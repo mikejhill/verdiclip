@@ -16,29 +16,51 @@ class TestDefaultConfigValues:
 
     def test_default_config_values(self, tmp_path: Path) -> None:
         config = Config(config_path=tmp_path / "config.json")
-        assert config.data["capture"]["default_action"] == "editor"
-        assert config.data["save"]["default_format"] == "png"
-        assert config.data["hotkeys"]["region"] == "print_screen"
-        assert config.data["editor"]["default_stroke_width"] == 3
-        assert config.data["startup"]["minimize_to_tray"] is True
+        assert config.data["capture"]["default_action"] == "editor", (
+            f"Expected default_action 'editor', got {config.data['capture']['default_action']}"
+        )
+        assert config.data["save"]["default_format"] == "png", (
+            f"Expected save.default_format to be 'png', got {config.data['save']['default_format']}"
+        )
+        assert config.data["hotkeys"]["region"] == "print_screen", (
+            f"Expected hotkeys.region to be 'print_screen', got {config.data['hotkeys']['region']}"
+        )
+        assert config.data["editor"]["default_stroke_width"] == 3, (
+            f"Expected default_stroke_width 3, got {config.data['editor']['default_stroke_width']}"
+        )
+        assert config.data["startup"]["minimize_to_tray"] is True, (
+            f"Expected minimize_to_tray True, got {config.data['startup']['minimize_to_tray']}"
+        )
 
 
 class TestGetNestedValue:
     """Dot-notation get retrieves nested values."""
 
     def test_get_nested_value(self, tmp_config: Config) -> None:
-        assert tmp_config.get("save.default_format") == "png"
-        assert tmp_config.get("capture.include_cursor") is False
-        assert tmp_config.get("editor.default_font_size") == 14
+        assert tmp_config.get("save.default_format") == "png", (
+            f"Expected save.default_format to be 'png', got {tmp_config.get('save.default_format')}"
+        )
+        assert tmp_config.get("capture.include_cursor") is False, (
+            f"Expected include_cursor False, got {tmp_config.get('capture.include_cursor')}"
+        )
+        assert tmp_config.get("editor.default_font_size") == 14, (
+            f"Expected default_font_size 14, got {tmp_config.get('editor.default_font_size')}"
+        )
 
 
 class TestGetNonexistentKey:
     """Missing keys return the provided default."""
 
     def test_get_nonexistent_key(self, tmp_config: Config) -> None:
-        assert tmp_config.get("nonexistent.key", "fallback") == "fallback"
-        assert tmp_config.get("capture.missing", 42) == 42
-        assert tmp_config.get("totally.absent") is None
+        assert tmp_config.get("nonexistent.key", "fallback") == "fallback", (
+            f"Expected 'fallback' default, got {tmp_config.get('nonexistent.key', 'fallback')}"
+        )
+        assert tmp_config.get("capture.missing", 42) == 42, (
+            f"Expected missing key to return 42, got {tmp_config.get('capture.missing', 42)}"
+        )
+        assert tmp_config.get("totally.absent") is None, (
+            f"Expected missing key to return None, got {tmp_config.get('totally.absent')}"
+        )
 
 
 class TestSetAndPersist:
@@ -48,23 +70,38 @@ class TestSetAndPersist:
         config_path = tmp_path / "config.json"
         config = Config(config_path=config_path)
         config.set("save.default_format", "jpg")
-        assert config.get("save.default_format") == "jpg"
+        assert config.get("save.default_format") == "jpg", (
+            f"Expected default_format 'jpg' after set, got {config.get('save.default_format')}"
+        )
 
         reloaded = Config(config_path=config_path)
-        assert reloaded.get("save.default_format") == "jpg"
+        assert reloaded.get("save.default_format") == "jpg", (
+            f"Expected default_format 'jpg' after reload, got {reloaded.get('save.default_format')}"
+        )
 
 
 class TestMergePreservesExisting:
-    """Existing values in config file aren't overwritten by defaults."""
+    """Existing values in config file aren't overwritten by defaults; missing keys get defaults."""
 
-    def test_merge_preserves_existing(self, sample_config_file: Path) -> None:
+    def test_merge_preserves_existing_and_fills_missing(
+        self, sample_config_file: Path
+    ) -> None:
         config = Config(config_path=sample_config_file)
-        assert config.get("capture.default_action") == "clipboard"
-        assert config.get("save.default_format") == "jpg"
-        assert config.get("save.jpg_quality") == 75
-        # Defaults still fill in missing keys
-        assert config.get("capture.include_cursor") is False
-        assert config.get("editor.default_stroke_width") == 3
+        assert config.get("capture.default_action") == "clipboard", (
+            "Existing 'clipboard' value should be preserved, not overwritten by default"
+        )
+        assert config.get("save.default_format") == "jpg", (
+            "Existing 'jpg' value should be preserved, not overwritten by 'png' default"
+        )
+        assert config.get("save.jpg_quality") == 75, (
+            "Existing jpg_quality=75 should be preserved"
+        )
+        assert config.get("capture.include_cursor") is False, (
+            "Missing key should be filled with default value"
+        )
+        assert config.get("editor.default_stroke_width") == 3, (
+            "Missing key should be filled with default value"
+        )
 
 
 class TestInvalidJsonUsesDefaults:
@@ -74,23 +111,13 @@ class TestInvalidJsonUsesDefaults:
         config_path = tmp_path / "config.json"
         config_path.write_text("{bad json!!!", encoding="utf-8")
         config = Config(config_path=config_path)
-        assert config.get("save.default_format") == "png"
-        assert config.get("capture.default_action") == DEFAULT_CONFIG["capture"]["default_action"]
-
-
-class TestSetNestedValue:
-    """set() updates a nested dictionary value."""
-
-    def test_set_updates_nested_dict(self, tmp_config: Config) -> None:
-        tmp_config.set("save.default_format", "jpg")
-        assert tmp_config.get("save.default_format") == "jpg"
-
-    def test_new_nested_value_persists_to_file(self, tmp_path: Path) -> None:
-        config_path = tmp_path / "config.json"
-        config = Config(config_path=config_path)
-        config.set("save.default_format", "jpg")
-        reloaded = Config(config_path=config_path)
-        assert reloaded.get("save.default_format") == "jpg"
+        assert config.get("save.default_format") == "png", (
+            f"Expected 'png' after invalid JSON, got {config.get('save.default_format')}"
+        )
+        expected = DEFAULT_CONFIG["capture"]["default_action"]
+        assert config.get("capture.default_action") == expected, (
+            f"Expected default after invalid JSON, got {config.get('capture.default_action')}"
+        )
 
 
 class TestReset:
@@ -102,8 +129,14 @@ class TestReset:
         config.set("save.default_format", "webp")
         config.set("capture.default_action", "clipboard")
         config.reset()
-        assert config.get("save.default_format") == DEFAULT_CONFIG["save"]["default_format"]
-        assert config.get("capture.default_action") == DEFAULT_CONFIG["capture"]["default_action"]
+        expected_fmt = DEFAULT_CONFIG["save"]["default_format"]
+        assert config.get("save.default_format") == expected_fmt, (
+            f"Expected default after reset, got format={config.get('save.default_format')}"
+        )
+        expected_act = DEFAULT_CONFIG["capture"]["default_action"]
+        assert config.get("capture.default_action") == expected_act, (
+            f"Expected default after reset, got action={config.get('capture.default_action')}"
+        )
 
 
 class TestConfigPathProperty:
@@ -112,23 +145,9 @@ class TestConfigPathProperty:
     def test_returns_construction_path(self, tmp_path: Path) -> None:
         config_path = tmp_path / "config.json"
         config = Config(config_path=config_path)
-        assert config.config_path == config_path
-
-
-class TestConfigWithExistingFile:
-    """Config loads from an existing file and merges with defaults."""
-
-    def test_existing_values_preserved(self, sample_config_file: Path) -> None:
-        config = Config(config_path=sample_config_file)
-        assert config.get("capture.default_action") == "clipboard"
-        assert config.get("save.default_format") == "jpg"
-        assert config.get("save.jpg_quality") == 75
-
-    def test_missing_keys_get_defaults(self, sample_config_file: Path) -> None:
-        config = Config(config_path=sample_config_file)
-        assert config.get("capture.include_cursor") is False
-        assert config.get("editor.default_stroke_width") == 3
-        assert config.get("startup.run_at_login") is False
+        assert config.config_path == config_path, (
+            f"Expected config_path to be {config_path}, got {config.config_path}"
+        )
 
 
 class TestSetNewTopLevelSection:
@@ -136,14 +155,18 @@ class TestSetNewTopLevelSection:
 
     def test_creates_new_section(self, tmp_config: Config) -> None:
         tmp_config.set("newsection.key", "value")
-        assert tmp_config.get("newsection.key") == "value"
+        assert tmp_config.get("newsection.key") == "value", (
+            f"Expected newsection.key to be 'value', got {tmp_config.get('newsection.key')}"
+        )
 
     def test_new_section_persists(self, tmp_path: Path) -> None:
         config_path = tmp_path / "config.json"
         config = Config(config_path=config_path)
         config.set("newsection.key", "value")
         reloaded = Config(config_path=config_path)
-        assert reloaded.get("newsection.key") == "value"
+        assert reloaded.get("newsection.key") == "value", (
+            f"Expected newsection.key to persist as 'value', got {reloaded.get('newsection.key')}"
+        )
 
 
 class TestSaveAndLoad:
@@ -157,4 +180,6 @@ class TestSaveAndLoad:
         with config_path.open("r", encoding="utf-8") as f:
             on_disk = json.load(f)
 
-        assert on_disk == config.data
+        assert on_disk == config.data, (
+            f"Expected disk data to match in-memory data, got disk={on_disk}"
+        )

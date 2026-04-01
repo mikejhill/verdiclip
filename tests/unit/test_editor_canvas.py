@@ -19,11 +19,15 @@ from verdiclip.editor.toolbar import ToolType
 class TestEditorCanvasInit:
     def test_scene_is_created(self, qapp) -> None:
         canvas = EditorCanvas()
-        assert isinstance(canvas.scene, QGraphicsScene)
+        assert isinstance(canvas.scene, QGraphicsScene), (
+            f"Expected scene to be QGraphicsScene, got {type(canvas.scene).__name__}"
+        )
 
     def test_no_pixmap_item_initially(self, qapp) -> None:
         canvas = EditorCanvas()
-        assert canvas.pixmap_item is None
+        assert canvas.pixmap_item is None, (
+            f"Expected pixmap_item to be None initially, got {canvas.pixmap_item}"
+        )
 
 
 class TestEditorCanvasSetImage:
@@ -31,21 +35,29 @@ class TestEditorCanvasSetImage:
         canvas = EditorCanvas()
         pixmap = QPixmap(100, 100)
         canvas.set_image(pixmap)
-        assert isinstance(canvas.pixmap_item, QGraphicsPixmapItem)
+        assert isinstance(canvas.pixmap_item, QGraphicsPixmapItem), (
+            f"Expected QGraphicsPixmapItem, got {type(canvas.pixmap_item).__name__}"
+        )
 
     def test_sets_scene_rect(self, qapp) -> None:
         canvas = EditorCanvas()
         pixmap = QPixmap(100, 100)
         canvas.set_image(pixmap)
         rect = canvas.scene.sceneRect()
-        assert rect.width() == 100
-        assert rect.height() == 100
+        assert rect.width() == 100, (
+            f"Expected scene rect width 100, got {rect.width()}"
+        )
+        assert rect.height() == 100, (
+            f"Expected scene rect height 100, got {rect.height()}"
+        )
 
     def test_updates_zoom(self, qapp) -> None:
         canvas = EditorCanvas()
         pixmap = QPixmap(100, 100)
         canvas.set_image(pixmap)
-        assert canvas._zoom_level == canvas.transform().m11()
+        assert canvas._zoom_level == canvas.transform().m11(), (
+            f"Expected zoom == m11, got {canvas._zoom_level} vs {canvas.transform().m11()}"
+        )
 
 
 class TestEditorCanvasSetTool:
@@ -69,7 +81,9 @@ class TestEditorCanvasSetTool:
         canvas.set_tool(tool)
         canvas.set_tool(None)
         tool.deactivate.assert_called_once()
-        assert canvas._current_tool is None
+        assert canvas._current_tool is None, (
+            f"Expected _current_tool to be None, got {canvas._current_tool}"
+        )
 
 
 class TestEditorCanvasGetFlattenedPixmap:
@@ -78,25 +92,28 @@ class TestEditorCanvasGetFlattenedPixmap:
         pixmap = QPixmap(100, 100)
         canvas.set_image(pixmap)
         result = canvas.get_flattened_pixmap()
-        assert isinstance(result, QPixmap)
-        assert result.width() == 100
-        assert result.height() == 100
+        assert isinstance(result, QPixmap), (
+            f"Expected QPixmap, got {type(result).__name__}"
+        )
+        assert result.width() == 100, (
+            f"Expected flattened pixmap width 100, got {result.width()}"
+        )
+        assert result.height() == 100, (
+            f"Expected flattened pixmap height 100, got {result.height()}"
+        )
 
 
 class TestEditorCanvasProperties:
-    def test_scene_returns_graphics_scene(self, qapp) -> None:
-        canvas = EditorCanvas()
-        assert isinstance(canvas.scene, QGraphicsScene)
-
-    def test_pixmap_item_none_initially(self, qapp) -> None:
-        canvas = EditorCanvas()
-        assert canvas.pixmap_item is None
-
-    def test_pixmap_item_after_set_image(self, qapp) -> None:
+    def test_pixmap_item_reflects_set_image(self, qapp) -> None:
         canvas = EditorCanvas()
         pixmap = QPixmap(100, 100)
         canvas.set_image(pixmap)
-        assert canvas.pixmap_item is not None
+        assert canvas.pixmap_item is not None, (
+            "pixmap_item should be set after set_image"
+        )
+        assert canvas.pixmap_item.pixmap().width() == 100, (
+            "pixmap_item width should match input pixmap"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -108,22 +125,30 @@ class TestEditorWindowCreation:
     def test_has_canvas(self, qapp, tmp_config) -> None:
         pixmap = QPixmap(100, 100)
         window = EditorWindow(pixmap, tmp_config)
-        assert isinstance(window._canvas, EditorCanvas)
+        assert isinstance(window._canvas, EditorCanvas), (
+            f"Expected _canvas to be EditorCanvas, got {type(window._canvas).__name__}"
+        )
 
     def test_has_toolbar(self, qapp, tmp_config) -> None:
         pixmap = QPixmap(100, 100)
         window = EditorWindow(pixmap, tmp_config)
-        assert window._toolbar is not None
+        assert window._toolbar is not None, (
+            "Expected _toolbar to not be None"
+        )
 
     def test_has_properties_panel(self, qapp, tmp_config) -> None:
         pixmap = QPixmap(100, 100)
         window = EditorWindow(pixmap, tmp_config)
-        assert window._properties is not None
+        assert window._properties is not None, (
+            "Expected _properties to not be None"
+        )
 
     def test_has_statusbar(self, qapp, tmp_config) -> None:
         pixmap = QPixmap(100, 100)
         window = EditorWindow(pixmap, tmp_config)
-        assert window._statusbar is not None
+        assert window._statusbar is not None, (
+            "Expected _statusbar to not be None"
+        )
 
 
 class TestEditorWindowToolChanged:
@@ -131,22 +156,30 @@ class TestEditorWindowToolChanged:
         pixmap = QPixmap(100, 100)
         window = EditorWindow(pixmap, tmp_config)
         window._on_tool_changed(ToolType.RECTANGLE)
-        assert "Rectangle" in window._statusbar.currentMessage()
+        assert "Rectangle" in window._statusbar.currentMessage(), (
+            f"Expected 'Rectangle' in status bar, got '{window._statusbar.currentMessage()}'"
+        )
 
 
 class TestEditorWindowTitle:
     def test_title_contains_verdiclip(self, qapp, tmp_config) -> None:
         pixmap = QPixmap(100, 100)
         window = EditorWindow(pixmap, tmp_config)
-        assert "VerdiClip" in window.windowTitle()
+        assert "VerdiClip" in window.windowTitle(), (
+            f"Expected 'VerdiClip' in window title, got '{window.windowTitle()}'"
+        )
 
 
 class TestEditorWindowMinimumSize:
     def test_minimum_size_is_800x600(self, qapp, tmp_config) -> None:
         pixmap = QPixmap(100, 100)
         window = EditorWindow(pixmap, tmp_config)
-        assert window.minimumWidth() == 800
-        assert window.minimumHeight() == 600
+        assert window.minimumWidth() == 800, (
+            f"Expected minimum width 800, got {window.minimumWidth()}"
+        )
+        assert window.minimumHeight() == 600, (
+            f"Expected minimum height 600, got {window.minimumHeight()}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +238,9 @@ class TestEditorCanvasWheelEvent:
             120, Qt.KeyboardModifier.ControlModifier,
         )
         canvas.wheelEvent(event)
-        assert canvas._zoom_level > zoom_before
+        assert canvas._zoom_level > zoom_before, (
+            f"Expected zoom increase on Ctrl+scroll, got {canvas._zoom_level} (was {zoom_before})"
+        )
 
     def test_ctrl_scroll_down_zooms_out(self, qapp) -> None:
         canvas = EditorCanvas()
@@ -216,7 +251,9 @@ class TestEditorCanvasWheelEvent:
             -120, Qt.KeyboardModifier.ControlModifier,
         )
         canvas.wheelEvent(event)
-        assert canvas._zoom_level < zoom_before
+        assert canvas._zoom_level < zoom_before, (
+            f"Expected zoom decrease on Ctrl+scroll, got {canvas._zoom_level} (was {zoom_before})"
+        )
 
     def test_no_ctrl_passes_to_super(self, qapp) -> None:
         canvas = EditorCanvas()
@@ -225,7 +262,9 @@ class TestEditorCanvasWheelEvent:
         zoom_before = canvas._zoom_level
         event = _make_wheel_event(120)
         canvas.wheelEvent(event)
-        assert canvas._zoom_level == zoom_before
+        assert canvas._zoom_level == zoom_before, (
+            f"Expected zoom unchanged without Ctrl, got {canvas._zoom_level} (was {zoom_before})"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +280,9 @@ class TestEditorCanvasMousePressEvent:
             Qt.MouseButton.MiddleButton,
         )
         canvas.mousePressEvent(event)
-        assert canvas._is_panning is True
+        assert canvas._is_panning is True, (
+            f"Expected _is_panning True after middle-click, got {canvas._is_panning}"
+        )
 
     def test_tool_delegation(self, qapp) -> None:
         canvas = EditorCanvas()
@@ -256,7 +297,7 @@ class TestEditorCanvasMousePressEvent:
         canvas.mousePressEvent(event)
         tool.mouse_press.assert_called_once()
 
-    def test_no_tool_calls_super(self, qapp) -> None:
+    def test_no_tool_left_click_does_not_pan(self, qapp) -> None:
         canvas = EditorCanvas()
         canvas.set_tool(None)
         event = _make_mouse_event(
@@ -264,7 +305,9 @@ class TestEditorCanvasMousePressEvent:
             Qt.MouseButton.LeftButton,
         )
         canvas.mousePressEvent(event)
-        assert canvas._is_panning is False
+        assert canvas._is_panning is False, (
+            "Left-click without tool should not start panning"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -283,7 +326,9 @@ class TestEditorCanvasMouseMoveEvent:
             QPointF(60, 60),
         )
         canvas.mouseMoveEvent(event)
-        assert event.isAccepted()
+        assert event.isAccepted(), (
+            "Expected mouse move event to be accepted during panning"
+        )
 
     def test_tool_delegation(self, qapp) -> None:
         canvas = EditorCanvas()
@@ -298,7 +343,7 @@ class TestEditorCanvasMouseMoveEvent:
         canvas.mouseMoveEvent(event)
         tool.mouse_move.assert_called_once()
 
-    def test_no_tool_no_pan_calls_super(self, qapp) -> None:
+    def test_no_tool_move_does_not_change_pan_state(self, qapp) -> None:
         canvas = EditorCanvas()
         canvas._is_panning = False
         canvas.set_tool(None)
@@ -307,7 +352,9 @@ class TestEditorCanvasMouseMoveEvent:
             Qt.MouseButton.NoButton,
         )
         canvas.mouseMoveEvent(event)
-        assert canvas._is_panning is False
+        assert canvas._is_panning is False, (
+            "Mouse move without tool or panning should keep _is_panning False"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -325,7 +372,9 @@ class TestEditorCanvasMouseReleaseEvent:
             Qt.MouseButton.MiddleButton,
         )
         canvas.mouseReleaseEvent(event)
-        assert canvas._is_panning is False
+        assert canvas._is_panning is False, (
+            f"Expected _is_panning False after middle-release, got {canvas._is_panning}"
+        )
 
     def test_tool_delegation(self, qapp) -> None:
         canvas = EditorCanvas()
@@ -348,7 +397,9 @@ class TestEditorCanvasMouseReleaseEvent:
             Qt.MouseButton.LeftButton,
         )
         canvas.mouseReleaseEvent(event)
-        assert canvas._is_panning is False
+        assert canvas._is_panning is False, (
+            f"Expected _is_panning False after left-release, got {canvas._is_panning}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -370,8 +421,12 @@ class TestEditorWindowOpenFile:
         window._open_file()
 
         rect = window._canvas.scene.sceneRect()
-        assert rect.width() == 80
-        assert rect.height() == 60
+        assert rect.width() == 80, (
+            f"Expected scene width 80 after open, got {rect.width()}"
+        )
+        assert rect.height() == 60, (
+            f"Expected scene height 60 after open, got {rect.height()}"
+        )
 
     @patch("verdiclip.editor.canvas.QFileDialog.getOpenFileName")
     def test_cancelled_dialog_does_nothing(
@@ -381,7 +436,9 @@ class TestEditorWindowOpenFile:
         window = EditorWindow(QPixmap(100, 100), tmp_config)
         window._open_file()
         rect = window._canvas.scene.sceneRect()
-        assert rect.width() == 100
+        assert rect.width() == 100, (
+            f"Expected scene width unchanged at 100 after cancel, got {rect.width()}"
+        )
 
 
 class TestEditorWindowSaveFile:
@@ -419,7 +476,9 @@ class TestEditorWindowCopyToClipboard:
     ) -> None:
         window = EditorWindow(QPixmap(100, 100), tmp_config)
         window._copy_to_clipboard()
-        assert "clipboard" in window._statusbar.currentMessage().lower()
+        assert "clipboard" in window._statusbar.currentMessage().lower(), (
+            f"Expected 'clipboard' in status bar, got '{window._statusbar.currentMessage()}'"
+        )
 
 
 class TestEditorWindowPrint:

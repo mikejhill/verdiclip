@@ -13,23 +13,25 @@ from verdiclip.tray.icon import TrayIcon, _create_default_icon
 class TestCreateDefaultIcon:
     def test_returns_qicon(self, qapp) -> None:
         icon = _create_default_icon()
-        assert isinstance(icon, QIcon)
+        assert isinstance(icon, QIcon), f"Expected icon to be instance of QIcon, got {type(icon)}"
 
     def test_icon_is_not_null(self, qapp) -> None:
         icon = _create_default_icon()
-        assert not icon.isNull()
+        assert not icon.isNull(), f"Expected icon.isNull() to be falsy, got {icon.isNull()}"
 
 
 class TestTrayIconCreation:
     def test_creates_with_app_and_config(self, qapp, tmp_config) -> None:
         app = QApplication.instance()
         icon = TrayIcon(app, tmp_config)
-        assert icon is not None
+        assert icon is not None, f"Expected icon to not be None, got {icon}"
 
     def test_tooltip_contains_verdiclip(self, qapp, tmp_config) -> None:
         app = QApplication.instance()
         icon = TrayIcon(app, tmp_config)
-        assert "VerdiClip" in icon.toolTip()
+        assert "VerdiClip" in icon.toolTip(), (
+            f"Expected 'VerdiClip' to be in icon.toolTip(), got {icon.toolTip()}"
+        )
 
 
 class TestTrayIconMenu:
@@ -47,7 +49,9 @@ class TestTrayIconMenu:
             "About",
             "Exit",
         ]
-        assert action_texts == expected
+        assert action_texts == expected, (
+            f"Expected action_texts to equal expected, got {action_texts}"
+        )
 
 
 class TestTrayIconBehavior:
@@ -78,7 +82,9 @@ class TestCaptureRegion:
             mock_cls.assert_called_once()
             mock_capture.start_selection.assert_called_once()
             kwargs = mock_capture.start_selection.call_args
-            assert "on_captured" in kwargs.kwargs or len(kwargs.args) >= 1
+            assert "on_captured" in kwargs.kwargs or len(kwargs.args) >= 1, (
+                "Expected ('on_captured' in kwargs.kwargs or len(kwargs.args) >= 1) to be truthy"
+            )
 
     def test_stores_active_capture_reference(self, qapp, tmp_config) -> None:
         app = QApplication.instance()
@@ -86,7 +92,9 @@ class TestCaptureRegion:
         mock_capture = MagicMock()
         with patch("verdiclip.capture.region.RegionCapture", return_value=mock_capture):
             icon._capture_region()
-            assert icon._active_capture is mock_capture
+            assert icon._active_capture is mock_capture, (
+                f"Expected icon._active_capture to be mock_capture, got {icon._active_capture}"
+            )
 
 
 class TestCaptureWindow:
@@ -111,7 +119,10 @@ class TestCaptureWindow:
             mock_wc.capture_active_window.return_value = MagicMock(spec=QPixmap)
             icon._capture_window()
             call_kwargs = mock_wc.capture_active_window.call_args
-            assert "include_decorations" in call_kwargs.kwargs
+            assert "include_decorations" in call_kwargs.kwargs, (
+                f"Expected 'include_decorations' to be in call_kwargs.kwargs,"
+                f" got {call_kwargs.kwargs}"
+            )
 
 
 class TestCaptureScreen:
@@ -146,7 +157,9 @@ class TestOpenEditor:
         mock_editor = MagicMock()
         with patch("verdiclip.editor.canvas.EditorWindow", return_value=mock_editor):
             icon._open_editor(MagicMock(spec=QPixmap))
-            assert icon._editor is mock_editor
+            assert icon._editor is mock_editor, (
+                f"Expected icon._editor to be mock_editor, got {icon._editor}"
+            )
 
 
 class TestOpenImage:

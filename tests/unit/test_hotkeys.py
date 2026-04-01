@@ -23,23 +23,34 @@ if TYPE_CHECKING:
 class TestParseHotkey:
     def test_ctrl_print_screen(self) -> None:
         keys = _parse_hotkey("ctrl+print_screen")
-        assert keys == {keyboard.Key.ctrl_l, keyboard.Key.print_screen}
+        assert keys == {keyboard.Key.ctrl_l, keyboard.Key.print_screen}, (
+            f"Expected keys to equal {{keyboard.Key.ctrl_l, keyboard.Key.print_screen}}, got {keys}"
+        )
 
     def test_shift_print_screen(self) -> None:
         keys = _parse_hotkey("shift+print_screen")
-        assert keys == {keyboard.Key.shift, keyboard.Key.print_screen}
+        assert keys == {keyboard.Key.shift, keyboard.Key.print_screen}, (
+            f"Expected keys to equal {{keyboard.Key.shift, keyboard.Key.print_screen}}, got {keys}"
+        )
 
     def test_alt_print_screen(self) -> None:
         keys = _parse_hotkey("alt+print_screen")
-        assert keys == {keyboard.Key.alt_l, keyboard.Key.print_screen}
+        assert keys == {keyboard.Key.alt_l, keyboard.Key.print_screen}, (
+            f"Expected keys to equal {{keyboard.Key.alt_l, keyboard.Key.print_screen}}, got {keys}"
+        )
 
     def test_ctrl_s(self) -> None:
         keys = _parse_hotkey("ctrl+s")
-        assert keys == {keyboard.Key.ctrl_l, keyboard.KeyCode.from_char("s")}
+        assert keys == {keyboard.Key.ctrl_l, keyboard.KeyCode.from_char("s")}, (
+            f"Expected keys to equal {{keyboard.Key.ctrl_l, keyboard.KeyCode.from_char('s')}},"
+            f" got {keys}"
+        )
 
     def test_bare_print_screen(self) -> None:
         keys = _parse_hotkey("print_screen")
-        assert keys == {keyboard.Key.print_screen}
+        assert keys == {keyboard.Key.print_screen}, (
+            f"Expected keys to equal {{keyboard.Key.print_screen}}, got {keys}"
+        )
 
     def test_ctrl_shift_print_screen(self) -> None:
         keys = _parse_hotkey("ctrl+shift+print_screen")
@@ -47,39 +58,49 @@ class TestParseHotkey:
             keyboard.Key.ctrl_l,
             keyboard.Key.shift,
             keyboard.Key.print_screen,
-        }
+        }, f"Unexpected keys: {keys}"
 
     def test_control_alias_same_as_ctrl(self) -> None:
-        assert _parse_hotkey("control+s") == _parse_hotkey("ctrl+s")
+        assert _parse_hotkey("control+s") == _parse_hotkey("ctrl+s"), (
+            f"Expected _parse_hotkey('control+s') to equal _parse_hotkey('ctrl+s'),"
+            f" got {_parse_hotkey('control+s')}"
+        )
 
     def test_win_alias_returns_cmd(self) -> None:
         keys = _parse_hotkey("win+s")
-        assert keyboard.Key.cmd in keys
+        assert keyboard.Key.cmd in keys, f"Expected keyboard.Key.cmd to be in keys, got {keys}"
 
     @pytest.mark.parametrize("char", list("abcdefghijklmnopqrstuvwxyz"))
     def test_single_char_keys(self, char: str) -> None:
         keys = _parse_hotkey(char)
-        assert keys == {keyboard.KeyCode.from_char(char)}
+        assert keys == {keyboard.KeyCode.from_char(char)}, (
+            f"Expected keys to equal {{keyboard.KeyCode.from_char(char)}}, got {keys}"
+        )
 
     @pytest.mark.parametrize("n", range(1, 13))
     def test_function_keys_f1_through_f12(self, n: int) -> None:
         keys = _parse_hotkey(f"f{n}")
         expected_key = getattr(keyboard.Key, f"f{n}")
-        assert keys == {expected_key}
+        assert keys == {expected_key}, f"Expected keys to equal {{expected_key}}, got {keys}"
 
     def test_empty_string_returns_empty_set(self) -> None:
         keys = _parse_hotkey("")
-        assert keys == set()
+        assert keys == set(), f"Expected keys to equal set(), got {keys}"
 
     def test_unknown_key_logs_warning(self, caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level(logging.WARNING, logger="verdiclip.hotkeys.manager"):
             keys = _parse_hotkey("boguskey")
-        assert len(keys) == 0
-        assert "Unknown key" in caplog.text
+        assert len(keys) == 0, f"Expected len(keys) to equal 0, got {len(keys)}"
+        assert "Unknown key" in caplog.text, (
+            f"Expected 'Unknown key' to be in caplog.text, got {caplog.text}"
+        )
 
     def test_whitespace_around_parts_is_stripped(self) -> None:
         keys = _parse_hotkey(" ctrl + s ")
-        assert keys == {keyboard.Key.ctrl_l, keyboard.KeyCode.from_char("s")}
+        assert keys == {keyboard.Key.ctrl_l, keyboard.KeyCode.from_char("s")}, (
+            f"Expected keys to equal {{keyboard.Key.ctrl_l, keyboard.KeyCode.from_char('s')}},"
+            f" got {keys}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +112,9 @@ class TestRegister:
     def test_registers_callback(self, tmp_config: Config) -> None:
         manager = HotkeyManager(tmp_config)
         manager.register("ctrl+print_screen", MagicMock())
-        assert len(manager._callbacks) == 1
+        assert len(manager._callbacks) == 1, (
+            f"Expected len(manager._callbacks) to equal 1, got {len(manager._callbacks)}"
+        )
 
     def test_same_hotkey_overwrites_previous(self, tmp_config: Config) -> None:
         manager = HotkeyManager(tmp_config)
@@ -100,14 +123,18 @@ class TestRegister:
         manager.register("ctrl+s", first)
         manager.register("ctrl+s", second)
 
-        assert len(manager._callbacks) == 1
+        assert len(manager._callbacks) == 1, (
+            f"Expected len(manager._callbacks) to equal 1, got {len(manager._callbacks)}"
+        )
         stored = next(iter(manager._callbacks.values()))
-        assert stored is second
+        assert stored is second, f"Expected stored to be second, got {stored}"
 
     def test_empty_hotkey_does_not_register(self, tmp_config: Config) -> None:
         manager = HotkeyManager(tmp_config)
         manager.register("", MagicMock())
-        assert len(manager._callbacks) == 0
+        assert len(manager._callbacks) == 0, (
+            f"Expected len(manager._callbacks) to equal 0, got {len(manager._callbacks)}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -119,9 +146,13 @@ class TestUnregister:
     def test_unregisters_existing_hotkey(self, tmp_config: Config) -> None:
         manager = HotkeyManager(tmp_config)
         manager.register("ctrl+print_screen", MagicMock())
-        assert len(manager._callbacks) == 1
+        assert len(manager._callbacks) == 1, (
+            f"Expected len(manager._callbacks) to equal 1, got {len(manager._callbacks)}"
+        )
         manager.unregister("ctrl+print_screen")
-        assert len(manager._callbacks) == 0
+        assert len(manager._callbacks) == 0, (
+            f"Expected len(manager._callbacks) to equal 0, got {len(manager._callbacks)}"
+        )
 
     def test_unregister_nonexistent_does_not_raise(
         self, tmp_config: Config
@@ -141,41 +172,73 @@ class TestNormalizeKey:
         return HotkeyManager(tmp_config)
 
     def test_ctrl_l_unchanged(self, manager: HotkeyManager) -> None:
-        assert manager._normalize_key(keyboard.Key.ctrl_l) == keyboard.Key.ctrl_l
+        assert manager._normalize_key(keyboard.Key.ctrl_l) == keyboard.Key.ctrl_l, (
+            f"Expected manager._normalize_key(keyboard.Key.ctrl_l) to equal keyboard.Key.ctrl_l,"
+            f" got {manager._normalize_key(keyboard.Key.ctrl_l)}"
+        )
 
     def test_ctrl_r_to_ctrl_l(self, manager: HotkeyManager) -> None:
-        assert manager._normalize_key(keyboard.Key.ctrl_r) == keyboard.Key.ctrl_l
+        assert manager._normalize_key(keyboard.Key.ctrl_r) == keyboard.Key.ctrl_l, (
+            f"Expected manager._normalize_key(keyboard.Key.ctrl_r) to equal keyboard.Key.ctrl_l,"
+            f" got {manager._normalize_key(keyboard.Key.ctrl_r)}"
+        )
 
     def test_alt_l_unchanged(self, manager: HotkeyManager) -> None:
-        assert manager._normalize_key(keyboard.Key.alt_l) == keyboard.Key.alt_l
+        assert manager._normalize_key(keyboard.Key.alt_l) == keyboard.Key.alt_l, (
+            f"Expected manager._normalize_key(keyboard.Key.alt_l) to equal keyboard.Key.alt_l,"
+            f" got {manager._normalize_key(keyboard.Key.alt_l)}"
+        )
 
     def test_alt_r_to_alt_l(self, manager: HotkeyManager) -> None:
-        assert manager._normalize_key(keyboard.Key.alt_r) == keyboard.Key.alt_l
+        assert manager._normalize_key(keyboard.Key.alt_r) == keyboard.Key.alt_l, (
+            f"Expected manager._normalize_key(keyboard.Key.alt_r) to equal keyboard.Key.alt_l,"
+            f" got {manager._normalize_key(keyboard.Key.alt_r)}"
+        )
 
     def test_alt_gr_to_alt_l(self, manager: HotkeyManager) -> None:
-        assert manager._normalize_key(keyboard.Key.alt_gr) == keyboard.Key.alt_l
+        assert manager._normalize_key(keyboard.Key.alt_gr) == keyboard.Key.alt_l, (
+            f"Expected manager._normalize_key(keyboard.Key.alt_gr) to equal keyboard.Key.alt_l,"
+            f" got {manager._normalize_key(keyboard.Key.alt_gr)}"
+        )
 
     def test_shift_l_to_shift(self, manager: HotkeyManager) -> None:
-        assert manager._normalize_key(keyboard.Key.shift_l) == keyboard.Key.shift
+        assert manager._normalize_key(keyboard.Key.shift_l) == keyboard.Key.shift, (
+            f"Expected manager._normalize_key(keyboard.Key.shift_l) to equal keyboard.Key.shift,"
+            f" got {manager._normalize_key(keyboard.Key.shift_l)}"
+        )
 
     def test_shift_r_to_shift(self, manager: HotkeyManager) -> None:
-        assert manager._normalize_key(keyboard.Key.shift_r) == keyboard.Key.shift
+        assert manager._normalize_key(keyboard.Key.shift_r) == keyboard.Key.shift, (
+            f"Expected manager._normalize_key(keyboard.Key.shift_r) to equal keyboard.Key.shift,"
+            f" got {manager._normalize_key(keyboard.Key.shift_r)}"
+        )
 
     def test_cmd_l_to_cmd(self, manager: HotkeyManager) -> None:
-        assert manager._normalize_key(keyboard.Key.cmd_l) == keyboard.Key.cmd
+        assert manager._normalize_key(keyboard.Key.cmd_l) == keyboard.Key.cmd, (
+            f"Expected manager._normalize_key(keyboard.Key.cmd_l) to equal keyboard.Key.cmd,"
+            f" got {manager._normalize_key(keyboard.Key.cmd_l)}"
+        )
 
     def test_cmd_r_to_cmd(self, manager: HotkeyManager) -> None:
-        assert manager._normalize_key(keyboard.Key.cmd_r) == keyboard.Key.cmd
+        assert manager._normalize_key(keyboard.Key.cmd_r) == keyboard.Key.cmd, (
+            f"Expected manager._normalize_key(keyboard.Key.cmd_r) to equal keyboard.Key.cmd,"
+            f" got {manager._normalize_key(keyboard.Key.cmd_r)}"
+        )
 
     def test_regular_key_unchanged(self, manager: HotkeyManager) -> None:
         assert (
             manager._normalize_key(keyboard.Key.print_screen)
             == keyboard.Key.print_screen
+        ), (
+            f"Expected print_screen key unchanged, "
+            f"got {manager._normalize_key(keyboard.Key.print_screen)}"
         )
 
     def test_keycode_unchanged(self, manager: HotkeyManager) -> None:
         kc = keyboard.KeyCode.from_char("a")
-        assert manager._normalize_key(kc) == kc
+        assert manager._normalize_key(kc) == kc, (
+            f"Expected manager._normalize_key(kc) to equal kc, got {manager._normalize_key(kc)}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +253,10 @@ class TestOnPress:
 
     def test_adds_normalized_key_to_pressed(self, manager: HotkeyManager) -> None:
         manager._on_press(keyboard.Key.ctrl_r)
-        assert keyboard.Key.ctrl_l in manager._pressed_keys
+        assert keyboard.Key.ctrl_l in manager._pressed_keys, (
+            f"Expected keyboard.Key.ctrl_l to be in manager._pressed_keys,"
+            f" got {manager._pressed_keys}"
+        )
 
     def test_triggers_callback_when_combo_pressed(
         self, manager: HotkeyManager
@@ -232,7 +298,10 @@ class TestOnRelease:
     def test_removes_normalized_key(self, manager: HotkeyManager) -> None:
         manager._pressed_keys.add(keyboard.Key.ctrl_l)
         manager._on_release(keyboard.Key.ctrl_l)
-        assert keyboard.Key.ctrl_l not in manager._pressed_keys
+        assert keyboard.Key.ctrl_l not in manager._pressed_keys, (
+            f"Expected keyboard.Key.ctrl_l to not be in manager._pressed_keys,"
+            f" got {manager._pressed_keys}"
+        )
 
     def test_key_not_in_set_does_not_raise(self, manager: HotkeyManager) -> None:
         manager._on_release(keyboard.Key.ctrl_l)
@@ -271,7 +340,9 @@ class TestStart:
             manager.start()
 
         mock_listener_cls.assert_called_once()
-        assert "already running" in caplog.text
+        assert "already running" in caplog.text, (
+            f"Expected 'already running' to be in caplog.text, got {caplog.text}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -291,8 +362,12 @@ class TestStop:
         manager.stop()
 
         mock_listener_cls.return_value.stop.assert_called_once()
-        assert manager._listener is None
-        assert len(manager._pressed_keys) == 0
+        assert manager._listener is None, (
+            f"Expected manager._listener to be None, got {manager._listener}"
+        )
+        assert len(manager._pressed_keys) == 0, (
+            f"Expected len(manager._pressed_keys) to equal 0, got {len(manager._pressed_keys)}"
+        )
 
     def test_stop_when_not_started_is_safe(self, tmp_config: Config) -> None:
         manager = HotkeyManager(tmp_config)
@@ -309,7 +384,11 @@ class TestReloadFromConfig:
         manager = HotkeyManager(tmp_config)
         manager.register("ctrl+s", MagicMock())
         manager.register("alt+print_screen", MagicMock())
-        assert len(manager._callbacks) == 2
+        assert len(manager._callbacks) == 2, (
+            f"Expected len(manager._callbacks) to equal 2, got {len(manager._callbacks)}"
+        )
 
         manager.reload_from_config()
-        assert len(manager._callbacks) == 0
+        assert len(manager._callbacks) == 0, (
+            f"Expected len(manager._callbacks) to equal 0, got {len(manager._callbacks)}"
+        )

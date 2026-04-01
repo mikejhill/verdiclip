@@ -16,25 +16,35 @@ from verdiclip.editor.properties import ColorButton, PropertiesPanel
 class TestColorButtonInit:
     def test_initial_color_is_set(self, qapp) -> None:
         btn = ColorButton(QColor("#00FF00"))
-        assert btn.color.name() == "#00ff00"
+        assert btn.color.name() == "#00ff00", (
+            f"Expected initial color '#00ff00', got '{btn.color.name()}'"
+        )
 
     def test_fixed_size_28x28(self, qapp) -> None:
         btn = ColorButton(QColor("#000000"))
-        assert btn.width() == 28
-        assert btn.height() == 28
+        assert btn.width() == 28, (
+            f"Expected button width 28, got {btn.width()}"
+        )
+        assert btn.height() == 28, (
+            f"Expected button height 28, got {btn.height()}"
+        )
 
 
 class TestColorButtonProperty:
     def test_getter_returns_current_color(self, qapp) -> None:
         color = QColor("#ABCDEF")
         btn = ColorButton(color)
-        assert btn.color.name() == color.name()
+        assert btn.color.name() == color.name(), (
+            f"Expected color '{color.name()}', got '{btn.color.name()}'"
+        )
 
     def test_setter_updates_color(self, qapp) -> None:
         btn = ColorButton(QColor("#000000"))
         new_color = QColor("#FF00FF")
         btn.color = new_color
-        assert btn.color.name() == new_color.name()
+        assert btn.color.name() == new_color.name(), (
+            f"Expected color '{new_color.name()}' after set, got '{btn.color.name()}'"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -45,25 +55,37 @@ class TestColorButtonProperty:
 class TestPropertiesPanelDefaults:
     def test_stroke_color_default(self, qapp) -> None:
         panel = PropertiesPanel()
-        assert panel.stroke_color.name() == QColor("#FF0000").name()
+        assert panel.stroke_color.name() == QColor("#FF0000").name(), (
+            f"Expected default stroke color '#ff0000', got '{panel.stroke_color.name()}'"
+        )
 
     def test_fill_color_default_is_transparent(self, qapp) -> None:
         panel = PropertiesPanel()
-        assert panel.fill_color.alpha() == 0
+        assert panel.fill_color.alpha() == 0, (
+            f"Expected default fill color alpha 0, got {panel.fill_color.alpha()}"
+        )
 
     def test_stroke_width_default(self, qapp) -> None:
         panel = PropertiesPanel()
-        assert panel.stroke_width == 3
+        assert panel.stroke_width == 3, (
+            f"Expected default stroke width 3, got {panel.stroke_width}"
+        )
 
     def test_current_font_default(self, qapp) -> None:
         panel = PropertiesPanel()
         font = panel.current_font
-        assert font.family() == "Arial"
-        assert font.pointSize() == 14
+        assert font.family() == "Arial", (
+            f"Expected default font family 'Arial', got '{font.family()}'"
+        )
+        assert font.pointSize() == 14, (
+            f"Expected default font size 14, got {font.pointSize()}"
+        )
 
     def test_obfuscation_strength_default(self, qapp) -> None:
         panel = PropertiesPanel()
-        assert panel.obfuscation_strength == 12
+        assert panel.obfuscation_strength == 12, (
+            f"Expected default obfuscation strength 12, got {panel.obfuscation_strength}"
+        )
 
 
 class TestPropertiesPanelSetStrokeColor:
@@ -71,7 +93,9 @@ class TestPropertiesPanelSetStrokeColor:
         panel = PropertiesPanel()
         new_color = QColor("#00FF00")
         panel.set_stroke_color(new_color)
-        assert panel.stroke_color.name() == new_color.name()
+        assert panel.stroke_color.name() == new_color.name(), (
+            f"Expected stroke color '{new_color.name()}', got '{panel.stroke_color.name()}'"
+        )
 
 
 class TestPropertiesPanelSetFillColor:
@@ -79,14 +103,18 @@ class TestPropertiesPanelSetFillColor:
         panel = PropertiesPanel()
         new_color = QColor("#0000FF")
         panel.set_fill_color(new_color)
-        assert panel.fill_color.name() == new_color.name()
+        assert panel.fill_color.name() == new_color.name(), (
+            f"Expected fill color '{new_color.name()}', got '{panel.fill_color.name()}'"
+        )
 
 
 class TestPropertiesPanelSetStrokeWidth:
     def test_updates_width(self, qapp) -> None:
         panel = PropertiesPanel()
         panel.set_stroke_width(10)
-        assert panel.stroke_width == 10
+        assert panel.stroke_width == 10, (
+            f"Expected stroke width 10, got {panel.stroke_width}"
+        )
 
 
 class TestPropertiesPanelStrokeWidthSignal:

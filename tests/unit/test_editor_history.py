@@ -20,13 +20,19 @@ class TestUndoRedo:
         history = EditorHistory()
 
         history.push(AddItemCommand(scene, item, "Add rect"))
-        assert item in scene.items()
+        assert item in scene.items(), (
+            "Expected item in scene after AddItemCommand push"
+        )
 
         history.undo()
-        assert item not in scene.items()
+        assert item not in scene.items(), (
+            "Expected item removed from scene after undo"
+        )
 
         history.redo()
-        assert item in scene.items()
+        assert item in scene.items(), (
+            "Expected item back in scene after redo"
+        )
 
 
 class TestCanUndoRedoStates:
@@ -35,16 +41,28 @@ class TestCanUndoRedoStates:
         item = QGraphicsRectItem(0, 0, 50, 50)
         history = EditorHistory()
 
-        assert history.can_undo() is False
-        assert history.can_redo() is False
+        assert history.can_undo() is False, (
+            f"Expected can_undo() False on empty history, got {history.can_undo()}"
+        )
+        assert history.can_redo() is False, (
+            f"Expected can_redo() False on empty history, got {history.can_redo()}"
+        )
 
         history.push(AddItemCommand(scene, item))
-        assert history.can_undo() is True
-        assert history.can_redo() is False
+        assert history.can_undo() is True, (
+            f"Expected can_undo() True after push, got {history.can_undo()}"
+        )
+        assert history.can_redo() is False, (
+            f"Expected can_redo() False after push, got {history.can_redo()}"
+        )
 
         history.undo()
-        assert history.can_undo() is False
-        assert history.can_redo() is True
+        assert history.can_undo() is False, (
+            f"Expected can_undo() False after undo, got {history.can_undo()}"
+        )
+        assert history.can_redo() is True, (
+            f"Expected can_redo() True after undo, got {history.can_redo()}"
+        )
 
 
 class TestClearHistory:
@@ -56,8 +74,12 @@ class TestClearHistory:
         history.push(AddItemCommand(scene, item))
         history.clear()
 
-        assert history.can_undo() is False
-        assert history.can_redo() is False
+        assert history.can_undo() is False, (
+            f"Expected can_undo() False after clear, got {history.can_undo()}"
+        )
+        assert history.can_redo() is False, (
+            f"Expected can_redo() False after clear, got {history.can_redo()}"
+        )
 
 
 class TestRemoveItemCommand:
@@ -69,7 +91,9 @@ class TestRemoveItemCommand:
         cmd = RemoveItemCommand(scene, item, "Remove rect")
         cmd.redo()
 
-        assert item not in scene.items()
+        assert item not in scene.items(), (
+            "Expected item removed from scene after RemoveItemCommand.redo()"
+        )
 
     def test_undo_re_adds_item_to_scene(self, qapp) -> None:
         scene = QGraphicsScene()
@@ -80,7 +104,9 @@ class TestRemoveItemCommand:
         cmd.redo()
         cmd.undo()
 
-        assert item in scene.items()
+        assert item in scene.items(), (
+            "Expected item back in scene after RemoveItemCommand.undo()"
+        )
 
 
 class TestMoveItemCommand:
@@ -93,8 +119,12 @@ class TestMoveItemCommand:
         cmd = MoveItemCommand(item, (10.0, 20.0), (100.0, 200.0), "Move rect")
         cmd.redo()
 
-        assert item.pos().x() == 100.0
-        assert item.pos().y() == 200.0
+        assert item.pos().x() == 100.0, (
+            f"Expected item x=100.0 after redo, got {item.pos().x()}"
+        )
+        assert item.pos().y() == 200.0, (
+            f"Expected item y=200.0 after redo, got {item.pos().y()}"
+        )
 
     def test_undo_moves_item_to_old_pos(self, qapp) -> None:
         scene = QGraphicsScene()
@@ -106,11 +136,17 @@ class TestMoveItemCommand:
         cmd.redo()
         cmd.undo()
 
-        assert item.pos().x() == 10.0
-        assert item.pos().y() == 20.0
+        assert item.pos().x() == 10.0, (
+            f"Expected item x=10.0 after undo, got {item.pos().x()}"
+        )
+        assert item.pos().y() == 20.0, (
+            f"Expected item y=20.0 after undo, got {item.pos().y()}"
+        )
 
 
 class TestEditorHistoryStack:
     def test_stack_returns_qundostack(self, qapp) -> None:
         history = EditorHistory()
-        assert isinstance(history.stack, QUndoStack)
+        assert isinstance(history.stack, QUndoStack), (
+            f"Expected stack to be QUndoStack, got {type(history.stack).__name__}"
+        )

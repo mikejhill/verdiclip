@@ -34,13 +34,15 @@ class TestSetupLogging:
         with patch("verdiclip.__main__.Path.home", return_value=tmp_path):
             _setup_logging()
         log_dir = tmp_path / "AppData" / "Roaming" / "VerdiClip" / "logs"
-        assert log_dir.is_dir()
+        assert log_dir.is_dir(), "Expected log_dir.is_dir() to be truthy"
 
     def test_adds_rotating_file_handler(self, tmp_path: Path) -> None:
         with patch("verdiclip.__main__.Path.home", return_value=tmp_path):
             _setup_logging()
         logger = logging.getLogger("verdiclip")
-        assert any(isinstance(h, RotatingFileHandler) for h in logger.handlers)
+        assert any(isinstance(h, RotatingFileHandler) for h in logger.handlers), (
+            "Assertion failed: any((isinstance(h, RotatingFileHandler) ..."
+        )
 
     def test_adds_stream_handler(self, tmp_path: Path) -> None:
         with patch("verdiclip.__main__.Path.home", return_value=tmp_path):
@@ -51,19 +53,25 @@ class TestSetupLogging:
             for h in logger.handlers
             if isinstance(h, logging.StreamHandler) and not isinstance(h, RotatingFileHandler)
         ]
-        assert len(stream_handlers) >= 1
+        assert len(stream_handlers) >= 1, (
+            f"Expected len(stream_handlers) >= 1, got {len(stream_handlers)}"
+        )
 
     def test_root_logger_level_is_debug(self, tmp_path: Path) -> None:
         with patch("verdiclip.__main__.Path.home", return_value=tmp_path):
             _setup_logging()
         logger = logging.getLogger("verdiclip")
-        assert logger.level == logging.DEBUG
+        assert logger.level == logging.DEBUG, (
+            f"Expected logger.level to equal logging.DEBUG, got {logger.level}"
+        )
 
     def test_logger_has_at_least_two_handlers(self, tmp_path: Path) -> None:
         with patch("verdiclip.__main__.Path.home", return_value=tmp_path):
             _setup_logging()
         logger = logging.getLogger("verdiclip")
-        assert len(logger.handlers) >= 2
+        assert len(logger.handlers) >= 2, (
+            f"Expected len(logger.handlers) >= 2, got {len(logger.handlers)}"
+        )
 
 
 class TestMain:

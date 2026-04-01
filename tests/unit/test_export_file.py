@@ -18,7 +18,9 @@ from verdiclip.export.file_export import FileExporter
 
 class TestGetNextCounterEmptyDir:
     def test_returns_one_for_empty_directory(self, tmp_path: Path) -> None:
-        assert FileExporter._get_next_counter(tmp_path, "png") == 1
+        assert FileExporter._get_next_counter(tmp_path, "png") == 1, (
+            f"Expected 1, got {FileExporter._get_next_counter(tmp_path, 'png')}"
+        )
 
 
 class TestGetNextCounterWithFiles:
@@ -26,13 +28,17 @@ class TestGetNextCounterWithFiles:
         (tmp_path / "shot_001.png").touch()
         (tmp_path / "shot_002.png").touch()
         (tmp_path / "shot_003.png").touch()
-        assert FileExporter._get_next_counter(tmp_path, "png") == 4
+        assert FileExporter._get_next_counter(tmp_path, "png") == 4, (
+            f"Expected 4, got {FileExporter._get_next_counter(tmp_path, 'png')}"
+        )
 
     def test_ignores_other_extensions(self, tmp_path: Path) -> None:
         (tmp_path / "image.jpg").touch()
         (tmp_path / "image.bmp").touch()
         (tmp_path / "image.png").touch()
-        assert FileExporter._get_next_counter(tmp_path, "png") == 2
+        assert FileExporter._get_next_counter(tmp_path, "png") == 2, (
+            f"Expected 2, got {FileExporter._get_next_counter(tmp_path, 'png')}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -60,11 +66,13 @@ class TestAutoSave:
 
         result = FileExporter.auto_save(pixmap, cfg)
 
-        assert result is not None
+        assert result is not None, f"Expected result to not be None, got {result}"
         saved = Path(result)
-        assert saved.exists()
-        assert saved.parent == tmp_path / "screenshots"
-        assert saved.suffix == ".png"
+        assert saved.exists(), f"Expected saved.exists() to be truthy, got {saved.exists()}"
+        assert saved.parent == tmp_path / "screenshots", (
+            f"Expected saved.parent to be tmp_path / 'screenshots', got {saved.parent}"
+        )
+        assert saved.suffix == ".png", f"Expected saved.suffix to be '.png', got {saved.suffix}"
 
     def test_creates_save_directory_if_missing(
         self, qapp, tmp_path: Path
@@ -78,8 +86,8 @@ class TestAutoSave:
 
         result = FileExporter.auto_save(pixmap, cfg)
 
-        assert result is not None
-        assert nested.is_dir()
+        assert result is not None, f"Expected result to not be None, got {result}"
+        assert nested.is_dir(), f"Expected nested.is_dir() to be truthy, got {nested.is_dir()}"
 
     def test_uses_filename_pattern_with_counter(
         self, qapp, tmp_path: Path
@@ -92,8 +100,10 @@ class TestAutoSave:
 
         result = FileExporter.auto_save(pixmap, cfg)
 
-        assert result is not None
-        assert Path(result).stem == "capture_1"
+        assert result is not None, f"Expected result to not be None, got {result}"
+        assert Path(result).stem == "capture_1", (
+            f"Expected Path(result).stem to be 'capture_1', got {Path(result).stem}"
+        )
 
     def test_uses_filename_pattern_with_datetime(
         self, qapp, tmp_path: Path
@@ -106,8 +116,10 @@ class TestAutoSave:
 
         result = FileExporter.auto_save(pixmap, cfg)
 
-        assert result is not None
-        assert Path(result).stem.startswith("shot_")
+        assert result is not None, f"Expected result to not be None, got {result}"
+        assert Path(result).stem.startswith("shot_"), (
+            f"Expected startswith() to be truthy, got {Path(result).stem.startswith('shot_')}"
+        )
 
     def test_uses_configured_format(self, qapp, tmp_path: Path) -> None:
         cfg = self._make_config(tmp_path, default_format="bmp")
@@ -116,8 +128,10 @@ class TestAutoSave:
 
         result = FileExporter.auto_save(pixmap, cfg)
 
-        assert result is not None
-        assert Path(result).suffix == ".bmp"
+        assert result is not None, f"Expected result to not be None, got {result}"
+        assert Path(result).suffix == ".bmp", (
+            f"Expected Path(result).suffix to be '.bmp', got {Path(result).suffix}"
+        )
 
     def test_jpg_quality_from_config(self, qapp, tmp_path: Path) -> None:
         cfg = self._make_config(
@@ -132,8 +146,8 @@ class TestAutoSave:
 
         mock_save.assert_called_once()
         _path_arg, fmt_arg, quality_arg = mock_save.call_args[0]
-        assert fmt_arg == "JPG"
-        assert quality_arg == 50
+        assert fmt_arg == "JPG", f"Expected fmt_arg to be 'JPG', got {fmt_arg}"
+        assert quality_arg == 50, f"Expected quality_arg to be 50, got {quality_arg}"
 
     def test_returns_file_path_on_success(
         self, qapp, tmp_path: Path
@@ -144,8 +158,10 @@ class TestAutoSave:
 
         result = FileExporter.auto_save(pixmap, cfg)
 
-        assert isinstance(result, str)
-        assert Path(result).exists()
+        assert isinstance(result, str), f"Expected instance of str, got {type(result)}"
+        assert Path(result).exists(), (
+            f"Expected Path(result).exists() to be truthy, got {Path(result).exists()}"
+        )
 
     def test_returns_none_on_save_failure(
         self, qapp, tmp_path: Path
@@ -157,7 +173,7 @@ class TestAutoSave:
 
         result = FileExporter.auto_save(pixmap, cfg)
 
-        assert result is None
+        assert result is None, f"Expected result to be None, got {result}"
 
 
 # ---------------------------------------------------------------------------
@@ -182,7 +198,7 @@ class TestSaveWithDialog:
             result = FileExporter.save_with_dialog(pixmap, cfg)
 
         mock_auto.assert_called_once_with(pixmap, cfg)
-        assert result == "/fake/path.png"
+        assert result == "/fake/path.png", f"Expected result to be '/fake/path.png', got {result}"
 
     def test_calls_save_as_when_auto_save_disabled(
         self, qapp, tmp_path: Path
@@ -199,7 +215,9 @@ class TestSaveWithDialog:
             result = FileExporter.save_with_dialog(pixmap, cfg)
 
         mock_sa.assert_called_once()
-        assert result == "/dialog/path.png"
+        assert result == "/dialog/path.png", (
+            f"Expected result to be '/dialog/path.png', got {result}"
+        )
 
     def test_auto_save_success_skips_dialog(
         self, qapp, tmp_path: Path
@@ -220,7 +238,7 @@ class TestSaveWithDialog:
             result = FileExporter.save_with_dialog(pixmap, cfg)
 
         mock_sa.assert_not_called()
-        assert result == "/auto/path.png"
+        assert result == "/auto/path.png", f"Expected result to be '/auto/path.png', got {result}"
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +259,7 @@ class TestSaveAs:
         ):
             result = FileExporter.save_as(pixmap)
 
-        assert result is None
+        assert result is None, f"Expected result to be None, got {result}"
 
     def test_adds_default_extension_when_none_provided(
         self, qapp, tmp_path: Path
@@ -261,8 +279,10 @@ class TestSaveAs:
         ):
             result = FileExporter.save_as(pixmap, config=cfg)
 
-        assert result is not None
-        assert result.endswith(".png")
+        assert result is not None, f"Expected result to not be None, got {result}"
+        assert result.endswith(".png"), (
+            f"Expected result.endswith('.png') to be truthy, got {result.endswith('.png')}"
+        )
 
     def test_calls_save_with_correct_format_and_quality(
         self, qapp, tmp_path: Path
@@ -285,5 +305,5 @@ class TestSaveAs:
 
         mock_save.assert_called_once()
         _path_arg, fmt_arg, quality_arg = mock_save.call_args[0]
-        assert fmt_arg == "JPG"
-        assert quality_arg == 75
+        assert fmt_arg == "JPG", f"Expected fmt_arg to be 'JPG', got {fmt_arg}"
+        assert quality_arg == 75, f"Expected quality_arg to be 75, got {quality_arg}"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
 from PySide6.QtCore import QRect
 from PySide6.QtGui import QPixmap
 
@@ -13,65 +14,71 @@ from verdiclip.capture.window import WindowCapture
 class TestGetForegroundWindowHandle:
     def test_returns_int(self) -> None:
         hwnd = WindowCapture.get_foreground_window_handle()
-        assert isinstance(hwnd, int)
+        assert isinstance(hwnd, int), f"Expected int, got {type(hwnd).__name__}"
 
 
 class TestGetWindowRect:
     def test_returns_qrect_with_reasonable_dimensions(self) -> None:
         hwnd = WindowCapture.get_foreground_window_handle()
         if not hwnd:
-            return
+            pytest.skip("No foreground window available in this environment")
         rect = WindowCapture.get_window_rect(hwnd)
-        assert isinstance(rect, QRect)
-        assert rect.width() > 0
-        assert rect.height() > 0
+        assert isinstance(rect, QRect), (
+            f"Expected QRect, got {type(rect).__name__}"
+        )
+        assert rect.width() > 0, f"Window width should be positive, got {rect.width()}"
+        assert rect.height() > 0, f"Window height should be positive, got {rect.height()}"
 
     def test_without_decorations(self) -> None:
         hwnd = WindowCapture.get_foreground_window_handle()
         if not hwnd:
-            return
+            pytest.skip("No foreground window available in this environment")
         rect = WindowCapture.get_window_rect(hwnd, include_decorations=False)
-        assert isinstance(rect, QRect)
-        assert rect.width() > 0
-        assert rect.height() > 0
+        assert isinstance(rect, QRect), (
+            f"Expected QRect, got {type(rect).__name__}"
+        )
+        assert rect.width() > 0, f"Window width should be positive, got {rect.width()}"
+        assert rect.height() > 0, f"Window height should be positive, got {rect.height()}"
 
 
 class TestGetWindowTitle:
     def test_returns_string(self) -> None:
         hwnd = WindowCapture.get_foreground_window_handle()
         title = WindowCapture.get_window_title(hwnd)
-        assert isinstance(title, str)
+        assert isinstance(title, str), f"Expected str, got {type(title).__name__}"
 
 
 class TestCaptureActiveWindow:
     def test_returns_non_null_pixmap(self, qapp) -> None:
         pixmap = WindowCapture.capture_active_window()
-        assert isinstance(pixmap, QPixmap)
-        assert not pixmap.isNull()
+        assert isinstance(pixmap, QPixmap), f"Expected QPixmap, got {type(pixmap).__name__}"
+        assert not pixmap.isNull(), "Expected capture_active_window to return non-null pixmap"
 
 
 class TestEnumerateVisibleWindows:
     def test_returns_non_empty_list(self) -> None:
         windows = WindowCapture.enumerate_visible_windows()
-        assert isinstance(windows, list)
-        assert len(windows) > 0
+        assert isinstance(windows, list), f"Expected list, got {type(windows).__name__}"
+        assert len(windows) > 0, f"Expected non-empty window list, got {len(windows)} windows"
 
     def test_tuple_structure(self) -> None:
         windows = WindowCapture.enumerate_visible_windows()
         hwnd, title, rect = windows[0]
-        assert isinstance(hwnd, int)
-        assert isinstance(title, str)
-        assert isinstance(rect, QRect)
+        assert isinstance(hwnd, int), f"Expected int for hwnd, got {type(hwnd).__name__}"
+        assert isinstance(title, str), f"Expected str for title, got {type(title).__name__}"
+        assert isinstance(rect, QRect), f"Expected QRect for rect, got {type(rect).__name__}"
 
 
 class TestCaptureWindowByHandle:
     def test_captures_foreground_window(self, qapp) -> None:
         hwnd = WindowCapture.get_foreground_window_handle()
         if not hwnd:
-            return
+            pytest.skip("No foreground window available in this environment")
         pixmap = WindowCapture.capture_window_by_handle(hwnd)
-        assert isinstance(pixmap, QPixmap)
-        assert not pixmap.isNull()
+        assert isinstance(pixmap, QPixmap), (
+            f"Expected QPixmap, got {type(pixmap).__name__}"
+        )
+        assert not pixmap.isNull(), "capture_window_by_handle returned null pixmap"
 
 
 class TestGetWindowRectMocked:
@@ -86,7 +93,7 @@ class TestGetWindowRectMocked:
         rect = WindowCapture.get_window_rect(
             12345, include_decorations=False
         )
-        assert isinstance(rect, QRect)
+        assert isinstance(rect, QRect), f"Expected QRect from DWM path, got {type(rect).__name__}"
         mock_dwmapi.DwmGetWindowAttribute.assert_called_once()
 
     @patch("verdiclip.capture.window.user32")
@@ -99,7 +106,9 @@ class TestGetWindowRectMocked:
         rect = WindowCapture.get_window_rect(
             12345, include_decorations=False
         )
-        assert isinstance(rect, QRect)
+        assert isinstance(rect, QRect), (
+            f"Expected QRect from fallback path, got {type(rect).__name__}"
+        )
         mock_user32.GetWindowRect.assert_called_once()
 
 
@@ -125,7 +134,9 @@ class TestCaptureActiveWindowMocked:
         mock_title.assert_called_once_with(12345)
         mock_rect.assert_called_once_with(12345, True)
         mock_screen.capture_region.assert_called_once()
-        assert result is expected
+        assert result is expected, (
+            f"Expected capture result to be the expected pixmap, got {result}"
+        )
 
     @patch("verdiclip.capture.window.ScreenCapture")
     @patch.object(WindowCapture, "get_foreground_window_handle")
@@ -140,7 +151,9 @@ class TestCaptureActiveWindowMocked:
         result = WindowCapture.capture_active_window()
 
         mock_screen.capture_primary_monitor.assert_called_once()
-        assert result is expected
+        assert result is expected, (
+            f"Expected fallback to return primary monitor capture, got {result}"
+        )
 
 
 class TestCaptureWindowByHandleMocked:
@@ -160,7 +173,9 @@ class TestCaptureWindowByHandleMocked:
 
         mock_rect.assert_called_once_with(99999, True)
         mock_screen.capture_region.assert_called_once()
-        assert result is expected
+        assert result is expected, (
+            f"Expected capture_window_by_handle to return expected pixmap, got {result}"
+        )
 
     @patch("verdiclip.capture.window.ScreenCapture")
     @patch.object(WindowCapture, "get_window_rect")

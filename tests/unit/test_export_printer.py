@@ -17,13 +17,19 @@ from verdiclip.export.printer import PrinterExporter, _best_orientation, _render
 
 class TestBestOrientation:
     def test_returns_landscape_for_wide_image(self) -> None:
-        assert _best_orientation(1920, 1080) == QPageLayout.Orientation.Landscape
+        assert _best_orientation(1920, 1080) == QPageLayout.Orientation.Landscape, (
+            f"Expected _best_orientation() to be Landscape, got {_best_orientation(1920, 1080)}"
+        )
 
     def test_returns_portrait_for_tall_image(self) -> None:
-        assert _best_orientation(1080, 1920) == QPageLayout.Orientation.Portrait
+        assert _best_orientation(1080, 1920) == QPageLayout.Orientation.Portrait, (
+            f"Expected _best_orientation() to be Portrait, got {_best_orientation(1080, 1920)}"
+        )
 
     def test_returns_portrait_for_square_image(self) -> None:
-        assert _best_orientation(500, 500) == QPageLayout.Orientation.Portrait
+        assert _best_orientation(500, 500) == QPageLayout.Orientation.Portrait, (
+            f"Expected _best_orientation() to be Portrait, got {_best_orientation(500, 500)}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -85,7 +91,7 @@ class TestPrintPixmap:
         ):
             result = PrinterExporter.print_pixmap(pixmap)
 
-        assert result is True
+        assert result is True, f"Expected result to be True, got {result}"
         mock_render.assert_called_once()
 
     def test_returns_false_when_dialog_rejected(self, qapp) -> None:
@@ -97,4 +103,4 @@ class TestPrintPixmap:
         ):
             result = PrinterExporter.print_pixmap(pixmap)
 
-        assert result is False
+        assert result is False, f"Expected result to be False, got {result}"
