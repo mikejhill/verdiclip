@@ -372,6 +372,18 @@ class TestStop:
             f"Expected len(manager._pressed_keys) to equal 0, got {len(manager._pressed_keys)}"
         )
 
+    @patch("verdiclip.hotkeys.manager.keyboard.Listener")
+    def test_stop_joins_listener_thread(
+        self, mock_listener_cls: MagicMock, tmp_config: Config
+    ) -> None:
+        manager = HotkeyManager(tmp_config)
+        manager.start()
+        manager.stop()
+
+        mock_listener_cls.return_value.join.assert_called_once_with(timeout=1.0), (
+            "Expected stop() to call listener.join(timeout=1.0) for clean thread shutdown"
+        )
+
     def test_stop_when_not_started_is_safe(self, tmp_config: Config) -> None:
         manager = HotkeyManager(tmp_config)
         manager.stop()

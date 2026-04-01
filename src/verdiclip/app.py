@@ -26,6 +26,7 @@ class VerdiClipApp:
         self._config: Config | None = None
         self._tray_icon = None
         self._hotkey_manager = None
+        self._post_init_hooks: list = []
 
     def _is_already_running(self) -> bool:
         """Check if another instance is already running via shared memory."""
@@ -57,6 +58,11 @@ class VerdiClipApp:
 
         self._qt_app = self._init_qt()
         self._qt_app.setProperty("verdiclip_controller", self)
+        self._qt_app.aboutToQuit.connect(self._cleanup)
+
+        for hook in self._post_init_hooks:
+            hook()
+
         self._config = Config()
 
         logger.info("VerdiClip %s started successfully.", __version__)
@@ -64,6 +70,19 @@ class VerdiClipApp:
         self._setup_hotkeys()
 
         return self._qt_app.exec()
+
+    def _cleanup(self) -> None:
+        """Gracefully shut down all components before the process exits."""
+        logger.info("Shutting down VerdiClip…")
+        if self._hotkey_manager:
+            self._hotkey_manager.stop()
+            self._hotkey_manager = None
+        if self._tray_icon:
+            self._tray_icon.hide()
+            self._tray_icon = None
+        if self._shared_memory.isAttached():
+            self._shared_memory.detach()
+        logger.info("Cleanup complete.")
 
     def _setup_tray(self) -> None:
         """Initialize the system tray icon."""

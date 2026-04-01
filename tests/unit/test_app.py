@@ -37,6 +37,84 @@ class TestVerdiClipAppInit:
         app = VerdiClipApp([])
         assert app._config is None, f"Expected _config to be None, got {app._config}"
 
+    def test_post_init_hooks_initialized_empty(self, qapp: QApplication) -> None:
+        app = VerdiClipApp([])
+        assert app._post_init_hooks == [], (
+            f"Expected empty _post_init_hooks list, got {app._post_init_hooks}"
+        )
+
+
+class TestCleanup:
+    """_cleanup stops hotkey manager, hides tray, detaches shared memory."""
+
+    def test_cleanup_stops_hotkey_manager(self, qapp: QApplication) -> None:
+        app = VerdiClipApp([])
+        mock_hk = MagicMock()
+        app._hotkey_manager = mock_hk
+        app._tray_icon = MagicMock()
+        app._shared_memory = MagicMock()
+        app._shared_memory.isAttached.return_value = False
+
+        app._cleanup()
+
+        mock_hk.stop.assert_called_once(), (
+            "Expected _cleanup to call hotkey_manager.stop()"
+        )
+        assert app._hotkey_manager is None, (
+            "Expected _hotkey_manager to be None after cleanup"
+        )
+
+    def test_cleanup_hides_tray_icon(self, qapp: QApplication) -> None:
+        app = VerdiClipApp([])
+        app._hotkey_manager = None
+        mock_tray = MagicMock()
+        app._tray_icon = mock_tray
+        app._shared_memory = MagicMock()
+        app._shared_memory.isAttached.return_value = False
+
+        app._cleanup()
+
+        mock_tray.hide.assert_called_once(), (
+            "Expected _cleanup to call tray_icon.hide()"
+        )
+
+    def test_cleanup_detaches_shared_memory(self, qapp: QApplication) -> None:
+        app = VerdiClipApp([])
+        app._hotkey_manager = None
+        app._tray_icon = None
+        app._shared_memory = MagicMock()
+        app._shared_memory.isAttached.return_value = True
+
+        app._cleanup()
+
+        app._shared_memory.detach.assert_called_once(), (
+            "Expected _cleanup to detach shared memory"
+        )
+
+    def test_cleanup_skips_detach_when_not_attached(
+        self, qapp: QApplication,
+    ) -> None:
+        app = VerdiClipApp([])
+        app._hotkey_manager = None
+        app._tray_icon = None
+        app._shared_memory = MagicMock()
+        app._shared_memory.isAttached.return_value = False
+
+        app._cleanup()
+
+        app._shared_memory.detach.assert_not_called(), (
+            "Expected _cleanup to skip detach when not attached"
+        )
+
+    def test_cleanup_handles_all_none(self, qapp: QApplication) -> None:
+        app = VerdiClipApp([])
+        app._hotkey_manager = None
+        app._tray_icon = None
+        app._shared_memory = MagicMock()
+        app._shared_memory.isAttached.return_value = False
+        # Should not raise
+        app._cleanup()
+
 
 class TestIsAlreadyRunning:
     """_is_already_running detects another instance via shared memory."""

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from typing import TYPE_CHECKING
 
@@ -160,9 +161,11 @@ class HotkeyManager:
         logger.info("Global hotkey listener started.")
 
     def stop(self) -> None:
-        """Stop the hotkey listener."""
+        """Stop the hotkey listener and wait for its thread to exit."""
         if self._listener:
             self._listener.stop()
+            with contextlib.suppress(RuntimeError):
+                self._listener.join(timeout=1.0)
             self._listener = None
             self._pressed_keys.clear()
             logger.info("Global hotkey listener stopped.")
