@@ -263,9 +263,10 @@ class TestOnPress:
     ) -> None:
         cb = MagicMock()
         manager.register("ctrl+print_screen", cb)
-        manager._on_press(keyboard.Key.ctrl_l)
-        manager._on_press(keyboard.Key.print_screen)
-        cb.assert_called_once()
+        with patch("verdiclip.hotkeys.manager.QTimer") as mock_timer:
+            manager._on_press(keyboard.Key.ctrl_l)
+            manager._on_press(keyboard.Key.print_screen)
+            mock_timer.singleShot.assert_called_once_with(0, cb)
 
     def test_does_not_trigger_on_partial_combo(
         self, manager: HotkeyManager
@@ -275,14 +276,16 @@ class TestOnPress:
         manager._on_press(keyboard.Key.ctrl_l)
         cb.assert_not_called()
 
-    def test_callback_exception_is_caught(
+    def test_callback_scheduled_via_qtimer_for_thread_safety(
         self, manager: HotkeyManager
     ) -> None:
-        cb = MagicMock(side_effect=RuntimeError("boom"))
+        cb = MagicMock()
         manager.register("print_screen", cb)
-        # Should not raise
-        manager._on_press(keyboard.Key.print_screen)
-        cb.assert_called_once()
+        with patch("verdiclip.hotkeys.manager.QTimer") as mock_timer:
+            manager._on_press(keyboard.Key.print_screen)
+            mock_timer.singleShot.assert_called_once_with(
+                0, cb
+            ), "Callback must be scheduled on Qt GUI thread via QTimer.singleShot"
 
 
 # ---------------------------------------------------------------------------

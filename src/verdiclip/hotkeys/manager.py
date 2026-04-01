@@ -6,6 +6,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from pynput import keyboard
+from PySide6.QtCore import QTimer
 
 if TYPE_CHECKING:
     import threading
@@ -110,10 +111,10 @@ class HotkeyManager:
         for hotkey_keys, callback in self._callbacks.items():
             if hotkey_keys.issubset(frozen_pressed):
                 logger.debug("Hotkey triggered: %s", hotkey_keys)
-                try:
-                    callback()
-                except Exception:
-                    logger.exception("Error in hotkey callback")
+                # Marshal callback onto the Qt GUI thread — pynput listener
+                # runs on a daemon thread, but Qt GUI operations (creating
+                # widgets, showing windows) must run on the main thread.
+                QTimer.singleShot(0, callback)
 
     def _on_release(self, key: keyboard.Key | keyboard.KeyCode) -> None:
         """Handle key release events."""
