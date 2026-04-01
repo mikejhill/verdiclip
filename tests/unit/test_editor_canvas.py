@@ -6,8 +6,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from PySide6.QtCore import QPoint, QPointF, Qt
-from PySide6.QtGui import QMouseEvent, QPixmap, QWheelEvent
-from PySide6.QtWidgets import QGraphicsPixmapItem, QGraphicsScene
+from PySide6.QtGui import QKeyEvent, QMouseEvent, QPixmap, QWheelEvent
+from PySide6.QtWidgets import QGraphicsItem, QGraphicsPixmapItem, QGraphicsScene
 
 from verdiclip.editor.canvas import EditorCanvas, EditorWindow
 from verdiclip.editor.toolbar import ToolType
@@ -620,4 +620,122 @@ class TestEditorWindowToolRegistration:
         window._properties.obfuscation_strength_changed.emit(16)
         obfuscate_tool.set_block_size.assert_called_once_with(16), (
             "Expected obfuscation_strength_changed signal to reach ObfuscateTool's set_block_size"
+        )
+
+
+# ---------------------------------------------------------------------------
+# EditorCanvas — _delete_selected_items
+# ---------------------------------------------------------------------------
+
+
+def _make_canvas_with_image() -> EditorCanvas:
+    """Create an EditorCanvas with a 100×100 blue image loaded."""
+    canvas = EditorCanvas()
+    pixmap = QPixmap(100, 100)
+    pixmap.fill(Qt.GlobalColor.blue)
+    canvas.set_image(pixmap)
+    return canvas
+
+
+def _make_key_event(key: Qt.Key) -> QKeyEvent:
+    """Create a QKeyEvent for the given key."""
+    return QKeyEvent(
+        QKeyEvent.Type.KeyPress,
+        key,
+        Qt.KeyboardModifier.NoModifier,
+    )
+
+
+class TestEditorCanvasDeleteItems:
+    def test_delete_selected_items_removes_from_scene(self, qapp) -> None:
+        canvas = _make_canvas_with_image()
+        item = canvas.scene.addRect(10, 10, 50, 50)
+        item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+        item.setSelected(True)
+
+        assert item in canvas.scene.items(), (
+            "Pre-condition: item should be in scene before deletion"
+        )
+        canvas._delete_selected_items()
+        assert item not in canvas.scene.items(), (
+            f"Expected item to be removed from scene after _delete_selected_items, "
+            f"but scene still contains {len(canvas.scene.items())} item(s)"
+        )
+
+    def test_delete_selected_items_does_not_remove_pixmap_item(self, qapp) -> None:
+        canvas = _make_canvas_with_image()
+        pixmap_item = canvas.pixmap_item
+        assert pixmap_item is not None, "Pre-condition: pixmap_item must exist"
+
+        # Select the pixmap item (simulating accidental select-all)
+        pixmap_item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+        pixmap_item.setSelected(True)
+
+        canvas._delete_selected_items()
+        assert pixmap_item in canvas.scene.items(), (
+            "Expected pixmap_item (base image) to remain in scene after delete, "
+            "but it was removed"
+        )
+
+    def test_keypress_delete_triggers_deletion(self, qapp) -> None:
+        canvas = _make_canvas_with_image()
+        item = canvas.scene.addRect(10, 10, 50, 50)
+        item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+        item.setSelected(True)
+
+        event = _make_key_event(Qt.Key.Key_Delete)
+        canvas.keyPressEvent(event)
+        assert item not in canvas.scene.items(), (
+            "Expected Delete key to remove selected item from scene"
+        )
+
+    def test_keypress_backspace_triggers_deletion(self, qapp) -> None:
+        canvas = _make_canvas_with_image()
+        item = canvas.scene.addRect(10, 10, 50, 50)
+        item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+        item.setSelected(True)
+
+        event = _make_key_event(Qt.Key.Key_Backspace)
+        canvas.keyPressEvent(event)
+        assert item not in canvas.scene.items(), (
+            "Expected Backspace key to remove selected item from scene"
+        )
+
+
+# ---------------------------------------------------------------------------
+# EditorWindow — status bar with dimensions and title with file_path
+# ---------------------------------------------------------------------------
+
+
+class TestEditorWindowStatusBar:
+    def test_status_bar_shows_image_dimensions(self, qapp, tmp_config) -> None:
+        pixmap = QPixmap(100, 100)
+        window = EditorWindow(pixmap, tmp_config)
+        dim_text = window._dim_label.text()
+        assert "100" in dim_text and "px" in dim_text, (
+            f"Expected dimension label to contain '100' and 'px', got '{dim_text}'"
+        )
+        # Verify exact format  "W × H px"
+        assert dim_text == "100 × 100 px", (
+            f"Expected dimension label '100 × 100 px', got '{dim_text}'"
+        )
+
+    def test_window_title_contains_filename_when_file_path_given(
+        self, qapp, tmp_config
+    ) -> None:
+        pixmap = QPixmap(100, 100)
+        window = EditorWindow(pixmap, tmp_config, file_path="C:\\images\\screenshot.png")
+        title = window.windowTitle()
+        assert "screenshot.png" in title, (
+            f"Expected window title to contain 'screenshot.png', got '{title}'"
+        )
+
+    def test_window_title_contains_editor_when_no_file_path(
+        self, qapp, tmp_config
+    ) -> None:
+        pixmap = QPixmap(100, 100)
+        window = EditorWindow(pixmap, tmp_config, file_path="")
+        title = window.windowTitle()
+        assert "Editor" in title, (
+            f"Expected window title to contain 'Editor' when no file_path, got '{title}'"
         )

@@ -45,6 +45,7 @@ class TestTrayIconMenu:
         expected = [
             "Capture Region",
             "Capture Window",
+            "Capture Window (Select)...",
             "Capture Full Screen",
             "Open Image...",
             "Settings...",
@@ -307,3 +308,53 @@ class TestShowAbout:
             icon._show_about()
             mock_cls.assert_called_once()
             mock_dialog.exec.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# capture_window_interactive — WindowPicker
+# ---------------------------------------------------------------------------
+
+
+class TestCaptureWindowInteractive:
+    def test_creates_window_picker_and_starts(self, qapp, tmp_config) -> None:
+        app = QApplication.instance()
+        icon = TrayIcon(app, tmp_config)
+        with patch("verdiclip.capture.window_picker.WindowPicker") as mock_picker_cls:
+            mock_picker = MagicMock()
+            mock_picker.window_captured = MagicMock()
+            mock_picker_cls.return_value = mock_picker
+            icon.capture_window_interactive()
+            mock_picker_cls.assert_called_once(), (
+                f"Expected WindowPicker constructor called once, "
+                f"call count: {mock_picker_cls.call_count}"
+            )
+            mock_picker.start.assert_called_once(), (
+                f"Expected picker.start() called once, "
+                f"call count: {mock_picker.start.call_count}"
+            )
+
+    def test_stores_picker_as_active_capture(self, qapp, tmp_config) -> None:
+        app = QApplication.instance()
+        icon = TrayIcon(app, tmp_config)
+        with patch("verdiclip.capture.window_picker.WindowPicker") as mock_picker_cls:
+            mock_picker = MagicMock()
+            mock_picker.window_captured = MagicMock()
+            mock_picker_cls.return_value = mock_picker
+            icon.capture_window_interactive()
+            assert icon._active_capture is mock_picker, (
+                f"Expected _active_capture to be the WindowPicker instance, "
+                f"got {icon._active_capture}"
+            )
+
+    def test_connects_window_captured_signal(self, qapp, tmp_config) -> None:
+        app = QApplication.instance()
+        icon = TrayIcon(app, tmp_config)
+        with patch("verdiclip.capture.window_picker.WindowPicker") as mock_picker_cls:
+            mock_picker = MagicMock()
+            mock_picker.window_captured = MagicMock()
+            mock_picker_cls.return_value = mock_picker
+            icon.capture_window_interactive()
+            mock_picker.window_captured.connect.assert_called_once(), (
+                f"Expected window_captured.connect called once, "
+                f"call count: {mock_picker.window_captured.connect.call_count}"
+            )

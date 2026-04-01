@@ -85,3 +85,41 @@ class TestEditorToolbarOrientation:
         assert toolbar.isFloatable() is False, (
             f"Expected toolbar not floatable, got {toolbar.isFloatable()}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Toolbar icons — every action has an icon, no text, and a tooltip with shortcut
+# ---------------------------------------------------------------------------
+
+_TOOL_SHORTCUTS: dict[str, str] = {
+    "SELECT": "V", "CROP": "C", "RECTANGLE": "R", "ELLIPSE": "E",
+    "LINE": "L", "ARROW": "A", "TEXT": "T", "NUMBER": "N",
+    "HIGHLIGHT": "H", "OBFUSCATE": "O", "FREEHAND": "F",
+}
+
+
+class TestToolbarIcons:
+    def test_each_action_has_non_null_icon(self, qapp) -> None:
+        toolbar = EditorToolbar()
+        for tool_type, action in toolbar._actions.items():
+            assert not action.icon().isNull(), (
+                f"Expected action for {tool_type.name} to have a non-null icon"
+            )
+
+    def test_each_action_has_empty_text(self, qapp) -> None:
+        toolbar = EditorToolbar()
+        for tool_type, action in toolbar._actions.items():
+            assert action.text() == "", (
+                f"Expected action text for {tool_type.name} to be empty (icons only), "
+                f"got '{action.text()}'"
+            )
+
+    def test_each_action_tooltip_contains_shortcut(self, qapp) -> None:
+        toolbar = EditorToolbar()
+        for tool_type, action in toolbar._actions.items():
+            shortcut = _TOOL_SHORTCUTS[tool_type.name]
+            tooltip = action.toolTip()
+            assert shortcut in tooltip, (
+                f"Expected tooltip for {tool_type.name} to contain shortcut '{shortcut}', "
+                f"got '{tooltip}'"
+            )

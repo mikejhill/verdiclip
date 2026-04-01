@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pynput import keyboard
 
-from verdiclip.hotkeys.manager import HotkeyManager, _parse_hotkey
+from verdiclip.hotkeys.manager import HotkeyManager, _CallbackRelay, _parse_hotkey
 
 if TYPE_CHECKING:
     from verdiclip.config import Config
@@ -263,10 +263,10 @@ class TestOnPress:
     ) -> None:
         cb = MagicMock()
         manager.register("ctrl+print_screen", cb)
-        with patch("verdiclip.hotkeys.manager.QTimer") as mock_timer:
-            manager._on_press(keyboard.Key.ctrl_l)
-            manager._on_press(keyboard.Key.print_screen)
-            mock_timer.singleShot.assert_called_once_with(0, cb)
+        manager._relay = MagicMock()
+        manager._on_press(keyboard.Key.ctrl_l)
+        manager._on_press(keyboard.Key.print_screen)
+        manager._relay.schedule.assert_called_once_with(cb)
 
     def test_does_not_trigger_on_partial_combo(
         self, manager: HotkeyManager
@@ -276,16 +276,16 @@ class TestOnPress:
         manager._on_press(keyboard.Key.ctrl_l)
         cb.assert_not_called()
 
-    def test_callback_scheduled_via_qtimer_for_thread_safety(
+    def test_callback_scheduled_via_relay_for_thread_safety(
         self, manager: HotkeyManager
     ) -> None:
         cb = MagicMock()
         manager.register("print_screen", cb)
-        with patch("verdiclip.hotkeys.manager.QTimer") as mock_timer:
-            manager._on_press(keyboard.Key.print_screen)
-            mock_timer.singleShot.assert_called_once_with(
-                0, cb
-            ), "Callback must be scheduled on Qt GUI thread via QTimer.singleShot"
+        manager._relay = MagicMock()
+        manager._on_press(keyboard.Key.print_screen)
+        manager._relay.schedule.assert_called_once_with(
+            cb
+        ), "Callback must be scheduled on Qt GUI thread via _CallbackRelay"
 
 
 # ---------------------------------------------------------------------------
@@ -394,4 +394,41 @@ class TestReloadFromConfig:
         manager.reload_from_config()
         assert len(manager._callbacks) == 0, (
             f"Expected len(manager._callbacks) to equal 0, got {len(manager._callbacks)}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# _CallbackRelay thread safety
+# ---------------------------------------------------------------------------
+
+
+class TestCallbackRelay:
+    def test_schedule_invokes_callback_via_signal(self, qapp) -> None:
+        relay = _CallbackRelay()
+        callback = MagicMock()
+        relay.schedule(callback)
+        callback.assert_called_once(), (
+            f"Expected schedule() to invoke callback via _invoke signal, "
+            f"call count: {callback.call_count}"
+        )
+
+    def test_execute_calls_callback(self, qapp) -> None:
+        callback = MagicMock()
+        _CallbackRelay._execute(callback)
+        callback.assert_called_once(), (
+            f"Expected callback to be called once, call count: {callback.call_count}"
+        )
+
+    def test_execute_catches_exceptions(
+        self, qapp, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        callback = MagicMock(side_effect=RuntimeError("boom"))
+        with caplog.at_level(logging.ERROR, logger="verdiclip.hotkeys.manager"):
+            _CallbackRelay._execute(callback)
+        callback.assert_called_once(), (
+            f"Expected callback to be called once despite exception, "
+            f"call count: {callback.call_count}"
+        )
+        assert "Error in hotkey callback" in caplog.text, (
+            f"Expected 'Error in hotkey callback' in log output, got: {caplog.text}"
         )

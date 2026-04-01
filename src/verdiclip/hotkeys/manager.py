@@ -6,7 +6,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from pynput import keyboard
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QObject, Signal
 
 if TYPE_CHECKING:
     import threading
@@ -58,6 +58,32 @@ def _parse_hotkey(hotkey_str: str) -> set[keyboard.Key | keyboard.KeyCode]:
     return keys
 
 
+class _CallbackRelay(QObject):
+    """Thread-safe relay that marshals callbacks from any thread to the GUI thread.
+
+    pynput's keyboard listener fires callbacks on a daemon thread, but Qt GUI
+    operations (creating widgets, showing windows) must run on the main thread.
+    This relay uses a queued signal connection to safely cross that boundary.
+    """
+
+    _invoke = Signal(object)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._invoke.connect(self._execute)
+
+    @staticmethod
+    def _execute(callback: Callable) -> None:
+        try:
+            callback()
+        except Exception:
+            logger.exception("Error in hotkey callback")
+
+    def schedule(self, callback: Callable) -> None:
+        """Emit the callback to be executed on the GUI thread."""
+        self._invoke.emit(callback)
+
+
 class HotkeyManager:
     """Manages global hotkey registration and dispatch."""
 
@@ -67,6 +93,7 @@ class HotkeyManager:
         self._callbacks: dict[frozenset, Callable] = {}
         self._pressed_keys: set[keyboard.Key | keyboard.KeyCode] = set()
         self._thread: threading.Thread | None = None
+        self._relay = _CallbackRelay()
 
     def register(self, hotkey_str: str, callback: Callable) -> None:
         """Register a callback for a hotkey string.
@@ -111,10 +138,7 @@ class HotkeyManager:
         for hotkey_keys, callback in self._callbacks.items():
             if hotkey_keys.issubset(frozen_pressed):
                 logger.debug("Hotkey triggered: %s", hotkey_keys)
-                # Marshal callback onto the Qt GUI thread — pynput listener
-                # runs on a daemon thread, but Qt GUI operations (creating
-                # widgets, showing windows) must run on the main thread.
-                QTimer.singleShot(0, callback)
+                self._relay.schedule(callback)
 
     def _on_release(self, key: keyboard.Key | keyboard.KeyCode) -> None:
         """Handle key release events."""

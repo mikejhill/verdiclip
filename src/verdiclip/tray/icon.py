@@ -78,6 +78,10 @@ class TrayIcon(QSystemTrayIcon):
         capture_window.triggered.connect(self.capture_window)
         menu.addAction(capture_window)
 
+        capture_window_pick = QAction("Capture Window (Select)...", menu)
+        capture_window_pick.triggered.connect(self.capture_window_interactive)
+        menu.addAction(capture_window_pick)
+
         capture_screen = QAction("Capture Full Screen", menu)
         shortcut = _hotkey_label("hotkeys.fullscreen")
         if shortcut:
@@ -164,6 +168,21 @@ class TrayIcon(QSystemTrayIcon):
         self._last_capture_type = "screen"
         self._handle_capture(pixmap)
 
+    def capture_window_interactive(self) -> None:
+        """Trigger interactive window capture — user selects a window by clicking."""
+        logger.info("Tray: Interactive window capture requested.")
+        from verdiclip.capture.window_picker import WindowPicker
+
+        picker = WindowPicker()
+
+        def _on_window_captured(pixmap: QPixmap) -> None:
+            self._last_capture_type = "window"
+            self._handle_capture(pixmap)
+
+        picker.window_captured.connect(_on_window_captured)
+        picker.start()
+        self._active_capture = picker
+
     def capture_repeat(self) -> None:
         """Repeat the last capture action."""
         logger.info("Tray: Repeat last capture requested.")
@@ -195,11 +214,11 @@ class TrayIcon(QSystemTrayIcon):
 
         self._open_editor(pixmap)
 
-    def _open_editor(self, pixmap: QPixmap) -> None:
+    def _open_editor(self, pixmap: QPixmap, file_path: str = "") -> None:
         """Open the editor with a captured image."""
         from verdiclip.editor.canvas import EditorWindow
 
-        editor = EditorWindow(pixmap, self._config)
+        editor = EditorWindow(pixmap, self._config, file_path=file_path)
         editor.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         editor.destroyed.connect(lambda: self._editors.remove(editor))
         self._editors.append(editor)
@@ -219,7 +238,7 @@ class TrayIcon(QSystemTrayIcon):
             logger.info("Opening image: %s", file_path)
             pixmap = QPixmap(file_path)
             if not pixmap.isNull():
-                self._open_editor(pixmap)
+                self._open_editor(pixmap, file_path=file_path)
             else:
                 logger.error("Failed to load image: %s", file_path)
 

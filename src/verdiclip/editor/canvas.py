@@ -54,8 +54,8 @@ class EditorCanvas(QGraphicsView):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
-        # Checkerboard background
-        self.setBackgroundBrush(QBrush(QColor(200, 200, 200), Qt.BrushStyle.Dense4Pattern))
+        # Solid neutral background — easy to distinguish from image content
+        self.setBackgroundBrush(QBrush(QColor(45, 45, 48)))
 
         self._pixmap_item: QGraphicsPixmapItem | None = None
         self._zoom_level: float = 1.0
@@ -136,6 +136,25 @@ class EditorCanvas(QGraphicsView):
         else:
             super().mouseReleaseEvent(event)
 
+    def keyPressEvent(self, event) -> None:
+        """Handle key presses — Delete removes selected annotation items."""
+        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            self._delete_selected_items()
+        else:
+            super().keyPressEvent(event)
+
+    def _delete_selected_items(self) -> None:
+        """Remove all currently selected annotation items from the scene."""
+        selected = self._scene.selectedItems()
+        removed = 0
+        for item in selected:
+            if item is self._pixmap_item:
+                continue
+            self._scene.removeItem(item)
+            removed += 1
+        if removed:
+            logger.info("Deleted %d annotation item(s)", removed)
+
     @property
     def scene(self) -> QGraphicsScene:
         return self._scene
@@ -159,13 +178,19 @@ class EditorCanvas(QGraphicsView):
 class EditorWindow(QMainWindow):
     """Main editor window with canvas, toolbar, and properties."""
 
-    def __init__(self, pixmap: QPixmap, config: Config) -> None:
+    def __init__(self, pixmap: QPixmap, config: Config, file_path: str = "") -> None:
         super().__init__()
         self._config = config
         self._history = EditorHistory()
         self._tools: dict[ToolType, BaseTool] = {}
+        self._file_path = file_path
+        self._image_size = (pixmap.width(), pixmap.height())
 
-        self.setWindowTitle(f"{__app_name__} — Editor")
+        title = f"{__app_name__} — Editor"
+        if file_path:
+            import os
+            title = f"{os.path.basename(file_path)} — {__app_name__} Editor"
+        self.setWindowTitle(title)
         self.setMinimumSize(800, 600)
         self.resize(1200, 800)
 
@@ -249,8 +274,21 @@ class EditorWindow(QMainWindow):
         edit_menu.addAction(redo_action)
 
     def _setup_statusbar(self) -> None:
+        from PySide6.QtWidgets import QLabel
+
         self._statusbar = QStatusBar()
         self.setStatusBar(self._statusbar)
+
+        # Permanent labels for image info (right side)
+        w, h = self._image_size
+        self._dim_label = QLabel(f"{w} × {h} px")
+        self._statusbar.addPermanentWidget(self._dim_label)
+
+        if self._file_path:
+            import os
+            self._file_label = QLabel(os.path.basename(self._file_path))
+            self._statusbar.addPermanentWidget(self._file_label)
+
         self._statusbar.showMessage("Ready")
 
     def _register_tools(self) -> None:

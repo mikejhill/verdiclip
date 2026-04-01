@@ -39,13 +39,30 @@ class TestVerdiClipAppInit:
 
 
 class TestIsAlreadyRunning:
-    """_is_already_running returns False when no shared memory is attached."""
+    """_is_already_running detects another instance via shared memory."""
 
     def test_returns_false_when_no_shared_memory_attached(self, qapp: QApplication) -> None:
-        app = VerdiClipApp([])
-        assert app._is_already_running() is False, (
-            f"Expected _is_already_running() to be False, got {app._is_already_running()}"
-        )
+        with patch("verdiclip.app.QSharedMemory") as mock_shm_cls:
+            mock_shm = MagicMock()
+            mock_shm.attach.return_value = False
+            mock_shm_cls.return_value = mock_shm
+            app = VerdiClipApp([])
+            result = app._is_already_running()
+            assert result is False, (
+                f"Expected _is_already_running() to be False when attach fails, got {result}"
+            )
+
+    def test_returns_true_when_shared_memory_attached(self, qapp: QApplication) -> None:
+        with patch("verdiclip.app.QSharedMemory") as mock_shm_cls:
+            mock_shm = MagicMock()
+            mock_shm.attach.return_value = True
+            mock_shm_cls.return_value = mock_shm
+            app = VerdiClipApp([])
+            result = app._is_already_running()
+            assert result is True, (
+                f"Expected _is_already_running() to be True when attach succeeds, got {result}"
+            )
+            mock_shm.detach.assert_called_once()
 
 
 class TestInitQt:
