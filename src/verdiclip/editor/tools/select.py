@@ -49,10 +49,10 @@ class SelectTool(BaseTool):
                 i.setSelected(False)
 
     def mouse_move(self, scene_pos: QPointF, event: QMouseEvent) -> None:
-        if self._dragging and self._drag_item and self._drag_start:
+        if self._dragging and self._drag_item and self._drag_start is not None:
             delta = scene_pos - self._drag_start
-            new_pos = self._item_start_pos + delta if self._item_start_pos else QPointF()
-            self._drag_item.setPos(new_pos)
+            base = self._item_start_pos if self._item_start_pos is not None else QPointF()
+            self._drag_item.setPos(base + delta)
 
     def mouse_release(self, scene_pos: QPointF, event: QMouseEvent) -> None:
         self._dragging = False

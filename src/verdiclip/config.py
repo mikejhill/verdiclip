@@ -108,6 +108,17 @@ class Config:
         current[keys[-1]] = value
         self.save()
 
+    def reset(self) -> None:
+        """Reset configuration to defaults and save."""
+        self._data = {}
+        self._merge_defaults(self._data, DEFAULT_CONFIG)
+        self.save()
+
+    @property
+    def config_path(self) -> Path:
+        """Return the configuration file path."""
+        return self._path
+
     @property
     def data(self) -> dict[str, Any]:
         """Return the full configuration dictionary."""

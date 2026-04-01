@@ -38,15 +38,28 @@ def _setup_logging() -> None:
 
 
 def main() -> None:
-    """Launch the VerdiClip application."""
+    """Launch VerdiClip in GUI (tray) mode or CLI mode."""
     _setup_logging()
     logger = logging.getLogger("verdiclip")
-    logger.info("Starting VerdiClip v%s", "0.1.0")
 
-    from verdiclip.app import VerdiClipApp
+    from verdiclip.cli import build_parser
 
-    app = VerdiClipApp(sys.argv)
-    sys.exit(app.run())
+    parser = build_parser()
+    args = parser.parse_args()
+
+    if args.command is not None:
+        # CLI mode: capture or open
+        logger.info("VerdiClip CLI: %s", args.command)
+        from verdiclip.cli import run_cli
+
+        sys.exit(run_cli(args))
+    else:
+        # GUI tray mode (no subcommand)
+        logger.info("Starting VerdiClip v%s (tray mode)", "0.1.0")
+        from verdiclip.app import VerdiClipApp
+
+        app = VerdiClipApp(sys.argv)
+        sys.exit(app.run())
 
 
 if __name__ == "__main__":
