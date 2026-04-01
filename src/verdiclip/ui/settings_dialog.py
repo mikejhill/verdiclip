@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -32,6 +32,8 @@ logger = logging.getLogger(__name__)
 
 class SettingsDialog(QDialog):
     """Tabbed settings dialog for VerdiClip configuration."""
+
+    settings_saved = Signal()
 
     def __init__(self, config: Config, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -94,12 +96,25 @@ class SettingsDialog(QDialog):
 
         self._save_format = QComboBox()
         self._save_format.addItems(["PNG", "JPG", "BMP", "GIF", "TIFF"])
+        self._save_format.currentTextChanged.connect(self._on_format_changed)
         form.addRow("Default format:", self._save_format)
 
+        # JPG quality row — slider with value label
+        jpg_layout = QHBoxLayout()
         self._jpg_quality = QSlider(Qt.Orientation.Horizontal)
         self._jpg_quality.setRange(1, 100)
         self._jpg_quality.setValue(90)
-        form.addRow("JPG quality:", self._jpg_quality)
+        jpg_layout.addWidget(self._jpg_quality)
+        self._jpg_quality_label = QLabel("90")
+        self._jpg_quality_label.setFixedWidth(28)
+        self._jpg_quality.valueChanged.connect(
+            lambda v: self._jpg_quality_label.setText(str(v))
+        )
+        jpg_layout.addWidget(self._jpg_quality_label)
+        self._jpg_quality_row_label = QLabel("JPG quality:")
+        self._jpg_quality_row_widget = QWidget()
+        self._jpg_quality_row_widget.setLayout(jpg_layout)
+        form.addRow(self._jpg_quality_row_label, self._jpg_quality_row_widget)
 
         self._auto_save = QCheckBox("Auto-save screenshots")
         form.addRow(self._auto_save)
@@ -111,6 +126,12 @@ class SettingsDialog(QDialog):
         form.addRow(QLabel("Tokens: {datetime}, {date}, {time}, {counter}, {title}"))
 
         return widget
+
+    def _on_format_changed(self, fmt: str) -> None:
+        """Show or hide the JPG quality slider based on selected format."""
+        is_jpg = fmt.upper() in ("JPG", "JPEG")
+        self._jpg_quality_row_label.setVisible(is_jpg)
+        self._jpg_quality_row_widget.setVisible(is_jpg)
 
     def _create_editor_tab(self) -> QWidget:
         widget = QWidget()
@@ -149,7 +170,7 @@ class SettingsDialog(QDialog):
         self._hotkey_repeat = QLineEdit()
         form.addRow("Repeat last:", self._hotkey_repeat)
 
-        form.addRow(QLabel("Use format like: ctrl+shift+print_screen"))
+        form.addRow(QLabel("Example: ctrl+shift+print_screen"))
 
         return widget
 
@@ -181,6 +202,8 @@ class SettingsDialog(QDialog):
         if idx >= 0:
             self._save_format.setCurrentIndex(idx)
         self._jpg_quality.setValue(self._config.get("save.jpg_quality", 90))
+        self._jpg_quality_label.setText(str(self._jpg_quality.value()))
+        self._on_format_changed(self._save_format.currentText())
         self._auto_save.setChecked(self._config.get("save.auto_save_enabled", False))
         pattern = self._config.get("save.filename_pattern", "Screenshot_{datetime}")
         self._filename_pattern.setText(pattern)
@@ -230,6 +253,7 @@ class SettingsDialog(QDialog):
         self._config.set("startup.minimize_to_tray", self._minimize_to_tray.isChecked())
 
         logger.info("Settings saved.")
+        self.settings_saved.emit()
         self.accept()
 
     def _browse_save_dir(self) -> None:

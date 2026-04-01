@@ -201,6 +201,7 @@ class TestSetupHotkeys:
     ) -> None:
         app = VerdiClipApp([])
         app._config = tmp_config
+        app._tray_icon = MagicMock()
         mock_manager = MagicMock()
         mock_hk_cls.return_value = mock_manager
 
@@ -211,3 +212,99 @@ class TestSetupHotkeys:
         assert app._hotkey_manager is mock_manager, (
             f"Expected _hotkey_manager to be mock_manager, got {app._hotkey_manager}"
         )
+
+
+class TestHotkeyRegistration:
+    """_register_hotkeys registers configured hotkeys with tray capture methods."""
+
+    def _make_app(self, qapp: QApplication, tmp_config: Config) -> VerdiClipApp:
+        """Create a VerdiClipApp with mocked tray icon and hotkey manager."""
+        app = VerdiClipApp([])
+        app._config = tmp_config
+        app._tray_icon = MagicMock()
+        app._hotkey_manager = MagicMock()
+        return app
+
+    def test_registers_region_hotkey(self, qapp: QApplication, tmp_config: Config) -> None:
+        app = self._make_app(qapp, tmp_config)
+        app._register_hotkeys()
+        calls = {args[0][0]: args[0][1] for args in app._hotkey_manager.register.call_args_list}
+        expected_key = tmp_config.get("hotkeys.region")
+        assert expected_key in calls, (
+            f"Expected hotkey '{expected_key}' to be registered, "
+            f"got keys: {list(calls.keys())}"
+        )
+        assert calls[expected_key] is app._tray_icon.capture_region, (
+            f"Expected region hotkey bound to capture_region, got {calls[expected_key]}"
+        )
+
+    def test_registers_fullscreen_hotkey(self, qapp: QApplication, tmp_config: Config) -> None:
+        app = self._make_app(qapp, tmp_config)
+        app._register_hotkeys()
+        calls = {args[0][0]: args[0][1] for args in app._hotkey_manager.register.call_args_list}
+        expected_key = tmp_config.get("hotkeys.fullscreen")
+        assert expected_key in calls, (
+            f"Expected hotkey '{expected_key}' to be registered, "
+            f"got keys: {list(calls.keys())}"
+        )
+        assert calls[expected_key] is app._tray_icon.capture_screen, (
+            f"Expected fullscreen hotkey bound to capture_screen, got {calls[expected_key]}"
+        )
+
+    def test_registers_window_hotkey(self, qapp: QApplication, tmp_config: Config) -> None:
+        app = self._make_app(qapp, tmp_config)
+        app._register_hotkeys()
+        calls = {args[0][0]: args[0][1] for args in app._hotkey_manager.register.call_args_list}
+        expected_key = tmp_config.get("hotkeys.window")
+        assert expected_key in calls, (
+            f"Expected hotkey '{expected_key}' to be registered, "
+            f"got keys: {list(calls.keys())}"
+        )
+        assert calls[expected_key] is app._tray_icon.capture_window, (
+            f"Expected window hotkey bound to capture_window, got {calls[expected_key]}"
+        )
+
+    def test_registers_repeat_hotkey(self, qapp: QApplication, tmp_config: Config) -> None:
+        app = self._make_app(qapp, tmp_config)
+        app._register_hotkeys()
+        calls = {args[0][0]: args[0][1] for args in app._hotkey_manager.register.call_args_list}
+        expected_key = tmp_config.get("hotkeys.repeat")
+        assert expected_key in calls, (
+            f"Expected hotkey '{expected_key}' to be registered, "
+            f"got keys: {list(calls.keys())}"
+        )
+        assert calls[expected_key] is app._tray_icon.capture_repeat, (
+            f"Expected repeat hotkey bound to capture_repeat, got {calls[expected_key]}"
+        )
+
+    def test_empty_hotkey_is_not_registered(
+        self, qapp: QApplication, tmp_config: Config,
+    ) -> None:
+        tmp_config.set("hotkeys.region", "")
+        app = self._make_app(qapp, tmp_config)
+        app._register_hotkeys()
+        registered_callbacks = [
+            args[0][1] for args in app._hotkey_manager.register.call_args_list
+        ]
+        assert app._tray_icon.capture_region not in registered_callbacks, (
+            "Expected capture_region NOT to be registered when hotkey is empty string, "
+            f"but it was found among {len(registered_callbacks)} registered callbacks"
+        )
+
+    def test_reload_hotkeys_clears_and_reregisters(
+        self, qapp: QApplication, tmp_config: Config,
+    ) -> None:
+        app = self._make_app(qapp, tmp_config)
+        app.reload_hotkeys()
+        app._hotkey_manager.reload_from_config.assert_called_once_with(), (
+            "Expected reload_from_config() to be called once during reload_hotkeys()"
+        )
+        assert app._hotkey_manager.register.call_count > 0, (
+            "Expected register() to be called after reload_from_config(), "
+            f"but call_count was {app._hotkey_manager.register.call_count}"
+        )
+
+    def test_reload_hotkeys_noop_when_no_manager(self, qapp: QApplication) -> None:
+        app = VerdiClipApp([])
+        app._hotkey_manager = None
+        app.reload_hotkeys()  # should not raise

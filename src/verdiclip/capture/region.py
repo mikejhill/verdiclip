@@ -45,14 +45,27 @@ class RegionSelector(QWidget):
         self._origin: QPoint | None = None
         self._current: QPoint | None = None
         self._is_selecting = False
+        self._virtual_offset: QPoint = QPoint(0, 0)
 
     def start(self) -> None:
-        """Capture the screen and show the overlay."""
+        """Capture the screen and show the overlay across all monitors."""
+        from PySide6.QtWidgets import QApplication
+
         self._background = ScreenCapture.capture_all_monitors()
-        self.setGeometry(0, 0, self._background.width(), self._background.height())
-        self.showFullScreen()
+
+        # Use virtual desktop geometry so the overlay spans all monitors,
+        # including those with negative coordinates (e.g., left of primary).
+        virtual_geo = QApplication.primaryScreen().virtualGeometry()
+        self.setGeometry(virtual_geo)
+        self.show()
         self.activateWindow()
-        logger.debug("Region selector overlay shown.")
+        self.raise_()
+        self._virtual_offset = virtual_geo.topLeft()
+        logger.debug(
+            "Region selector overlay shown: %dx%d at (%d,%d)",
+            virtual_geo.width(), virtual_geo.height(),
+            virtual_geo.x(), virtual_geo.y(),
+        )
 
     def _selection_rect(self) -> QRect | None:
         """Return the normalized selection rectangle, or None if not selecting."""
@@ -161,13 +174,16 @@ class RegionSelector(QWidget):
             self._is_selecting = False
             selection = self._selection_rect()
             if selection and selection.width() > 5 and selection.height() > 5:
+                # Convert widget coordinates to screen coordinates for mss capture
+                screen_rect = selection.translated(self._virtual_offset)
                 logger.info(
-                    "Region selected: (%d,%d) %dx%d",
+                    "Region selected: widget(%d,%d) screen(%d,%d) %dx%d",
                     selection.x(), selection.y(),
+                    screen_rect.x(), screen_rect.y(),
                     selection.width(), selection.height(),
                 )
                 self.hide()
-                self.region_selected.emit(selection)
+                self.region_selected.emit(screen_rect)
             else:
                 self._origin = None
                 self._current = event.position().toPoint()

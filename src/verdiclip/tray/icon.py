@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from PySide6.QtCore import QRect, Qt
 from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
@@ -41,6 +42,10 @@ class TrayIcon(QSystemTrayIcon):
         super().__init__(_create_default_icon(), app)
         self._app = app
         self._config = config
+        self._editors: list = []
+        self._active_capture = None
+        self._last_capture_type: str | None = None
+        self._last_region: QRect | None = None
         self._menu = self._build_menu()
         self.setContextMenu(self._menu)
         self.setToolTip(f"{__app_name__} {__version__}")
@@ -48,21 +53,36 @@ class TrayIcon(QSystemTrayIcon):
         self.activated.connect(self._on_activated)
 
     def _build_menu(self) -> QMenu:
-        """Build the tray context menu."""
+        """Build the tray context menu with current hotkey labels."""
         menu = QMenu()
+
+        def _hotkey_label(config_key: str) -> str:
+            """Format a config hotkey string for display in menu."""
+            hotkey = self._config.get(config_key, "")
+            if hotkey:
+                return hotkey.replace("+", " + ").replace("_", " ").title()
+            return ""
 
         # Capture actions
         capture_region = QAction("Capture Region", menu)
-        capture_region.setShortcut("Print")
-        capture_region.triggered.connect(self._capture_region)
+        shortcut = _hotkey_label("hotkeys.region")
+        if shortcut:
+            capture_region.setText(f"Capture Region\t{shortcut}")
+        capture_region.triggered.connect(self.capture_region)
         menu.addAction(capture_region)
 
         capture_window = QAction("Capture Window", menu)
-        capture_window.triggered.connect(self._capture_window)
+        shortcut = _hotkey_label("hotkeys.window")
+        if shortcut:
+            capture_window.setText(f"Capture Window\t{shortcut}")
+        capture_window.triggered.connect(self.capture_window)
         menu.addAction(capture_window)
 
         capture_screen = QAction("Capture Full Screen", menu)
-        capture_screen.triggered.connect(self._capture_screen)
+        shortcut = _hotkey_label("hotkeys.fullscreen")
+        if shortcut:
+            capture_screen.setText(f"Capture Full Screen\t{shortcut}")
+        capture_screen.triggered.connect(self.capture_screen)
         menu.addAction(capture_screen)
 
         menu.addSeparator()
@@ -93,26 +113,38 @@ class TrayIcon(QSystemTrayIcon):
 
         return menu
 
+    def rebuild_menu(self) -> None:
+        """Rebuild the tray menu to reflect updated hotkey labels."""
+        self._menu = self._build_menu()
+        self.setContextMenu(self._menu)
+        logger.info("Tray menu rebuilt with updated hotkey labels.")
+
     def _on_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         """Handle tray icon activation (e.g., left-click)."""
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
             logger.debug("Tray icon left-clicked.")
-            self._capture_region()
+            self.capture_region()
 
-    def _capture_region(self) -> None:
+    def capture_region(self) -> None:
         """Trigger region capture."""
         logger.info("Tray: Capture region requested.")
         from verdiclip.capture.region import RegionCapture
 
         capture = RegionCapture()
+
+        def _on_region_captured(pixmap: QPixmap) -> None:
+            if capture.last_region:
+                self._last_region = capture.last_region
+            self._handle_capture(pixmap)
+
         capture.start_selection(
-            on_captured=self._open_editor,
+            on_captured=_on_region_captured,
             on_cancelled=lambda: logger.info("Region capture cancelled."),
         )
-        # Keep reference to prevent garbage collection
         self._active_capture = capture
+        self._last_capture_type = "region"
 
-    def _capture_window(self) -> None:
+    def capture_window(self) -> None:
         """Trigger active window capture."""
         logger.info("Tray: Capture window requested.")
         from verdiclip.capture.window import WindowCapture
@@ -120,22 +152,58 @@ class TrayIcon(QSystemTrayIcon):
         pixmap = WindowCapture.capture_active_window(
             include_decorations=self._config.get("capture.window_decorations", True)
         )
-        self._open_editor(pixmap)
+        self._last_capture_type = "window"
+        self._handle_capture(pixmap)
 
-    def _capture_screen(self) -> None:
+    def capture_screen(self) -> None:
         """Trigger full-screen capture."""
         logger.info("Tray: Capture full screen requested.")
         from verdiclip.capture.screen import ScreenCapture
 
         pixmap = ScreenCapture.capture_all_monitors()
+        self._last_capture_type = "screen"
+        self._handle_capture(pixmap)
+
+    def capture_repeat(self) -> None:
+        """Repeat the last capture action."""
+        logger.info("Tray: Repeat last capture requested.")
+        if self._last_capture_type == "region" and self._last_region:
+            from verdiclip.capture.screen import ScreenCapture
+            pixmap = ScreenCapture.capture_region(self._last_region)
+            self._handle_capture(pixmap)
+        elif self._last_capture_type == "window":
+            self.capture_window()
+        elif self._last_capture_type == "screen":
+            self.capture_screen()
+        elif self._last_capture_type == "region":
+            self.capture_region()
+        else:
+            logger.info("No previous capture to repeat.")
+
+    def _handle_capture(self, pixmap: QPixmap) -> None:
+        """Handle a completed capture — autosave and/or open editor."""
+        if pixmap.isNull():
+            logger.warning("Capture returned a null pixmap.")
+            return
+
+        # Auto-save if enabled
+        if self._config.get("save.auto_save_enabled", False):
+            from verdiclip.export.file_export import FileExporter
+            path = FileExporter.auto_save(pixmap, self._config)
+            if path:
+                logger.info("Auto-saved capture to %s", path)
+
         self._open_editor(pixmap)
 
     def _open_editor(self, pixmap: QPixmap) -> None:
         """Open the editor with a captured image."""
         from verdiclip.editor.canvas import EditorWindow
 
-        self._editor = EditorWindow(pixmap, self._config)
-        self._editor.show()
+        editor = EditorWindow(pixmap, self._config)
+        editor.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        editor.destroyed.connect(lambda: self._editors.remove(editor))
+        self._editors.append(editor)
+        editor.show()
 
     def _open_image(self) -> None:
         """Open an existing image file for editing."""
@@ -160,7 +228,17 @@ class TrayIcon(QSystemTrayIcon):
         from verdiclip.ui.settings_dialog import SettingsDialog
 
         dialog = SettingsDialog(self._config)
+        dialog.settings_saved.connect(self._on_settings_saved)
         dialog.exec()
+
+    def _on_settings_saved(self) -> None:
+        """Handle settings saved — rebuild menu and notify app to reload hotkeys."""
+        self.rebuild_menu()
+        # Reload hotkeys if app controller is connected
+        from verdiclip.app import VerdiClipApp
+        app = self._app.property("verdiclip_controller")
+        if isinstance(app, VerdiClipApp):
+            app.reload_hotkeys()
 
     def _show_about(self) -> None:
         """Open the about dialog."""

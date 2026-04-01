@@ -56,6 +56,7 @@ class VerdiClipApp:
             )
 
         self._qt_app = self._init_qt()
+        self._qt_app.setProperty("verdiclip_controller", self)
         self._config = Config()
 
         logger.info("VerdiClip %s started successfully.", __version__)
@@ -73,12 +74,36 @@ class VerdiClipApp:
         logger.info("System tray icon initialized.")
 
     def _setup_hotkeys(self) -> None:
-        """Initialize global hotkey listener."""
+        """Initialize global hotkey listener and register capture callbacks."""
         from verdiclip.hotkeys.manager import HotkeyManager
 
         self._hotkey_manager = HotkeyManager(self._config)
+        self._register_hotkeys()
         self._hotkey_manager.start()
         logger.info("Global hotkey listener started.")
+
+    def _register_hotkeys(self) -> None:
+        """Register configured hotkeys with tray capture callbacks."""
+        assert self._hotkey_manager is not None
+        assert self._tray_icon is not None
+
+        bindings = {
+            "hotkeys.region": self._tray_icon.capture_region,
+            "hotkeys.fullscreen": self._tray_icon.capture_screen,
+            "hotkeys.window": self._tray_icon.capture_window,
+            "hotkeys.repeat": self._tray_icon.capture_repeat,
+        }
+        for config_key, callback in bindings.items():
+            hotkey_str = self._config.get(config_key, "")
+            if hotkey_str:
+                self._hotkey_manager.register(hotkey_str, callback)
+
+    def reload_hotkeys(self) -> None:
+        """Reload hotkey bindings from config (called after settings change)."""
+        if self._hotkey_manager:
+            self._hotkey_manager.reload_from_config()
+            self._register_hotkeys()
+            logger.info("Hotkey bindings reloaded.")
 
     @property
     def config(self) -> Config:

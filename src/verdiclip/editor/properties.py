@@ -118,13 +118,27 @@ class PropertiesPanel(QWidget):
         layout.addWidget(self._font_size)
 
         # Obfuscation strength
-        layout.addWidget(QLabel("Obfuscation:"))
+        self._obfuscation_label = QLabel("Obfuscation:")
+        self._obfuscation_label.setToolTip(
+            "Controls the pixelation block size for the obfuscation tool.\n"
+            "Higher values produce stronger obfuscation with larger pixel blocks."
+        )
+        layout.addWidget(self._obfuscation_label)
         self._obfuscation_slider = QSlider(Qt.Orientation.Horizontal)
         self._obfuscation_slider.setRange(4, 32)
         self._obfuscation_slider.setValue(12)
         self._obfuscation_slider.setFixedWidth(80)
+        self._obfuscation_slider.setToolTip(
+            "Pixelation block size (4 = fine detail, 32 = heavy blur)"
+        )
         self._obfuscation_slider.valueChanged.connect(self.obfuscation_strength_changed.emit)
         layout.addWidget(self._obfuscation_slider)
+        self._obfuscation_value_label = QLabel("12")
+        self._obfuscation_value_label.setFixedWidth(20)
+        self._obfuscation_slider.valueChanged.connect(
+            lambda v: self._obfuscation_value_label.setText(str(v))
+        )
+        layout.addWidget(self._obfuscation_value_label)
 
         layout.addStretch()
 

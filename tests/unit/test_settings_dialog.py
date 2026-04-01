@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtWidgets import QDialogButtonBox, QTabWidget
+from PySide6.QtWidgets import QDialogButtonBox, QLabel, QTabWidget
 
 from verdiclip.ui.settings_dialog import SettingsDialog
 
@@ -294,4 +294,157 @@ class TestSaveAndClose:
         assert tmp_config.get("startup.minimize_to_tray") is False, (
             f"Expected tmp_config.get('startup.minimize_to_tray') to be False,"
             f" got {tmp_config.get('startup.minimize_to_tray')}"
+        )
+
+
+class TestJpgQualityVisibility:
+    """Tests that JPG quality row visibility tracks the selected format."""
+
+    def test_jpg_quality_hidden_when_format_is_png(self, qapp, tmp_config) -> None:
+        """JPG quality row is hidden when the format is PNG."""
+        tmp_config.set("save.default_format", "png")
+        dialog = SettingsDialog(tmp_config)
+        assert dialog._jpg_quality_row_label.isHidden(), (
+            f"Expected JPG quality row label to be hidden for PNG,"
+            f" got isHidden={dialog._jpg_quality_row_label.isHidden()}"
+        )
+        assert dialog._jpg_quality_row_widget.isHidden(), (
+            f"Expected JPG quality row widget to be hidden for PNG,"
+            f" got isHidden={dialog._jpg_quality_row_widget.isHidden()}"
+        )
+
+    def test_jpg_quality_visible_when_format_is_jpg(self, qapp, tmp_config) -> None:
+        """JPG quality row is not hidden when the format is JPG."""
+        tmp_config.set("save.default_format", "jpg")
+        dialog = SettingsDialog(tmp_config)
+        assert not dialog._jpg_quality_row_label.isHidden(), (
+            f"Expected JPG quality row label to NOT be hidden for JPG,"
+            f" got isHidden={dialog._jpg_quality_row_label.isHidden()}"
+        )
+        assert not dialog._jpg_quality_row_widget.isHidden(), (
+            f"Expected JPG quality row widget to NOT be hidden for JPG,"
+            f" got isHidden={dialog._jpg_quality_row_widget.isHidden()}"
+        )
+
+    def test_jpg_quality_hidden_for_bmp(self, qapp, tmp_config) -> None:
+        """JPG quality row is hidden when the format is BMP."""
+        tmp_config.set("save.default_format", "bmp")
+        dialog = SettingsDialog(tmp_config)
+        assert dialog._jpg_quality_row_label.isHidden(), (
+            f"Expected JPG quality row label to be hidden for BMP,"
+            f" got isHidden={dialog._jpg_quality_row_label.isHidden()}"
+        )
+
+
+class TestJpgQualityLabel:
+    """Tests that the JPG quality slider value label updates dynamically."""
+
+    def test_quality_label_exists(self, qapp, tmp_config) -> None:
+        """JPG quality slider has an associated value label."""
+        dialog = SettingsDialog(tmp_config)
+        assert hasattr(dialog, "_jpg_quality_label"), (
+            "Expected dialog to have a _jpg_quality_label attribute"
+        )
+        assert isinstance(dialog._jpg_quality_label, QLabel), (
+            f"Expected _jpg_quality_label to be QLabel,"
+            f" got {type(dialog._jpg_quality_label)}"
+        )
+
+    def test_quality_label_matches_initial_value(self, qapp, tmp_config) -> None:
+        """Value label shows the slider's initial value."""
+        tmp_config.set("save.default_format", "jpg")
+        tmp_config.set("save.jpg_quality", 75)
+        dialog = SettingsDialog(tmp_config)
+        assert dialog._jpg_quality_label.text() == "75", (
+            f"Expected _jpg_quality_label text to equal '75',"
+            f" got '{dialog._jpg_quality_label.text()}'"
+        )
+
+    def test_quality_label_updates_on_slider_change(self, qapp, tmp_config) -> None:
+        """Value label updates when the slider value changes."""
+        dialog = SettingsDialog(tmp_config)
+        dialog._jpg_quality.setValue(42)
+        assert dialog._jpg_quality_label.text() == "42", (
+            f"Expected _jpg_quality_label text to equal '42' after slider change,"
+            f" got '{dialog._jpg_quality_label.text()}'"
+        )
+
+
+class TestSettingsSavedSignal:
+    """Tests that settings_saved signal is emitted on save."""
+
+    def test_settings_saved_signal_emitted_on_save(self, qapp, tmp_config) -> None:
+        """_save_and_close emits the settings_saved signal."""
+        dialog = SettingsDialog(tmp_config)
+        emitted = []
+        dialog.settings_saved.connect(lambda: emitted.append(True))
+        dialog._save_and_close()
+        assert len(emitted) == 1, (
+            f"Expected settings_saved signal to be emitted exactly once,"
+            f" got {len(emitted)} emissions"
+        )
+
+    def test_settings_saved_signal_emitted_after_config_written(self, qapp, tmp_config) -> None:
+        """Config values are persisted before the signal fires."""
+        dialog = SettingsDialog(tmp_config)
+        dialog._stroke_width.setValue(15)
+
+        config_at_signal_time = []
+
+        def on_saved() -> None:
+            config_at_signal_time.append(tmp_config.get("editor.default_stroke_width"))
+
+        dialog.settings_saved.connect(on_saved)
+        dialog._save_and_close()
+        assert len(config_at_signal_time) == 1, (
+            f"Expected signal handler to be called once, got {len(config_at_signal_time)}"
+        )
+        assert config_at_signal_time[0] == 15, (
+            f"Expected config value at signal time to be 15, got {config_at_signal_time[0]}"
+        )
+
+
+class TestHotkeyExampleGrammar:
+    """Tests that the hotkeys tab contains the correct example text."""
+
+    def test_hotkeys_tab_contains_example_prefix(self, qapp, tmp_config) -> None:
+        """Hotkeys tab should say 'Example:' not 'Use format like:'."""
+        dialog = SettingsDialog(tmp_config)
+        tabs = dialog.findChildren(QTabWidget)[0]
+        hotkeys_tab = None
+        for i in range(tabs.count()):
+            if tabs.tabText(i) == "Hotkeys":
+                hotkeys_tab = tabs.widget(i)
+                break
+        assert hotkeys_tab is not None, (
+            "Expected to find a tab named 'Hotkeys' in the settings dialog"
+        )
+
+        labels = hotkeys_tab.findChildren(QLabel)
+        label_texts = [lbl.text() for lbl in labels]
+        has_example = any("Example:" in t for t in label_texts)
+        assert has_example, (
+            f"Expected at least one QLabel containing 'Example:' in Hotkeys tab,"
+            f" found labels: {label_texts}"
+        )
+
+    def test_hotkeys_tab_does_not_contain_old_phrasing(self, qapp, tmp_config) -> None:
+        """Hotkeys tab must NOT contain the old 'Use format like:' phrasing."""
+        dialog = SettingsDialog(tmp_config)
+        tabs = dialog.findChildren(QTabWidget)[0]
+        hotkeys_tab = None
+        for i in range(tabs.count()):
+            if tabs.tabText(i) == "Hotkeys":
+                hotkeys_tab = tabs.widget(i)
+                break
+        assert hotkeys_tab is not None, (
+            "Expected to find a tab named 'Hotkeys' in the settings dialog"
+        )
+
+        labels = hotkeys_tab.findChildren(QLabel)
+        label_texts = [lbl.text() for lbl in labels]
+        has_old_phrasing = any("Use format like:" in t for t in label_texts)
+        assert not has_old_phrasing, (
+            f"Expected no QLabel containing 'Use format like:' in Hotkeys tab,"
+            f" but found labels: {label_texts}"
         )

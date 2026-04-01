@@ -254,8 +254,66 @@ class EditorWindow(QMainWindow):
         self._statusbar.showMessage("Ready")
 
     def _register_tools(self) -> None:
-        """Register all tool implementations (lazy - tools created on first use)."""
-        pass  # Tools will be registered as they are implemented
+        """Create and register all tool instances."""
+        from verdiclip.editor.tools.arrow import ArrowTool
+        from verdiclip.editor.tools.crop import CropTool
+        from verdiclip.editor.tools.ellipse import EllipseTool
+        from verdiclip.editor.tools.freehand import FreehandTool
+        from verdiclip.editor.tools.highlight import HighlightTool
+        from verdiclip.editor.tools.line import LineTool
+        from verdiclip.editor.tools.number import NumberTool
+        from verdiclip.editor.tools.obfuscate import ObfuscateTool
+        from verdiclip.editor.tools.rectangle import RectangleTool
+        from verdiclip.editor.tools.select import SelectTool
+        from verdiclip.editor.tools.text import TextTool
+
+        self._tools = {
+            ToolType.SELECT: SelectTool(),
+            ToolType.CROP: CropTool(),
+            ToolType.RECTANGLE: RectangleTool(),
+            ToolType.ELLIPSE: EllipseTool(),
+            ToolType.LINE: LineTool(),
+            ToolType.ARROW: ArrowTool(),
+            ToolType.TEXT: TextTool(),
+            ToolType.NUMBER: NumberTool(),
+            ToolType.HIGHLIGHT: HighlightTool(),
+            ToolType.OBFUSCATE: ObfuscateTool(),
+            ToolType.FREEHAND: FreehandTool(),
+        }
+
+        # Wire properties panel signals to active tools
+        self._properties.stroke_color_changed.connect(self._update_tool_stroke_color)
+        self._properties.fill_color_changed.connect(self._update_tool_fill_color)
+        self._properties.stroke_width_changed.connect(self._update_tool_stroke_width)
+        self._properties.font_changed.connect(self._update_tool_font)
+        self._properties.obfuscation_strength_changed.connect(
+            self._update_obfuscation_strength
+        )
+
+    def _update_tool_stroke_color(self, color: QColor) -> None:
+        tool = self._canvas._current_tool
+        if tool and hasattr(tool, "set_stroke_color"):
+            tool.set_stroke_color(color)
+
+    def _update_tool_fill_color(self, color: QColor) -> None:
+        tool = self._canvas._current_tool
+        if tool and hasattr(tool, "set_fill_color"):
+            tool.set_fill_color(color)
+
+    def _update_tool_stroke_width(self, width: int) -> None:
+        tool = self._canvas._current_tool
+        if tool and hasattr(tool, "set_stroke_width"):
+            tool.set_stroke_width(width)
+
+    def _update_tool_font(self, font) -> None:
+        tool = self._canvas._current_tool
+        if tool and hasattr(tool, "set_font"):
+            tool.set_font(font)
+
+    def _update_obfuscation_strength(self, strength: int) -> None:
+        tool = self._tools.get(ToolType.OBFUSCATE)
+        if tool and hasattr(tool, "set_block_size"):
+            tool.set_block_size(strength)
 
     def _on_tool_changed(self, tool_type: ToolType) -> None:
         """Handle tool selection from toolbar."""

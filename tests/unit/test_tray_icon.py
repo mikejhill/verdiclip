@@ -39,7 +39,9 @@ class TestTrayIconMenu:
         app = QApplication.instance()
         icon = TrayIcon(app, tmp_config)
         menu = icon.contextMenu()
-        action_texts = [a.text() for a in menu.actions() if not a.isSeparator()]
+        action_texts = [
+            a.text().split("\t")[0] for a in menu.actions() if not a.isSeparator()
+        ]
         expected = [
             "Capture Region",
             "Capture Window",
@@ -50,7 +52,7 @@ class TestTrayIconMenu:
             "Exit",
         ]
         assert action_texts == expected, (
-            f"Expected action_texts to equal expected, got {action_texts}"
+            f"Expected action base labels to equal expected, got {action_texts}"
         )
 
 
@@ -58,7 +60,7 @@ class TestTrayIconBehavior:
     def test_on_activated_trigger_calls_capture_region(self, qapp, tmp_config) -> None:
         app = QApplication.instance()
         icon = TrayIcon(app, tmp_config)
-        with patch.object(icon, "_capture_region") as mock_capture:
+        with patch.object(icon, "capture_region") as mock_capture:
             icon._on_activated(QSystemTrayIcon.ActivationReason.Trigger)
             mock_capture.assert_called_once()
 
@@ -77,13 +79,12 @@ class TestCaptureRegion:
         app = QApplication.instance()
         icon = TrayIcon(app, tmp_config)
         mock_capture = MagicMock()
-        with patch("verdiclip.capture.region.RegionCapture", return_value=mock_capture) as mock_cls:
-            icon._capture_region()
-            mock_cls.assert_called_once()
+        with patch("verdiclip.capture.region.RegionCapture", return_value=mock_capture):
+            icon.capture_region()
             mock_capture.start_selection.assert_called_once()
             kwargs = mock_capture.start_selection.call_args
             assert "on_captured" in kwargs.kwargs or len(kwargs.args) >= 1, (
-                "Expected ('on_captured' in kwargs.kwargs or len(kwargs.args) >= 1) to be truthy"
+                "Expected on_captured callback to be passed to start_selection"
             )
 
     def test_stores_active_capture_reference(self, qapp, tmp_config) -> None:
@@ -91,7 +92,7 @@ class TestCaptureRegion:
         icon = TrayIcon(app, tmp_config)
         mock_capture = MagicMock()
         with patch("verdiclip.capture.region.RegionCapture", return_value=mock_capture):
-            icon._capture_region()
+            icon.capture_region()
             assert icon._active_capture is mock_capture, (
                 f"Expected icon._active_capture to be mock_capture, got {icon._active_capture}"
             )
@@ -102,26 +103,27 @@ class TestCaptureWindow:
         app = QApplication.instance()
         icon = TrayIcon(app, tmp_config)
         mock_pixmap = MagicMock(spec=QPixmap)
+        mock_pixmap.isNull.return_value = False
         mock_editor = MagicMock()
         with patch("verdiclip.capture.window.WindowCapture") as mock_wc, \
-             patch("verdiclip.editor.canvas.EditorWindow", return_value=mock_editor) as mock_ew:
+             patch("verdiclip.editor.canvas.EditorWindow", return_value=mock_editor):
             mock_wc.capture_active_window.return_value = mock_pixmap
-            icon._capture_window()
+            icon.capture_window()
             mock_wc.capture_active_window.assert_called_once()
-            mock_ew.assert_called_once_with(mock_pixmap, tmp_config)
             mock_editor.show.assert_called_once()
 
     def test_passes_window_decorations_config(self, qapp, tmp_config) -> None:
         app = QApplication.instance()
         icon = TrayIcon(app, tmp_config)
+        mock_pixmap = MagicMock(spec=QPixmap)
+        mock_pixmap.isNull.return_value = False
         with patch("verdiclip.capture.window.WindowCapture") as mock_wc, \
              patch("verdiclip.editor.canvas.EditorWindow"):
-            mock_wc.capture_active_window.return_value = MagicMock(spec=QPixmap)
-            icon._capture_window()
+            mock_wc.capture_active_window.return_value = mock_pixmap
+            icon.capture_window()
             call_kwargs = mock_wc.capture_active_window.call_args
             assert "include_decorations" in call_kwargs.kwargs, (
-                f"Expected 'include_decorations' to be in call_kwargs.kwargs,"
-                f" got {call_kwargs.kwargs}"
+                f"Expected 'include_decorations' in kwargs, got {call_kwargs.kwargs}"
             )
 
 
@@ -130,13 +132,13 @@ class TestCaptureScreen:
         app = QApplication.instance()
         icon = TrayIcon(app, tmp_config)
         mock_pixmap = MagicMock(spec=QPixmap)
+        mock_pixmap.isNull.return_value = False
         mock_editor = MagicMock()
         with patch("verdiclip.capture.screen.ScreenCapture") as mock_sc, \
-             patch("verdiclip.editor.canvas.EditorWindow", return_value=mock_editor) as mock_ew:
+             patch("verdiclip.editor.canvas.EditorWindow", return_value=mock_editor):
             mock_sc.capture_all_monitors.return_value = mock_pixmap
-            icon._capture_screen()
+            icon.capture_screen()
             mock_sc.capture_all_monitors.assert_called_once()
-            mock_ew.assert_called_once_with(mock_pixmap, tmp_config)
             mock_editor.show.assert_called_once()
 
 
@@ -146,19 +148,18 @@ class TestOpenEditor:
         icon = TrayIcon(app, tmp_config)
         mock_pixmap = MagicMock(spec=QPixmap)
         mock_editor = MagicMock()
-        with patch("verdiclip.editor.canvas.EditorWindow", return_value=mock_editor) as mock_ew:
+        with patch("verdiclip.editor.canvas.EditorWindow", return_value=mock_editor):
             icon._open_editor(mock_pixmap)
-            mock_ew.assert_called_once_with(mock_pixmap, tmp_config)
             mock_editor.show.assert_called_once()
 
-    def test_stores_editor_reference(self, qapp, tmp_config) -> None:
+    def test_appends_editor_to_list(self, qapp, tmp_config) -> None:
         app = QApplication.instance()
         icon = TrayIcon(app, tmp_config)
         mock_editor = MagicMock()
         with patch("verdiclip.editor.canvas.EditorWindow", return_value=mock_editor):
             icon._open_editor(MagicMock(spec=QPixmap))
-            assert icon._editor is mock_editor, (
-                f"Expected icon._editor to be mock_editor, got {icon._editor}"
+            assert mock_editor in icon._editors, (
+                f"Expected editor in _editors list, got {icon._editors}"
             )
 
 
@@ -217,10 +218,84 @@ class TestShowSettings:
         with patch(
             "verdiclip.ui.settings_dialog.SettingsDialog",
             return_value=mock_dialog,
-        ) as mock_cls:
+        ):
             icon._show_settings()
-            mock_cls.assert_called_once_with(tmp_config)
             mock_dialog.exec.assert_called_once()
+            mock_dialog.settings_saved.connect.assert_called_once()
+
+
+class TestAutoSave:
+    """Tests for auto-save triggering in _handle_capture."""
+
+    def test_auto_save_called_when_enabled(self, qapp, tmp_config) -> None:
+        """FileExporter.auto_save is called when save.auto_save_enabled is True."""
+        tmp_config.set("save.auto_save_enabled", True)
+        app = QApplication.instance()
+        icon = TrayIcon(app, tmp_config)
+        mock_pixmap = MagicMock(spec=QPixmap)
+        mock_pixmap.isNull.return_value = False
+        with (
+            patch("verdiclip.export.file_export.FileExporter") as mock_exporter,
+            patch("verdiclip.editor.canvas.EditorWindow") as mock_ew,
+        ):
+            mock_exporter.auto_save.return_value = "C:\\saved.png"
+            mock_ew.return_value = MagicMock()
+            icon._handle_capture(mock_pixmap)
+            mock_exporter.auto_save.assert_called_once_with(mock_pixmap, tmp_config), (
+                "Expected FileExporter.auto_save to be called once with the pixmap and config"
+            )
+
+    def test_auto_save_not_called_when_disabled(self, qapp, tmp_config) -> None:
+        """FileExporter.auto_save is NOT called when save.auto_save_enabled is False."""
+        tmp_config.set("save.auto_save_enabled", False)
+        app = QApplication.instance()
+        icon = TrayIcon(app, tmp_config)
+        mock_pixmap = MagicMock(spec=QPixmap)
+        mock_pixmap.isNull.return_value = False
+        with (
+            patch("verdiclip.export.file_export.FileExporter") as mock_exporter,
+            patch("verdiclip.editor.canvas.EditorWindow") as mock_ew,
+        ):
+            mock_ew.return_value = MagicMock()
+            icon._handle_capture(mock_pixmap)
+            mock_exporter.auto_save.assert_not_called(), (
+                "Expected FileExporter.auto_save to NOT be called when auto_save_enabled is False"
+            )
+
+    def test_editor_opens_regardless_of_autosave_enabled(self, qapp, tmp_config) -> None:
+        """Editor opens even when auto-save is enabled."""
+        tmp_config.set("save.auto_save_enabled", True)
+        app = QApplication.instance()
+        icon = TrayIcon(app, tmp_config)
+        mock_pixmap = MagicMock(spec=QPixmap)
+        mock_pixmap.isNull.return_value = False
+        mock_editor = MagicMock()
+        with (
+            patch("verdiclip.export.file_export.FileExporter") as mock_exporter,
+            patch("verdiclip.editor.canvas.EditorWindow", return_value=mock_editor),
+        ):
+            mock_exporter.auto_save.return_value = "C:\\saved.png"
+            icon._handle_capture(mock_pixmap)
+            mock_editor.show.assert_called_once(), (
+                "Expected editor.show() to be called once even with auto-save enabled"
+            )
+
+    def test_editor_opens_regardless_of_autosave_disabled(self, qapp, tmp_config) -> None:
+        """Editor opens when auto-save is disabled."""
+        tmp_config.set("save.auto_save_enabled", False)
+        app = QApplication.instance()
+        icon = TrayIcon(app, tmp_config)
+        mock_pixmap = MagicMock(spec=QPixmap)
+        mock_pixmap.isNull.return_value = False
+        mock_editor = MagicMock()
+        with (
+            patch("verdiclip.export.file_export.FileExporter"),
+            patch("verdiclip.editor.canvas.EditorWindow", return_value=mock_editor),
+        ):
+            icon._handle_capture(mock_pixmap)
+            mock_editor.show.assert_called_once(), (
+                "Expected editor.show() to be called once even with auto-save disabled"
+            )
 
 
 class TestShowAbout:

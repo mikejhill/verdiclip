@@ -405,3 +405,110 @@ class TestRegionCaptureWorkflow:
         rc._selector.selection_cancelled.emit()
 
         assert len(cancelled) == 1, f"Expected len(cancelled) to equal 1, got {len(cancelled)}"
+
+
+class TestRegionSelectorMultiMonitor:
+    """Tests for multi-monitor support using virtual desktop geometry."""
+
+    @patch("verdiclip.capture.region.ScreenCapture")
+    def test_start_uses_virtual_geometry_instead_of_show_full_screen(
+        self, mock_screen, qapp
+    ) -> None:
+        """start() sets widget geometry to virtual desktop, not showFullScreen."""
+        mock_screen.capture_all_monitors.return_value = QPixmap(5760, 1080)
+        mock_primary = MagicMock()
+        mock_primary.virtualGeometry.return_value = QRect(-1920, 0, 5760, 1080)
+        with patch(
+            "PySide6.QtWidgets.QApplication.primaryScreen",
+            return_value=mock_primary,
+        ):
+            selector = RegionSelector()
+            selector.start()
+
+            geo = selector.geometry()
+            assert geo.x() == -1920, (
+                f"Expected geometry x to equal -1920 (virtual left edge), got {geo.x()}"
+            )
+            assert geo.y() == 0, (
+                f"Expected geometry y to equal 0, got {geo.y()}"
+            )
+            assert geo.width() == 5760, (
+                f"Expected geometry width to equal 5760 (total virtual width), got {geo.width()}"
+            )
+            assert geo.height() == 1080, (
+                f"Expected geometry height to equal 1080, got {geo.height()}"
+            )
+
+    @patch("verdiclip.capture.region.ScreenCapture")
+    def test_virtual_offset_stored_from_geometry_top_left(
+        self, mock_screen, qapp
+    ) -> None:
+        """start() stores _virtual_offset from the virtual geometry's top-left corner."""
+        mock_screen.capture_all_monitors.return_value = QPixmap(5760, 1080)
+        mock_primary = MagicMock()
+        mock_primary.virtualGeometry.return_value = QRect(-1920, 0, 5760, 1080)
+        with patch(
+            "PySide6.QtWidgets.QApplication.primaryScreen",
+            return_value=mock_primary,
+        ):
+            selector = RegionSelector()
+            selector.start()
+
+            offset = selector._virtual_offset
+            assert offset.x() == -1920, (
+                f"Expected _virtual_offset.x() to equal -1920, got {offset.x()}"
+            )
+            assert offset.y() == 0, (
+                f"Expected _virtual_offset.y() to equal 0, got {offset.y()}"
+            )
+
+    @patch("verdiclip.capture.region.ScreenCapture")
+    def test_mouse_release_emits_coordinates_translated_by_virtual_offset(
+        self, mock_screen, qapp
+    ) -> None:
+        """mouseReleaseEvent emits screen_rect translated by _virtual_offset."""
+        mock_screen.capture_all_monitors.return_value = QPixmap(5760, 1080)
+        mock_primary = MagicMock()
+        mock_primary.virtualGeometry.return_value = QRect(-1920, 0, 5760, 1080)
+        with patch(
+            "PySide6.QtWidgets.QApplication.primaryScreen",
+            return_value=mock_primary,
+        ):
+            selector = RegionSelector()
+            selector.start()
+
+            # Simulate a selection in widget coordinates
+            selector._origin = QPoint(100, 100)
+            selector._current = QPoint(300, 300)
+            selector._is_selecting = True
+
+            emitted = []
+            selector.region_selected.connect(lambda r: emitted.append(r))
+
+            event = MagicMock()
+            event.button.return_value = Qt.MouseButton.LeftButton
+            mock_pos = MagicMock()
+            mock_pos.toPoint.return_value = QPoint(300, 300)
+            event.position.return_value = mock_pos
+
+            selector.mouseReleaseEvent(event)
+
+            assert len(emitted) == 1, (
+                f"Expected exactly 1 signal emission, got {len(emitted)}"
+            )
+            rect = emitted[0]
+            # Widget rect (100,100)→(300,300) translated by offset (-1920, 0)
+            assert rect.x() == 100 + (-1920), (
+                f"Expected emitted rect x to equal {100 + (-1920)} (widget x + offset),"
+                f" got {rect.x()}"
+            )
+            assert rect.y() == 100 + 0, (
+                f"Expected emitted rect y to equal 100 (widget y + offset 0),"
+                f" got {rect.y()}"
+            )
+            assert rect.width() == 201, (
+                f"Expected emitted rect width to equal 201, got {rect.width()}"
+            )
+            assert rect.height() == 201, (
+                f"Expected emitted rect height to equal 201, got {rect.height()}"
+            )

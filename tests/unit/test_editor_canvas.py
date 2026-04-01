@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QMouseEvent, QPixmap, QWheelEvent
 from PySide6.QtWidgets import QGraphicsPixmapItem, QGraphicsScene
@@ -489,3 +490,134 @@ class TestEditorWindowPrint:
         window = EditorWindow(QPixmap(100, 100), tmp_config)
         window._print()
         mock_print.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# EditorWindow — tool registration (bug-fix coverage)
+# ---------------------------------------------------------------------------
+
+
+class TestEditorWindowToolRegistration:
+    """_register_tools creates all 11 tools with correct types and wiring."""
+
+    _EXPECTED_TOOL_TYPES: dict[ToolType, str] = {
+        ToolType.SELECT: "SelectTool",
+        ToolType.CROP: "CropTool",
+        ToolType.RECTANGLE: "RectangleTool",
+        ToolType.ELLIPSE: "EllipseTool",
+        ToolType.LINE: "LineTool",
+        ToolType.ARROW: "ArrowTool",
+        ToolType.TEXT: "TextTool",
+        ToolType.NUMBER: "NumberTool",
+        ToolType.HIGHLIGHT: "HighlightTool",
+        ToolType.OBFUSCATE: "ObfuscateTool",
+        ToolType.FREEHAND: "FreehandTool",
+    }
+
+    def test_tools_dict_has_all_11_entries(self, qapp, tmp_config) -> None:
+        window = EditorWindow(QPixmap(100, 100), tmp_config)
+        assert len(window._tools) == 11, (
+            f"Expected 11 tools registered, got {len(window._tools)}: "
+            f"{list(window._tools.keys())}"
+        )
+
+    def test_tools_dict_contains_every_tool_type(self, qapp, tmp_config) -> None:
+        window = EditorWindow(QPixmap(100, 100), tmp_config)
+        for tool_type in ToolType:
+            assert tool_type in window._tools, (
+                f"Expected ToolType.{tool_type.name} in _tools dict, "
+                f"missing from {list(window._tools.keys())}"
+            )
+
+    @pytest.mark.parametrize(
+        ("tool_type", "expected_class_name"),
+        list(_EXPECTED_TOOL_TYPES.items()),
+        ids=[t.name for t in _EXPECTED_TOOL_TYPES],
+    )
+    def test_tool_is_correct_type(
+        self, qapp, tmp_config, tool_type, expected_class_name,
+    ) -> None:
+        window = EditorWindow(QPixmap(100, 100), tmp_config)
+        tool = window._tools[tool_type]
+        actual_name = type(tool).__name__
+        assert actual_name == expected_class_name, (
+            f"Expected ToolType.{tool_type.name} → {expected_class_name}, "
+            f"got {actual_name}"
+        )
+
+    def test_toolbar_tool_changed_sets_canvas_tool(self, qapp, tmp_config) -> None:
+        window = EditorWindow(QPixmap(100, 100), tmp_config)
+        window._toolbar.tool_changed.emit(ToolType.RECTANGLE)
+        expected = window._tools[ToolType.RECTANGLE]
+        actual = window._canvas._current_tool
+        assert actual is expected, (
+            f"Expected canvas tool to be RectangleTool after toolbar signal, "
+            f"got {type(actual).__name__ if actual else None}"
+        )
+
+    def test_toolbar_tool_changed_to_freehand(self, qapp, tmp_config) -> None:
+        window = EditorWindow(QPixmap(100, 100), tmp_config)
+        window._toolbar.tool_changed.emit(ToolType.FREEHAND)
+        expected = window._tools[ToolType.FREEHAND]
+        actual = window._canvas._current_tool
+        assert actual is expected, (
+            f"Expected canvas tool to be FreehandTool after toolbar signal, "
+            f"got {type(actual).__name__ if actual else None}"
+        )
+
+    def test_properties_stroke_color_signal_connected(self, qapp, tmp_config) -> None:
+        from PySide6.QtGui import QColor
+        window = EditorWindow(QPixmap(100, 100), tmp_config)
+        window._toolbar.tool_changed.emit(ToolType.RECTANGLE)
+        tool = window._canvas._current_tool
+        tool.set_stroke_color = MagicMock()
+        color = QColor(255, 0, 0)
+        window._properties.stroke_color_changed.emit(color)
+        tool.set_stroke_color.assert_called_once_with(color), (
+            "Expected stroke_color_changed signal to reach active tool's set_stroke_color"
+        )
+
+    def test_properties_fill_color_signal_connected(self, qapp, tmp_config) -> None:
+        from PySide6.QtGui import QColor
+        window = EditorWindow(QPixmap(100, 100), tmp_config)
+        window._toolbar.tool_changed.emit(ToolType.RECTANGLE)
+        tool = window._canvas._current_tool
+        tool.set_fill_color = MagicMock()
+        color = QColor(0, 255, 0)
+        window._properties.fill_color_changed.emit(color)
+        tool.set_fill_color.assert_called_once_with(color), (
+            "Expected fill_color_changed signal to reach active tool's set_fill_color"
+        )
+
+    def test_properties_stroke_width_signal_connected(self, qapp, tmp_config) -> None:
+        window = EditorWindow(QPixmap(100, 100), tmp_config)
+        window._toolbar.tool_changed.emit(ToolType.RECTANGLE)
+        tool = window._canvas._current_tool
+        tool.set_stroke_width = MagicMock()
+        window._properties.stroke_width_changed.emit(5)
+        tool.set_stroke_width.assert_called_once_with(5), (
+            "Expected stroke_width_changed signal to reach active tool's set_stroke_width"
+        )
+
+    def test_properties_font_signal_connected(self, qapp, tmp_config) -> None:
+        from PySide6.QtGui import QFont
+        window = EditorWindow(QPixmap(100, 100), tmp_config)
+        window._toolbar.tool_changed.emit(ToolType.TEXT)
+        tool = window._canvas._current_tool
+        tool.set_font = MagicMock()
+        font = QFont("Arial", 12)
+        window._properties.font_changed.emit(font)
+        tool.set_font.assert_called_once_with(font), (
+            "Expected font_changed signal to reach active tool's set_font"
+        )
+
+    def test_properties_obfuscation_strength_signal_connected(
+        self, qapp, tmp_config,
+    ) -> None:
+        window = EditorWindow(QPixmap(100, 100), tmp_config)
+        obfuscate_tool = window._tools[ToolType.OBFUSCATE]
+        obfuscate_tool.set_block_size = MagicMock()
+        window._properties.obfuscation_strength_changed.emit(16)
+        obfuscate_tool.set_block_size.assert_called_once_with(16), (
+            "Expected obfuscation_strength_changed signal to reach ObfuscateTool's set_block_size"
+        )
