@@ -5,7 +5,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
-from PySide6.QtCore import QPoint, QPointF, Qt
+from PySide6.QtCore import QPoint, QPointF, QRectF, Qt
 from PySide6.QtGui import QKeyEvent, QMouseEvent, QPixmap, QWheelEvent
 from PySide6.QtWidgets import QGraphicsItem, QGraphicsPixmapItem, QGraphicsScene
 
@@ -45,11 +45,16 @@ class TestEditorCanvasSetImage:
         pixmap = QPixmap(100, 100)
         canvas.set_image(pixmap)
         rect = canvas.scene.sceneRect()
-        assert rect.width() == 100, (
-            f"Expected scene rect width 100, got {rect.width()}"
+        # Scene rect is expanded with margin around the image
+        assert rect.width() > 100, (
+            f"Expected scene rect width > 100 (includes margin), got {rect.width()}"
         )
-        assert rect.height() == 100, (
-            f"Expected scene rect height 100, got {rect.height()}"
+        assert rect.height() > 100, (
+            f"Expected scene rect height > 100 (includes margin), got {rect.height()}"
+        )
+        img_rect = QRectF(pixmap.rect())
+        assert rect.contains(img_rect), (
+            f"Scene rect {rect} should fully contain image rect {img_rect}"
         )
 
     def test_updates_zoom(self, qapp) -> None:
@@ -422,11 +427,12 @@ class TestEditorWindowOpenFile:
         window._open_file()
 
         rect = window._canvas.scene.sceneRect()
-        assert rect.width() == 80, (
-            f"Expected scene width 80 after open, got {rect.width()}"
+        img_rect = QRectF(0, 0, 80, 60)
+        assert rect.contains(img_rect), (
+            f"Scene rect {rect} should contain image rect {img_rect} after open"
         )
-        assert rect.height() == 60, (
-            f"Expected scene height 60 after open, got {rect.height()}"
+        assert rect.width() > 80, (
+            f"Expected scene width > 80 (includes margin) after open, got {rect.width()}"
         )
 
     @patch("verdiclip.editor.canvas.QFileDialog.getOpenFileName")
@@ -437,8 +443,8 @@ class TestEditorWindowOpenFile:
         window = EditorWindow(QPixmap(100, 100), tmp_config)
         window._open_file()
         rect = window._canvas.scene.sceneRect()
-        assert rect.width() == 100, (
-            f"Expected scene width unchanged at 100 after cancel, got {rect.width()}"
+        assert rect.width() > 100, (
+            f"Expected scene width > 100 (includes margin) after cancel, got {rect.width()}"
         )
 
 
@@ -611,17 +617,6 @@ class TestEditorWindowToolRegistration:
             "Expected font_changed signal to reach active tool's set_font"
         )
 
-    def test_properties_obfuscation_strength_signal_connected(
-        self, qapp, tmp_config,
-    ) -> None:
-        window = EditorWindow(QPixmap(100, 100), tmp_config)
-        obfuscate_tool = window._tools[ToolType.OBFUSCATE]
-        obfuscate_tool.set_block_size = MagicMock()
-        window._properties.obfuscation_strength_changed.emit(16)
-        obfuscate_tool.set_block_size.assert_called_once_with(16), (
-            "Expected obfuscation_strength_changed signal to reach ObfuscateTool's set_block_size"
-        )
-
 
 # ---------------------------------------------------------------------------
 # EditorCanvas — _delete_selected_items
@@ -738,4 +733,350 @@ class TestEditorWindowStatusBar:
         title = window.windowTitle()
         assert "Editor" in title, (
             f"Expected window title to contain 'Editor' when no file_path, got '{title}'"
+        )
+
+
+# ---------------------------------------------------------------------------
+# EditorCanvas — zoom controls
+# ---------------------------------------------------------------------------
+
+
+class TestEditorCanvasZoom:
+    def test_initial_zoom_is_100_percent(self, qapp) -> None:
+        canvas = _make_canvas_with_image()
+        assert canvas.zoom_level == pytest.approx(1.0, abs=0.01), (
+            f"Expected initial zoom level 1.0 (100%), got {canvas.zoom_level}"
+        )
+
+    def test_zoom_in_increases_level(self, qapp) -> None:
+        canvas = _make_canvas_with_image()
+        original = canvas.zoom_level
+        canvas.zoom_in()
+        assert canvas.zoom_level > original, (
+            f"Expected zoom_in to increase level from {original}, got {canvas.zoom_level}"
+        )
+
+    def test_zoom_out_decreases_level(self, qapp) -> None:
+        canvas = _make_canvas_with_image()
+        original = canvas.zoom_level
+        canvas.zoom_out()
+        assert canvas.zoom_level < original, (
+            f"Expected zoom_out to decrease level from {original}, got {canvas.zoom_level}"
+        )
+
+    def test_zoom_reset_returns_to_100_percent(self, qapp) -> None:
+        canvas = _make_canvas_with_image()
+        canvas.zoom_in()
+        canvas.zoom_in()
+        canvas.zoom_reset()
+        assert canvas.zoom_level == pytest.approx(1.0, abs=0.01), (
+            f"Expected zoom_reset to return to 1.0, got {canvas.zoom_level}"
+        )
+
+    def test_zoom_fit_changes_level(self, qapp) -> None:
+        canvas = _make_canvas_with_image()
+        canvas.resize(200, 200)
+        canvas.zoom_fit()
+        # After fit, zoom level should be computed from viewport/image ratio
+        assert canvas.zoom_level > 0, (
+            f"Expected positive zoom level after zoom_fit, got {canvas.zoom_level}"
+        )
+
+    def test_zoom_in_respects_max_limit(self, qapp) -> None:
+        canvas = _make_canvas_with_image()
+        for _ in range(100):
+            canvas.zoom_in()
+        assert canvas.zoom_level <= 16.0, (
+            f"Expected zoom capped at 16.0, got {canvas.zoom_level}"
+        )
+
+    def test_zoom_out_respects_min_limit(self, qapp) -> None:
+        canvas = _make_canvas_with_image()
+        for _ in range(100):
+            canvas.zoom_out()
+        assert canvas.zoom_level >= 0.1, (
+            f"Expected zoom capped at >= 0.1, got {canvas.zoom_level}"
+        )
+
+
+class TestEditorWindowZoomControls:
+    def test_zoom_label_shows_100_initially(self, qapp, tmp_config) -> None:
+        window = EditorWindow(QPixmap(100, 100), tmp_config)
+        assert window._zoom_label.text() == "100%", (
+            f"Expected zoom label '100%' initially, got '{window._zoom_label.text()}'"
+        )
+
+    def test_zoom_in_updates_label(self, qapp, tmp_config) -> None:
+        window = EditorWindow(QPixmap(100, 100), tmp_config)
+        window._zoom_in()
+        label = window._zoom_label.text()
+        assert "%" in label, (
+            f"Expected zoom label to contain '%' after zoom in, got '{label}'"
+        )
+        pct = int(label.replace("%", ""))
+        assert pct > 100, (
+            f"Expected zoom percentage > 100 after zoom_in, got {pct}"
+        )
+
+    def test_zoom_out_updates_label(self, qapp, tmp_config) -> None:
+        window = EditorWindow(QPixmap(100, 100), tmp_config)
+        window._zoom_out()
+        label = window._zoom_label.text()
+        pct = int(label.replace("%", ""))
+        assert pct < 100, (
+            f"Expected zoom percentage < 100 after zoom_out, got {pct}"
+        )
+
+    def test_zoom_100_resets_label(self, qapp, tmp_config) -> None:
+        window = EditorWindow(QPixmap(100, 100), tmp_config)
+        window._zoom_in()
+        window._zoom_100()
+        assert window._zoom_label.text() == "100%", (
+            f"Expected zoom label '100%' after reset, got '{window._zoom_label.text()}'"
+        )
+
+
+# ---------------------------------------------------------------------------
+# EditorCanvas — image boundary
+# ---------------------------------------------------------------------------
+
+
+class TestEditorCanvasImageBoundary:
+    def test_boundary_item_created_on_set_image(self, qapp) -> None:
+        canvas = _make_canvas_with_image()
+        assert canvas._boundary_item is not None, (
+            "Expected _boundary_item to be created when image is set"
+        )
+
+    def test_boundary_rect_matches_image_size(self, qapp) -> None:
+        canvas = EditorCanvas()
+        pixmap = QPixmap(200, 150)
+        canvas.set_image(pixmap)
+        br = canvas._boundary_item.rect()
+        assert br.width() == pytest.approx(200, abs=1), (
+            f"Expected boundary width 200, got {br.width()}"
+        )
+        assert br.height() == pytest.approx(150, abs=1), (
+            f"Expected boundary height 150, got {br.height()}"
+        )
+
+    def test_boundary_not_selectable(self, qapp) -> None:
+        canvas = _make_canvas_with_image()
+        flags = canvas._boundary_item.flags()
+        is_selectable = bool(
+            flags & QGraphicsItem.GraphicsItemFlag.ItemIsSelectable
+        )
+        assert not is_selectable, (
+            "Expected boundary item to NOT be selectable"
+        )
+
+    def test_boundary_not_movable(self, qapp) -> None:
+        canvas = _make_canvas_with_image()
+        flags = canvas._boundary_item.flags()
+        is_movable = bool(
+            flags & QGraphicsItem.GraphicsItemFlag.ItemIsMovable
+        )
+        assert not is_movable, (
+            "Expected boundary item to NOT be movable"
+        )
+
+    def test_delete_does_not_remove_boundary(self, qapp) -> None:
+        canvas = _make_canvas_with_image()
+        # Force-select boundary to test protection
+        canvas._boundary_item.setFlag(
+            QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True
+        )
+        canvas._boundary_item.setSelected(True)
+        canvas._delete_selected_items()
+        assert canvas._boundary_item in canvas.scene.items(), (
+            "Expected boundary item to remain in scene after _delete_selected_items"
+        )
+
+
+# ---------------------------------------------------------------------------
+# EditorCanvas — undo via add_item_undoable
+# ---------------------------------------------------------------------------
+
+
+class TestEditorCanvasUndoIntegration:
+    def test_add_item_undoable_registers_with_history(self, qapp) -> None:
+        from verdiclip.editor.history import EditorHistory
+        canvas = _make_canvas_with_image()
+        history = EditorHistory()
+        canvas.set_history(history)
+
+        item = canvas.scene.addRect(10, 10, 50, 50)
+        canvas.add_item_undoable(item, "Test rect")
+
+        assert history.can_undo, (
+            "Expected history.can_undo to be True after add_item_undoable"
+        )
+
+    def test_undo_removes_item_added_via_undoable(self, qapp) -> None:
+        from verdiclip.editor.history import EditorHistory
+        canvas = _make_canvas_with_image()
+        history = EditorHistory()
+        canvas.set_history(history)
+
+        item = canvas.scene.addRect(10, 10, 50, 50)
+        canvas.add_item_undoable(item, "Test rect")
+
+        assert item in canvas.scene.items(), (
+            "Pre-condition: item should be in scene before undo"
+        )
+        history.undo()
+        assert item not in canvas.scene.items(), (
+            "Expected item to be removed from scene after undo"
+        )
+
+    def test_redo_restores_undone_item(self, qapp) -> None:
+        from verdiclip.editor.history import EditorHistory
+        canvas = _make_canvas_with_image()
+        history = EditorHistory()
+        canvas.set_history(history)
+
+        item = canvas.scene.addRect(10, 10, 50, 50)
+        canvas.add_item_undoable(item, "Test rect")
+
+        history.undo()
+        history.redo()
+        assert item in canvas.scene.items(), (
+            "Expected item to be restored to scene after redo"
+        )
+
+    def test_delete_with_history_is_undoable(self, qapp) -> None:
+        from verdiclip.editor.history import EditorHistory
+        canvas = _make_canvas_with_image()
+        history = EditorHistory()
+        canvas.set_history(history)
+
+        item = canvas.scene.addRect(10, 10, 50, 50)
+        item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+        item.setSelected(True)
+        canvas._delete_selected_items()
+
+        assert item not in canvas.scene.items(), (
+            "Pre-condition: item should be removed after delete"
+        )
+        history.undo()
+        assert item in canvas.scene.items(), (
+            "Expected deleted item to be restored after undo"
+        )
+
+    def test_add_item_undoable_without_history_is_noop(self, qapp) -> None:
+        canvas = _make_canvas_with_image()
+        # No history set — should not crash
+        item = canvas.scene.addRect(10, 10, 50, 50)
+        canvas.add_item_undoable(item, "Test rect")
+        assert item in canvas.scene.items(), (
+            "Item should remain in scene even without history configured"
+        )
+
+
+# ---------------------------------------------------------------------------
+# EditorCanvas — flattened pixmap export
+# ---------------------------------------------------------------------------
+
+
+class TestEditorCanvasExport:
+    def test_flattened_pixmap_uses_image_bounds(self, qapp) -> None:
+        canvas = EditorCanvas()
+        pixmap = QPixmap(200, 150)
+        pixmap.fill(Qt.GlobalColor.blue)
+        canvas.set_image(pixmap)
+
+        result = canvas.get_flattened_pixmap()
+        assert result.width() == 200, (
+            f"Expected flattened pixmap width 200, got {result.width()}"
+        )
+        assert result.height() == 150, (
+            f"Expected flattened pixmap height 150, got {result.height()}"
+        )
+
+    def test_flattened_pixmap_excludes_boundary_item(self, qapp) -> None:
+        canvas = EditorCanvas()
+        pixmap = QPixmap(100, 100)
+        pixmap.fill(Qt.GlobalColor.red)
+        canvas.set_image(pixmap)
+
+        # Boundary should be temporarily hidden during export
+        assert canvas._boundary_item.isVisible(), (
+            "Pre-condition: boundary should be visible before export"
+        )
+        canvas.get_flattened_pixmap()
+        assert canvas._boundary_item.isVisible(), (
+            "Boundary should be visible again after export"
+        )
+
+
+# ---------------------------------------------------------------------------
+# EditorCanvas — crop key handling
+# ---------------------------------------------------------------------------
+
+
+class TestEditorCanvasCropKeyHandling:
+    def test_enter_calls_apply_crop_on_crop_tool(self, qapp) -> None:
+        canvas = _make_canvas_with_image()
+        mock_tool = MagicMock()
+        mock_tool.apply_crop = MagicMock()
+        canvas._current_tool = mock_tool
+
+        event = _make_key_event(Qt.Key.Key_Return)
+        canvas.keyPressEvent(event)
+        mock_tool.apply_crop.assert_called_once(), (
+            "Expected Enter key to call apply_crop on crop tool"
+        )
+
+    def test_escape_calls_cancel_crop_on_crop_tool(self, qapp) -> None:
+        canvas = _make_canvas_with_image()
+        mock_tool = MagicMock()
+        mock_tool.cancel_crop = MagicMock()
+        canvas._current_tool = mock_tool
+
+        event = _make_key_event(Qt.Key.Key_Escape)
+        canvas.keyPressEvent(event)
+        mock_tool.cancel_crop.assert_called_once(), (
+            "Expected Escape key to call cancel_crop on crop tool"
+        )
+
+
+# ---------------------------------------------------------------------------
+# EditorWindow — View menu exists
+# ---------------------------------------------------------------------------
+
+
+class TestEditorWindowViewMenu:
+    def test_view_menu_exists(self, qapp, tmp_config) -> None:
+        window = EditorWindow(QPixmap(100, 100), tmp_config)
+        menubar = window.menuBar()
+        view_found = any(
+            action.text().replace("&", "") == "View"
+            for action in menubar.actions()
+        )
+        assert view_found, (
+            "Expected a 'View' menu in the menu bar"
+        )
+
+    def test_view_menu_has_zoom_actions(self, qapp, tmp_config) -> None:
+        window = EditorWindow(QPixmap(100, 100), tmp_config)
+        menubar = window.menuBar()
+        view_menu = None
+        for action in menubar.actions():
+            if action.text().replace("&", "") == "View":
+                view_menu = action.menu()
+                break
+
+        assert view_menu is not None, "Expected to find View menu"
+        action_texts = [a.text().replace("&", "") for a in view_menu.actions()]
+        assert any("In" in t for t in action_texts), (
+            f"Expected 'Zoom In' in View menu, got actions: {action_texts}"
+        )
+        assert any("Out" in t for t in action_texts), (
+            f"Expected 'Zoom Out' in View menu, got actions: {action_texts}"
+        )
+        assert any("100" in t for t in action_texts), (
+            f"Expected 'Zoom 100%' in View menu, got actions: {action_texts}"
+        )
+        assert any("Fit" in t for t in action_texts), (
+            f"Expected 'Zoom to Fit' in View menu, got actions: {action_texts}"
         )

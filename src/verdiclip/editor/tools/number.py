@@ -82,6 +82,8 @@ class NumberTool(BaseTool):
         group.setPos(center)
         group.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
         group.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable)
+        if self._view and hasattr(self._view, "add_item_undoable"):
+            self._view.add_item_undoable(group, "Add number marker")
 
         logger.debug("Number marker #%d placed at (%.0f, %.0f)", number, center.x(), center.y())
 

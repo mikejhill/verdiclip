@@ -55,6 +55,8 @@ class HighlightTool(BaseTool):
             rect = self._current_item.rect()
             if rect.width() < 5 and rect.height() < 5 and self._scene:
                 self._scene.removeItem(self._current_item)
+            elif self._view and hasattr(self._view, "add_item_undoable"):
+                self._view.add_item_undoable(self._current_item, "Highlight area")
         self._current_item = None
         self._origin = None
 

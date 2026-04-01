@@ -65,10 +65,11 @@ class FreehandTool(BaseTool):
 
     def mouse_release(self, scene_pos: QPointF, event: QMouseEvent) -> None:
         if self._path and self._current_item:
-            # Check if anything was actually drawn
             bounds = self._path.boundingRect()
             if bounds.width() < 2 and bounds.height() < 2 and self._scene:
                 self._scene.removeItem(self._current_item)
+            elif self._view and hasattr(self._view, "add_item_undoable"):
+                self._view.add_item_undoable(self._current_item, "Draw freehand")
         self._path = None
         self._current_item = None
         self._last_point = None

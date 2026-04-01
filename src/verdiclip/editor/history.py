@@ -20,8 +20,13 @@ class AddItemCommand(QUndoCommand):
         super().__init__(description)
         self._scene = scene
         self._item = item
+        self._already_added = False
 
     def redo(self) -> None:
+        # On first push the item is already in the scene
+        if self._already_added:
+            self._already_added = False
+            return
         self._scene.addItem(self._item)
 
     def undo(self) -> None:

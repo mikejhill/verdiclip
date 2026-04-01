@@ -96,6 +96,21 @@ class CropTool(BaseTool):
         if not bg_item:
             return
 
+        # Hide boundary border so it doesn't render into the crop
+        from PySide6.QtWidgets import QGraphicsRectItem as _RectItem
+        for item in self._scene.items():
+            is_boundary = (
+                isinstance(item, _RectItem)
+                and item.zValue() >= 9000
+                and item is not self._crop_rect_item
+            )
+            if is_boundary:
+                item.setVisible(False)
+                break
+
+        # Also hide the crop rect itself from the render
+        self._crop_rect_item.setVisible(False)
+
         # Render the scene into the crop rect
         from PySide6.QtGui import QPainter
         result = QPixmap(int(crop_rect.width()), int(crop_rect.height()))
@@ -104,16 +119,16 @@ class CropTool(BaseTool):
         self._scene.render(painter, QRectF(result.rect()), crop_rect)
         painter.end()
 
-        # Replace scene contents
+        # Replace scene with cropped image via the view's set_image method
         self._clear_crop_ui()
-        self._scene.clear()
-        new_bg = QGraphicsPixmapItem(result)
-        new_bg.setZValue(-1000)
-        self._scene.addItem(new_bg)
-        self._scene.setSceneRect(QRectF(result.rect()))
-
-        if self._view:
-            self._view.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+        if self._view and hasattr(self._view, "set_image"):
+            self._view.set_image(result)
+        else:
+            self._scene.clear()
+            new_bg = QGraphicsPixmapItem(result)
+            new_bg.setZValue(-1000)
+            self._scene.addItem(new_bg)
+            self._scene.setSceneRect(QRectF(result.rect()))
 
         logger.info("Crop applied: %dx%d", int(crop_rect.width()), int(crop_rect.height()))
 

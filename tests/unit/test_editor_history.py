@@ -150,3 +150,53 @@ class TestEditorHistoryStack:
         assert isinstance(history.stack, QUndoStack), (
             f"Expected stack to be QUndoStack, got {type(history.stack).__name__}"
         )
+
+
+class TestAddItemCommandAlreadyAdded:
+    """Test the _already_added flag used when items are already in the scene."""
+
+    def test_first_push_skips_redo_when_already_added(self, qapp) -> None:
+        scene = QGraphicsScene()
+        item = QGraphicsRectItem(0, 0, 50, 50)
+        scene.addItem(item)  # Item already in scene
+
+        cmd = AddItemCommand(scene, item, "Add rect")
+        cmd._already_added = True
+        history = EditorHistory()
+        history.push(cmd)
+
+        # Item should still be in scene (redo was skipped on first push)
+        assert item in scene.items(), (
+            "Expected item to remain in scene on first push with _already_added=True"
+        )
+
+    def test_undo_removes_already_added_item(self, qapp) -> None:
+        scene = QGraphicsScene()
+        item = QGraphicsRectItem(0, 0, 50, 50)
+        scene.addItem(item)
+
+        cmd = AddItemCommand(scene, item, "Add rect")
+        cmd._already_added = True
+        history = EditorHistory()
+        history.push(cmd)
+
+        history.undo()
+        assert item not in scene.items(), (
+            "Expected item removed from scene after undo of already-added item"
+        )
+
+    def test_redo_after_undo_adds_item_back(self, qapp) -> None:
+        scene = QGraphicsScene()
+        item = QGraphicsRectItem(0, 0, 50, 50)
+        scene.addItem(item)
+
+        cmd = AddItemCommand(scene, item, "Add rect")
+        cmd._already_added = True
+        history = EditorHistory()
+        history.push(cmd)
+
+        history.undo()
+        history.redo()
+        assert item in scene.items(), (
+            "Expected item back in scene after redo (second redo uses addItem)"
+        )

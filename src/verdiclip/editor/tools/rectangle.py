@@ -75,6 +75,8 @@ class RectangleTool(BaseTool):
             if rect.width() < 3 and rect.height() < 3:
                 self._scene.removeItem(self._current_item)
             else:
+                if self._view and hasattr(self._view, "add_item_undoable"):
+                    self._view.add_item_undoable(self._current_item, "Draw rectangle")
                 logger.debug("Rectangle drawn: %.0fx%.0f", rect.width(), rect.height())
         self._current_item = None
         self._origin = None

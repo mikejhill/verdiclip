@@ -82,6 +82,8 @@ class ArrowTool(BaseTool):
                     self._scene.removeItem(self._line_item)
                 if self._head_item and self._head_item.scene():
                     self._scene.removeItem(self._head_item)
+            elif self._group and self._view and hasattr(self._view, "add_item_undoable"):
+                self._view.add_item_undoable(self._group, "Draw arrow")
         self._line_item = None
         self._head_item = None
         self._group = None

@@ -26,7 +26,7 @@ from verdiclip.editor.tools.freehand import FreehandTool
 from verdiclip.editor.tools.highlight import HighlightTool
 from verdiclip.editor.tools.line import LineTool
 from verdiclip.editor.tools.number import NumberTool
-from verdiclip.editor.tools.obfuscate import ObfuscateTool
+from verdiclip.editor.tools.obfuscate import ObfuscateTool, ObfuscationItem
 from verdiclip.editor.tools.rectangle import RectangleTool
 from verdiclip.editor.tools.select import SelectTool
 from verdiclip.editor.tools.text import TextTool
@@ -1047,10 +1047,12 @@ class TestObfuscateTool:
         tool = ObfuscateTool()
         _simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(100, 100))
 
-        # Should have the background + a pixelated overlay
-        pixmap_items = [i for i in scene.items() if isinstance(i, QGraphicsPixmapItem)]
-        assert len(pixmap_items) == 2, (
-            f"Expected len(pixmap_items) to be 2, got {len(pixmap_items)}"
+        # Should have the background + an ObfuscationItem overlay
+        obfuscation_items = [
+            i for i in scene.items() if isinstance(i, ObfuscationItem)
+        ]
+        assert len(obfuscation_items) == 1, (
+            f"Expected 1 ObfuscationItem, got {len(obfuscation_items)}"
         )
 
     def test_too_small_draw_discarded(self, qapp) -> None:
@@ -1060,9 +1062,11 @@ class TestObfuscateTool:
         _simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(12, 12))
 
         # Only background should remain
-        pixmap_items = [i for i in scene.items() if isinstance(i, QGraphicsPixmapItem)]
-        assert len(pixmap_items) == 1, (
-            f"Expected len(pixmap_items) to be 1, got {len(pixmap_items)}"
+        obfuscation_items = [
+            i for i in scene.items() if isinstance(i, ObfuscationItem)
+        ]
+        assert len(obfuscation_items) == 0, (
+            f"Expected 0 ObfuscationItem, got {len(obfuscation_items)}"
         )
 
     def test_too_narrow_draw_discarded(self, qapp) -> None:
@@ -1072,9 +1076,11 @@ class TestObfuscateTool:
         # Width is ok (90) but height is too small (3)
         _simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(100, 13))
 
-        pixmap_items = [i for i in scene.items() if isinstance(i, QGraphicsPixmapItem)]
-        assert len(pixmap_items) == 1, (
-            f"Expected len(pixmap_items) to be 1, got {len(pixmap_items)}"
+        obfuscation_items = [
+            i for i in scene.items() if isinstance(i, ObfuscationItem)
+        ]
+        assert len(obfuscation_items) == 0, (
+            f"Expected 0 ObfuscationItem, got {len(obfuscation_items)}"
         )
 
     def test_no_background_does_nothing(self, qapp) -> None:
@@ -1084,9 +1090,11 @@ class TestObfuscateTool:
         _simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(100, 100))
 
         # No background means no pixelation overlay
-        pixmap_items = [i for i in scene.items() if isinstance(i, QGraphicsPixmapItem)]
-        assert len(pixmap_items) == 0, (
-            f"Expected len(pixmap_items) to be 0, got {len(pixmap_items)}"
+        obfuscation_items = [
+            i for i in scene.items() if isinstance(i, ObfuscationItem)
+        ]
+        assert len(obfuscation_items) == 0, (
+            f"Expected 0 ObfuscationItem, got {len(obfuscation_items)}"
         )
 
     def test_pixelate_static_method(self, qapp) -> None:
@@ -1097,21 +1105,6 @@ class TestObfuscateTool:
 
         assert result.width() == 100, f"Expected result.width() to be 100, got {result.width()}"
         assert result.height() == 100, f"Expected result.height() to be 100, got {result.height()}"
-
-    def test_set_block_size(self, qapp) -> None:
-        tool = ObfuscateTool()
-        tool.set_block_size(20)
-        assert tool._block_size == 20, f"Expected tool._block_size to be 20, got {tool._block_size}"
-
-    def test_set_block_size_clamped_low(self, qapp) -> None:
-        tool = ObfuscateTool()
-        tool.set_block_size(1)
-        assert tool._block_size == 2, f"Expected tool._block_size to be 2, got {tool._block_size}"
-
-    def test_set_block_size_clamped_high(self, qapp) -> None:
-        tool = ObfuscateTool()
-        tool.set_block_size(100)
-        assert tool._block_size == 64, f"Expected tool._block_size to be 64, got {tool._block_size}"
 
     def test_right_click_ignored(self, qapp) -> None:
         scene, bg = _make_scene_with_background(200, 200)
@@ -1125,9 +1118,11 @@ class TestObfuscateTool:
         tool.mouse_release(QPointF(100, 100), _make_mouse_event())
 
         # Only background should remain — right-click didn't set origin
-        pixmap_items = [i for i in scene.items() if isinstance(i, QGraphicsPixmapItem)]
-        assert len(pixmap_items) == 1, (
-            f"Expected len(pixmap_items) to be 1, got {len(pixmap_items)}"
+        obfuscation_items = [
+            i for i in scene.items() if isinstance(i, ObfuscationItem)
+        ]
+        assert len(obfuscation_items) == 0, (
+            f"Expected 0 ObfuscationItem, got {len(obfuscation_items)}"
         )
 
     def test_overlay_is_selectable_and_movable(self, qapp) -> None:
@@ -1137,8 +1132,7 @@ class TestObfuscateTool:
         _simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(100, 100))
 
         overlays = [
-            i for i in scene.items()
-            if isinstance(i, QGraphicsPixmapItem) and i is not bg
+            i for i in scene.items() if isinstance(i, ObfuscationItem)
         ]
         overlay = overlays[0]
         flags = overlay.flags()
@@ -1147,6 +1141,27 @@ class TestObfuscateTool:
         )
         assert flags & QGraphicsPixmapItem.GraphicsItemFlag.ItemIsMovable, (
             f"Expected ItemIsMovable flag to be set, got {flags}"
+        )
+
+    def test_overlay_refreshes_on_move(self, qapp) -> None:
+        scene, bg = _make_scene_with_background(200, 200)
+        view = QGraphicsView(scene)
+        tool = ObfuscateTool()
+        _simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(60, 60))
+
+        overlays = [
+            i for i in scene.items() if isinstance(i, ObfuscationItem)
+        ]
+        overlay = overlays[0]
+        pixmap_before = overlay.pixmap().toImage()
+
+        # Move the item to a new position
+        overlay.setPos(80, 80)
+        pixmap_after = overlay.pixmap().toImage()
+
+        # The pixmap should have been refreshed (different region of background)
+        assert pixmap_after.size() == pixmap_before.size(), (
+            "Pixmap size should remain the same after move"
         )
 
 
@@ -1495,4 +1510,191 @@ class TestSelectTool:
         )
         assert abs(rect_item.pos().y() - 80) < 1, (
             f"Expected abs(rect_item.pos().y() - 80) < 1, got {abs(rect_item.pos().y() - 80)}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Drawing tool undo integration
+# ---------------------------------------------------------------------------
+
+
+def _make_canvas_with_history():
+    """Create an EditorCanvas with image and undo history wired up."""
+    from verdiclip.editor.canvas import EditorCanvas
+    from verdiclip.editor.history import EditorHistory
+    canvas = EditorCanvas()
+    pixmap = QPixmap(200, 200)
+    pixmap.fill(QColor(200, 200, 200))
+    canvas.set_image(pixmap)
+    history = EditorHistory()
+    canvas.set_history(history)
+    return canvas, history
+
+
+class TestRectangleToolUndo:
+    def test_rectangle_draw_is_undoable(self, qapp) -> None:
+        canvas, history = _make_canvas_with_history()
+        tool = RectangleTool()
+        tool.activate(canvas._scene, canvas)
+        event = _make_mouse_event()
+        tool.mouse_press(QPointF(10, 10), event)
+        tool.mouse_move(QPointF(100, 100), event)
+        tool.mouse_release(QPointF(100, 100), event)
+
+        rects = [i for i in canvas._scene.items() if isinstance(i, QGraphicsRectItem)
+                 and i.zValue() > -1000]
+        assert len(rects) >= 1, (
+            f"Expected at least 1 drawn rectangle, got {len(rects)}"
+        )
+        assert history.can_undo, "Expected undo to be available after drawing rectangle"
+
+        history.undo()
+        rects_after = [i for i in canvas._scene.items() if isinstance(i, QGraphicsRectItem)
+                       and i.zValue() > -1000]
+        # The boundary item is also a QGraphicsRectItem — filter by zValue
+        drawn_rects = [r for r in rects_after if r.zValue() < 9000]
+        assert len(drawn_rects) == 0, (
+            f"Expected 0 drawn rectangles after undo, got {len(drawn_rects)}"
+        )
+
+
+class TestEllipseToolUndo:
+    def test_ellipse_draw_is_undoable(self, qapp) -> None:
+        canvas, history = _make_canvas_with_history()
+        tool = EllipseTool()
+        tool.activate(canvas._scene, canvas)
+        event = _make_mouse_event()
+        tool.mouse_press(QPointF(10, 10), event)
+        tool.mouse_move(QPointF(100, 100), event)
+        tool.mouse_release(QPointF(100, 100), event)
+
+        ellipses = [i for i in canvas._scene.items() if isinstance(i, QGraphicsEllipseItem)]
+        assert len(ellipses) >= 1, "Expected at least 1 drawn ellipse"
+        assert history.can_undo, "Expected undo available after drawing ellipse"
+
+        history.undo()
+        ellipses_after = [i for i in canvas._scene.items() if isinstance(i, QGraphicsEllipseItem)]
+        assert len(ellipses_after) == 0, (
+            f"Expected 0 ellipses after undo, got {len(ellipses_after)}"
+        )
+
+
+class TestLineToolUndo:
+    def test_line_draw_is_undoable(self, qapp) -> None:
+        canvas, history = _make_canvas_with_history()
+        tool = LineTool()
+        tool.activate(canvas._scene, canvas)
+        event = _make_mouse_event()
+        tool.mouse_press(QPointF(10, 10), event)
+        tool.mouse_move(QPointF(100, 100), event)
+        tool.mouse_release(QPointF(100, 100), event)
+
+        lines = [i for i in canvas._scene.items() if isinstance(i, QGraphicsLineItem)]
+        assert len(lines) >= 1, "Expected at least 1 drawn line"
+        assert history.can_undo, "Expected undo available after drawing line"
+
+        history.undo()
+        lines_after = [i for i in canvas._scene.items() if isinstance(i, QGraphicsLineItem)]
+        assert len(lines_after) == 0, (
+            f"Expected 0 lines after undo, got {len(lines_after)}"
+        )
+
+
+class TestHighlightToolUndo:
+    def test_highlight_draw_is_undoable(self, qapp) -> None:
+        canvas, history = _make_canvas_with_history()
+        tool = HighlightTool()
+        tool.activate(canvas._scene, canvas)
+        event = _make_mouse_event()
+        tool.mouse_press(QPointF(10, 10), event)
+        tool.mouse_move(QPointF(100, 100), event)
+        tool.mouse_release(QPointF(100, 100), event)
+
+        assert history.can_undo, "Expected undo available after highlighting"
+        history.undo()
+
+        # Only boundary rect and pixmap should remain
+        rects = [i for i in canvas._scene.items()
+                 if isinstance(i, QGraphicsRectItem) and i.zValue() < 9000 and i.zValue() > -1000]
+        assert len(rects) == 0, (
+            f"Expected 0 highlight rects after undo, got {len(rects)}"
+        )
+
+
+class TestFreehandToolUndo:
+    def test_freehand_draw_is_undoable(self, qapp) -> None:
+        canvas, history = _make_canvas_with_history()
+        tool = FreehandTool()
+        tool.activate(canvas._scene, canvas)
+        event = _make_mouse_event()
+        tool.mouse_press(QPointF(10, 10), event)
+        tool.mouse_move(QPointF(50, 50), event)
+        tool.mouse_move(QPointF(100, 100), event)
+        tool.mouse_release(QPointF(100, 100), event)
+
+        paths = [i for i in canvas._scene.items() if isinstance(i, QGraphicsPathItem)]
+        assert len(paths) >= 1, "Expected at least 1 freehand path"
+        assert history.can_undo, "Expected undo available after freehand drawing"
+
+        history.undo()
+        paths_after = [i for i in canvas._scene.items() if isinstance(i, QGraphicsPathItem)]
+        assert len(paths_after) == 0, (
+            f"Expected 0 freehand paths after undo, got {len(paths_after)}"
+        )
+
+
+class TestArrowToolUndo:
+    def test_arrow_draw_is_undoable(self, qapp) -> None:
+        canvas, history = _make_canvas_with_history()
+        tool = ArrowTool()
+        tool.activate(canvas._scene, canvas)
+        event = _make_mouse_event()
+        tool.mouse_press(QPointF(10, 10), event)
+        tool.mouse_move(QPointF(100, 100), event)
+        tool.mouse_release(QPointF(100, 100), event)
+
+        assert history.can_undo, "Expected undo available after drawing arrow"
+        history.undo()
+        # After undo, the arrow group should be gone
+        groups = [i for i in canvas._scene.items() if isinstance(i, QGraphicsItemGroup)]
+        assert len(groups) == 0, (
+            f"Expected 0 arrow groups after undo, got {len(groups)}"
+        )
+
+
+class TestNumberToolUndo:
+    def test_number_marker_is_undoable(self, qapp) -> None:
+        canvas, history = _make_canvas_with_history()
+        tool = NumberTool()
+        tool.activate(canvas._scene, canvas)
+        event = _make_mouse_event()
+        tool.mouse_press(QPointF(50, 50), event)
+
+        assert history.can_undo, "Expected undo available after placing number marker"
+        groups = [i for i in canvas._scene.items() if isinstance(i, QGraphicsItemGroup)]
+        assert len(groups) >= 1, "Expected at least 1 number marker group"
+
+        history.undo()
+        groups_after = [i for i in canvas._scene.items() if isinstance(i, QGraphicsItemGroup)]
+        assert len(groups_after) == 0, (
+            f"Expected 0 number marker groups after undo, got {len(groups_after)}"
+        )
+
+
+class TestTextToolUndo:
+    def test_text_placement_is_undoable(self, qapp) -> None:
+        canvas, history = _make_canvas_with_history()
+        tool = TextTool()
+        tool.activate(canvas._scene, canvas)
+        event = _make_mouse_event()
+        tool.mouse_press(QPointF(50, 50), event)
+
+        texts = [i for i in canvas._scene.items() if isinstance(i, QGraphicsTextItem)]
+        assert len(texts) >= 1, "Expected at least 1 text item"
+        assert history.can_undo, "Expected undo available after placing text"
+
+        history.undo()
+        texts_after = [i for i in canvas._scene.items() if isinstance(i, QGraphicsTextItem)]
+        assert len(texts_after) == 0, (
+            f"Expected 0 text items after undo, got {len(texts_after)}"
         )

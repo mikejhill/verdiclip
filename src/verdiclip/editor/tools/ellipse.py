@@ -70,6 +70,8 @@ class EllipseTool(BaseTool):
             rect = self._current_item.rect()
             if rect.width() < 3 and rect.height() < 3:
                 self._scene.removeItem(self._current_item)
+            elif self._view and hasattr(self._view, "add_item_undoable"):
+                self._view.add_item_undoable(self._current_item, "Draw ellipse")
         self._current_item = None
         self._origin = None
 

@@ -20,6 +20,7 @@ user32 = ctypes.windll.user32
 dwmapi = ctypes.windll.dwmapi
 
 DWMWA_EXTENDED_FRAME_BOUNDS = 9
+_MIN_WINDOW_DIMENSION = 50
 
 
 class WindowCapture:
@@ -91,26 +92,54 @@ class WindowCapture:
         return ScreenCapture.capture_region(rect)
 
     @staticmethod
-    def enumerate_visible_windows() -> list[tuple[int, str, QRect]]:
-        """Return a list of visible windows as (hwnd, title, rect) tuples."""
+    def enumerate_visible_windows(
+        exclude_hwnd: int = 0,
+    ) -> list[tuple[int, str, QRect]]:
+        """Return a list of visible, non-minimized, non-tool windows.
+
+        Args:
+            exclude_hwnd: Optional window handle to exclude (e.g. our own overlay).
+        """
         windows: list[tuple[int, str, QRect]] = []
 
         @ctypes.WINFUNCTYPE(ctypes.wintypes.BOOL, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
         def enum_callback(hwnd: int, _lparam: int) -> bool:
-            if user32.IsWindowVisible(hwnd):
-                length = user32.GetWindowTextLengthW(hwnd)
-                if length > 0:
-                    buf = ctypes.create_unicode_buffer(length + 1)
-                    user32.GetWindowTextW(hwnd, buf, length + 1)
-                    title = buf.value
-                    rect = ctypes.wintypes.RECT()
-                    user32.GetWindowRect(hwnd, ctypes.byref(rect))
-                    qrect = QRect(
-                        rect.left, rect.top,
-                        rect.right - rect.left, rect.bottom - rect.top,
-                    )
-                    if qrect.width() > 0 and qrect.height() > 0:
-                        windows.append((hwnd, title, qrect))
+            if hwnd == exclude_hwnd:
+                return True
+            if not user32.IsWindowVisible(hwnd):
+                return True
+            if user32.IsIconic(hwnd):
+                return True
+
+            ex_style = user32.GetWindowLongW(hwnd, -20)  # GWL_EXSTYLE
+            if (ex_style & 0x80) and not (ex_style & 0x40000):  # TOOLWINDOW w/o APPWINDOW
+                return True
+
+            length = user32.GetWindowTextLengthW(hwnd)
+            if length <= 0:
+                return True
+
+            buf = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(hwnd, buf, length + 1)
+            title = buf.value
+
+            # Use DWM extended frame bounds for accurate geometry
+            rect = ctypes.wintypes.RECT()
+            result = dwmapi.DwmGetWindowAttribute(
+                hwnd,
+                DWMWA_EXTENDED_FRAME_BOUNDS,
+                ctypes.byref(rect),
+                ctypes.sizeof(rect),
+            )
+            if result != 0:
+                user32.GetWindowRect(hwnd, ctypes.byref(rect))
+
+            qrect = QRect(
+                rect.left, rect.top,
+                rect.right - rect.left, rect.bottom - rect.top,
+            )
+            if qrect.width() >= _MIN_WINDOW_DIMENSION and qrect.height() >= _MIN_WINDOW_DIMENSION:
+                windows.append((hwnd, title, qrect))
             return True
 
         user32.EnumWindows(enum_callback, 0)

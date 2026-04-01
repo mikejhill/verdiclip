@@ -1,11 +1,15 @@
-"""Obfuscation tool for pixelating sensitive areas."""
+"""Obfuscation tool for pixelating sensitive areas.
+
+Provides a live pixelation mask that re-pixelates the underlying background
+image whenever the overlay is moved, similar to Greenshot's obfuscation.
+"""
 
 from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QPointF, QRect, QRectF, Qt
+from PySide6.QtCore import QPointF, QRect, QRectF, QSizeF, Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QGraphicsPixmapItem,
@@ -20,16 +24,61 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+BLOCK_SIZE = 12
+
+
+class ObfuscationItem(QGraphicsPixmapItem):
+    """A live pixelation mask that re-pixelates the background as it moves."""
+
+    def __init__(
+        self,
+        bg_item: QGraphicsPixmapItem,
+        size: QSizeF,
+        parent: QGraphicsPixmapItem | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._bg_item = bg_item
+        self._size = size
+        self.setFlag(QGraphicsPixmapItem.GraphicsItemFlag.ItemIsSelectable)
+        self.setFlag(QGraphicsPixmapItem.GraphicsItemFlag.ItemIsMovable)
+        self.setFlag(
+            QGraphicsPixmapItem.GraphicsItemFlag.ItemSendsGeometryChanges,
+        )
+        self._refresh_pixelation()
+
+    def itemChange(self, change, value):  # noqa: N802
+        if change == QGraphicsPixmapItem.GraphicsItemChange.ItemPositionHasChanged:
+            self._refresh_pixelation()
+        return super().itemChange(change, value)
+
+    def _refresh_pixelation(self) -> None:
+        """Re-pixelate the background region underneath this item."""
+        bg_pixmap = self._bg_item.pixmap()
+        pos = self.pos()
+        int_rect = QRect(
+            int(pos.x()),
+            int(pos.y()),
+            int(self._size.width()),
+            int(self._size.height()),
+        )
+        int_rect = int_rect.intersected(
+            QRect(0, 0, bg_pixmap.width(), bg_pixmap.height()),
+        )
+        if int_rect.isEmpty():
+            self.setPixmap(QPixmap())
+            return
+
+        region = bg_pixmap.copy(int_rect)
+        self.setPixmap(ObfuscateTool._pixelate(region, BLOCK_SIZE))
+
 
 class ObfuscateTool(BaseTool):
     """Pixelate regions of the image for obfuscation."""
 
-    def __init__(self, block_size: int = 12) -> None:
+    def __init__(self) -> None:
         super().__init__()
-        self._block_size = block_size
         self._origin: QPointF | None = None
-        self._preview_item: QGraphicsPixmapItem | None = None
-        self._selection_rect: QRectF | None = None
+        self._preview_item: ObfuscationItem | None = None
 
     def activate(self, scene: QGraphicsScene, view: QGraphicsView) -> None:
         super().activate(scene, view)
@@ -42,66 +91,85 @@ class ObfuscateTool(BaseTool):
         self._origin = scene_pos
 
     def mouse_move(self, scene_pos: QPointF, event: QMouseEvent) -> None:
-        if self._origin is None:
+        if self._origin is None or self._scene is None:
             return
-        self._selection_rect = QRectF(self._origin, scene_pos).normalized()
+
+        rect = QRectF(self._origin, scene_pos).normalized()
+        if rect.width() < 2 or rect.height() < 2:
+            return
+
+        bg_item = self._find_background()
+        if bg_item is None:
+            return
+
+        if self._preview_item is None:
+            self._preview_item = ObfuscationItem(
+                bg_item, rect.size(),
+            )
+            self._scene.addItem(self._preview_item)
+
+        self._preview_item._size = rect.size()
+        self._preview_item.setPos(rect.topLeft())
 
     def mouse_release(self, scene_pos: QPointF, event: QMouseEvent) -> None:
         if self._origin is None or self._scene is None:
             self._origin = None
+            self._preview_item = None
             return
 
         rect = QRectF(self._origin, scene_pos).normalized()
         if rect.width() < 5 or rect.height() < 5:
+            # Discard too-small regions; remove preview if it was added
+            if self._preview_item is not None:
+                self._scene.removeItem(self._preview_item)
+                self._preview_item = None
             self._origin = None
             return
 
-        self._apply_pixelation(rect)
-        self._origin = None
-        self._selection_rect = None
+        if self._preview_item is not None:
+            # Finalize the preview item — it's already in the scene
+            self._preview_item._size = rect.size()
+            self._preview_item.setPos(rect.topLeft())
+            logger.debug(
+                "Obfuscation applied at (%.0f,%.0f) %.0fx%.0f",
+                rect.x(), rect.y(), rect.width(), rect.height(),
+            )
+        else:
+            # No preview (e.g. very fast click-release) — create item directly
+            self._apply_obfuscation(rect)
 
-    def _apply_pixelation(self, rect: QRectF) -> None:
-        """Apply pixelation effect to the given region."""
+        self._origin = None
+        self._preview_item = None
+
+    def _find_background(self) -> QGraphicsPixmapItem | None:
+        """Find the background pixmap item in the scene."""
+        if not self._scene:
+            return None
+        for item in self._scene.items():
+            if isinstance(item, QGraphicsPixmapItem) and item.zValue() <= -1000:
+                return item
+        return None
+
+    def _apply_obfuscation(self, rect: QRectF) -> None:
+        """Create an ObfuscationItem for the given region."""
         if not self._scene:
             return
 
-        # Find the background pixmap item
-        bg_item = None
-        for item in self._scene.items():
-            if isinstance(item, QGraphicsPixmapItem) and item.zValue() <= -1000:
-                bg_item = item
-                break
-
+        bg_item = self._find_background()
         if not bg_item:
             logger.warning("No background image found for obfuscation.")
             return
 
-        pixmap = bg_item.pixmap()
-        int_rect = QRect(
-            int(rect.x()), int(rect.y()),
-            int(rect.width()), int(rect.height()),
-        )
-        int_rect = int_rect.intersected(QRect(0, 0, pixmap.width(), pixmap.height()))
-        if int_rect.isEmpty():
-            return
-
-        region = pixmap.copy(int_rect)
-        pixelated = self._pixelate(region, self._block_size)
-
-        # Place pixelated overlay
-        overlay = QGraphicsPixmapItem(pixelated)
-        overlay.setPos(int_rect.x(), int_rect.y())
-        overlay.setFlag(QGraphicsPixmapItem.GraphicsItemFlag.ItemIsSelectable)
-        overlay.setFlag(QGraphicsPixmapItem.GraphicsItemFlag.ItemIsMovable)
-        self._scene.addItem(overlay)
+        item = ObfuscationItem(bg_item, rect.size())
+        item.setPos(rect.topLeft())
+        self._scene.addItem(item)
         logger.debug(
-            "Obfuscation applied at (%d,%d) %dx%d with block_size=%d",
-            int_rect.x(), int_rect.y(), int_rect.width(), int_rect.height(),
-            self._block_size,
+            "Obfuscation applied at (%.0f,%.0f) %.0fx%.0f",
+            rect.x(), rect.y(), rect.width(), rect.height(),
         )
 
     @staticmethod
-    def _pixelate(pixmap: QPixmap, block_size: int) -> QPixmap:
+    def _pixelate(pixmap: QPixmap, block_size: int = BLOCK_SIZE) -> QPixmap:
         """Apply pixelation effect to a QPixmap."""
         img = pixmap.toImage()
         w, h = img.width(), img.height()
@@ -112,7 +180,3 @@ class ObfuscateTool(BaseTool):
         small = img.scaled(small_w, small_h, ignore_ratio, fast_transform)
         pixelated = small.scaled(w, h, ignore_ratio, fast_transform)
         return QPixmap.fromImage(pixelated)
-
-    def set_block_size(self, size: int) -> None:
-        """Set the pixelation block size."""
-        self._block_size = max(2, min(size, 64))

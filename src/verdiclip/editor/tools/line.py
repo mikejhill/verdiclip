@@ -60,6 +60,8 @@ class LineTool(BaseTool):
             line = self._current_item.line()
             if line.length() < 3:
                 self._scene.removeItem(self._current_item)
+            elif self._view and hasattr(self._view, "add_item_undoable"):
+                self._view.add_item_undoable(self._current_item, "Draw line")
         self._current_item = None
         self._origin = None
 

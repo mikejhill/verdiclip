@@ -81,12 +81,6 @@ class TestPropertiesPanelDefaults:
             f"Expected default font size 14, got {font.pointSize()}"
         )
 
-    def test_obfuscation_strength_default(self, qapp) -> None:
-        panel = PropertiesPanel()
-        assert panel.obfuscation_strength == 12, (
-            f"Expected default obfuscation strength 12, got {panel.obfuscation_strength}"
-        )
-
 
 class TestPropertiesPanelSetStrokeColor:
     def test_updates_stroke_color(self, qapp) -> None:

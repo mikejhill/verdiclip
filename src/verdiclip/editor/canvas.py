@@ -11,12 +11,14 @@ from PySide6.QtGui import (
     QBrush,
     QColor,
     QKeySequence,
+    QPen,
     QPixmap,
     QWheelEvent,
 )
 from PySide6.QtWidgets import (
     QFileDialog,
     QGraphicsPixmapItem,
+    QGraphicsRectItem,
     QGraphicsScene,
     QGraphicsView,
     QMainWindow,
@@ -58,19 +60,40 @@ class EditorCanvas(QGraphicsView):
         self.setBackgroundBrush(QBrush(QColor(45, 45, 48)))
 
         self._pixmap_item: QGraphicsPixmapItem | None = None
+        self._boundary_item: QGraphicsRectItem | None = None
         self._zoom_level: float = 1.0
         self._current_tool: BaseTool | None = None
         self._is_panning = False
+        self._history: EditorHistory | None = None
 
     def set_image(self, pixmap: QPixmap) -> None:
-        """Load an image onto the canvas."""
+        """Load an image onto the canvas at 100% zoom, centered."""
         self._scene.clear()
         self._pixmap_item = QGraphicsPixmapItem(pixmap)
         self._pixmap_item.setZValue(-1000)
         self._scene.addItem(self._pixmap_item)
-        self._scene.setSceneRect(QRectF(pixmap.rect()))
-        self.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
-        self._zoom_level = self.transform().m11()
+
+        # Draw a visible border around the image area
+        img_rect = QRectF(pixmap.rect())
+        border_pen = QPen(QColor(100, 100, 100), 1.0)
+        border_pen.setCosmetic(True)  # Constant width regardless of zoom
+        self._boundary_item = QGraphicsRectItem(img_rect)
+        self._boundary_item.setPen(border_pen)
+        self._boundary_item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+        self._boundary_item.setZValue(9000)  # Above annotations, below nothing
+        self._boundary_item.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsSelectable, False)
+        self._boundary_item.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsMovable, False)
+        self._boundary_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        self._scene.addItem(self._boundary_item)
+
+        # Expand scene rect to allow placing items outside the image
+        margin = max(pixmap.width(), pixmap.height()) * 0.5
+        expanded = img_rect.adjusted(-margin, -margin, margin, margin)
+        self._scene.setSceneRect(expanded)
+
+        self.resetTransform()
+        self._zoom_level = 1.0
+        self.centerOn(img_rect.center())
         logger.info("Image loaded: %dx%d", pixmap.width(), pixmap.height())
 
     def set_tool(self, tool: BaseTool | None) -> None:
@@ -81,15 +104,24 @@ class EditorCanvas(QGraphicsView):
         if tool:
             tool.activate(self._scene, self)
 
+    def add_item_undoable(self, item, description: str = "Add item") -> None:
+        """Register a scene item with the undo stack (item already in scene)."""
+        from verdiclip.editor.history import AddItemCommand
+        if self._history:
+            cmd = AddItemCommand(self._scene, item, description)
+            cmd._already_added = True
+            self._history.push(cmd)
+        # Item is already in the scene from the tool's mouse_press
+
+    def set_history(self, history: EditorHistory) -> None:
+        """Set the history instance for undo support."""
+        self._history = history
+
     def wheelEvent(self, event: QWheelEvent) -> None:
         """Zoom in/out with Ctrl+scroll wheel."""
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             factor = _ZOOM_FACTOR if event.angleDelta().y() > 0 else 1.0 / _ZOOM_FACTOR
-
-            new_zoom = self._zoom_level * factor
-            if _MIN_ZOOM <= new_zoom <= _MAX_ZOOM:
-                self.scale(factor, factor)
-                self._zoom_level = new_zoom
+            self._apply_zoom(factor)
         else:
             super().wheelEvent(event)
 
@@ -137,23 +169,66 @@ class EditorCanvas(QGraphicsView):
             super().mouseReleaseEvent(event)
 
     def keyPressEvent(self, event) -> None:
-        """Handle key presses — Delete removes selected annotation items."""
+        """Handle key presses — Delete removes items, Enter confirms crop."""
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
             self._delete_selected_items()
+        elif event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if self._current_tool and hasattr(self._current_tool, "apply_crop"):
+                self._current_tool.apply_crop()
+        elif event.key() == Qt.Key.Key_Escape:
+            if self._current_tool and hasattr(self._current_tool, "cancel_crop"):
+                self._current_tool.cancel_crop()
         else:
             super().keyPressEvent(event)
 
     def _delete_selected_items(self) -> None:
         """Remove all currently selected annotation items from the scene."""
+        from verdiclip.editor.history import RemoveItemCommand
         selected = self._scene.selectedItems()
         removed = 0
         for item in selected:
-            if item is self._pixmap_item:
+            if item is self._pixmap_item or item is self._boundary_item:
                 continue
-            self._scene.removeItem(item)
+            if self._history:
+                cmd = RemoveItemCommand(self._scene, item, "Delete item")
+                self._history.push(cmd)
+            else:
+                self._scene.removeItem(item)
             removed += 1
         if removed:
             logger.info("Deleted %d annotation item(s)", removed)
+
+    def zoom_in(self) -> None:
+        """Zoom in by one step."""
+        self._apply_zoom(_ZOOM_FACTOR)
+
+    def zoom_out(self) -> None:
+        """Zoom out by one step."""
+        self._apply_zoom(1.0 / _ZOOM_FACTOR)
+
+    def zoom_reset(self) -> None:
+        """Reset to 100% zoom."""
+        factor = 1.0 / self._zoom_level
+        self.scale(factor, factor)
+        self._zoom_level = 1.0
+
+    def zoom_fit(self) -> None:
+        """Fit the image in the viewport."""
+        if self._pixmap_item:
+            self.fitInView(self._pixmap_item, Qt.AspectRatioMode.KeepAspectRatio)
+        else:
+            self.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+        self._zoom_level = self.transform().m11()
+
+    def _apply_zoom(self, factor: float) -> None:
+        new_zoom = self._zoom_level * factor
+        if _MIN_ZOOM <= new_zoom <= _MAX_ZOOM:
+            self.scale(factor, factor)
+            self._zoom_level = new_zoom
+
+    @property
+    def zoom_level(self) -> float:
+        return self._zoom_level
 
     @property
     def scene(self) -> QGraphicsScene:
@@ -164,14 +239,27 @@ class EditorCanvas(QGraphicsView):
         return self._pixmap_item
 
     def get_flattened_pixmap(self) -> QPixmap:
-        """Render the entire scene (image + annotations) to a QPixmap."""
-        rect = self._scene.sceneRect()
+        """Render only the image area (with annotations) to a QPixmap."""
+        if self._pixmap_item:
+            rect = QRectF(self._pixmap_item.pixmap().rect())
+        else:
+            rect = self._scene.sceneRect()
+
+        # Temporarily hide the boundary border so it doesn't render into the export
+        boundary_was_visible = False
+        if self._boundary_item:
+            boundary_was_visible = self._boundary_item.isVisible()
+            self._boundary_item.setVisible(False)
+
         pixmap = QPixmap(int(rect.width()), int(rect.height()))
         pixmap.fill(Qt.GlobalColor.transparent)
         from PySide6.QtGui import QPainter
         painter = QPainter(pixmap)
         self._scene.render(painter, QRectF(pixmap.rect()), rect)
         painter.end()
+
+        if self._boundary_item:
+            self._boundary_item.setVisible(boundary_was_visible)
         return pixmap
 
 
@@ -206,6 +294,7 @@ class EditorWindow(QMainWindow):
 
     def _setup_canvas(self, pixmap: QPixmap) -> None:
         self._canvas = EditorCanvas()
+        self._canvas.set_history(self._history)
         self.setCentralWidget(self._canvas)
         self._canvas.set_image(pixmap)
 
@@ -273,6 +362,36 @@ class EditorWindow(QMainWindow):
         redo_action.triggered.connect(self._history.redo)
         edit_menu.addAction(redo_action)
 
+        edit_menu.addSeparator()
+
+        delete_action = QAction("&Delete Selected", self)
+        delete_action.setShortcut(QKeySequence.StandardKey.Delete)
+        delete_action.triggered.connect(self._canvas._delete_selected_items)
+        edit_menu.addAction(delete_action)
+
+        # View menu
+        view_menu = menubar.addMenu("&View")
+
+        zoom_in_action = QAction("Zoom &In", self)
+        zoom_in_action.setShortcut(QKeySequence("Ctrl+="))
+        zoom_in_action.triggered.connect(self._zoom_in)
+        view_menu.addAction(zoom_in_action)
+
+        zoom_out_action = QAction("Zoom &Out", self)
+        zoom_out_action.setShortcut(QKeySequence("Ctrl+-"))
+        zoom_out_action.triggered.connect(self._zoom_out)
+        view_menu.addAction(zoom_out_action)
+
+        zoom_100_action = QAction("Zoom &100%", self)
+        zoom_100_action.setShortcut(QKeySequence("Ctrl+0"))
+        zoom_100_action.triggered.connect(self._zoom_100)
+        view_menu.addAction(zoom_100_action)
+
+        zoom_fit_action = QAction("Zoom to &Fit", self)
+        zoom_fit_action.setShortcut(QKeySequence("Ctrl+Shift+F"))
+        zoom_fit_action.triggered.connect(self._zoom_fit)
+        view_menu.addAction(zoom_fit_action)
+
     def _setup_statusbar(self) -> None:
         from PySide6.QtWidgets import QLabel
 
@@ -283,6 +402,9 @@ class EditorWindow(QMainWindow):
         w, h = self._image_size
         self._dim_label = QLabel(f"{w} × {h} px")
         self._statusbar.addPermanentWidget(self._dim_label)
+
+        self._zoom_label = QLabel("100%")
+        self._statusbar.addPermanentWidget(self._zoom_label)
 
         if self._file_path:
             import os
@@ -324,9 +446,6 @@ class EditorWindow(QMainWindow):
         self._properties.fill_color_changed.connect(self._update_tool_fill_color)
         self._properties.stroke_width_changed.connect(self._update_tool_stroke_width)
         self._properties.font_changed.connect(self._update_tool_font)
-        self._properties.obfuscation_strength_changed.connect(
-            self._update_obfuscation_strength
-        )
 
     def _update_tool_stroke_color(self, color: QColor) -> None:
         tool = self._canvas._current_tool
@@ -348,10 +467,25 @@ class EditorWindow(QMainWindow):
         if tool and hasattr(tool, "set_font"):
             tool.set_font(font)
 
-    def _update_obfuscation_strength(self, strength: int) -> None:
-        tool = self._tools.get(ToolType.OBFUSCATE)
-        if tool and hasattr(tool, "set_block_size"):
-            tool.set_block_size(strength)
+    def _zoom_in(self) -> None:
+        self._canvas.zoom_in()
+        self._update_zoom_label()
+
+    def _zoom_out(self) -> None:
+        self._canvas.zoom_out()
+        self._update_zoom_label()
+
+    def _zoom_100(self) -> None:
+        self._canvas.zoom_reset()
+        self._update_zoom_label()
+
+    def _zoom_fit(self) -> None:
+        self._canvas.zoom_fit()
+        self._update_zoom_label()
+
+    def _update_zoom_label(self) -> None:
+        pct = int(self._canvas.zoom_level * 100)
+        self._zoom_label.setText(f"{pct}%")
 
     def _on_tool_changed(self, tool_type: ToolType) -> None:
         """Handle tool selection from toolbar."""

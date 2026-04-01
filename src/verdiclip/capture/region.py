@@ -190,11 +190,31 @@ class RegionSelector(QWidget):
                 self.update()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
-        """Cancel selection on Escape."""
+        """Handle Escape (cancel) and arrow keys (move cursor by pixel)."""
         if event.key() == Qt.Key.Key_Escape:
             logger.debug("Region selection cancelled.")
             self.hide()
             self.selection_cancelled.emit()
+            return
+
+        step = 10 if event.modifiers() & Qt.KeyboardModifier.ControlModifier else 1
+        dx, dy = 0, 0
+        if event.key() == Qt.Key.Key_Left:
+            dx = -step
+        elif event.key() == Qt.Key.Key_Right:
+            dx = step
+        elif event.key() == Qt.Key.Key_Up:
+            dy = -step
+        elif event.key() == Qt.Key.Key_Down:
+            dy = step
+
+        if dx or dy:
+            from PySide6.QtGui import QCursor
+
+            new_pos = QCursor.pos() + QPoint(dx, dy)
+            QCursor.setPos(new_pos)
+            self._current = self.mapFromGlobal(new_pos)
+            self.update()
 
 
 class RegionCapture:

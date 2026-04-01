@@ -68,6 +68,8 @@ class TextTool(BaseTool):
         text_item.setFlag(QGraphicsTextItem.GraphicsItemFlag.ItemIsSelectable)
         text_item.setFlag(QGraphicsTextItem.GraphicsItemFlag.ItemIsMovable)
         self._scene.addItem(text_item)
+        if self._view and hasattr(self._view, "add_item_undoable"):
+            self._view.add_item_undoable(text_item, "Add text")
         text_item.setFocus()
         self._active_item = text_item
         logger.debug("Text item placed at (%.0f, %.0f)", scene_pos.x(), scene_pos.y())
