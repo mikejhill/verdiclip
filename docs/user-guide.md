@@ -8,6 +8,7 @@
 - [Saving and Exporting](#saving-and-exporting)
 - [Configuration](#configuration)
 - [Keyboard Shortcuts](#keyboard-shortcuts)
+- [Command-Line Interface](#command-line-interface)
 
 ---
 
@@ -20,6 +21,7 @@ in the bottom-right corner of your taskbar. Look for the green "V" icon.
 
 - **Capture Region** — select an area of your screen
 - **Capture Window** — capture the active window
+- **Capture Window (Select)...** — click any window to capture it
 - **Capture Full Screen** — capture everything
 - **Open Image...** — open an existing image for editing
 - **Settings** — configure VerdiClip
@@ -141,13 +143,85 @@ Settings are stored in: `%APPDATA%\VerdiClip\config.json`
 
 ### Editor
 
-| Action     | Shortcut    |
-|-----------|-------------|
-| Undo       | Ctrl+Z      |
-| Redo       | Ctrl+Y      |
-| Save       | Ctrl+S      |
-| Save As    | Ctrl+Shift+S|
-| Copy       | Ctrl+C      |
-| Print      | Ctrl+P      |
-| Open       | Ctrl+O      |
-| Close      | Ctrl+W      |
+| Action          | Shortcut      |
+|-----------------|---------------|
+| Undo            | Ctrl+Z        |
+| Redo            | Ctrl+Y        |
+| Delete Selected | Delete        |
+| Save            | Ctrl+S        |
+| Save As         | Ctrl+Shift+S  |
+| Copy            | Ctrl+C        |
+| Print           | Ctrl+P        |
+| Open            | Ctrl+O        |
+| Close           | Ctrl+W        |
+| Zoom In         | Ctrl+=        |
+| Zoom Out        | Ctrl+-        |
+| Zoom 100%       | Ctrl+0        |
+| Zoom to Fit     | Ctrl+Shift+F  |
+
+## Command-Line Interface
+
+VerdiClip provides a CLI for headless screenshot capture and opening images
+in the editor without launching the system tray application.
+
+### Subcommands
+
+#### `capture` — Take a Screenshot
+
+```bash
+uv run verdiclip capture <mode> [options]
+```
+
+**Modes:** `screen`, `region`, `window`
+
+**Options:**
+
+| Option         | Description                                              |
+|----------------|----------------------------------------------------------|
+| `-o, --output` | Output file path (auto-generates if omitted)             |
+| `--region`     | Region coordinates `X,Y,W,H` (required for `region`)    |
+| `--monitor`    | Monitor index, 1-based (for `screen` mode)               |
+| `--format`     | Image format: `png`, `jpg`, `bmp`, `tiff`                |
+| `--quality`    | JPEG quality 1–100 (default: 90)                         |
+| `--delay`      | Delay in seconds before capturing (default: 0)           |
+| `--clipboard`  | Copy to clipboard instead of saving to file              |
+
+**Examples:**
+
+```bash
+# Capture full screen
+uv run verdiclip capture screen -o screenshot.png
+
+# Capture specific monitor
+uv run verdiclip capture screen --monitor 1 -o monitor1.png
+
+# Capture region (coordinates)
+uv run verdiclip capture region --region 100,100,800,600 -o region.png
+
+# Capture active window
+uv run verdiclip capture window -o window.png
+
+# Copy to clipboard instead of file
+uv run verdiclip capture screen --clipboard
+
+# With delay
+uv run verdiclip capture screen --delay 3 -o delayed.png
+```
+
+#### `open` — Open an Image in the Editor
+
+```bash
+uv run verdiclip open <file>
+```
+
+**Example:**
+
+```bash
+uv run verdiclip open photo.png
+```
+
+### Version
+
+```bash
+uv run verdiclip --version
+```

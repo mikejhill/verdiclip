@@ -1,6 +1,6 @@
 # VerdiClip
 
-**A performant screenshot and annotation tool for Windows.**
+**A performant screenshot and annotation tool for Windows, inspired by Greenshot.**
 
 > *"Verdi"* — Italian for *green*, a respectful nod to [Greenshot](https://getgreenshot.org/),
 > the excellent open-source screenshot tool that inspired this project.
@@ -69,6 +69,61 @@ uv run verdiclip
 
 ---
 
+## 💻 CLI Usage
+
+VerdiClip includes a command-line interface for headless screenshot capture and
+opening images directly in the editor.
+
+### Capture Subcommand
+
+```bash
+# Capture full screen
+uv run verdiclip capture screen -o screenshot.png
+
+# Capture specific monitor
+uv run verdiclip capture screen --monitor 1 -o monitor1.png
+
+# Capture region (coordinates)
+uv run verdiclip capture region --region 100,100,800,600 -o region.png
+
+# Capture active window
+uv run verdiclip capture window -o window.png
+
+# Copy to clipboard instead of file
+uv run verdiclip capture screen --clipboard
+
+# With delay
+uv run verdiclip capture screen --delay 3 -o delayed.png
+```
+
+**Capture options:**
+
+| Option        | Description                                              |
+|---------------|----------------------------------------------------------|
+| `mode`        | `screen`, `region`, or `window`                          |
+| `-o, --output`| Output file path (auto-generates if omitted)             |
+| `--region`    | Region coordinates `X,Y,W,H` (required for `region`)    |
+| `--monitor`   | Monitor index, 1-based (for `screen` mode)               |
+| `--format`    | Image format: `png`, `jpg`, `bmp`, `tiff`                |
+| `--quality`   | JPEG quality 1–100 (default: 90)                         |
+| `--delay`     | Delay in seconds before capturing (default: 0)           |
+| `--clipboard` | Copy to clipboard instead of saving to file              |
+
+### Open Subcommand
+
+```bash
+# Open image for editing
+uv run verdiclip open photo.png
+```
+
+### Version
+
+```bash
+uv run verdiclip --version
+```
+
+---
+
 ## ⚙️ Configuration
 
 Settings are stored in `%APPDATA%\VerdiClip\config.json` and can be edited
@@ -125,11 +180,14 @@ uv run ruff check src/ tests/
 verdiclip/
 ├── src/verdiclip/       # Application source code
 │   ├── capture/         # Screenshot capture methods
+│   │   └── window_picker.py
 │   ├── editor/          # Image editor and annotation tools
 │   ├── export/          # File, clipboard, and print export
 │   ├── hotkeys/         # Global hotkey management
 │   ├── tray/            # System tray integration
-│   └── ui/              # Settings and about dialogs
+│   ├── ui/              # Settings and about dialogs
+│   ├── config.py        # Configuration management
+│   └── cli.py           # Command-line interface
 ├── tests/               # Unit, integration, and performance tests
 ├── resources/           # Icons and default configuration
 ├── scripts/             # PowerShell build and setup scripts

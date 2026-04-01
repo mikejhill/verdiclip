@@ -9,7 +9,7 @@
 ## Setup
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/verdiclip.git
+git clone https://github.com/mikejhill/verdiclip.git
 cd verdiclip
 
 # Option A: Use the setup script
@@ -27,10 +27,12 @@ src/verdiclip/
 ├── __main__.py          # Entry point, logging setup
 ├── app.py               # QApplication, single-instance, startup
 ├── config.py            # JSON config with dot-notation access
+├── cli.py               # Command-line interface
 ├── capture/             # Screenshot capture methods
 │   ├── screen.py        # Full-screen via mss
 │   ├── region.py        # Region selection overlay
 │   ├── window.py        # Window capture via Win32 API
+│   ├── window_picker.py # Interactive window selection
 │   └── repeat.py        # Repeat last capture
 ├── editor/              # Image editor
 │   ├── canvas.py        # QGraphicsView canvas + EditorWindow
