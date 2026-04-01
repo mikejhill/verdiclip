@@ -1,0 +1,33 @@
+{
+  "capture": {
+    "default_action": "editor",
+    "include_cursor": false,
+    "region_magnifier": true,
+    "window_decorations": true
+  },
+  "save": {
+    "default_directory": "",
+    "default_format": "png",
+    "jpg_quality": 90,
+    "auto_save_enabled": false,
+    "filename_pattern": "Screenshot_{datetime}"
+  },
+  "hotkeys": {
+    "region": "print_screen",
+    "fullscreen": "ctrl+print_screen",
+    "window": "alt+print_screen",
+    "window_pick": "ctrl+shift+print_screen",
+    "repeat": "shift+print_screen"
+  },
+  "editor": {
+    "default_stroke_color": "#FF0000",
+    "default_fill_color": "#00000000",
+    "default_stroke_width": 3,
+    "default_font_family": "Arial",
+    "default_font_size": 14
+  },
+  "startup": {
+    "run_at_login": false,
+    "minimize_to_tray": true
+  }
+}

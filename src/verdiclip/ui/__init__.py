@@ -1,0 +1,1 @@
+"""UI dialogs for VerdiClip."""

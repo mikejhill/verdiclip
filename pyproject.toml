@@ -1,0 +1,61 @@
+[project]
+name = "verdiclip"
+version = "0.1.0"
+description = "A performant screenshot and annotation tool for Windows, inspired by Greenshot."
+readme = "README.md"
+license = "MIT"
+authors = [
+    { name = "Mike Hill", email = "mike@mikejhill.com" }
+]
+requires-python = ">=3.12"
+keywords = ["screenshot", "annotation", "screen-capture", "windows"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Win32 (MS Windows)",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Graphics :: Capture :: Screen Capture",
+    "Topic :: Multimedia :: Graphics :: Editors",
+]
+dependencies = [
+    "PySide6>=6.7,<7",
+    "Pillow>=10.0,<12",
+    "mss>=9.0,<10",
+    "pynput>=1.7,<2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0,<9",
+    "pytest-qt>=4.4,<5",
+    "pytest-benchmark>=5.0,<6",
+    "pytest-cov>=6.0,<7",
+    "ruff>=0.9,<1",
+]
+
+[project.scripts]
+verdiclip = "verdiclip.__main__:main"
+
+[project.gui-scripts]
+verdiclip-gui = "verdiclip.__main__:main"
+
+[build-system]
+requires = ["uv_build>=0.11.1,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "SIM", "TCH"]
+ignore = ["N802", "N803"]  # Qt overrides use camelCase (e.g., paintEvent, mousePressEvent)
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+qt_api = "pyside6"
