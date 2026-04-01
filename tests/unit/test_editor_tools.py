@@ -1698,3 +1698,157 @@ class TestTextToolUndo:
         assert len(texts_after) == 0, (
             f"Expected 0 text items after undo, got {len(texts_after)}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Coverage: TextTool — finalize with configured font and text content
+# ---------------------------------------------------------------------------
+
+
+class TestTextToolFinalizeWithFont:
+    def test_text_item_uses_configured_font(self, qapp) -> None:
+        custom_font = QFont("Consolas", 24)
+        scene = QGraphicsScene()
+        view = QGraphicsView(scene)
+        tool = TextTool(font=custom_font)
+        tool.activate(scene, view)
+
+        event = _make_mouse_event()
+        tool.mouse_press(QPointF(30, 30), event)
+
+        text_items = [i for i in scene.items() if isinstance(i, QGraphicsTextItem)]
+        assert len(text_items) == 1, (
+            f"Expected 1 text item after click, got {len(text_items)}"
+        )
+        item_font = text_items[0].font()
+        assert item_font.family() == "Consolas", (
+            f"Expected font family 'Consolas', got '{item_font.family()}'"
+        )
+        assert item_font.pointSize() == 24, (
+            f"Expected font point size 24, got {item_font.pointSize()}"
+        )
+
+    def test_finalize_preserves_text_content(self, qapp) -> None:
+        scene = QGraphicsScene()
+        view = QGraphicsView(scene)
+        tool = TextTool()
+        tool.activate(scene, view)
+
+        event = _make_mouse_event()
+        tool.mouse_press(QPointF(10, 10), event)
+        tool._active_item.setPlainText("Hello World")
+
+        tool._finalize_text()
+
+        text_items = [i for i in scene.items() if isinstance(i, QGraphicsTextItem)]
+        assert len(text_items) == 1, (
+            f"Expected finalized text item to remain in scene, got {len(text_items)}"
+        )
+        assert text_items[0].toPlainText() == "Hello World", (
+            f"Expected text content 'Hello World', got '{text_items[0].toPlainText()}'"
+        )
+        assert text_items[0].textInteractionFlags() == Qt.TextInteractionFlag.NoTextInteraction, (
+            f"Expected NoTextInteraction after finalize, "
+            f"got {text_items[0].textInteractionFlags()}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Coverage: NumberTool — auto-increment marker labels
+# ---------------------------------------------------------------------------
+
+
+class TestNumberToolAutoIncrement:
+    def test_three_placements_produce_labels_1_2_3(self, qapp) -> None:
+        scene = QGraphicsScene()
+        view = QGraphicsView(scene)
+        tool = NumberTool()
+        tool.activate(scene, view)
+
+        event = _make_mouse_event()
+        for pos in [QPointF(50, 50), QPointF(100, 100), QPointF(150, 150)]:
+            tool.mouse_press(pos, event)
+
+        text_items = [i for i in scene.items() if isinstance(i, QGraphicsSimpleTextItem)]
+        labels = sorted([item.text() for item in text_items])
+        assert labels == ["1", "2", "3"], (
+            f"Expected marker labels ['1', '2', '3'], got {labels}"
+        )
+
+    def test_counter_value_matches_placement_count(self, qapp) -> None:
+        scene = QGraphicsScene()
+        view = QGraphicsView(scene)
+        tool = NumberTool()
+        tool.activate(scene, view)
+
+        event = _make_mouse_event()
+        tool.mouse_press(QPointF(10, 10), event)
+        assert tool._counter == 1, (
+            f"Expected counter to be 1 after first placement, got {tool._counter}"
+        )
+        tool.mouse_press(QPointF(20, 20), event)
+        assert tool._counter == 2, (
+            f"Expected counter to be 2 after second placement, got {tool._counter}"
+        )
+        tool.mouse_press(QPointF(30, 30), event)
+        assert tool._counter == 3, (
+            f"Expected counter to be 3 after third placement, got {tool._counter}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Coverage: FreehandTool — mouse moves add points to path
+# ---------------------------------------------------------------------------
+
+
+class TestFreehandToolPathPoints:
+    def test_mouse_moves_extend_path(self, qapp) -> None:
+        scene = QGraphicsScene()
+        view = QGraphicsView(scene)
+        tool = FreehandTool()
+        tool.activate(scene, view)
+
+        event = _make_mouse_event()
+        tool.mouse_press(QPointF(0, 0), event)
+
+        move_points = [QPointF(10, 10), QPointF(20, 20), QPointF(30, 30), QPointF(40, 40)]
+        for pt in move_points:
+            tool.mouse_move(pt, event)
+
+        assert tool._path is not None, "Expected path to exist during drawing"
+        bounds = tool._path.boundingRect()
+        assert bounds.width() > 0, (
+            f"Expected path bounding rect width > 0 after moves, got {bounds.width()}"
+        )
+        assert bounds.height() > 0, (
+            f"Expected path bounding rect height > 0 after moves, got {bounds.height()}"
+        )
+
+        tool.mouse_release(QPointF(40, 40), event)
+        paths = [i for i in scene.items() if isinstance(i, QGraphicsPathItem)]
+        assert len(paths) == 1, (
+            f"Expected 1 path item after drawing, got {len(paths)}"
+        )
+
+    def test_path_grows_with_each_move(self, qapp) -> None:
+        scene = QGraphicsScene()
+        view = QGraphicsView(scene)
+        tool = FreehandTool()
+        tool.activate(scene, view)
+
+        event = _make_mouse_event()
+        tool.mouse_press(QPointF(0, 0), event)
+
+        tool.mouse_move(QPointF(20, 20), event)
+        length_after_first = tool._path.length()
+
+        tool.mouse_move(QPointF(40, 40), event)
+        length_after_second = tool._path.length()
+
+        assert length_after_second > length_after_first, (
+            f"Expected path length to grow after second move "
+            f"({length_after_second} > {length_after_first})"
+        )
+
+        tool.mouse_release(QPointF(40, 40), event)
+

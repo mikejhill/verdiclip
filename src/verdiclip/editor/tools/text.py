@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QGraphicsView,
 )
 
+from verdiclip.editor import Z_BACKGROUND
 from verdiclip.editor.tools.base import BaseTool
 
 if TYPE_CHECKING:
@@ -53,7 +54,7 @@ class TextTool(BaseTool):
         # Check if clicking on an existing text item
         transform = self._view.transform() if self._view else self._scene.views()[0].transform()
         item = self._scene.itemAt(scene_pos, transform)
-        if isinstance(item, QGraphicsTextItem) and item.zValue() > -1000:
+        if isinstance(item, QGraphicsTextItem) and item.zValue() > Z_BACKGROUND:
             self._active_item = item
             item.setTextInteractionFlags(Qt.TextInteractionFlag.TextEditorInteraction)
             item.setFocus()

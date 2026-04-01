@@ -12,6 +12,8 @@ from PySide6.QtWidgets import QWidget
 from verdiclip.capture.screen import ScreenCapture
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from PySide6.QtGui import QKeyEvent, QMouseEvent, QPaintEvent
 
 logger = logging.getLogger(__name__)
@@ -226,8 +228,8 @@ class RegionCapture:
 
     def start_selection(
         self,
-        on_captured: callable | None = None,
-        on_cancelled: callable | None = None,
+        on_captured: Callable[[QPixmap], None] | None = None,
+        on_cancelled: Callable[[], None] | None = None,
     ) -> None:
         """Show the region selection overlay."""
         self._selector = RegionSelector()

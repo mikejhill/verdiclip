@@ -182,9 +182,9 @@ class TestInitQt:
 class TestConfigProperty:
     """Config property access."""
 
-    def test_raises_assertion_error_when_config_is_none(self, qapp: QApplication) -> None:
+    def test_raises_runtime_error_when_config_is_none(self, qapp: QApplication) -> None:
         app = VerdiClipApp([])
-        with pytest.raises(AssertionError):
+        with pytest.raises(RuntimeError, match="Config not initialized"):
             _ = app.config
 
     def test_returns_config_when_set(self, qapp: QApplication, tmp_config: Config) -> None:

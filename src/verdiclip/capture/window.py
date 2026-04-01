@@ -19,7 +19,15 @@ logger = logging.getLogger(__name__)
 user32 = ctypes.windll.user32
 dwmapi = ctypes.windll.dwmapi
 
+# Win32 API constants
+GWL_STYLE = -16
+GWL_EXSTYLE = -20
+WS_VISIBLE = 0x10000000
+WS_EX_TOOLWINDOW = 0x00000080
+WS_EX_APPWINDOW = 0x00040000
 DWMWA_EXTENDED_FRAME_BOUNDS = 9
+SW_SHOWMAXIMIZED = 3
+
 _MIN_WINDOW_DIMENSION = 50
 
 
@@ -111,8 +119,8 @@ class WindowCapture:
             if user32.IsIconic(hwnd):
                 return True
 
-            ex_style = user32.GetWindowLongW(hwnd, -20)  # GWL_EXSTYLE
-            if (ex_style & 0x80) and not (ex_style & 0x40000):  # TOOLWINDOW w/o APPWINDOW
+            ex_style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            if (ex_style & WS_EX_TOOLWINDOW) and not (ex_style & WS_EX_APPWINDOW):
                 return True
 
             length = user32.GetWindowTextLengthW(hwnd)

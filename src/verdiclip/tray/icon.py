@@ -220,7 +220,9 @@ class TrayIcon(QSystemTrayIcon):
 
         editor = EditorWindow(pixmap, self._config, file_path=file_path)
         editor.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-        editor.destroyed.connect(lambda: self._editors.remove(editor))
+        editor.destroyed.connect(
+            lambda: self._editors.remove(editor) if editor in self._editors else None
+        )
         self._editors.append(editor)
         editor.show()
 

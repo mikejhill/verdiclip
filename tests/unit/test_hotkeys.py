@@ -171,74 +171,45 @@ class TestNormalizeKey:
     def manager(self, tmp_config: Config) -> HotkeyManager:
         return HotkeyManager(tmp_config)
 
-    def test_ctrl_l_unchanged(self, manager: HotkeyManager) -> None:
-        assert manager._normalize_key(keyboard.Key.ctrl_l) == keyboard.Key.ctrl_l, (
-            f"Expected manager._normalize_key(keyboard.Key.ctrl_l) to equal keyboard.Key.ctrl_l,"
-            f" got {manager._normalize_key(keyboard.Key.ctrl_l)}"
-        )
-
-    def test_ctrl_r_to_ctrl_l(self, manager: HotkeyManager) -> None:
-        assert manager._normalize_key(keyboard.Key.ctrl_r) == keyboard.Key.ctrl_l, (
-            f"Expected manager._normalize_key(keyboard.Key.ctrl_r) to equal keyboard.Key.ctrl_l,"
-            f" got {manager._normalize_key(keyboard.Key.ctrl_r)}"
-        )
-
-    def test_alt_l_unchanged(self, manager: HotkeyManager) -> None:
-        assert manager._normalize_key(keyboard.Key.alt_l) == keyboard.Key.alt_l, (
-            f"Expected manager._normalize_key(keyboard.Key.alt_l) to equal keyboard.Key.alt_l,"
-            f" got {manager._normalize_key(keyboard.Key.alt_l)}"
-        )
-
-    def test_alt_r_to_alt_l(self, manager: HotkeyManager) -> None:
-        assert manager._normalize_key(keyboard.Key.alt_r) == keyboard.Key.alt_l, (
-            f"Expected manager._normalize_key(keyboard.Key.alt_r) to equal keyboard.Key.alt_l,"
-            f" got {manager._normalize_key(keyboard.Key.alt_r)}"
-        )
-
-    def test_alt_gr_to_alt_l(self, manager: HotkeyManager) -> None:
-        assert manager._normalize_key(keyboard.Key.alt_gr) == keyboard.Key.alt_l, (
-            f"Expected manager._normalize_key(keyboard.Key.alt_gr) to equal keyboard.Key.alt_l,"
-            f" got {manager._normalize_key(keyboard.Key.alt_gr)}"
-        )
-
-    def test_shift_l_to_shift(self, manager: HotkeyManager) -> None:
-        assert manager._normalize_key(keyboard.Key.shift_l) == keyboard.Key.shift, (
-            f"Expected manager._normalize_key(keyboard.Key.shift_l) to equal keyboard.Key.shift,"
-            f" got {manager._normalize_key(keyboard.Key.shift_l)}"
-        )
-
-    def test_shift_r_to_shift(self, manager: HotkeyManager) -> None:
-        assert manager._normalize_key(keyboard.Key.shift_r) == keyboard.Key.shift, (
-            f"Expected manager._normalize_key(keyboard.Key.shift_r) to equal keyboard.Key.shift,"
-            f" got {manager._normalize_key(keyboard.Key.shift_r)}"
-        )
-
-    def test_cmd_l_to_cmd(self, manager: HotkeyManager) -> None:
-        assert manager._normalize_key(keyboard.Key.cmd_l) == keyboard.Key.cmd, (
-            f"Expected manager._normalize_key(keyboard.Key.cmd_l) to equal keyboard.Key.cmd,"
-            f" got {manager._normalize_key(keyboard.Key.cmd_l)}"
-        )
-
-    def test_cmd_r_to_cmd(self, manager: HotkeyManager) -> None:
-        assert manager._normalize_key(keyboard.Key.cmd_r) == keyboard.Key.cmd, (
-            f"Expected manager._normalize_key(keyboard.Key.cmd_r) to equal keyboard.Key.cmd,"
-            f" got {manager._normalize_key(keyboard.Key.cmd_r)}"
-        )
-
-    def test_regular_key_unchanged(self, manager: HotkeyManager) -> None:
-        assert (
-            manager._normalize_key(keyboard.Key.print_screen)
-            == keyboard.Key.print_screen
-        ), (
-            f"Expected print_screen key unchanged, "
-            f"got {manager._normalize_key(keyboard.Key.print_screen)}"
+    @pytest.mark.parametrize(
+        ("input_key", "expected_key"),
+        [
+            (keyboard.Key.ctrl_l, keyboard.Key.ctrl_l),
+            (keyboard.Key.ctrl_r, keyboard.Key.ctrl_l),
+            (keyboard.Key.alt_l, keyboard.Key.alt_l),
+            (keyboard.Key.alt_r, keyboard.Key.alt_l),
+            (keyboard.Key.alt_gr, keyboard.Key.alt_l),
+            (keyboard.Key.shift_l, keyboard.Key.shift),
+            (keyboard.Key.shift_r, keyboard.Key.shift),
+            (keyboard.Key.cmd_l, keyboard.Key.cmd),
+            (keyboard.Key.cmd_r, keyboard.Key.cmd),
+            (keyboard.Key.print_screen, keyboard.Key.print_screen),
+        ],
+        ids=[
+            "ctrl_l-unchanged",
+            "ctrl_r-to-ctrl_l",
+            "alt_l-unchanged",
+            "alt_r-to-alt_l",
+            "alt_gr-to-alt_l",
+            "shift_l-to-shift",
+            "shift_r-to-shift",
+            "cmd_l-to-cmd",
+            "cmd_r-to-cmd",
+            "print_screen-unchanged",
+        ],
+    )
+    def test_normalize_key(
+        self, manager: HotkeyManager, input_key: keyboard.Key, expected_key: keyboard.Key
+    ) -> None:
+        result = manager._normalize_key(input_key)
+        assert result == expected_key, (
+            f"Expected _normalize_key({input_key}) to return {expected_key}, got {result}"
         )
 
     def test_keycode_unchanged(self, manager: HotkeyManager) -> None:
         kc = keyboard.KeyCode.from_char("a")
-        assert manager._normalize_key(kc) == kc, (
-            f"Expected manager._normalize_key(kc) to equal kc, got {manager._normalize_key(kc)}"
-        )
+        result = manager._normalize_key(kc)
+        assert result == kc, f"Expected KeyCode('a') unchanged, got {result}"
 
 
 # ---------------------------------------------------------------------------
@@ -380,9 +351,7 @@ class TestStop:
         manager.start()
         manager.stop()
 
-        mock_listener_cls.return_value.join.assert_called_once_with(timeout=1.0), (
-            "Expected stop() to call listener.join(timeout=1.0) for clean thread shutdown"
-        )
+        mock_listener_cls.return_value.join.assert_called_once_with(timeout=1.0)
 
     def test_stop_when_not_started_is_safe(self, tmp_config: Config) -> None:
         manager = HotkeyManager(tmp_config)
@@ -419,7 +388,7 @@ class TestCallbackRelay:
         relay = _CallbackRelay()
         callback = MagicMock()
         relay.schedule(callback)
-        callback.assert_called_once(), (
+        assert callback.call_count == 1, (
             f"Expected schedule() to invoke callback via _invoke signal, "
             f"call count: {callback.call_count}"
         )
@@ -427,7 +396,7 @@ class TestCallbackRelay:
     def test_execute_calls_callback(self, qapp) -> None:
         callback = MagicMock()
         _CallbackRelay._execute(callback)
-        callback.assert_called_once(), (
+        assert callback.call_count == 1, (
             f"Expected callback to be called once, call count: {callback.call_count}"
         )
 
@@ -437,7 +406,7 @@ class TestCallbackRelay:
         callback = MagicMock(side_effect=RuntimeError("boom"))
         with caplog.at_level(logging.ERROR, logger="verdiclip.hotkeys.manager"):
             _CallbackRelay._execute(callback)
-        callback.assert_called_once(), (
+        assert callback.call_count == 1, (
             f"Expected callback to be called once despite exception, "
             f"call count: {callback.call_count}"
         )

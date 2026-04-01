@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QGraphicsView,
 )
 
+from verdiclip.editor import Z_BACKGROUND, Z_BOUNDARY, Z_CROP_OVERLAY
 from verdiclip.editor.tools.base import BaseTool
 
 if TYPE_CHECKING:
@@ -52,7 +53,7 @@ class CropTool(BaseTool):
 
         self._crop_rect_item = QGraphicsRectItem()
         self._crop_rect_item.setPen(QPen(_CROP_BORDER_COLOR, 2, Qt.PenStyle.DashLine))
-        self._crop_rect_item.setZValue(9999)
+        self._crop_rect_item.setZValue(Z_CROP_OVERLAY)
         self._scene.addItem(self._crop_rect_item)
 
     def mouse_move(self, scene_pos: QPointF, event: QMouseEvent) -> None:
@@ -89,7 +90,7 @@ class CropTool(BaseTool):
         # Find background pixmap
         bg_item = None
         for item in self._scene.items():
-            if isinstance(item, QGraphicsPixmapItem) and item.zValue() <= -1000:
+            if isinstance(item, QGraphicsPixmapItem) and item.zValue() <= Z_BACKGROUND:
                 bg_item = item
                 break
 
@@ -101,7 +102,7 @@ class CropTool(BaseTool):
         for item in self._scene.items():
             is_boundary = (
                 isinstance(item, _RectItem)
-                and item.zValue() >= 9000
+                and item.zValue() >= Z_BOUNDARY
                 and item is not self._crop_rect_item
             )
             if is_boundary:
@@ -126,7 +127,7 @@ class CropTool(BaseTool):
         else:
             self._scene.clear()
             new_bg = QGraphicsPixmapItem(result)
-            new_bg.setZValue(-1000)
+            new_bg.setZValue(Z_BACKGROUND)
             self._scene.addItem(new_bg)
             self._scene.setSceneRect(QRectF(result.rect()))
 

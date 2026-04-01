@@ -28,12 +28,11 @@ if ($Clean) {
     }
 }
 
-Write-Host "`nInstalling PyInstaller..." -ForegroundColor Cyan
+# Use uvx to run PyInstaller in an isolated environment so it doesn't pollute
+# the project's venv (uv sync would remove it as an unmanaged dependency).
+Write-Host "`nBuilding with PyInstaller (via uvx)..." -ForegroundColor Cyan
 Push-Location $ProjectRoot
 try {
-    & uv pip install pyinstaller --quiet
-    if ($LASTEXITCODE -ne 0) { throw "Failed to install PyInstaller." }
-
     $pyinstallerArgs = @(
         "src\verdiclip\__main__.py",
         "--name", "VerdiClip",
@@ -60,7 +59,7 @@ try {
     }
 
     Write-Host "`nBuilding VerdiClip..." -ForegroundColor Cyan
-    & uv run pyinstaller @pyinstallerArgs
+    & uvx pyinstaller @pyinstallerArgs
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed." }
 
     $outputDir = if ($OneFile) { "dist\VerdiClip.exe" } else { "dist\VerdiClip\" }

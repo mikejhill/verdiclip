@@ -129,4 +129,10 @@ class TestPropertiesPanelStrokeColorSignal:
         # cannot be triggered without user interaction, so we verify
         # the internal wiring by emitting from the color button directly).
         panel._stroke_btn.color_changed.emit(QColor("#123456"))
-        handler.assert_called_once()
+        assert handler.call_count == 1, (
+            f"Expected signal to fire once, fired {handler.call_count} times"
+        )
+        actual_color = handler.call_args[0][0]
+        assert actual_color.name() == QColor("#123456").name(), (
+            f"Expected stroke color '#123456', got '{actual_color.name()}'"
+        )

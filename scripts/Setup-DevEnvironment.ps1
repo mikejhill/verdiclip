@@ -35,13 +35,16 @@ function Test-UvInstalled {
         Write-Host "[OK] uv is installed." -ForegroundColor Green
         return $true
     } catch {
-        Write-Host "[WARN] uv not found. Installing..." -ForegroundColor Yellow
+        Write-Host "[WARN] uv not found. Installing via official installer..." -ForegroundColor Yellow
         try {
-            & pip install uv
-            Write-Host "[OK] uv installed via pip." -ForegroundColor Green
+            & powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+            if ($LASTEXITCODE -ne 0) { throw "Installer exited with code $LASTEXITCODE" }
+            # Refresh PATH so uv is available in the current session
+            $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
+            Write-Host "[OK] uv installed via official installer." -ForegroundColor Green
             return $true
         } catch {
-            Write-Host "[ERROR] Failed to install uv." -ForegroundColor Red
+            Write-Host "[ERROR] Failed to install uv. Visit https://docs.astral.sh/uv/getting-started/installation/" -ForegroundColor Red
             return $false
         }
     }

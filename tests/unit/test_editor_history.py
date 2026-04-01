@@ -36,30 +36,52 @@ class TestUndoRedo:
 
 
 class TestCanUndoRedoStates:
-    def test_can_undo_redo_states(self, qapp) -> None:
-        scene = QGraphicsScene()
-        item = QGraphicsRectItem(0, 0, 50, 50)
+    def test_empty_history_cannot_undo(self, qapp) -> None:
         history = EditorHistory()
-
         assert history.can_undo() is False, (
             f"Expected can_undo() False on empty history, got {history.can_undo()}"
         )
+
+    def test_empty_history_cannot_redo(self, qapp) -> None:
+        history = EditorHistory()
         assert history.can_redo() is False, (
             f"Expected can_redo() False on empty history, got {history.can_redo()}"
         )
 
+    def test_can_undo_after_push(self, qapp) -> None:
+        scene = QGraphicsScene()
+        item = QGraphicsRectItem(0, 0, 50, 50)
+        history = EditorHistory()
         history.push(AddItemCommand(scene, item))
         assert history.can_undo() is True, (
             f"Expected can_undo() True after push, got {history.can_undo()}"
         )
+
+    def test_cannot_redo_after_push(self, qapp) -> None:
+        scene = QGraphicsScene()
+        item = QGraphicsRectItem(0, 0, 50, 50)
+        history = EditorHistory()
+        history.push(AddItemCommand(scene, item))
         assert history.can_redo() is False, (
             f"Expected can_redo() False after push, got {history.can_redo()}"
         )
 
+    def test_cannot_undo_after_undo_single_item(self, qapp) -> None:
+        scene = QGraphicsScene()
+        item = QGraphicsRectItem(0, 0, 50, 50)
+        history = EditorHistory()
+        history.push(AddItemCommand(scene, item))
         history.undo()
         assert history.can_undo() is False, (
             f"Expected can_undo() False after undo, got {history.can_undo()}"
         )
+
+    def test_can_redo_after_undo(self, qapp) -> None:
+        scene = QGraphicsScene()
+        item = QGraphicsRectItem(0, 0, 50, 50)
+        history = EditorHistory()
+        history.push(AddItemCommand(scene, item))
+        history.undo()
         assert history.can_redo() is True, (
             f"Expected can_redo() True after undo, got {history.can_redo()}"
         )

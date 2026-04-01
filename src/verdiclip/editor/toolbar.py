@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from enum import Enum, auto
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
@@ -141,7 +141,7 @@ class EditorToolbar(QToolBar):
         self.setOrientation(Qt.Orientation.Vertical)
         self.setMovable(False)
         self.setFloatable(False)
-        self.setIconSize(self.iconSize())
+        self.setIconSize(QSize(24, 24))
 
         self._action_group = QActionGroup(self)
         self._action_group.setExclusive(True)

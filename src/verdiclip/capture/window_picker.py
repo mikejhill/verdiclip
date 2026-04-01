@@ -5,7 +5,15 @@ from __future__ import annotations
 import logging
 
 from PySide6.QtCore import QObject, QPoint, QRect, Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
+from PySide6.QtGui import (
+    QColor,
+    QKeyEvent,
+    QMouseEvent,
+    QPainter,
+    QPaintEvent,
+    QPen,
+    QPixmap,
+)
 from PySide6.QtWidgets import QApplication, QWidget
 
 from verdiclip.capture.screen import ScreenCapture
@@ -51,7 +59,7 @@ class WindowPickerOverlay(QWidget):
         self.activateWindow()
         self.raise_()
 
-    def paintEvent(self, _event) -> None:
+    def paintEvent(self, _event: QPaintEvent) -> None:
         painter = QPainter(self)
         if self._background:
             painter.drawPixmap(0, 0, self._background)
@@ -88,7 +96,7 @@ class WindowPickerOverlay(QWidget):
                          f"\n{msg}")
         painter.end()
 
-    def mouseMoveEvent(self, event) -> None:
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
         screen_pos = event.position().toPoint() + self._virtual_offset
         best_hwnd = 0
         best_rect: QRect | None = None
@@ -107,7 +115,7 @@ class WindowPickerOverlay(QWidget):
             self._hovered_rect = best_rect
             self.update()
 
-    def mousePressEvent(self, event) -> None:
+    def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton and self._hovered_hwnd:
             self.hide()
             self.window_selected.emit(self._hovered_hwnd)
@@ -115,7 +123,7 @@ class WindowPickerOverlay(QWidget):
             self.hide()
             self.cancelled.emit()
 
-    def keyPressEvent(self, event) -> None:
+    def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key.Key_Escape:
             self.hide()
             self.cancelled.emit()

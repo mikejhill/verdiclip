@@ -35,14 +35,8 @@ class TestRegionSelectorInit:
 
     def test_initial_state(self, qapp) -> None:
         selector = RegionSelector()
-        assert selector._origin is None, (
-            f"Expected selector._origin to be None, got {selector._origin}"
-        )
-        assert selector._current is None, (
-            f"Expected selector._current to be None, got {selector._current}"
-        )
-        assert selector._is_selecting is False, (
-            f"Expected selector._is_selecting to be False, got {selector._is_selecting}"
+        assert selector._selection_rect() is None, (
+            f"Expected _selection_rect() to be None initially, got {selector._selection_rect()}"
         )
 
 

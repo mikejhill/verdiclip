@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
-from verdiclip.config import DEFAULT_CONFIG, Config
+from verdiclip.config import Config
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -16,20 +16,20 @@ class TestDefaultConfigValues:
 
     def test_default_config_values(self, tmp_path: Path) -> None:
         config = Config(config_path=tmp_path / "config.json")
-        assert config.data["capture"]["default_action"] == "editor", (
-            f"Expected default_action 'editor', got {config.data['capture']['default_action']}"
+        assert config.get("capture.default_action") == "editor", (
+            f"Expected default_action 'editor', got {config.get('capture.default_action')}"
         )
-        assert config.data["save"]["default_format"] == "png", (
-            f"Expected save.default_format to be 'png', got {config.data['save']['default_format']}"
+        assert config.get("save.default_format") == "png", (
+            f"Expected save.default_format to be 'png', got {config.get('save.default_format')}"
         )
-        assert config.data["hotkeys"]["region"] == "print_screen", (
-            f"Expected hotkeys.region to be 'print_screen', got {config.data['hotkeys']['region']}"
+        assert config.get("hotkeys.region") == "print_screen", (
+            f"Expected hotkeys.region to be 'print_screen', got {config.get('hotkeys.region')}"
         )
-        assert config.data["editor"]["default_stroke_width"] == 3, (
-            f"Expected default_stroke_width 3, got {config.data['editor']['default_stroke_width']}"
+        assert config.get("editor.default_stroke_width") == 3, (
+            f"Expected default_stroke_width 3, got {config.get('editor.default_stroke_width')}"
         )
-        assert config.data["startup"]["minimize_to_tray"] is True, (
-            f"Expected minimize_to_tray True, got {config.data['startup']['minimize_to_tray']}"
+        assert config.get("startup.minimize_to_tray") is True, (
+            f"Expected minimize_to_tray True, got {config.get('startup.minimize_to_tray')}"
         )
 
 
@@ -114,8 +114,7 @@ class TestInvalidJsonUsesDefaults:
         assert config.get("save.default_format") == "png", (
             f"Expected 'png' after invalid JSON, got {config.get('save.default_format')}"
         )
-        expected = DEFAULT_CONFIG["capture"]["default_action"]
-        assert config.get("capture.default_action") == expected, (
+        assert config.get("capture.default_action") == "editor", (
             f"Expected default after invalid JSON, got {config.get('capture.default_action')}"
         )
 
@@ -129,13 +128,11 @@ class TestReset:
         config.set("save.default_format", "webp")
         config.set("capture.default_action", "clipboard")
         config.reset()
-        expected_fmt = DEFAULT_CONFIG["save"]["default_format"]
-        assert config.get("save.default_format") == expected_fmt, (
-            f"Expected default after reset, got format={config.get('save.default_format')}"
+        assert config.get("save.default_format") == "png", (
+            f"Expected format 'png' after reset, got {config.get('save.default_format')}"
         )
-        expected_act = DEFAULT_CONFIG["capture"]["default_action"]
-        assert config.get("capture.default_action") == expected_act, (
-            f"Expected default after reset, got action={config.get('capture.default_action')}"
+        assert config.get("capture.default_action") == "editor", (
+            f"Expected action 'editor' after reset, got {config.get('capture.default_action')}"
         )
 
 

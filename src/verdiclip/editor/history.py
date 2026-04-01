@@ -85,14 +85,16 @@ class EditorHistory:
     def undo(self) -> None:
         """Undo the last command."""
         if self._stack.canUndo():
+            text = self._stack.undoText()
             self._stack.undo()
-            logger.debug("Undo: %s", self._stack.undoText())
+            logger.debug("Undo: %s", text)
 
     def redo(self) -> None:
         """Redo the last undone command."""
         if self._stack.canRedo():
+            text = self._stack.redoText()
             self._stack.redo()
-            logger.debug("Redo: %s", self._stack.redoText())
+            logger.debug("Redo: %s", text)
 
     def can_undo(self) -> bool:
         return self._stack.canUndo()

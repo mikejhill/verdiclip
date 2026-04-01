@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import logging
 import sys
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QSharedMemory
 from PySide6.QtWidgets import QApplication
 
 from verdiclip import __app_name__, __version__
 from verdiclip.config import Config
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -103,8 +107,10 @@ class VerdiClipApp:
 
     def _register_hotkeys(self) -> None:
         """Register configured hotkeys with tray capture callbacks."""
-        assert self._hotkey_manager is not None
-        assert self._tray_icon is not None
+        if self._hotkey_manager is None:
+            raise RuntimeError("Hotkey manager not initialized")
+        if self._tray_icon is None:
+            raise RuntimeError("Tray icon not initialized")
 
         bindings = {
             "hotkeys.region": self._tray_icon.capture_region,
@@ -124,8 +130,13 @@ class VerdiClipApp:
             self._register_hotkeys()
             logger.info("Hotkey bindings reloaded.")
 
+    def register_post_init_hook(self, hook: Callable[[], None]) -> None:
+        """Register a callback to run after QApplication initialization."""
+        self._post_init_hooks.append(hook)
+
     @property
     def config(self) -> Config:
         """Return the application configuration."""
-        assert self._config is not None
+        if self._config is None:
+            raise RuntimeError("Config not initialized")
         return self._config

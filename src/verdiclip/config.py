@@ -108,6 +108,18 @@ class Config:
         current[keys[-1]] = value
         self.save()
 
+    def set_many(self, updates: dict[str, object]) -> None:
+        """Apply multiple config changes with a single disk write."""
+        for key, value in updates.items():
+            parts = key.split(".")
+            section = self._data
+            for part in parts[:-1]:
+                if part not in section:
+                    section[part] = {}
+                section = section[part]
+            section[parts[-1]] = value
+        self.save()
+
     def reset(self) -> None:
         """Reset configuration to defaults and save."""
         self._data = {}

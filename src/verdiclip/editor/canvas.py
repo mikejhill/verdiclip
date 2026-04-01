@@ -27,11 +27,17 @@ from PySide6.QtWidgets import (
 )
 
 from verdiclip import __app_name__
+from verdiclip.editor import Z_BACKGROUND, Z_BOUNDARY
 from verdiclip.editor.history import EditorHistory
 from verdiclip.editor.properties import PropertiesPanel
 from verdiclip.editor.toolbar import EditorToolbar, ToolType
 
 if TYPE_CHECKING:
+    from PySide6.QtGui import (
+        QKeyEvent,
+        QMouseEvent,
+    )
+
     from verdiclip.config import Config
     from verdiclip.editor.tools.base import BaseTool
 
@@ -49,7 +55,9 @@ class EditorCanvas(QGraphicsView):
         super().__init__(parent)
         self._scene = QGraphicsScene(self)
         self.setScene(self._scene)
-        self.setRenderHint(self.renderHints())
+        from PySide6.QtGui import QPainter
+        self.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         self.setDragMode(QGraphicsView.DragMode.NoDrag)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
@@ -70,7 +78,7 @@ class EditorCanvas(QGraphicsView):
         """Load an image onto the canvas at 100% zoom, centered."""
         self._scene.clear()
         self._pixmap_item = QGraphicsPixmapItem(pixmap)
-        self._pixmap_item.setZValue(-1000)
+        self._pixmap_item.setZValue(Z_BACKGROUND)
         self._scene.addItem(self._pixmap_item)
 
         # Draw a visible border around the image area
@@ -80,7 +88,7 @@ class EditorCanvas(QGraphicsView):
         self._boundary_item = QGraphicsRectItem(img_rect)
         self._boundary_item.setPen(border_pen)
         self._boundary_item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
-        self._boundary_item.setZValue(9000)  # Above annotations, below nothing
+        self._boundary_item.setZValue(Z_BOUNDARY)  # Above annotations, below nothing
         self._boundary_item.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsSelectable, False)
         self._boundary_item.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsMovable, False)
         self._boundary_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
@@ -113,6 +121,15 @@ class EditorCanvas(QGraphicsView):
             self._history.push(cmd)
         # Item is already in the scene from the tool's mouse_press
 
+    def add_move_undoable(
+        self, item, old_pos: tuple[float, float], new_pos: tuple[float, float],
+    ) -> None:
+        """Record an item move on the undo stack."""
+        from verdiclip.editor.history import MoveItemCommand
+        if self._history:
+            cmd = MoveItemCommand(item, old_pos, new_pos)
+            self._history.push(cmd)
+
     def set_history(self, history: EditorHistory) -> None:
         """Set the history instance for undo support."""
         self._history = history
@@ -125,7 +142,7 @@ class EditorCanvas(QGraphicsView):
         else:
             super().wheelEvent(event)
 
-    def mousePressEvent(self, event):
+    def mousePressEvent(self, event: QMouseEvent) -> None:
         """Handle mouse press — pan with middle button, delegate to tool otherwise."""
         if event.button() == Qt.MouseButton.MiddleButton:
             self._is_panning = True
@@ -138,7 +155,7 @@ class EditorCanvas(QGraphicsView):
         else:
             super().mousePressEvent(event)
 
-    def mouseMoveEvent(self, event):
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
         """Handle mouse move — pan or delegate to tool."""
         if self._is_panning:
             delta = event.position() - self._pan_start
@@ -156,7 +173,7 @@ class EditorCanvas(QGraphicsView):
         else:
             super().mouseMoveEvent(event)
 
-    def mouseReleaseEvent(self, event):
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         """Handle mouse release — stop pan or delegate to tool."""
         if event.button() == Qt.MouseButton.MiddleButton and self._is_panning:
             self._is_panning = False
@@ -168,7 +185,7 @@ class EditorCanvas(QGraphicsView):
         else:
             super().mouseReleaseEvent(event)
 
-    def keyPressEvent(self, event) -> None:
+    def keyPressEvent(self, event: QKeyEvent) -> None:
         """Handle key presses — Delete removes items, Enter confirms crop."""
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
             self._delete_selected_items()
@@ -180,6 +197,15 @@ class EditorCanvas(QGraphicsView):
                 self._current_tool.cancel_crop()
         else:
             super().keyPressEvent(event)
+
+    @property
+    def current_tool(self) -> BaseTool | None:
+        """Return the currently active tool."""
+        return self._current_tool
+
+    def delete_selected(self) -> None:
+        """Delete all selected items (excluding background and boundary)."""
+        self._delete_selected_items()
 
     def _delete_selected_items(self) -> None:
         """Remove all currently selected annotation items from the scene."""
@@ -366,7 +392,7 @@ class EditorWindow(QMainWindow):
 
         delete_action = QAction("&Delete Selected", self)
         delete_action.setShortcut(QKeySequence.StandardKey.Delete)
-        delete_action.triggered.connect(self._canvas._delete_selected_items)
+        delete_action.triggered.connect(self._canvas.delete_selected)
         edit_menu.addAction(delete_action)
 
         # View menu
@@ -448,22 +474,22 @@ class EditorWindow(QMainWindow):
         self._properties.font_changed.connect(self._update_tool_font)
 
     def _update_tool_stroke_color(self, color: QColor) -> None:
-        tool = self._canvas._current_tool
+        tool = self._canvas.current_tool
         if tool and hasattr(tool, "set_stroke_color"):
             tool.set_stroke_color(color)
 
     def _update_tool_fill_color(self, color: QColor) -> None:
-        tool = self._canvas._current_tool
+        tool = self._canvas.current_tool
         if tool and hasattr(tool, "set_fill_color"):
             tool.set_fill_color(color)
 
     def _update_tool_stroke_width(self, width: int) -> None:
-        tool = self._canvas._current_tool
+        tool = self._canvas.current_tool
         if tool and hasattr(tool, "set_stroke_width"):
             tool.set_stroke_width(width)
 
     def _update_tool_font(self, font) -> None:
-        tool = self._canvas._current_tool
+        tool = self._canvas.current_tool
         if tool and hasattr(tool, "set_font"):
             tool.set_font(font)
 

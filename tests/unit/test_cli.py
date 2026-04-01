@@ -47,7 +47,7 @@ class TestBuildParser:
             f"Expected args.output to equal 'out.png', got {args.output}"
         )
 
-    def test_capture_with_all_options(self) -> None:
+    def test_capture_region_mode_parsed(self) -> None:
         parser = build_parser()
         args = parser.parse_args([
             "capture", "region",
@@ -58,11 +58,55 @@ class TestBuildParser:
             "--delay", "2.5",
         ])
         assert args.mode == "region", f"Expected args.mode to equal 'region', got {args.mode}"
+
+    def test_capture_region_flag_parsed(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([
+            "capture", "region",
+            "--region", "10,20,300,400",
+            "-o", "test.jpg",
+            "--format", "jpg",
+            "--quality", "80",
+            "--delay", "2.5",
+        ])
         assert args.region == "10,20,300,400", (
             f"Expected args.region to equal '10,20,300,400', got {args.region}"
         )
+
+    def test_capture_format_flag_parsed(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([
+            "capture", "region",
+            "--region", "10,20,300,400",
+            "-o", "test.jpg",
+            "--format", "jpg",
+            "--quality", "80",
+            "--delay", "2.5",
+        ])
         assert args.format == "jpg", f"Expected args.format to equal 'jpg', got {args.format}"
+
+    def test_capture_quality_flag_parsed(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([
+            "capture", "region",
+            "--region", "10,20,300,400",
+            "-o", "test.jpg",
+            "--format", "jpg",
+            "--quality", "80",
+            "--delay", "2.5",
+        ])
         assert args.quality == 80, f"Expected args.quality to equal 80, got {args.quality}"
+
+    def test_capture_delay_flag_parsed(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([
+            "capture", "region",
+            "--region", "10,20,300,400",
+            "-o", "test.jpg",
+            "--format", "jpg",
+            "--quality", "80",
+            "--delay", "2.5",
+        ])
         assert args.delay == 2.5, f"Expected args.delay to equal 2.5, got {args.delay}"
 
     def test_capture_clipboard_flag(self) -> None:

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QPointF, Qt
 
+from verdiclip.editor import Z_BACKGROUND
 from verdiclip.editor.tools.base import BaseTool
 
 if TYPE_CHECKING:
@@ -37,7 +38,7 @@ class SelectTool(BaseTool):
 
         transform = self._view.transform() if self._view else self._scene.views()[0].transform()
         item = self._scene.itemAt(scene_pos, transform)
-        if item and item.zValue() > -1000:  # Don't select background image
+        if item and item.zValue() > Z_BACKGROUND:  # Don't select background image
             item.setSelected(True)
             self._dragging = True
             self._drag_item = item
@@ -55,6 +56,19 @@ class SelectTool(BaseTool):
             self._drag_item.setPos(base + delta)
 
     def mouse_release(self, scene_pos: QPointF, event: QMouseEvent) -> None:
+        if (
+            self._dragging
+            and self._drag_item is not None
+            and self._item_start_pos is not None
+            and self._drag_item.pos() != self._item_start_pos
+            and self._view is not None
+            and hasattr(self._view, "add_move_undoable")
+        ):
+            old = self._item_start_pos
+            new = self._drag_item.pos()
+            self._view.add_move_undoable(
+                self._drag_item, (old.x(), old.y()), (new.x(), new.y()),
+            )
         self._dragging = False
         self._drag_item = None
         self._drag_start = None

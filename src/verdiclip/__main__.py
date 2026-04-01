@@ -90,13 +90,15 @@ def main() -> None:
         sys.exit(run_cli(args))
     else:
         # GUI tray mode (no subcommand)
-        logger.info("Starting VerdiClip v%s (tray mode)", "0.1.0")
+        from verdiclip import __version__
+
+        logger.info("Starting VerdiClip v%s (tray mode)", __version__)
         from verdiclip.app import VerdiClipApp
 
         app = VerdiClipApp(sys.argv)
         # _install_signal_handlers must be called AFTER QApplication is
         # created (inside app.run), so we hook into the run sequence.
-        app._post_init_hooks.append(_install_signal_handlers)
+        app.register_post_init_hook(_install_signal_handlers)
         sys.exit(app.run())
 
 

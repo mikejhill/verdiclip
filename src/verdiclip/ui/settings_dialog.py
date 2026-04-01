@@ -228,29 +228,28 @@ class SettingsDialog(QDialog):
         """Save all settings and close the dialog."""
         action_map = {0: "editor", 1: "file", 2: "clipboard", 3: "menu"}
         action = action_map.get(self._capture_action.currentIndex(), "editor")
-        self._config.set("capture.default_action", action)
-        self._config.set("capture.include_cursor", self._include_cursor.isChecked())
-        self._config.set("capture.region_magnifier", self._region_magnifier.isChecked())
-        self._config.set("capture.window_decorations", self._window_decorations.isChecked())
 
-        self._config.set("save.default_directory", self._save_dir.text())
-        self._config.set("save.default_format", self._save_format.currentText().lower())
-        self._config.set("save.jpg_quality", self._jpg_quality.value())
-        self._config.set("save.auto_save_enabled", self._auto_save.isChecked())
-        self._config.set("save.filename_pattern", self._filename_pattern.text())
-
-        self._config.set("editor.default_stroke_width", self._stroke_width.value())
-        self._config.set("editor.default_font_family", self._font_family.currentText())
-        self._config.set("editor.default_font_size", self._font_size.value())
-
-        self._config.set("hotkeys.region", self._hotkey_region.text())
-        self._config.set("hotkeys.fullscreen", self._hotkey_fullscreen.text())
-        self._config.set("hotkeys.window", self._hotkey_window.text())
-        self._config.set("hotkeys.window_pick", self._hotkey_window_pick.text())
-        self._config.set("hotkeys.repeat", self._hotkey_repeat.text())
-
-        self._config.set("startup.run_at_login", self._run_at_login.isChecked())
-        self._config.set("startup.minimize_to_tray", self._minimize_to_tray.isChecked())
+        self._config.set_many({
+            "capture.default_action": action,
+            "capture.include_cursor": self._include_cursor.isChecked(),
+            "capture.region_magnifier": self._region_magnifier.isChecked(),
+            "capture.window_decorations": self._window_decorations.isChecked(),
+            "save.default_directory": self._save_dir.text(),
+            "save.default_format": self._save_format.currentText().lower(),
+            "save.jpg_quality": self._jpg_quality.value(),
+            "save.auto_save_enabled": self._auto_save.isChecked(),
+            "save.filename_pattern": self._filename_pattern.text(),
+            "editor.default_stroke_width": self._stroke_width.value(),
+            "editor.default_font_family": self._font_family.currentText(),
+            "editor.default_font_size": self._font_size.value(),
+            "hotkeys.region": self._hotkey_region.text(),
+            "hotkeys.fullscreen": self._hotkey_fullscreen.text(),
+            "hotkeys.window": self._hotkey_window.text(),
+            "hotkeys.window_pick": self._hotkey_window_pick.text(),
+            "hotkeys.repeat": self._hotkey_repeat.text(),
+            "startup.run_at_login": self._run_at_login.isChecked(),
+            "startup.minimize_to_tray": self._minimize_to_tray.isChecked(),
+        })
 
         logger.info("Settings saved.")
         self.settings_saved.emit()

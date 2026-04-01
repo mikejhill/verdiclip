@@ -28,6 +28,12 @@ dependencies = [
     "pynput>=1.7,<2",
 ]
 
+[project.urls]
+Homepage = "https://github.com/mikejhill/verdiclip"
+Repository = "https://github.com/mikejhill/verdiclip"
+Issues = "https://github.com/mikejhill/verdiclip/issues"
+Documentation = "https://github.com/mikejhill/verdiclip/tree/main/docs"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0,<9",

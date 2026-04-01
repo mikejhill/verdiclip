@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QGraphicsView,
 )
 
+from verdiclip.editor import Z_BACKGROUND
 from verdiclip.editor.tools.base import BaseTool
 
 if TYPE_CHECKING:
@@ -146,7 +147,7 @@ class ObfuscateTool(BaseTool):
         if not self._scene:
             return None
         for item in self._scene.items():
-            if isinstance(item, QGraphicsPixmapItem) and item.zValue() <= -1000:
+            if isinstance(item, QGraphicsPixmapItem) and item.zValue() <= Z_BACKGROUND:
                 return item
         return None
 

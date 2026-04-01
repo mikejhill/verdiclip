@@ -57,53 +57,72 @@ class TestSettingsDialogCreation:
 
 
 class TestLoadValues:
-    def test_capture_settings_loaded(self, qapp, tmp_config) -> None:
+    def test_capture_default_action_loaded(self, qapp, tmp_config) -> None:
         tmp_config.set("capture.default_action", "clipboard")
-        tmp_config.set("capture.include_cursor", True)
-        tmp_config.set("capture.region_magnifier", False)
-        tmp_config.set("capture.window_decorations", False)
-
         dialog = SettingsDialog(tmp_config)
         assert dialog._capture_action.currentIndex() == 2, (
             f"Expected dialog._capture_action.currentIndex() to equal 2,"
             f" got {dialog._capture_action.currentIndex()}"
         )
+
+    def test_capture_include_cursor_loaded(self, qapp, tmp_config) -> None:
+        tmp_config.set("capture.include_cursor", True)
+        dialog = SettingsDialog(tmp_config)
         assert dialog._include_cursor.isChecked() is True, (
             f"Expected dialog._include_cursor.isChecked() to be True,"
             f" got {dialog._include_cursor.isChecked()}"
         )
+
+    def test_capture_region_magnifier_loaded(self, qapp, tmp_config) -> None:
+        tmp_config.set("capture.region_magnifier", False)
+        dialog = SettingsDialog(tmp_config)
         assert dialog._region_magnifier.isChecked() is False, (
             f"Expected dialog._region_magnifier.isChecked() to be False,"
             f" got {dialog._region_magnifier.isChecked()}"
         )
+
+    def test_capture_window_decorations_loaded(self, qapp, tmp_config) -> None:
+        tmp_config.set("capture.window_decorations", False)
+        dialog = SettingsDialog(tmp_config)
         assert dialog._window_decorations.isChecked() is False, (
             f"Expected dialog._window_decorations.isChecked() to be False,"
             f" got {dialog._window_decorations.isChecked()}"
         )
 
-    def test_save_settings_loaded(self, qapp, tmp_config) -> None:
+    def test_save_directory_loaded(self, qapp, tmp_config) -> None:
         tmp_config.set("save.default_directory", r"C:\Screenshots")
-        tmp_config.set("save.default_format", "jpg")
-        tmp_config.set("save.jpg_quality", 75)
-        tmp_config.set("save.auto_save_enabled", True)
-        tmp_config.set("save.filename_pattern", "Img_{date}")
-
         dialog = SettingsDialog(tmp_config)
         assert dialog._save_dir.text() == r"C:\Screenshots", (
             f"Expected dialog._save_dir.text() to equal 'C:\\Screenshots',"
             f" got {dialog._save_dir.text()}"
         )
+
+    def test_save_format_loaded(self, qapp, tmp_config) -> None:
+        tmp_config.set("save.default_format", "jpg")
+        dialog = SettingsDialog(tmp_config)
         assert dialog._save_format.currentText() == "JPG", (
             f"Expected dialog._save_format.currentText() to equal 'JPG',"
             f" got {dialog._save_format.currentText()}"
         )
+
+    def test_save_jpg_quality_loaded(self, qapp, tmp_config) -> None:
+        tmp_config.set("save.jpg_quality", 75)
+        dialog = SettingsDialog(tmp_config)
         assert dialog._jpg_quality.value() == 75, (
             f"Expected dialog._jpg_quality.value() to equal 75, got {dialog._jpg_quality.value()}"
         )
+
+    def test_save_auto_save_loaded(self, qapp, tmp_config) -> None:
+        tmp_config.set("save.auto_save_enabled", True)
+        dialog = SettingsDialog(tmp_config)
         assert dialog._auto_save.isChecked() is True, (
             f"Expected dialog._auto_save.isChecked() to be True,"
             f" got {dialog._auto_save.isChecked()}"
         )
+
+    def test_save_filename_pattern_loaded(self, qapp, tmp_config) -> None:
+        tmp_config.set("save.filename_pattern", "Img_{date}")
+        dialog = SettingsDialog(tmp_config)
         assert dialog._filename_pattern.text() == "Img_{date}", (
             f"Expected dialog._filename_pattern.text() to equal 'Img_{{date}}',"
             f" got {dialog._filename_pattern.text()}"
@@ -126,30 +145,41 @@ class TestLoadValues:
             f"Expected dialog._font_size.value() to equal 20, got {dialog._font_size.value()}"
         )
 
-    def test_hotkey_settings_loaded(self, qapp, tmp_config) -> None:
+    def test_hotkey_region_loaded(self, qapp, tmp_config) -> None:
         tmp_config.set("hotkeys.region", "ctrl+r")
-        tmp_config.set("hotkeys.fullscreen", "ctrl+f")
-        tmp_config.set("hotkeys.window", "ctrl+w")
-        tmp_config.set("hotkeys.window_pick", "ctrl+p")
-        tmp_config.set("hotkeys.repeat", "ctrl+l")
-
         dialog = SettingsDialog(tmp_config)
         assert dialog._hotkey_region.text() == "ctrl+r", (
             f"Expected dialog._hotkey_region.text() to equal 'ctrl+r',"
             f" got {dialog._hotkey_region.text()}"
         )
+
+    def test_hotkey_fullscreen_loaded(self, qapp, tmp_config) -> None:
+        tmp_config.set("hotkeys.fullscreen", "ctrl+f")
+        dialog = SettingsDialog(tmp_config)
         assert dialog._hotkey_fullscreen.text() == "ctrl+f", (
             f"Expected dialog._hotkey_fullscreen.text() to equal 'ctrl+f',"
             f" got {dialog._hotkey_fullscreen.text()}"
         )
+
+    def test_hotkey_window_loaded(self, qapp, tmp_config) -> None:
+        tmp_config.set("hotkeys.window", "ctrl+w")
+        dialog = SettingsDialog(tmp_config)
         assert dialog._hotkey_window.text() == "ctrl+w", (
             f"Expected dialog._hotkey_window.text() to equal 'ctrl+w',"
             f" got {dialog._hotkey_window.text()}"
         )
+
+    def test_hotkey_window_pick_loaded(self, qapp, tmp_config) -> None:
+        tmp_config.set("hotkeys.window_pick", "ctrl+p")
+        dialog = SettingsDialog(tmp_config)
         assert dialog._hotkey_window_pick.text() == "ctrl+p", (
             f"Expected dialog._hotkey_window_pick.text() to equal 'ctrl+p',"
             f" got {dialog._hotkey_window_pick.text()}"
         )
+
+    def test_hotkey_repeat_loaded(self, qapp, tmp_config) -> None:
+        tmp_config.set("hotkeys.repeat", "ctrl+l")
+        dialog = SettingsDialog(tmp_config)
         assert dialog._hotkey_repeat.text() == "ctrl+l", (
             f"Expected dialog._hotkey_repeat.text() to equal 'ctrl+l',"
             f" got {dialog._hotkey_repeat.text()}"
@@ -171,58 +201,82 @@ class TestLoadValues:
 
 
 class TestSaveAndClose:
-    def test_capture_settings_saved(self, qapp, tmp_config) -> None:
+    def test_capture_default_action_saved(self, qapp, tmp_config) -> None:
         dialog = SettingsDialog(tmp_config)
         dialog._capture_action.setCurrentIndex(1)  # file
-        dialog._include_cursor.setChecked(True)
-        dialog._region_magnifier.setChecked(False)
-        dialog._window_decorations.setChecked(False)
-
         dialog._save_and_close()
-
         assert tmp_config.get("capture.default_action") == "file", (
             f"Expected tmp_config.get('capture.default_action') to equal 'file',"
             f" got {tmp_config.get('capture.default_action')}"
         )
+
+    def test_capture_include_cursor_saved(self, qapp, tmp_config) -> None:
+        dialog = SettingsDialog(tmp_config)
+        dialog._include_cursor.setChecked(True)
+        dialog._save_and_close()
         assert tmp_config.get("capture.include_cursor") is True, (
             f"Expected tmp_config.get('capture.include_cursor') to be True,"
             f" got {tmp_config.get('capture.include_cursor')}"
         )
+
+    def test_capture_region_magnifier_saved(self, qapp, tmp_config) -> None:
+        dialog = SettingsDialog(tmp_config)
+        dialog._region_magnifier.setChecked(False)
+        dialog._save_and_close()
         assert tmp_config.get("capture.region_magnifier") is False, (
             f"Expected tmp_config.get('capture.region_magnifier') to be False,"
             f" got {tmp_config.get('capture.region_magnifier')}"
         )
+
+    def test_capture_window_decorations_saved(self, qapp, tmp_config) -> None:
+        dialog = SettingsDialog(tmp_config)
+        dialog._window_decorations.setChecked(False)
+        dialog._save_and_close()
         assert tmp_config.get("capture.window_decorations") is False, (
             f"Expected tmp_config.get('capture.window_decorations') to be False,"
             f" got {tmp_config.get('capture.window_decorations')}"
         )
 
-    def test_save_settings_saved(self, qapp, tmp_config) -> None:
+    def test_save_directory_saved(self, qapp, tmp_config) -> None:
         dialog = SettingsDialog(tmp_config)
         dialog._save_dir.setText(r"D:\Captures")
-        dialog._save_format.setCurrentText("JPG")
-        dialog._jpg_quality.setValue(60)
-        dialog._auto_save.setChecked(True)
-        dialog._filename_pattern.setText("Cap_{counter}")
-
         dialog._save_and_close()
-
         assert tmp_config.get("save.default_directory") == r"D:\Captures", (
             f"Expected tmp_config.get('save.default_directory') to equal 'D:\\Captures',"
             f" got {tmp_config.get('save.default_directory')}"
         )
+
+    def test_save_format_saved(self, qapp, tmp_config) -> None:
+        dialog = SettingsDialog(tmp_config)
+        dialog._save_format.setCurrentText("JPG")
+        dialog._save_and_close()
         assert tmp_config.get("save.default_format") == "jpg", (
             f"Expected tmp_config.get('save.default_format') to equal 'jpg',"
             f" got {tmp_config.get('save.default_format')}"
         )
+
+    def test_save_jpg_quality_saved(self, qapp, tmp_config) -> None:
+        dialog = SettingsDialog(tmp_config)
+        dialog._jpg_quality.setValue(60)
+        dialog._save_and_close()
         assert tmp_config.get("save.jpg_quality") == 60, (
             f"Expected tmp_config.get('save.jpg_quality') to equal 60,"
             f" got {tmp_config.get('save.jpg_quality')}"
         )
+
+    def test_save_auto_save_enabled_saved(self, qapp, tmp_config) -> None:
+        dialog = SettingsDialog(tmp_config)
+        dialog._auto_save.setChecked(True)
+        dialog._save_and_close()
         assert tmp_config.get("save.auto_save_enabled") is True, (
             f"Expected tmp_config.get('save.auto_save_enabled') to be True,"
             f" got {tmp_config.get('save.auto_save_enabled')}"
         )
+
+    def test_save_filename_pattern_saved(self, qapp, tmp_config) -> None:
+        dialog = SettingsDialog(tmp_config)
+        dialog._filename_pattern.setText("Cap_{counter}")
+        dialog._save_and_close()
         assert tmp_config.get("save.filename_pattern") == "Cap_{counter}", (
             f"Expected tmp_config.get('save.filename_pattern') to equal 'Cap_{{counter}}',"
             f" got {tmp_config.get('save.filename_pattern')}"
@@ -249,32 +303,46 @@ class TestSaveAndClose:
             f" got {tmp_config.get('editor.default_font_size')}"
         )
 
-    def test_hotkey_settings_saved(self, qapp, tmp_config) -> None:
+    def test_hotkey_region_saved(self, qapp, tmp_config) -> None:
         dialog = SettingsDialog(tmp_config)
         dialog._hotkey_region.setText("alt+1")
-        dialog._hotkey_fullscreen.setText("alt+2")
-        dialog._hotkey_window.setText("alt+3")
-        dialog._hotkey_window_pick.setText("alt+4")
-        dialog._hotkey_repeat.setText("alt+5")
-
         dialog._save_and_close()
-
         assert tmp_config.get("hotkeys.region") == "alt+1", (
             f"Expected tmp_config.get('hotkeys.region') to equal 'alt+1',"
             f" got {tmp_config.get('hotkeys.region')}"
         )
+
+    def test_hotkey_fullscreen_saved(self, qapp, tmp_config) -> None:
+        dialog = SettingsDialog(tmp_config)
+        dialog._hotkey_fullscreen.setText("alt+2")
+        dialog._save_and_close()
         assert tmp_config.get("hotkeys.fullscreen") == "alt+2", (
             f"Expected tmp_config.get('hotkeys.fullscreen') to equal 'alt+2',"
             f" got {tmp_config.get('hotkeys.fullscreen')}"
         )
+
+    def test_hotkey_window_saved(self, qapp, tmp_config) -> None:
+        dialog = SettingsDialog(tmp_config)
+        dialog._hotkey_window.setText("alt+3")
+        dialog._save_and_close()
         assert tmp_config.get("hotkeys.window") == "alt+3", (
             f"Expected tmp_config.get('hotkeys.window') to equal 'alt+3',"
             f" got {tmp_config.get('hotkeys.window')}"
         )
+
+    def test_hotkey_window_pick_saved(self, qapp, tmp_config) -> None:
+        dialog = SettingsDialog(tmp_config)
+        dialog._hotkey_window_pick.setText("alt+4")
+        dialog._save_and_close()
         assert tmp_config.get("hotkeys.window_pick") == "alt+4", (
             f"Expected tmp_config.get('hotkeys.window_pick') to equal 'alt+4',"
             f" got {tmp_config.get('hotkeys.window_pick')}"
         )
+
+    def test_hotkey_repeat_saved(self, qapp, tmp_config) -> None:
+        dialog = SettingsDialog(tmp_config)
+        dialog._hotkey_repeat.setText("alt+5")
+        dialog._save_and_close()
         assert tmp_config.get("hotkeys.repeat") == "alt+5", (
             f"Expected tmp_config.get('hotkeys.repeat') to equal 'alt+5',"
             f" got {tmp_config.get('hotkeys.repeat')}"

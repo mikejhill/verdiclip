@@ -16,6 +16,19 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _mss_to_pixmap(sct_img) -> QPixmap:
+    """Convert an mss screenshot to a QPixmap."""
+    img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
+    qimage = QImage(
+        img.tobytes("raw", "RGB"),
+        img.width,
+        img.height,
+        3 * img.width,
+        QImage.Format.Format_RGB888,
+    )
+    return QPixmap.fromImage(qimage)
+
+
 class ScreenCapture:
     """Captures full-screen screenshots using mss for performance."""
 
@@ -25,16 +38,9 @@ class ScreenCapture:
         with mss.mss() as sct:
             monitor = sct.monitors[0]  # Virtual screen (all monitors)
             raw = sct.grab(monitor)
-            img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
-            qimage = QImage(
-                img.tobytes("raw", "RGB"),
-                img.width,
-                img.height,
-                3 * img.width,
-                QImage.Format.Format_RGB888,
-            )
-            logger.info("Captured all monitors: %dx%d", img.width, img.height)
-            return QPixmap.fromImage(qimage)
+            pixmap = _mss_to_pixmap(raw)
+            logger.info("Captured all monitors: %dx%d", pixmap.width(), pixmap.height())
+            return pixmap
 
     @staticmethod
     def capture_primary_monitor() -> QPixmap:
@@ -42,16 +48,9 @@ class ScreenCapture:
         with mss.mss() as sct:
             monitor = sct.monitors[1]  # Primary monitor
             raw = sct.grab(monitor)
-            img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
-            qimage = QImage(
-                img.tobytes("raw", "RGB"),
-                img.width,
-                img.height,
-                3 * img.width,
-                QImage.Format.Format_RGB888,
-            )
-            logger.info("Captured primary monitor: %dx%d", img.width, img.height)
-            return QPixmap.fromImage(qimage)
+            pixmap = _mss_to_pixmap(raw)
+            logger.info("Captured primary monitor: %dx%d", pixmap.width(), pixmap.height())
+            return pixmap
 
     @staticmethod
     def capture_monitor(index: int) -> QPixmap:
@@ -64,16 +63,9 @@ class ScreenCapture:
                 )
             monitor = sct.monitors[index]
             raw = sct.grab(monitor)
-            img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
-            qimage = QImage(
-                img.tobytes("raw", "RGB"),
-                img.width,
-                img.height,
-                3 * img.width,
-                QImage.Format.Format_RGB888,
-            )
-            logger.info("Captured monitor %d: %dx%d", index, img.width, img.height)
-            return QPixmap.fromImage(qimage)
+            pixmap = _mss_to_pixmap(raw)
+            logger.info("Captured monitor %d: %dx%d", index, pixmap.width(), pixmap.height())
+            return pixmap
 
     @staticmethod
     def capture_region(rect: QRect) -> QPixmap:
@@ -86,19 +78,12 @@ class ScreenCapture:
         }
         with mss.mss() as sct:
             raw = sct.grab(region)
-            img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
-            qimage = QImage(
-                img.tobytes("raw", "RGB"),
-                img.width,
-                img.height,
-                3 * img.width,
-                QImage.Format.Format_RGB888,
-            )
+            pixmap = _mss_to_pixmap(raw)
             logger.info(
                 "Captured region (%d,%d %dx%d)",
                 rect.x(), rect.y(), rect.width(), rect.height(),
             )
-            return QPixmap.fromImage(qimage)
+            return pixmap
 
     @staticmethod
     def get_monitor_count() -> int:

@@ -40,10 +40,15 @@ Desktop.ini
 htmlcov/
 .pytest_cache/
 .benchmarks/
+.ruff_cache/
 
 # Distribution
 *.exe
 *.msi
+*.pyd
+
+# Logs
+*.log
 
 # Environment
 .env
