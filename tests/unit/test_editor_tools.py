@@ -2934,3 +2934,395 @@ class TestSelectToolHandles:
         tool.deactivate()
         assert tool._handles == [], "Expected handles cleared on deactivate"
 
+
+# ---------------------------------------------------------------------------
+# Sharp corners: MiterJoin on rectangles, NoPen/FlatCap on arrows
+# ---------------------------------------------------------------------------
+
+class TestRectangleMiterJoin:
+    """Rectangle pen must use MiterJoin for sharp corners at all stroke widths."""
+
+    def test_pen_uses_miter_join(self, qapp) -> None:
+        scene = QGraphicsScene()
+        view = QGraphicsView(scene)
+        tool = RectangleTool(stroke_width=8)
+        _simulate_draw(tool, scene, view, QPointF(0, 0), QPointF(100, 100))
+
+        rects = [i for i in scene.items() if isinstance(i, QGraphicsRectItem)]
+        assert len(rects) == 1
+        assert rects[0].pen().joinStyle() == Qt.PenJoinStyle.MiterJoin, (
+            f"Expected MiterJoin, got {rects[0].pen().joinStyle()}"
+        )
+
+
+class TestArrowItemSharpTip:
+    """ArrowItem shaft must use FlatCap and arrowhead must use NoPen for a sharp tip."""
+
+    def test_shaft_uses_flat_cap(self, qapp) -> None:
+        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        item = ArrowItem(QPointF(0, 0), QPointF(100, 0), QColor("#FF0000"), 3)
+        assert item._shaft.pen().capStyle() == Qt.PenCapStyle.FlatCap, (
+            f"Expected FlatCap on shaft, got {item._shaft.pen().capStyle()}"
+        )
+
+    def test_arrowhead_has_no_pen(self, qapp) -> None:
+        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        item = ArrowItem(QPointF(0, 0), QPointF(100, 0), QColor("#FF0000"), 3)
+        assert item._head.pen().style() == Qt.PenStyle.NoPen, (
+            f"Expected NoPen on arrowhead, got {item._head.pen().style()}"
+        )
+
+    def test_arrowhead_brush_matches_stroke_color(self, qapp) -> None:
+        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        color = QColor("#00AABB")
+        item = ArrowItem(QPointF(0, 0), QPointF(100, 0), color, 3)
+        assert item._head.brush().color().name() == color.name(), (
+            f"Expected brush color {color.name()}, got {item._head.brush().color().name()}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# ArrowItem geometry API
+# ---------------------------------------------------------------------------
+
+class TestArrowItemGeometry:
+    """ArrowItem endpoint accessors and update_endpoints."""
+
+    def test_update_endpoints_changes_shaft_line(self, qapp) -> None:
+        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        item = ArrowItem(QPointF(0, 0), QPointF(50, 50), QColor("#FF0000"), 2)
+        item.update_endpoints(QPointF(10, 20), QPointF(90, 80))
+        line = item._shaft.line()
+        assert abs(line.p1().x() - 10) < 0.5
+        assert abs(line.p2().x() - 90) < 0.5
+
+    def test_get_scene_p1_p2_without_pos_offset(self, qapp) -> None:
+        """When item pos() is (0,0), scene coords equal local coords."""
+        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        scene = QGraphicsScene()
+        item = ArrowItem(QPointF(10, 20), QPointF(80, 60), QColor("#FF0000"), 2)
+        scene.addItem(item)
+        sp1 = item.get_scene_p1()
+        sp2 = item.get_scene_p2()
+        assert abs(sp1.x() - 10) < 0.5 and abs(sp1.y() - 20) < 0.5, (
+            f"Expected scene_p1 ~(10, 20), got ({sp1.x():.1f}, {sp1.y():.1f})"
+        )
+        assert abs(sp2.x() - 80) < 0.5 and abs(sp2.y() - 60) < 0.5, (
+            f"Expected scene_p2 ~(80, 60), got ({sp2.x():.1f}, {sp2.y():.1f})"
+        )
+
+    def test_set_scene_p1_moves_tail(self, qapp) -> None:
+        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        scene = QGraphicsScene()
+        item = ArrowItem(QPointF(0, 0), QPointF(100, 0), QColor("#FF0000"), 2)
+        scene.addItem(item)
+        item.set_scene_p1(QPointF(30, 30))
+        sp1 = item.get_scene_p1()
+        assert abs(sp1.x() - 30) < 0.5 and abs(sp1.y() - 30) < 0.5, (
+            f"Expected tail at (30, 30), got ({sp1.x():.1f}, {sp1.y():.1f})"
+        )
+        # Tip should remain unchanged
+        sp2 = item.get_scene_p2()
+        assert abs(sp2.x() - 100) < 0.5, (
+            f"Expected tip x ~100, got {sp2.x():.1f}"
+        )
+
+    def test_set_scene_p2_moves_tip(self, qapp) -> None:
+        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        scene = QGraphicsScene()
+        item = ArrowItem(QPointF(0, 0), QPointF(100, 0), QColor("#FF0000"), 2)
+        scene.addItem(item)
+        item.set_scene_p2(QPointF(200, 50))
+        sp2 = item.get_scene_p2()
+        assert abs(sp2.x() - 200) < 0.5 and abs(sp2.y() - 50) < 0.5, (
+            f"Expected tip at (200, 50), got ({sp2.x():.1f}, {sp2.y():.1f})"
+        )
+        # Tail should remain unchanged
+        sp1 = item.get_scene_p1()
+        assert abs(sp1.x()) < 0.5, f"Expected tail x ~0, got {sp1.x():.1f}"
+
+    def test_set_stroke_color_updates_shaft_and_head(self, qapp) -> None:
+        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        item = ArrowItem(QPointF(0, 0), QPointF(100, 0), QColor("#FF0000"), 2)
+        new_color = QColor("#00FF00")
+        item.set_stroke_color(new_color)
+        assert item._shaft.pen().color().name() == new_color.name()
+        assert item._head.brush().color().name() == new_color.name()
+
+    def test_set_stroke_width_updates_shaft_pen(self, qapp) -> None:
+        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        item = ArrowItem(QPointF(0, 0), QPointF(100, 0), QColor("#FF0000"), 2)
+        item.set_stroke_width(10)
+        assert item._shaft.pen().width() == 10, (
+            f"Expected shaft pen width 10, got {item._shaft.pen().width()}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Arrow endpoint handles (LINE_P1 / LINE_P2)
+# ---------------------------------------------------------------------------
+
+class TestArrowItemHandles:
+    """Handles system creates LINE_P1/LINE_P2 handles for ArrowItem."""
+
+    def test_create_handles_returns_two_line_handles(self, qapp) -> None:
+        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        from verdiclip.editor.tools.handles import (  # noqa: PLC0415
+            HandleRole,
+            create_handles_for_item,
+        )
+
+        scene = QGraphicsScene()
+        item = ArrowItem(QPointF(0, 0), QPointF(100, 50), QColor("#FF0000"), 2)
+        scene.addItem(item)
+        handles = create_handles_for_item(item)
+
+        assert len(handles) == 2, f"Expected 2 handles for ArrowItem, got {len(handles)}"
+        roles = {h.role for h in handles}
+        assert HandleRole.LINE_P1 in roles, "Expected LINE_P1 handle"
+        assert HandleRole.LINE_P2 in roles, "Expected LINE_P2 handle"
+
+    def test_apply_resize_p2_moves_tip(self, qapp) -> None:
+        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        from verdiclip.editor.tools.handles import HandleRole, apply_resize  # noqa: PLC0415
+
+        scene = QGraphicsScene()
+        item = ArrowItem(QPointF(0, 0), QPointF(100, 0), QColor("#FF0000"), 2)
+        scene.addItem(item)
+        original_p2 = item.get_scene_p2()
+        apply_resize(item, HandleRole.LINE_P2, QPointF(20, 10))
+        new_p2 = item.get_scene_p2()
+
+        assert abs(new_p2.x() - (original_p2.x() + 20)) < 0.5, (
+            f"Expected p2.x ~{original_p2.x() + 20}, got {new_p2.x():.1f}"
+        )
+        assert abs(new_p2.y() - (original_p2.y() + 10)) < 0.5, (
+            f"Expected p2.y ~{original_p2.y() + 10}, got {new_p2.y():.1f}"
+        )
+
+    def test_apply_resize_p1_moves_tail_only(self, qapp) -> None:
+        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        from verdiclip.editor.tools.handles import HandleRole, apply_resize  # noqa: PLC0415
+
+        scene = QGraphicsScene()
+        item = ArrowItem(QPointF(0, 0), QPointF(100, 0), QColor("#FF0000"), 2)
+        scene.addItem(item)
+        original_p2 = item.get_scene_p2()
+        apply_resize(item, HandleRole.LINE_P1, QPointF(-10, 5))
+        new_p1 = item.get_scene_p1()
+        new_p2 = item.get_scene_p2()
+
+        assert abs(new_p1.x() - (-10)) < 0.5, (
+            f"Expected p1.x ~-10, got {new_p1.x():.1f}"
+        )
+        assert abs(new_p2.x() - original_p2.x()) < 0.5, (
+            "p2 should not move when only p1 is dragged"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 45-degree snap: LineTool and ArrowTool
+# ---------------------------------------------------------------------------
+
+class TestLineToolSnap45:
+    """LineTool Shift-snap must snap to 45-degree increments."""
+
+    def test_snap_horizontal_stays_horizontal(self, qapp) -> None:
+        from verdiclip.editor.tools.line import LineTool  # noqa: PLC0415
+        origin = QPointF(0, 0)
+        # Nearly horizontal — should snap to 0°
+        result = LineTool._snap_angle(origin, QPointF(100, 5))
+        assert abs(result.y()) < 1.0, (
+            f"Expected y ~0 for horizontal snap, got {result.y():.2f}"
+        )
+
+    def test_snap_45_degrees(self, qapp) -> None:
+        from verdiclip.editor.tools.line import LineTool  # noqa: PLC0415
+        origin = QPointF(0, 0)
+        # 40° input → should snap to 45°
+        import math
+        target = QPointF(100 * math.cos(math.radians(40)), 100 * math.sin(math.radians(40)))
+        result = LineTool._snap_angle(origin, target)
+        angle = math.degrees(math.atan2(result.y(), result.x()))
+        assert abs(angle - 45.0) < 1.0, (
+            f"Expected snap to 45°, got {angle:.1f}°"
+        )
+
+    def test_snap_does_not_snap_to_15_degrees(self, qapp) -> None:
+        """Verify old 15° snap no longer occurs — 15° input should snap to 0° or 45°, not 15°."""
+        import math
+
+        from verdiclip.editor.tools.line import LineTool  # noqa: PLC0415
+        origin = QPointF(0, 0)
+        target = QPointF(100 * math.cos(math.radians(15)), 100 * math.sin(math.radians(15)))
+        result = LineTool._snap_angle(origin, target)
+        angle = math.degrees(math.atan2(result.y(), result.x()))
+        # Must be 0 or 45, never 15
+        assert abs(angle) < 1.0 or abs(angle - 45.0) < 1.0, (
+            f"Expected snap to 0° or 45°, got {angle:.1f}°"
+        )
+
+    def test_lineTool_shift_snaps_to_45(self, qapp) -> None:
+        scene = QGraphicsScene()
+        view = QGraphicsView(scene)
+        tool = LineTool()
+        _simulate_draw(
+            tool, scene, view, QPointF(0, 0), QPointF(80, 30),
+            modifiers=Qt.KeyboardModifier.ShiftModifier,
+        )
+        lines = [i for i in scene.items() if isinstance(i, QGraphicsLineItem)]
+        assert len(lines) == 1
+        line = lines[0].line()
+        import math
+        angle = abs(math.degrees(math.atan2(
+            line.p2().y() - line.p1().y(),
+            line.p2().x() - line.p1().x(),
+        )))
+        # Must be 0°, 45°, 90°, or 135°
+        snapped_angles = [0, 45, 90, 135, 180]
+        assert any(abs(angle - a) < 1.0 for a in snapped_angles), (
+            f"Expected line snapped to 45° increment, got angle {angle:.1f}°"
+        )
+
+
+class TestArrowSnap45:
+    """ArrowTool Shift-snap must snap to 45-degree increments."""
+
+    def test_snap_45_function_horizontal(self, qapp) -> None:
+        from verdiclip.editor.tools.arrow import _snap_45  # noqa: PLC0415
+        origin = QPointF(0, 0)
+        result = _snap_45(origin, QPointF(100, 3))
+        assert abs(result.y()) < 1.0, (
+            f"Expected y ~0 for near-horizontal input, got {result.y():.2f}"
+        )
+
+    def test_snap_45_function_diagonal(self, qapp) -> None:
+        import math
+
+        from verdiclip.editor.tools.arrow import _snap_45  # noqa: PLC0415
+        origin = QPointF(0, 0)
+        # ~40° → should snap to 45°
+        target = QPointF(100 * math.cos(math.radians(40)), 100 * math.sin(math.radians(40)))
+        result = _snap_45(origin, target)
+        angle = math.degrees(math.atan2(result.y(), result.x()))
+        assert abs(angle - 45.0) < 1.0, f"Expected 45°, got {angle:.1f}°"
+
+    def test_arrow_shift_snaps_endpoint(self, qapp) -> None:
+        """ArrowTool with Shift produces an arrow whose angle is a 45° multiple."""
+        import math
+
+        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        scene = QGraphicsScene()
+        view = QGraphicsView(scene)
+        _simulate_draw(
+            ArrowTool(), scene, view, QPointF(0, 0), QPointF(80, 30),
+            modifiers=Qt.KeyboardModifier.ShiftModifier,
+        )
+        groups = [i for i in scene.items() if isinstance(i, ArrowItem)]
+        assert len(groups) == 1
+        sp1 = groups[0].get_scene_p1()
+        sp2 = groups[0].get_scene_p2()
+        angle = abs(math.degrees(math.atan2(sp2.y() - sp1.y(), sp2.x() - sp1.x())))
+        snapped_angles = [0, 45, 90, 135, 180]
+        assert any(abs(angle - a) < 1.0 for a in snapped_angles), (
+            f"Expected arrow angle at 45° multiple, got {angle:.1f}°"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Counter (NumberMarkerItem) 1:1 resize handles
+# ---------------------------------------------------------------------------
+
+class TestNumberMarkerResizeHandles:
+    """NumberMarkerItem gets exactly 4 corner handles and resizes uniformly."""
+
+    def test_create_handles_returns_four_corner_handles(self, qapp) -> None:
+        from verdiclip.editor.tools.handles import (  # noqa: PLC0415
+            HandleRole,
+            create_handles_for_item,
+        )
+        from verdiclip.editor.tools.number import NumberMarkerItem  # noqa: PLC0415
+
+        scene = QGraphicsScene()
+        item = NumberMarkerItem("1", QColor("#FF0000"), QColor("#FFFFFF"))
+        scene.addItem(item)
+        handles = create_handles_for_item(item)
+
+        assert len(handles) == 4, (
+            f"Expected 4 corner handles for NumberMarkerItem, got {len(handles)}"
+        )
+        roles = {h.role for h in handles}
+        assert HandleRole.NW in roles
+        assert HandleRole.NE in roles
+        assert HandleRole.SE in roles
+        assert HandleRole.SW in roles
+        # Edge-midpoint handles must not be present
+        assert HandleRole.N not in roles, "Edge-midpoint N handle should not exist for markers"
+        assert HandleRole.E not in roles, "Edge-midpoint E handle should not exist for markers"
+
+    def test_resize_se_grows_radius_uniformly(self, qapp) -> None:
+        from verdiclip.editor.tools.handles import HandleRole, apply_resize  # noqa: PLC0415
+        from verdiclip.editor.tools.number import NumberMarkerItem  # noqa: PLC0415
+
+        scene = QGraphicsScene()
+        item = NumberMarkerItem("1", QColor("#FF0000"), QColor("#FFFFFF"))
+        scene.addItem(item)
+        original_w = item.rect().width()
+
+        apply_resize(item, HandleRole.SE, QPointF(10, 10))
+        new_rect = item.rect()
+
+        # Width and height must remain equal (circle stays circular)
+        assert abs(new_rect.width() - new_rect.height()) < 0.5, (
+            f"Expected w == h after resize, got "
+            f"w={new_rect.width():.1f} h={new_rect.height():.1f}"
+        )
+        assert new_rect.width() > original_w, "Expected circle to grow after SE drag"
+
+    def test_resize_nw_grows_radius_uniformly(self, qapp) -> None:
+        from verdiclip.editor.tools.handles import HandleRole, apply_resize  # noqa: PLC0415
+        from verdiclip.editor.tools.number import NumberMarkerItem  # noqa: PLC0415
+
+        scene = QGraphicsScene()
+        item = NumberMarkerItem("1", QColor("#FF0000"), QColor("#FFFFFF"))
+        scene.addItem(item)
+        original_w = item.rect().width()
+
+        apply_resize(item, HandleRole.NW, QPointF(-10, -10))
+        new_rect = item.rect()
+
+        assert abs(new_rect.width() - new_rect.height()) < 0.5
+        assert new_rect.width() > original_w, "Expected circle to grow after NW drag"
+
+    def test_resize_calls_center_text(self, qapp) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        from verdiclip.editor.tools.handles import HandleRole, apply_resize  # noqa: PLC0415
+        from verdiclip.editor.tools.number import NumberMarkerItem  # noqa: PLC0415
+
+        scene = QGraphicsScene()
+        item = NumberMarkerItem("1", QColor("#FF0000"), QColor("#FFFFFF"))
+        scene.addItem(item)
+
+        with patch.object(item, "_center_text") as mock_center:
+            apply_resize(item, HandleRole.SE, QPointF(5, 5))
+            mock_center.assert_called_once()
+
+    def test_resize_minimum_radius_enforced(self, qapp) -> None:
+        from verdiclip.editor.tools.handles import (  # noqa: PLC0415
+            _MIN_MARKER_RADIUS,
+            HandleRole,
+            apply_resize,
+        )
+        from verdiclip.editor.tools.number import NumberMarkerItem  # noqa: PLC0415
+
+        scene = QGraphicsScene()
+        item = NumberMarkerItem("1", QColor("#FF0000"), QColor("#FFFFFF"))
+        scene.addItem(item)
+
+        # Drag inward by a huge amount — radius must not go below minimum
+        apply_resize(item, HandleRole.SE, QPointF(-1000, -1000))
+        new_r = item.rect().width() / 2.0
+        assert new_r >= _MIN_MARKER_RADIUS, (
+            f"Expected radius >= {_MIN_MARKER_RADIUS}, got {new_r:.1f}"
+        )
