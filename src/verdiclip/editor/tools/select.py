@@ -49,19 +49,32 @@ class SelectTool(BaseTool):
         z = item.zValue()
         return z > Z_BACKGROUND and z < Z_BOUNDARY
 
-    def mouse_press(self, scene_pos: QPointF, event: QMouseEvent) -> None:
-        if not self._scene or event.button() != Qt.MouseButton.LeftButton:
-            return
+    def _find_annotation_at(self, scene_pos: QPointF) -> QGraphicsItem | None:
+        """Find the topmost annotation item at the given scene position.
 
+        Uses scene.items() instead of itemAt() because the boundary rect
+        (z=Z_BOUNDARY) covers the full image area and would always be returned
+        first by itemAt(), hiding annotations beneath it.
+        """
+        if not self._scene:
+            return None
         transform = (
             self._view.transform()
             if self._view
             else self._scene.views()[0].transform()
         )
-        raw_item = self._scene.itemAt(scene_pos, transform)
+        for raw in self._scene.items(scene_pos, Qt.ItemSelectionMode.IntersectsItemShape,
+                                     Qt.SortOrder.DescendingOrder, transform):
+            top = _resolve_top_level_item(raw)
+            if self._is_annotation(top):
+                return top
+        return None
 
-        # Walk to top-level parent and check if it's a selectable annotation
-        item = _resolve_top_level_item(raw_item) if raw_item else None
+    def mouse_press(self, scene_pos: QPointF, event: QMouseEvent) -> None:
+        if not self._scene or event.button() != Qt.MouseButton.LeftButton:
+            return
+
+        item = self._find_annotation_at(scene_pos)
 
         if item and self._is_annotation(item):
             # Deselect others unless Ctrl is held

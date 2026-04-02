@@ -81,6 +81,8 @@ class CropCommand(QUndoCommand):
         old_pixmap,
         new_pixmap,
         removed_items: list,
+        item_positions: list[tuple],
+        crop_offset: tuple[float, float],
         description: str = "Crop image",
     ):
         super().__init__(description)
@@ -88,6 +90,8 @@ class CropCommand(QUndoCommand):
         self._old_pixmap = old_pixmap
         self._new_pixmap = new_pixmap
         self._removed_items = removed_items
+        self._item_positions = item_positions  # [(item, old_x, old_y), ...]
+        self._crop_offset = crop_offset  # (offset_x, offset_y)
         self._first_redo = True
 
     def redo(self) -> None:
@@ -95,9 +99,18 @@ class CropCommand(QUndoCommand):
             self._first_redo = False
             return
         self._canvas._replace_image(self._new_pixmap, self._removed_items, remove=True)
+        # Shift remaining items by crop offset
+        ox, oy = self._crop_offset
+        for item, _old_x, _old_y in self._item_positions:
+            if item not in self._removed_items and item.scene():
+                pos = item.pos()
+                item.setPos(pos.x() - ox, pos.y() - oy)
 
     def undo(self) -> None:
         self._canvas._replace_image(self._old_pixmap, self._removed_items, remove=False)
+        # Restore all items to their original positions
+        for item, old_x, old_y in self._item_positions:
+            item.setPos(old_x, old_y)
 
 
 class EditorHistory:

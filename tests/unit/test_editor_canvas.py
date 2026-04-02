@@ -1667,11 +1667,7 @@ class TestEditorCanvasCropUndoable:
         # Crop to a 50x50 region
         cropped = QPixmap(50, 50)
         cropped.fill(Qt.GlobalColor.red)
-        canvas.crop_undoable(cropped, [])
-
-        assert canvas.pixmap_item is not None, (
-            "Expected pixmap_item to exist after crop"
-        )
+        canvas.crop_undoable(cropped, [], [], (0.0, 0.0))
         assert canvas.pixmap_item.pixmap().width() == 50, (
             f"Expected cropped width 50, got {canvas.pixmap_item.pixmap().width()}"
         )
@@ -1689,7 +1685,7 @@ class TestEditorCanvasCropUndoable:
 
         cropped = QPixmap(50, 50)
         cropped.fill(Qt.GlobalColor.red)
-        canvas.crop_undoable(cropped, [])
+        canvas.crop_undoable(cropped, [], [], (0.0, 0.0))
 
         assert history.can_undo() is True, (
             "Expected can_undo() True after crop_undoable"
@@ -1724,7 +1720,7 @@ class TestEditorCanvasCropUndoable:
         # Now crop
         cropped = QPixmap(80, 80)
         cropped.fill(Qt.GlobalColor.green)
-        canvas.crop_undoable(cropped, [])
+        canvas.crop_undoable(cropped, [], [], (0.0, 0.0))
 
         # Undo crop
         history.undo()
@@ -1753,7 +1749,7 @@ class TestEditorCanvasCropUndoable:
 
         cropped = QPixmap(50, 50)
         cropped.fill(Qt.GlobalColor.red)
-        canvas.crop_undoable(cropped, [outside_item])
+        canvas.crop_undoable(cropped, [outside_item], [(outside_item, 70.0, 70.0)], (0.0, 0.0))
 
         assert outside_item not in canvas.scene.items(), (
             "Expected outside_item removed from scene after crop"
@@ -1825,9 +1821,9 @@ class TestEditorCanvasNumberEditorDoubleClick:
             lambda m: signal_received.append(m)
         )
 
-        # Patch scene.itemAt to return the marker directly (avoids coordinate
-        # mapping issues when the widget is not shown/laid out)
-        with patch.object(canvas.scene, "itemAt", return_value=marker):
+        # Patch _find_annotation_at to return the marker directly (avoids
+        # coordinate mapping issues when the widget is not shown/laid out)
+        with patch.object(select_tool, "_find_annotation_at", return_value=marker):
             event = _make_mouse_event(
                 QMouseEvent.Type.MouseButtonDblClick,
                 Qt.MouseButton.LeftButton,

@@ -239,7 +239,7 @@ class TestCropCommand:
         new_pixmap = QPixmap(50, 50)
         removed = [QGraphicsRectItem(0, 0, 10, 10)]
 
-        cmd = CropCommand(canvas, old_pixmap, new_pixmap, removed)
+        cmd = CropCommand(canvas, old_pixmap, new_pixmap, removed, [], (0.0, 0.0))
         cmd.redo()
 
         canvas._replace_image.assert_not_called(), (
@@ -257,7 +257,7 @@ class TestCropCommand:
         new_pixmap = QPixmap(50, 50)
         removed = [QGraphicsRectItem(0, 0, 10, 10)]
 
-        cmd = CropCommand(canvas, old_pixmap, new_pixmap, removed)
+        cmd = CropCommand(canvas, old_pixmap, new_pixmap, removed, [], (0.0, 0.0))
         cmd.redo()   # first redo (no-op)
         cmd.undo()   # undo
         cmd.redo()   # second redo — should apply
@@ -277,7 +277,7 @@ class TestCropCommand:
         new_pixmap = QPixmap(50, 50)
         removed = [QGraphicsRectItem(0, 0, 10, 10)]
 
-        cmd = CropCommand(canvas, old_pixmap, new_pixmap, removed)
+        cmd = CropCommand(canvas, old_pixmap, new_pixmap, removed, [], (0.0, 0.0))
         cmd.redo()   # first redo (no-op)
         cmd.undo()
 
@@ -297,7 +297,7 @@ class TestCropCommand:
         removed = []
 
         history = EditorHistory()
-        cmd = CropCommand(canvas, old_pixmap, new_pixmap, removed)
+        cmd = CropCommand(canvas, old_pixmap, new_pixmap, removed, [], (0.0, 0.0))
         history.push(cmd)
 
         assert history.can_undo() is True, (
@@ -324,7 +324,7 @@ class TestCropCommand:
         from PySide6.QtGui import QPixmap
 
         canvas = MagicMock()
-        cmd = CropCommand(canvas, QPixmap(100, 100), QPixmap(50, 50), [])
+        cmd = CropCommand(canvas, QPixmap(100, 100), QPixmap(50, 50), [], [], (0.0, 0.0))
         assert cmd.text() == "Crop image", (
             f"Expected description 'Crop image', got '{cmd.text()}'"
         )

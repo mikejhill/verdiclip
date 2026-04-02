@@ -116,7 +116,10 @@ class EditorCanvas(QGraphicsView):
         expanded = img_rect.adjusted(-margin, -margin, margin, margin)
         self._scene.setSceneRect(expanded)
 
-    def crop_undoable(self, new_pixmap: QPixmap, removed_items: list) -> None:
+    def crop_undoable(
+        self, new_pixmap: QPixmap, removed_items: list,
+        item_positions: list[tuple], crop_offset: tuple[float, float],
+    ) -> None:
         """Replace the background with a cropped image while keeping undo history."""
         if not self._history or not self._pixmap_item:
             self.set_image(new_pixmap)
@@ -135,7 +138,10 @@ class EditorCanvas(QGraphicsView):
         self._setup_background(new_pixmap)
 
         from verdiclip.editor.history import CropCommand
-        cmd = CropCommand(self, old_pixmap, new_pixmap, removed_items)
+        cmd = CropCommand(
+            self, old_pixmap, new_pixmap, removed_items,
+            item_positions, crop_offset,
+        )
         self._history.push(cmd)
         logger.info("Crop applied (undoable): %dx%d", new_pixmap.width(), new_pixmap.height())
 
@@ -227,13 +233,12 @@ class EditorCanvas(QGraphicsView):
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
         """Handle double-click to open inline editors (e.g., number markers)."""
         if self._current_tool:
-            scene_pos = self.mapToScene(event.position().toPoint())
-            from verdiclip.editor.tools.select import SelectTool, _resolve_top_level_item
+            from verdiclip.editor.tools.select import SelectTool
             if isinstance(self._current_tool, SelectTool):
-                transform = self.transform()
-                raw = self._scene.itemAt(scene_pos, transform)
-                if raw:
-                    item = _resolve_top_level_item(raw)
+                item = self._current_tool._find_annotation_at(
+                    self.mapToScene(event.position().toPoint()),
+                )
+                if item:
                     from verdiclip.editor.tools.number import NumberMarkerItem
                     if isinstance(item, NumberMarkerItem):
                         self.number_editor_requested.emit(item)

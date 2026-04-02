@@ -2423,14 +2423,13 @@ class TestSelectToolCtrlClick:
 
 
 # ---------------------------------------------------------------------------
-# ObfuscateTool — clamping to image bounds
+# ObfuscateTool — extending past image bounds
 # ---------------------------------------------------------------------------
 
 
-class TestObfuscateToolClampToImageBounds:
-    def test_drag_past_top_left_clamps_to_image_origin(self, qapp) -> None:
-        """Dragging from inside to past top-left clamps the obfuscation to (0,0)."""
-
+class TestObfuscateToolExtendsPastImageBounds:
+    def test_drag_past_top_left_allows_negative_position(self, qapp) -> None:
+        """Dragging from inside to past top-left should allow negative coordinates."""
         scene, bg = _make_scene_with_background(100, 100)
         view = QGraphicsView(scene)
         tool = ObfuscateTool()
@@ -2441,21 +2440,15 @@ class TestObfuscateToolClampToImageBounds:
             f"Expected 1 ObfuscationItem, got {len(overlays)}"
         )
         item = overlays[0]
-        assert item.pos().x() >= 0, (
-            f"Expected pos.x >= 0 (clamped to image), got {item.pos().x()}"
+        assert item.pos().x() < 0, (
+            f"Expected negative pos.x when dragged past top-left, got {item.pos().x()}"
         )
-        assert item.pos().y() >= 0, (
-            f"Expected pos.y >= 0 (clamped to image), got {item.pos().y()}"
-        )
-        assert abs(item.pos().x() - 0) < 1, (
-            f"Expected pos.x ~0 after clamping, got {item.pos().x()}"
-        )
-        assert abs(item.pos().y() - 0) < 1, (
-            f"Expected pos.y ~0 after clamping, got {item.pos().y()}"
+        assert item.pos().y() < 0, (
+            f"Expected negative pos.y when dragged past top-left, got {item.pos().y()}"
         )
 
-    def test_drag_past_top_left_clamps_size(self, qapp) -> None:
-        """Size should be clamped to 50x50 when dragging from (50,50) to (-20,-20)."""
+    def test_drag_past_top_left_preserves_full_size(self, qapp) -> None:
+        """Size should reflect the full drag area (70x70 from (50,50) to (-20,-20))."""
         scene, bg = _make_scene_with_background(100, 100)
         view = QGraphicsView(scene)
         tool = ObfuscateTool()
@@ -2466,15 +2459,15 @@ class TestObfuscateToolClampToImageBounds:
             f"Expected 1 ObfuscationItem, got {len(overlays)}"
         )
         item = overlays[0]
-        assert abs(item._size.width() - 50) < 1, (
-            f"Expected _size.width ~50 (clamped), got {item._size.width()}"
+        assert abs(item._size.width() - 70) < 1, (
+            f"Expected _size.width ~70 (full drag), got {item._size.width()}"
         )
-        assert abs(item._size.height() - 50) < 1, (
-            f"Expected _size.height ~50 (clamped), got {item._size.height()}"
+        assert abs(item._size.height() - 70) < 1, (
+            f"Expected _size.height ~70 (full drag), got {item._size.height()}"
         )
 
-    def test_drag_past_bottom_right_clamps_to_image_bounds(self, qapp) -> None:
-        """Dragging past bottom-right clamps size to image edge."""
+    def test_drag_past_bottom_right_allows_extended_size(self, qapp) -> None:
+        """Dragging past bottom-right should create full-size item."""
         scene, bg = _make_scene_with_background(100, 100)
         view = QGraphicsView(scene)
         tool = ObfuscateTool()
@@ -2485,24 +2478,48 @@ class TestObfuscateToolClampToImageBounds:
             f"Expected 1 ObfuscationItem, got {len(overlays)}"
         )
         item = overlays[0]
-        # Width should be 100 - 60 = 40 (not 90)
-        assert abs(item._size.width() - 40) < 1, (
-            f"Expected _size.width ~40 (clamped to image), got {item._size.width()}"
+        assert abs(item._size.width() - 90) < 1, (
+            f"Expected _size.width ~90 (full drag), got {item._size.width()}"
         )
-        assert abs(item._size.height() - 40) < 1, (
-            f"Expected _size.height ~40 (clamped to image), got {item._size.height()}"
+        assert abs(item._size.height() - 90) < 1, (
+            f"Expected _size.height ~90 (full drag), got {item._size.height()}"
         )
 
-    def test_fully_outside_image_discards_obfuscation(self, qapp) -> None:
-        """Dragging entirely outside the image should not create an item."""
+    def test_pixmap_offset_when_extending_past_top(self, qapp) -> None:
+        """When item extends past top-left, pixmap offset aligns with image region."""
+        scene, bg = _make_scene_with_background(100, 100)
+        view = QGraphicsView(scene)
+        tool = ObfuscateTool()
+        _simulate_draw(tool, scene, view, QPointF(50, 50), QPointF(-20, -20))
+
+        overlays = [i for i in scene.items() if isinstance(i, ObfuscationItem)]
+        assert len(overlays) == 1, (
+            f"Expected 1 ObfuscationItem, got {len(overlays)}"
+        )
+        item = overlays[0]
+        # The item starts at (-20, -20), so the pixmap offset should be (20, 20)
+        # to align with the image starting at (0, 0)
+        assert item.offset().x() > 0, (
+            f"Expected positive pixmap x offset, got {item.offset().x()}"
+        )
+        assert item.offset().y() > 0, (
+            f"Expected positive pixmap y offset, got {item.offset().y()}"
+        )
+
+    def test_fully_outside_image_creates_empty_obfuscation(self, qapp) -> None:
+        """Dragging entirely outside the image creates an item with empty pixmap."""
         scene, bg = _make_scene_with_background(100, 100)
         view = QGraphicsView(scene)
         tool = ObfuscateTool()
         _simulate_draw(tool, scene, view, QPointF(-50, -50), QPointF(-10, -10))
 
         overlays = [i for i in scene.items() if isinstance(i, ObfuscationItem)]
-        assert len(overlays) == 0, (
-            f"Expected 0 ObfuscationItem for fully out-of-bounds drag, got {len(overlays)}"
+        assert len(overlays) == 1, (
+            f"Expected 1 ObfuscationItem for out-of-bounds drag, got {len(overlays)}"
+        )
+        item = overlays[0]
+        assert item.pixmap().isNull(), (
+            "Expected null pixmap for obfuscation fully outside image bounds"
         )
 
 
@@ -2658,5 +2675,180 @@ class TestObfuscationItemSetGeometry:
         assert item._updating_geometry is False, (
             f"Expected _updating_geometry to be False after set_geometry, "
             f"got {item._updating_geometry}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# SelectTool — _find_annotation_at skips boundary items
+# ---------------------------------------------------------------------------
+
+
+class TestSelectToolFindAnnotationAt:
+    """Test that _find_annotation_at correctly skips non-annotation items."""
+
+    def test_find_annotation_at_skips_boundary_rect(self, qapp) -> None:
+        """Regression: boundary rect (z=Z_BOUNDARY) intercepted itemAt, preventing
+        annotation selection. _find_annotation_at should skip it."""
+        from verdiclip.editor import Z_BACKGROUND, Z_BOUNDARY
+
+        scene = QGraphicsScene()
+        view = QGraphicsView(scene)
+
+        # Background
+        bg = QGraphicsRectItem(0, 0, 200, 200)
+        bg.setZValue(Z_BACKGROUND)
+        scene.addItem(bg)
+
+        # Boundary rect covers entire image area (highest z below crop overlay)
+        boundary = QGraphicsRectItem(0, 0, 200, 200)
+        boundary.setZValue(Z_BOUNDARY)
+        scene.addItem(boundary)
+
+        # Annotation underneath
+        annotation = QGraphicsRectItem(10, 10, 30, 30)
+        annotation.setZValue(0)
+        annotation.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsSelectable)
+        scene.addItem(annotation)
+
+        tool = SelectTool()
+        tool.activate(scene, view)
+
+        found = tool._find_annotation_at(QPointF(25, 25))
+        assert found is annotation, (
+            f"Expected _find_annotation_at to return the annotation, "
+            f"got {found} (boundary rect is intercepting)"
+        )
+
+    def test_find_annotation_at_returns_none_on_empty(self, qapp) -> None:
+        """_find_annotation_at should return None when no annotation is at the point."""
+        from verdiclip.editor import Z_BACKGROUND, Z_BOUNDARY
+
+        scene = QGraphicsScene()
+        view = QGraphicsView(scene)
+
+        bg = QGraphicsRectItem(0, 0, 200, 200)
+        bg.setZValue(Z_BACKGROUND)
+        scene.addItem(bg)
+
+        boundary = QGraphicsRectItem(0, 0, 200, 200)
+        boundary.setZValue(Z_BOUNDARY)
+        scene.addItem(boundary)
+
+        tool = SelectTool()
+        tool.activate(scene, view)
+
+        found = tool._find_annotation_at(QPointF(100, 100))
+        assert found is None, (
+            f"Expected None when no annotation at position, got {found}"
+        )
+
+    def test_find_annotation_at_returns_none_without_scene(self, qapp) -> None:
+        """_find_annotation_at should return None when tool has no scene."""
+        tool = SelectTool()
+        found = tool._find_annotation_at(QPointF(50, 50))
+        assert found is None, (
+            "Expected None when tool has no scene"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Crop undo — position restoration
+# ---------------------------------------------------------------------------
+
+
+class TestCropUndoPositionRestoration:
+    """Test that crop undo restores annotation positions correctly."""
+
+    def test_crop_undo_restores_annotation_positions(self, qapp) -> None:
+        """Regression: crop undo shifted elements because positions weren't restored."""
+        from verdiclip.editor.canvas import EditorCanvas
+        from verdiclip.editor.history import EditorHistory
+
+        canvas = EditorCanvas()
+        pixmap = QPixmap(100, 100)
+        pixmap.fill(Qt.GlobalColor.blue)
+        canvas.set_image(pixmap)
+        history = EditorHistory()
+        canvas.set_history(history)
+
+        # Add annotation at (30, 40)
+        annotation = QGraphicsRectItem(0, 0, 20, 20)
+        annotation.setPos(30, 40)
+        canvas.scene.addItem(annotation)
+
+        # Crop from (10, 10) to (90, 90) — annotation moves to (20, 30)
+        cropped = QPixmap(80, 80)
+        cropped.fill(Qt.GlobalColor.red)
+        item_positions = [(annotation, 30.0, 40.0)]
+        canvas.crop_undoable(cropped, [], item_positions, (10.0, 10.0))
+        annotation.setPos(20, 30)  # Simulate the shift that crop tool does
+
+        # Undo should restore to original position (30, 40)
+        history.undo()
+
+        assert abs(annotation.pos().x() - 30) < 1, (
+            f"Expected annotation x ~30 after crop undo, got {annotation.pos().x()}"
+        )
+        assert abs(annotation.pos().y() - 40) < 1, (
+            f"Expected annotation y ~40 after crop undo, got {annotation.pos().y()}"
+        )
+
+    def test_crop_redo_reapplies_position_offset(self, qapp) -> None:
+        """Crop redo should re-shift annotation positions by the crop offset."""
+        from verdiclip.editor.canvas import EditorCanvas
+        from verdiclip.editor.history import EditorHistory
+
+        canvas = EditorCanvas()
+        pixmap = QPixmap(100, 100)
+        pixmap.fill(Qt.GlobalColor.blue)
+        canvas.set_image(pixmap)
+        history = EditorHistory()
+        canvas.set_history(history)
+
+        annotation = QGraphicsRectItem(0, 0, 20, 20)
+        annotation.setPos(30, 40)
+        canvas.scene.addItem(annotation)
+
+        cropped = QPixmap(80, 80)
+        cropped.fill(Qt.GlobalColor.red)
+        item_positions = [(annotation, 30.0, 40.0)]
+        canvas.crop_undoable(cropped, [], item_positions, (10.0, 10.0))
+        annotation.setPos(20, 30)
+
+        history.undo()  # restores to (30, 40)
+        history.redo()  # should shift back to (20, 30)
+
+        assert abs(annotation.pos().x() - 20) < 1, (
+            f"Expected annotation x ~20 after crop redo, got {annotation.pos().x()}"
+        )
+        assert abs(annotation.pos().y() - 30) < 1, (
+            f"Expected annotation y ~30 after crop redo, got {annotation.pos().y()}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# ObfuscationItem — bounding rect uses full size
+# ---------------------------------------------------------------------------
+
+
+class TestObfuscationItemBoundingRect:
+    """Test that ObfuscationItem's boundingRect reflects the full _size."""
+
+    def test_bounding_rect_matches_full_size(self, qapp) -> None:
+        """boundingRect should cover the full item size, not just the pixmap area."""
+        from PySide6.QtCore import QSizeF
+
+        scene, bg = _make_scene_with_background(100, 100)
+        item = ObfuscationItem(bg, QSizeF(80, 60))
+        item.setPos(-20, -10)
+        item.set_show_border(False)  # Exclude border pen from rect
+        scene.addItem(item)
+
+        rect = item.boundingRect()
+        assert abs(rect.width() - 80) < 1, (
+            f"Expected boundingRect width ~80, got {rect.width()}"
+        )
+        assert abs(rect.height() - 60) < 1, (
+            f"Expected boundingRect height ~60, got {rect.height()}"
         )
 

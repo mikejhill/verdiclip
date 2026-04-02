@@ -101,6 +101,7 @@ class CropTool(BaseTool):
 
         # Identify annotation items fully outside the crop rect
         removed_items = []
+        annotation_items = []
         for item in self._scene.items():
             if item is bg_item or item is self._crop_rect_item:
                 continue
@@ -108,9 +109,16 @@ class CropTool(BaseTool):
                 continue
             if item.zValue() <= Z_BACKGROUND:
                 continue
+            annotation_items.append(item)
             item_rect = item.sceneBoundingRect()
             if not item_rect.intersects(crop_rect):
                 removed_items.append(item)
+
+        # Record all annotation positions BEFORE shifting
+        item_positions = [
+            (item, item.pos().x(), item.pos().y())
+            for item in annotation_items
+        ]
 
         # Create the cropped pixmap directly from the background
         src_rect = QRectF(crop_rect)
@@ -123,11 +131,7 @@ class CropTool(BaseTool):
         # Adjust remaining annotation positions relative to new origin
         offset_x = crop_rect.x()
         offset_y = crop_rect.y()
-        for item in self._scene.items():
-            if item is bg_item or item is self._crop_rect_item:
-                continue
-            if item.zValue() >= Z_BOUNDARY or item.zValue() <= Z_BACKGROUND:
-                continue
+        for item in annotation_items:
             if item in removed_items:
                 continue
             pos = item.pos()
@@ -135,7 +139,10 @@ class CropTool(BaseTool):
 
         self._clear_crop_ui()
         if self._view and hasattr(self._view, "crop_undoable"):
-            self._view.crop_undoable(result, removed_items)
+            self._view.crop_undoable(
+                result, removed_items, item_positions,
+                (offset_x, offset_y),
+            )
         elif self._view and hasattr(self._view, "set_image"):
             self._view.set_image(result)
         else:

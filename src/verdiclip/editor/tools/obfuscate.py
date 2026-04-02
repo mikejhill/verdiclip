@@ -70,8 +70,8 @@ class ObfuscationItem(QGraphicsPixmapItem):
         self.update()
 
     def boundingRect(self) -> QRectF:  # noqa: N802
-        """Include border pen width in the bounding rect."""
-        base = super().boundingRect()
+        """Return the full item rect (not just the pixmap portion)."""
+        base = QRectF(0, 0, self._size.width(), self._size.height())
         if self._show_border:
             pw = self._border_pen.widthF() / 2
             return base.adjusted(-pw, -pw, pw, pw)
@@ -82,9 +82,7 @@ class ObfuscationItem(QGraphicsPixmapItem):
         super().paint(painter, option, widget)
         if self._show_border:
             painter.setPen(self._border_pen)
-            pm = self.pixmap()
-            if not pm.isNull():
-                painter.drawRect(QRectF(0, 0, pm.width(), pm.height()))
+            painter.drawRect(QRectF(0, 0, self._size.width(), self._size.height()))
 
     def itemChange(self, change, value):  # noqa: N802
         if (
@@ -104,15 +102,17 @@ class ObfuscationItem(QGraphicsPixmapItem):
             int(self._size.width()),
             int(self._size.height()),
         )
-        int_rect = int_rect.intersected(
-            QRect(0, 0, bg_pixmap.width(), bg_pixmap.height()),
-        )
-        if int_rect.isEmpty():
+        img_bounds = QRect(0, 0, bg_pixmap.width(), bg_pixmap.height())
+        clipped = int_rect.intersected(img_bounds)
+        if clipped.isEmpty():
             self.setPixmap(QPixmap())
+            self.setOffset(0, 0)
             return
 
-        region = bg_pixmap.copy(int_rect)
+        region = bg_pixmap.copy(clipped)
         self.setPixmap(ObfuscateTool._pixelate(region, BLOCK_SIZE))
+        # Offset the pixmap so it aligns with the correct image area
+        self.setOffset(clipped.x() - int(pos.x()), clipped.y() - int(pos.y()))
 
 
 class ObfuscateTool(BaseTool):
@@ -145,12 +145,6 @@ class ObfuscateTool(BaseTool):
         if bg_item is None:
             return
 
-        # Clamp to image bounds — cannot obfuscate outside the image
-        img_rect = QRectF(bg_item.pixmap().rect())
-        rect = rect.intersected(img_rect)
-        if rect.width() < 2 or rect.height() < 2:
-            return
-
         if self._preview_item is None:
             self._preview_item = ObfuscationItem(
                 bg_item, rect.size(),
@@ -166,12 +160,6 @@ class ObfuscateTool(BaseTool):
             return
 
         rect = QRectF(self._origin, scene_pos).normalized()
-
-        bg_item = self._find_background()
-        if bg_item:
-            img_rect = QRectF(bg_item.pixmap().rect())
-            rect = rect.intersected(img_rect)
-
         if rect.width() < 5 or rect.height() < 5:
             # Discard too-small regions; remove preview if it was added
             if self._preview_item is not None:
