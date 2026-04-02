@@ -848,6 +848,18 @@ class EditorWindow(QMainWindow):
             except ImportError:
                 _is_obfuscation = False
 
+            # ArrowItem: read shaft colour and width
+            try:
+                from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+                if isinstance(item, ArrowItem):
+                    pen = item._shaft.pen()
+                    self._properties.set_stroke_color(pen.color())
+                    self._properties.set_stroke_width(max(1, int(pen.widthF())))
+                    self._update_properties_visibility_for_item(item)
+                    return
+            except ImportError:
+                pass
+
             if isinstance(item, (QGraphicsRectItem, QGraphicsEllipseItem)):
                 pen = item.pen()
                 self._properties.set_stroke_color(pen.color())
@@ -901,13 +913,25 @@ class EditorWindow(QMainWindow):
             QGraphicsRectItem,
             QGraphicsTextItem,
         )
+
+        # ArrowItem: stroke + width + caps
+        try:
+            from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+            if isinstance(item, ArrowItem):
+                self._properties.set_visible_properties(
+                    stroke=True, fill=False, width=True, font=False, caps=True,
+                )
+                return
+        except ImportError:
+            pass
+
         if isinstance(item, (QGraphicsRectItem, QGraphicsEllipseItem)):
             self._properties.set_visible_properties(
                 stroke=True, fill=True, width=True, font=False, caps=False,
             )
         elif isinstance(item, QGraphicsLineItem):
             self._properties.set_visible_properties(
-                stroke=True, fill=False, width=True, font=False, caps=False,
+                stroke=True, fill=False, width=True, font=False, caps=True,
             )
         elif isinstance(item, QGraphicsTextItem):
             self._properties.set_visible_properties(
@@ -965,6 +989,15 @@ class EditorWindow(QMainWindow):
 
 def _apply_stroke_to_item(item: object, color: QColor) -> None:
     """Apply *color* as the stroke (pen) of *item* in-place."""
+    # ArrowItem has its own setter that keeps shaft + head in sync.
+    try:
+        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        if isinstance(item, ArrowItem):
+            item.set_stroke_color(color)
+            return
+    except ImportError:
+        pass
+
     from PySide6.QtWidgets import (  # noqa: PLC0415
         QGraphicsEllipseItem,
         QGraphicsLineItem,
@@ -988,6 +1021,15 @@ def _apply_fill_to_item(item: object, color: QColor) -> None:
 
 def _apply_width_to_item(item: object, width: int) -> None:
     """Apply *width* as the pen width of *item* in-place."""
+    # ArrowItem has its own setter that preserves cap style.
+    try:
+        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        if isinstance(item, ArrowItem):
+            item.set_stroke_width(width)
+            return
+    except ImportError:
+        pass
+
     from PySide6.QtWidgets import (  # noqa: PLC0415
         QGraphicsEllipseItem,
         QGraphicsLineItem,

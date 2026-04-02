@@ -43,7 +43,9 @@ class RectangleTool(BaseTool):
             return
         self._origin = scene_pos
         self._current_item = QGraphicsRectItem()
-        self._current_item.setPen(QPen(self._stroke_color, self._stroke_width))
+        pen = QPen(self._stroke_color, self._stroke_width)
+        pen.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
+        self._current_item.setPen(pen)
         self._current_item.setBrush(QBrush(self._fill_color))
         self._current_item.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsSelectable)
         self._scene.addItem(self._current_item)

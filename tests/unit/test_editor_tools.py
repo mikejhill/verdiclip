@@ -542,6 +542,7 @@ class TestArrowTool:
         )
 
     def test_group_is_selectable_and_movable(self, qapp) -> None:
+        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
         scene = QGraphicsScene()
         view = QGraphicsView(scene)
         tool = ArrowTool()
@@ -550,9 +551,10 @@ class TestArrowTool:
         press_event = _make_mouse_event()
         tool.mouse_press(QPointF(0, 0), press_event)
 
-        # Verify the group has correct flags before release
-        assert tool._group is not None, f"Expected tool._group to not be None, got {tool._group}"
-        flags = tool._group.flags()
+        # The in-progress arrow is an ArrowItem already in the scene
+        assert tool._arrow is not None, "Expected _arrow to be set during draw"
+        assert isinstance(tool._arrow, ArrowItem), "Expected _arrow to be an ArrowItem"
+        flags = tool._arrow.flags()
         assert flags & QGraphicsItemGroup.GraphicsItemFlag.ItemIsSelectable, (
             f"Expected ItemIsSelectable flag to be set, got {flags}"
         )

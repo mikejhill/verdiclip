@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 _HANDLE_SIZE: float = 8.0
 _HALF: float = _HANDLE_SIZE / 2.0
 _MIN_SIZE: float = 4.0
+_MIN_MARKER_RADIUS: float = 8.0
 
 _HANDLE_PEN = QPen(QColor(0, 120, 215), 1)
 _HANDLE_BRUSH = QBrush(QColor(255, 255, 255))
@@ -60,6 +61,13 @@ _RECT_ROLES: list[HandleRole] = [
     HandleRole.S,
     HandleRole.SW,
     HandleRole.W,
+]
+
+_CORNER_ROLES: list[HandleRole] = [
+    HandleRole.NW,
+    HandleRole.NE,
+    HandleRole.SE,
+    HandleRole.SW,
 ]
 
 _ROLE_CURSORS: dict[HandleRole, Qt.CursorShape] = {
@@ -101,6 +109,18 @@ def _scene_rect_for(item: QGraphicsItem) -> QRectF | None:
 
 def compute_handle_scene_pos(item: QGraphicsItem, role: HandleRole) -> QPointF | None:
     """Return the scene-space anchor position for *role* on *item*."""
+    # Arrow endpoints
+    try:
+        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        if isinstance(item, ArrowItem):
+            if role == HandleRole.LINE_P1:
+                return item.get_scene_p1()
+            if role == HandleRole.LINE_P2:
+                return item.get_scene_p2()
+            return None
+    except ImportError:
+        pass
+
     if role in (HandleRole.LINE_P1, HandleRole.LINE_P2):
         if isinstance(item, QGraphicsLineItem):
             line = item.line()
@@ -133,6 +153,18 @@ def apply_resize(item: QGraphicsItem, role: HandleRole, scene_delta: QPointF) ->
 
     No-op when the delta would shrink below the minimum allowed size.
     """
+    # Arrow endpoint handles
+    try:
+        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        if isinstance(item, ArrowItem):
+            if role == HandleRole.LINE_P1:
+                item.set_scene_p1(item.get_scene_p1() + scene_delta)
+            elif role == HandleRole.LINE_P2:
+                item.set_scene_p2(item.get_scene_p2() + scene_delta)
+            return
+    except ImportError:
+        pass
+
     if role in (HandleRole.LINE_P1, HandleRole.LINE_P2):
         if isinstance(item, QGraphicsLineItem):
             # Delta in item-local coords equals scene delta because items have no rotation.
@@ -142,6 +174,15 @@ def apply_resize(item: QGraphicsItem, role: HandleRole, scene_delta: QPointF) ->
             else:
                 item.setLine(QLineF(line.p1(), line.p2() + scene_delta))
         return
+
+    # NumberMarkerItem: 1:1 (circular) resize
+    try:
+        from verdiclip.editor.tools.number import NumberMarkerItem  # noqa: PLC0415
+        if isinstance(item, NumberMarkerItem):
+            _resize_number_marker(item, role, scene_delta)
+            return
+    except ImportError:
+        pass
 
     try:
         from verdiclip.editor.tools.obfuscate import ObfuscationItem  # noqa: PLC0415
@@ -221,6 +262,33 @@ def _resize_obfuscation(item: object, role: HandleRole, delta: QPointF) -> None:
         item.set_geometry(QPointF(x1, y1), QSizeF(w, h))
 
 
+def _resize_number_marker(item: object, role: HandleRole, delta: QPointF) -> None:
+    """Resize a NumberMarkerItem keeping width == height (circular)."""
+    from verdiclip.editor.tools.number import NumberMarkerItem  # noqa: PLC0415
+    assert isinstance(item, NumberMarkerItem)
+
+    dx, dy = delta.x(), delta.y()
+
+    # Map corner drag direction to a signed radius change.
+    # Each corner handle sits at (±r, ±r); dragging it outward grows the circle.
+    match role:
+        case HandleRole.NW:
+            dr = (-dx - dy) / 2.0   # Up-left → grow
+        case HandleRole.NE:
+            dr = (dx - dy) / 2.0    # Up-right → grow
+        case HandleRole.SE:
+            dr = (dx + dy) / 2.0    # Down-right → grow
+        case HandleRole.SW:
+            dr = (-dx + dy) / 2.0   # Down-left → grow
+        case _:
+            return
+
+    current_r = item.rect().width() / 2.0
+    new_r = max(_MIN_MARKER_RADIUS, current_r + dr)
+    item.setRect(QRectF(-new_r, -new_r, 2.0 * new_r, 2.0 * new_r))
+    item._center_text()
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -268,8 +336,25 @@ def create_handles_for_item(item: QGraphicsItem) -> list[ResizeHandle]:
     """Create the appropriate resize/reshape handles for *item*.
 
     Returns an empty list for item types that do not support resizing
-    (e.g., text items, number markers, freehand paths, arrow groups).
+    (e.g., text items, freehand paths).
     """
+    # Arrow: two endpoint handles
+    try:
+        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        if isinstance(item, ArrowItem):
+            return [ResizeHandle(item, HandleRole.LINE_P1), ResizeHandle(item, HandleRole.LINE_P2)]
+    except ImportError:
+        pass
+
+    # NumberMarkerItem: four corner handles (1:1 resize only)
+    try:
+        from verdiclip.editor.tools.number import NumberMarkerItem  # noqa: PLC0415
+        if isinstance(item, NumberMarkerItem):
+            return [ResizeHandle(item, r) for r in _CORNER_ROLES]
+    except ImportError:
+        pass
+
+    # ObfuscationItem: eight handles
     try:
         from verdiclip.editor.tools.obfuscate import ObfuscationItem  # noqa: PLC0415
         if isinstance(item, ObfuscationItem):

@@ -65,8 +65,8 @@ class LineTool(BaseTool):
         self._origin = None
 
     @staticmethod
-    def _snap_angle(origin: QPointF, pos: QPointF, snap_degrees: float = 15.0) -> QPointF:
-        """Snap the endpoint to the nearest angle increment."""
+    def _snap_angle(origin: QPointF, pos: QPointF, snap_degrees: float = 45.0) -> QPointF:
+        """Snap the endpoint to the nearest 45-degree angle from *origin*."""
         dx = pos.x() - origin.x()
         dy = pos.y() - origin.y()
         angle = math.atan2(dy, dx)

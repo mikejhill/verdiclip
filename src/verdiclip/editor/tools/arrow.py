@@ -1,4 +1,4 @@
-"""Arrow drawing tool."""
+"""Arrow drawing tool and selectable ArrowItem annotation."""
 
 from __future__ import annotations
 
@@ -27,6 +27,144 @@ _ARROWHEAD_LENGTH = 20
 _ARROWHEAD_ANGLE = math.radians(25)
 
 
+# ---------------------------------------------------------------------------
+# Shared geometry helpers
+# ---------------------------------------------------------------------------
+
+def _build_arrowhead_path(p1: QPointF, p2: QPointF) -> QPainterPath:
+    """Return a filled triangle path for an arrowhead pointing from *p1* to *p2*."""
+    dx = p2.x() - p1.x()
+    dy = p2.y() - p1.y()
+    angle = math.atan2(dy, dx)
+
+    left = QPointF(
+        p2.x() - _ARROWHEAD_LENGTH * math.cos(angle - _ARROWHEAD_ANGLE),
+        p2.y() - _ARROWHEAD_LENGTH * math.sin(angle - _ARROWHEAD_ANGLE),
+    )
+    right = QPointF(
+        p2.x() - _ARROWHEAD_LENGTH * math.cos(angle + _ARROWHEAD_ANGLE),
+        p2.y() - _ARROWHEAD_LENGTH * math.sin(angle + _ARROWHEAD_ANGLE),
+    )
+
+    path = QPainterPath()
+    path.moveTo(p2)    # Tip of the arrow
+    path.lineTo(left)
+    path.lineTo(right)
+    path.closeSubpath()
+    return path
+
+
+def _snap_45(origin: QPointF, pos: QPointF) -> QPointF:
+    """Snap *pos* to the nearest 45-degree angle from *origin*."""
+    dx = pos.x() - origin.x()
+    dy = pos.y() - origin.y()
+    angle = math.atan2(dy, dx)
+    snap_rad = math.radians(45.0)
+    snapped = round(angle / snap_rad) * snap_rad
+    length = math.hypot(dx, dy)
+    return QPointF(
+        origin.x() + length * math.cos(snapped),
+        origin.y() + length * math.sin(snapped),
+    )
+
+
+# ---------------------------------------------------------------------------
+# ArrowItem — persistent annotation item
+# ---------------------------------------------------------------------------
+
+class ArrowItem(QGraphicsItemGroup):
+    """Selectable arrow annotation comprising a shaft line and a filled arrowhead.
+
+    Endpoints are stored in item-local coordinates.  When the item has not been
+    moved (``pos() == (0, 0)``), local coordinates equal scene coordinates.  Use
+    :meth:`get_scene_p1` / :meth:`get_scene_p2` for scene-space positions and
+    :meth:`set_scene_p1` / :meth:`set_scene_p2` to move endpoints from scene
+    space (e.g., from a resize handle drag).
+    """
+
+    def __init__(
+        self,
+        p1: QPointF,
+        p2: QPointF,
+        stroke_color: QColor,
+        stroke_width: int,
+    ) -> None:
+        super().__init__()
+        self._stroke_color = stroke_color
+        self._stroke_width = stroke_width
+
+        # Shaft: FlatCap so the stroke stops exactly at the arrowhead junction.
+        shaft_pen = QPen(stroke_color, stroke_width)
+        shaft_pen.setCapStyle(Qt.PenCapStyle.FlatCap)
+        self._shaft = QGraphicsLineItem()
+        self._shaft.setPen(shaft_pen)
+        self.addToGroup(self._shaft)
+
+        # Arrowhead: filled triangle with no stroke border → perfectly sharp tip.
+        self._head = QGraphicsPathItem()
+        self._head.setPen(QPen(Qt.PenStyle.NoPen))
+        self._head.setBrush(QBrush(stroke_color))
+        self.addToGroup(self._head)
+
+        self.setFlag(QGraphicsItemGroup.GraphicsItemFlag.ItemIsSelectable)
+        self.update_endpoints(p1, p2)
+
+    # ------------------------------------------------------------------
+    # Geometry
+    # ------------------------------------------------------------------
+
+    def update_endpoints(self, p1: QPointF, p2: QPointF) -> None:
+        """Set shaft and arrowhead geometry for *p1* → *p2* (item-local coords)."""
+        self._shaft.setLine(QLineF(p1, p2))
+        self._head.setPath(_build_arrowhead_path(p1, p2))
+
+    @property
+    def shaft_line(self) -> QLineF:
+        """The shaft as a local-coordinate line."""
+        return self._shaft.line()
+
+    def get_scene_p1(self) -> QPointF:
+        """Return the tail endpoint in scene coordinates."""
+        return self.mapToScene(self._shaft.line().p1())
+
+    def get_scene_p2(self) -> QPointF:
+        """Return the tip (arrowhead) endpoint in scene coordinates."""
+        return self.mapToScene(self._shaft.line().p2())
+
+    def set_scene_p1(self, scene_pos: QPointF) -> None:
+        """Move the tail endpoint, keeping the tip fixed (scene coords)."""
+        local = self.mapFromScene(scene_pos)
+        self.update_endpoints(local, self._shaft.line().p2())
+
+    def set_scene_p2(self, scene_pos: QPointF) -> None:
+        """Move the tip endpoint, keeping the tail fixed (scene coords)."""
+        local = self.mapFromScene(scene_pos)
+        self.update_endpoints(self._shaft.line().p1(), local)
+
+    # ------------------------------------------------------------------
+    # Property setters (for the properties panel)
+    # ------------------------------------------------------------------
+
+    def set_stroke_color(self, color: QColor) -> None:
+        """Update shaft and arrowhead colour."""
+        self._stroke_color = color
+        pen = self._shaft.pen()
+        pen.setColor(color)
+        self._shaft.setPen(pen)
+        self._head.setBrush(QBrush(color))
+
+    def set_stroke_width(self, width: int) -> None:
+        """Update shaft line width."""
+        self._stroke_width = width
+        pen = self._shaft.pen()
+        pen.setWidth(width)
+        self._shaft.setPen(pen)
+
+
+# ---------------------------------------------------------------------------
+# ArrowTool — drawing interaction
+# ---------------------------------------------------------------------------
+
 class ArrowTool(BaseTool):
     """Draw lines with arrowheads."""
 
@@ -39,9 +177,7 @@ class ArrowTool(BaseTool):
         self._stroke_color = stroke_color or QColor("#FF0000")
         self._stroke_width = stroke_width
         self._origin: QPointF | None = None
-        self._line_item: QGraphicsLineItem | None = None
-        self._head_item: QGraphicsPathItem | None = None
-        self._group: QGraphicsItemGroup | None = None
+        self._arrow: ArrowItem | None = None
 
     def activate(self, scene: QGraphicsScene, view: QGraphicsView) -> None:
         super().activate(scene, view)
@@ -52,65 +188,27 @@ class ArrowTool(BaseTool):
         if not self._scene or event.button() != Qt.MouseButton.LeftButton:
             return
         self._origin = scene_pos
-        pen = QPen(self._stroke_color, self._stroke_width)
-
-        self._group = self._scene.createItemGroup([])
-        self._group.setFlag(QGraphicsItemGroup.GraphicsItemFlag.ItemIsSelectable)
-
-        self._line_item = QGraphicsLineItem(QLineF(scene_pos, scene_pos))
-        self._line_item.setPen(pen)
-        self._group.addToGroup(self._line_item)
-
-        self._head_item = QGraphicsPathItem()
-        self._head_item.setPen(pen)
-        self._head_item.setBrush(QBrush(self._stroke_color))
-        self._group.addToGroup(self._head_item)
+        self._arrow = ArrowItem(scene_pos, scene_pos, self._stroke_color, self._stroke_width)
+        self._scene.addItem(self._arrow)
 
     def mouse_move(self, scene_pos: QPointF, event: QMouseEvent) -> None:
-        if self._line_item is None or self._origin is None:
+        if self._arrow is None or self._origin is None:
             return
-        self._line_item.setLine(QLineF(self._origin, scene_pos))
-        self._update_arrowhead(self._origin, scene_pos)
+        end = scene_pos
+        if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+            end = _snap_45(self._origin, scene_pos)
+        self._arrow.update_endpoints(self._origin, end)
 
     def mouse_release(self, scene_pos: QPointF, event: QMouseEvent) -> None:
-        if self._line_item and self._origin:
+        if self._arrow and self._origin:
             length = QLineF(self._origin, scene_pos).length()
-            if length < 5 and self._group and self._scene:
-                self._scene.destroyItemGroup(self._group)
-                if self._line_item.scene():
-                    self._scene.removeItem(self._line_item)
-                if self._head_item and self._head_item.scene():
-                    self._scene.removeItem(self._head_item)
-            elif self._group and self._view and hasattr(self._view, "add_item_undoable"):
-                self._view.add_item_undoable(self._group, "Draw arrow")
-        self._line_item = None
-        self._head_item = None
-        self._group = None
+            if length < 5:
+                if self._arrow.scene():
+                    self._scene.removeItem(self._arrow)
+            elif self._view and hasattr(self._view, "add_item_undoable"):
+                self._view.add_item_undoable(self._arrow, "Draw arrow")
+        self._arrow = None
         self._origin = None
-
-    def _update_arrowhead(self, start: QPointF, end: QPointF) -> None:
-        """Update the arrowhead polygon at the end point."""
-        if not self._head_item:
-            return
-        dx = end.x() - start.x()
-        dy = end.y() - start.y()
-        angle = math.atan2(dy, dx)
-
-        p1 = QPointF(
-            end.x() - _ARROWHEAD_LENGTH * math.cos(angle - _ARROWHEAD_ANGLE),
-            end.y() - _ARROWHEAD_LENGTH * math.sin(angle - _ARROWHEAD_ANGLE),
-        )
-        p2 = QPointF(
-            end.x() - _ARROWHEAD_LENGTH * math.cos(angle + _ARROWHEAD_ANGLE),
-            end.y() - _ARROWHEAD_LENGTH * math.sin(angle + _ARROWHEAD_ANGLE),
-        )
-
-        path = QPainterPath()
-        path.moveTo(end)
-        path.lineTo(p1)
-        path.lineTo(p2)
-        path.closeSubpath()
-        self._head_item.setPath(path)
 
     def set_stroke_color(self, color: QColor) -> None:
         self._stroke_color = color

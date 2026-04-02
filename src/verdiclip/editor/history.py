@@ -135,6 +135,22 @@ def capture_geometry(item) -> dict:
     """Return a geometry snapshot for *item* suitable for ``ResizeItemCommand``."""
     from PySide6.QtWidgets import QGraphicsEllipseItem, QGraphicsLineItem, QGraphicsRectItem
 
+    # ArrowItem: store both scene endpoints
+    try:
+        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        if isinstance(item, ArrowItem):
+            return {"type": "arrow", "p1": item.get_scene_p1(), "p2": item.get_scene_p2()}
+    except ImportError:
+        pass
+
+    # NumberMarkerItem: store bounding rect (radius encodes size)
+    try:
+        from verdiclip.editor.tools.number import NumberMarkerItem  # noqa: PLC0415
+        if isinstance(item, NumberMarkerItem):
+            return {"type": "number_marker", "rect": item.rect()}
+    except ImportError:
+        pass
+
     if isinstance(item, (QGraphicsRectItem, QGraphicsEllipseItem)):
         return {"type": "rect", "rect": item.rect()}
     if isinstance(item, QGraphicsLineItem):
@@ -151,7 +167,18 @@ def capture_geometry(item) -> dict:
 def _apply_geometry(item, geometry: dict) -> None:
     """Apply a geometry snapshot to *item*."""
     gtype = geometry.get("type")
-    if gtype == "rect":
+    if gtype == "arrow":
+        try:
+            from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+            if isinstance(item, ArrowItem):
+                item.set_scene_p1(geometry["p1"])
+                item.set_scene_p2(geometry["p2"])
+        except ImportError:
+            pass
+    elif gtype == "number_marker":
+        item.setRect(geometry["rect"])
+        item._center_text()
+    elif gtype == "rect":
         item.setRect(geometry["rect"])
     elif gtype == "line":
         item.setLine(geometry["line"])
