@@ -30,8 +30,18 @@ _MAGNIFIER_ZOOM = 4
 class RegionSelector(QWidget):
     """Full-screen transparent overlay for selecting a screen region."""
 
-    region_selected = Signal(QRect)
+    region_selected = Signal(QRect)  # Emits screen-coordinate rect
     selection_cancelled = Signal()
+
+    @property
+    def background(self) -> QPixmap | None:
+        """Return the frozen background pixmap captured at overlay start."""
+        return self._background
+
+    @property
+    def virtual_offset(self) -> QPoint:
+        """Return the virtual desktop offset used to map widget↔screen coordinates."""
+        return self._virtual_offset
 
     def __init__(self) -> None:
         super().__init__(None)
@@ -237,7 +247,16 @@ class RegionCapture:
         if on_captured:
             def handle_region(rect: QRect) -> None:
                 self._last_region = rect
-                pixmap = ScreenCapture.capture_region(rect)
+                # Crop from the frozen background captured when the overlay appeared,
+                # so the user gets exactly the pixels they saw during selection — even
+                # if on-screen content changed while they were drawing the region.
+                bg = self._selector.background
+                offset = self._selector.virtual_offset
+                if bg and not bg.isNull():
+                    widget_rect = rect.translated(-offset)
+                    pixmap = bg.copy(widget_rect)
+                else:
+                    pixmap = ScreenCapture.capture_region(rect)
                 on_captured(pixmap)
 
             self._selector.region_selected.connect(handle_region)

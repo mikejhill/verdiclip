@@ -77,34 +77,38 @@ class TestWindowPickerOverlayMousePress:
     def test_left_click_with_hovered_hwnd_emits_window_selected(self, qapp) -> None:
         overlay = WindowPickerOverlay()
         overlay._hovered_hwnd = 12345
+        overlay._hovered_rect = QRect(10, 20, 640, 480)
 
-        selected_hwnds: list[int] = []
-        overlay.window_selected.connect(lambda h: selected_hwnds.append(h))
+        emissions: list[tuple[int, QRect]] = []
+        overlay.window_selected.connect(lambda h, r: emissions.append((h, r)))
 
         event = MagicMock()
         event.button.return_value = Qt.MouseButton.LeftButton
         overlay.mousePressEvent(event)
 
-        assert len(selected_hwnds) == 1, (
-            f"Expected 1 window_selected emission, got {len(selected_hwnds)}"
+        assert len(emissions) == 1, (
+            f"Expected 1 window_selected emission, got {len(emissions)}"
         )
-        assert selected_hwnds[0] == 12345, (
-            f"Expected hwnd 12345 in signal, got {selected_hwnds[0]}"
+        assert emissions[0][0] == 12345, (
+            f"Expected hwnd 12345 in signal, got {emissions[0][0]}"
+        )
+        assert emissions[0][1] == QRect(10, 20, 640, 480), (
+            f"Expected window rect in signal, got {emissions[0][1]}"
         )
 
     def test_left_click_without_hovered_hwnd_does_not_emit(self, qapp) -> None:
         overlay = WindowPickerOverlay()
         overlay._hovered_hwnd = 0
 
-        selected_hwnds: list[int] = []
-        overlay.window_selected.connect(lambda h: selected_hwnds.append(h))
+        emissions: list[tuple[int, QRect]] = []
+        overlay.window_selected.connect(lambda h, r: emissions.append((h, r)))
 
         event = MagicMock()
         event.button.return_value = Qt.MouseButton.LeftButton
         overlay.mousePressEvent(event)
 
-        assert len(selected_hwnds) == 0, (
-            f"Expected no window_selected emission, got {len(selected_hwnds)}"
+        assert len(emissions) == 0, (
+            f"Expected no window_selected emission, got {len(emissions)}"
         )
 
     def test_right_click_emits_cancelled(self, qapp) -> None:
@@ -336,23 +340,51 @@ class TestWindowPickerStart:
 
 
 class TestWindowPickerOnWindowSelected:
+    def test_on_window_selected_crops_from_frozen_background(self, qapp) -> None:
+        picker = WindowPicker()
+        # Set up overlay with a frozen background
+        overlay = WindowPickerOverlay()
+        bg = QPixmap(1920, 1080)
+        bg.fill(Qt.GlobalColor.green)
+        overlay._background = bg
+        overlay._virtual_offset = QPoint(0, 0)
+        picker._overlay = overlay
+
+        captured: list[QPixmap] = []
+        picker.window_captured.connect(lambda px: captured.append(px))
+
+        window_rect = QRect(100, 100, 640, 480)
+        picker._on_window_selected(12345, window_rect)
+
+        assert len(captured) == 1, (
+            f"Expected 1 window_captured emission, got {len(captured)}"
+        )
+        result = captured[0]
+        assert not result.isNull(), "Expected captured pixmap to not be null"
+        assert result.width() == 640, (
+            f"Expected cropped width 640, got {result.width()}"
+        )
+        assert result.height() == 480, (
+            f"Expected cropped height 480, got {result.height()}"
+        )
+
     @patch("verdiclip.capture.window_picker.WindowCapture")
-    def test_on_window_selected_captures_and_emits(self, mock_wincap, qapp) -> None:
+    def test_on_window_selected_falls_back_to_live_capture(self, mock_wincap, qapp) -> None:
+        """Falls back to live capture when background is unavailable."""
         fake_pixmap = QPixmap(640, 480)
         mock_wincap.capture_window_by_handle.return_value = fake_pixmap
 
         picker = WindowPicker()
+        picker._overlay = None  # No overlay (background unavailable)
+
         captured: list[QPixmap] = []
         picker.window_captured.connect(lambda px: captured.append(px))
 
-        picker._on_window_selected(12345)
+        picker._on_window_selected(12345, QRect())
 
         mock_wincap.capture_window_by_handle.assert_called_once_with(
             12345, include_decorations=False
         )
         assert len(captured) == 1, (
             f"Expected 1 window_captured emission, got {len(captured)}"
-        )
-        assert captured[0] is not None, (
-            "Expected captured pixmap to not be None"
         )

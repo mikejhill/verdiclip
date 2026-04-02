@@ -25,8 +25,18 @@ logger = logging.getLogger(__name__)
 class WindowPickerOverlay(QWidget):
     """Fullscreen transparent overlay that highlights windows under the cursor."""
 
-    window_selected = Signal(int)  # Emits hwnd of clicked window
+    window_selected = Signal(int, QRect)  # Emits (hwnd, screen_rect) of clicked window
     cancelled = Signal()
+
+    @property
+    def background(self) -> QPixmap | None:
+        """Return the frozen background pixmap captured at overlay start."""
+        return self._background
+
+    @property
+    def virtual_offset(self) -> QPoint:
+        """Return the virtual desktop offset for widget↔screen coordinate mapping."""
+        return self._virtual_offset
 
     def __init__(self) -> None:
         super().__init__()
@@ -118,7 +128,8 @@ class WindowPickerOverlay(QWidget):
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton and self._hovered_hwnd:
             self.hide()
-            self.window_selected.emit(self._hovered_hwnd)
+            rect = self._hovered_rect if self._hovered_rect else QRect()
+            self.window_selected.emit(self._hovered_hwnd, rect)
         elif event.button() == Qt.MouseButton.RightButton:
             self.hide()
             self.cancelled.emit()
@@ -181,6 +192,15 @@ class WindowPicker(QObject):
         )
         self._overlay.start()
 
-    def _on_window_selected(self, hwnd: int) -> None:
-        pixmap = WindowCapture.capture_window_by_handle(hwnd, include_decorations=False)
+    def _on_window_selected(self, hwnd: int, screen_rect: QRect) -> None:
+        # Crop from the frozen background captured when the overlay appeared,
+        # so the user gets exactly the pixels they saw — even if the window
+        # content changed while they were choosing.
+        bg = self._overlay.background if self._overlay else None
+        offset = self._overlay.virtual_offset if self._overlay else QPoint(0, 0)
+        if bg and not bg.isNull() and screen_rect.isValid():
+            widget_rect = screen_rect.translated(-offset)
+            pixmap = bg.copy(widget_rect)
+        else:
+            pixmap = WindowCapture.capture_window_by_handle(hwnd, include_decorations=False)
         self.window_captured.emit(pixmap)

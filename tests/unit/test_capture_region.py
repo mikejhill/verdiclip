@@ -39,6 +39,12 @@ class TestRegionSelectorInit:
             f"Expected _selection_rect() to be None initially, got {selector._selection_rect()}"
         )
 
+    def test_background_none_initially(self, qapp) -> None:
+        selector = RegionSelector()
+        assert selector.background is None, (
+            f"Expected background to be None before start(), got {selector.background}"
+        )
+
 
 class TestRegionSelectorSelectionRect:
     def test_returns_none_when_no_selection(self, qapp) -> None:
@@ -359,11 +365,10 @@ class TestRegionCaptureWorkflow:
     def test_on_captured_callback_invoked(
         self, mock_screen, qapp
     ) -> None:
-        """region_selected triggers capture and callback."""
-        mock_screen.capture_all_monitors.return_value = QPixmap(
-            100, 100
-        )
-        mock_screen.capture_region.return_value = QPixmap(50, 50)
+        """region_selected crops from frozen background and invokes callback."""
+        bg = QPixmap(100, 100)
+        bg.fill(Qt.GlobalColor.blue)
+        mock_screen.capture_all_monitors.return_value = bg
 
         captured = []
         rc = RegionCapture()
@@ -378,9 +383,10 @@ class TestRegionCaptureWorkflow:
         assert rc.last_region == test_rect, (
             f"Expected rc.last_region to equal test_rect, got {rc.last_region}"
         )
-        mock_screen.capture_region.assert_called_once_with(
-            test_rect
-        )
+        # Should crop from frozen background, NOT call capture_region again
+        mock_screen.capture_region.assert_not_called()
+        pixmap = captured[0]
+        assert not pixmap.isNull(), "Expected cropped pixmap to be non-null"
 
     @patch("verdiclip.capture.region.ScreenCapture")
     def test_on_cancelled_callback_invoked(
