@@ -2,15 +2,25 @@
 
 from __future__ import annotations
 
+from PySide6.QtCore import QLineF, QPointF
 from PySide6.QtGui import QUndoStack
-from PySide6.QtWidgets import QGraphicsRectItem, QGraphicsScene
+from PySide6.QtWidgets import (
+    QGraphicsEllipseItem,
+    QGraphicsLineItem,
+    QGraphicsRectItem,
+    QGraphicsScene,
+    QGraphicsTextItem,
+)
 
 from verdiclip.editor.history import (
     AddItemCommand,
     CropCommand,
     EditorHistory,
     MoveItemCommand,
+    MultipleMoveCommand,
     RemoveItemCommand,
+    ResizeItemCommand,
+    capture_geometry,
 )
 
 
@@ -328,3 +338,204 @@ class TestCropCommand:
         assert cmd.text() == "Crop image", (
             f"Expected description 'Crop image', got '{cmd.text()}'"
         )
+
+
+# ---------------------------------------------------------------------------
+# New commands: MultipleMoveCommand and ResizeItemCommand
+# ---------------------------------------------------------------------------
+
+
+class TestMultipleMoveCommand:
+    def test_redo_moves_all_items(self, qapp) -> None:
+
+        from verdiclip.editor.history import MultipleMoveCommand
+
+        scene = QGraphicsScene()
+        a = QGraphicsRectItem(0, 0, 10, 10)
+        b = QGraphicsRectItem(0, 0, 10, 10)
+        scene.addItem(a)
+        scene.addItem(b)
+        a.setPos(0, 0)
+        b.setPos(10, 10)
+
+        moves = [
+            (a, QPointF(0, 0), QPointF(50, 60)),
+            (b, QPointF(10, 10), QPointF(80, 90)),
+        ]
+        cmd = MultipleMoveCommand(moves)
+        cmd.redo()
+
+        assert abs(a.pos().x() - 50) < 0.01, f"Expected a.x=50, got {a.pos().x()}"
+        assert abs(b.pos().y() - 90) < 0.01, f"Expected b.y=90, got {b.pos().y()}"
+
+    def test_undo_restores_all_items(self, qapp) -> None:
+
+        from verdiclip.editor.history import MultipleMoveCommand
+
+        scene = QGraphicsScene()
+        a = QGraphicsRectItem(0, 0, 10, 10)
+        scene.addItem(a)
+        a.setPos(50, 60)
+
+        moves = [(a, QPointF(0, 0), QPointF(50, 60))]
+        cmd = MultipleMoveCommand(moves)
+        cmd.undo()
+
+        assert abs(a.pos().x()) < 0.01, f"Expected a.x=0 after undo, got {a.pos().x()}"
+        assert abs(a.pos().y()) < 0.01, f"Expected a.y=0 after undo, got {a.pos().y()}"
+
+    def test_default_description(self, qapp) -> None:
+        cmd = MultipleMoveCommand([])
+        assert cmd.text() == "Move items"
+
+
+class TestResizeItemCommand:
+    def test_undo_restores_rect(self, qapp) -> None:
+        from PySide6.QtCore import QRectF
+
+
+        scene = QGraphicsScene()
+        item = QGraphicsRectItem(10, 20, 80, 60)
+        scene.addItem(item)
+
+        old = capture_geometry(item)
+        item.setRect(QRectF(0, 0, 40, 30))
+        new = capture_geometry(item)
+
+        cmd = ResizeItemCommand(item, old, new)
+        cmd.undo()
+
+        r = item.rect()
+        assert abs(r.x() - 10) < 0.01, f"Expected rect.x=10 after undo, got {r.x()}"
+        assert abs(r.width() - 80) < 0.01, f"Expected rect.width=80 after undo, got {r.width()}"
+
+    def test_redo_applies_new_geometry(self, qapp) -> None:
+        from PySide6.QtCore import QRectF
+
+
+        scene = QGraphicsScene()
+        item = QGraphicsRectItem(10, 20, 80, 60)
+        scene.addItem(item)
+
+        old = capture_geometry(item)
+        new_rect = QRectF(0, 0, 40, 30)
+        new = {"type": "rect", "rect": new_rect}
+
+        cmd = ResizeItemCommand(item, old, new)
+        cmd.redo()
+
+        r = item.rect()
+        assert abs(r.width() - 40) < 0.01, f"Expected rect.width=40 after redo, got {r.width()}"
+
+    def test_capture_geometry_line(self, qapp) -> None:
+
+        from verdiclip.editor.history import capture_geometry
+
+        scene = QGraphicsScene()
+        item = QGraphicsLineItem(QLineF(0, 0, 100, 50))
+        scene.addItem(item)
+
+        geom = capture_geometry(item)
+        assert geom["type"] == "line"
+        assert abs(geom["line"].x2() - 100) < 0.01
+
+
+# ---------------------------------------------------------------------------
+# Handles module
+# ---------------------------------------------------------------------------
+
+
+class TestResizeHandles:
+    def test_create_handles_rect(self, qapp) -> None:
+        from verdiclip.editor.tools.handles import create_handles_for_item
+
+        scene = QGraphicsScene()
+        item = QGraphicsRectItem(0, 0, 100, 80)
+        scene.addItem(item)
+
+        handles = create_handles_for_item(item)
+        assert len(handles) == 8, f"Expected 8 handles for rect, got {len(handles)}"
+
+    def test_create_handles_ellipse(self, qapp) -> None:
+        from verdiclip.editor.tools.handles import create_handles_for_item
+
+
+        scene = QGraphicsScene()
+        item = QGraphicsEllipseItem(0, 0, 60, 40)
+        scene.addItem(item)
+
+        handles = create_handles_for_item(item)
+        assert len(handles) == 8, f"Expected 8 handles for ellipse, got {len(handles)}"
+
+    def test_create_handles_line(self, qapp) -> None:
+
+        from verdiclip.editor.tools.handles import HandleRole, create_handles_for_item
+
+        scene = QGraphicsScene()
+        item = QGraphicsLineItem(QLineF(10, 10, 100, 80))
+        scene.addItem(item)
+
+        handles = create_handles_for_item(item)
+        assert len(handles) == 2, f"Expected 2 handles for line, got {len(handles)}"
+        roles = {h.role for h in handles}
+        assert HandleRole.LINE_P1 in roles
+        assert HandleRole.LINE_P2 in roles
+
+    def test_create_handles_text_returns_empty(self, qapp) -> None:
+        from verdiclip.editor.tools.handles import create_handles_for_item
+
+        scene = QGraphicsScene()
+        item = QGraphicsTextItem("hello")
+        scene.addItem(item)
+
+        handles = create_handles_for_item(item)
+        assert handles == [], "Expected no handles for text item"
+
+    def test_handle_apply_drag_resizes_rect(self, qapp) -> None:
+
+        from verdiclip.editor.tools.handles import HandleRole, ResizeHandle
+
+        scene = QGraphicsScene()
+        item = QGraphicsRectItem(0, 0, 100, 80)
+        scene.addItem(item)
+
+        handle = ResizeHandle(item, HandleRole.SE)
+        scene.addItem(handle)
+        handle.apply_drag(QPointF(10, 5))
+
+        r = item.rect()
+        assert abs(r.width() - 110) < 0.01, f"Expected width=110 after SE drag, got {r.width()}"
+        assert abs(r.height() - 85) < 0.01, f"Expected height=85 after SE drag, got {r.height()}"
+
+    def test_handle_does_not_shrink_below_minimum(self, qapp) -> None:
+
+        from verdiclip.editor.tools.handles import HandleRole, ResizeHandle
+
+        scene = QGraphicsScene()
+        item = QGraphicsRectItem(0, 0, 10, 10)
+        scene.addItem(item)
+
+        handle = ResizeHandle(item, HandleRole.SE)
+        scene.addItem(handle)
+        # Drag SE inward far enough to push below min size
+        handle.apply_drag(QPointF(-20, -20))
+
+        r = item.rect()
+        assert r.width() >= 4, f"Expected width >= 4 (min), got {r.width()}"
+        assert r.height() >= 4, f"Expected height >= 4 (min), got {r.height()}"
+
+    def test_line_handle_moves_endpoint(self, qapp) -> None:
+
+        from verdiclip.editor.tools.handles import HandleRole, ResizeHandle
+
+        scene = QGraphicsScene()
+        item = QGraphicsLineItem(QLineF(0, 0, 100, 0))
+        scene.addItem(item)
+
+        handle = ResizeHandle(item, HandleRole.LINE_P2)
+        scene.addItem(handle)
+        handle.apply_drag(QPointF(20, 10))
+
+        line = item.line()
+        assert abs(line.x2() - 120) < 0.01, f"Expected p2.x=120, got {line.x2()}"
+        assert abs(line.y2() - 10) < 0.01, f"Expected p2.y=10, got {line.y2()}"

@@ -195,6 +195,18 @@ class EditorCanvas(QGraphicsView):
             cmd = MoveItemCommand(item, old_pos, new_pos)
             self._history.push(cmd)
 
+    def add_moves_undoable(self, moves: list[tuple]) -> None:
+        """Record a simultaneous multi-item move as a single undo command."""
+        from verdiclip.editor.history import MultipleMoveCommand
+        if self._history and moves:
+            self._history.push(MultipleMoveCommand(moves))
+
+    def add_resize_undoable(self, item, old_geometry: dict, new_geometry: dict) -> None:
+        """Record an item resize on the undo stack."""
+        from verdiclip.editor.history import ResizeItemCommand
+        if self._history:
+            self._history.push(ResizeItemCommand(item, old_geometry, new_geometry))
+
     def set_history(self, history: EditorHistory) -> None:
         """Set the history instance for undo support."""
         self._history = history
@@ -278,7 +290,18 @@ class EditorCanvas(QGraphicsView):
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         """Handle key presses — Delete removes items, Enter confirms crop, Esc deselects."""
+        # If a text item is being edited, let the scene/item handle the key event first.
+        from PySide6.QtWidgets import QGraphicsTextItem  # noqa: PLC0415
+        focus = self._scene.focusItem()
+        if (
+            isinstance(focus, QGraphicsTextItem)
+            and focus.textInteractionFlags() & Qt.TextInteractionFlag.TextEditorInteraction
+        ):
+            super().keyPressEvent(event)
+            return
+
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            self._delete_selected_items()
             self._delete_selected_items()
         elif event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             if self._current_tool and hasattr(self._current_tool, "apply_crop"):
@@ -421,6 +444,9 @@ class EditorWindow(QMainWindow):
         self._tools: dict[ToolType, BaseTool] = {}
         self._file_path = file_path
         self._image_size = (pixmap.width(), pixmap.height())
+        # Guard flag: True while the properties panel is being updated from a
+        # selected item's state, preventing feedback loops with tool setters.
+        self._updating_from_selection = False
 
         title = f"{__app_name__} — Editor"
         if file_path:
@@ -639,24 +665,43 @@ class EditorWindow(QMainWindow):
         self._properties.font_changed.connect(self._update_tool_font)
 
     def _update_tool_stroke_color(self, color: QColor) -> None:
+        if self._updating_from_selection:
+            return
         tool = self._canvas.current_tool
         if tool and hasattr(tool, "set_stroke_color"):
             tool.set_stroke_color(color)
+        # Apply to currently selected items
+        for item in self._canvas.scene.selectedItems():
+            _apply_stroke_to_item(item, color)
 
     def _update_tool_fill_color(self, color: QColor) -> None:
+        if self._updating_from_selection:
+            return
         tool = self._canvas.current_tool
         if tool and hasattr(tool, "set_fill_color"):
             tool.set_fill_color(color)
+        for item in self._canvas.scene.selectedItems():
+            _apply_fill_to_item(item, color)
 
     def _update_tool_stroke_width(self, width: int) -> None:
+        if self._updating_from_selection:
+            return
         tool = self._canvas.current_tool
         if tool and hasattr(tool, "set_stroke_width"):
             tool.set_stroke_width(width)
+        for item in self._canvas.scene.selectedItems():
+            _apply_width_to_item(item, width)
 
     def _update_tool_font(self, font) -> None:
+        if self._updating_from_selection:
+            return
         tool = self._canvas.current_tool
         if tool and hasattr(tool, "set_font"):
             tool.set_font(font)
+        from PySide6.QtWidgets import QGraphicsTextItem  # noqa: PLC0415
+        for item in self._canvas.scene.selectedItems():
+            if isinstance(item, QGraphicsTextItem):
+                item.setFont(font)
 
     def _zoom_in(self) -> None:
         self._canvas.zoom_in()
@@ -715,8 +760,28 @@ class EditorWindow(QMainWindow):
 
     def _on_tool_changed(self, tool_type: ToolType) -> None:
         """Handle tool selection from toolbar."""
+        from verdiclip.editor.tools.select import SelectTool  # noqa: PLC0415
+
+        # Clear handles when leaving the Select tool
+        prev_tool = self._canvas.current_tool
+        if isinstance(prev_tool, SelectTool):
+            prev_tool.clear_handles()
+
         tool = self._tools.get(tool_type)
+
+        # Sync current panel values to the incoming tool
+        if tool is not None:
+            if hasattr(tool, "set_stroke_color"):
+                tool.set_stroke_color(self._properties.stroke_color)
+            if hasattr(tool, "set_fill_color"):
+                tool.set_fill_color(self._properties.fill_color)
+            if hasattr(tool, "set_stroke_width"):
+                tool.set_stroke_width(self._properties.stroke_width)
+            if hasattr(tool, "set_font"):
+                tool.set_font(self._properties.current_font)
+
         self._canvas.set_tool(tool)
+        self._update_properties_visibility(tool_type)
         self._statusbar.showMessage(f"Tool: {tool_type.name.title()}")
         logger.debug("Switched to tool: %s", tool_type.name)
 
@@ -725,10 +790,13 @@ class EditorWindow(QMainWindow):
         self._toolbar.set_tool(ToolType.SELECT)
 
     def _on_selection_changed(self) -> None:
-        """Dismiss the number editor when selection changes away from a counter."""
-        from verdiclip.editor.tools.number import NumberMarkerItem, NumberTool
+        """Sync the properties panel with the selected item and update handles."""
+        from verdiclip.editor.tools.number import NumberMarkerItem, NumberTool  # noqa: PLC0415
+        from verdiclip.editor.tools.select import SelectTool  # noqa: PLC0415
 
         selected = self._canvas.scene.selectedItems()
+
+        # Dismiss the number editor when a non-counter item is selected
         number_tool = self._tools.get(ToolType.NUMBER)
         if (
             isinstance(number_tool, NumberTool)
@@ -736,14 +804,115 @@ class EditorWindow(QMainWindow):
         ):
             number_tool._dismiss_editor()
 
+        # Update resize handles (only for Select tool)
+        select_tool = self._tools.get(ToolType.SELECT)
+        if isinstance(select_tool, SelectTool):
+            if self._canvas.current_tool is select_tool:
+                select_tool.update_selection_handles(selected)
+            else:
+                select_tool.clear_handles()
+
+        # Read back properties from a single selected item
+        self._sync_properties_from_selection(selected)
+
     def _on_number_editor_requested(self, marker) -> None:
         """Open inline editor for a NumberMarkerItem on double-click."""
-        from verdiclip.editor.tools.number import NumberMarkerItem, NumberTool
+        from verdiclip.editor.tools.number import NumberMarkerItem, NumberTool  # noqa: PLC0415
 
         if isinstance(marker, NumberMarkerItem):
             number_tool = self._tools.get(ToolType.NUMBER)
             if isinstance(number_tool, NumberTool):
                 number_tool.show_editor_for(marker)
+
+    def _sync_properties_from_selection(self, selected: list) -> None:
+        """Read properties from the single selected item into the properties panel.
+
+        Blocked by ``_updating_from_selection`` to prevent recursive signal loops.
+        """
+        if len(selected) != 1:
+            return
+
+        item = selected[0]
+        self._updating_from_selection = True
+        try:
+            from PySide6.QtWidgets import (  # noqa: PLC0415
+                QGraphicsEllipseItem,
+                QGraphicsLineItem,
+                QGraphicsRectItem,
+                QGraphicsTextItem,
+            )
+
+            try:
+                from verdiclip.editor.tools.obfuscate import ObfuscationItem  # noqa: PLC0415
+                _is_obfuscation = isinstance(item, ObfuscationItem)
+            except ImportError:
+                _is_obfuscation = False
+
+            if isinstance(item, (QGraphicsRectItem, QGraphicsEllipseItem)):
+                pen = item.pen()
+                self._properties.set_stroke_color(pen.color())
+                self._properties.set_stroke_width(max(1, int(pen.widthF())))
+                brush = item.brush()
+                from PySide6.QtCore import Qt as _Qt  # noqa: PLC0415
+                if brush.style() == _Qt.BrushStyle.NoBrush or brush.color().alpha() == 0:
+                    self._properties.set_fill_color(QColor(0, 0, 0, 0))
+                else:
+                    self._properties.set_fill_color(brush.color())
+                self._update_properties_visibility_for_item(item)
+
+            elif isinstance(item, QGraphicsLineItem):
+                pen = item.pen()
+                self._properties.set_stroke_color(pen.color())
+                self._properties.set_stroke_width(max(1, int(pen.widthF())))
+                self._update_properties_visibility_for_item(item)
+
+            elif isinstance(item, QGraphicsTextItem):
+                self._properties.set_stroke_color(item.defaultTextColor())
+                self._properties.set_font(item.font())
+                self._update_properties_visibility_for_item(item)
+
+            elif _is_obfuscation:
+                # Obfuscation has no configurable stroke/fill
+                self._properties.set_visible_properties(stroke=False, fill=False, width=False)
+
+        finally:
+            self._updating_from_selection = False
+
+    def _update_properties_visibility(self, tool_type: ToolType) -> None:
+        """Show or hide properties based on the active tool type."""
+        show_stroke = tool_type not in (ToolType.SELECT, ToolType.CROP, ToolType.OBFUSCATE)
+        show_fill = tool_type in (ToolType.RECTANGLE, ToolType.ELLIPSE, ToolType.HIGHLIGHT)
+        show_width = tool_type not in (
+            ToolType.SELECT, ToolType.CROP, ToolType.OBFUSCATE,
+            ToolType.TEXT, ToolType.NUMBER,
+        )
+        show_font = tool_type in (ToolType.TEXT, ToolType.NUMBER)
+        show_caps = tool_type in (ToolType.LINE, ToolType.ARROW)
+        self._properties.set_visible_properties(
+            stroke=show_stroke, fill=show_fill, width=show_width,
+            font=show_font, caps=show_caps,
+        )
+
+    def _update_properties_visibility_for_item(self, item: object) -> None:
+        """Show or hide properties based on the type of the selected item."""
+        from PySide6.QtWidgets import (  # noqa: PLC0415
+            QGraphicsEllipseItem,
+            QGraphicsLineItem,
+            QGraphicsRectItem,
+            QGraphicsTextItem,
+        )
+        if isinstance(item, (QGraphicsRectItem, QGraphicsEllipseItem)):
+            self._properties.set_visible_properties(
+                stroke=True, fill=True, width=True, font=False, caps=False,
+            )
+        elif isinstance(item, QGraphicsLineItem):
+            self._properties.set_visible_properties(
+                stroke=True, fill=False, width=True, font=False, caps=False,
+            )
+        elif isinstance(item, QGraphicsTextItem):
+            self._properties.set_visible_properties(
+                stroke=True, fill=False, width=False, font=True, caps=False,
+            )
 
     def _open_file(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
@@ -788,3 +957,43 @@ class EditorWindow(QMainWindow):
     def _print(self) -> None:
         from verdiclip.export.printer import PrinterExporter
         PrinterExporter.print_pixmap(self._canvas.get_flattened_pixmap(), self)
+
+
+# ---------------------------------------------------------------------------
+# Item-level property application helpers
+# ---------------------------------------------------------------------------
+
+def _apply_stroke_to_item(item: object, color: QColor) -> None:
+    """Apply *color* as the stroke (pen) of *item* in-place."""
+    from PySide6.QtWidgets import (  # noqa: PLC0415
+        QGraphicsEllipseItem,
+        QGraphicsLineItem,
+        QGraphicsRectItem,
+        QGraphicsTextItem,
+    )
+    if isinstance(item, (QGraphicsRectItem, QGraphicsEllipseItem, QGraphicsLineItem)):
+        pen = item.pen()
+        pen.setColor(color)
+        item.setPen(pen)
+    elif isinstance(item, QGraphicsTextItem):
+        item.setDefaultTextColor(color)
+
+
+def _apply_fill_to_item(item: object, color: QColor) -> None:
+    """Apply *color* as the fill (brush) of *item* in-place."""
+    from PySide6.QtWidgets import QGraphicsEllipseItem, QGraphicsRectItem  # noqa: PLC0415
+    if isinstance(item, (QGraphicsRectItem, QGraphicsEllipseItem)):
+        item.setBrush(QBrush(color))
+
+
+def _apply_width_to_item(item: object, width: int) -> None:
+    """Apply *width* as the pen width of *item* in-place."""
+    from PySide6.QtWidgets import (  # noqa: PLC0415
+        QGraphicsEllipseItem,
+        QGraphicsLineItem,
+        QGraphicsRectItem,
+    )
+    if isinstance(item, (QGraphicsRectItem, QGraphicsEllipseItem, QGraphicsLineItem)):
+        pen = item.pen()
+        pen.setWidth(width)
+        item.setPen(pen)

@@ -1525,11 +1525,11 @@ class TestSelectTool:
         tool = SelectTool()
         tool.activate(scene, view)
 
-        # Set up drag state directly (itemAt may not work without a visible view)
+        # Set up drag state using the new multi-item API
         tool._dragging = True
-        tool._drag_item = rect_item
         tool._drag_start = QPointF(25, 25)
-        tool._item_start_pos = rect_item.pos()
+        tool._drag_items = [rect_item]
+        tool._drag_starts = {id(rect_item): rect_item.pos()}
 
         event = _make_mouse_event()
         tool.mouse_move(QPointF(75, 75), event)
@@ -1613,14 +1613,11 @@ class TestSelectTool:
 
         tool.mouse_release(QPointF(25, 25), event)
         assert tool._dragging is False, f"Expected tool._dragging to be False, got {tool._dragging}"
-        assert tool._drag_item is None, (
-            f"Expected tool._drag_item to be None, got {tool._drag_item}"
-        )
         assert tool._drag_start is None, (
             f"Expected tool._drag_start to be None, got {tool._drag_start}"
         )
-        assert tool._item_start_pos is None, (
-            f"Expected tool._item_start_pos to be None, got {tool._item_start_pos}"
+        assert tool._drag_items == [], (
+            f"Expected tool._drag_items to be empty, got {tool._drag_items}"
         )
 
     def test_move_without_press_is_noop(self, qapp) -> None:
@@ -1652,11 +1649,11 @@ class TestSelectTool:
         tool = SelectTool()
         tool.activate(scene, view)
 
-        # Set up drag state directly
+        # Set up drag state using the new multi-item API
         tool._dragging = True
-        tool._drag_item = rect_item
         tool._drag_start = QPointF(25, 25)
-        tool._item_start_pos = rect_item.pos()
+        tool._drag_items = [rect_item]
+        tool._drag_starts = {id(rect_item): rect_item.pos()}
 
         event = _make_mouse_event()
         tool.mouse_move(QPointF(75, 85), event)
@@ -2851,4 +2848,87 @@ class TestObfuscationItemBoundingRect:
         assert abs(rect.height() - 60) < 1, (
             f"Expected boundingRect height ~60, got {rect.height()}"
         )
+
+
+# ---------------------------------------------------------------------------
+# SelectTool — handle management
+# ---------------------------------------------------------------------------
+
+
+class TestSelectToolHandles:
+    def test_update_selection_handles_adds_handles(self, qapp) -> None:
+        from verdiclip.editor.tools.handles import ResizeHandle  # noqa: PLC0415
+
+        scene = QGraphicsScene()
+        view = QGraphicsView(scene)
+        item = QGraphicsRectItem(0, 0, 100, 80)
+        item.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsSelectable)
+        scene.addItem(item)
+
+        tool = SelectTool()
+        tool.activate(scene, view)
+        tool.update_selection_handles([item])
+
+        assert len(tool._handles) == 8, f"Expected 8 handles for rect, got {len(tool._handles)}"
+        for h in tool._handles:
+            assert isinstance(h, ResizeHandle), "Expected handle to be a ResizeHandle"
+            assert h.scene() is scene, "Handle not added to scene"
+
+    def test_clear_handles_removes_from_scene(self, qapp) -> None:
+        from verdiclip.editor.tools.handles import ResizeHandle  # noqa: PLC0415
+
+        scene = QGraphicsScene()
+        view = QGraphicsView(scene)
+        item = QGraphicsRectItem(0, 0, 100, 80)
+        scene.addItem(item)
+
+        tool = SelectTool()
+        tool.activate(scene, view)
+        tool.update_selection_handles([item])
+        assert len(tool._handles) == 8
+
+        tool.clear_handles()
+        assert tool._handles == [], "Expected handles list to be empty after clear"
+        for scene_item in scene.items():
+            assert not isinstance(scene_item, ResizeHandle), "Stale handle left in scene"
+
+    def test_no_handles_for_multi_selection(self, qapp) -> None:
+        scene = QGraphicsScene()
+        view = QGraphicsView(scene)
+        a = QGraphicsRectItem(0, 0, 50, 50)
+        b = QGraphicsRectItem(60, 0, 50, 50)
+        scene.addItem(a)
+        scene.addItem(b)
+
+        tool = SelectTool()
+        tool.activate(scene, view)
+        tool.update_selection_handles([a, b])
+
+        assert tool._handles == [], "Expected no handles for multi-selection (2 items)"
+
+    def test_no_handles_for_text_item(self, qapp) -> None:
+        scene = QGraphicsScene()
+        view = QGraphicsView(scene)
+        item = QGraphicsTextItem("hello")
+        scene.addItem(item)
+
+        tool = SelectTool()
+        tool.activate(scene, view)
+        tool.update_selection_handles([item])
+
+        assert tool._handles == [], "Expected no handles for unsupported item type (text)"
+
+    def test_deactivate_clears_handles(self, qapp) -> None:
+        scene = QGraphicsScene()
+        view = QGraphicsView(scene)
+        item = QGraphicsRectItem(0, 0, 100, 80)
+        scene.addItem(item)
+
+        tool = SelectTool()
+        tool.activate(scene, view)
+        tool.update_selection_handles([item])
+        assert len(tool._handles) == 8
+
+        tool.deactivate()
+        assert tool._handles == [], "Expected handles cleared on deactivate"
 

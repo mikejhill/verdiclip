@@ -72,6 +72,93 @@ class MoveItemCommand(QUndoCommand):
         self._item.setPos(self._old_pos[0], self._old_pos[1])
 
 
+class MultipleMoveCommand(QUndoCommand):
+    """Command to record a simultaneous move of multiple graphics items."""
+
+    def __init__(
+        self,
+        moves: list[tuple],
+        description: str = "Move items",
+    ):
+        """Initialise with a list of ``(item, old_pos, new_pos)`` tuples.
+
+        Each position is a ``(float, float)`` pair or a ``QPointF``.
+        """
+        super().__init__(description)
+        self._moves = moves
+
+    def redo(self) -> None:
+        for item, _old, new in self._moves:
+            if hasattr(new, "x"):
+                item.setPos(new.x(), new.y())
+            else:
+                item.setPos(new[0], new[1])
+
+    def undo(self) -> None:
+        for item, old, _new in self._moves:
+            if hasattr(old, "x"):
+                item.setPos(old.x(), old.y())
+            else:
+                item.setPos(old[0], old[1])
+
+
+class ResizeItemCommand(QUndoCommand):
+    """Command to record a resize of a single annotation item.
+
+    Stores the item's geometry before and after the resize so the operation
+    can be fully undone and redone.  Geometry is stored as a snapshot dict
+    rather than a typed structure so that the command works uniformly for
+    ``QGraphicsRectItem``, ``QGraphicsEllipseItem``, ``QGraphicsLineItem``,
+    and ``ObfuscationItem``.
+    """
+
+    def __init__(
+        self,
+        item,
+        old_geometry: dict,
+        new_geometry: dict,
+        description: str = "Resize item",
+    ):
+        super().__init__(description)
+        self._item = item
+        self._old = old_geometry
+        self._new = new_geometry
+
+    def redo(self) -> None:
+        _apply_geometry(self._item, self._new)
+
+    def undo(self) -> None:
+        _apply_geometry(self._item, self._old)
+
+
+def capture_geometry(item) -> dict:
+    """Return a geometry snapshot for *item* suitable for ``ResizeItemCommand``."""
+    from PySide6.QtWidgets import QGraphicsEllipseItem, QGraphicsLineItem, QGraphicsRectItem
+
+    if isinstance(item, (QGraphicsRectItem, QGraphicsEllipseItem)):
+        return {"type": "rect", "rect": item.rect()}
+    if isinstance(item, QGraphicsLineItem):
+        return {"type": "line", "line": item.line()}
+    try:
+        from verdiclip.editor.tools.obfuscate import ObfuscationItem  # noqa: PLC0415
+        if isinstance(item, ObfuscationItem):
+            return {"type": "obfuscate", "pos": item.pos(), "size": item._size}
+    except ImportError:
+        pass
+    return {}
+
+
+def _apply_geometry(item, geometry: dict) -> None:
+    """Apply a geometry snapshot to *item*."""
+    gtype = geometry.get("type")
+    if gtype == "rect":
+        item.setRect(geometry["rect"])
+    elif gtype == "line":
+        item.setLine(geometry["line"])
+    elif gtype == "obfuscate":
+        item.set_geometry(geometry["pos"], geometry["size"])
+
+
 class CropCommand(QUndoCommand):
     """Command to crop the image, undoable by restoring the original."""
 

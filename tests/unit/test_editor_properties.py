@@ -113,11 +113,23 @@ class TestPropertiesPanelSetStrokeWidth:
 
 class TestPropertiesPanelStrokeWidthSignal:
     def test_emits_on_slider_change(self, qapp) -> None:
+        """Direct slider interaction emits stroke_width_changed."""
         panel = PropertiesPanel()
         handler = MagicMock()
         panel.stroke_width_changed.connect(handler)
-        panel.set_stroke_width(7)
+        # Simulate user slider interaction — setValue on the slider widget
+        # emits valueChanged, which is wired to stroke_width_changed.
+        panel._width_slider.setValue(7)
         handler.assert_called_once_with(7)
+
+    def test_set_stroke_width_does_not_emit(self, qapp) -> None:
+        """set_stroke_width is silent — it updates the display without emitting."""
+        panel = PropertiesPanel()
+        handler = MagicMock()
+        panel.stroke_width_changed.connect(handler)
+        panel.set_stroke_width(12)
+        assert panel.stroke_width == 12
+        handler.assert_not_called()
 
 
 class TestPropertiesPanelStrokeColorSignal:
