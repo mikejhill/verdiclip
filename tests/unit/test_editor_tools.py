@@ -2037,3 +2037,460 @@ class TestFreehandToolPathPoints:
 
         tool.mouse_release(QPointF(40, 40), event)
 
+
+# ---------------------------------------------------------------------------
+# SelectTool — _resolve_top_level_item (parent-walking)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveTopLevelItem:
+    def test_returns_item_when_no_parent(self, qapp) -> None:
+        """An item with no parent should be returned as-is."""
+        from verdiclip.editor.tools.select import _resolve_top_level_item
+
+        scene = QGraphicsScene()
+        rect = QGraphicsRectItem(0, 0, 50, 50)
+        scene.addItem(rect)
+
+        result = _resolve_top_level_item(rect)
+        assert result is rect, (
+            f"Expected the same item back when it has no parent, got {result}"
+        )
+
+    def test_walks_single_parent(self, qapp) -> None:
+        """A child should resolve to its parent."""
+        from verdiclip.editor.tools.select import _resolve_top_level_item
+
+        scene = QGraphicsScene()
+        parent = QGraphicsRectItem(0, 0, 80, 80)
+        child = QGraphicsSimpleTextItem("X", parent)
+        scene.addItem(parent)
+
+        result = _resolve_top_level_item(child)
+        assert result is parent, (
+            f"Expected child to resolve to parent, got {result}"
+        )
+
+    def test_walks_nested_parents(self, qapp) -> None:
+        """A deeply nested item should resolve to the top-level ancestor."""
+        from verdiclip.editor.tools.select import _resolve_top_level_item
+
+        scene = QGraphicsScene()
+        grandparent = QGraphicsRectItem(0, 0, 100, 100)
+        parent = QGraphicsRectItem(0, 0, 60, 60, grandparent)
+        child = QGraphicsSimpleTextItem("Y", parent)
+        scene.addItem(grandparent)
+
+        result = _resolve_top_level_item(child)
+        assert result is grandparent, (
+            f"Expected child to resolve to grandparent, got {result}"
+        )
+
+    def test_click_on_child_selects_parent_item(self, qapp) -> None:
+        """Clicking on a child graphics item should select the top-level parent."""
+        scene = QGraphicsScene()
+        view = QGraphicsView(scene)
+        view.resize(400, 400)
+        view.show()
+
+        parent = QGraphicsRectItem(0, 0, 80, 80)
+        parent.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsSelectable)
+        child = QGraphicsSimpleTextItem("X", parent)
+        child.setPos(10, 10)
+        scene.addItem(parent)
+
+        tool = SelectTool()
+        tool.activate(scene, view)
+
+        event = _make_mouse_event()
+        tool.mouse_press(QPointF(15, 15), event)
+
+        assert parent.isSelected(), (
+            "Expected parent item to be selected after clicking on child's area"
+        )
+
+
+# ---------------------------------------------------------------------------
+# SelectTool — rubber band multi-selection
+# ---------------------------------------------------------------------------
+
+
+class TestSelectToolRubberBand:
+    def test_rubber_band_created_on_empty_space_click(self, qapp) -> None:
+        """Clicking on empty space should start rubber band selection."""
+        scene = QGraphicsScene()
+        scene.setSceneRect(0, 0, 400, 400)
+        view = QGraphicsView(scene)
+
+        tool = SelectTool()
+        tool.activate(scene, view)
+
+        event = _make_mouse_event()
+        tool.mouse_press(QPointF(200, 200), event)
+
+        assert tool._rubber_banding is True, (
+            f"Expected _rubber_banding to be True, got {tool._rubber_banding}"
+        )
+        assert tool._rubber_band_rect is not None, (
+            "Expected _rubber_band_rect to be created"
+        )
+        assert tool._rubber_band_rect.zValue() > 9000, (
+            f"Expected rubber band zValue > Z_BOUNDARY, "
+            f"got {tool._rubber_band_rect.zValue()}"
+        )
+
+    def test_rubber_band_rect_updates_on_move(self, qapp) -> None:
+        """Dragging should update the rubber band rectangle."""
+        scene = QGraphicsScene()
+        scene.setSceneRect(0, 0, 400, 400)
+        view = QGraphicsView(scene)
+
+        tool = SelectTool()
+        tool.activate(scene, view)
+
+        press_event = _make_mouse_event()
+        tool.mouse_press(QPointF(50, 50), press_event)
+
+        move_event = _make_mouse_event()
+        tool.mouse_move(QPointF(200, 200), move_event)
+
+        rect = tool._rubber_band_rect.rect()
+        assert rect.width() > 0, (
+            f"Expected rubber band width > 0, got {rect.width()}"
+        )
+        assert rect.height() > 0, (
+            f"Expected rubber band height > 0, got {rect.height()}"
+        )
+
+    def test_rubber_band_selects_items_within(self, qapp) -> None:
+        """Items within the rubber band area should be selected on release."""
+        scene = QGraphicsScene()
+        scene.setSceneRect(0, 0, 400, 400)
+        view = QGraphicsView(scene)
+
+        item1 = QGraphicsRectItem(10, 10, 30, 30)
+        item1.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsSelectable)
+        item1.setZValue(0)
+        scene.addItem(item1)
+
+        item2 = QGraphicsRectItem(50, 50, 30, 30)
+        item2.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsSelectable)
+        item2.setZValue(0)
+        scene.addItem(item2)
+
+        item3 = QGraphicsRectItem(300, 300, 30, 30)
+        item3.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsSelectable)
+        item3.setZValue(0)
+        scene.addItem(item3)
+
+        tool = SelectTool()
+        tool.activate(scene, view)
+
+        press_event = _make_mouse_event()
+        tool.mouse_press(QPointF(0, 0), press_event)
+        move_event = _make_mouse_event()
+        tool.mouse_move(QPointF(100, 100), move_event)
+        release_event = _make_mouse_event()
+        tool.mouse_release(QPointF(100, 100), release_event)
+
+        assert item1.isSelected(), (
+            "Expected item1 inside rubber band to be selected"
+        )
+        assert item2.isSelected(), (
+            "Expected item2 inside rubber band to be selected"
+        )
+        assert not item3.isSelected(), (
+            "Expected item3 outside rubber band to NOT be selected"
+        )
+
+    def test_rubber_band_cleaned_up_on_release(self, qapp) -> None:
+        """Rubber band rect should be removed from scene after release."""
+        scene = QGraphicsScene()
+        scene.setSceneRect(0, 0, 400, 400)
+        view = QGraphicsView(scene)
+
+        tool = SelectTool()
+        tool.activate(scene, view)
+
+        event = _make_mouse_event()
+        tool.mouse_press(QPointF(50, 50), event)
+        tool.mouse_move(QPointF(200, 200), event)
+        tool.mouse_release(QPointF(200, 200), event)
+
+        assert tool._rubber_band_rect is None, (
+            "Expected _rubber_band_rect to be None after release"
+        )
+        assert tool._rubber_banding is False, (
+            f"Expected _rubber_banding to be False, got {tool._rubber_banding}"
+        )
+        rubber_rects = [
+            i for i in scene.items()
+            if isinstance(i, QGraphicsRectItem) and i.zValue() > 9000
+        ]
+        assert len(rubber_rects) == 0, (
+            f"Expected 0 rubber band rects in scene, got {len(rubber_rects)}"
+        )
+
+    def test_rubber_band_ignores_background_items(self, qapp) -> None:
+        """Rubber band should not select background items."""
+        scene, bg = _make_scene_with_background(200, 200)
+        scene.setSceneRect(0, 0, 400, 400)
+        view = QGraphicsView(scene)
+
+        annotation = QGraphicsRectItem(10, 10, 30, 30)
+        annotation.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsSelectable)
+        annotation.setZValue(0)
+        scene.addItem(annotation)
+
+        tool = SelectTool()
+        tool.activate(scene, view)
+
+        event = _make_mouse_event()
+        tool.mouse_press(QPointF(0, 0), event)
+        tool.mouse_move(QPointF(300, 300), event)
+        tool.mouse_release(QPointF(300, 300), event)
+
+        assert annotation.isSelected(), (
+            "Annotation inside band should be selected"
+        )
+        assert not bg.isSelected(), (
+            "Background item should NOT be selected by rubber band"
+        )
+
+
+# ---------------------------------------------------------------------------
+# SelectTool — select_all
+# ---------------------------------------------------------------------------
+
+
+class TestSelectToolSelectAll:
+    def test_select_all_selects_annotations(self, qapp) -> None:
+        """select_all should select all annotation items."""
+        scene = QGraphicsScene()
+        view = QGraphicsView(scene)
+
+        item1 = QGraphicsRectItem(0, 0, 50, 50)
+        item1.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsSelectable)
+        item1.setZValue(0)
+        scene.addItem(item1)
+
+        item2 = QGraphicsEllipseItem(60, 60, 40, 40)
+        item2.setFlag(QGraphicsEllipseItem.GraphicsItemFlag.ItemIsSelectable)
+        item2.setZValue(0)
+        scene.addItem(item2)
+
+        tool = SelectTool()
+        tool.activate(scene, view)
+        tool.select_all()
+
+        assert item1.isSelected(), (
+            "Expected item1 to be selected by select_all"
+        )
+        assert item2.isSelected(), (
+            "Expected item2 to be selected by select_all"
+        )
+
+    def test_select_all_ignores_background(self, qapp) -> None:
+        """select_all should not select background items."""
+        scene, bg = _make_scene_with_background(200, 200)
+        view = QGraphicsView(scene)
+
+        annotation = QGraphicsRectItem(10, 10, 30, 30)
+        annotation.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsSelectable)
+        annotation.setZValue(0)
+        scene.addItem(annotation)
+
+        tool = SelectTool()
+        tool.activate(scene, view)
+        tool.select_all()
+
+        assert annotation.isSelected(), (
+            "Annotation should be selected by select_all"
+        )
+        assert not bg.isSelected(), (
+            "Background should NOT be selected by select_all"
+        )
+
+    def test_select_all_ignores_boundary(self, qapp) -> None:
+        """select_all should not select boundary items."""
+        from verdiclip.editor import Z_BOUNDARY
+
+        scene = QGraphicsScene()
+        view = QGraphicsView(scene)
+
+        boundary = QGraphicsRectItem(0, 0, 200, 200)
+        boundary.setZValue(Z_BOUNDARY)
+        scene.addItem(boundary)
+
+        annotation = QGraphicsRectItem(10, 10, 30, 30)
+        annotation.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsSelectable)
+        annotation.setZValue(0)
+        scene.addItem(annotation)
+
+        tool = SelectTool()
+        tool.activate(scene, view)
+        tool.select_all()
+
+        assert annotation.isSelected(), (
+            "Annotation should be selected by select_all"
+        )
+        assert not boundary.isSelected(), (
+            "Boundary should NOT be selected by select_all"
+        )
+
+    def test_select_all_noop_without_scene(self, qapp) -> None:
+        """select_all should be a no-op when tool has no scene."""
+        tool = SelectTool()
+        tool.select_all()  # Should not raise
+
+
+# ---------------------------------------------------------------------------
+# SelectTool — Ctrl+click multi-select
+# ---------------------------------------------------------------------------
+
+
+class TestSelectToolCtrlClick:
+    def test_ctrl_click_adds_to_selection(self, qapp) -> None:
+        """Ctrl+click should add items to the existing selection."""
+        scene = QGraphicsScene()
+        view = QGraphicsView(scene)
+
+        item1 = QGraphicsRectItem(0, 0, 50, 50)
+        item1.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsSelectable)
+        scene.addItem(item1)
+
+        item2 = QGraphicsRectItem(100, 100, 50, 50)
+        item2.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsSelectable)
+        scene.addItem(item2)
+
+        tool = SelectTool()
+        tool.activate(scene, view)
+
+        # Select first item normally
+        event1 = _make_mouse_event()
+        tool.mouse_press(QPointF(25, 25), event1)
+        tool.mouse_release(QPointF(25, 25), event1)
+
+        assert item1.isSelected(), "Precondition: item1 should be selected"
+
+        # Ctrl+click on second item
+        ctrl_event = _make_mouse_event(
+            modifiers=Qt.KeyboardModifier.ControlModifier,
+        )
+        tool.mouse_press(QPointF(125, 125), ctrl_event)
+
+        assert item1.isSelected(), (
+            "Expected item1 to remain selected during Ctrl+click"
+        )
+        assert item2.isSelected(), (
+            "Expected item2 to be added to selection on Ctrl+click"
+        )
+
+    def test_click_without_ctrl_deselects_others(self, qapp) -> None:
+        """Normal click (no Ctrl) should deselect existing items."""
+        scene = QGraphicsScene()
+        view = QGraphicsView(scene)
+
+        item1 = QGraphicsRectItem(0, 0, 50, 50)
+        item1.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsSelectable)
+        scene.addItem(item1)
+
+        item2 = QGraphicsRectItem(100, 100, 50, 50)
+        item2.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsSelectable)
+        scene.addItem(item2)
+
+        tool = SelectTool()
+        tool.activate(scene, view)
+
+        # Select both via direct API
+        item1.setSelected(True)
+        item2.setSelected(True)
+
+        # Normal click on item1 — should deselect item2
+        event = _make_mouse_event()
+        tool.mouse_press(QPointF(25, 25), event)
+
+        assert item1.isSelected(), "Clicked item should be selected"
+        assert not item2.isSelected(), (
+            "Other item should be deselected on normal click (no Ctrl)"
+        )
+
+
+# ---------------------------------------------------------------------------
+# ObfuscationItem — set_geometry (atomic position+size)
+# ---------------------------------------------------------------------------
+
+
+class TestObfuscationItemSetGeometry:
+    def test_set_geometry_updates_position_and_size(self, qapp) -> None:
+        """set_geometry should update both pos and size atomically."""
+        from PySide6.QtCore import QSizeF
+
+        scene, bg = _make_scene_with_background(200, 200)
+        item = ObfuscationItem(bg, QSizeF(40, 40))
+        item.setPos(10, 10)
+        scene.addItem(item)
+
+        new_pos = QPointF(50, 60)
+        new_size = QSizeF(80, 70)
+        item.set_geometry(new_pos, new_size)
+
+        assert abs(item.pos().x() - 50) < 1, (
+            f"Expected pos.x ~50 after set_geometry, got {item.pos().x()}"
+        )
+        assert abs(item.pos().y() - 60) < 1, (
+            f"Expected pos.y ~60 after set_geometry, got {item.pos().y()}"
+        )
+        assert item._size.width() == 80, (
+            f"Expected _size.width 80, got {item._size.width()}"
+        )
+        assert item._size.height() == 70, (
+            f"Expected _size.height 70, got {item._size.height()}"
+        )
+        assert not item.pixmap().isNull(), (
+            "Expected non-null pixmap after set_geometry"
+        )
+
+    def test_set_geometry_prevents_double_refresh(self, qapp) -> None:
+        """_updating_geometry flag should prevent extra refresh from itemChange."""
+        from PySide6.QtCore import QSizeF
+
+        scene, bg = _make_scene_with_background(200, 200)
+        item = ObfuscationItem(bg, QSizeF(40, 40))
+        item.setPos(10, 10)
+        scene.addItem(item)
+
+        refresh_calls = []
+        original_refresh = item._refresh_pixelation
+
+        def counting_refresh():
+            refresh_calls.append(1)
+            original_refresh()
+
+        item._refresh_pixelation = counting_refresh
+
+        item.set_geometry(QPointF(50, 60), QSizeF(80, 70))
+
+        assert len(refresh_calls) == 1, (
+            f"Expected exactly 1 refresh call during set_geometry, "
+            f"got {len(refresh_calls)}"
+        )
+
+    def test_updating_geometry_flag_reset_after_set_geometry(
+        self, qapp,
+    ) -> None:
+        """_updating_geometry should be False after set_geometry completes."""
+        from PySide6.QtCore import QSizeF
+
+        scene, bg = _make_scene_with_background(200, 200)
+        item = ObfuscationItem(bg, QSizeF(40, 40))
+        item.setPos(10, 10)
+        scene.addItem(item)
+
+        item.set_geometry(QPointF(50, 60), QSizeF(80, 70))
+
+        assert item._updating_geometry is False, (
+            f"Expected _updating_geometry to be False after set_geometry, "
+            f"got {item._updating_geometry}"
+        )
+

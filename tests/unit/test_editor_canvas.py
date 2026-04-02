@@ -1329,3 +1329,275 @@ class TestEditorCanvasZoomSignal:
             f"Expected zoom_changed emitted once on Ctrl+scroll, "
             f"got {len(received)} times"
         )
+
+
+# ---------------------------------------------------------------------------
+# EditorCanvas — undo after set_image (crash fix)
+# ---------------------------------------------------------------------------
+
+
+class TestEditorCanvasUndoAfterSetImage:
+    def test_set_image_clears_history_before_scene(self, qapp) -> None:
+        """set_image should clear undo history before scene.clear() to avoid crashes."""
+        from verdiclip.editor.history import EditorHistory
+
+        canvas = _make_canvas_with_image()
+        history = EditorHistory()
+        canvas.set_history(history)
+
+        # Add some items and undo history
+        item = canvas.scene.addRect(10, 10, 50, 50)
+        canvas.add_item_undoable(item, "Test rect")
+        assert history.can_undo(), (
+            "Precondition: history should have undo entries"
+        )
+
+        # Load a new image — this should clear history first, then scene
+        new_pixmap = QPixmap(300, 300)
+        new_pixmap.fill(Qt.GlobalColor.red)
+        canvas.set_image(new_pixmap)
+
+        # History should be cleared — undo should not crash
+        assert not history.can_undo(), (
+            "Expected history to be cleared after set_image"
+        )
+
+    def test_undo_after_set_image_does_not_crash(self, qapp) -> None:
+        """Calling undo after set_image should be safe (no RuntimeError)."""
+        from verdiclip.editor.history import EditorHistory
+
+        canvas = _make_canvas_with_image()
+        history = EditorHistory()
+        canvas.set_history(history)
+
+        # Build up undo entries
+        item1 = canvas.scene.addRect(10, 10, 50, 50)
+        canvas.add_item_undoable(item1, "Rect 1")
+        item2 = canvas.scene.addRect(60, 60, 50, 50)
+        canvas.add_item_undoable(item2, "Rect 2")
+
+        # Replace image — destroys old scene items
+        new_pixmap = QPixmap(300, 300)
+        new_pixmap.fill(Qt.GlobalColor.green)
+        canvas.set_image(new_pixmap)
+
+        # This should NOT raise RuntimeError
+        history.undo()  # no-op since history was cleared
+
+
+# ---------------------------------------------------------------------------
+# EditorCanvas — zoom_to_point
+# ---------------------------------------------------------------------------
+
+
+class TestEditorCanvasZoomToPoint:
+    def test_zoom_to_point_changes_level(self, qapp) -> None:
+        """_zoom_to_point should change the zoom level."""
+        canvas = _make_canvas_with_image()
+        original = canvas.zoom_level
+
+        center = canvas.viewport().rect().center()
+        canvas._zoom_to_point(1.15, center)
+
+        assert canvas.zoom_level != pytest.approx(original, abs=0.01), (
+            f"Expected zoom level to change from {original}, "
+            f"got {canvas.zoom_level}"
+        )
+
+    def test_zoom_to_point_emits_signal(self, qapp) -> None:
+        """_zoom_to_point should emit zoom_changed signal."""
+        canvas = _make_canvas_with_image()
+        received = []
+        canvas.zoom_changed.connect(lambda v: received.append(v))
+
+        center = canvas.viewport().rect().center()
+        canvas._zoom_to_point(1.15, center)
+
+        assert len(received) == 1, (
+            f"Expected zoom_changed emitted once, got {len(received)} times"
+        )
+
+    def test_zoom_to_point_respects_max_limit(self, qapp) -> None:
+        """_zoom_to_point should not exceed MAX_ZOOM (16.0)."""
+        canvas = _make_canvas_with_image()
+        center = canvas.viewport().rect().center()
+
+        # Try to zoom way past max
+        for _ in range(100):
+            canvas._zoom_to_point(1.5, center)
+
+        assert canvas.zoom_level <= 16.0, (
+            f"Expected zoom capped at 16.0, got {canvas.zoom_level}"
+        )
+
+    def test_zoom_to_point_respects_min_limit(self, qapp) -> None:
+        """_zoom_to_point should not go below MIN_ZOOM (0.1)."""
+        canvas = _make_canvas_with_image()
+        center = canvas.viewport().rect().center()
+
+        # Try to zoom way below min
+        for _ in range(100):
+            canvas._zoom_to_point(0.5, center)
+
+        assert canvas.zoom_level >= 0.1, (
+            f"Expected zoom capped at >= 0.1, got {canvas.zoom_level}"
+        )
+
+    def test_zoom_to_point_noop_at_boundary(self, qapp) -> None:
+        """Zooming beyond limits should be a no-op (level unchanged)."""
+        canvas = _make_canvas_with_image()
+        center = canvas.viewport().rect().center()
+
+        # Push to max
+        for _ in range(100):
+            canvas._zoom_to_point(1.5, center)
+        level_at_max = canvas.zoom_level
+
+        # One more should be a no-op
+        canvas._zoom_to_point(1.5, center)
+        assert canvas.zoom_level == pytest.approx(level_at_max, abs=0.001), (
+            f"Expected no change at max, got {canvas.zoom_level}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# EditorCanvas — zoom_fit
+# ---------------------------------------------------------------------------
+
+
+class TestEditorCanvasZoomFit:
+    def test_zoom_fit_updates_zoom_level(self, qapp) -> None:
+        """zoom_fit should update _zoom_level from the resulting transform."""
+        canvas = EditorCanvas()
+        pixmap = QPixmap(800, 600)
+        pixmap.fill(Qt.GlobalColor.blue)
+        canvas.set_image(pixmap)
+        canvas.resize(200, 200)
+
+        canvas.zoom_fit()
+
+        assert canvas.zoom_level > 0, (
+            f"Expected positive zoom level after zoom_fit, got {canvas.zoom_level}"
+        )
+
+    def test_zoom_fit_emits_signal(self, qapp) -> None:
+        """zoom_fit should emit zoom_changed signal."""
+        canvas = _make_canvas_with_image()
+        canvas.resize(200, 200)
+        received = []
+        canvas.zoom_changed.connect(lambda v: received.append(v))
+
+        canvas.zoom_fit()
+
+        assert len(received) == 1, (
+            f"Expected zoom_changed emitted once, got {len(received)} times"
+        )
+
+    def test_zoom_fit_after_zoom_in(self, qapp) -> None:
+        """zoom_fit after zoom_in should change the zoom level."""
+        canvas = EditorCanvas()
+        pixmap = QPixmap(800, 600)
+        pixmap.fill(Qt.GlobalColor.blue)
+        canvas.set_image(pixmap)
+        canvas.resize(200, 200)
+
+        canvas.zoom_in()
+        canvas.zoom_in()
+        zoomed_level = canvas.zoom_level
+
+        canvas.zoom_fit()
+
+        assert canvas.zoom_level != pytest.approx(zoomed_level, abs=0.01), (
+            f"Expected zoom_fit to change level from {zoomed_level}, "
+            f"got {canvas.zoom_level}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# EditorCanvas — zoom_reset
+# ---------------------------------------------------------------------------
+
+
+class TestEditorCanvasZoomReset:
+    def test_zoom_reset_returns_to_1_0_after_zoom_in(self, qapp) -> None:
+        """After zoom_in, zoom_reset should return to exactly 1.0."""
+        canvas = _make_canvas_with_image()
+        canvas.zoom_in()
+        canvas.zoom_in()
+        canvas.zoom_in()
+
+        assert canvas.zoom_level != pytest.approx(1.0, abs=0.01), (
+            "Precondition: zoom should be != 1.0 after zoom_in"
+        )
+
+        canvas.zoom_reset()
+
+        assert canvas.zoom_level == pytest.approx(1.0, abs=0.01), (
+            f"Expected zoom_reset to return to 1.0, got {canvas.zoom_level}"
+        )
+
+    def test_zoom_reset_returns_to_1_0_after_zoom_out(self, qapp) -> None:
+        """After zoom_out, zoom_reset should return to exactly 1.0."""
+        canvas = _make_canvas_with_image()
+        canvas.zoom_out()
+        canvas.zoom_out()
+
+        canvas.zoom_reset()
+
+        assert canvas.zoom_level == pytest.approx(1.0, abs=0.01), (
+            f"Expected zoom_reset to return to 1.0, got {canvas.zoom_level}"
+        )
+
+    def test_zoom_reset_emits_signal(self, qapp) -> None:
+        """zoom_reset should emit zoom_changed with 1.0."""
+        canvas = _make_canvas_with_image()
+        canvas.zoom_in()
+
+        received = []
+        canvas.zoom_changed.connect(lambda v: received.append(v))
+        canvas.zoom_reset()
+
+        assert len(received) == 1, (
+            f"Expected zoom_changed emitted once, got {len(received)} times"
+        )
+        assert received[0] == pytest.approx(1.0, abs=0.01), (
+            f"Expected zoom_changed signal value 1.0, got {received[0]}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# EditorCanvas — Ctrl+A select all integration
+# ---------------------------------------------------------------------------
+
+
+class TestEditorCanvasCtrlA:
+    def test_ctrl_a_selects_all_annotations(self, qapp) -> None:
+        """Ctrl+A with SelectTool active should select all annotation items."""
+        from verdiclip.editor.tools.select import SelectTool
+
+        canvas = _make_canvas_with_image()
+        tool = SelectTool()
+        canvas.set_tool(tool)
+
+        item1 = canvas.scene.addRect(10, 10, 30, 30)
+        item1.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
+        item1.setZValue(0)
+
+        item2 = canvas.scene.addRect(60, 60, 30, 30)
+        item2.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
+        item2.setZValue(0)
+
+        # Simulate Ctrl+A
+        event = QKeyEvent(
+            QKeyEvent.Type.KeyPress,
+            Qt.Key.Key_A,
+            Qt.KeyboardModifier.ControlModifier,
+        )
+        canvas.keyPressEvent(event)
+
+        assert item1.isSelected(), (
+            "Expected item1 to be selected after Ctrl+A"
+        )
+        assert item2.isSelected(), (
+            "Expected item2 to be selected after Ctrl+A"
+        )

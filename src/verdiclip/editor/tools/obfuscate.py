@@ -48,11 +48,21 @@ class ObfuscationItem(QGraphicsPixmapItem):
             QGraphicsPixmapItem.GraphicsItemFlag.ItemSendsGeometryChanges,
         )
         self._show_border = True
+        self._updating_geometry = False
         self._refresh_pixelation()
 
     def set_size(self, size: QSizeF) -> None:
         """Update the obfuscation region size and refresh pixelation."""
         self._size = size
+        self._refresh_pixelation()
+
+    def set_geometry(self, pos: QPointF, size: QSizeF) -> None:
+        """Update position and size atomically with a single pixelation refresh."""
+        self._size = size
+        # Block itemChange from triggering an extra refresh during setPos
+        self._updating_geometry = True
+        self.setPos(pos)
+        self._updating_geometry = False
         self._refresh_pixelation()
 
     def set_show_border(self, show: bool) -> None:
@@ -78,7 +88,10 @@ class ObfuscationItem(QGraphicsPixmapItem):
                 painter.drawRect(QRectF(0, 0, pm.width(), pm.height()))
 
     def itemChange(self, change, value):  # noqa: N802
-        if change == QGraphicsPixmapItem.GraphicsItemChange.ItemPositionHasChanged:
+        if (
+            change == QGraphicsPixmapItem.GraphicsItemChange.ItemPositionHasChanged
+            and not self._updating_geometry
+        ):
             self._refresh_pixelation()
         return super().itemChange(change, value)
 
@@ -139,8 +152,8 @@ class ObfuscateTool(BaseTool):
             )
             self._scene.addItem(self._preview_item)
 
-        self._preview_item.set_size(rect.size())
-        self._preview_item.setPos(rect.topLeft())
+        # Update position first (without triggering pixelation), then size
+        self._preview_item.set_geometry(rect.topLeft(), rect.size())
 
     def mouse_release(self, scene_pos: QPointF, event: QMouseEvent) -> None:
         if self._origin is None or self._scene is None:
@@ -159,8 +172,7 @@ class ObfuscateTool(BaseTool):
 
         if self._preview_item is not None:
             # Finalize the preview item — it's already in the scene
-            self._preview_item.set_size(rect.size())
-            self._preview_item.setPos(rect.topLeft())
+            self._preview_item.set_geometry(rect.topLeft(), rect.size())
             self._preview_item.set_show_border(False)
             logger.debug(
                 "Obfuscation applied at (%.0f,%.0f) %.0fx%.0f",

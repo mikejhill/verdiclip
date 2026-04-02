@@ -63,7 +63,7 @@ class EditorCanvas(QGraphicsView):
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         self.setDragMode(QGraphicsView.DragMode.NoDrag)
-        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.NoAnchor)
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
@@ -80,7 +80,11 @@ class EditorCanvas(QGraphicsView):
 
     def set_image(self, pixmap: QPixmap) -> None:
         """Load an image onto the canvas at 100% zoom, centered."""
+        # Clear undo history first — commands hold references to scene items
+        if self._history:
+            self._history.clear()
         self._scene.clear()
+
         self._pixmap_item = QGraphicsPixmapItem(pixmap)
         self._pixmap_item.setZValue(Z_BACKGROUND)
         self._scene.addItem(self._pixmap_item)
@@ -142,7 +146,9 @@ class EditorCanvas(QGraphicsView):
         """Zoom with Ctrl+scroll, scroll horizontally with Shift+scroll."""
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             factor = _ZOOM_FACTOR if event.angleDelta().y() > 0 else 1.0 / _ZOOM_FACTOR
-            self._apply_zoom(factor)
+            # Zoom to the point under the cursor
+            view_pos = event.position()
+            self._zoom_to_point(factor, view_pos.toPoint())
             event.accept()
         elif event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
             # Shift+scroll: horizontal scrolling at normal speed
@@ -212,6 +218,13 @@ class EditorCanvas(QGraphicsView):
                     item.setSelected(False)
             else:
                 self.switch_to_select_requested.emit()
+        elif (
+            event.key() == Qt.Key.Key_A
+            and event.modifiers() & Qt.KeyboardModifier.ControlModifier
+        ):
+            from verdiclip.editor.tools.select import SelectTool
+            if isinstance(self._current_tool, SelectTool):
+                self._current_tool.select_all()
         else:
             super().keyPressEvent(event)
 
@@ -243,17 +256,20 @@ class EditorCanvas(QGraphicsView):
 
     def zoom_in(self) -> None:
         """Zoom in by one step (anchored to viewport center for menu/keyboard)."""
-        self._apply_zoom_at_center(_ZOOM_FACTOR)
+        center = self.viewport().rect().center()
+        self._zoom_to_point(_ZOOM_FACTOR, center)
 
     def zoom_out(self) -> None:
         """Zoom out by one step (anchored to viewport center for menu/keyboard)."""
-        self._apply_zoom_at_center(1.0 / _ZOOM_FACTOR)
+        center = self.viewport().rect().center()
+        self._zoom_to_point(1.0 / _ZOOM_FACTOR, center)
 
     def zoom_reset(self) -> None:
-        """Reset to 100% zoom."""
-        factor = 1.0 / self._zoom_level
-        self.scale(factor, factor)
+        """Reset to 100% zoom, centered on the image."""
+        self.resetTransform()
         self._zoom_level = 1.0
+        if self._pixmap_item:
+            self.centerOn(self._pixmap_item)
         self.zoom_changed.emit(self._zoom_level)
 
     def zoom_fit(self) -> None:
@@ -265,24 +281,25 @@ class EditorCanvas(QGraphicsView):
         self._zoom_level = self.transform().m11()
         self.zoom_changed.emit(self._zoom_level)
 
-    def _apply_zoom(self, factor: float) -> None:
+    def _zoom_to_point(self, factor: float, view_pos) -> None:
+        """Zoom anchored to a specific viewport pixel position."""
         new_zoom = self._zoom_level * factor
-        if _MIN_ZOOM <= new_zoom <= _MAX_ZOOM:
-            self.scale(factor, factor)
-            self._zoom_level = new_zoom
-            self.zoom_changed.emit(self._zoom_level)
-
-    def _apply_zoom_at_center(self, factor: float) -> None:
-        """Zoom anchored to the viewport center (for keyboard/menu-triggered zoom)."""
-        new_zoom = self._zoom_level * factor
-        if _MIN_ZOOM <= new_zoom <= _MAX_ZOOM:
-            # Temporarily change anchor to viewport center for non-mouse zoom
-            old_anchor = self.transformationAnchor()
-            self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
-            self.scale(factor, factor)
-            self.setTransformationAnchor(old_anchor)
-            self._zoom_level = new_zoom
-            self.zoom_changed.emit(self._zoom_level)
+        if not (_MIN_ZOOM <= new_zoom <= _MAX_ZOOM):
+            return
+        # Map the anchor point to scene coords before scaling
+        scene_pos = self.mapToScene(view_pos)
+        self.scale(factor, factor)
+        self._zoom_level = new_zoom
+        # Map the same scene point to new viewport coords and adjust scroll
+        new_view_pos = self.mapFromScene(scene_pos)
+        delta = new_view_pos - view_pos
+        self.horizontalScrollBar().setValue(
+            self.horizontalScrollBar().value() + int(delta.x())
+        )
+        self.verticalScrollBar().setValue(
+            self.verticalScrollBar().value() + int(delta.y())
+        )
+        self.zoom_changed.emit(self._zoom_level)
 
     @property
     def zoom_level(self) -> float:
@@ -479,6 +496,14 @@ class EditorWindow(QMainWindow):
         self._zoom_button.clicked.connect(self._toggle_zoom_slider)
         self._statusbar.addPermanentWidget(self._zoom_button)
 
+        # Zoom-to-fit button (icon)
+        self._zoom_fit_button = QPushButton("⊞")
+        self._zoom_fit_button.setFlat(True)
+        self._zoom_fit_button.setToolTip("Zoom to fit image in viewport")
+        self._zoom_fit_button.setFixedWidth(28)
+        self._zoom_fit_button.clicked.connect(self._zoom_fit)
+        self._statusbar.addPermanentWidget(self._zoom_fit_button)
+
         # Zoom slider popup (hidden by default)
         self._zoom_slider_widget = QWidget(self)
         slider_layout = QVBoxLayout(self._zoom_slider_widget)
@@ -600,7 +625,8 @@ class EditorWindow(QMainWindow):
         current_zoom = self._canvas.zoom_level
         if abs(current_zoom - target_zoom) > 0.001:
             factor = target_zoom / current_zoom
-            self._canvas._apply_zoom_at_center(factor)
+            center = self._canvas.viewport().rect().center()
+            self._canvas._zoom_to_point(factor, center)
 
     def _update_zoom_label(self) -> None:
         pct = int(self._canvas.zoom_level * 100)
