@@ -221,8 +221,47 @@ class TestShowSettings:
             return_value=mock_dialog,
         ):
             icon._show_settings()
-            mock_dialog.exec.assert_called_once()
+            mock_dialog.show.assert_called_once()
             mock_dialog.settings_saved.connect.assert_called_once()
+
+    def test_settings_dialog_reuses_existing_instance(
+        self, qapp, tmp_config,
+    ) -> None:
+        """Calling _show_settings twice reuses the existing dialog."""
+        app = QApplication.instance()
+        icon = TrayIcon(app, tmp_config)
+        mock_dialog = MagicMock()
+        mock_dialog.raise_ = MagicMock()
+        mock_dialog.activateWindow = MagicMock()
+        with patch(
+            "verdiclip.ui.settings_dialog.SettingsDialog",
+            return_value=mock_dialog,
+        ) as mock_cls:
+            icon._show_settings()
+            icon._show_settings()
+            assert mock_cls.call_count == 1, (
+                f"Expected SettingsDialog created once, "
+                f"but was created {mock_cls.call_count} times"
+            )
+
+    def test_reuses_existing_settings_dialog(self, qapp, tmp_config) -> None:
+        """Calling _show_settings twice reuses the existing dialog instance."""
+        app = QApplication.instance()
+        icon = TrayIcon(app, tmp_config)
+        mock_dialog = MagicMock()
+        with patch(
+            "verdiclip.ui.settings_dialog.SettingsDialog",
+            return_value=mock_dialog,
+        ) as mock_cls:
+            icon._show_settings()
+            icon._show_settings()
+            assert mock_cls.call_count == 1, (
+                f"Expected SettingsDialog created once, "
+                f"got {mock_cls.call_count} times"
+            )
+            assert mock_dialog.raise_.called, (
+                "Expected raise_() called on second show"
+            )
 
 
 class TestAutoSave:

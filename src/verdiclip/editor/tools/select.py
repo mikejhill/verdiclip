@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QPointF, Qt
 
-from verdiclip.editor import Z_BACKGROUND
+from verdiclip.editor import Z_BACKGROUND, Z_BOUNDARY
 from verdiclip.editor.tools.base import BaseTool
 
 if TYPE_CHECKING:
@@ -38,7 +38,7 @@ class SelectTool(BaseTool):
 
         transform = self._view.transform() if self._view else self._scene.views()[0].transform()
         item = self._scene.itemAt(scene_pos, transform)
-        if item and item.zValue() > Z_BACKGROUND:  # Don't select background image
+        if item and item.zValue() > Z_BACKGROUND and item.zValue() < Z_BOUNDARY:
             item.setSelected(True)
             self._dragging = True
             self._drag_item = item

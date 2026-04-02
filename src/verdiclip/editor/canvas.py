@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QRectF, Qt
+from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import (
     QAction,
     QBrush,
@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QGraphicsScene,
     QGraphicsView,
     QMainWindow,
+    QSlider,
     QStatusBar,
     QWidget,
 )
@@ -50,6 +51,9 @@ _MAX_ZOOM = 16.0
 
 class EditorCanvas(QGraphicsView):
     """QGraphicsView-based canvas for image editing and annotation."""
+
+    switch_to_select_requested = Signal()
+    zoom_changed = Signal(float)  # Emitted with new zoom_level after any zoom change
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -135,10 +139,18 @@ class EditorCanvas(QGraphicsView):
         self._history = history
 
     def wheelEvent(self, event: QWheelEvent) -> None:
-        """Zoom in/out with Ctrl+scroll wheel."""
+        """Zoom with Ctrl+scroll, scroll horizontally with Shift+scroll."""
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             factor = _ZOOM_FACTOR if event.angleDelta().y() > 0 else 1.0 / _ZOOM_FACTOR
             self._apply_zoom(factor)
+            event.accept()
+        elif event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+            # Shift+scroll: horizontal scrolling at normal speed
+            delta = event.angleDelta().y()
+            self.horizontalScrollBar().setValue(
+                self.horizontalScrollBar().value() - delta
+            )
+            event.accept()
         else:
             super().wheelEvent(event)
 
@@ -186,7 +198,7 @@ class EditorCanvas(QGraphicsView):
             super().mouseReleaseEvent(event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
-        """Handle key presses — Delete removes items, Enter confirms crop."""
+        """Handle key presses — Delete removes items, Enter confirms crop, Esc deselects."""
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
             self._delete_selected_items()
         elif event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
@@ -195,6 +207,11 @@ class EditorCanvas(QGraphicsView):
         elif event.key() == Qt.Key.Key_Escape:
             if self._current_tool and hasattr(self._current_tool, "cancel_crop"):
                 self._current_tool.cancel_crop()
+            elif self._scene.selectedItems():
+                for item in self._scene.selectedItems():
+                    item.setSelected(False)
+            else:
+                self.switch_to_select_requested.emit()
         else:
             super().keyPressEvent(event)
 
@@ -225,18 +242,19 @@ class EditorCanvas(QGraphicsView):
             logger.info("Deleted %d annotation item(s)", removed)
 
     def zoom_in(self) -> None:
-        """Zoom in by one step."""
-        self._apply_zoom(_ZOOM_FACTOR)
+        """Zoom in by one step (anchored to viewport center for menu/keyboard)."""
+        self._apply_zoom_at_center(_ZOOM_FACTOR)
 
     def zoom_out(self) -> None:
-        """Zoom out by one step."""
-        self._apply_zoom(1.0 / _ZOOM_FACTOR)
+        """Zoom out by one step (anchored to viewport center for menu/keyboard)."""
+        self._apply_zoom_at_center(1.0 / _ZOOM_FACTOR)
 
     def zoom_reset(self) -> None:
         """Reset to 100% zoom."""
         factor = 1.0 / self._zoom_level
         self.scale(factor, factor)
         self._zoom_level = 1.0
+        self.zoom_changed.emit(self._zoom_level)
 
     def zoom_fit(self) -> None:
         """Fit the image in the viewport."""
@@ -245,12 +263,26 @@ class EditorCanvas(QGraphicsView):
         else:
             self.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
         self._zoom_level = self.transform().m11()
+        self.zoom_changed.emit(self._zoom_level)
 
     def _apply_zoom(self, factor: float) -> None:
         new_zoom = self._zoom_level * factor
         if _MIN_ZOOM <= new_zoom <= _MAX_ZOOM:
             self.scale(factor, factor)
             self._zoom_level = new_zoom
+            self.zoom_changed.emit(self._zoom_level)
+
+    def _apply_zoom_at_center(self, factor: float) -> None:
+        """Zoom anchored to the viewport center (for keyboard/menu-triggered zoom)."""
+        new_zoom = self._zoom_level * factor
+        if _MIN_ZOOM <= new_zoom <= _MAX_ZOOM:
+            # Temporarily change anchor to viewport center for non-mouse zoom
+            old_anchor = self.transformationAnchor()
+            self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
+            self.scale(factor, factor)
+            self.setTransformationAnchor(old_anchor)
+            self._zoom_level = new_zoom
+            self.zoom_changed.emit(self._zoom_level)
 
     @property
     def zoom_level(self) -> float:
@@ -323,6 +355,9 @@ class EditorWindow(QMainWindow):
         self._canvas.set_history(self._history)
         self.setCentralWidget(self._canvas)
         self._canvas.set_image(pixmap)
+        self._canvas.zoom_changed.connect(self._on_zoom_changed)
+        self._canvas.switch_to_select_requested.connect(self._switch_to_select)
+        self._canvas.scene.selectionChanged.connect(self._on_selection_changed)
 
     def _setup_toolbar(self) -> None:
         self._toolbar = EditorToolbar()
@@ -419,23 +454,54 @@ class EditorWindow(QMainWindow):
         view_menu.addAction(zoom_fit_action)
 
     def _setup_statusbar(self) -> None:
-        from PySide6.QtWidgets import QLabel
+        from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
         self._statusbar = QStatusBar()
         self.setStatusBar(self._statusbar)
+
+        # File name label (left side via showMessage fallback)
+        self._file_label = QLabel("")
+        self._statusbar.addWidget(self._file_label)
+        if self._file_path:
+            import os
+            self._file_label.setText(os.path.basename(self._file_path))
 
         # Permanent labels for image info (right side)
         w, h = self._image_size
         self._dim_label = QLabel(f"{w} × {h} px")
         self._statusbar.addPermanentWidget(self._dim_label)
 
-        self._zoom_label = QLabel("100%")
-        self._statusbar.addPermanentWidget(self._zoom_label)
+        # Zoom control: clickable label that toggles a slider popup
+        self._zoom_button = QPushButton("100%")
+        self._zoom_button.setFlat(True)
+        self._zoom_button.setToolTip("Click to adjust zoom level")
+        self._zoom_button.setFixedWidth(60)
+        self._zoom_button.clicked.connect(self._toggle_zoom_slider)
+        self._statusbar.addPermanentWidget(self._zoom_button)
 
-        if self._file_path:
-            import os
-            self._file_label = QLabel(os.path.basename(self._file_path))
-            self._statusbar.addPermanentWidget(self._file_label)
+        # Zoom slider popup (hidden by default)
+        self._zoom_slider_widget = QWidget(self)
+        slider_layout = QVBoxLayout(self._zoom_slider_widget)
+        slider_layout.setContentsMargins(4, 4, 4, 4)
+
+        slider_row = QHBoxLayout()
+        self._zoom_slider_label_min = QLabel("10%")
+        self._zoom_slider = QSlider(Qt.Orientation.Horizontal)
+        self._zoom_slider.setRange(10, 400)
+        self._zoom_slider.setValue(100)
+        self._zoom_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self._zoom_slider.setTickInterval(50)
+        self._zoom_slider_label_max = QLabel("400%")
+        slider_row.addWidget(self._zoom_slider_label_min)
+        slider_row.addWidget(self._zoom_slider)
+        slider_row.addWidget(self._zoom_slider_label_max)
+        slider_layout.addLayout(slider_row)
+
+        self._zoom_slider_widget.setFixedWidth(300)
+        self._zoom_slider_widget.setWindowFlags(
+            Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint
+        )
+        self._zoom_slider.valueChanged.connect(self._on_zoom_slider_changed)
 
         self._statusbar.showMessage("Ready")
 
@@ -495,23 +561,50 @@ class EditorWindow(QMainWindow):
 
     def _zoom_in(self) -> None:
         self._canvas.zoom_in()
-        self._update_zoom_label()
 
     def _zoom_out(self) -> None:
         self._canvas.zoom_out()
-        self._update_zoom_label()
 
     def _zoom_100(self) -> None:
         self._canvas.zoom_reset()
-        self._update_zoom_label()
 
     def _zoom_fit(self) -> None:
         self._canvas.zoom_fit()
-        self._update_zoom_label()
+
+    def _on_zoom_changed(self, zoom_level: float) -> None:
+        """Update the zoom display whenever the canvas zoom changes."""
+        pct = int(zoom_level * 100)
+        self._zoom_button.setText(f"{pct}%")
+        # Sync the slider without triggering a recursive zoom change
+        self._zoom_slider.blockSignals(True)
+        self._zoom_slider.setValue(max(10, min(400, pct)))
+        self._zoom_slider.blockSignals(False)
+
+    def _toggle_zoom_slider(self) -> None:
+        """Show or hide the zoom slider popup above the zoom button."""
+        if self._zoom_slider_widget.isVisible():
+            self._zoom_slider_widget.hide()
+        else:
+            btn_pos = self._zoom_button.mapToGlobal(self._zoom_button.rect().topLeft())
+            half_popup = self._zoom_slider_widget.width() // 2
+            half_btn = self._zoom_button.width() // 2
+            popup_x = btn_pos.x() - half_popup + half_btn
+            popup_y = btn_pos.y() - self._zoom_slider_widget.sizeHint().height()
+            from PySide6.QtCore import QPoint
+            self._zoom_slider_widget.move(QPoint(popup_x, popup_y))
+            self._zoom_slider_widget.show()
+
+    def _on_zoom_slider_changed(self, value: int) -> None:
+        """Apply zoom level from the slider."""
+        target_zoom = value / 100.0
+        current_zoom = self._canvas.zoom_level
+        if abs(current_zoom - target_zoom) > 0.001:
+            factor = target_zoom / current_zoom
+            self._canvas._apply_zoom_at_center(factor)
 
     def _update_zoom_label(self) -> None:
         pct = int(self._canvas.zoom_level * 100)
-        self._zoom_label.setText(f"{pct}%")
+        self._zoom_button.setText(f"{pct}%")
 
     def _on_tool_changed(self, tool_type: ToolType) -> None:
         """Handle tool selection from toolbar."""
@@ -519,6 +612,20 @@ class EditorWindow(QMainWindow):
         self._canvas.set_tool(tool)
         self._statusbar.showMessage(f"Tool: {tool_type.name.title()}")
         logger.debug("Switched to tool: %s", tool_type.name)
+
+    def _switch_to_select(self) -> None:
+        """Switch to the Select tool (triggered by Esc when nothing is selected)."""
+        self._toolbar.set_tool(ToolType.SELECT)
+
+    def _on_selection_changed(self) -> None:
+        """Show an inline editor when a NumberMarkerItem is selected."""
+        from verdiclip.editor.tools.number import NumberMarkerItem, NumberTool
+
+        selected = self._canvas.scene.selectedItems()
+        if len(selected) == 1 and isinstance(selected[0], NumberMarkerItem):
+            number_tool = self._tools.get(ToolType.NUMBER)
+            if isinstance(number_tool, NumberTool):
+                number_tool.show_editor_for(selected[0])
 
     def _open_file(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
@@ -530,14 +637,30 @@ class EditorWindow(QMainWindow):
             if not pixmap.isNull():
                 self._canvas.set_image(pixmap)
                 self._history.clear()
+                self._update_title(file_path)
 
     def _save_file(self) -> None:
         from verdiclip.export.file_export import FileExporter
-        FileExporter.save_with_dialog(self._canvas.get_flattened_pixmap(), self._config, self)
+        path = FileExporter.save_with_dialog(
+            self._canvas.get_flattened_pixmap(), self._config, self
+        )
+        if path:
+            self._file_path = path
+            self._update_title(path)
 
     def _save_file_as(self) -> None:
         from verdiclip.export.file_export import FileExporter
-        FileExporter.save_as(self._canvas.get_flattened_pixmap(), self)
+        path = FileExporter.save_as(self._canvas.get_flattened_pixmap(), self)
+        if path:
+            self._file_path = path
+            self._update_title(path)
+
+    def _update_title(self, file_path: str) -> None:
+        """Update the window title and file label to reflect the save location."""
+        import os
+        basename = os.path.basename(file_path)
+        self.setWindowTitle(f"{basename} — {__app_name__} Editor")
+        self._file_label.setText(file_path)
 
     def _copy_to_clipboard(self) -> None:
         from verdiclip.export.clipboard import ClipboardExporter

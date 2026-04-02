@@ -245,12 +245,24 @@ class TrayIcon(QSystemTrayIcon):
                 logger.error("Failed to load image: %s", file_path)
 
     def _show_settings(self) -> None:
-        """Open the settings dialog."""
+        """Open the settings dialog (non-modal so editors remain accessible)."""
         from verdiclip.ui.settings_dialog import SettingsDialog
+
+        # Reuse existing dialog if still open
+        if hasattr(self, "_settings_dialog") and self._settings_dialog is not None:
+            try:
+                self._settings_dialog.raise_()
+                self._settings_dialog.activateWindow()
+                return
+            except RuntimeError:
+                self._settings_dialog = None
 
         dialog = SettingsDialog(self._config)
         dialog.settings_saved.connect(self._on_settings_saved)
-        dialog.exec()
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dialog.destroyed.connect(lambda: setattr(self, "_settings_dialog", None))
+        dialog.show()
+        self._settings_dialog = dialog
 
     def _on_settings_saved(self) -> None:
         """Handle settings saved — rebuild menu and notify app to reload hotkeys."""

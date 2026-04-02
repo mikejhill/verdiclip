@@ -453,9 +453,24 @@ class TestEditorWindowSaveFile:
     def test_delegates_to_file_exporter(
         self, mock_save, qapp, tmp_config,
     ) -> None:
+        mock_save.return_value = None  # Simulate no file saved
         window = EditorWindow(QPixmap(100, 100), tmp_config)
         window._save_file()
         mock_save.assert_called_once()
+
+    @patch("verdiclip.export.file_export.FileExporter.save_with_dialog")
+    def test_save_updates_title_with_file_path(
+        self, mock_save, qapp, tmp_config,
+    ) -> None:
+        mock_save.return_value = r"C:\Pictures\screenshot.png"
+        window = EditorWindow(QPixmap(100, 100), tmp_config)
+        window._save_file()
+        assert "screenshot.png" in window.windowTitle(), (
+            f"Expected 'screenshot.png' in title, got '{window.windowTitle()}'"
+        )
+        assert window._file_label.text() == r"C:\Pictures\screenshot.png", (
+            f"Expected full path in file label, got '{window._file_label.text()}'"
+        )
 
 
 class TestEditorWindowSaveFileAs:
@@ -463,9 +478,24 @@ class TestEditorWindowSaveFileAs:
     def test_delegates_to_file_exporter(
         self, mock_save_as, qapp, tmp_config,
     ) -> None:
+        mock_save_as.return_value = None  # Simulate dialog cancelled
         window = EditorWindow(QPixmap(100, 100), tmp_config)
         window._save_file_as()
         mock_save_as.assert_called_once()
+
+    @patch("verdiclip.export.file_export.FileExporter.save_as")
+    def test_save_as_updates_title_with_file_path(
+        self, mock_save_as, qapp, tmp_config,
+    ) -> None:
+        mock_save_as.return_value = r"C:\Output\my_image.png"
+        window = EditorWindow(QPixmap(100, 100), tmp_config)
+        window._save_file_as()
+        assert "my_image.png" in window.windowTitle(), (
+            f"Expected 'my_image.png' in title, got '{window.windowTitle()}'"
+        )
+        assert window._file_label.text() == r"C:\Output\my_image.png", (
+            f"Expected full path in file label, got '{window._file_label.text()}'"
+        )
 
 
 class TestEditorWindowCopyToClipboard:
@@ -800,39 +830,58 @@ class TestEditorCanvasZoom:
 
 
 class TestEditorWindowZoomControls:
-    def test_zoom_label_shows_100_initially(self, qapp, tmp_config) -> None:
+    def test_zoom_button_shows_100_initially(self, qapp, tmp_config) -> None:
         window = EditorWindow(QPixmap(100, 100), tmp_config)
-        assert window._zoom_label.text() == "100%", (
-            f"Expected zoom label '100%' initially, got '{window._zoom_label.text()}'"
+        assert window._zoom_button.text() == "100%", (
+            f"Expected zoom button '100%' initially, got '{window._zoom_button.text()}'"
         )
 
-    def test_zoom_in_updates_label(self, qapp, tmp_config) -> None:
+    def test_zoom_in_updates_zoom_display(self, qapp, tmp_config) -> None:
         window = EditorWindow(QPixmap(100, 100), tmp_config)
         window._zoom_in()
-        label = window._zoom_label.text()
+        label = window._zoom_button.text()
         assert "%" in label, (
-            f"Expected zoom label to contain '%' after zoom in, got '{label}'"
+            f"Expected zoom button to contain '%' after zoom in, got '{label}'"
         )
         pct = int(label.replace("%", ""))
         assert pct > 100, (
             f"Expected zoom percentage > 100 after zoom_in, got {pct}"
         )
 
-    def test_zoom_out_updates_label(self, qapp, tmp_config) -> None:
+    def test_zoom_out_updates_zoom_display(self, qapp, tmp_config) -> None:
         window = EditorWindow(QPixmap(100, 100), tmp_config)
         window._zoom_out()
-        label = window._zoom_label.text()
+        label = window._zoom_button.text()
         pct = int(label.replace("%", ""))
         assert pct < 100, (
             f"Expected zoom percentage < 100 after zoom_out, got {pct}"
         )
 
-    def test_zoom_100_resets_label(self, qapp, tmp_config) -> None:
+    def test_zoom_100_resets_display(self, qapp, tmp_config) -> None:
         window = EditorWindow(QPixmap(100, 100), tmp_config)
         window._zoom_in()
         window._zoom_100()
-        assert window._zoom_label.text() == "100%", (
-            f"Expected zoom label '100%' after reset, got '{window._zoom_label.text()}'"
+        assert window._zoom_button.text() == "100%", (
+            f"Expected zoom button '100%' after reset, got '{window._zoom_button.text()}'"
+        )
+
+    def test_ctrl_scroll_updates_zoom_display(self, qapp, tmp_config) -> None:
+        """Zoom via Ctrl+scroll should update the footer zoom display."""
+        from PySide6.QtCore import QPoint, QPointF
+        from PySide6.QtGui import QWheelEvent
+
+        window = EditorWindow(QPixmap(200, 200), tmp_config)
+        # Simulate Ctrl+scroll up
+        event = QWheelEvent(
+            QPointF(100, 100), QPointF(100, 100),
+            QPoint(0, 120), QPoint(0, 120),
+            Qt.MouseButton.NoButton, Qt.KeyboardModifier.ControlModifier,
+            Qt.ScrollPhase.NoScrollPhase, False,
+        )
+        window._canvas.wheelEvent(event)
+        pct = int(window._zoom_button.text().replace("%", ""))
+        assert pct > 100, (
+            f"Expected zoom > 100% after Ctrl+scroll up, got {pct}%"
         )
 
 
@@ -1079,4 +1128,204 @@ class TestEditorWindowViewMenu:
         )
         assert any("Fit" in t for t in action_texts), (
             f"Expected 'Zoom to Fit' in View menu, got actions: {action_texts}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# EditorCanvas — Esc key cascade
+# ---------------------------------------------------------------------------
+
+
+class TestEditorCanvasEscKey:
+    def test_escape_deselects_selected_items(self, qapp) -> None:
+        """Pressing Esc when items are selected deselects all of them."""
+        canvas = _make_canvas_with_image()
+        from PySide6.QtWidgets import QGraphicsRectItem
+        rect_item = QGraphicsRectItem(0, 0, 50, 50)
+        rect_item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+        canvas.scene.addItem(rect_item)
+        rect_item.setSelected(True)
+        assert rect_item.isSelected(), "Precondition: item should be selected"
+
+        event = _make_key_event(Qt.Key.Key_Escape)
+        canvas.keyPressEvent(event)
+
+        assert not rect_item.isSelected(), (
+            "Expected item to be deselected after Esc, but it is still selected"
+        )
+
+    def test_escape_emits_switch_to_select_when_nothing_selected(
+        self, qapp,
+    ) -> None:
+        """Pressing Esc with no selection emits switch_to_select_requested."""
+        canvas = _make_canvas_with_image()
+        signal_received = []
+        canvas.switch_to_select_requested.connect(
+            lambda: signal_received.append(True)
+        )
+
+        event = _make_key_event(Qt.Key.Key_Escape)
+        canvas.keyPressEvent(event)
+
+        assert len(signal_received) == 1, (
+            f"Expected switch_to_select_requested emitted once, "
+            f"got {len(signal_received)} times"
+        )
+
+    def test_escape_does_not_emit_signal_when_items_deselected(
+        self, qapp,
+    ) -> None:
+        """Esc deselects first; should NOT also emit switch_to_select."""
+        canvas = _make_canvas_with_image()
+        from PySide6.QtWidgets import QGraphicsRectItem
+        rect_item = QGraphicsRectItem(0, 0, 50, 50)
+        rect_item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+        canvas.scene.addItem(rect_item)
+        rect_item.setSelected(True)
+
+        signal_received = []
+        canvas.switch_to_select_requested.connect(
+            lambda: signal_received.append(True)
+        )
+        event = _make_key_event(Qt.Key.Key_Escape)
+        canvas.keyPressEvent(event)
+
+        assert len(signal_received) == 0, (
+            "Expected no switch_to_select_requested when items were deselected, "
+            f"but signal was emitted {len(signal_received)} time(s)"
+        )
+
+
+# ---------------------------------------------------------------------------
+# EditorCanvas — Shift+scroll horizontal
+# ---------------------------------------------------------------------------
+
+
+class TestEditorCanvasShiftScroll:
+    def test_shift_scroll_scrolls_horizontally(self, qapp) -> None:
+        """Shift+scroll should change horizontal scrollbar, not zoom."""
+        canvas = EditorCanvas()
+        canvas.set_image(QPixmap(2000, 2000))
+        canvas.resize(200, 200)
+        canvas.show()
+
+        zoom_before = canvas._zoom_level
+        h_before = canvas.horizontalScrollBar().value()
+
+        event = _make_wheel_event(
+            120, Qt.KeyboardModifier.ShiftModifier,
+        )
+        canvas.wheelEvent(event)
+
+        h_after = canvas.horizontalScrollBar().value()
+        assert canvas._zoom_level == zoom_before, (
+            f"Expected zoom unchanged with Shift+scroll, "
+            f"got {canvas._zoom_level} (was {zoom_before})"
+        )
+        assert h_after != h_before, (
+            f"Expected horizontal scroll to change, "
+            f"but value remained {h_before}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# EditorWindow — zoom slider popup
+# ---------------------------------------------------------------------------
+
+
+class TestEditorWindowZoomSlider:
+    def test_zoom_slider_initially_hidden(self, qapp, tmp_config) -> None:
+        window = EditorWindow(QPixmap(100, 100), tmp_config)
+        assert not window._zoom_slider_widget.isVisible(), (
+            "Expected zoom slider popup to be hidden initially"
+        )
+
+    def test_toggle_zoom_slider_shows_popup(
+        self, qapp, tmp_config,
+    ) -> None:
+        """Calling _toggle_zoom_slider makes the popup visible."""
+        window = EditorWindow(QPixmap(100, 100), tmp_config)
+        window.show()
+        assert not window._zoom_slider_widget.isVisible(), (
+            "Precondition: slider should be hidden before toggle"
+        )
+
+        window._toggle_zoom_slider()
+
+        assert window._zoom_slider_widget.isVisible(), (
+            "Expected zoom slider popup to be visible after toggle"
+        )
+
+    def test_zoom_slider_changes_zoom_level(
+        self, qapp, tmp_config,
+    ) -> None:
+        """Setting the zoom slider value changes the canvas zoom level."""
+        window = EditorWindow(QPixmap(200, 200), tmp_config)
+        window._zoom_slider.setValue(200)
+        actual_pct = int(window._canvas.zoom_level * 100)
+        assert 195 <= actual_pct <= 205, (
+            f"Expected zoom ~200% after slider set to 200, "
+            f"got {actual_pct}%"
+        )
+
+
+# ---------------------------------------------------------------------------
+# EditorWindow — _switch_to_select
+# ---------------------------------------------------------------------------
+
+
+class TestEditorWindowSwitchToSelect:
+    def test_switch_to_select_sets_select_tool(
+        self, qapp, tmp_config,
+    ) -> None:
+        window = EditorWindow(QPixmap(100, 100), tmp_config)
+        # First switch to a non-select tool
+        window._toolbar.set_tool(ToolType.RECTANGLE)
+        assert window._toolbar.current_tool == ToolType.RECTANGLE, (
+            "Precondition: should be on RECTANGLE tool"
+        )
+
+        window._switch_to_select()
+
+        assert window._toolbar.current_tool == ToolType.SELECT, (
+            f"Expected SELECT tool after _switch_to_select, "
+            f"got {window._toolbar.current_tool}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# EditorCanvas — zoom_changed signal
+# ---------------------------------------------------------------------------
+
+
+class TestEditorCanvasZoomSignal:
+    def test_zoom_in_emits_zoom_changed(self, qapp) -> None:
+        canvas = EditorCanvas()
+        canvas.set_image(QPixmap(100, 100))
+        received = []
+        canvas.zoom_changed.connect(lambda v: received.append(v))
+
+        canvas.zoom_in()
+
+        assert len(received) == 1, (
+            f"Expected zoom_changed emitted once, got {len(received)} times"
+        )
+        assert received[0] > 1.0, (
+            f"Expected zoom level > 1.0 after zoom_in, got {received[0]}"
+        )
+
+    def test_ctrl_scroll_emits_zoom_changed(self, qapp) -> None:
+        canvas = EditorCanvas()
+        canvas.set_image(QPixmap(100, 100))
+        received = []
+        canvas.zoom_changed.connect(lambda v: received.append(v))
+
+        event = _make_wheel_event(
+            120, Qt.KeyboardModifier.ControlModifier,
+        )
+        canvas.wheelEvent(event)
+
+        assert len(received) == 1, (
+            f"Expected zoom_changed emitted once on Ctrl+scroll, "
+            f"got {len(received)} times"
         )

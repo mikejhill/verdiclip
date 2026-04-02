@@ -848,13 +848,18 @@ class TestNumberTool:
         event = _make_mouse_event()
         tool.mouse_press(QPointF(50, 50), event)
         tool.mouse_release(QPointF(50, 50), event)
-        assert tool._counter == 1, f"Expected tool._counter to be 1, got {tool._counter}"
+        assert tool._last_numeric_value == 1, (
+            f"Expected _last_numeric_value 1, got {tool._last_numeric_value}"
+        )
 
         tool.mouse_press(QPointF(100, 100), event)
         tool.mouse_release(QPointF(100, 100), event)
-        assert tool._counter == 2, f"Expected tool._counter to be 2, got {tool._counter}"
+        assert tool._last_numeric_value == 2, (
+            f"Expected _last_numeric_value 2, got {tool._last_numeric_value}"
+        )
 
-    def test_creates_group_with_ellipse_and_text(self, qapp) -> None:
+    def test_creates_marker_with_ellipse_and_text(self, qapp) -> None:
+        from verdiclip.editor.tools.number import NumberMarkerItem
         scene = QGraphicsScene()
         view = QGraphicsView(scene)
         tool = NumberTool()
@@ -863,11 +868,11 @@ class TestNumberTool:
         event = _make_mouse_event()
         tool.mouse_press(QPointF(50, 50), event)
 
-        # Should contain ellipse and text items
-        ellipses = [i for i in scene.items() if isinstance(i, QGraphicsEllipseItem)]
-        texts = [i for i in scene.items() if isinstance(i, QGraphicsSimpleTextItem)]
-        assert len(ellipses) >= 1, f"Expected len(ellipses) >= 1, got {len(ellipses)}"
-        assert len(texts) >= 1, f"Expected len(texts) >= 1, got {len(texts)}"
+        markers = [i for i in scene.items() if isinstance(i, NumberMarkerItem)]
+        assert len(markers) == 1, f"Expected 1 NumberMarkerItem, got {len(markers)}"
+        assert markers[0].value == "1", (
+            f"Expected marker value '1', got '{markers[0].value}'"
+        )
 
     def test_reset_counter(self, qapp) -> None:
         scene = QGraphicsScene()
@@ -878,13 +883,56 @@ class TestNumberTool:
         event = _make_mouse_event()
         tool.mouse_press(QPointF(50, 50), event)
         tool.mouse_press(QPointF(100, 100), event)
-        assert tool._counter == 2, f"Expected tool._counter to be 2, got {tool._counter}"
+        assert tool._last_numeric_value == 2, (
+            f"Expected _last_numeric_value 2, got {tool._last_numeric_value}"
+        )
 
         tool.reset_counter()
-        assert tool._counter == 0, f"Expected tool._counter to be 0, got {tool._counter}"
+        assert tool._last_numeric_value == 0, (
+            f"Expected _last_numeric_value 0, got {tool._last_numeric_value}"
+        )
 
         tool.mouse_press(QPointF(150, 150), event)
-        assert tool._counter == 1, f"Expected tool._counter to be 1, got {tool._counter}"
+        assert tool._last_numeric_value == 1, (
+            f"Expected _last_numeric_value 1, got {tool._last_numeric_value}"
+        )
+
+    def test_marker_value_editable(self, qapp) -> None:
+        """NumberMarkerItem value can be set and read."""
+        from verdiclip.editor.tools.number import NumberMarkerItem
+        marker = NumberMarkerItem("1", QColor("#E74C3C"), QColor("#FFFFFF"))
+        assert marker.value == "1", f"Expected value '1', got '{marker.value}'"
+
+        marker.value = "42"
+        assert marker.value == "42", f"Expected value '42', got '{marker.value}'"
+
+    def test_marker_accepts_non_numeric_value(self, qapp) -> None:
+        """NumberMarkerItem accepts non-numeric values like 'A' or 'X'."""
+        from verdiclip.editor.tools.number import NumberMarkerItem
+        marker = NumberMarkerItem("A", QColor("#E74C3C"), QColor("#FFFFFF"))
+        assert marker.value == "A", f"Expected value 'A', got '{marker.value}'"
+
+    def test_next_counter_after_numeric_edit(self, qapp) -> None:
+        """After editing a marker to numeric value, next counter follows it."""
+        from verdiclip.editor.tools.number import NumberMarkerItem
+        scene = QGraphicsScene()
+        view = QGraphicsView(scene)
+        tool = NumberTool()
+        tool.activate(scene, view)
+
+        event = _make_mouse_event()
+        tool.mouse_press(QPointF(50, 50), event)
+        # Simulate editing the marker to value "10"
+        markers = [i for i in scene.items() if isinstance(i, NumberMarkerItem)]
+        markers[0].value = "10"
+        tool._last_numeric_value = 10  # Simulates editor callback
+
+        tool.mouse_press(QPointF(100, 100), event)
+        new_markers = [i for i in scene.items() if isinstance(i, NumberMarkerItem)]
+        values = sorted([m.value for m in new_markers])
+        assert "11" in values, (
+            f"Expected next marker value '11' after editing to '10', got {values}"
+        )
 
     def test_set_bg_color(self, qapp) -> None:
         tool = NumberTool()
@@ -911,12 +959,15 @@ class TestNumberTool:
         event = _make_mouse_event(button=Qt.MouseButton.RightButton)
         tool.mouse_press(QPointF(50, 50), event)
 
-        assert tool._counter == 0, f"Expected tool._counter to be 0, got {tool._counter}"
+        assert tool._last_numeric_value == 0, (
+            f"Expected _last_numeric_value 0, got {tool._last_numeric_value}"
+        )
         assert len(scene.items()) == 0, (
             f"Expected len(scene.items()) to be 0, got {len(scene.items())}"
         )
 
-    def test_group_is_selectable_and_movable(self, qapp) -> None:
+    def test_marker_is_selectable_and_movable(self, qapp) -> None:
+        from verdiclip.editor.tools.number import NumberMarkerItem
         scene = QGraphicsScene()
         view = QGraphicsView(scene)
         tool = NumberTool()
@@ -925,14 +976,50 @@ class TestNumberTool:
         event = _make_mouse_event()
         tool.mouse_press(QPointF(50, 50), event)
 
-        groups = [i for i in scene.items() if isinstance(i, QGraphicsItemGroup)]
-        assert len(groups) >= 1, f"Expected len(groups) >= 1, got {len(groups)}"
-        flags = groups[0].flags()
-        assert flags & QGraphicsItemGroup.GraphicsItemFlag.ItemIsSelectable, (
+        markers = [i for i in scene.items() if isinstance(i, NumberMarkerItem)]
+        assert len(markers) >= 1, f"Expected at least 1 marker, got {len(markers)}"
+        flags = markers[0].flags()
+        assert flags & NumberMarkerItem.GraphicsItemFlag.ItemIsSelectable, (
             f"Expected ItemIsSelectable flag to be set, got {flags}"
         )
-        assert flags & QGraphicsItemGroup.GraphicsItemFlag.ItemIsMovable, (
+        assert flags & NumberMarkerItem.GraphicsItemFlag.ItemIsMovable, (
             f"Expected ItemIsMovable flag to be set, got {flags}"
+        )
+
+    def test_marker_text_updates_when_value_changed(
+        self, qapp,
+    ) -> None:
+        """Changing value property updates the _text_item display."""
+        from verdiclip.editor.tools.number import NumberMarkerItem
+        marker = NumberMarkerItem(
+            "1", QColor("#E74C3C"), QColor("#FFFFFF"),
+        )
+        assert marker._text_item.text() == "1", (
+            f"Precondition: expected text '1', "
+            f"got '{marker._text_item.text()}'"
+        )
+
+        marker.value = "99"
+
+        assert marker._text_item.text() == "99", (
+            f"Expected _text_item.text() '99' after value change, "
+            f"got '{marker._text_item.text()}'"
+        )
+
+    def test_marker_non_numeric_value_displays_correctly(
+        self, qapp,
+    ) -> None:
+        """Non-numeric value like 'X' is rendered in _text_item."""
+        from verdiclip.editor.tools.number import NumberMarkerItem
+        marker = NumberMarkerItem(
+            "A", QColor("#E74C3C"), QColor("#FFFFFF"),
+        )
+
+        marker.value = "X"
+
+        assert marker._text_item.text() == "X", (
+            f"Expected _text_item.text() 'X' for non-numeric value, "
+            f"got '{marker._text_item.text()}'"
         )
 
 
@@ -1164,6 +1251,79 @@ class TestObfuscateTool:
             "Pixmap size should remain the same after move"
         )
 
+    def test_obfuscation_item_set_size_refreshes_pixelation(
+        self, qapp,
+    ) -> None:
+        """set_size updates the internal pixmap to reflect the new size."""
+        from PySide6.QtCore import QSizeF
+        scene, bg = _make_scene_with_background(200, 200)
+
+        item = ObfuscationItem(bg, QSizeF(40, 40))
+        item.setPos(10, 10)
+        scene.addItem(item)
+        pixmap_before = item.pixmap()
+
+        item.set_size(QSizeF(80, 80))
+        pixmap_after = item.pixmap()
+
+        assert not pixmap_after.isNull(), (
+            "Expected non-null pixmap after set_size"
+        )
+        assert (
+            pixmap_after.width() != pixmap_before.width()
+            or pixmap_after.height() != pixmap_before.height()
+        ), (
+            f"Expected pixmap dimensions to change after set_size, "
+            f"before={pixmap_before.width()}x{pixmap_before.height()}, "
+            f"after={pixmap_after.width()}x{pixmap_after.height()}"
+        )
+
+    def test_obfuscation_item_border_visible_during_creation(
+        self, qapp,
+    ) -> None:
+        """During mouse_move, preview item should have _show_border True."""
+        scene, bg = _make_scene_with_background(200, 200)
+        view = QGraphicsView(scene)
+        tool = ObfuscateTool()
+        tool.activate(scene, view)
+
+        press_event = _make_mouse_event()
+        tool.mouse_press(QPointF(10, 10), press_event)
+        move_event = _make_mouse_event()
+        tool.mouse_move(QPointF(80, 80), move_event)
+
+        assert tool._preview_item is not None, (
+            "Expected _preview_item to exist during mouse_move"
+        )
+        assert tool._preview_item._show_border is True, (
+            "Expected _show_border True during creation, "
+            f"got {tool._preview_item._show_border}"
+        )
+
+    def test_obfuscation_item_border_hidden_after_finalize(
+        self, qapp,
+    ) -> None:
+        """After mouse_release the finalized item has _show_border False."""
+        scene, bg = _make_scene_with_background(200, 200)
+        view = QGraphicsView(scene)
+        tool = ObfuscateTool()
+        _simulate_draw(
+            tool, scene, view,
+            QPointF(10, 10), QPointF(80, 80),
+        )
+
+        overlays = [
+            i for i in scene.items()
+            if isinstance(i, ObfuscationItem)
+        ]
+        assert len(overlays) == 1, (
+            f"Expected 1 ObfuscationItem, got {len(overlays)}"
+        )
+        assert overlays[0]._show_border is False, (
+            "Expected _show_border False after finalize, "
+            f"got {overlays[0]._show_border}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # CropTool
@@ -1171,7 +1331,8 @@ class TestObfuscateTool:
 
 
 class TestCropTool:
-    def test_creates_crop_rect(self, qapp) -> None:
+    def test_crop_rect_visible_during_drag(self, qapp) -> None:
+        """Crop rect is visible during mouse_move (before release)."""
         scene, bg = _make_scene_with_background(400, 400)
         view = QGraphicsView(scene)
         tool = CropTool()
@@ -1180,10 +1341,9 @@ class TestCropTool:
         event = _make_mouse_event()
         tool.mouse_press(QPointF(10, 10), event)
         tool.mouse_move(QPointF(200, 200), event)
-        tool.mouse_release(QPointF(200, 200), event)
 
         assert tool._crop_rect_item is not None, (
-            f"Expected tool._crop_rect_item to not be None, got {tool._crop_rect_item}"
+            "Expected crop rect to be visible during drag"
         )
         rect = tool._crop_rect_item.rect()
         assert rect.width() >= 10, f"Expected rect.width() >= 10, got {rect.width()}"
@@ -1205,7 +1365,8 @@ class TestCropTool:
             f"Expected zValue() to be 9999, got {tool._crop_rect_item.zValue()}"
         )
 
-    def test_apply_crop_replaces_scene(self, qapp) -> None:
+    def test_mouse_release_applies_crop(self, qapp) -> None:
+        """Crop is applied immediately on mouse release."""
         scene, bg = _make_scene_with_background(400, 400)
         view = QGraphicsView(scene)
         tool = CropTool()
@@ -1216,36 +1377,36 @@ class TestCropTool:
         tool.mouse_move(QPointF(200, 200), event)
         tool.mouse_release(QPointF(200, 200), event)
 
-        tool.apply_crop()
-
+        # After release, crop is applied and crop UI is cleared
+        assert tool._crop_rect_item is None, (
+            "Expected crop rect cleared after crop applied on release"
+        )
         # Scene should have a new background pixmap
         pixmap_items = [i for i in scene.items() if isinstance(i, QGraphicsPixmapItem)]
         assert len(pixmap_items) == 1, (
-            f"Expected len(pixmap_items) to be 1, got {len(pixmap_items)}"
+            f"Expected 1 pixmap item after crop, got {len(pixmap_items)}"
         )
         assert pixmap_items[0].zValue() == -1000, (
-            f"Expected pixmap_items[0].zValue() to be -1000, got {pixmap_items[0].zValue()}"
+            f"Expected zValue -1000, got {pixmap_items[0].zValue()}"
         )
 
-    def test_apply_crop_too_small_does_nothing(self, qapp) -> None:
+    def test_too_small_crop_discarded_on_release(self, qapp) -> None:
         scene, bg = _make_scene_with_background(400, 400)
         view = QGraphicsView(scene)
         tool = CropTool()
         tool.activate(scene, view)
 
-        # Create a crop rect item but with a small rect
         event = _make_mouse_event()
         tool.mouse_press(QPointF(10, 10), event)
         tool.mouse_move(QPointF(15, 15), event)
-        # mouse_release should clear the UI due to too-small check
         tool.mouse_release(QPointF(15, 15), event)
 
-        # crop_rect_item was cleared by _clear_crop_ui
         assert tool._crop_rect_item is None, (
             f"Expected tool._crop_rect_item to be None, got {tool._crop_rect_item}"
         )
 
-    def test_cancel_crop_clears_ui(self, qapp) -> None:
+    def test_cancel_crop_clears_ui_during_drag(self, qapp) -> None:
+        """Cancel clears the crop rect before mouse release."""
         scene, bg = _make_scene_with_background(400, 400)
         view = QGraphicsView(scene)
         tool = CropTool()
@@ -1254,12 +1415,8 @@ class TestCropTool:
         event = _make_mouse_event()
         tool.mouse_press(QPointF(10, 10), event)
         tool.mouse_move(QPointF(200, 200), event)
-        tool.mouse_release(QPointF(200, 200), event)
 
-        assert tool._crop_rect_item is not None, (
-            f"Expected tool._crop_rect_item to not be None, got {tool._crop_rect_item}"
-        )
-
+        # Cancel before release
         tool.cancel_crop()
 
         assert tool._crop_rect_item is None, (
@@ -1276,7 +1433,6 @@ class TestCropTool:
         event = _make_mouse_event()
         tool.mouse_press(QPointF(10, 10), event)
         tool.mouse_move(QPointF(200, 200), event)
-        tool.mouse_release(QPointF(200, 200), event)
 
         tool.deactivate()
 
@@ -1312,24 +1468,24 @@ class TestCropTool:
             f"Expected items_before to be items_after, got {items_before}"
         )
 
-    def test_apply_crop_without_background_does_nothing(self, qapp) -> None:
+    def test_crop_without_background_does_not_crop(self, qapp) -> None:
+        """When there is no background pixmap, crop has no effect."""
         scene = QGraphicsScene()
         view = QGraphicsView(scene)
         tool = CropTool()
         tool.activate(scene, view)
 
-        # Manually create a crop rect
         event = _make_mouse_event()
         tool.mouse_press(QPointF(10, 10), event)
         tool.mouse_move(QPointF(200, 200), event)
+
+        # apply_crop is called on release but no bg_item means it does nothing
         tool.mouse_release(QPointF(200, 200), event)
 
-        tool.apply_crop()
-
-        # Should still have the crop rect (it wasn't cleared because no bg found)
-        # Actually, apply_crop returns early if no bg_item, so the crop rect remains
-        assert tool._crop_rect_item is not None, (
-            f"Expected tool._crop_rect_item to not be None, got {tool._crop_rect_item}"
+        # No pixmap items should exist since there was no background
+        pixmap_items = [i for i in scene.items() if isinstance(i, QGraphicsPixmapItem)]
+        assert len(pixmap_items) == 0, (
+            f"Expected no pixmap items, got {len(pixmap_items)}"
         )
 
 
@@ -1506,10 +1662,38 @@ class TestSelectTool:
 
         # Delta is (50, 60), original pos was (10, 20) → new pos (60, 80)
         assert abs(rect_item.pos().x() - 60) < 1, (
-            f"Expected abs(rect_item.pos().x() - 60) < 1, got {abs(rect_item.pos().x() - 60)}"
+            f"Expected abs(rect_item.pos().x() - 60) < 1, "
+            f"got {abs(rect_item.pos().x() - 60)}"
         )
         assert abs(rect_item.pos().y() - 80) < 1, (
-            f"Expected abs(rect_item.pos().y() - 80) < 1, got {abs(rect_item.pos().y() - 80)}"
+            f"Expected abs(rect_item.pos().y() - 80) < 1, "
+            f"got {abs(rect_item.pos().y() - 80)}"
+        )
+
+    def test_select_tool_cannot_select_boundary_item(
+        self, qapp,
+    ) -> None:
+        """Boundary rect (zValue >= Z_BOUNDARY) must not be selectable."""
+        from verdiclip.editor.canvas import EditorCanvas
+        canvas = EditorCanvas()
+        pixmap = QPixmap(200, 200)
+        pixmap.fill(QColor(100, 100, 100))
+        canvas.set_image(pixmap)
+
+        tool = SelectTool()
+        tool.activate(canvas._scene, canvas)
+
+        # Click at center of the image — boundary overlaps it
+        event = _make_mouse_event()
+        tool.mouse_press(QPointF(100, 100), event)
+
+        boundary = canvas._boundary_item
+        assert boundary is not None, (
+            "Precondition: boundary item should exist"
+        )
+        assert not boundary.isSelected(), (
+            "Boundary rect must NOT be selected by SelectTool, "
+            f"but isSelected() returned {boundary.isSelected()}"
         )
 
 
@@ -1664,6 +1848,7 @@ class TestArrowToolUndo:
 
 class TestNumberToolUndo:
     def test_number_marker_is_undoable(self, qapp) -> None:
+        from verdiclip.editor.tools.number import NumberMarkerItem
         canvas, history = _make_canvas_with_history()
         tool = NumberTool()
         tool.activate(canvas._scene, canvas)
@@ -1671,13 +1856,13 @@ class TestNumberToolUndo:
         tool.mouse_press(QPointF(50, 50), event)
 
         assert history.can_undo, "Expected undo available after placing number marker"
-        groups = [i for i in canvas._scene.items() if isinstance(i, QGraphicsItemGroup)]
-        assert len(groups) >= 1, "Expected at least 1 number marker group"
+        markers = [i for i in canvas._scene.items() if isinstance(i, NumberMarkerItem)]
+        assert len(markers) >= 1, "Expected at least 1 NumberMarkerItem"
 
         history.undo()
-        groups_after = [i for i in canvas._scene.items() if isinstance(i, QGraphicsItemGroup)]
-        assert len(groups_after) == 0, (
-            f"Expected 0 number marker groups after undo, got {len(groups_after)}"
+        markers_after = [i for i in canvas._scene.items() if isinstance(i, NumberMarkerItem)]
+        assert len(markers_after) == 0, (
+            f"Expected 0 markers after undo, got {len(markers_after)}"
         )
 
 

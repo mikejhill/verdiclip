@@ -72,11 +72,7 @@ class CropTool(BaseTool):
             return
 
         self._crop_rect_item.setRect(rect)
-
-        # If double-click, apply immediately
-        if event.button() == Qt.MouseButton.LeftButton:
-            # Apply crop on double-click (user can also press Enter via key handler)
-            pass
+        self.apply_crop()
 
     def apply_crop(self) -> None:
         """Apply the current crop selection."""

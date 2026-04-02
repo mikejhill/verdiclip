@@ -10,7 +10,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QPointF, QRect, QRectF, QSizeF, Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QColor, QPen, QPixmap
 from PySide6.QtWidgets import (
     QGraphicsPixmapItem,
     QGraphicsScene,
@@ -40,12 +40,42 @@ class ObfuscationItem(QGraphicsPixmapItem):
         super().__init__(parent)
         self._bg_item = bg_item
         self._size = size
+        self._border_pen = QPen(QColor(0, 120, 215), 1, Qt.PenStyle.DashLine)
+        self._border_pen.setCosmetic(True)
         self.setFlag(QGraphicsPixmapItem.GraphicsItemFlag.ItemIsSelectable)
         self.setFlag(QGraphicsPixmapItem.GraphicsItemFlag.ItemIsMovable)
         self.setFlag(
             QGraphicsPixmapItem.GraphicsItemFlag.ItemSendsGeometryChanges,
         )
+        self._show_border = True
         self._refresh_pixelation()
+
+    def set_size(self, size: QSizeF) -> None:
+        """Update the obfuscation region size and refresh pixelation."""
+        self._size = size
+        self._refresh_pixelation()
+
+    def set_show_border(self, show: bool) -> None:
+        """Toggle the dashed border visibility."""
+        self._show_border = show
+        self.update()
+
+    def boundingRect(self) -> QRectF:  # noqa: N802
+        """Include border pen width in the bounding rect."""
+        base = super().boundingRect()
+        if self._show_border:
+            pw = self._border_pen.widthF() / 2
+            return base.adjusted(-pw, -pw, pw, pw)
+        return base
+
+    def paint(self, painter, option, widget=None) -> None:
+        """Draw the pixelated pixmap with a dashed border."""
+        super().paint(painter, option, widget)
+        if self._show_border:
+            painter.setPen(self._border_pen)
+            pm = self.pixmap()
+            if not pm.isNull():
+                painter.drawRect(QRectF(0, 0, pm.width(), pm.height()))
 
     def itemChange(self, change, value):  # noqa: N802
         if change == QGraphicsPixmapItem.GraphicsItemChange.ItemPositionHasChanged:
@@ -109,7 +139,7 @@ class ObfuscateTool(BaseTool):
             )
             self._scene.addItem(self._preview_item)
 
-        self._preview_item._size = rect.size()
+        self._preview_item.set_size(rect.size())
         self._preview_item.setPos(rect.topLeft())
 
     def mouse_release(self, scene_pos: QPointF, event: QMouseEvent) -> None:
@@ -129,8 +159,9 @@ class ObfuscateTool(BaseTool):
 
         if self._preview_item is not None:
             # Finalize the preview item — it's already in the scene
-            self._preview_item._size = rect.size()
+            self._preview_item.set_size(rect.size())
             self._preview_item.setPos(rect.topLeft())
+            self._preview_item.set_show_border(False)
             logger.debug(
                 "Obfuscation applied at (%.0f,%.0f) %.0fx%.0f",
                 rect.x(), rect.y(), rect.width(), rect.height(),
