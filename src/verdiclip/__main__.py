@@ -63,13 +63,15 @@ def _install_signal_handlers() -> None:
 
     # Periodic no-op timer lets the Python interpreter check for pending
     # signals between Qt event-loop iterations.  200 ms is imperceptible.
-    _timer = QTimer()
-    _timer.timeout.connect(lambda: None)
-    _timer.start(200)
-    # Prevent garbage collection — attach to the QApplication instance.
+    timer = QTimer()
+    timer.timeout.connect(lambda: None)
+    timer.start(200)
+    # Prevent garbage collection — store as attribute on the QApplication
+    # instance.  setProperty() converts to QVariant, which loses the
+    # Python reference and allows GC to destroy the timer.
     app = QApplication.instance()
     if app:
-        app.setProperty("_sigint_timer", _timer)
+        app._sigint_timer = timer  # type: ignore[attr-defined]
 
 
 def main() -> None:
