@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt
-from PySide6.QtGui import QKeyEvent, QMouseEvent, QPixmap, QWheelEvent
+from PySide6.QtGui import QColor, QKeyEvent, QMouseEvent, QPixmap, QWheelEvent
 from PySide6.QtWidgets import QGraphicsItem, QGraphicsPixmapItem, QGraphicsScene
 
 from verdiclip.editor.canvas import EditorCanvas, EditorWindow
@@ -1600,4 +1600,245 @@ class TestEditorCanvasCtrlA:
         )
         assert item2.isSelected(), (
             "Expected item2 to be selected after Ctrl+A"
+        )
+
+
+# ---------------------------------------------------------------------------
+# EditorWindow — zoom slider snaps to 10% intervals
+# ---------------------------------------------------------------------------
+
+
+class TestEditorWindowZoomSliderSnap:
+    def test_slider_43_snaps_to_40(self, qapp, tmp_config) -> None:
+        """Setting zoom slider to 43 should snap to 40%."""
+        window = EditorWindow(QPixmap(200, 200), tmp_config)
+        window._zoom_slider.setValue(43)
+        assert window._zoom_slider.value() == 40, (
+            f"Expected slider snapped to 40, got {window._zoom_slider.value()}"
+        )
+
+    def test_slider_47_snaps_to_50(self, qapp, tmp_config) -> None:
+        """Setting zoom slider to 47 should snap to 50%."""
+        window = EditorWindow(QPixmap(200, 200), tmp_config)
+        window._zoom_slider.setValue(47)
+        assert window._zoom_slider.value() == 50, (
+            f"Expected slider snapped to 50, got {window._zoom_slider.value()}"
+        )
+
+    def test_slider_15_snaps_to_20(self, qapp, tmp_config) -> None:
+        """Setting zoom slider to 15 should snap to 20%."""
+        window = EditorWindow(QPixmap(200, 200), tmp_config)
+        window._zoom_slider.setValue(15)
+        assert window._zoom_slider.value() == 20, (
+            f"Expected slider snapped to 20, got {window._zoom_slider.value()}"
+        )
+
+    def test_slider_exact_multiple_unchanged(self, qapp, tmp_config) -> None:
+        """Setting zoom slider to an exact multiple (e.g. 100) stays at 100."""
+        window = EditorWindow(QPixmap(200, 200), tmp_config)
+        window._zoom_slider.setValue(100)
+        assert window._zoom_slider.value() == 100, (
+            f"Expected slider at 100, got {window._zoom_slider.value()}"
+        )
+
+    def test_slider_min_clamp_10(self, qapp, tmp_config) -> None:
+        """Slider snaps value 10 to 10 (the minimum)."""
+        window = EditorWindow(QPixmap(200, 200), tmp_config)
+        window._zoom_slider.setValue(10)
+        assert window._zoom_slider.value() == 10, (
+            f"Expected slider at 10 (min), got {window._zoom_slider.value()}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# EditorCanvas — crop is undoable
+# ---------------------------------------------------------------------------
+
+
+class TestEditorCanvasCropUndoable:
+    def test_crop_undoable_changes_background(self, qapp) -> None:
+        """crop_undoable should replace the background with the cropped image."""
+        from verdiclip.editor.history import EditorHistory
+
+        canvas = _make_canvas_with_image()  # 100x100 blue
+        history = EditorHistory()
+        canvas.set_history(history)
+
+        # Crop to a 50x50 region
+        cropped = QPixmap(50, 50)
+        cropped.fill(Qt.GlobalColor.red)
+        canvas.crop_undoable(cropped, [])
+
+        assert canvas.pixmap_item is not None, (
+            "Expected pixmap_item to exist after crop"
+        )
+        assert canvas.pixmap_item.pixmap().width() == 50, (
+            f"Expected cropped width 50, got {canvas.pixmap_item.pixmap().width()}"
+        )
+        assert canvas.pixmap_item.pixmap().height() == 50, (
+            f"Expected cropped height 50, got {canvas.pixmap_item.pixmap().height()}"
+        )
+
+    def test_crop_undoable_can_be_undone(self, qapp) -> None:
+        """Undo after crop should restore the original image dimensions."""
+        from verdiclip.editor.history import EditorHistory
+
+        canvas = _make_canvas_with_image()  # 100x100 blue
+        history = EditorHistory()
+        canvas.set_history(history)
+
+        cropped = QPixmap(50, 50)
+        cropped.fill(Qt.GlobalColor.red)
+        canvas.crop_undoable(cropped, [])
+
+        assert history.can_undo() is True, (
+            "Expected can_undo() True after crop_undoable"
+        )
+
+        history.undo()
+
+        assert canvas.pixmap_item.pixmap().width() == 100, (
+            f"Expected restored width 100 after undo, "
+            f"got {canvas.pixmap_item.pixmap().width()}"
+        )
+        assert canvas.pixmap_item.pixmap().height() == 100, (
+            f"Expected restored height 100 after undo, "
+            f"got {canvas.pixmap_item.pixmap().height()}"
+        )
+
+    def test_crop_undoable_preserves_history(self, qapp) -> None:
+        """Crop should NOT clear undo history — prior actions should be undoable."""
+        from verdiclip.editor.history import EditorHistory
+
+        canvas = _make_canvas_with_image()  # 100x100
+        history = EditorHistory()
+        canvas.set_history(history)
+
+        # Add an annotation first
+        item = canvas.scene.addRect(10, 10, 30, 30)
+        canvas.add_item_undoable(item, "Test rect")
+        assert history.can_undo() is True, (
+            "Precondition: history should have undo after adding item"
+        )
+
+        # Now crop
+        cropped = QPixmap(80, 80)
+        cropped.fill(Qt.GlobalColor.green)
+        canvas.crop_undoable(cropped, [])
+
+        # Undo crop
+        history.undo()
+        assert canvas.pixmap_item.pixmap().width() == 100, (
+            f"Expected restored width 100 after undoing crop, "
+            f"got {canvas.pixmap_item.pixmap().width()}"
+        )
+
+        # Undo the annotation add — should still be possible
+        assert history.can_undo() is True, (
+            "Expected can_undo() True for prior annotation after undoing crop"
+        )
+
+    def test_crop_undoable_removes_items_outside_crop(self, qapp) -> None:
+        """Items passed as removed_items should be removed from the scene."""
+        from PySide6.QtWidgets import QGraphicsRectItem
+
+        from verdiclip.editor.history import EditorHistory
+
+        canvas = _make_canvas_with_image()
+        history = EditorHistory()
+        canvas.set_history(history)
+
+        outside_item = QGraphicsRectItem(70, 70, 40, 40)
+        canvas.scene.addItem(outside_item)
+
+        cropped = QPixmap(50, 50)
+        cropped.fill(Qt.GlobalColor.red)
+        canvas.crop_undoable(cropped, [outside_item])
+
+        assert outside_item not in canvas.scene.items(), (
+            "Expected outside_item removed from scene after crop"
+        )
+
+        # Undo should restore the removed item
+        history.undo()
+        assert outside_item in canvas.scene.items(), (
+            "Expected outside_item restored to scene after undo"
+        )
+
+
+# ---------------------------------------------------------------------------
+# EditorCanvas — number editor requires double-click
+# ---------------------------------------------------------------------------
+
+
+class TestEditorCanvasNumberEditorDoubleClick:
+    def test_selecting_number_marker_does_not_emit_editor_signal(
+        self, qapp, tmp_config,
+    ) -> None:
+        """Selecting a NumberMarkerItem should NOT emit number_editor_requested."""
+        from verdiclip.editor.tools.number import NumberMarkerItem
+
+        window = EditorWindow(QPixmap(200, 200), tmp_config)
+        canvas = window._canvas
+
+        # Place a NumberMarkerItem in the scene
+        marker = NumberMarkerItem("1", QColor(255, 0, 0), QColor(255, 255, 255))
+        marker.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+        marker.setPos(50, 50)
+        canvas.scene.addItem(marker)
+
+        signal_received = []
+        canvas.number_editor_requested.connect(
+            lambda m: signal_received.append(m)
+        )
+
+        # Select the marker (simulating a click)
+        marker.setSelected(True)
+
+        assert len(signal_received) == 0, (
+            f"Expected no number_editor_requested on selection, "
+            f"but signal was emitted {len(signal_received)} time(s)"
+        )
+
+    def test_double_click_on_number_marker_emits_editor_signal(
+        self, qapp, tmp_config,
+    ) -> None:
+        """Double-clicking a NumberMarkerItem should emit number_editor_requested."""
+        from verdiclip.editor.tools.number import NumberMarkerItem
+        from verdiclip.editor.tools.select import SelectTool
+
+        window = EditorWindow(QPixmap(200, 200), tmp_config)
+        canvas = window._canvas
+
+        # Switch to select tool
+        select_tool = SelectTool()
+        canvas.set_tool(select_tool)
+
+        # Place a NumberMarkerItem in the scene
+        marker = NumberMarkerItem("1", QColor(255, 0, 0), QColor(255, 255, 255))
+        marker.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+        marker.setPos(50, 50)
+        canvas.scene.addItem(marker)
+
+        signal_received = []
+        canvas.number_editor_requested.connect(
+            lambda m: signal_received.append(m)
+        )
+
+        # Patch scene.itemAt to return the marker directly (avoids coordinate
+        # mapping issues when the widget is not shown/laid out)
+        with patch.object(canvas.scene, "itemAt", return_value=marker):
+            event = _make_mouse_event(
+                QMouseEvent.Type.MouseButtonDblClick,
+                Qt.MouseButton.LeftButton,
+                QPointF(50, 50),
+            )
+            canvas.mouseDoubleClickEvent(event)
+
+        assert len(signal_received) == 1, (
+            f"Expected number_editor_requested emitted once on double-click, "
+            f"got {len(signal_received)} times"
+        )
+        assert signal_received[0] is marker, (
+            "Expected signal to pass the clicked NumberMarkerItem"
         )

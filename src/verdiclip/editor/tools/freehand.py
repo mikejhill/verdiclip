@@ -48,7 +48,6 @@ class FreehandTool(BaseTool):
         pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         self._current_item.setPen(pen)
         self._current_item.setFlag(QGraphicsPathItem.GraphicsItemFlag.ItemIsSelectable)
-        self._current_item.setFlag(QGraphicsPathItem.GraphicsItemFlag.ItemIsMovable)
         self._scene.addItem(self._current_item)
 
     def mouse_move(self, scene_pos: QPointF, event: QMouseEvent) -> None:

@@ -54,6 +54,7 @@ class EditorCanvas(QGraphicsView):
 
     switch_to_select_requested = Signal()
     zoom_changed = Signal(float)  # Emitted with new zoom_level after any zoom change
+    number_editor_requested = Signal(object)  # Emitted with NumberMarkerItem on double-click
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -84,7 +85,15 @@ class EditorCanvas(QGraphicsView):
         if self._history:
             self._history.clear()
         self._scene.clear()
+        self._setup_background(pixmap)
 
+        self.resetTransform()
+        self._zoom_level = 1.0
+        self.centerOn(QRectF(pixmap.rect()).center())
+        logger.info("Image loaded: %dx%d", pixmap.width(), pixmap.height())
+
+    def _setup_background(self, pixmap: QPixmap) -> None:
+        """Set up the background pixmap and boundary rect."""
         self._pixmap_item = QGraphicsPixmapItem(pixmap)
         self._pixmap_item.setZValue(Z_BACKGROUND)
         self._scene.addItem(self._pixmap_item)
@@ -107,10 +116,52 @@ class EditorCanvas(QGraphicsView):
         expanded = img_rect.adjusted(-margin, -margin, margin, margin)
         self._scene.setSceneRect(expanded)
 
-        self.resetTransform()
-        self._zoom_level = 1.0
-        self.centerOn(img_rect.center())
-        logger.info("Image loaded: %dx%d", pixmap.width(), pixmap.height())
+    def crop_undoable(self, new_pixmap: QPixmap, removed_items: list) -> None:
+        """Replace the background with a cropped image while keeping undo history."""
+        if not self._history or not self._pixmap_item:
+            self.set_image(new_pixmap)
+            return
+
+        old_pixmap = self._pixmap_item.pixmap()
+
+        # Remove items from scene (they're outside the crop)
+        for item in removed_items:
+            self._scene.removeItem(item)
+
+        # Replace background and boundary
+        self._scene.removeItem(self._pixmap_item)
+        if self._boundary_item:
+            self._scene.removeItem(self._boundary_item)
+        self._setup_background(new_pixmap)
+
+        from verdiclip.editor.history import CropCommand
+        cmd = CropCommand(self, old_pixmap, new_pixmap, removed_items)
+        self._history.push(cmd)
+        logger.info("Crop applied (undoable): %dx%d", new_pixmap.width(), new_pixmap.height())
+
+    def _replace_image(self, pixmap: QPixmap, items: list, *, remove: bool) -> None:
+        """Replace the background image during undo/redo of a crop.
+
+        Args:
+            pixmap: The new background pixmap.
+            items: Items that were removed by the crop.
+            remove: If True, remove *items* from scene (redo). If False, restore them (undo).
+        """
+        # Remove old background and boundary
+        if self._pixmap_item and self._pixmap_item.scene():
+            self._scene.removeItem(self._pixmap_item)
+        if self._boundary_item and self._boundary_item.scene():
+            self._scene.removeItem(self._boundary_item)
+
+        self._setup_background(pixmap)
+
+        for item in items:
+            if remove:
+                if item.scene():
+                    self._scene.removeItem(item)
+            else:
+                if not item.scene():
+                    self._scene.addItem(item)
 
     def set_tool(self, tool: BaseTool | None) -> None:
         """Set the active drawing tool."""
@@ -172,6 +223,23 @@ class EditorCanvas(QGraphicsView):
             self._current_tool.mouse_press(scene_pos, event)
         else:
             super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        """Handle double-click to open inline editors (e.g., number markers)."""
+        if self._current_tool:
+            scene_pos = self.mapToScene(event.position().toPoint())
+            from verdiclip.editor.tools.select import SelectTool, _resolve_top_level_item
+            if isinstance(self._current_tool, SelectTool):
+                transform = self.transform()
+                raw = self._scene.itemAt(scene_pos, transform)
+                if raw:
+                    item = _resolve_top_level_item(raw)
+                    from verdiclip.editor.tools.number import NumberMarkerItem
+                    if isinstance(item, NumberMarkerItem):
+                        self.number_editor_requested.emit(item)
+                        event.accept()
+                        return
+        super().mouseDoubleClickEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         """Handle mouse move — pan or delegate to tool."""
@@ -374,6 +442,7 @@ class EditorWindow(QMainWindow):
         self._canvas.set_image(pixmap)
         self._canvas.zoom_changed.connect(self._on_zoom_changed)
         self._canvas.switch_to_select_requested.connect(self._switch_to_select)
+        self._canvas.number_editor_requested.connect(self._on_number_editor_requested)
         self._canvas.scene.selectionChanged.connect(self._on_selection_changed)
 
     def _setup_toolbar(self) -> None:
@@ -620,8 +689,15 @@ class EditorWindow(QMainWindow):
             self._zoom_slider_widget.show()
 
     def _on_zoom_slider_changed(self, value: int) -> None:
-        """Apply zoom level from the slider."""
-        target_zoom = value / 100.0
+        """Apply zoom level from the slider, snapping to 10% intervals."""
+        snap_interval = 10
+        snapped = round(value / snap_interval) * snap_interval
+        snapped = max(10, min(400, snapped))
+        if self._zoom_slider.value() != snapped:
+            self._zoom_slider.blockSignals(True)
+            self._zoom_slider.setValue(snapped)
+            self._zoom_slider.blockSignals(False)
+        target_zoom = snapped / 100.0
         current_zoom = self._canvas.zoom_level
         if abs(current_zoom - target_zoom) > 0.001:
             factor = target_zoom / current_zoom
@@ -644,14 +720,25 @@ class EditorWindow(QMainWindow):
         self._toolbar.set_tool(ToolType.SELECT)
 
     def _on_selection_changed(self) -> None:
-        """Show an inline editor when a NumberMarkerItem is selected."""
+        """Dismiss the number editor when selection changes away from a counter."""
         from verdiclip.editor.tools.number import NumberMarkerItem, NumberTool
 
         selected = self._canvas.scene.selectedItems()
-        if len(selected) == 1 and isinstance(selected[0], NumberMarkerItem):
+        number_tool = self._tools.get(ToolType.NUMBER)
+        if (
+            isinstance(number_tool, NumberTool)
+            and not (len(selected) == 1 and isinstance(selected[0], NumberMarkerItem))
+        ):
+            number_tool._dismiss_editor()
+
+    def _on_number_editor_requested(self, marker) -> None:
+        """Open inline editor for a NumberMarkerItem on double-click."""
+        from verdiclip.editor.tools.number import NumberMarkerItem, NumberTool
+
+        if isinstance(marker, NumberMarkerItem):
             number_tool = self._tools.get(ToolType.NUMBER)
             if isinstance(number_tool, NumberTool):
-                number_tool.show_editor_for(selected[0])
+                number_tool.show_editor_for(marker)
 
     def _open_file(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(

@@ -218,8 +218,8 @@ class TestRectangleTool:
         assert flags & QGraphicsRectItem.GraphicsItemFlag.ItemIsSelectable, (
             f"Expected ItemIsSelectable flag to be set, got {flags}"
         )
-        assert flags & QGraphicsRectItem.GraphicsItemFlag.ItemIsMovable, (
-            f"Expected ItemIsMovable flag to be set, got {flags}"
+        assert not (flags & QGraphicsRectItem.GraphicsItemFlag.ItemIsMovable), (
+            "ItemIsMovable should not be set — SelectTool handles movement"
         )
 
 
@@ -329,8 +329,8 @@ class TestEllipseTool:
         assert flags & QGraphicsEllipseItem.GraphicsItemFlag.ItemIsSelectable, (
             f"Expected ItemIsSelectable flag to be set, got {flags}"
         )
-        assert flags & QGraphicsEllipseItem.GraphicsItemFlag.ItemIsMovable, (
-            f"Expected ItemIsMovable flag to be set, got {flags}"
+        assert not (flags & QGraphicsEllipseItem.GraphicsItemFlag.ItemIsMovable), (
+            "ItemIsMovable should not be set — SelectTool handles movement"
         )
 
 
@@ -451,8 +451,8 @@ class TestLineTool:
         assert flags & QGraphicsLineItem.GraphicsItemFlag.ItemIsSelectable, (
             f"Expected ItemIsSelectable flag to be set, got {flags}"
         )
-        assert flags & QGraphicsLineItem.GraphicsItemFlag.ItemIsMovable, (
-            f"Expected ItemIsMovable flag to be set, got {flags}"
+        assert not (flags & QGraphicsLineItem.GraphicsItemFlag.ItemIsMovable), (
+            "ItemIsMovable should not be set — SelectTool handles movement"
         )
 
 
@@ -556,8 +556,8 @@ class TestArrowTool:
         assert flags & QGraphicsItemGroup.GraphicsItemFlag.ItemIsSelectable, (
             f"Expected ItemIsSelectable flag to be set, got {flags}"
         )
-        assert flags & QGraphicsItemGroup.GraphicsItemFlag.ItemIsMovable, (
-            f"Expected ItemIsMovable flag to be set, got {flags}"
+        assert not (flags & QGraphicsItemGroup.GraphicsItemFlag.ItemIsMovable), (
+            "ItemIsMovable should not be set — SelectTool handles movement"
         )
 
         move_event = _make_mouse_event()
@@ -663,8 +663,8 @@ class TestFreehandTool:
         assert flags & QGraphicsPathItem.GraphicsItemFlag.ItemIsSelectable, (
             f"Expected ItemIsSelectable flag to be set, got {flags}"
         )
-        assert flags & QGraphicsPathItem.GraphicsItemFlag.ItemIsMovable, (
-            f"Expected ItemIsMovable flag to be set, got {flags}"
+        assert not (flags & QGraphicsPathItem.GraphicsItemFlag.ItemIsMovable), (
+            "ItemIsMovable should not be set — SelectTool handles movement"
         )
 
 
@@ -828,8 +828,8 @@ class TestTextTool:
         assert flags & QGraphicsTextItem.GraphicsItemFlag.ItemIsSelectable, (
             f"Expected ItemIsSelectable flag to be set, got {flags}"
         )
-        assert flags & QGraphicsTextItem.GraphicsItemFlag.ItemIsMovable, (
-            f"Expected ItemIsMovable flag to be set, got {flags}"
+        assert not (flags & QGraphicsTextItem.GraphicsItemFlag.ItemIsMovable), (
+            "ItemIsMovable should not be set — SelectTool handles movement"
         )
 
 
@@ -966,7 +966,8 @@ class TestNumberTool:
             f"Expected len(scene.items()) to be 0, got {len(scene.items())}"
         )
 
-    def test_marker_is_selectable_and_movable(self, qapp) -> None:
+    def test_marker_is_selectable_not_movable(self, qapp) -> None:
+        """Markers are selectable but not ItemIsMovable (SelectTool handles drag)."""
         from verdiclip.editor.tools.number import NumberMarkerItem
         scene = QGraphicsScene()
         view = QGraphicsView(scene)
@@ -982,8 +983,8 @@ class TestNumberTool:
         assert flags & NumberMarkerItem.GraphicsItemFlag.ItemIsSelectable, (
             f"Expected ItemIsSelectable flag to be set, got {flags}"
         )
-        assert flags & NumberMarkerItem.GraphicsItemFlag.ItemIsMovable, (
-            f"Expected ItemIsMovable flag to be set, got {flags}"
+        assert not (flags & NumberMarkerItem.GraphicsItemFlag.ItemIsMovable), (
+            "ItemIsMovable should NOT be set — SelectTool handles movement manually"
         )
 
     def test_marker_text_updates_when_value_changed(
@@ -1117,8 +1118,8 @@ class TestHighlightTool:
         assert flags & QGraphicsRectItem.GraphicsItemFlag.ItemIsSelectable, (
             f"Expected ItemIsSelectable flag to be set, got {flags}"
         )
-        assert flags & QGraphicsRectItem.GraphicsItemFlag.ItemIsMovable, (
-            f"Expected ItemIsMovable flag to be set, got {flags}"
+        assert not (flags & QGraphicsRectItem.GraphicsItemFlag.ItemIsMovable), (
+            "ItemIsMovable should not be set — SelectTool handles movement"
         )
 
 
@@ -1226,8 +1227,8 @@ class TestObfuscateTool:
         assert flags & QGraphicsPixmapItem.GraphicsItemFlag.ItemIsSelectable, (
             f"Expected ItemIsSelectable flag to be set, got {flags}"
         )
-        assert flags & QGraphicsPixmapItem.GraphicsItemFlag.ItemIsMovable, (
-            f"Expected ItemIsMovable flag to be set, got {flags}"
+        assert not (flags & QGraphicsPixmapItem.GraphicsItemFlag.ItemIsMovable), (
+            "ItemIsMovable should not be set — SelectTool handles movement"
         )
 
     def test_overlay_refreshes_on_move(self, qapp) -> None:
@@ -2419,6 +2420,171 @@ class TestSelectToolCtrlClick:
 # ---------------------------------------------------------------------------
 # ObfuscationItem — set_geometry (atomic position+size)
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# ObfuscateTool — clamping to image bounds
+# ---------------------------------------------------------------------------
+
+
+class TestObfuscateToolClampToImageBounds:
+    def test_drag_past_top_left_clamps_to_image_origin(self, qapp) -> None:
+        """Dragging from inside to past top-left clamps the obfuscation to (0,0)."""
+
+        scene, bg = _make_scene_with_background(100, 100)
+        view = QGraphicsView(scene)
+        tool = ObfuscateTool()
+        _simulate_draw(tool, scene, view, QPointF(50, 50), QPointF(-20, -20))
+
+        overlays = [i for i in scene.items() if isinstance(i, ObfuscationItem)]
+        assert len(overlays) == 1, (
+            f"Expected 1 ObfuscationItem, got {len(overlays)}"
+        )
+        item = overlays[0]
+        assert item.pos().x() >= 0, (
+            f"Expected pos.x >= 0 (clamped to image), got {item.pos().x()}"
+        )
+        assert item.pos().y() >= 0, (
+            f"Expected pos.y >= 0 (clamped to image), got {item.pos().y()}"
+        )
+        assert abs(item.pos().x() - 0) < 1, (
+            f"Expected pos.x ~0 after clamping, got {item.pos().x()}"
+        )
+        assert abs(item.pos().y() - 0) < 1, (
+            f"Expected pos.y ~0 after clamping, got {item.pos().y()}"
+        )
+
+    def test_drag_past_top_left_clamps_size(self, qapp) -> None:
+        """Size should be clamped to 50x50 when dragging from (50,50) to (-20,-20)."""
+        scene, bg = _make_scene_with_background(100, 100)
+        view = QGraphicsView(scene)
+        tool = ObfuscateTool()
+        _simulate_draw(tool, scene, view, QPointF(50, 50), QPointF(-20, -20))
+
+        overlays = [i for i in scene.items() if isinstance(i, ObfuscationItem)]
+        assert len(overlays) == 1, (
+            f"Expected 1 ObfuscationItem, got {len(overlays)}"
+        )
+        item = overlays[0]
+        assert abs(item._size.width() - 50) < 1, (
+            f"Expected _size.width ~50 (clamped), got {item._size.width()}"
+        )
+        assert abs(item._size.height() - 50) < 1, (
+            f"Expected _size.height ~50 (clamped), got {item._size.height()}"
+        )
+
+    def test_drag_past_bottom_right_clamps_to_image_bounds(self, qapp) -> None:
+        """Dragging past bottom-right clamps size to image edge."""
+        scene, bg = _make_scene_with_background(100, 100)
+        view = QGraphicsView(scene)
+        tool = ObfuscateTool()
+        _simulate_draw(tool, scene, view, QPointF(60, 60), QPointF(150, 150))
+
+        overlays = [i for i in scene.items() if isinstance(i, ObfuscationItem)]
+        assert len(overlays) == 1, (
+            f"Expected 1 ObfuscationItem, got {len(overlays)}"
+        )
+        item = overlays[0]
+        # Width should be 100 - 60 = 40 (not 90)
+        assert abs(item._size.width() - 40) < 1, (
+            f"Expected _size.width ~40 (clamped to image), got {item._size.width()}"
+        )
+        assert abs(item._size.height() - 40) < 1, (
+            f"Expected _size.height ~40 (clamped to image), got {item._size.height()}"
+        )
+
+    def test_fully_outside_image_discards_obfuscation(self, qapp) -> None:
+        """Dragging entirely outside the image should not create an item."""
+        scene, bg = _make_scene_with_background(100, 100)
+        view = QGraphicsView(scene)
+        tool = ObfuscateTool()
+        _simulate_draw(tool, scene, view, QPointF(-50, -50), QPointF(-10, -10))
+
+        overlays = [i for i in scene.items() if isinstance(i, ObfuscationItem)]
+        assert len(overlays) == 0, (
+            f"Expected 0 ObfuscationItem for fully out-of-bounds drag, got {len(overlays)}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# CropTool — clamping to image bounds
+# ---------------------------------------------------------------------------
+
+
+class TestCropToolClampToImageBounds:
+    def test_crop_past_bottom_right_clamps_to_image_size(self, qapp) -> None:
+        """Crop rect extending beyond image is clamped to image bounds."""
+        scene, bg = _make_scene_with_background(100, 100)
+        view = QGraphicsView(scene)
+        tool = CropTool()
+        tool.activate(scene, view)
+
+        event = _make_mouse_event()
+        tool.mouse_press(QPointF(10, 10), event)
+        tool.mouse_move(QPointF(150, 150), event)
+        tool.mouse_release(QPointF(150, 150), event)
+
+        # After crop, the resulting background should be 90x90 (clamped from 140x140)
+        pixmap_items = [i for i in scene.items() if isinstance(i, QGraphicsPixmapItem)]
+        assert len(pixmap_items) >= 1, (
+            f"Expected at least 1 pixmap item after crop, got {len(pixmap_items)}"
+        )
+        bg_item = [i for i in pixmap_items if i.zValue() <= -1000][0]
+        w = bg_item.pixmap().width()
+        h = bg_item.pixmap().height()
+        assert w == 90, (
+            f"Expected cropped width 90 (clamped to image), got {w}"
+        )
+        assert h == 90, (
+            f"Expected cropped height 90 (clamped to image), got {h}"
+        )
+
+    def test_crop_past_top_left_clamps_to_zero(self, qapp) -> None:
+        """Crop starting before (0,0) is clamped to image origin."""
+        scene, bg = _make_scene_with_background(100, 100)
+        view = QGraphicsView(scene)
+        tool = CropTool()
+        tool.activate(scene, view)
+
+        event = _make_mouse_event()
+        tool.mouse_press(QPointF(-20, -20), event)
+        tool.mouse_move(QPointF(50, 50), event)
+        tool.mouse_release(QPointF(50, 50), event)
+
+        pixmap_items = [i for i in scene.items() if isinstance(i, QGraphicsPixmapItem)]
+        bg_item = [i for i in pixmap_items if i.zValue() <= -1000][0]
+        w = bg_item.pixmap().width()
+        h = bg_item.pixmap().height()
+        assert w == 50, (
+            f"Expected cropped width 50 (clamped at origin), got {w}"
+        )
+        assert h == 50, (
+            f"Expected cropped height 50 (clamped at origin), got {h}"
+        )
+
+    def test_crop_entirely_outside_does_nothing(self, qapp) -> None:
+        """Crop rect entirely outside the image should not change the background."""
+        scene, bg = _make_scene_with_background(100, 100)
+        view = QGraphicsView(scene)
+        tool = CropTool()
+        tool.activate(scene, view)
+
+        event = _make_mouse_event()
+        tool.mouse_press(QPointF(-50, -50), event)
+        tool.mouse_move(QPointF(-10, -10), event)
+        tool.mouse_release(QPointF(-10, -10), event)
+
+        # Background should be unchanged — 100x100
+        pixmap_items = [
+            i for i in scene.items()
+            if isinstance(i, QGraphicsPixmapItem) and i.zValue() <= -1000
+        ]
+        assert len(pixmap_items) == 1, (
+            f"Expected 1 background pixmap (unchanged), got {len(pixmap_items)}"
+        )
+        assert pixmap_items[0].pixmap().width() == 100, (
+            f"Expected unchanged width 100, got {pixmap_items[0].pixmap().width()}"
+        )
 
 
 class TestObfuscationItemSetGeometry:

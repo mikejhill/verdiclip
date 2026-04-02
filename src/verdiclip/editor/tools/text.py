@@ -67,7 +67,6 @@ class TextTool(BaseTool):
         text_item.setFont(self._font)
         text_item.setTextInteractionFlags(Qt.TextInteractionFlag.TextEditorInteraction)
         text_item.setFlag(QGraphicsTextItem.GraphicsItemFlag.ItemIsSelectable)
-        text_item.setFlag(QGraphicsTextItem.GraphicsItemFlag.ItemIsMovable)
         self._scene.addItem(text_item)
         if self._view and hasattr(self._view, "add_item_undoable"):
             self._view.add_item_undoable(text_item, "Add text")

@@ -46,7 +46,6 @@ class EllipseTool(BaseTool):
         self._current_item.setPen(QPen(self._stroke_color, self._stroke_width))
         self._current_item.setBrush(QBrush(self._fill_color))
         self._current_item.setFlag(QGraphicsEllipseItem.GraphicsItemFlag.ItemIsSelectable)
-        self._current_item.setFlag(QGraphicsEllipseItem.GraphicsItemFlag.ItemIsMovable)
         self._scene.addItem(self._current_item)
 
     def mouse_move(self, scene_pos: QPointF, event: QMouseEvent) -> None:

@@ -6,7 +6,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QPen, QPixmap
+from PySide6.QtGui import QColor, QPen
 from PySide6.QtWidgets import (
     QGraphicsPixmapItem,
     QGraphicsRectItem,
@@ -93,32 +93,50 @@ class CropTool(BaseTool):
         if not bg_item:
             return
 
-        # Hide boundary border so it doesn't render into the crop
-        from PySide6.QtWidgets import QGraphicsRectItem as _RectItem
+        # Clamp crop rect to image bounds
+        img_rect = QRectF(bg_item.pixmap().rect())
+        crop_rect = crop_rect.intersected(img_rect)
+        if crop_rect.width() < 10 or crop_rect.height() < 10:
+            return
+
+        # Identify annotation items fully outside the crop rect
+        removed_items = []
         for item in self._scene.items():
-            is_boundary = (
-                isinstance(item, _RectItem)
-                and item.zValue() >= Z_BOUNDARY
-                and item is not self._crop_rect_item
-            )
-            if is_boundary:
-                item.setVisible(False)
-                break
+            if item is bg_item or item is self._crop_rect_item:
+                continue
+            if item.zValue() >= Z_BOUNDARY:
+                continue
+            if item.zValue() <= Z_BACKGROUND:
+                continue
+            item_rect = item.sceneBoundingRect()
+            if not item_rect.intersects(crop_rect):
+                removed_items.append(item)
 
-        # Also hide the crop rect itself from the render
-        self._crop_rect_item.setVisible(False)
+        # Create the cropped pixmap directly from the background
+        src_rect = QRectF(crop_rect)
+        bg_pixmap = bg_item.pixmap()
+        result = bg_pixmap.copy(
+            int(src_rect.x()), int(src_rect.y()),
+            int(src_rect.width()), int(src_rect.height()),
+        )
 
-        # Render the scene into the crop rect
-        from PySide6.QtGui import QPainter
-        result = QPixmap(int(crop_rect.width()), int(crop_rect.height()))
-        result.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(result)
-        self._scene.render(painter, QRectF(result.rect()), crop_rect)
-        painter.end()
+        # Adjust remaining annotation positions relative to new origin
+        offset_x = crop_rect.x()
+        offset_y = crop_rect.y()
+        for item in self._scene.items():
+            if item is bg_item or item is self._crop_rect_item:
+                continue
+            if item.zValue() >= Z_BOUNDARY or item.zValue() <= Z_BACKGROUND:
+                continue
+            if item in removed_items:
+                continue
+            pos = item.pos()
+            item.setPos(pos.x() - offset_x, pos.y() - offset_y)
 
-        # Replace scene with cropped image via the view's set_image method
         self._clear_crop_ui()
-        if self._view and hasattr(self._view, "set_image"):
+        if self._view and hasattr(self._view, "crop_undoable"):
+            self._view.crop_undoable(result, removed_items)
+        elif self._view and hasattr(self._view, "set_image"):
             self._view.set_image(result)
         else:
             self._scene.clear()

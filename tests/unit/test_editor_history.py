@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QGraphicsRectItem, QGraphicsScene
 
 from verdiclip.editor.history import (
     AddItemCommand,
+    CropCommand,
     EditorHistory,
     MoveItemCommand,
     RemoveItemCommand,
@@ -221,4 +222,109 @@ class TestAddItemCommandAlreadyAdded:
         history.redo()
         assert item in scene.items(), (
             "Expected item back in scene after redo (second redo uses addItem)"
+        )
+
+
+class TestCropCommand:
+    """Test CropCommand redo/undo cycle with a mock canvas."""
+
+    def test_first_redo_is_noop(self, qapp) -> None:
+        """First redo (on push) should skip since crop is already applied."""
+        from unittest.mock import MagicMock
+
+        from PySide6.QtGui import QPixmap
+
+        canvas = MagicMock()
+        old_pixmap = QPixmap(100, 100)
+        new_pixmap = QPixmap(50, 50)
+        removed = [QGraphicsRectItem(0, 0, 10, 10)]
+
+        cmd = CropCommand(canvas, old_pixmap, new_pixmap, removed)
+        cmd.redo()
+
+        canvas._replace_image.assert_not_called(), (
+            "Expected _replace_image NOT called on first redo (no-op)"
+        )
+
+    def test_second_redo_applies_new_pixmap(self, qapp) -> None:
+        """Second redo (after undo) should call _replace_image with new pixmap."""
+        from unittest.mock import MagicMock
+
+        from PySide6.QtGui import QPixmap
+
+        canvas = MagicMock()
+        old_pixmap = QPixmap(100, 100)
+        new_pixmap = QPixmap(50, 50)
+        removed = [QGraphicsRectItem(0, 0, 10, 10)]
+
+        cmd = CropCommand(canvas, old_pixmap, new_pixmap, removed)
+        cmd.redo()   # first redo (no-op)
+        cmd.undo()   # undo
+        cmd.redo()   # second redo — should apply
+
+        canvas._replace_image.assert_called_with(
+            new_pixmap, removed, remove=True,
+        )
+
+    def test_undo_restores_old_pixmap(self, qapp) -> None:
+        """Undo should call _replace_image with old pixmap and remove=False."""
+        from unittest.mock import MagicMock
+
+        from PySide6.QtGui import QPixmap
+
+        canvas = MagicMock()
+        old_pixmap = QPixmap(100, 100)
+        new_pixmap = QPixmap(50, 50)
+        removed = [QGraphicsRectItem(0, 0, 10, 10)]
+
+        cmd = CropCommand(canvas, old_pixmap, new_pixmap, removed)
+        cmd.redo()   # first redo (no-op)
+        cmd.undo()
+
+        canvas._replace_image.assert_called_once_with(
+            old_pixmap, removed, remove=False,
+        )
+
+    def test_undo_redo_cycle_with_history(self, qapp) -> None:
+        """Full undo/redo cycle via EditorHistory with mock canvas."""
+        from unittest.mock import MagicMock
+
+        from PySide6.QtGui import QPixmap
+
+        canvas = MagicMock()
+        old_pixmap = QPixmap(100, 100)
+        new_pixmap = QPixmap(50, 50)
+        removed = []
+
+        history = EditorHistory()
+        cmd = CropCommand(canvas, old_pixmap, new_pixmap, removed)
+        history.push(cmd)
+
+        assert history.can_undo() is True, (
+            "Expected can_undo() True after pushing CropCommand"
+        )
+        # First redo was no-op, so _replace_image should not have been called yet
+        canvas._replace_image.assert_not_called()
+
+        history.undo()
+        canvas._replace_image.assert_called_once_with(
+            old_pixmap, removed, remove=False,
+        )
+
+        history.redo()
+        assert canvas._replace_image.call_count == 2, (
+            f"Expected 2 _replace_image calls (undo + redo), "
+            f"got {canvas._replace_image.call_count}"
+        )
+
+    def test_crop_command_description(self, qapp) -> None:
+        """CropCommand should have 'Crop image' as its description."""
+        from unittest.mock import MagicMock
+
+        from PySide6.QtGui import QPixmap
+
+        canvas = MagicMock()
+        cmd = CropCommand(canvas, QPixmap(100, 100), QPixmap(50, 50), [])
+        assert cmd.text() == "Crop image", (
+            f"Expected description 'Crop image', got '{cmd.text()}'"
         )

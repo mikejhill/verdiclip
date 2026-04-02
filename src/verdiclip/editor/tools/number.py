@@ -48,7 +48,6 @@ class NumberMarkerItem(QGraphicsEllipseItem):
         self.setBrush(QBrush(bg_color))
         self.setPen(QPen(bg_color.darker(120), 2))
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
-        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable)
 
         # Number text (child item)
         self._text_item = QGraphicsSimpleTextItem(value, self)

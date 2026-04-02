@@ -56,7 +56,6 @@ class ArrowTool(BaseTool):
 
         self._group = self._scene.createItemGroup([])
         self._group.setFlag(QGraphicsItemGroup.GraphicsItemFlag.ItemIsSelectable)
-        self._group.setFlag(QGraphicsItemGroup.GraphicsItemFlag.ItemIsMovable)
 
         self._line_item = QGraphicsLineItem(QLineF(scene_pos, scene_pos))
         self._line_item.setPen(pen)

@@ -43,7 +43,6 @@ class ObfuscationItem(QGraphicsPixmapItem):
         self._border_pen = QPen(QColor(0, 120, 215), 1, Qt.PenStyle.DashLine)
         self._border_pen.setCosmetic(True)
         self.setFlag(QGraphicsPixmapItem.GraphicsItemFlag.ItemIsSelectable)
-        self.setFlag(QGraphicsPixmapItem.GraphicsItemFlag.ItemIsMovable)
         self.setFlag(
             QGraphicsPixmapItem.GraphicsItemFlag.ItemSendsGeometryChanges,
         )
@@ -146,13 +145,18 @@ class ObfuscateTool(BaseTool):
         if bg_item is None:
             return
 
+        # Clamp to image bounds — cannot obfuscate outside the image
+        img_rect = QRectF(bg_item.pixmap().rect())
+        rect = rect.intersected(img_rect)
+        if rect.width() < 2 or rect.height() < 2:
+            return
+
         if self._preview_item is None:
             self._preview_item = ObfuscationItem(
                 bg_item, rect.size(),
             )
             self._scene.addItem(self._preview_item)
 
-        # Update position first (without triggering pixelation), then size
         self._preview_item.set_geometry(rect.topLeft(), rect.size())
 
     def mouse_release(self, scene_pos: QPointF, event: QMouseEvent) -> None:
@@ -162,6 +166,12 @@ class ObfuscateTool(BaseTool):
             return
 
         rect = QRectF(self._origin, scene_pos).normalized()
+
+        bg_item = self._find_background()
+        if bg_item:
+            img_rect = QRectF(bg_item.pixmap().rect())
+            rect = rect.intersected(img_rect)
+
         if rect.width() < 5 or rect.height() < 5:
             # Discard too-small regions; remove preview if it was added
             if self._preview_item is not None:

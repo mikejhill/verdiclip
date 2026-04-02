@@ -72,6 +72,34 @@ class MoveItemCommand(QUndoCommand):
         self._item.setPos(self._old_pos[0], self._old_pos[1])
 
 
+class CropCommand(QUndoCommand):
+    """Command to crop the image, undoable by restoring the original."""
+
+    def __init__(
+        self,
+        canvas,
+        old_pixmap,
+        new_pixmap,
+        removed_items: list,
+        description: str = "Crop image",
+    ):
+        super().__init__(description)
+        self._canvas = canvas
+        self._old_pixmap = old_pixmap
+        self._new_pixmap = new_pixmap
+        self._removed_items = removed_items
+        self._first_redo = True
+
+    def redo(self) -> None:
+        if self._first_redo:
+            self._first_redo = False
+            return
+        self._canvas._replace_image(self._new_pixmap, self._removed_items, remove=True)
+
+    def undo(self) -> None:
+        self._canvas._replace_image(self._old_pixmap, self._removed_items, remove=False)
+
+
 class EditorHistory:
     """Manages undo/redo for the editor using QUndoStack."""
 
