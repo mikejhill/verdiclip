@@ -6,7 +6,7 @@ import logging
 import math
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QLineF, QPointF, Qt
+from PySide6.QtCore import QLineF, QPointF, QRectF, Qt
 from PySide6.QtGui import QBrush, QColor, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QGraphicsItemGroup,
@@ -119,6 +119,15 @@ class ArrowItem(QGraphicsItemGroup):
         self._logical_p1 = QPointF(p1)
         self._logical_p2 = QPointF(p2)
         self.update_endpoints(p1, p2)
+
+    def boundingRect(self) -> QRectF:  # noqa: N802
+        """Return combined bounding rect of shaft and head children.
+
+        QGraphicsItemGroup.boundingRect() can return empty when children are
+        positioned in local space.  This override ensures hit-testing, scene
+        bounding-rect queries, and crop intersection checks work correctly.
+        """
+        return self.childrenBoundingRect()
 
     # ------------------------------------------------------------------
     # Geometry

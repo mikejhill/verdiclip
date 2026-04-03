@@ -111,21 +111,26 @@ class EditorCanvas(QGraphicsView):
         item_positions: list[tuple], crop_offset: tuple[float, float],
     ) -> None:
         """Replace the background with a cropped image while keeping undo history."""
-        if not self._history or not self._pixmap_item:
+        if not self._pixmap_item:
             self.set_image(new_pixmap)
             return
 
         old_pixmap = self._pixmap_item.pixmap()
 
-        # Remove items from scene (they're outside the crop)
+        # Remove items that fell outside the crop
         for item in removed_items:
-            self._scene.removeItem(item)
+            if item.scene():
+                self._scene.removeItem(item)
 
-        # Replace background and boundary
+        # Replace background and boundary (preserves annotation items)
         self._scene.removeItem(self._pixmap_item)
         if self._boundary_item:
             self._scene.removeItem(self._boundary_item)
         self._setup_background(new_pixmap)
+
+        if not self._history:
+            logger.info("Crop applied (no undo): %dx%d", new_pixmap.width(), new_pixmap.height())
+            return
 
         from verdiclip.editor.history import CropCommand
         cmd = CropCommand(

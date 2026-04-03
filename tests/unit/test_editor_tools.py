@@ -379,6 +379,55 @@ class TestArrowTool:
         release_event = make_mouse_event()
         tool.mouse_release(QPointF(100, 100), release_event)
 
+    def test_bounding_rect_covers_children(self, qapp) -> None:
+        """ArrowItem.boundingRect must return non-empty rect encompassing child items."""
+        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+
+        scene = QGraphicsScene()
+        view = QGraphicsView(scene)
+        tool = ArrowTool()
+        simulate_draw(tool, scene, view, QPointF(10, 20), QPointF(150, 80))
+
+        arrows = [i for i in scene.items() if isinstance(i, ArrowItem)]
+        assert len(arrows) == 1
+        rect = arrows[0].boundingRect()
+        assert rect.width() > 0, f"Expected non-zero width, got {rect.width()}"
+        assert rect.height() > 0, f"Expected non-zero height, got {rect.height()}"
+
+        scene_rect = arrows[0].sceneBoundingRect()
+        assert scene_rect.width() > 0, "sceneBoundingRect width should be > 0"
+        assert scene_rect.height() > 0, "sceneBoundingRect height should be > 0"
+
+    def test_crop_preserves_arrows_inside_region(self, qapp) -> None:
+        """Cropping should preserve arrows that overlap the crop region."""
+        from PySide6.QtGui import QColor, QPixmap  # noqa: PLC0415
+
+        from verdiclip.editor.canvas import EditorCanvas  # noqa: PLC0415
+        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        from verdiclip.editor.tools.crop import CropTool  # noqa: PLC0415
+
+        canvas = EditorCanvas()
+        pixmap = QPixmap(400, 300)
+        pixmap.fill(QColor(200, 200, 200))
+        canvas.set_image(pixmap)
+
+        arrow_tool = ArrowTool(stroke_color=QColor("#FF0000"))
+        simulate_draw(arrow_tool, canvas.scene, canvas, QPointF(50, 50), QPointF(150, 100))
+
+        arrows_before = [i for i in canvas.scene.items() if isinstance(i, ArrowItem)]
+        assert len(arrows_before) == 1, "Arrow should exist before crop"
+
+        crop_tool = CropTool()
+        crop_tool.activate(canvas.scene, canvas)
+        crop_tool.mouse_press(QPointF(20, 20), make_mouse_event())
+        crop_tool.mouse_move(QPointF(200, 200), make_mouse_event())
+        crop_tool.mouse_release(QPointF(200, 200), make_mouse_event())
+
+        arrows_after = [i for i in canvas.scene.items() if isinstance(i, ArrowItem)]
+        assert len(arrows_after) == 1, (
+            f"Arrow inside crop region should be preserved, found {len(arrows_after)}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # FreehandTool
