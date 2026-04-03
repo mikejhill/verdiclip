@@ -191,7 +191,10 @@ verdiclip/
 ├── tests/               # Unit, integration, and performance tests
 ├── resources/           # Icons and default configuration
 ├── scripts/             # PowerShell build and setup scripts
-└── docs/                # User and developer documentation
+└── docs/                # Project documentation
+    ├── architecture/    #   System design and component overview
+    ├── guides/          #   User and developer guides
+    └── specifications/  #   Feature requirements
 ```
 
 ---
