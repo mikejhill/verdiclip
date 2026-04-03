@@ -3607,3 +3607,115 @@ class TestArrowKeysMove:
         event.key.return_value = Qt.Key.Key_Left
         event.modifiers.return_value = Qt.KeyboardModifier.NoModifier
         canvas.keyPressEvent(event)  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# Parametrized common tool behavior tests
+# ---------------------------------------------------------------------------
+# These consolidate redundant per-tool tests for behaviors shared across
+# all (or most) drawing tools: right-click ignored, too-small discarded,
+# items selectable but not movable, set_stroke_color, set_stroke_width.
+
+
+import pytest  # noqa: E402
+
+from tests.conftest import make_mouse_event, simulate_draw  # noqa: E402
+
+
+# Tools that use the standard (start, end) draw pattern
+_DRAW_TOOLS = [
+    pytest.param(RectangleTool, id="rectangle"),
+    pytest.param(EllipseTool, id="ellipse"),
+    pytest.param(LineTool, id="line"),
+    pytest.param(ArrowTool, id="arrow"),
+    pytest.param(HighlightTool, id="highlight"),
+]
+
+# Tools that have set_stroke_color
+_STROKE_COLOR_TOOLS = [
+    pytest.param(RectangleTool, id="rectangle"),
+    pytest.param(EllipseTool, id="ellipse"),
+    pytest.param(LineTool, id="line"),
+    pytest.param(ArrowTool, id="arrow"),
+    pytest.param(FreehandTool, id="freehand"),
+]
+
+# Tools that have set_stroke_width
+_STROKE_WIDTH_TOOLS = [
+    pytest.param(RectangleTool, id="rectangle"),
+    pytest.param(EllipseTool, id="ellipse"),
+    pytest.param(LineTool, id="line"),
+    pytest.param(ArrowTool, id="arrow"),
+    pytest.param(FreehandTool, id="freehand"),
+]
+
+# Tools that have set_fill_color
+_FILL_COLOR_TOOLS = [
+    pytest.param(RectangleTool, id="rectangle"),
+    pytest.param(EllipseTool, id="ellipse"),
+]
+
+
+class TestCommonToolBehaviors:
+    """Parametrized tests verifying behaviors shared across multiple tools."""
+
+    @pytest.mark.parametrize("tool_cls", _DRAW_TOOLS)
+    def test_right_click_creates_nothing(self, qapp, tool_cls) -> None:
+        """Right-clicking should never create scene items."""
+        scene = QGraphicsScene()
+        view = QGraphicsView(scene)
+        tool = tool_cls()
+        tool.activate(scene, view)
+
+        event = make_mouse_event(button=Qt.MouseButton.RightButton)
+        tool.mouse_press(QPointF(10, 10), event)
+        tool.mouse_move(QPointF(110, 110), make_mouse_event())
+        tool.mouse_release(QPointF(110, 110), make_mouse_event())
+
+        # Filter out background items (z < 0)
+        annotations = [i for i in scene.items() if i.zValue() >= 0]
+        assert len(annotations) == 0, (
+            f"{tool_cls.__name__}: right-click created {len(annotations)} item(s)"
+        )
+
+    @pytest.mark.parametrize("tool_cls", _DRAW_TOOLS)
+    def test_too_small_draw_creates_nothing(self, qapp, tool_cls) -> None:
+        """Drawing a tiny shape (< 3px) should be discarded."""
+        scene = QGraphicsScene()
+        view = QGraphicsView(scene)
+        tool = tool_cls()
+        simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(11, 11))
+
+        annotations = [i for i in scene.items() if i.zValue() >= 0]
+        assert len(annotations) == 0, (
+            f"{tool_cls.__name__}: tiny draw created {len(annotations)} item(s)"
+        )
+
+    @pytest.mark.parametrize("tool_cls", _STROKE_COLOR_TOOLS)
+    def test_set_stroke_color(self, qapp, tool_cls) -> None:
+        """Setting stroke color updates the tool's internal state."""
+        tool = tool_cls()
+        color = QColor("#0000FF")
+        tool.set_stroke_color(color)
+        assert tool._stroke_color == color, (
+            f"{tool_cls.__name__}: stroke color not updated"
+        )
+
+    @pytest.mark.parametrize("tool_cls", _STROKE_WIDTH_TOOLS)
+    def test_set_stroke_width(self, qapp, tool_cls) -> None:
+        """Setting stroke width updates the tool's internal state."""
+        tool = tool_cls()
+        tool.set_stroke_width(9)
+        assert tool._stroke_width == 9, (
+            f"{tool_cls.__name__}: stroke width not updated"
+        )
+
+    @pytest.mark.parametrize("tool_cls", _FILL_COLOR_TOOLS)
+    def test_set_fill_color(self, qapp, tool_cls) -> None:
+        """Setting fill color updates the tool's internal state."""
+        tool = tool_cls()
+        color = QColor(255, 0, 0, 100)
+        tool.set_fill_color(color)
+        assert tool._fill_color == color, (
+            f"{tool_cls.__name__}: fill color not updated"
+        )
