@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
+import pytest
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QPixmap
 from PySide6.QtWidgets import (
@@ -19,6 +18,7 @@ from PySide6.QtWidgets import (
     QGraphicsView,
 )
 
+from tests.conftest import make_mouse_event, make_scene_with_background, simulate_draw
 from verdiclip.editor.tools.arrow import ArrowTool
 from verdiclip.editor.tools.crop import CropTool
 from verdiclip.editor.tools.ellipse import EllipseTool
@@ -30,40 +30,6 @@ from verdiclip.editor.tools.obfuscate import ObfuscateTool, ObfuscationItem
 from verdiclip.editor.tools.rectangle import RectangleTool
 from verdiclip.editor.tools.select import SelectTool
 from verdiclip.editor.tools.text import TextTool
-
-
-def _make_mouse_event(button=Qt.MouseButton.LeftButton, modifiers=Qt.KeyboardModifier.NoModifier):
-    """Create a mock QMouseEvent with the given button and modifiers."""
-    event = MagicMock()
-    event.button.return_value = button
-    event.modifiers.return_value = modifiers
-    return event
-
-
-def _simulate_draw(
-    tool, scene, view, start: QPointF, end: QPointF,
-    modifiers=Qt.KeyboardModifier.NoModifier,
-):
-    """Activate a tool and simulate a full press-move-release sequence."""
-    tool.activate(scene, view)
-    press_event = _make_mouse_event()
-    move_event = _make_mouse_event(modifiers=modifiers)
-    release_event = _make_mouse_event()
-    tool.mouse_press(start, press_event)
-    tool.mouse_move(end, move_event)
-    tool.mouse_release(end, release_event)
-
-
-def _make_scene_with_background(width=200, height=200):
-    """Create a scene with a background QGraphicsPixmapItem at zValue -1000."""
-    scene = QGraphicsScene()
-    pixmap = QPixmap(width, height)
-    pixmap.fill(QColor(100, 150, 200))
-    bg = QGraphicsPixmapItem(pixmap)
-    bg.setZValue(-1000)
-    scene.addItem(bg)
-    return scene, bg
-
 
 # ---------------------------------------------------------------------------
 # BaseTool
@@ -105,7 +71,7 @@ class TestRectangleTool:
         scene = QGraphicsScene()
         view = QGraphicsView(scene)
         tool = RectangleTool()
-        _simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(110, 110))
+        simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(110, 110))
 
         rects = [i for i in scene.items() if isinstance(i, QGraphicsRectItem)]
         assert len(rects) == 1, f"Expected len(rects) to be 1, got {len(rects)}"
@@ -114,7 +80,7 @@ class TestRectangleTool:
         scene = QGraphicsScene()
         view = QGraphicsView(scene)
         tool = RectangleTool()
-        _simulate_draw(tool, scene, view, QPointF(10, 20), QPointF(110, 80))
+        simulate_draw(tool, scene, view, QPointF(10, 20), QPointF(110, 80))
 
         rect_item = [i for i in scene.items() if isinstance(i, QGraphicsRectItem)][0]
         rect = rect_item.rect()
@@ -131,9 +97,9 @@ class TestRectangleTool:
         tool = RectangleTool()
         tool.activate(scene, view)
 
-        press_event = _make_mouse_event()
-        shift_event = _make_mouse_event(modifiers=Qt.KeyboardModifier.ShiftModifier)
-        release_event = _make_mouse_event()
+        press_event = make_mouse_event()
+        shift_event = make_mouse_event(modifiers=Qt.KeyboardModifier.ShiftModifier)
+        release_event = make_mouse_event()
 
         tool.mouse_press(QPointF(10, 10), press_event)
         tool.mouse_move(QPointF(110, 60), shift_event)
@@ -151,7 +117,7 @@ class TestRectangleTool:
         scene = QGraphicsScene()
         view = QGraphicsView(scene)
         tool = RectangleTool(stroke_color=stroke, fill_color=fill)
-        _simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(110, 110))
+        simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(110, 110))
 
         rect_item = [i for i in scene.items() if isinstance(i, QGraphicsRectItem)][0]
         assert rect_item.pen().color().name() == stroke.name(), (
@@ -161,57 +127,11 @@ class TestRectangleTool:
             f"Expected alpha() to be alpha(), got {rect_item.brush().color().alpha()}"
         )
 
-    def test_too_small_draw_discarded(self, qapp) -> None:
-        scene = QGraphicsScene()
-        view = QGraphicsView(scene)
-        tool = RectangleTool()
-        _simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(11, 11))
-
-        rects = [i for i in scene.items() if isinstance(i, QGraphicsRectItem)]
-        assert len(rects) == 0, f"Expected len(rects) to be 0, got {len(rects)}"
-
-    def test_right_click_ignored(self, qapp) -> None:
-        scene = QGraphicsScene()
-        view = QGraphicsView(scene)
-        tool = RectangleTool()
-        tool.activate(scene, view)
-
-        event = _make_mouse_event(button=Qt.MouseButton.RightButton)
-        tool.mouse_press(QPointF(10, 10), event)
-        tool.mouse_move(QPointF(110, 110), event)
-        tool.mouse_release(QPointF(110, 110), event)
-
-        rects = [i for i in scene.items() if isinstance(i, QGraphicsRectItem)]
-        assert len(rects) == 0, f"Expected len(rects) to be 0, got {len(rects)}"
-
-    def test_set_stroke_color(self, qapp) -> None:
-        tool = RectangleTool()
-        new_color = QColor("#0000FF")
-        tool.set_stroke_color(new_color)
-        assert tool._stroke_color == new_color, (
-            f"Expected tool._stroke_color to be new_color, got {tool._stroke_color}"
-        )
-
-    def test_set_fill_color(self, qapp) -> None:
-        tool = RectangleTool()
-        new_color = QColor(255, 0, 0, 100)
-        tool.set_fill_color(new_color)
-        assert tool._fill_color == new_color, (
-            f"Expected tool._fill_color to be new_color, got {tool._fill_color}"
-        )
-
-    def test_set_stroke_width(self, qapp) -> None:
-        tool = RectangleTool()
-        tool.set_stroke_width(5)
-        assert tool._stroke_width == 5, (
-            f"Expected tool._stroke_width to be 5, got {tool._stroke_width}"
-        )
-
     def test_item_is_selectable_and_movable(self, qapp) -> None:
         scene = QGraphicsScene()
         view = QGraphicsView(scene)
         tool = RectangleTool()
-        _simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(110, 110))
+        simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(110, 110))
 
         rect_item = [i for i in scene.items() if isinstance(i, QGraphicsRectItem)][0]
         flags = rect_item.flags()
@@ -233,7 +153,7 @@ class TestEllipseTool:
         scene = QGraphicsScene()
         view = QGraphicsView(scene)
         tool = EllipseTool()
-        _simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(110, 110))
+        simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(110, 110))
 
         ellipses = [i for i in scene.items() if isinstance(i, QGraphicsEllipseItem)]
         assert len(ellipses) == 1, f"Expected len(ellipses) to be 1, got {len(ellipses)}"
@@ -244,9 +164,9 @@ class TestEllipseTool:
         tool = EllipseTool()
         tool.activate(scene, view)
 
-        press_event = _make_mouse_event()
-        shift_event = _make_mouse_event(modifiers=Qt.KeyboardModifier.ShiftModifier)
-        release_event = _make_mouse_event()
+        press_event = make_mouse_event()
+        shift_event = make_mouse_event(modifiers=Qt.KeyboardModifier.ShiftModifier)
+        release_event = make_mouse_event()
 
         tool.mouse_press(QPointF(10, 10), press_event)
         tool.mouse_move(QPointF(110, 60), shift_event)
@@ -264,7 +184,7 @@ class TestEllipseTool:
         scene = QGraphicsScene()
         view = QGraphicsView(scene)
         tool = EllipseTool(stroke_color=stroke, fill_color=fill)
-        _simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(110, 110))
+        simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(110, 110))
 
         ellipse_item = [i for i in scene.items() if isinstance(i, QGraphicsEllipseItem)][0]
         assert ellipse_item.pen().color().name() == stroke.name(), (
@@ -274,55 +194,11 @@ class TestEllipseTool:
             f"Expected alpha() to be alpha(), got {ellipse_item.brush().color().alpha()}"
         )
 
-    def test_too_small_draw_discarded(self, qapp) -> None:
-        scene = QGraphicsScene()
-        view = QGraphicsView(scene)
-        tool = EllipseTool()
-        _simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(11, 11))
-
-        ellipses = [i for i in scene.items() if isinstance(i, QGraphicsEllipseItem)]
-        assert len(ellipses) == 0, f"Expected len(ellipses) to be 0, got {len(ellipses)}"
-
-    def test_right_click_ignored(self, qapp) -> None:
-        scene = QGraphicsScene()
-        view = QGraphicsView(scene)
-        tool = EllipseTool()
-        tool.activate(scene, view)
-
-        event = _make_mouse_event(button=Qt.MouseButton.RightButton)
-        tool.mouse_press(QPointF(10, 10), event)
-
-        ellipses = [i for i in scene.items() if isinstance(i, QGraphicsEllipseItem)]
-        assert len(ellipses) == 0, f"Expected len(ellipses) to be 0, got {len(ellipses)}"
-
-    def test_set_stroke_color(self, qapp) -> None:
-        tool = EllipseTool()
-        new_color = QColor("#0000FF")
-        tool.set_stroke_color(new_color)
-        assert tool._stroke_color == new_color, (
-            f"Expected tool._stroke_color to be new_color, got {tool._stroke_color}"
-        )
-
-    def test_set_fill_color(self, qapp) -> None:
-        tool = EllipseTool()
-        new_color = QColor(255, 0, 0, 100)
-        tool.set_fill_color(new_color)
-        assert tool._fill_color == new_color, (
-            f"Expected tool._fill_color to be new_color, got {tool._fill_color}"
-        )
-
-    def test_set_stroke_width(self, qapp) -> None:
-        tool = EllipseTool()
-        tool.set_stroke_width(7)
-        assert tool._stroke_width == 7, (
-            f"Expected tool._stroke_width to be 7, got {tool._stroke_width}"
-        )
-
     def test_item_is_selectable_and_movable(self, qapp) -> None:
         scene = QGraphicsScene()
         view = QGraphicsView(scene)
         tool = EllipseTool()
-        _simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(110, 110))
+        simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(110, 110))
 
         ellipse_item = [i for i in scene.items() if isinstance(i, QGraphicsEllipseItem)][0]
         flags = ellipse_item.flags()
@@ -344,7 +220,7 @@ class TestLineTool:
         scene = QGraphicsScene()
         view = QGraphicsView(scene)
         tool = LineTool()
-        _simulate_draw(tool, scene, view, QPointF(0, 0), QPointF(100, 100))
+        simulate_draw(tool, scene, view, QPointF(0, 0), QPointF(100, 100))
 
         lines = [i for i in scene.items() if isinstance(i, QGraphicsLineItem)]
         assert len(lines) == 1, f"Expected len(lines) to be 1, got {len(lines)}"
@@ -353,7 +229,7 @@ class TestLineTool:
         scene = QGraphicsScene()
         view = QGraphicsView(scene)
         tool = LineTool()
-        _simulate_draw(tool, scene, view, QPointF(10, 20), QPointF(110, 80))
+        simulate_draw(tool, scene, view, QPointF(10, 20), QPointF(110, 80))
 
         line_item = [i for i in scene.items() if isinstance(i, QGraphicsLineItem)][0]
         line = line_item.line()
@@ -376,9 +252,9 @@ class TestLineTool:
         tool = LineTool()
         tool.activate(scene, view)
 
-        press_event = _make_mouse_event()
-        shift_event = _make_mouse_event(modifiers=Qt.KeyboardModifier.ShiftModifier)
-        release_event = _make_mouse_event()
+        press_event = make_mouse_event()
+        shift_event = make_mouse_event(modifiers=Qt.KeyboardModifier.ShiftModifier)
+        release_event = make_mouse_event()
 
         tool.mouse_press(QPointF(0, 0), press_event)
         # Move at ~47 degrees — should snap to 45 degrees (3 * 15)
@@ -397,54 +273,18 @@ class TestLineTool:
         scene = QGraphicsScene()
         view = QGraphicsView(scene)
         tool = LineTool(stroke_color=stroke)
-        _simulate_draw(tool, scene, view, QPointF(0, 0), QPointF(100, 100))
+        simulate_draw(tool, scene, view, QPointF(0, 0), QPointF(100, 100))
 
         line_item = [i for i in scene.items() if isinstance(i, QGraphicsLineItem)][0]
         assert line_item.pen().color().name() == stroke.name(), (
             f"Expected name() to be name(), got {line_item.pen().color().name()}"
         )
 
-    def test_too_small_draw_discarded(self, qapp) -> None:
-        scene = QGraphicsScene()
-        view = QGraphicsView(scene)
-        tool = LineTool()
-        _simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(11, 11))
-
-        lines = [i for i in scene.items() if isinstance(i, QGraphicsLineItem)]
-        assert len(lines) == 0, f"Expected len(lines) to be 0, got {len(lines)}"
-
-    def test_right_click_ignored(self, qapp) -> None:
-        scene = QGraphicsScene()
-        view = QGraphicsView(scene)
-        tool = LineTool()
-        tool.activate(scene, view)
-
-        event = _make_mouse_event(button=Qt.MouseButton.RightButton)
-        tool.mouse_press(QPointF(10, 10), event)
-
-        lines = [i for i in scene.items() if isinstance(i, QGraphicsLineItem)]
-        assert len(lines) == 0, f"Expected len(lines) to be 0, got {len(lines)}"
-
-    def test_set_stroke_color(self, qapp) -> None:
-        tool = LineTool()
-        new_color = QColor("#0000FF")
-        tool.set_stroke_color(new_color)
-        assert tool._stroke_color == new_color, (
-            f"Expected tool._stroke_color to be new_color, got {tool._stroke_color}"
-        )
-
-    def test_set_stroke_width(self, qapp) -> None:
-        tool = LineTool()
-        tool.set_stroke_width(10)
-        assert tool._stroke_width == 10, (
-            f"Expected tool._stroke_width to be 10, got {tool._stroke_width}"
-        )
-
     def test_item_is_selectable_and_movable(self, qapp) -> None:
         scene = QGraphicsScene()
         view = QGraphicsView(scene)
         tool = LineTool()
-        _simulate_draw(tool, scene, view, QPointF(0, 0), QPointF(100, 100))
+        simulate_draw(tool, scene, view, QPointF(0, 0), QPointF(100, 100))
 
         line_item = [i for i in scene.items() if isinstance(i, QGraphicsLineItem)][0]
         flags = line_item.flags()
@@ -466,7 +306,7 @@ class TestArrowTool:
         scene = QGraphicsScene()
         view = QGraphicsView(scene)
         tool = ArrowTool()
-        _simulate_draw(tool, scene, view, QPointF(0, 0), QPointF(100, 100))
+        simulate_draw(tool, scene, view, QPointF(0, 0), QPointF(100, 100))
 
         # Should contain at least a line item and a path item (arrowhead)
         lines = [i for i in scene.items() if isinstance(i, QGraphicsLineItem)]
@@ -479,7 +319,7 @@ class TestArrowTool:
         scene = QGraphicsScene()
         view = QGraphicsView(scene)
         tool = ArrowTool(stroke_color=stroke)
-        _simulate_draw(tool, scene, view, QPointF(0, 0), QPointF(100, 100))
+        simulate_draw(tool, scene, view, QPointF(0, 0), QPointF(100, 100))
 
         line_items = [i for i in scene.items() if isinstance(i, QGraphicsLineItem)]
         assert len(line_items) >= 1, f"Expected len(line_items) >= 1, got {len(line_items)}"
@@ -491,7 +331,7 @@ class TestArrowTool:
         scene = QGraphicsScene()
         view = QGraphicsView(scene)
         tool = ArrowTool(stroke_width=5)
-        _simulate_draw(tool, scene, view, QPointF(0, 0), QPointF(100, 100))
+        simulate_draw(tool, scene, view, QPointF(0, 0), QPointF(100, 100))
 
         line_items = [i for i in scene.items() if isinstance(i, QGraphicsLineItem)]
         assert len(line_items) >= 1, f"Expected len(line_items) >= 1, got {len(line_items)}"
@@ -503,7 +343,7 @@ class TestArrowTool:
         scene = QGraphicsScene()
         view = QGraphicsView(scene)
         tool = ArrowTool()
-        _simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(11, 11))
+        simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(11, 11))
 
         # After discard, scene should have no line/path items remaining
         lines = [i for i in scene.items() if isinstance(i, QGraphicsLineItem)]
@@ -513,34 +353,6 @@ class TestArrowTool:
         assert len(paths) == 0, f"Expected len(paths) to be 0, got {len(paths)}"
         assert len(groups) == 0, f"Expected len(groups) to be 0, got {len(groups)}"
 
-    def test_right_click_ignored(self, qapp) -> None:
-        scene = QGraphicsScene()
-        view = QGraphicsView(scene)
-        tool = ArrowTool()
-        tool.activate(scene, view)
-
-        event = _make_mouse_event(button=Qt.MouseButton.RightButton)
-        tool.mouse_press(QPointF(10, 10), event)
-
-        assert len(scene.items()) == 0, (
-            f"Expected len(scene.items()) to be 0, got {len(scene.items())}"
-        )
-
-    def test_set_stroke_color(self, qapp) -> None:
-        tool = ArrowTool()
-        new_color = QColor("#0000FF")
-        tool.set_stroke_color(new_color)
-        assert tool._stroke_color == new_color, (
-            f"Expected tool._stroke_color to be new_color, got {tool._stroke_color}"
-        )
-
-    def test_set_stroke_width(self, qapp) -> None:
-        tool = ArrowTool()
-        tool.set_stroke_width(8)
-        assert tool._stroke_width == 8, (
-            f"Expected tool._stroke_width to be 8, got {tool._stroke_width}"
-        )
-
     def test_group_is_selectable_and_movable(self, qapp) -> None:
         from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
         scene = QGraphicsScene()
@@ -548,7 +360,7 @@ class TestArrowTool:
         tool = ArrowTool()
         tool.activate(scene, view)
 
-        press_event = _make_mouse_event()
+        press_event = make_mouse_event()
         tool.mouse_press(QPointF(0, 0), press_event)
 
         # The in-progress arrow is an ArrowItem already in the scene
@@ -562,9 +374,9 @@ class TestArrowTool:
             "ItemIsMovable should not be set — SelectTool handles movement"
         )
 
-        move_event = _make_mouse_event()
+        move_event = make_mouse_event()
         tool.mouse_move(QPointF(100, 100), move_event)
-        release_event = _make_mouse_event()
+        release_event = make_mouse_event()
         tool.mouse_release(QPointF(100, 100), release_event)
 
 
@@ -580,7 +392,7 @@ class TestFreehandTool:
         tool = FreehandTool()
         tool.activate(scene, view)
 
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(0, 0), event)
         for i in range(1, 20):
             tool.mouse_move(QPointF(i * 5, i * 5), event)
@@ -596,7 +408,7 @@ class TestFreehandTool:
         tool = FreehandTool(stroke_color=stroke)
         tool.activate(scene, view)
 
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(0, 0), event)
         for i in range(1, 20):
             tool.mouse_move(QPointF(i * 5, i * 5), event)
@@ -613,7 +425,7 @@ class TestFreehandTool:
         tool = FreehandTool()
         tool.activate(scene, view)
 
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(10, 10), event)
         # No moves or tiny move — bounding rect < 2x2
         tool.mouse_release(QPointF(10, 10), event)
@@ -621,40 +433,13 @@ class TestFreehandTool:
         paths = [i for i in scene.items() if isinstance(i, QGraphicsPathItem)]
         assert len(paths) == 0, f"Expected len(paths) to be 0, got {len(paths)}"
 
-    def test_right_click_ignored(self, qapp) -> None:
-        scene = QGraphicsScene()
-        view = QGraphicsView(scene)
-        tool = FreehandTool()
-        tool.activate(scene, view)
-
-        event = _make_mouse_event(button=Qt.MouseButton.RightButton)
-        tool.mouse_press(QPointF(10, 10), event)
-
-        paths = [i for i in scene.items() if isinstance(i, QGraphicsPathItem)]
-        assert len(paths) == 0, f"Expected len(paths) to be 0, got {len(paths)}"
-
-    def test_set_stroke_color(self, qapp) -> None:
-        tool = FreehandTool()
-        new_color = QColor("#0000FF")
-        tool.set_stroke_color(new_color)
-        assert tool._stroke_color == new_color, (
-            f"Expected tool._stroke_color to be new_color, got {tool._stroke_color}"
-        )
-
-    def test_set_stroke_width(self, qapp) -> None:
-        tool = FreehandTool()
-        tool.set_stroke_width(4)
-        assert tool._stroke_width == 4, (
-            f"Expected tool._stroke_width to be 4, got {tool._stroke_width}"
-        )
-
     def test_item_is_selectable_and_movable(self, qapp) -> None:
         scene = QGraphicsScene()
         view = QGraphicsView(scene)
         tool = FreehandTool()
         tool.activate(scene, view)
 
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(0, 0), event)
         for i in range(1, 20):
             tool.mouse_move(QPointF(i * 5, i * 5), event)
@@ -682,7 +467,7 @@ class TestTextTool:
         tool = TextTool()
         tool.activate(scene, view)
 
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(50, 50), event)
 
         text_items = [i for i in scene.items() if isinstance(i, QGraphicsTextItem)]
@@ -701,7 +486,7 @@ class TestTextTool:
         tool.activate(scene, view)
 
         # Place a text item and give it content
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(50, 50), event)
         text_item = tool._active_item
         assert text_item is not None, f"Expected text_item to not be None, got {text_item}"
@@ -727,7 +512,7 @@ class TestTextTool:
         tool = TextTool()
         tool.activate(scene, view)
 
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(50, 50), event)
         tool._active_item.setPlainText("Test text")
 
@@ -748,7 +533,7 @@ class TestTextTool:
         tool = TextTool()
         tool.activate(scene, view)
 
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(50, 50), event)
         # Leave text empty (default)
 
@@ -763,7 +548,7 @@ class TestTextTool:
         tool = TextTool()
         tool.activate(scene, view)
 
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(50, 50), event)
         tool._active_item.setPlainText("   ")
 
@@ -795,7 +580,7 @@ class TestTextTool:
         tool = TextTool()
         tool.activate(scene, view)
 
-        event = _make_mouse_event(button=Qt.MouseButton.RightButton)
+        event = make_mouse_event(button=Qt.MouseButton.RightButton)
         tool.mouse_press(QPointF(50, 50), event)
 
         text_items = [i for i in scene.items() if isinstance(i, QGraphicsTextItem)]
@@ -808,7 +593,7 @@ class TestTextTool:
         tool = TextTool(color=color)
         tool.activate(scene, view)
 
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(50, 50), event)
 
         text_item = [i for i in scene.items() if isinstance(i, QGraphicsTextItem)][0]
@@ -822,7 +607,7 @@ class TestTextTool:
         tool = TextTool()
         tool.activate(scene, view)
 
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(50, 50), event)
 
         text_item = [i for i in scene.items() if isinstance(i, QGraphicsTextItem)][0]
@@ -847,7 +632,7 @@ class TestNumberTool:
         tool = NumberTool()
         tool.activate(scene, view)
 
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(50, 50), event)
         tool.mouse_release(QPointF(50, 50), event)
         assert tool._last_numeric_value == 1, (
@@ -867,7 +652,7 @@ class TestNumberTool:
         tool = NumberTool()
         tool.activate(scene, view)
 
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(50, 50), event)
 
         markers = [i for i in scene.items() if isinstance(i, NumberMarkerItem)]
@@ -882,7 +667,7 @@ class TestNumberTool:
         tool = NumberTool()
         tool.activate(scene, view)
 
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(50, 50), event)
         tool.mouse_press(QPointF(100, 100), event)
         assert tool._last_numeric_value == 2, (
@@ -922,7 +707,7 @@ class TestNumberTool:
         tool = NumberTool()
         tool.activate(scene, view)
 
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(50, 50), event)
         # Simulate editing the marker to value "10"
         markers = [i for i in scene.items() if isinstance(i, NumberMarkerItem)]
@@ -958,7 +743,7 @@ class TestNumberTool:
         tool = NumberTool()
         tool.activate(scene, view)
 
-        event = _make_mouse_event(button=Qt.MouseButton.RightButton)
+        event = make_mouse_event(button=Qt.MouseButton.RightButton)
         tool.mouse_press(QPointF(50, 50), event)
 
         assert tool._last_numeric_value == 0, (
@@ -976,7 +761,7 @@ class TestNumberTool:
         tool = NumberTool()
         tool.activate(scene, view)
 
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(50, 50), event)
 
         markers = [i for i in scene.items() if isinstance(i, NumberMarkerItem)]
@@ -1036,7 +821,7 @@ class TestHighlightTool:
         scene = QGraphicsScene()
         view = QGraphicsView(scene)
         tool = HighlightTool()
-        _simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(110, 110))
+        simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(110, 110))
 
         rects = [i for i in scene.items() if isinstance(i, QGraphicsRectItem)]
         assert len(rects) == 1, f"Expected len(rects) to be 1, got {len(rects)}"
@@ -1045,7 +830,7 @@ class TestHighlightTool:
         scene = QGraphicsScene()
         view = QGraphicsView(scene)
         tool = HighlightTool()
-        _simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(110, 110))
+        simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(110, 110))
 
         rect_item = [i for i in scene.items() if isinstance(i, QGraphicsRectItem)][0]
         brush_color = rect_item.brush().color()
@@ -1060,7 +845,7 @@ class TestHighlightTool:
         scene = QGraphicsScene()
         view = QGraphicsView(scene)
         tool = HighlightTool()
-        _simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(110, 110))
+        simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(110, 110))
 
         rect_item = [i for i in scene.items() if isinstance(i, QGraphicsRectItem)][0]
         assert rect_item.pen().style() == Qt.PenStyle.NoPen, (
@@ -1071,7 +856,7 @@ class TestHighlightTool:
         scene = QGraphicsScene()
         view = QGraphicsView(scene)
         tool = HighlightTool()
-        _simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(12, 12))
+        simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(12, 12))
 
         rects = [i for i in scene.items() if isinstance(i, QGraphicsRectItem)]
         assert len(rects) == 0, f"Expected len(rects) to be 0, got {len(rects)}"
@@ -1082,7 +867,7 @@ class TestHighlightTool:
         tool = HighlightTool()
         tool.activate(scene, view)
 
-        event = _make_mouse_event(button=Qt.MouseButton.RightButton)
+        event = make_mouse_event(button=Qt.MouseButton.RightButton)
         tool.mouse_press(QPointF(10, 10), event)
 
         rects = [i for i in scene.items() if isinstance(i, QGraphicsRectItem)]
@@ -1099,7 +884,7 @@ class TestHighlightTool:
         scene = QGraphicsScene()
         view = QGraphicsView(scene)
         tool = HighlightTool(color=custom)
-        _simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(110, 110))
+        simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(110, 110))
 
         rect_item = [i for i in scene.items() if isinstance(i, QGraphicsRectItem)][0]
         assert rect_item.brush().color().green() == 255, (
@@ -1113,7 +898,7 @@ class TestHighlightTool:
         scene = QGraphicsScene()
         view = QGraphicsView(scene)
         tool = HighlightTool()
-        _simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(110, 110))
+        simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(110, 110))
 
         rect_item = [i for i in scene.items() if isinstance(i, QGraphicsRectItem)][0]
         flags = rect_item.flags()
@@ -1132,10 +917,10 @@ class TestHighlightTool:
 
 class TestObfuscateTool:
     def test_pixelates_region_of_background(self, qapp) -> None:
-        scene, bg = _make_scene_with_background(200, 200)
+        scene, bg = make_scene_with_background(200, 200)
         view = QGraphicsView(scene)
         tool = ObfuscateTool()
-        _simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(100, 100))
+        simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(100, 100))
 
         # Should have the background + an ObfuscationItem overlay
         obfuscation_items = [
@@ -1146,10 +931,10 @@ class TestObfuscateTool:
         )
 
     def test_too_small_draw_discarded(self, qapp) -> None:
-        scene, bg = _make_scene_with_background(200, 200)
+        scene, bg = make_scene_with_background(200, 200)
         view = QGraphicsView(scene)
         tool = ObfuscateTool()
-        _simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(12, 12))
+        simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(12, 12))
 
         # Only background should remain
         obfuscation_items = [
@@ -1160,11 +945,11 @@ class TestObfuscateTool:
         )
 
     def test_too_narrow_draw_discarded(self, qapp) -> None:
-        scene, bg = _make_scene_with_background(200, 200)
+        scene, bg = make_scene_with_background(200, 200)
         view = QGraphicsView(scene)
         tool = ObfuscateTool()
         # Width is ok (90) but height is too small (3)
-        _simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(100, 13))
+        simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(100, 13))
 
         obfuscation_items = [
             i for i in scene.items() if isinstance(i, ObfuscationItem)
@@ -1177,7 +962,7 @@ class TestObfuscateTool:
         scene = QGraphicsScene()
         view = QGraphicsView(scene)
         tool = ObfuscateTool()
-        _simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(100, 100))
+        simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(100, 100))
 
         # No background means no pixelation overlay
         obfuscation_items = [
@@ -1197,15 +982,15 @@ class TestObfuscateTool:
         assert result.height() == 100, f"Expected result.height() to be 100, got {result.height()}"
 
     def test_right_click_ignored(self, qapp) -> None:
-        scene, bg = _make_scene_with_background(200, 200)
+        scene, bg = make_scene_with_background(200, 200)
         view = QGraphicsView(scene)
         tool = ObfuscateTool()
         tool.activate(scene, view)
 
-        event = _make_mouse_event(button=Qt.MouseButton.RightButton)
+        event = make_mouse_event(button=Qt.MouseButton.RightButton)
         tool.mouse_press(QPointF(10, 10), event)
-        tool.mouse_move(QPointF(100, 100), _make_mouse_event())
-        tool.mouse_release(QPointF(100, 100), _make_mouse_event())
+        tool.mouse_move(QPointF(100, 100), make_mouse_event())
+        tool.mouse_release(QPointF(100, 100), make_mouse_event())
 
         # Only background should remain — right-click didn't set origin
         obfuscation_items = [
@@ -1216,10 +1001,10 @@ class TestObfuscateTool:
         )
 
     def test_overlay_is_selectable_and_movable(self, qapp) -> None:
-        scene, bg = _make_scene_with_background(200, 200)
+        scene, bg = make_scene_with_background(200, 200)
         view = QGraphicsView(scene)
         tool = ObfuscateTool()
-        _simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(100, 100))
+        simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(100, 100))
 
         overlays = [
             i for i in scene.items() if isinstance(i, ObfuscationItem)
@@ -1234,10 +1019,10 @@ class TestObfuscateTool:
         )
 
     def test_overlay_refreshes_on_move(self, qapp) -> None:
-        scene, bg = _make_scene_with_background(200, 200)
+        scene, bg = make_scene_with_background(200, 200)
         view = QGraphicsView(scene)
         tool = ObfuscateTool()
-        _simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(60, 60))
+        simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(60, 60))
 
         overlays = [
             i for i in scene.items() if isinstance(i, ObfuscationItem)
@@ -1259,7 +1044,7 @@ class TestObfuscateTool:
     ) -> None:
         """set_size updates the internal pixmap to reflect the new size."""
         from PySide6.QtCore import QSizeF
-        scene, bg = _make_scene_with_background(200, 200)
+        scene, bg = make_scene_with_background(200, 200)
 
         item = ObfuscationItem(bg, QSizeF(40, 40))
         item.setPos(10, 10)
@@ -1285,14 +1070,14 @@ class TestObfuscateTool:
         self, qapp,
     ) -> None:
         """During mouse_move, preview item should have _show_border True."""
-        scene, bg = _make_scene_with_background(200, 200)
+        scene, bg = make_scene_with_background(200, 200)
         view = QGraphicsView(scene)
         tool = ObfuscateTool()
         tool.activate(scene, view)
 
-        press_event = _make_mouse_event()
+        press_event = make_mouse_event()
         tool.mouse_press(QPointF(10, 10), press_event)
-        move_event = _make_mouse_event()
+        move_event = make_mouse_event()
         tool.mouse_move(QPointF(80, 80), move_event)
 
         assert tool._preview_item is not None, (
@@ -1307,10 +1092,10 @@ class TestObfuscateTool:
         self, qapp,
     ) -> None:
         """After mouse_release the finalized item has _show_border False."""
-        scene, bg = _make_scene_with_background(200, 200)
+        scene, bg = make_scene_with_background(200, 200)
         view = QGraphicsView(scene)
         tool = ObfuscateTool()
-        _simulate_draw(
+        simulate_draw(
             tool, scene, view,
             QPointF(10, 10), QPointF(80, 80),
         )
@@ -1336,12 +1121,12 @@ class TestObfuscateTool:
 class TestCropTool:
     def test_crop_rect_visible_during_drag(self, qapp) -> None:
         """Crop rect is visible during mouse_move (before release)."""
-        scene, bg = _make_scene_with_background(400, 400)
+        scene, bg = make_scene_with_background(400, 400)
         view = QGraphicsView(scene)
         tool = CropTool()
         tool.activate(scene, view)
 
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(10, 10), event)
         tool.mouse_move(QPointF(200, 200), event)
 
@@ -1353,12 +1138,12 @@ class TestCropTool:
         assert rect.height() >= 10, f"Expected rect.height() >= 10, got {rect.height()}"
 
     def test_crop_rect_has_high_zvalue(self, qapp) -> None:
-        scene, bg = _make_scene_with_background(400, 400)
+        scene, bg = make_scene_with_background(400, 400)
         view = QGraphicsView(scene)
         tool = CropTool()
         tool.activate(scene, view)
 
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(10, 10), event)
 
         assert tool._crop_rect_item is not None, (
@@ -1370,12 +1155,12 @@ class TestCropTool:
 
     def test_mouse_release_applies_crop(self, qapp) -> None:
         """Crop is applied immediately on mouse release."""
-        scene, bg = _make_scene_with_background(400, 400)
+        scene, bg = make_scene_with_background(400, 400)
         view = QGraphicsView(scene)
         tool = CropTool()
         tool.activate(scene, view)
 
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(10, 10), event)
         tool.mouse_move(QPointF(200, 200), event)
         tool.mouse_release(QPointF(200, 200), event)
@@ -1394,12 +1179,12 @@ class TestCropTool:
         )
 
     def test_too_small_crop_discarded_on_release(self, qapp) -> None:
-        scene, bg = _make_scene_with_background(400, 400)
+        scene, bg = make_scene_with_background(400, 400)
         view = QGraphicsView(scene)
         tool = CropTool()
         tool.activate(scene, view)
 
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(10, 10), event)
         tool.mouse_move(QPointF(15, 15), event)
         tool.mouse_release(QPointF(15, 15), event)
@@ -1410,12 +1195,12 @@ class TestCropTool:
 
     def test_cancel_crop_clears_ui_during_drag(self, qapp) -> None:
         """Cancel clears the crop rect before mouse release."""
-        scene, bg = _make_scene_with_background(400, 400)
+        scene, bg = make_scene_with_background(400, 400)
         view = QGraphicsView(scene)
         tool = CropTool()
         tool.activate(scene, view)
 
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(10, 10), event)
         tool.mouse_move(QPointF(200, 200), event)
 
@@ -1428,12 +1213,12 @@ class TestCropTool:
         assert tool._origin is None, f"Expected tool._origin to be None, got {tool._origin}"
 
     def test_deactivate_clears_crop_ui(self, qapp) -> None:
-        scene, bg = _make_scene_with_background(400, 400)
+        scene, bg = make_scene_with_background(400, 400)
         view = QGraphicsView(scene)
         tool = CropTool()
         tool.activate(scene, view)
 
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(10, 10), event)
         tool.mouse_move(QPointF(200, 200), event)
 
@@ -1445,12 +1230,12 @@ class TestCropTool:
         assert tool._origin is None, f"Expected tool._origin to be None, got {tool._origin}"
 
     def test_right_click_ignored(self, qapp) -> None:
-        scene, bg = _make_scene_with_background(400, 400)
+        scene, bg = make_scene_with_background(400, 400)
         view = QGraphicsView(scene)
         tool = CropTool()
         tool.activate(scene, view)
 
-        event = _make_mouse_event(button=Qt.MouseButton.RightButton)
+        event = make_mouse_event(button=Qt.MouseButton.RightButton)
         tool.mouse_press(QPointF(10, 10), event)
 
         assert tool._crop_rect_item is None, (
@@ -1458,7 +1243,7 @@ class TestCropTool:
         )
 
     def test_apply_crop_without_selection_does_nothing(self, qapp) -> None:
-        scene, bg = _make_scene_with_background(400, 400)
+        scene, bg = make_scene_with_background(400, 400)
         view = QGraphicsView(scene)
         tool = CropTool()
         tool.activate(scene, view)
@@ -1478,7 +1263,7 @@ class TestCropTool:
         tool = CropTool()
         tool.activate(scene, view)
 
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(10, 10), event)
         tool.mouse_move(QPointF(200, 200), event)
 
@@ -1508,7 +1293,7 @@ class TestSelectTool:
         tool = SelectTool()
         tool.activate(scene, view)
 
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(25, 25), event)
 
         assert rect_item.isSelected(), (
@@ -1533,7 +1318,7 @@ class TestSelectTool:
         tool._drag_items = [rect_item]
         tool._drag_starts = {id(rect_item): rect_item.pos()}
 
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_move(QPointF(75, 75), event)
 
         # Item should have moved by delta (50, 50) from original (10, 10)
@@ -1555,7 +1340,7 @@ class TestSelectTool:
         tool.activate(scene, view)
 
         # First select the item
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(25, 25), event)
         assert rect_item.isSelected(), (
             f"Expected rect_item.isSelected() to be truthy, got {rect_item.isSelected()}"
@@ -1569,13 +1354,13 @@ class TestSelectTool:
         )
 
     def test_ignores_background_item(self, qapp) -> None:
-        scene, bg = _make_scene_with_background(200, 200)
+        scene, bg = make_scene_with_background(200, 200)
         view = QGraphicsView(scene)
 
         tool = SelectTool()
         tool.activate(scene, view)
 
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(50, 50), event)
 
         # Background should NOT be selected (zValue <= -1000)
@@ -1592,7 +1377,7 @@ class TestSelectTool:
         tool = SelectTool()
         tool.activate(scene, view)
 
-        event = _make_mouse_event(button=Qt.MouseButton.RightButton)
+        event = make_mouse_event(button=Qt.MouseButton.RightButton)
         tool.mouse_press(QPointF(25, 25), event)
 
         assert not rect_item.isSelected(), (
@@ -1609,7 +1394,7 @@ class TestSelectTool:
         tool = SelectTool()
         tool.activate(scene, view)
 
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(25, 25), event)
         assert tool._dragging is True, f"Expected tool._dragging to be True, got {tool._dragging}"
 
@@ -1632,7 +1417,7 @@ class TestSelectTool:
         tool.activate(scene, view)
 
         original_pos = rect_item.pos()
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_move(QPointF(75, 75), event)
 
         assert rect_item.pos() == original_pos, (
@@ -1657,7 +1442,7 @@ class TestSelectTool:
         tool._drag_items = [rect_item]
         tool._drag_starts = {id(rect_item): rect_item.pos()}
 
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_move(QPointF(75, 85), event)
 
         # Delta is (50, 60), original pos was (10, 20) → new pos (60, 80)
@@ -1684,7 +1469,7 @@ class TestSelectTool:
         tool.activate(canvas._scene, canvas)
 
         # Click at center of the image — boundary overlaps it
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(100, 100), event)
 
         boundary = canvas._boundary_item
@@ -1720,7 +1505,7 @@ class TestRectangleToolUndo:
         canvas, history = _make_canvas_with_history()
         tool = RectangleTool()
         tool.activate(canvas._scene, canvas)
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(10, 10), event)
         tool.mouse_move(QPointF(100, 100), event)
         tool.mouse_release(QPointF(100, 100), event)
@@ -1747,7 +1532,7 @@ class TestEllipseToolUndo:
         canvas, history = _make_canvas_with_history()
         tool = EllipseTool()
         tool.activate(canvas._scene, canvas)
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(10, 10), event)
         tool.mouse_move(QPointF(100, 100), event)
         tool.mouse_release(QPointF(100, 100), event)
@@ -1768,7 +1553,7 @@ class TestLineToolUndo:
         canvas, history = _make_canvas_with_history()
         tool = LineTool()
         tool.activate(canvas._scene, canvas)
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(10, 10), event)
         tool.mouse_move(QPointF(100, 100), event)
         tool.mouse_release(QPointF(100, 100), event)
@@ -1789,7 +1574,7 @@ class TestHighlightToolUndo:
         canvas, history = _make_canvas_with_history()
         tool = HighlightTool()
         tool.activate(canvas._scene, canvas)
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(10, 10), event)
         tool.mouse_move(QPointF(100, 100), event)
         tool.mouse_release(QPointF(100, 100), event)
@@ -1810,7 +1595,7 @@ class TestFreehandToolUndo:
         canvas, history = _make_canvas_with_history()
         tool = FreehandTool()
         tool.activate(canvas._scene, canvas)
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(10, 10), event)
         tool.mouse_move(QPointF(50, 50), event)
         tool.mouse_move(QPointF(100, 100), event)
@@ -1832,7 +1617,7 @@ class TestArrowToolUndo:
         canvas, history = _make_canvas_with_history()
         tool = ArrowTool()
         tool.activate(canvas._scene, canvas)
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(10, 10), event)
         tool.mouse_move(QPointF(100, 100), event)
         tool.mouse_release(QPointF(100, 100), event)
@@ -1852,7 +1637,7 @@ class TestNumberToolUndo:
         canvas, history = _make_canvas_with_history()
         tool = NumberTool()
         tool.activate(canvas._scene, canvas)
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(50, 50), event)
 
         assert history.can_undo, "Expected undo available after placing number marker"
@@ -1871,7 +1656,7 @@ class TestTextToolUndo:
         canvas, history = _make_canvas_with_history()
         tool = TextTool()
         tool.activate(canvas._scene, canvas)
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(50, 50), event)
 
         texts = [i for i in canvas._scene.items() if isinstance(i, QGraphicsTextItem)]
@@ -1898,7 +1683,7 @@ class TestTextToolFinalizeWithFont:
         tool = TextTool(font=custom_font)
         tool.activate(scene, view)
 
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(30, 30), event)
 
         text_items = [i for i in scene.items() if isinstance(i, QGraphicsTextItem)]
@@ -1919,7 +1704,7 @@ class TestTextToolFinalizeWithFont:
         tool = TextTool()
         tool.activate(scene, view)
 
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(10, 10), event)
         tool._active_item.setPlainText("Hello World")
 
@@ -1950,7 +1735,7 @@ class TestNumberToolAutoIncrement:
         tool = NumberTool()
         tool.activate(scene, view)
 
-        event = _make_mouse_event()
+        event = make_mouse_event()
         for pos in [QPointF(50, 50), QPointF(100, 100), QPointF(150, 150)]:
             tool.mouse_press(pos, event)
 
@@ -1966,7 +1751,7 @@ class TestNumberToolAutoIncrement:
         tool = NumberTool()
         tool.activate(scene, view)
 
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(10, 10), event)
         assert tool._counter == 1, (
             f"Expected counter to be 1 after first placement, got {tool._counter}"
@@ -1993,7 +1778,7 @@ class TestFreehandToolPathPoints:
         tool = FreehandTool()
         tool.activate(scene, view)
 
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(0, 0), event)
 
         move_points = [QPointF(10, 10), QPointF(20, 20), QPointF(30, 30), QPointF(40, 40)]
@@ -2021,7 +1806,7 @@ class TestFreehandToolPathPoints:
         tool = FreehandTool()
         tool.activate(scene, view)
 
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(0, 0), event)
 
         tool.mouse_move(QPointF(20, 20), event)
@@ -2102,7 +1887,7 @@ class TestResolveTopLevelItem:
         tool = SelectTool()
         tool.activate(scene, view)
 
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(15, 15), event)
 
         assert parent.isSelected(), (
@@ -2125,7 +1910,7 @@ class TestSelectToolRubberBand:
         tool = SelectTool()
         tool.activate(scene, view)
 
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(200, 200), event)
 
         assert tool._rubber_banding is True, (
@@ -2148,10 +1933,10 @@ class TestSelectToolRubberBand:
         tool = SelectTool()
         tool.activate(scene, view)
 
-        press_event = _make_mouse_event()
+        press_event = make_mouse_event()
         tool.mouse_press(QPointF(50, 50), press_event)
 
-        move_event = _make_mouse_event()
+        move_event = make_mouse_event()
         tool.mouse_move(QPointF(200, 200), move_event)
 
         rect = tool._rubber_band_rect.rect()
@@ -2186,11 +1971,11 @@ class TestSelectToolRubberBand:
         tool = SelectTool()
         tool.activate(scene, view)
 
-        press_event = _make_mouse_event()
+        press_event = make_mouse_event()
         tool.mouse_press(QPointF(0, 0), press_event)
-        move_event = _make_mouse_event()
+        move_event = make_mouse_event()
         tool.mouse_move(QPointF(100, 100), move_event)
-        release_event = _make_mouse_event()
+        release_event = make_mouse_event()
         tool.mouse_release(QPointF(100, 100), release_event)
 
         assert item1.isSelected(), (
@@ -2212,7 +1997,7 @@ class TestSelectToolRubberBand:
         tool = SelectTool()
         tool.activate(scene, view)
 
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(50, 50), event)
         tool.mouse_move(QPointF(200, 200), event)
         tool.mouse_release(QPointF(200, 200), event)
@@ -2233,7 +2018,7 @@ class TestSelectToolRubberBand:
 
     def test_rubber_band_ignores_background_items(self, qapp) -> None:
         """Rubber band should not select background items."""
-        scene, bg = _make_scene_with_background(200, 200)
+        scene, bg = make_scene_with_background(200, 200)
         scene.setSceneRect(0, 0, 400, 400)
         view = QGraphicsView(scene)
 
@@ -2245,7 +2030,7 @@ class TestSelectToolRubberBand:
         tool = SelectTool()
         tool.activate(scene, view)
 
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(0, 0), event)
         tool.mouse_move(QPointF(300, 300), event)
         tool.mouse_release(QPointF(300, 300), event)
@@ -2292,7 +2077,7 @@ class TestSelectToolSelectAll:
 
     def test_select_all_ignores_background(self, qapp) -> None:
         """select_all should not select background items."""
-        scene, bg = _make_scene_with_background(200, 200)
+        scene, bg = make_scene_with_background(200, 200)
         view = QGraphicsView(scene)
 
         annotation = QGraphicsRectItem(10, 10, 30, 30)
@@ -2367,14 +2152,14 @@ class TestSelectToolCtrlClick:
         tool.activate(scene, view)
 
         # Select first item normally
-        event1 = _make_mouse_event()
+        event1 = make_mouse_event()
         tool.mouse_press(QPointF(25, 25), event1)
         tool.mouse_release(QPointF(25, 25), event1)
 
         assert item1.isSelected(), "Precondition: item1 should be selected"
 
         # Ctrl+click on second item
-        ctrl_event = _make_mouse_event(
+        ctrl_event = make_mouse_event(
             modifiers=Qt.KeyboardModifier.ControlModifier,
         )
         tool.mouse_press(QPointF(125, 125), ctrl_event)
@@ -2407,7 +2192,7 @@ class TestSelectToolCtrlClick:
         item2.setSelected(True)
 
         # Normal click on item1 — should deselect item2
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(25, 25), event)
 
         assert item1.isSelected(), "Clicked item should be selected"
@@ -2429,10 +2214,10 @@ class TestSelectToolCtrlClick:
 class TestObfuscateToolExtendsPastImageBounds:
     def test_drag_past_top_left_allows_negative_position(self, qapp) -> None:
         """Dragging from inside to past top-left should allow negative coordinates."""
-        scene, bg = _make_scene_with_background(100, 100)
+        scene, bg = make_scene_with_background(100, 100)
         view = QGraphicsView(scene)
         tool = ObfuscateTool()
-        _simulate_draw(tool, scene, view, QPointF(50, 50), QPointF(-20, -20))
+        simulate_draw(tool, scene, view, QPointF(50, 50), QPointF(-20, -20))
 
         overlays = [i for i in scene.items() if isinstance(i, ObfuscationItem)]
         assert len(overlays) == 1, (
@@ -2448,10 +2233,10 @@ class TestObfuscateToolExtendsPastImageBounds:
 
     def test_drag_past_top_left_preserves_full_size(self, qapp) -> None:
         """Size should reflect the full drag area (70x70 from (50,50) to (-20,-20))."""
-        scene, bg = _make_scene_with_background(100, 100)
+        scene, bg = make_scene_with_background(100, 100)
         view = QGraphicsView(scene)
         tool = ObfuscateTool()
-        _simulate_draw(tool, scene, view, QPointF(50, 50), QPointF(-20, -20))
+        simulate_draw(tool, scene, view, QPointF(50, 50), QPointF(-20, -20))
 
         overlays = [i for i in scene.items() if isinstance(i, ObfuscationItem)]
         assert len(overlays) == 1, (
@@ -2467,10 +2252,10 @@ class TestObfuscateToolExtendsPastImageBounds:
 
     def test_drag_past_bottom_right_allows_extended_size(self, qapp) -> None:
         """Dragging past bottom-right should create full-size item."""
-        scene, bg = _make_scene_with_background(100, 100)
+        scene, bg = make_scene_with_background(100, 100)
         view = QGraphicsView(scene)
         tool = ObfuscateTool()
-        _simulate_draw(tool, scene, view, QPointF(60, 60), QPointF(150, 150))
+        simulate_draw(tool, scene, view, QPointF(60, 60), QPointF(150, 150))
 
         overlays = [i for i in scene.items() if isinstance(i, ObfuscationItem)]
         assert len(overlays) == 1, (
@@ -2486,10 +2271,10 @@ class TestObfuscateToolExtendsPastImageBounds:
 
     def test_pixmap_offset_when_extending_past_top(self, qapp) -> None:
         """When item extends past top-left, pixmap offset aligns with image region."""
-        scene, bg = _make_scene_with_background(100, 100)
+        scene, bg = make_scene_with_background(100, 100)
         view = QGraphicsView(scene)
         tool = ObfuscateTool()
-        _simulate_draw(tool, scene, view, QPointF(50, 50), QPointF(-20, -20))
+        simulate_draw(tool, scene, view, QPointF(50, 50), QPointF(-20, -20))
 
         overlays = [i for i in scene.items() if isinstance(i, ObfuscationItem)]
         assert len(overlays) == 1, (
@@ -2507,10 +2292,10 @@ class TestObfuscateToolExtendsPastImageBounds:
 
     def test_fully_outside_image_creates_empty_obfuscation(self, qapp) -> None:
         """Dragging entirely outside the image creates an item with empty pixmap."""
-        scene, bg = _make_scene_with_background(100, 100)
+        scene, bg = make_scene_with_background(100, 100)
         view = QGraphicsView(scene)
         tool = ObfuscateTool()
-        _simulate_draw(tool, scene, view, QPointF(-50, -50), QPointF(-10, -10))
+        simulate_draw(tool, scene, view, QPointF(-50, -50), QPointF(-10, -10))
 
         overlays = [i for i in scene.items() if isinstance(i, ObfuscationItem)]
         assert len(overlays) == 1, (
@@ -2530,12 +2315,12 @@ class TestObfuscateToolExtendsPastImageBounds:
 class TestCropToolClampToImageBounds:
     def test_crop_past_bottom_right_clamps_to_image_size(self, qapp) -> None:
         """Crop rect extending beyond image is clamped to image bounds."""
-        scene, bg = _make_scene_with_background(100, 100)
+        scene, bg = make_scene_with_background(100, 100)
         view = QGraphicsView(scene)
         tool = CropTool()
         tool.activate(scene, view)
 
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(10, 10), event)
         tool.mouse_move(QPointF(150, 150), event)
         tool.mouse_release(QPointF(150, 150), event)
@@ -2557,12 +2342,12 @@ class TestCropToolClampToImageBounds:
 
     def test_crop_past_top_left_clamps_to_zero(self, qapp) -> None:
         """Crop starting before (0,0) is clamped to image origin."""
-        scene, bg = _make_scene_with_background(100, 100)
+        scene, bg = make_scene_with_background(100, 100)
         view = QGraphicsView(scene)
         tool = CropTool()
         tool.activate(scene, view)
 
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(-20, -20), event)
         tool.mouse_move(QPointF(50, 50), event)
         tool.mouse_release(QPointF(50, 50), event)
@@ -2580,12 +2365,12 @@ class TestCropToolClampToImageBounds:
 
     def test_crop_entirely_outside_does_nothing(self, qapp) -> None:
         """Crop rect entirely outside the image should not change the background."""
-        scene, bg = _make_scene_with_background(100, 100)
+        scene, bg = make_scene_with_background(100, 100)
         view = QGraphicsView(scene)
         tool = CropTool()
         tool.activate(scene, view)
 
-        event = _make_mouse_event()
+        event = make_mouse_event()
         tool.mouse_press(QPointF(-50, -50), event)
         tool.mouse_move(QPointF(-10, -10), event)
         tool.mouse_release(QPointF(-10, -10), event)
@@ -2608,7 +2393,7 @@ class TestObfuscationItemSetGeometry:
         """set_geometry should update both pos and size atomically."""
         from PySide6.QtCore import QSizeF
 
-        scene, bg = _make_scene_with_background(200, 200)
+        scene, bg = make_scene_with_background(200, 200)
         item = ObfuscationItem(bg, QSizeF(40, 40))
         item.setPos(10, 10)
         scene.addItem(item)
@@ -2637,7 +2422,7 @@ class TestObfuscationItemSetGeometry:
         """_updating_geometry flag should prevent extra refresh from itemChange."""
         from PySide6.QtCore import QSizeF
 
-        scene, bg = _make_scene_with_background(200, 200)
+        scene, bg = make_scene_with_background(200, 200)
         item = ObfuscationItem(bg, QSizeF(40, 40))
         item.setPos(10, 10)
         scene.addItem(item)
@@ -2664,7 +2449,7 @@ class TestObfuscationItemSetGeometry:
         """_updating_geometry should be False after set_geometry completes."""
         from PySide6.QtCore import QSizeF
 
-        scene, bg = _make_scene_with_background(200, 200)
+        scene, bg = make_scene_with_background(200, 200)
         item = ObfuscationItem(bg, QSizeF(40, 40))
         item.setPos(10, 10)
         scene.addItem(item)
@@ -2837,7 +2622,7 @@ class TestObfuscationItemBoundingRect:
         """boundingRect should cover the full item size, not just the pixmap area."""
         from PySide6.QtCore import QSizeF
 
-        scene, bg = _make_scene_with_background(100, 100)
+        scene, bg = make_scene_with_background(100, 100)
         item = ObfuscationItem(bg, QSizeF(80, 60))
         item.setPos(-20, -10)
         item.set_show_border(False)  # Exclude border pen from rect
@@ -2946,7 +2731,7 @@ class TestRectangleMiterJoin:
         scene = QGraphicsScene()
         view = QGraphicsView(scene)
         tool = RectangleTool(stroke_width=8)
-        _simulate_draw(tool, scene, view, QPointF(0, 0), QPointF(100, 100))
+        simulate_draw(tool, scene, view, QPointF(0, 0), QPointF(100, 100))
 
         rects = [i for i in scene.items() if isinstance(i, QGraphicsRectItem)]
         assert len(rects) == 1
@@ -3172,7 +2957,7 @@ class TestLineToolSnap45:
         scene = QGraphicsScene()
         view = QGraphicsView(scene)
         tool = LineTool()
-        _simulate_draw(
+        simulate_draw(
             tool, scene, view, QPointF(0, 0), QPointF(80, 30),
             modifiers=Qt.KeyboardModifier.ShiftModifier,
         )
@@ -3220,7 +3005,7 @@ class TestArrowSnap45:
         from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
         scene = QGraphicsScene()
         view = QGraphicsView(scene)
-        _simulate_draw(
+        simulate_draw(
             ArrowTool(), scene, view, QPointF(0, 0), QPointF(80, 30),
             modifiers=Qt.KeyboardModifier.ShiftModifier,
         )
@@ -3373,7 +3158,7 @@ class TestCropPreservesArrows:
         from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
         from verdiclip.editor.tools.crop import CropTool  # noqa: PLC0415
 
-        scene, _bg = _make_scene_with_background(200, 200)
+        scene, _bg = make_scene_with_background(200, 200)
         view = QGraphicsView(scene)
 
         arrow = ArrowItem(QPointF(20, 20), QPointF(80, 80), QColor("#FF0000"), 2)
@@ -3412,7 +3197,7 @@ class TestCropPreservesArrows:
         """Arrow child items (shaft, head) should not be treated as separate annotations."""
         from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
 
-        scene, _bg = _make_scene_with_background(200, 200)
+        scene, _bg = make_scene_with_background(200, 200)
 
         arrow = ArrowItem(QPointF(10, 10), QPointF(60, 60), QColor("#FF0000"), 2)
         scene.addItem(arrow)
@@ -3493,7 +3278,7 @@ class TestEscKeyBehavior:
         """Non-Select tool + Esc → switch to Select."""
         from verdiclip.editor.tools.line import LineTool  # noqa: PLC0415
 
-        scene, _bg = _make_scene_with_background()
+        scene, _bg = make_scene_with_background()
         from verdiclip.editor.canvas import EditorCanvas  # noqa: PLC0415
         canvas = EditorCanvas()
         canvas.set_image(QPixmap(100, 100))
@@ -3617,9 +3402,7 @@ class TestArrowKeysMove:
 # items selectable but not movable, set_stroke_color, set_stroke_width.
 
 
-import pytest  # noqa: E402
 
-from tests.conftest import make_mouse_event, simulate_draw  # noqa: E402
 
 
 # Tools that use the standard (start, end) draw pattern

@@ -111,6 +111,7 @@ def _deserialise_items(data_list: list[dict]) -> list:
     from PySide6.QtWidgets import (  # noqa: PLC0415
         QGraphicsEllipseItem,
         QGraphicsLineItem,
+        QGraphicsPixmapItem,
         QGraphicsRectItem,
         QGraphicsTextItem,
     )
@@ -134,8 +135,12 @@ def _deserialise_items(data_list: list[dict]) -> list:
             from PySide6.QtCore import QSizeF  # noqa: PLC0415
 
             from verdiclip.editor.tools.obfuscate import ObfuscationItem  # noqa: PLC0415
-            item = ObfuscationItem()
-            item.set_geometry(pos, QSizeF(d["w"], d["h"]))
+            size = QSizeF(d["w"], d["h"])
+            # bg_item is supplied post-deserialisation when added to a scene;
+            # use a 1×1 transparent placeholder so the constructor succeeds.
+            placeholder = QGraphicsPixmapItem()
+            item = ObfuscationItem(placeholder, size)
+            item.setPos(pos)
             items.append(item)
 
         elif t == "number":
