@@ -1066,8 +1066,10 @@ class TestEditorCanvasExport:
 
 class TestEditorCanvasCropKeyHandling:
     def test_enter_calls_apply_crop_on_crop_tool(self, qapp) -> None:
+        from verdiclip.editor.tools.crop import CropTool
+
         canvas = _make_canvas_with_image()
-        mock_tool = MagicMock()
+        mock_tool = MagicMock(spec=CropTool)
         mock_tool.apply_crop = MagicMock()
         canvas._current_tool = mock_tool
 
@@ -1078,9 +1080,12 @@ class TestEditorCanvasCropKeyHandling:
         )
 
     def test_escape_calls_cancel_crop_on_crop_tool(self, qapp) -> None:
+        from verdiclip.editor.tools.crop import CropTool
+
         canvas = _make_canvas_with_image()
-        mock_tool = MagicMock()
+        mock_tool = MagicMock(spec=CropTool)
         mock_tool.cancel_crop = MagicMock()
+        mock_tool._crop_rect_item = MagicMock()  # Simulate an active crop
         canvas._current_tool = mock_tool
 
         event = _make_key_event(Qt.Key.Key_Escape)

@@ -13,13 +13,14 @@ from PySide6.QtWidgets import (
     QGraphicsLineItem,
     QGraphicsPathItem,
     QGraphicsScene,
-    QGraphicsView,
 )
 
 from verdiclip.editor.tools.base import BaseTool
 
 if TYPE_CHECKING:
     from PySide6.QtGui import QMouseEvent
+
+    from verdiclip.editor.canvas import EditorCanvas
 
 logger = logging.getLogger(__name__)
 
@@ -217,7 +218,7 @@ class ArrowTool(BaseTool):
         self._origin: QPointF | None = None
         self._arrow: ArrowItem | None = None
 
-    def activate(self, scene: QGraphicsScene, view: QGraphicsView) -> None:
+    def activate(self, scene: QGraphicsScene, view: EditorCanvas) -> None:
         super().activate(scene, view)
         if view:
             view.setCursor(Qt.CursorShape.CrossCursor)
@@ -242,6 +243,7 @@ class ArrowTool(BaseTool):
             length = QLineF(self._origin, scene_pos).length()
             if length < 5:
                 if self._arrow.scene():
+                    assert self._scene is not None
                     self._scene.removeItem(self._arrow)
             elif self._view and hasattr(self._view, "add_item_undoable"):
                 self._view.add_item_undoable(self._arrow, "Draw arrow")

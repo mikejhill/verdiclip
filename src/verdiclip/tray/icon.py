@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from PySide6.QtWidgets import QApplication
 
     from verdiclip.config import Config
+    from verdiclip.editor.window import EditorWindow
 
 logger = logging.getLogger(__name__)
 
@@ -42,8 +43,8 @@ class TrayIcon(QSystemTrayIcon):
         super().__init__(_create_default_icon(), app)
         self._app = app
         self._config = config
-        self._editors: list = []
-        self._active_capture = None
+        self._editors: list[EditorWindow] = []
+        self._active_capture: object | None = None
         self._last_capture_type: str | None = None
         self._last_region: QRect | None = None
         self._menu = self._build_menu()

@@ -10,6 +10,7 @@ from PySide6.QtGui import QPainter, QPixmap
 from PySide6.QtPrintSupport import QPrintDialog, QPrinter, QPrintPreviewDialog
 
 if TYPE_CHECKING:
+    from PySide6.QtGui import QPageLayout
     from PySide6.QtWidgets import QWidget
 
 logger = logging.getLogger(__name__)
@@ -57,9 +58,9 @@ class PrinterExporter:
         preview.exec()
 
 
-def _best_orientation(width: int, height: int):
+def _best_orientation(width: int, height: int) -> QPageLayout.Orientation:
     """Return the best page orientation for the given image dimensions."""
-    from PySide6.QtGui import QPageLayout
+    from PySide6.QtGui import QPageLayout  # noqa: PLC0415
     if width > height:
         return QPageLayout.Orientation.Landscape
     return QPageLayout.Orientation.Portrait

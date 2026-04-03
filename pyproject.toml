@@ -41,6 +41,7 @@ dev = [
     "pytest-benchmark>=5.0,<6",
     "pytest-cov>=6.0,<7",
     "ruff>=0.9,<1",
+    "pyright>=1.1,<2",
 ]
 
 [project.scripts]
@@ -65,3 +66,13 @@ ignore = ["N802", "N803"]  # Qt overrides use camelCase (e.g., paintEvent, mouse
 testpaths = ["tests"]
 addopts = "-v --tb=short"
 qt_api = "pyside6"
+
+[tool.pyright]
+pythonVersion = "3.12"
+include = ["src"]
+typeCheckingMode = "standard"
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.408",
+]

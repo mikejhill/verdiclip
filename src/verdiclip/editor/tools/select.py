@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QPen
@@ -15,7 +15,9 @@ from verdiclip.editor.tools.handles import HandleRole, ResizeHandle, create_hand
 
 if TYPE_CHECKING:
     from PySide6.QtGui import QMouseEvent
-    from PySide6.QtWidgets import QGraphicsItem, QGraphicsScene, QGraphicsView
+    from PySide6.QtWidgets import QGraphicsItem, QGraphicsScene
+
+    from verdiclip.editor.canvas import EditorCanvas
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +44,7 @@ class SelectTool(BaseTool):
         self._resizing = False
         self._active_handle: ResizeHandle | None = None
         self._resize_start: QPointF | None = None
-        self._resize_old_geometry: dict | None = None
+        self._resize_old_geometry: dict[str, Any] | None = None
 
         # Rubber band
         self._rubber_banding = False
@@ -56,7 +58,7 @@ class SelectTool(BaseTool):
     # Activation
     # ------------------------------------------------------------------
 
-    def activate(self, scene: QGraphicsScene, view: QGraphicsView) -> None:
+    def activate(self, scene: QGraphicsScene, view: EditorCanvas) -> None:
         super().activate(scene, view)
         if view:
             # Unset view-level cursor so QGraphicsItem cursors (e.g., on
@@ -163,6 +165,7 @@ class SelectTool(BaseTool):
         )
         fixed_pos = compute_handle_scene_pos(target, fixed_role)
         if fixed_pos is None:
+            assert self._resize_start is not None
             return scene_pos - self._resize_start
 
         # Snap the cursor position to 45° from the fixed endpoint
@@ -179,6 +182,7 @@ class SelectTool(BaseTool):
         # The current position of the moving handle
         current_pos = compute_handle_scene_pos(target, moving)
         if current_pos is None:
+            assert self._resize_start is not None
             return scene_pos - self._resize_start
         return snapped_pos - current_pos
 
@@ -275,6 +279,8 @@ class SelectTool(BaseTool):
             if can_undo:
                 from verdiclip.editor.history import capture_geometry  # noqa: PLC0415
                 new_geometry = capture_geometry(handle.target)
+                assert self._view is not None
+                assert self._resize_old_geometry is not None
                 self._view.add_resize_undoable(
                     handle.target, self._resize_old_geometry, new_geometry,
                 )
@@ -287,6 +293,7 @@ class SelectTool(BaseTool):
         # Finish rubber band
         if self._rubber_banding and self._rubber_band_rect is not None:
             rect = self._rubber_band_rect.rect()
+            assert self._scene is not None
             for item in self._scene.items(rect, Qt.ItemSelectionMode.IntersectsItemShape):
                 top = _resolve_top_level_item(item)
                 if self._is_annotation(top):

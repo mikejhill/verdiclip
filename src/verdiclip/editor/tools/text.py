@@ -10,7 +10,6 @@ from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QGraphicsScene,
     QGraphicsTextItem,
-    QGraphicsView,
 )
 
 from verdiclip.editor import Z_BACKGROUND
@@ -18,6 +17,8 @@ from verdiclip.editor.tools.base import BaseTool
 
 if TYPE_CHECKING:
     from PySide6.QtGui import QMouseEvent
+
+    from verdiclip.editor.canvas import EditorCanvas
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ class TextTool(BaseTool):
         self._font = font or QFont("Arial", 14)
         self._active_item: QGraphicsTextItem | None = None
 
-    def activate(self, scene: QGraphicsScene, view: QGraphicsView) -> None:
+    def activate(self, scene: QGraphicsScene, view: EditorCanvas) -> None:
         super().activate(scene, view)
         if view:
             view.setCursor(Qt.CursorShape.IBeamCursor)

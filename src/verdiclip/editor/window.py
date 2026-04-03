@@ -10,6 +10,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import (
     QAction,
     QColor,
+    QFont,
     QKeySequence,
     QPixmap,
 )
@@ -35,6 +36,8 @@ from verdiclip.editor.serialization import (
 from verdiclip.editor.toolbar import EditorToolbar, ToolType
 
 if TYPE_CHECKING:
+    from PySide6.QtWidgets import QGraphicsItem
+
     from verdiclip.config import Config
     from verdiclip.editor.tools.base import BaseTool
 
@@ -309,7 +312,7 @@ class EditorWindow(QMainWindow):
         for item in self._canvas.scene.selectedItems():
             _apply_width_to_item(item, width)
 
-    def _update_tool_font(self, font) -> None:
+    def _update_tool_font(self, font: QFont) -> None:
         if self._updating_from_selection:
             return
         tool = self._canvas.current_tool
@@ -461,7 +464,7 @@ class EditorWindow(QMainWindow):
             if isinstance(number_tool, NumberTool):
                 number_tool.show_editor_for(marker)
 
-    def _sync_properties_from_selection(self, selected: list) -> None:
+    def _sync_properties_from_selection(self, selected: list[QGraphicsItem]) -> None:
         """Read properties from the single selected item into the properties panel.
 
         Blocked by ``_updating_from_selection`` to prevent recursive signal loops.

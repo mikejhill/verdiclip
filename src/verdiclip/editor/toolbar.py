@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from enum import Enum, auto
 
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import QPoint, QSize, Qt, Signal
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
@@ -125,9 +125,8 @@ def _create_tool_icon(tool_type: ToolType) -> QIcon:
     return QIcon(pixmap)
 
 
-def _qpoint(x: int, y: int):
+def _qpoint(x: int, y: int) -> QPoint:
     """Helper to create a QPoint for QPolygon."""
-    from PySide6.QtCore import QPoint
     return QPoint(x, y)
 
 

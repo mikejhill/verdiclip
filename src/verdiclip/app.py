@@ -15,6 +15,9 @@ from verdiclip.config import Config
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from verdiclip.hotkeys.manager import HotkeyManager
+    from verdiclip.tray.icon import TrayIcon
+
 logger = logging.getLogger(__name__)
 
 _SHARED_MEMORY_KEY = "VerdiClip_SingleInstance_Lock"
@@ -28,9 +31,9 @@ class VerdiClipApp:
         self._shared_memory = QSharedMemory(_SHARED_MEMORY_KEY)
         self._qt_app: QApplication | None = None
         self._config: Config | None = None
-        self._tray_icon = None
-        self._hotkey_manager = None
-        self._post_init_hooks: list = []
+        self._tray_icon: TrayIcon | None = None
+        self._hotkey_manager: HotkeyManager | None = None
+        self._post_init_hooks: list[Callable[[], None]] = []
 
     def _is_already_running(self) -> bool:
         """Check if another instance is already running via shared memory."""
@@ -96,16 +99,19 @@ class VerdiClipApp:
 
     def _setup_tray(self) -> None:
         """Initialize the system tray icon."""
-        from verdiclip.tray.icon import TrayIcon
+        from verdiclip.tray.icon import TrayIcon  # noqa: PLC0415
 
+        assert self._qt_app is not None
+        assert self._config is not None
         self._tray_icon = TrayIcon(self._qt_app, self._config)
         self._tray_icon.show()
         logger.info("System tray icon initialized.")
 
     def _setup_hotkeys(self) -> None:
         """Initialize global hotkey listener and register capture callbacks."""
-        from verdiclip.hotkeys.manager import HotkeyManager
+        from verdiclip.hotkeys.manager import HotkeyManager  # noqa: PLC0415
 
+        assert self._config is not None
         self._hotkey_manager = HotkeyManager(self._config)
         self._register_hotkeys()
         self._hotkey_manager.start()
@@ -125,7 +131,7 @@ class VerdiClipApp:
             "hotkeys.repeat": self._tray_icon.capture_repeat,
         }
         for config_key, callback in bindings.items():
-            hotkey_str = self._config.get(config_key, "")
+            hotkey_str = self.config.get(config_key, "")
             if hotkey_str:
                 self._hotkey_manager.register(hotkey_str, callback)
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import (
@@ -28,6 +28,7 @@ if TYPE_CHECKING:
         QKeyEvent,
         QMouseEvent,
     )
+    from PySide6.QtWidgets import QGraphicsItem
 
     from verdiclip.editor.history import EditorHistory
     from verdiclip.editor.tools.base import BaseTool
@@ -107,8 +108,9 @@ class EditorCanvas(QGraphicsView):
         self._scene.setSceneRect(expanded)
 
     def crop_undoable(
-        self, new_pixmap: QPixmap, removed_items: list,
-        item_positions: list[tuple], crop_offset: tuple[float, float],
+        self, new_pixmap: QPixmap, removed_items: list[QGraphicsItem],
+        item_positions: list[tuple[QGraphicsItem, float, float]],
+        crop_offset: tuple[float, float],
     ) -> None:
         """Replace the background with a cropped image while keeping undo history."""
         if not self._pixmap_item:
@@ -140,7 +142,7 @@ class EditorCanvas(QGraphicsView):
         self._history.push(cmd)
         logger.info("Crop applied (undoable): %dx%d", new_pixmap.width(), new_pixmap.height())
 
-    def _replace_image(self, pixmap: QPixmap, items: list, *, remove: bool) -> None:
+    def _replace_image(self, pixmap: QPixmap, items: list[QGraphicsItem], *, remove: bool) -> None:
         """Replace the background image during undo/redo of a crop.
 
         Args:
@@ -190,13 +192,15 @@ class EditorCanvas(QGraphicsView):
             cmd = MoveItemCommand(item, old_pos, new_pos)
             self._history.push(cmd)
 
-    def add_moves_undoable(self, moves: list[tuple]) -> None:
+    def add_moves_undoable(self, moves: list[tuple[Any, Any, Any]]) -> None:
         """Record a simultaneous multi-item move as a single undo command."""
         from verdiclip.editor.history import MultipleMoveCommand
         if self._history and moves:
             self._history.push(MultipleMoveCommand(moves))
 
-    def add_resize_undoable(self, item, old_geometry: dict, new_geometry: dict) -> None:
+    def add_resize_undoable(
+        self, item: QGraphicsItem, old_geometry: dict[str, Any], new_geometry: dict[str, Any],
+    ) -> None:
         """Record an item resize on the undo stack."""
         from verdiclip.editor.history import ResizeItemCommand
         if self._history:
@@ -298,18 +302,18 @@ class EditorCanvas(QGraphicsView):
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
             self._delete_selected_items()
         elif event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-            if self._current_tool and hasattr(self._current_tool, "apply_crop"):
+            from verdiclip.editor.tools.crop import CropTool  # noqa: PLC0415
+            if isinstance(self._current_tool, CropTool):
                 self._current_tool.apply_crop()
         elif event.key() == Qt.Key.Key_Escape:
+            from verdiclip.editor.tools.crop import CropTool as CropTool_  # noqa: PLC0415
             from verdiclip.editor.tools.select import SelectTool  # noqa: PLC0415
 
             is_select = isinstance(self._current_tool, SelectTool)
 
             # Cancel active crop UI if present
             if (
-                self._current_tool
-                and hasattr(self._current_tool, "cancel_crop")
-                and hasattr(self._current_tool, "_crop_rect_item")
+                isinstance(self._current_tool, CropTool_)
                 and self._current_tool._crop_rect_item is not None
             ):
                 self._current_tool.cancel_crop()
@@ -430,7 +434,7 @@ class EditorCanvas(QGraphicsView):
         return self._zoom_level
 
     @property
-    def scene(self) -> QGraphicsScene:
+    def scene(self) -> QGraphicsScene:  # pyright: ignore[reportIncompatibleMethodOverride]
         return self._scene
 
     @property

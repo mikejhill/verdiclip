@@ -11,7 +11,6 @@ from PySide6.QtWidgets import (
     QGraphicsPixmapItem,
     QGraphicsRectItem,
     QGraphicsScene,
-    QGraphicsView,
 )
 
 from verdiclip.editor import Z_BACKGROUND, Z_BOUNDARY, Z_CROP_OVERLAY
@@ -19,6 +18,8 @@ from verdiclip.editor.tools.base import BaseTool
 
 if TYPE_CHECKING:
     from PySide6.QtGui import QMouseEvent
+
+    from verdiclip.editor.canvas import EditorCanvas
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ class CropTool(BaseTool):
         self._crop_rect_item: QGraphicsRectItem | None = None
         self._dim_items: list[QGraphicsRectItem] = []
 
-    def activate(self, scene: QGraphicsScene, view: QGraphicsView) -> None:
+    def activate(self, scene: QGraphicsScene, view: EditorCanvas) -> None:
         super().activate(scene, view)
         if view:
             view.setCursor(Qt.CursorShape.CrossCursor)

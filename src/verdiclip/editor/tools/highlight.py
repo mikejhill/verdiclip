@@ -7,12 +7,14 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QBrush, QColor, QPen
-from PySide6.QtWidgets import QGraphicsRectItem, QGraphicsScene, QGraphicsView
+from PySide6.QtWidgets import QGraphicsRectItem, QGraphicsScene
 
 from verdiclip.editor.tools.base import BaseTool
 
 if TYPE_CHECKING:
     from PySide6.QtGui import QMouseEvent
+
+    from verdiclip.editor.canvas import EditorCanvas
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +30,7 @@ class HighlightTool(BaseTool):
         self._origin: QPointF | None = None
         self._current_item: QGraphicsRectItem | None = None
 
-    def activate(self, scene: QGraphicsScene, view: QGraphicsView) -> None:
+    def activate(self, scene: QGraphicsScene, view: EditorCanvas) -> None:
         super().activate(scene, view)
         if view:
             view.setCursor(Qt.CursorShape.CrossCursor)

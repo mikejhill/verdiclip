@@ -92,6 +92,16 @@ uv run ruff check src/ tests/
 uv run ruff check src/ tests/ --fix
 ```
 
+## Type Checking
+
+Pyright (the same engine behind Pylance in VS Code) is used for static type analysis:
+
+```bash
+uv run pyright src/
+```
+
+This runs in `standard` mode against `src/` only. The configuration is in `pyproject.toml` under `[tool.pyright]`.
+
 ## Architecture
 
 ### Key Design Decisions
@@ -139,4 +149,5 @@ Hotkey/Tray → Capture → QPixmap → EditorWindow → Tools/Canvas → Export
 3. Make your changes (keep commits small and focused)
 4. Run tests: `uv run pytest`
 5. Run linter: `uv run ruff check src/ tests/`
-6. Submit a pull request
+6. Run type checker: `uv run pyright src/`
+7. Submit a pull request

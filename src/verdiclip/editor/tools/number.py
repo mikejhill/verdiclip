@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
     QGraphicsItem,
     QGraphicsScene,
     QGraphicsSimpleTextItem,
-    QGraphicsView,
     QLineEdit,
 )
 
@@ -21,6 +20,8 @@ from verdiclip.editor.tools.base import BaseTool
 
 if TYPE_CHECKING:
     from PySide6.QtGui import QMouseEvent
+
+    from verdiclip.editor.canvas import EditorCanvas
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +90,7 @@ class NumberTool(BaseTool):
         self._last_numeric_value = 0
         self._active_editor: QLineEdit | None = None
 
-    def activate(self, scene: QGraphicsScene, view: QGraphicsView) -> None:
+    def activate(self, scene: QGraphicsScene, view: EditorCanvas) -> None:
         super().activate(scene, view)
         if view:
             view.setCursor(Qt.CursorShape.CrossCursor)
@@ -118,6 +119,7 @@ class NumberTool(BaseTool):
     def _place_marker(self, center: QPointF, value: str) -> None:
         """Place a numbered circle marker at the given position."""
         marker = NumberMarkerItem(value, self._bg_color, self._text_color)
+        assert self._scene is not None
         self._scene.addItem(marker)
         marker.setPos(center)
         if self._view and hasattr(self._view, "add_item_undoable"):

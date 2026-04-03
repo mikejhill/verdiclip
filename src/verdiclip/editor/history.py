@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from PySide6.QtGui import QUndoCommand, QUndoStack
 
 if TYPE_CHECKING:
+    from PySide6.QtGui import QPixmap
     from PySide6.QtWidgets import QGraphicsItem, QGraphicsScene
+
+    from verdiclip.editor.canvas import EditorCanvas
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +19,9 @@ logger = logging.getLogger(__name__)
 class AddItemCommand(QUndoCommand):
     """Command to add a graphics item to the scene."""
 
-    def __init__(self, scene: QGraphicsScene, item: QGraphicsItem, description: str = "Add item"):
+    def __init__(
+        self, scene: QGraphicsScene, item: QGraphicsItem, description: str = "Add item",
+    ) -> None:
         super().__init__(description)
         self._scene = scene
         self._item = item
@@ -77,7 +82,7 @@ class MultipleMoveCommand(QUndoCommand):
 
     def __init__(
         self,
-        moves: list[tuple],
+        moves: list[tuple[Any, Any, Any]],
         description: str = "Move items",
     ):
         """Initialise with a list of ``(item, old_pos, new_pos)`` tuples.
@@ -114,11 +119,11 @@ class ResizeItemCommand(QUndoCommand):
 
     def __init__(
         self,
-        item,
-        old_geometry: dict,
-        new_geometry: dict,
+        item: QGraphicsItem,
+        old_geometry: dict[str, Any],
+        new_geometry: dict[str, Any],
         description: str = "Resize item",
-    ):
+    ) -> None:
         super().__init__(description)
         self._item = item
         self._old = old_geometry
@@ -131,7 +136,7 @@ class ResizeItemCommand(QUndoCommand):
         _apply_geometry(self._item, self._old)
 
 
-def capture_geometry(item) -> dict:
+def capture_geometry(item: QGraphicsItem) -> dict[str, Any]:
     """Return a geometry snapshot for *item* suitable for ``ResizeItemCommand``."""
     from PySide6.QtWidgets import QGraphicsEllipseItem, QGraphicsLineItem, QGraphicsRectItem
 
@@ -164,7 +169,7 @@ def capture_geometry(item) -> dict:
     return {}
 
 
-def _apply_geometry(item, geometry: dict) -> None:
+def _apply_geometry(item: Any, geometry: dict[str, Any]) -> None:
     """Apply a geometry snapshot to *item*."""
     gtype = geometry.get("type")
     if gtype == "arrow":
@@ -191,14 +196,14 @@ class CropCommand(QUndoCommand):
 
     def __init__(
         self,
-        canvas,
-        old_pixmap,
-        new_pixmap,
-        removed_items: list,
-        item_positions: list[tuple],
+        canvas: EditorCanvas,
+        old_pixmap: QPixmap,
+        new_pixmap: QPixmap,
+        removed_items: list[QGraphicsItem],
+        item_positions: list[tuple[QGraphicsItem, float, float]],
         crop_offset: tuple[float, float],
         description: str = "Crop image",
-    ):
+    ) -> None:
         super().__init__(description)
         self._canvas = canvas
         self._old_pixmap = old_pixmap

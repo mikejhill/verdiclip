@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QBrush, QColor
+
+if TYPE_CHECKING:
+    from PySide6.QtWidgets import QGraphicsItem
 
 # ---------------------------------------------------------------------------
 # Element serialisation helpers (for copy-paste)
 # ---------------------------------------------------------------------------
 
-def _serialise_items(items: list) -> list[dict]:
+def _serialise_items(items: list[QGraphicsItem]) -> list[dict[str, Any]]:
     """Convert scene items into serialisable dicts for the internal clipboard."""
     from PySide6.QtWidgets import (  # noqa: PLC0415
         QGraphicsEllipseItem,
@@ -17,9 +22,9 @@ def _serialise_items(items: list) -> list[dict]:
         QGraphicsRectItem,
         QGraphicsTextItem,
     )
-    result: list[dict] = []
+    result: list[dict[str, Any]] = []
     for item in items:
-        data: dict = {"pos_x": item.pos().x(), "pos_y": item.pos().y()}
+        data: dict[str, Any] = {"pos_x": item.pos().x(), "pos_y": item.pos().y()}
 
         try:
             from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
@@ -104,7 +109,7 @@ def _serialise_items(items: list) -> list[dict]:
     return result
 
 
-def _deserialise_items(data_list: list[dict]) -> list:
+def _deserialise_items(data_list: list[dict[str, Any]]) -> list[QGraphicsItem]:
     """Reconstruct scene items from serialised dicts."""
     from PySide6.QtCore import QLineF, QPointF, QRectF  # noqa: PLC0415
     from PySide6.QtGui import QFont, QPen  # noqa: PLC0415
@@ -115,7 +120,7 @@ def _deserialise_items(data_list: list[dict]) -> list:
         QGraphicsRectItem,
         QGraphicsTextItem,
     )
-    items: list = []
+    items: list[QGraphicsItem] = []
     for d in data_list:
         t = d.get("type")
         pos = QPointF(d.get("pos_x", 0), d.get("pos_y", 0))

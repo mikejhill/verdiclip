@@ -243,6 +243,7 @@ class RegionCapture:
     ) -> None:
         """Show the region selection overlay."""
         self._selector = RegionSelector()
+        selector = self._selector
 
         if on_captured:
             def handle_region(rect: QRect) -> None:
@@ -250,8 +251,8 @@ class RegionCapture:
                 # Crop from the frozen background captured when the overlay appeared,
                 # so the user gets exactly the pixels they saw during selection — even
                 # if on-screen content changed while they were drawing the region.
-                bg = self._selector.background
-                offset = self._selector.virtual_offset
+                bg = selector.background
+                offset = selector.virtual_offset
                 if bg and not bg.isNull():
                     widget_rect = rect.translated(-offset)
                     pixmap = bg.copy(widget_rect)

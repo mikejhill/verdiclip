@@ -91,12 +91,12 @@ class HotkeyManager:
     def __init__(self, config: Config) -> None:
         self._config = config
         self._listener: keyboard.Listener | None = None
-        self._callbacks: dict[frozenset, Callable] = {}
+        self._callbacks: dict[frozenset[keyboard.Key | keyboard.KeyCode], Callable[[], None]] = {}
         self._pressed_keys: set[keyboard.Key | keyboard.KeyCode] = set()
         self._thread: threading.Thread | None = None
         self._relay = _CallbackRelay()
 
-    def register(self, hotkey_str: str, callback: Callable) -> None:
+    def register(self, hotkey_str: str, callback: Callable[[], None]) -> None:
         """Register a callback for a hotkey string.
 
         Args:
@@ -130,8 +130,10 @@ class HotkeyManager:
             return keyboard.Key.cmd
         return key
 
-    def _on_press(self, key: keyboard.Key | keyboard.KeyCode) -> None:
+    def _on_press(self, key: keyboard.Key | keyboard.KeyCode | None) -> None:
         """Handle key press events."""
+        if key is None:
+            return
         normalized = self._normalize_key(key)
         self._pressed_keys.add(normalized)
 
@@ -141,8 +143,10 @@ class HotkeyManager:
                 logger.debug("Hotkey triggered: %s", hotkey_keys)
                 self._relay.schedule(callback)
 
-    def _on_release(self, key: keyboard.Key | keyboard.KeyCode) -> None:
+    def _on_release(self, key: keyboard.Key | keyboard.KeyCode | None) -> None:
         """Handle key release events."""
+        if key is None:
+            return
         normalized = self._normalize_key(key)
         self._pressed_keys.discard(normalized)
 

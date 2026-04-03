@@ -7,12 +7,14 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QBrush, QColor, QPen
-from PySide6.QtWidgets import QGraphicsRectItem, QGraphicsScene, QGraphicsView
+from PySide6.QtWidgets import QGraphicsRectItem, QGraphicsScene
 
 from verdiclip.editor.tools.base import BaseTool
 
 if TYPE_CHECKING:
     from PySide6.QtGui import QMouseEvent
+
+    from verdiclip.editor.canvas import EditorCanvas
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +35,7 @@ class RectangleTool(BaseTool):
         self._origin: QPointF | None = None
         self._current_item: QGraphicsRectItem | None = None
 
-    def activate(self, scene: QGraphicsScene, view: QGraphicsView) -> None:
+    def activate(self, scene: QGraphicsScene, view: EditorCanvas) -> None:
         super().activate(scene, view)
         if view:
             view.setCursor(Qt.CursorShape.CrossCursor)
@@ -74,6 +76,7 @@ class RectangleTool(BaseTool):
         if self._current_item:
             rect = self._current_item.rect()
             if rect.width() < 3 and rect.height() < 3:
+                assert self._scene is not None
                 self._scene.removeItem(self._current_item)
             else:
                 if self._view and hasattr(self._view, "add_item_undoable"):

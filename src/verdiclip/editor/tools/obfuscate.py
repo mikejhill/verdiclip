@@ -10,11 +10,10 @@ import logging
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QPointF, QRect, QRectF, QSizeF, Qt
-from PySide6.QtGui import QColor, QPen, QPixmap
+from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QGraphicsPixmapItem,
     QGraphicsScene,
-    QGraphicsView,
 )
 
 from verdiclip.editor import Z_BACKGROUND
@@ -22,6 +21,9 @@ from verdiclip.editor.tools.base import BaseTool
 
 if TYPE_CHECKING:
     from PySide6.QtGui import QMouseEvent
+    from PySide6.QtWidgets import QStyleOptionGraphicsItem, QWidget
+
+    from verdiclip.editor.canvas import EditorCanvas
 
 logger = logging.getLogger(__name__)
 
@@ -77,14 +79,17 @@ class ObfuscationItem(QGraphicsPixmapItem):
             return base.adjusted(-pw, -pw, pw, pw)
         return base
 
-    def paint(self, painter, option, widget=None) -> None:
+    def paint(
+        self, painter: QPainter, option: QStyleOptionGraphicsItem,
+        widget: QWidget | None = None,
+    ) -> None:
         """Draw the pixelated pixmap with a dashed border."""
-        super().paint(painter, option, widget)
+        super().paint(painter, option, widget)  # pyright: ignore[reportArgumentType]
         if self._show_border:
             painter.setPen(self._border_pen)
             painter.drawRect(QRectF(0, 0, self._size.width(), self._size.height()))
 
-    def itemChange(self, change, value):  # noqa: N802
+    def itemChange(self, change: QGraphicsPixmapItem.GraphicsItemChange, value: object) -> object:  # noqa: N802
         if (
             change == QGraphicsPixmapItem.GraphicsItemChange.ItemPositionHasChanged
             and not self._updating_geometry
@@ -123,7 +128,7 @@ class ObfuscateTool(BaseTool):
         self._origin: QPointF | None = None
         self._preview_item: ObfuscationItem | None = None
 
-    def activate(self, scene: QGraphicsScene, view: QGraphicsView) -> None:
+    def activate(self, scene: QGraphicsScene, view: EditorCanvas) -> None:
         super().activate(scene, view)
         if view:
             view.setCursor(Qt.CursorShape.CrossCursor)

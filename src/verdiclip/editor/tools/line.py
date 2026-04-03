@@ -8,12 +8,14 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QLineF, QPointF, Qt
 from PySide6.QtGui import QColor, QPen
-from PySide6.QtWidgets import QGraphicsLineItem, QGraphicsScene, QGraphicsView
+from PySide6.QtWidgets import QGraphicsLineItem, QGraphicsScene
 
 from verdiclip.editor.tools.base import BaseTool
 
 if TYPE_CHECKING:
     from PySide6.QtGui import QMouseEvent
+
+    from verdiclip.editor.canvas import EditorCanvas
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +34,7 @@ class LineTool(BaseTool):
         self._origin: QPointF | None = None
         self._current_item: QGraphicsLineItem | None = None
 
-    def activate(self, scene: QGraphicsScene, view: QGraphicsView) -> None:
+    def activate(self, scene: QGraphicsScene, view: EditorCanvas) -> None:
         super().activate(scene, view)
         if view:
             view.setCursor(Qt.CursorShape.CrossCursor)
@@ -58,6 +60,7 @@ class LineTool(BaseTool):
         if self._current_item:
             line = self._current_item.line()
             if line.length() < 3:
+                assert self._scene is not None
                 self._scene.removeItem(self._current_item)
             elif self._view and hasattr(self._view, "add_item_undoable"):
                 self._view.add_item_undoable(self._current_item, "Draw line")
