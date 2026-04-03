@@ -234,7 +234,7 @@ def _handle_open(args: argparse.Namespace) -> int:
         return 1
 
     from verdiclip.config import Config
-    from verdiclip.editor.canvas import EditorWindow
+    from verdiclip.editor.window import EditorWindow
 
     config = Config()
     editor = EditorWindow(pixmap, config)

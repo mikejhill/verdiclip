@@ -418,7 +418,7 @@ class TestOpenSubcommand:
         parser = build_parser()
         args = parser.parse_args(["open", str(img)])
         with (
-            patch("verdiclip.editor.canvas.EditorWindow") as mock_ew,
+            patch("verdiclip.editor.window.EditorWindow") as mock_ew,
             patch("PySide6.QtWidgets.QApplication.exec", return_value=0),
         ):
             result = run_cli(args)

@@ -107,7 +107,7 @@ class TestCaptureWindow:
         mock_pixmap.isNull.return_value = False
         mock_editor = MagicMock()
         with patch("verdiclip.capture.window.WindowCapture") as mock_wc, \
-             patch("verdiclip.editor.canvas.EditorWindow", return_value=mock_editor):
+             patch("verdiclip.editor.window.EditorWindow", return_value=mock_editor):
             mock_wc.capture_active_window.return_value = mock_pixmap
             icon.capture_window()
             mock_wc.capture_active_window.assert_called_once()
@@ -119,7 +119,7 @@ class TestCaptureWindow:
         mock_pixmap = MagicMock(spec=QPixmap)
         mock_pixmap.isNull.return_value = False
         with patch("verdiclip.capture.window.WindowCapture") as mock_wc, \
-             patch("verdiclip.editor.canvas.EditorWindow"):
+             patch("verdiclip.editor.window.EditorWindow"):
             mock_wc.capture_active_window.return_value = mock_pixmap
             icon.capture_window()
             call_kwargs = mock_wc.capture_active_window.call_args
@@ -136,7 +136,7 @@ class TestCaptureScreen:
         mock_pixmap.isNull.return_value = False
         mock_editor = MagicMock()
         with patch("verdiclip.capture.screen.ScreenCapture") as mock_sc, \
-             patch("verdiclip.editor.canvas.EditorWindow", return_value=mock_editor):
+             patch("verdiclip.editor.window.EditorWindow", return_value=mock_editor):
             mock_sc.capture_all_monitors.return_value = mock_pixmap
             icon.capture_screen()
             mock_sc.capture_all_monitors.assert_called_once()
@@ -149,7 +149,7 @@ class TestOpenEditor:
         icon = TrayIcon(app, tmp_config)
         mock_pixmap = MagicMock(spec=QPixmap)
         mock_editor = MagicMock()
-        with patch("verdiclip.editor.canvas.EditorWindow", return_value=mock_editor):
+        with patch("verdiclip.editor.window.EditorWindow", return_value=mock_editor):
             icon._open_editor(mock_pixmap)
             mock_editor.show.assert_called_once()
 
@@ -157,7 +157,7 @@ class TestOpenEditor:
         app = QApplication.instance()
         icon = TrayIcon(app, tmp_config)
         mock_editor = MagicMock()
-        with patch("verdiclip.editor.canvas.EditorWindow", return_value=mock_editor):
+        with patch("verdiclip.editor.window.EditorWindow", return_value=mock_editor):
             icon._open_editor(MagicMock(spec=QPixmap))
             assert mock_editor in icon._editors, (
                 f"Expected editor in _editors list, got {icon._editors}"
@@ -176,7 +176,7 @@ class TestOpenImage:
                 return_value=("test.png", ""),
             ),
             patch("verdiclip.tray.icon.QPixmap", return_value=mock_pixmap),
-            patch("verdiclip.editor.canvas.EditorWindow") as mock_ew,
+            patch("verdiclip.editor.window.EditorWindow") as mock_ew,
         ):
             icon._open_image()
             mock_ew.assert_called_once()
@@ -189,7 +189,7 @@ class TestOpenImage:
                 "PySide6.QtWidgets.QFileDialog.getOpenFileName",
                 return_value=("", ""),
             ),
-            patch("verdiclip.editor.canvas.EditorWindow") as mock_ew,
+            patch("verdiclip.editor.window.EditorWindow") as mock_ew,
         ):
             icon._open_image()
             mock_ew.assert_not_called()
@@ -205,7 +205,7 @@ class TestOpenImage:
                 return_value=("bad.png", ""),
             ),
             patch("verdiclip.tray.icon.QPixmap", return_value=mock_pixmap),
-            patch("verdiclip.editor.canvas.EditorWindow") as mock_ew,
+            patch("verdiclip.editor.window.EditorWindow") as mock_ew,
         ):
             icon._open_image()
             mock_ew.assert_not_called()
@@ -276,7 +276,7 @@ class TestAutoSave:
         mock_pixmap.isNull.return_value = False
         with (
             patch("verdiclip.export.file_export.FileExporter") as mock_exporter,
-            patch("verdiclip.editor.canvas.EditorWindow") as mock_ew,
+            patch("verdiclip.editor.window.EditorWindow") as mock_ew,
         ):
             mock_exporter.auto_save.return_value = "C:\\saved.png"
             mock_ew.return_value = MagicMock()
@@ -294,7 +294,7 @@ class TestAutoSave:
         mock_pixmap.isNull.return_value = False
         with (
             patch("verdiclip.export.file_export.FileExporter") as mock_exporter,
-            patch("verdiclip.editor.canvas.EditorWindow") as mock_ew,
+            patch("verdiclip.editor.window.EditorWindow") as mock_ew,
         ):
             mock_ew.return_value = MagicMock()
             icon._handle_capture(mock_pixmap)
@@ -312,7 +312,7 @@ class TestAutoSave:
         mock_editor = MagicMock()
         with (
             patch("verdiclip.export.file_export.FileExporter") as mock_exporter,
-            patch("verdiclip.editor.canvas.EditorWindow", return_value=mock_editor),
+            patch("verdiclip.editor.window.EditorWindow", return_value=mock_editor),
         ):
             mock_exporter.auto_save.return_value = "C:\\saved.png"
             icon._handle_capture(mock_pixmap)
@@ -330,7 +330,7 @@ class TestAutoSave:
         mock_editor = MagicMock()
         with (
             patch("verdiclip.export.file_export.FileExporter"),
-            patch("verdiclip.editor.canvas.EditorWindow", return_value=mock_editor),
+            patch("verdiclip.editor.window.EditorWindow", return_value=mock_editor),
         ):
             icon._handle_capture(mock_pixmap)
             mock_editor.show.assert_called_once(), (

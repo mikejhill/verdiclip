@@ -9,8 +9,9 @@ from PySide6.QtCore import QPoint, QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QKeyEvent, QMouseEvent, QPixmap, QWheelEvent
 from PySide6.QtWidgets import QGraphicsItem, QGraphicsPixmapItem, QGraphicsScene
 
-from verdiclip.editor.canvas import EditorCanvas, EditorWindow
+from verdiclip.editor.canvas import EditorCanvas
 from verdiclip.editor.toolbar import ToolType
+from verdiclip.editor.window import EditorWindow
 
 # ---------------------------------------------------------------------------
 # EditorCanvas
@@ -414,7 +415,7 @@ class TestEditorCanvasMouseReleaseEvent:
 
 
 class TestEditorWindowOpenFile:
-    @patch("verdiclip.editor.canvas.QFileDialog.getOpenFileName")
+    @patch("verdiclip.editor.window.QFileDialog.getOpenFileName")
     def test_opens_and_loads_image(
         self, mock_dialog, qapp, tmp_config, tmp_path,
     ) -> None:
@@ -435,7 +436,7 @@ class TestEditorWindowOpenFile:
             f"Expected scene width > 80 (includes margin) after open, got {rect.width()}"
         )
 
-    @patch("verdiclip.editor.canvas.QFileDialog.getOpenFileName")
+    @patch("verdiclip.editor.window.QFileDialog.getOpenFileName")
     def test_cancelled_dialog_does_nothing(
         self, mock_dialog, qapp, tmp_config,
     ) -> None:
@@ -1855,7 +1856,7 @@ class TestEditorCanvasElementCopyPaste:
         from PySide6.QtGui import QBrush, QPen
         from PySide6.QtWidgets import QGraphicsRectItem
 
-        from verdiclip.editor.canvas import (
+        from verdiclip.editor.serialization import (
             _deserialise_items,
             _serialise_items,
         )
@@ -1880,7 +1881,7 @@ class TestEditorCanvasElementCopyPaste:
 
     def test_serialise_deserialise_arrow_round_trip(self, qapp) -> None:
         """An ArrowItem should survive serialise → deserialise round-trip."""
-        from verdiclip.editor.canvas import (
+        from verdiclip.editor.serialization import (
             _deserialise_items,
             _serialise_items,
         )
@@ -1905,7 +1906,7 @@ class TestEditorCanvasElementCopyPaste:
         from PySide6.QtWidgets import QGraphicsRectItem
 
         from verdiclip.editor import Z_BACKGROUND, Z_BOUNDARY
-        from verdiclip.editor.canvas import _serialise_items
+        from verdiclip.editor.serialization import _serialise_items
 
         window = EditorWindow(QPixmap(200, 200), tmp_config)
         canvas = window._canvas

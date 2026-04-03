@@ -216,7 +216,7 @@ class TrayIcon(QSystemTrayIcon):
 
     def _open_editor(self, pixmap: QPixmap, file_path: str = "") -> None:
         """Open the editor with a captured image."""
-        from verdiclip.editor.canvas import EditorWindow
+        from verdiclip.editor.window import EditorWindow
 
         editor = EditorWindow(pixmap, self._config, file_path=file_path)
         editor.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
