@@ -307,12 +307,26 @@ class EditorCanvas(QGraphicsView):
             if self._current_tool and hasattr(self._current_tool, "apply_crop"):
                 self._current_tool.apply_crop()
         elif event.key() == Qt.Key.Key_Escape:
-            if self._current_tool and hasattr(self._current_tool, "cancel_crop"):
+            from verdiclip.editor.tools.select import SelectTool  # noqa: PLC0415
+
+            is_select = isinstance(self._current_tool, SelectTool)
+
+            # Cancel active crop UI if present
+            if (
+                self._current_tool
+                and hasattr(self._current_tool, "cancel_crop")
+                and hasattr(self._current_tool, "_crop_rect_item")
+                and self._current_tool._crop_rect_item is not None
+            ):
                 self._current_tool.cancel_crop()
-            elif self._scene.selectedItems():
+            # Select tool: deselect any selected items
+            elif is_select and self._scene.selectedItems():
                 for item in self._scene.selectedItems():
                     item.setSelected(False)
-            else:
+            # Non-Select tool (or no tool): deselect and switch to Select
+            elif not is_select:
+                for item in self._scene.selectedItems():
+                    item.setSelected(False)
                 self.switch_to_select_requested.emit()
         elif (
             event.key() == Qt.Key.Key_A
@@ -510,8 +524,8 @@ class EditorWindow(QMainWindow):
 
         file_menu.addSeparator()
 
-        copy_action = QAction("&Copy to Clipboard", self)
-        copy_action.setShortcut(QKeySequence.StandardKey.Copy)
+        copy_action = QAction("Copy Image to &Clipboard", self)
+        copy_action.setShortcut(QKeySequence("Ctrl+Shift+C"))
         copy_action.triggered.connect(self._copy_to_clipboard)
         file_menu.addAction(copy_action)
 
@@ -539,6 +553,18 @@ class EditorWindow(QMainWindow):
         redo_action.setShortcut(QKeySequence.StandardKey.Redo)
         redo_action.triggered.connect(self._history.redo)
         edit_menu.addAction(redo_action)
+
+        edit_menu.addSeparator()
+
+        copy_el_action = QAction("&Copy", self)
+        copy_el_action.setShortcut(QKeySequence.StandardKey.Copy)
+        copy_el_action.triggered.connect(self._copy_elements)
+        edit_menu.addAction(copy_el_action)
+
+        paste_el_action = QAction("&Paste", self)
+        paste_el_action.setShortcut(QKeySequence.StandardKey.Paste)
+        paste_el_action.triggered.connect(self._paste_elements)
+        edit_menu.addAction(paste_el_action)
 
         edit_menu.addSeparator()
 
@@ -812,8 +838,12 @@ class EditorWindow(QMainWindow):
             else:
                 select_tool.clear_handles()
 
-        # Read back properties from a single selected item
-        self._sync_properties_from_selection(selected)
+        if selected:
+            # Read back properties from a single selected item
+            self._sync_properties_from_selection(selected)
+        else:
+            # No selection → restore default toolbar for the current tool
+            self._update_properties_visibility(self._toolbar.current_tool)
 
     def _on_number_editor_requested(self, marker) -> None:
         """Open inline editor for a NumberMarkerItem on double-click."""
@@ -891,11 +921,20 @@ class EditorWindow(QMainWindow):
             self._updating_from_selection = False
 
     def _update_properties_visibility(self, tool_type: ToolType) -> None:
-        """Show or hide properties based on the active tool type."""
-        show_stroke = tool_type not in (ToolType.SELECT, ToolType.CROP, ToolType.OBFUSCATE)
+        """Show or hide properties based on the active tool type.
+
+        The SELECT tool shows stroke, fill, and width so users can configure
+        defaults for new elements even when nothing is selected.
+        """
+        if tool_type == ToolType.SELECT:
+            self._properties.set_visible_properties(
+                stroke=True, fill=True, width=True, font=False, caps=False,
+            )
+            return
+        show_stroke = tool_type not in (ToolType.CROP, ToolType.OBFUSCATE)
         show_fill = tool_type in (ToolType.RECTANGLE, ToolType.ELLIPSE, ToolType.HIGHLIGHT)
         show_width = tool_type not in (
-            ToolType.SELECT, ToolType.CROP, ToolType.OBFUSCATE,
+            ToolType.CROP, ToolType.OBFUSCATE,
             ToolType.TEXT, ToolType.NUMBER,
         )
         show_font = tool_type in (ToolType.TEXT, ToolType.NUMBER)
@@ -978,9 +1017,227 @@ class EditorWindow(QMainWindow):
         ClipboardExporter.copy(self._canvas.get_flattened_pixmap())
         self._statusbar.showMessage("Copied to clipboard", 3000)
 
+    # ------------------------------------------------------------------
+    # Element copy / paste
+    # ------------------------------------------------------------------
+
+    def _copy_elements(self) -> None:
+        """Duplicate selected annotation elements into an internal clipboard."""
+        selected = self._canvas.scene.selectedItems()
+        if not selected:
+            self._statusbar.showMessage("Nothing selected to copy", 2000)
+            return
+        self._element_clipboard = _serialise_items(selected)
+        n = len(self._element_clipboard)
+        self._statusbar.showMessage(f"Copied {n} element{'s' if n != 1 else ''}", 2000)
+
+    def _paste_elements(self) -> None:
+        """Paste previously copied elements with a small offset."""
+        if not hasattr(self, "_element_clipboard") or not self._element_clipboard:
+            self._statusbar.showMessage("Nothing to paste", 2000)
+            return
+
+        pasted = _deserialise_items(self._element_clipboard)
+        if not pasted:
+            return
+
+        # Offset so the paste isn't exactly on top of the original
+        from PySide6.QtCore import QPointF  # noqa: PLC0415
+        offset = QPointF(15, 15)
+        for item in pasted:
+            item.setPos(item.pos() + offset)
+            self._canvas.scene.addItem(item)
+            if hasattr(self._canvas, "add_item_undoable"):
+                self._canvas.add_item_undoable(item, "Paste element")
+            item.setSelected(True)
+
+        n = len(pasted)
+        self._statusbar.showMessage(f"Pasted {n} element{'s' if n != 1 else ''}", 2000)
+
     def _print(self) -> None:
         from verdiclip.export.printer import PrinterExporter
         PrinterExporter.print_pixmap(self._canvas.get_flattened_pixmap(), self)
+
+
+# ---------------------------------------------------------------------------
+# Element serialisation helpers (for copy-paste)
+# ---------------------------------------------------------------------------
+
+def _serialise_items(items: list) -> list[dict]:
+    """Convert scene items into serialisable dicts for the internal clipboard."""
+    from PySide6.QtWidgets import (  # noqa: PLC0415
+        QGraphicsEllipseItem,
+        QGraphicsLineItem,
+        QGraphicsRectItem,
+        QGraphicsTextItem,
+    )
+    result: list[dict] = []
+    for item in items:
+        data: dict = {"pos_x": item.pos().x(), "pos_y": item.pos().y()}
+
+        try:
+            from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+            if isinstance(item, ArrowItem):
+                data["type"] = "arrow"
+                data["p1_x"] = item.shaft_line.p1().x()
+                data["p1_y"] = item.shaft_line.p1().y()
+                data["p2_x"] = item.shaft_line.p2().x()
+                data["p2_y"] = item.shaft_line.p2().y()
+                data["color"] = item._stroke_color.name()
+                data["width"] = item._stroke_width
+                result.append(data)
+                continue
+        except ImportError:
+            pass
+
+        try:
+            from verdiclip.editor.tools.obfuscate import ObfuscationItem  # noqa: PLC0415
+            if isinstance(item, ObfuscationItem):
+                data["type"] = "obfuscation"
+                data["w"] = item._size.width()
+                data["h"] = item._size.height()
+                result.append(data)
+                continue
+        except ImportError:
+            pass
+
+        try:
+            from verdiclip.editor.tools.number import NumberMarkerItem  # noqa: PLC0415
+            if isinstance(item, NumberMarkerItem):
+                data["type"] = "number"
+                data["value"] = item.value
+                data["bg_color"] = item._bg_color.name()
+                data["text_color"] = item._text_color.name()
+                r = item.rect()
+                data["radius"] = r.width() / 2.0
+                result.append(data)
+                continue
+        except ImportError:
+            pass
+
+        if isinstance(item, QGraphicsRectItem):
+            data["type"] = "rect"
+            r = item.rect()
+            data["x"] = r.x()
+            data["y"] = r.y()
+            data["w"] = r.width()
+            data["h"] = r.height()
+            data["pen_color"] = item.pen().color().name()
+            data["pen_width"] = item.pen().widthF()
+            data["brush_color"] = item.brush().color().name(QColor.NameFormat.HexArgb)
+            result.append(data)
+        elif isinstance(item, QGraphicsEllipseItem):
+            data["type"] = "ellipse"
+            r = item.rect()
+            data["x"] = r.x()
+            data["y"] = r.y()
+            data["w"] = r.width()
+            data["h"] = r.height()
+            data["pen_color"] = item.pen().color().name()
+            data["pen_width"] = item.pen().widthF()
+            data["brush_color"] = item.brush().color().name(QColor.NameFormat.HexArgb)
+            result.append(data)
+        elif isinstance(item, QGraphicsLineItem):
+            data["type"] = "line"
+            ln = item.line()
+            data["x1"] = ln.p1().x()
+            data["y1"] = ln.p1().y()
+            data["x2"] = ln.p2().x()
+            data["y2"] = ln.p2().y()
+            data["pen_color"] = item.pen().color().name()
+            data["pen_width"] = item.pen().widthF()
+            result.append(data)
+        elif isinstance(item, QGraphicsTextItem):
+            data["type"] = "text"
+            data["html"] = item.toHtml()
+            data["color"] = item.defaultTextColor().name()
+            f = item.font()
+            data["font_family"] = f.family()
+            data["font_size"] = f.pointSize()
+            result.append(data)
+    return result
+
+
+def _deserialise_items(data_list: list[dict]) -> list:
+    """Reconstruct scene items from serialised dicts."""
+    from PySide6.QtCore import QLineF, QPointF, QRectF  # noqa: PLC0415
+    from PySide6.QtGui import QBrush, QFont, QPen  # noqa: PLC0415
+    from PySide6.QtWidgets import (  # noqa: PLC0415
+        QGraphicsEllipseItem,
+        QGraphicsLineItem,
+        QGraphicsRectItem,
+        QGraphicsTextItem,
+    )
+    items: list = []
+    for d in data_list:
+        t = d.get("type")
+        pos = QPointF(d.get("pos_x", 0), d.get("pos_y", 0))
+
+        if t == "arrow":
+            from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+            item = ArrowItem(
+                QPointF(d["p1_x"], d["p1_y"]),
+                QPointF(d["p2_x"], d["p2_y"]),
+                QColor(d["color"]),
+                d["width"],
+            )
+            item.setPos(pos)
+            items.append(item)
+
+        elif t == "obfuscation":
+            from PySide6.QtCore import QSizeF  # noqa: PLC0415
+
+            from verdiclip.editor.tools.obfuscate import ObfuscationItem  # noqa: PLC0415
+            item = ObfuscationItem()
+            item.set_geometry(pos, QSizeF(d["w"], d["h"]))
+            items.append(item)
+
+        elif t == "number":
+            from verdiclip.editor.tools.number import NumberMarkerItem  # noqa: PLC0415
+            item = NumberMarkerItem(d["value"], QColor(d["bg_color"]), QColor(d["text_color"]))
+            r = d.get("radius", 16)
+            item.setRect(QRectF(-r, -r, 2 * r, 2 * r))
+            item._center_text()
+            item.setPos(pos)
+            items.append(item)
+
+        elif t == "rect":
+            item = QGraphicsRectItem(QRectF(d["x"], d["y"], d["w"], d["h"]))
+            pen = QPen(QColor(d["pen_color"]), d["pen_width"])
+            pen.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
+            item.setPen(pen)
+            item.setBrush(QBrush(QColor(d["brush_color"])))
+            item.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsSelectable)
+            item.setPos(pos)
+            items.append(item)
+
+        elif t == "ellipse":
+            item = QGraphicsEllipseItem(QRectF(d["x"], d["y"], d["w"], d["h"]))
+            item.setPen(QPen(QColor(d["pen_color"]), d["pen_width"]))
+            item.setBrush(QBrush(QColor(d["brush_color"])))
+            item.setFlag(QGraphicsEllipseItem.GraphicsItemFlag.ItemIsSelectable)
+            item.setPos(pos)
+            items.append(item)
+
+        elif t == "line":
+            item = QGraphicsLineItem(QLineF(
+                QPointF(d["x1"], d["y1"]), QPointF(d["x2"], d["y2"]),
+            ))
+            item.setPen(QPen(QColor(d["pen_color"]), d["pen_width"]))
+            item.setFlag(QGraphicsLineItem.GraphicsItemFlag.ItemIsSelectable)
+            item.setPos(pos)
+            items.append(item)
+
+        elif t == "text":
+            item = QGraphicsTextItem()
+            item.setHtml(d["html"])
+            item.setDefaultTextColor(QColor(d["color"]))
+            item.setFont(QFont(d["font_family"], d["font_size"]))
+            item.setFlag(QGraphicsTextItem.GraphicsItemFlag.ItemIsSelectable)
+            item.setPos(pos)
+            items.append(item)
+
+    return items
 
 
 # ---------------------------------------------------------------------------

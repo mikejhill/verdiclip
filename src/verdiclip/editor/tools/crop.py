@@ -109,6 +109,9 @@ class CropTool(BaseTool):
                 continue
             if item.zValue() <= Z_BACKGROUND:
                 continue
+            # Skip child items of groups (e.g., ArrowItem shaft/head)
+            if item.parentItem() is not None:
+                continue
             annotation_items.append(item)
             item_rect = item.sceneBoundingRect()
             if not item_rect.intersects(crop_rect):

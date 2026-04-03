@@ -1175,8 +1175,12 @@ class TestEditorCanvasEscKey:
     def test_escape_does_not_emit_signal_when_items_deselected(
         self, qapp,
     ) -> None:
-        """Esc deselects first; should NOT also emit switch_to_select."""
+        """Esc with Select tool active deselects items without emitting switch_to_select."""
         canvas = _make_canvas_with_image()
+        # Set the select tool so Esc only deselects (no tool switch needed)
+        from verdiclip.editor.tools.select import SelectTool
+        canvas.set_tool(SelectTool())
+
         from PySide6.QtWidgets import QGraphicsRectItem
         rect_item = QGraphicsRectItem(0, 0, 50, 50)
         rect_item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
@@ -1191,8 +1195,8 @@ class TestEditorCanvasEscKey:
         canvas.keyPressEvent(event)
 
         assert len(signal_received) == 0, (
-            "Expected no switch_to_select_requested when items were deselected, "
-            f"but signal was emitted {len(signal_received)} time(s)"
+            "Expected no switch_to_select_requested when Select tool is active "
+            f"and items were deselected, but signal was emitted {len(signal_received)} time(s)"
         )
 
 
@@ -1838,3 +1842,131 @@ class TestEditorCanvasNumberEditorDoubleClick:
         assert signal_received[0] is marker, (
             "Expected signal to pass the clicked NumberMarkerItem"
         )
+
+
+# ---------------------------------------------------------------------------
+# EditorCanvas — element copy-paste (Ctrl+C / Ctrl+V)
+# ---------------------------------------------------------------------------
+
+
+class TestEditorCanvasElementCopyPaste:
+    def test_serialise_deserialise_rect_round_trip(self, qapp) -> None:
+        """A rectangle should survive serialise → deserialise round-trip."""
+        from PySide6.QtGui import QBrush, QPen
+        from PySide6.QtWidgets import QGraphicsRectItem
+
+        from verdiclip.editor.canvas import (
+            _deserialise_items,
+            _serialise_items,
+        )
+
+        rect = QGraphicsRectItem(0, 0, 50, 30)
+        rect.setPen(QPen(QColor("#FF0000"), 3.0))
+        rect.setBrush(QBrush(QColor("#00FF00")))
+        rect.setPos(10, 20)
+        scene = QGraphicsScene()
+        scene.addItem(rect)
+
+        data = _serialise_items([rect])
+        assert len(data) == 1
+        assert data[0]["type"] == "rect"
+
+        items = _deserialise_items(data)
+        assert len(items) == 1
+        restored = items[0]
+        assert isinstance(restored, QGraphicsRectItem)
+        assert restored.rect().width() == pytest.approx(50, abs=1)
+        assert restored.rect().height() == pytest.approx(30, abs=1)
+
+    def test_serialise_deserialise_arrow_round_trip(self, qapp) -> None:
+        """An ArrowItem should survive serialise → deserialise round-trip."""
+        from verdiclip.editor.canvas import (
+            _deserialise_items,
+            _serialise_items,
+        )
+        from verdiclip.editor.tools.arrow import ArrowItem
+
+        arrow = ArrowItem(QPointF(0, 0), QPointF(80, 60), QColor("#0000FF"), 4)
+        arrow.setPos(5, 5)
+        scene = QGraphicsScene()
+        scene.addItem(arrow)
+
+        data = _serialise_items([arrow])
+        assert len(data) == 1
+        assert data[0]["type"] == "arrow"
+
+        items = _deserialise_items(data)
+        assert len(items) == 1
+        restored = items[0]
+        assert isinstance(restored, ArrowItem)
+
+    def test_paste_offsets_position(self, qapp, tmp_config) -> None:
+        """Pasted elements should be offset from originals."""
+        from PySide6.QtWidgets import QGraphicsRectItem
+
+        from verdiclip.editor import Z_BACKGROUND, Z_BOUNDARY
+        from verdiclip.editor.canvas import _serialise_items
+
+        window = EditorWindow(QPixmap(200, 200), tmp_config)
+        canvas = window._canvas
+        rect = QGraphicsRectItem(0, 0, 30, 30)
+        rect.setPos(10, 10)
+        canvas.scene.addItem(rect)
+
+        data = _serialise_items([rect])
+        window._element_clipboard = data
+
+        window._paste_elements()
+        # Filter to annotation-layer rects, excluding bg, boundary, and handles
+        all_rects = [
+            i for i in canvas.scene.items()
+            if isinstance(i, QGraphicsRectItem) and i is not rect
+            and not isinstance(i, QGraphicsPixmapItem)
+            and Z_BACKGROUND < i.zValue() < Z_BOUNDARY
+            and i.rect().width() >= 10 and i.rect().height() >= 10
+            and i.parentItem() is None
+        ]
+        assert len(all_rects) >= 1, "Expected a pasted rectangle in the scene"
+        pasted = all_rects[0]
+        assert pasted.pos().x() == pytest.approx(25, abs=1)
+        assert pasted.pos().y() == pytest.approx(25, abs=1)
+
+
+# ---------------------------------------------------------------------------
+# EditorCanvas — default toolbar visibility
+# ---------------------------------------------------------------------------
+
+
+class TestEditorCanvasDefaultToolbar:
+    def test_select_tool_shows_stroke_width_fill(self, qapp, tmp_config) -> None:
+        """SELECT tool with no selection should show stroke, fill, and width."""
+        from unittest.mock import patch as _patch
+
+        window = EditorWindow(QPixmap(100, 100), tmp_config)
+        with _patch.object(window._properties, "set_visible_properties") as mock_svp:
+            window._update_properties_visibility(ToolType.SELECT)
+            mock_svp.assert_called_once_with(
+                stroke=True, fill=True, width=True, font=False, caps=False,
+            )
+
+    def test_empty_selection_restores_default_toolbar(self, qapp, tmp_config) -> None:
+        """When selection becomes empty, toolbar should restore default properties."""
+        from unittest.mock import patch as _patch
+
+        window = EditorWindow(QPixmap(100, 100), tmp_config)
+        canvas = window._canvas
+
+        # Ensure we're on SELECT tool
+        from verdiclip.editor.tools.select import SelectTool
+        canvas.set_tool(SelectTool())
+
+        item = canvas.scene.addRect(10, 10, 30, 30)
+        item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
+        item.setSelected(True)
+        item.setSelected(False)
+
+        with _patch.object(window._properties, "set_visible_properties") as mock_svp:
+            window._on_selection_changed()
+            mock_svp.assert_called_once_with(
+                stroke=True, fill=True, width=True, font=False, caps=False,
+            )

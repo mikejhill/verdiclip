@@ -11,7 +11,7 @@ from PySide6.QtWidgets import QGraphicsRectItem
 
 from verdiclip.editor import Z_BACKGROUND, Z_BOUNDARY
 from verdiclip.editor.tools.base import BaseTool
-from verdiclip.editor.tools.handles import ResizeHandle, create_handles_for_item
+from verdiclip.editor.tools.handles import HandleRole, ResizeHandle, create_handles_for_item
 
 if TYPE_CHECKING:
     from PySide6.QtGui import QMouseEvent
@@ -59,7 +59,10 @@ class SelectTool(BaseTool):
     def activate(self, scene: QGraphicsScene, view: QGraphicsView) -> None:
         super().activate(scene, view)
         if view:
-            view.setCursor(Qt.CursorShape.ArrowCursor)
+            # Unset view-level cursor so QGraphicsItem cursors (e.g., on
+            # resize handles) are respected by Qt's scene cursor management.
+            view.unsetCursor()
+            view.viewport().setCursor(Qt.CursorShape.ArrowCursor)
 
     def deactivate(self) -> None:
         self.clear_handles()
@@ -142,6 +145,43 @@ class SelectTool(BaseTool):
         for h in self._handles:
             h.update_position()
 
+    def _snap_endpoint_delta(
+        self, handle: ResizeHandle, scene_pos: QPointF,
+    ) -> QPointF:
+        """Compute a delta that snaps the moved endpoint to 45° relative to the other end."""
+        import math  # noqa: PLC0415
+
+        from verdiclip.editor.tools.handles import compute_handle_scene_pos  # noqa: PLC0415
+
+        target = handle.target
+        moving = handle.role
+        # Determine the fixed endpoint (the one NOT being dragged)
+        fixed_role = (
+            HandleRole.LINE_P2
+            if moving == HandleRole.LINE_P1
+            else HandleRole.LINE_P1
+        )
+        fixed_pos = compute_handle_scene_pos(target, fixed_role)
+        if fixed_pos is None:
+            return scene_pos - self._resize_start
+
+        # Snap the cursor position to 45° from the fixed endpoint
+        dx = scene_pos.x() - fixed_pos.x()
+        dy = scene_pos.y() - fixed_pos.y()
+        angle = math.atan2(dy, dx)
+        snap_rad = math.radians(45.0)
+        snapped = round(angle / snap_rad) * snap_rad
+        length = math.hypot(dx, dy)
+        snapped_pos = QPointF(
+            fixed_pos.x() + length * math.cos(snapped),
+            fixed_pos.y() + length * math.sin(snapped),
+        )
+        # The current position of the moving handle
+        current_pos = compute_handle_scene_pos(target, moving)
+        if current_pos is None:
+            return scene_pos - self._resize_start
+        return snapped_pos - current_pos
+
     # ------------------------------------------------------------------
     # Mouse events
     # ------------------------------------------------------------------
@@ -191,6 +231,12 @@ class SelectTool(BaseTool):
     def mouse_move(self, scene_pos: QPointF, event: QMouseEvent) -> None:
         if self._resizing and self._active_handle and self._resize_start is not None:
             delta = scene_pos - self._resize_start
+            # Shift → 45° snap for line/arrow endpoint handles
+            if (
+                event.modifiers() & Qt.KeyboardModifier.ShiftModifier
+                and self._active_handle.role in (HandleRole.LINE_P1, HandleRole.LINE_P2)
+            ):
+                delta = self._snap_endpoint_delta(self._active_handle, scene_pos)
             self._active_handle.apply_drag(delta)
             self._resize_start = scene_pos
             # Keep other handles in sync

@@ -31,19 +31,28 @@ _ARROWHEAD_ANGLE = math.radians(25)
 # Shared geometry helpers
 # ---------------------------------------------------------------------------
 
-def _build_arrowhead_path(p1: QPointF, p2: QPointF) -> QPainterPath:
-    """Return a filled triangle path for an arrowhead pointing from *p1* to *p2*."""
+def _build_arrowhead_path(
+    p1: QPointF, p2: QPointF, stroke_width: int = 3,
+) -> QPainterPath:
+    """Return a filled triangle path for an arrowhead pointing from *p1* to *p2*.
+
+    The arrowhead scales with *stroke_width* so it remains visible and
+    proportional at any line thickness.
+    """
     dx = p2.x() - p1.x()
     dy = p2.y() - p1.y()
     angle = math.atan2(dy, dx)
 
+    # Scale the arrowhead with stroke width (base size + proportional growth)
+    head_length = _ARROWHEAD_LENGTH + stroke_width * 1.5
+
     left = QPointF(
-        p2.x() - _ARROWHEAD_LENGTH * math.cos(angle - _ARROWHEAD_ANGLE),
-        p2.y() - _ARROWHEAD_LENGTH * math.sin(angle - _ARROWHEAD_ANGLE),
+        p2.x() - head_length * math.cos(angle - _ARROWHEAD_ANGLE),
+        p2.y() - head_length * math.sin(angle - _ARROWHEAD_ANGLE),
     )
     right = QPointF(
-        p2.x() - _ARROWHEAD_LENGTH * math.cos(angle + _ARROWHEAD_ANGLE),
-        p2.y() - _ARROWHEAD_LENGTH * math.sin(angle + _ARROWHEAD_ANGLE),
+        p2.x() - head_length * math.cos(angle + _ARROWHEAD_ANGLE),
+        p2.y() - head_length * math.sin(angle + _ARROWHEAD_ANGLE),
     )
 
     path = QPainterPath()
@@ -116,7 +125,7 @@ class ArrowItem(QGraphicsItemGroup):
     def update_endpoints(self, p1: QPointF, p2: QPointF) -> None:
         """Set shaft and arrowhead geometry for *p1* → *p2* (item-local coords)."""
         self._shaft.setLine(QLineF(p1, p2))
-        self._head.setPath(_build_arrowhead_path(p1, p2))
+        self._head.setPath(_build_arrowhead_path(p1, p2, self._stroke_width))
 
     @property
     def shaft_line(self) -> QLineF:
@@ -154,11 +163,14 @@ class ArrowItem(QGraphicsItemGroup):
         self._head.setBrush(QBrush(color))
 
     def set_stroke_width(self, width: int) -> None:
-        """Update shaft line width."""
+        """Update shaft line width and rescale arrowhead to match."""
         self._stroke_width = width
         pen = self._shaft.pen()
         pen.setWidth(width)
         self._shaft.setPen(pen)
+        # Rebuild arrowhead so it scales with the new width
+        line = self._shaft.line()
+        self._head.setPath(_build_arrowhead_path(line.p1(), line.p2(), width))
 
 
 # ---------------------------------------------------------------------------

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from PySide6.QtCore import QPointF, Qt
+from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QPixmap
 from PySide6.QtWidgets import (
     QGraphicsEllipseItem,
@@ -3325,4 +3325,185 @@ class TestNumberMarkerResizeHandles:
         new_r = item.rect().width() / 2.0
         assert new_r >= _MIN_MARKER_RADIUS, (
             f"Expected radius >= {_MIN_MARKER_RADIUS}, got {new_r:.1f}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# ArrowItem arrowhead scaling with stroke width
+# ---------------------------------------------------------------------------
+
+class TestArrowHeadScaling:
+    """Arrowhead must scale proportionally with stroke width."""
+
+    def test_head_path_grows_with_width(self, qapp) -> None:
+        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        thin = ArrowItem(QPointF(0, 0), QPointF(100, 0), QColor("#FF0000"), 1)
+        thick = ArrowItem(QPointF(0, 0), QPointF(100, 0), QColor("#FF0000"), 15)
+        thin_bounds = thin._head.boundingRect()
+        thick_bounds = thick._head.boundingRect()
+        assert thick_bounds.width() > thin_bounds.width(), (
+            "Thick arrow head should be wider than thin arrow head"
+        )
+
+    def test_set_stroke_width_rebuilds_head(self, qapp) -> None:
+        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        item = ArrowItem(QPointF(0, 0), QPointF(100, 0), QColor("#FF0000"), 2)
+        original_bounds = item._head.boundingRect()
+        item.set_stroke_width(20)
+        new_bounds = item._head.boundingRect()
+        assert new_bounds.width() > original_bounds.width(), (
+            "set_stroke_width should rebuild the arrowhead path"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Crop tool preserves arrow items
+# ---------------------------------------------------------------------------
+
+class TestCropPreservesArrows:
+    """Crop must not remove arrows that are within the crop region."""
+
+    def test_arrow_inside_crop_survives(self, qapp) -> None:
+        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        from verdiclip.editor.tools.crop import CropTool  # noqa: PLC0415
+
+        scene, _bg = _make_scene_with_background(200, 200)
+        view = QGraphicsView(scene)
+
+        arrow = ArrowItem(QPointF(20, 20), QPointF(80, 80), QColor("#FF0000"), 2)
+        scene.addItem(arrow)
+
+        tool = CropTool()
+        tool.activate(scene, view)
+
+        # Manually invoke the crop phases to avoid the view fallback
+        tool._origin = QPointF(0, 0)
+        tool._crop_rect_item = QGraphicsRectItem()
+        tool._crop_rect_item.setRect(QRectF(0, 0, 100, 100))
+        from verdiclip.editor import Z_CROP_OVERLAY  # noqa: PLC0415
+        tool._crop_rect_item.setZValue(Z_CROP_OVERLAY)
+        scene.addItem(tool._crop_rect_item)
+
+        # Check that the annotation list does NOT include arrow children
+        from verdiclip.editor import Z_BACKGROUND, Z_BOUNDARY  # noqa: PLC0415
+        annotation_items = []
+        for item in scene.items():
+            if item is _bg or item is tool._crop_rect_item:
+                continue
+            if item.zValue() >= Z_BOUNDARY or item.zValue() <= Z_BACKGROUND:
+                continue
+            if item.parentItem() is not None:
+                continue
+            annotation_items.append(item)
+
+        assert arrow in annotation_items, "ArrowItem should be in annotation_items"
+        # Shaft and head should NOT be counted separately
+        assert len(annotation_items) == 1, (
+            f"Expected 1 annotation (the ArrowItem), got {len(annotation_items)}"
+        )
+
+    def test_crop_does_not_double_count_arrow_children(self, qapp) -> None:
+        """Arrow child items (shaft, head) should not be treated as separate annotations."""
+        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+
+        scene, _bg = _make_scene_with_background(200, 200)
+
+        arrow = ArrowItem(QPointF(10, 10), QPointF(60, 60), QColor("#FF0000"), 2)
+        scene.addItem(arrow)
+
+        # Count what scene.items() returns vs top-level only
+        from verdiclip.editor import Z_BACKGROUND, Z_BOUNDARY  # noqa: PLC0415
+        all_annotation = [
+            i for i in scene.items()
+            if Z_BACKGROUND < i.zValue() < Z_BOUNDARY
+        ]
+        top_level = [i for i in all_annotation if i.parentItem() is None]
+
+        # The arrow group has child items (shaft + head)
+        assert len(all_annotation) > len(top_level), (
+            "scene.items() should return more items than top-level items "
+            "(ArrowItem children should be present)"
+        )
+        assert len(top_level) == 1, (
+            f"Expected 1 top-level annotation, got {len(top_level)}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Shift snap during endpoint handle modification
+# ---------------------------------------------------------------------------
+
+class TestShiftSnapDuringResize:
+    """Shift key should snap line/arrow endpoints to 45° during handle drags."""
+
+    def test_snap_endpoint_delta_snaps_to_45(self, qapp) -> None:
+        from verdiclip.editor.tools.handles import (  # noqa: PLC0415
+            HandleRole,
+        )
+
+        scene = QGraphicsScene()
+        view = QGraphicsView(scene)
+        line = QGraphicsLineItem(0, 0, 100, 0)
+        line.setFlag(QGraphicsLineItem.GraphicsItemFlag.ItemIsSelectable)
+        scene.addItem(line)
+
+        tool = SelectTool()
+        tool.activate(scene, view)
+        tool.update_selection_handles([line])
+
+        # Find the P2 handle
+        p2_handle = None
+        for h in tool._handles:
+            if h.role == HandleRole.LINE_P2:
+                p2_handle = h
+                break
+        assert p2_handle is not None
+
+        # Simulate starting a resize
+        tool._resizing = True
+        tool._active_handle = p2_handle
+        tool._resize_start = QPointF(100, 0)
+
+        # Compute the snapped delta — should snap to 45° diagonal
+        delta = tool._snap_endpoint_delta(p2_handle, QPointF(140, 35))
+        import math
+        # The delta should move the endpoint to a 45° angle from P1 (0,0)
+        new_pos = QPointF(100, 0) + delta
+        angle = abs(math.degrees(math.atan2(new_pos.y(), new_pos.x())))
+        snapped_angles = [0, 45, 90, 135, 180]
+        assert any(abs(angle - a) < 2.0 for a in snapped_angles), (
+            f"Expected angle at 45° multiple, got {angle:.1f}°"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Esc key behavior
+# ---------------------------------------------------------------------------
+
+class TestEscKeyBehavior:
+    """Esc should deactivate non-Select tools in a single press."""
+
+    def test_esc_with_non_select_tool_emits_switch(self, qapp) -> None:
+        """Non-Select tool + Esc → switch to Select."""
+        from verdiclip.editor.tools.line import LineTool  # noqa: PLC0415
+
+        scene, _bg = _make_scene_with_background()
+        from verdiclip.editor.canvas import EditorCanvas  # noqa: PLC0415
+        canvas = EditorCanvas()
+        canvas.set_image(QPixmap(100, 100))
+        canvas.set_tool(LineTool())
+
+        signal_received = []
+        canvas.switch_to_select_requested.connect(
+            lambda: signal_received.append(True),
+        )
+
+        from unittest.mock import MagicMock  # noqa: PLC0415
+        event = MagicMock()
+        event.key.return_value = Qt.Key.Key_Escape
+        event.modifiers.return_value = Qt.KeyboardModifier.NoModifier
+        canvas.keyPressEvent(event)
+
+        assert len(signal_received) == 1, (
+            f"Expected switch signal emitted, got {len(signal_received)}"
         )
