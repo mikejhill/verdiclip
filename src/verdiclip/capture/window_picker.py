@@ -70,6 +70,7 @@ class WindowPickerOverlay(QWidget):
         self.raise_()
 
     def paintEvent(self, _event: QPaintEvent) -> None:
+        """Paint the background, dim overlay, window highlight, and instruction text."""
         painter = QPainter(self)
         if self._background:
             painter.drawPixmap(0, 0, self._background)
@@ -102,11 +103,13 @@ class WindowPickerOverlay(QWidget):
                     break
             if title:
                 msg = f'"{title}" — Click to capture. Escape to cancel.'
-        painter.drawText(self.rect(), Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter,
-                         f"\n{msg}")
+        painter.drawText(
+            self.rect(), Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter, f"\n{msg}"
+        )
         painter.end()
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        """Track cursor and highlight the smallest window under it."""
         screen_pos = event.position().toPoint() + self._virtual_offset
         best_hwnd = 0
         best_rect: QRect | None = None
@@ -126,6 +129,7 @@ class WindowPickerOverlay(QWidget):
             self.update()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
+        """Emit window selection on left-click or cancel on right-click."""
         if event.button() == Qt.MouseButton.LeftButton and self._hovered_hwnd:
             self.hide()
             rect = self._hovered_rect if self._hovered_rect else QRect()
@@ -135,6 +139,7 @@ class WindowPickerOverlay(QWidget):
             self.cancelled.emit()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
+        """Handle Escape to cancel and arrow keys to nudge the cursor."""
         if event.key() == Qt.Key.Key_Escape:
             self.hide()
             self.cancelled.emit()
@@ -185,6 +190,7 @@ class WindowPicker(QObject):
         self._overlay: WindowPickerOverlay | None = None
 
     def start(self) -> None:
+        """Create the overlay and begin interactive window selection."""
         self._overlay = WindowPickerOverlay()
         self._overlay.window_selected.connect(self._on_window_selected)
         self._overlay.cancelled.connect(

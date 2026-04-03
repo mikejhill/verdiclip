@@ -154,9 +154,7 @@ class TestUnregister:
             f"Expected len(manager._callbacks) to equal 0, got {len(manager._callbacks)}"
         )
 
-    def test_unregister_nonexistent_does_not_raise(
-        self, tmp_config: Config
-    ) -> None:
+    def test_unregister_nonexistent_does_not_raise(self, tmp_config: Config) -> None:
         manager = HotkeyManager(tmp_config)
         manager.unregister("ctrl+shift+x")
 
@@ -167,7 +165,7 @@ class TestUnregister:
 
 
 class TestNormalizeKey:
-    @pytest.fixture()
+    @pytest.fixture
     def manager(self, tmp_config: Config) -> HotkeyManager:
         return HotkeyManager(tmp_config)
 
@@ -218,7 +216,7 @@ class TestNormalizeKey:
 
 
 class TestOnPress:
-    @pytest.fixture()
+    @pytest.fixture
     def manager(self, tmp_config: Config) -> HotkeyManager:
         return HotkeyManager(tmp_config)
 
@@ -229,9 +227,7 @@ class TestOnPress:
             f" got {manager._pressed_keys}"
         )
 
-    def test_triggers_callback_when_combo_pressed(
-        self, manager: HotkeyManager
-    ) -> None:
+    def test_triggers_callback_when_combo_pressed(self, manager: HotkeyManager) -> None:
         cb = MagicMock()
         manager.register("ctrl+print_screen", cb)
         manager._relay = MagicMock()
@@ -239,24 +235,21 @@ class TestOnPress:
         manager._on_press(keyboard.Key.print_screen)
         manager._relay.schedule.assert_called_once_with(cb)
 
-    def test_does_not_trigger_on_partial_combo(
-        self, manager: HotkeyManager
-    ) -> None:
+    def test_does_not_trigger_on_partial_combo(self, manager: HotkeyManager) -> None:
         cb = MagicMock()
         manager.register("ctrl+print_screen", cb)
         manager._on_press(keyboard.Key.ctrl_l)
         cb.assert_not_called()
 
-    def test_callback_scheduled_via_relay_for_thread_safety(
-        self, manager: HotkeyManager
-    ) -> None:
+    def test_callback_scheduled_via_relay_for_thread_safety(self, manager: HotkeyManager) -> None:
         cb = MagicMock()
         manager.register("print_screen", cb)
         manager._relay = MagicMock()
         manager._on_press(keyboard.Key.print_screen)
-        manager._relay.schedule.assert_called_once_with(
-            cb
-        ), "Callback must be scheduled on Qt GUI thread via _CallbackRelay"
+        (
+            manager._relay.schedule.assert_called_once_with(cb),
+            "Callback must be scheduled on Qt GUI thread via _CallbackRelay",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -265,7 +258,7 @@ class TestOnPress:
 
 
 class TestOnRelease:
-    @pytest.fixture()
+    @pytest.fixture
     def manager(self, tmp_config: Config) -> HotkeyManager:
         return HotkeyManager(tmp_config)
 
@@ -400,9 +393,7 @@ class TestCallbackRelay:
             f"Expected callback to be called once, call count: {callback.call_count}"
         )
 
-    def test_execute_catches_exceptions(
-        self, qapp, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_execute_catches_exceptions(self, qapp, caplog: pytest.LogCaptureFixture) -> None:
         callback = MagicMock(side_effect=RuntimeError("boom"))
         with caplog.at_level(logging.ERROR, logger="verdiclip.hotkeys.manager"):
             _CallbackRelay._execute(callback)

@@ -35,11 +35,13 @@ class FreehandTool(BaseTool):
         self._last_point: QPointF | None = None
 
     def activate(self, scene: QGraphicsScene, view: EditorCanvas) -> None:
+        """Set crosshair cursor and prepare for freehand drawing."""
         super().activate(scene, view)
         if view:
             view.setCursor(Qt.CursorShape.CrossCursor)
 
     def mouse_press(self, scene_pos: QPointF, event: QMouseEvent) -> None:
+        """Begin a new freehand path at the click position."""
         if not self._scene or event.button() != Qt.MouseButton.LeftButton:
             return
         self._path = QPainterPath(scene_pos)
@@ -53,6 +55,7 @@ class FreehandTool(BaseTool):
         self._scene.addItem(self._current_item)
 
     def mouse_move(self, scene_pos: QPointF, event: QMouseEvent) -> None:
+        """Extend the freehand path with smooth quadratic curves."""
         if self._path is None or self._current_item is None or self._last_point is None:
             return
         # Use quadratic bezier for smoother curves
@@ -65,6 +68,7 @@ class FreehandTool(BaseTool):
         self._last_point = scene_pos
 
     def mouse_release(self, scene_pos: QPointF, event: QMouseEvent) -> None:
+        """Finalize the freehand path or discard if too small."""
         if self._path and self._current_item:
             bounds = self._path.boundingRect()
             if bounds.width() < 2 and bounds.height() < 2 and self._scene:
@@ -76,7 +80,9 @@ class FreehandTool(BaseTool):
         self._last_point = None
 
     def set_stroke_color(self, color: QColor) -> None:
+        """Update the stroke color for new paths."""
         self._stroke_color = color
 
     def set_stroke_width(self, width: int) -> None:
+        """Update the stroke width for new paths."""
         self._stroke_width = width

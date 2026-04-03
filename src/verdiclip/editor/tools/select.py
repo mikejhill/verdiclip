@@ -59,6 +59,7 @@ class SelectTool(BaseTool):
     # ------------------------------------------------------------------
 
     def activate(self, scene: QGraphicsScene, view: EditorCanvas) -> None:
+        """Set arrow cursor and enable item interaction."""
         super().activate(scene, view)
         if view:
             # Unset view-level cursor so QGraphicsItem cursors (e.g., on
@@ -67,6 +68,7 @@ class SelectTool(BaseTool):
             view.viewport().setCursor(Qt.CursorShape.ArrowCursor)
 
     def deactivate(self) -> None:
+        """Clear handles and deactivate the tool."""
         self.clear_handles()
         super().deactivate()
 
@@ -83,11 +85,7 @@ class SelectTool(BaseTool):
         """Find the topmost annotation item at the given scene position."""
         if not self._scene:
             return None
-        transform = (
-            self._view.transform()
-            if self._view
-            else self._scene.views()[0].transform()
-        )
+        transform = self._view.transform() if self._view else self._scene.views()[0].transform()
         for raw in self._scene.items(
             scene_pos,
             Qt.ItemSelectionMode.IntersectsItemShape,
@@ -103,11 +101,7 @@ class SelectTool(BaseTool):
         """Return the resize handle at *scene_pos*, if any."""
         if not self._scene or not self._handles:
             return None
-        transform = (
-            self._view.transform()
-            if self._view
-            else self._scene.views()[0].transform()
-        )
+        transform = self._view.transform() if self._view else self._scene.views()[0].transform()
         for raw in self._scene.items(
             scene_pos,
             Qt.ItemSelectionMode.IntersectsItemShape,
@@ -148,21 +142,19 @@ class SelectTool(BaseTool):
             h.update_position()
 
     def _snap_endpoint_delta(
-        self, handle: ResizeHandle, scene_pos: QPointF,
+        self,
+        handle: ResizeHandle,
+        scene_pos: QPointF,
     ) -> QPointF:
         """Compute a delta that snaps the moved endpoint to 45° relative to the other end."""
-        import math  # noqa: PLC0415
+        import math
 
-        from verdiclip.editor.tools.handles import compute_handle_scene_pos  # noqa: PLC0415
+        from verdiclip.editor.tools.handles import compute_handle_scene_pos
 
         target = handle.target
         moving = handle.role
         # Determine the fixed endpoint (the one NOT being dragged)
-        fixed_role = (
-            HandleRole.LINE_P2
-            if moving == HandleRole.LINE_P1
-            else HandleRole.LINE_P1
-        )
+        fixed_role = HandleRole.LINE_P2 if moving == HandleRole.LINE_P1 else HandleRole.LINE_P1
         fixed_pos = compute_handle_scene_pos(target, fixed_role)
         if fixed_pos is None:
             assert self._resize_start is not None
@@ -191,6 +183,7 @@ class SelectTool(BaseTool):
     # ------------------------------------------------------------------
 
     def mouse_press(self, scene_pos: QPointF, event: QMouseEvent) -> None:
+        """Handle click on handles, items, or empty space for selection."""
         if not self._scene or event.button() != Qt.MouseButton.LeftButton:
             return
 
@@ -200,7 +193,8 @@ class SelectTool(BaseTool):
             self._resizing = True
             self._active_handle = handle
             self._resize_start = scene_pos
-            from verdiclip.editor.history import capture_geometry  # noqa: PLC0415
+            from verdiclip.editor.history import capture_geometry
+
             self._resize_old_geometry = capture_geometry(handle.target)
             return
 
@@ -233,6 +227,7 @@ class SelectTool(BaseTool):
         self._scene.addItem(self._rubber_band_rect)
 
     def mouse_move(self, scene_pos: QPointF, event: QMouseEvent) -> None:
+        """Handle drag for resizing, moving, or rubber band selection."""
         if self._resizing and self._active_handle and self._resize_start is not None:
             delta = scene_pos - self._resize_start
             # Shift → 45° snap for line/arrow endpoint handles
@@ -268,6 +263,7 @@ class SelectTool(BaseTool):
             self._rubber_band_rect.setRect(rect)
 
     def mouse_release(self, scene_pos: QPointF, event: QMouseEvent) -> None:
+        """Finalize resize, move, or rubber band selection with undo support."""
         # Finish resize
         if self._resizing and self._active_handle:
             handle = self._active_handle
@@ -277,12 +273,15 @@ class SelectTool(BaseTool):
                 and hasattr(self._view, "add_resize_undoable")
             )
             if can_undo:
-                from verdiclip.editor.history import capture_geometry  # noqa: PLC0415
+                from verdiclip.editor.history import capture_geometry
+
                 new_geometry = capture_geometry(handle.target)
                 assert self._view is not None
                 assert self._resize_old_geometry is not None
                 self._view.add_resize_undoable(
-                    handle.target, self._resize_old_geometry, new_geometry,
+                    handle.target,
+                    self._resize_old_geometry,
+                    new_geometry,
                 )
             self._resizing = False
             self._active_handle = None
@@ -341,4 +340,3 @@ class SelectTool(BaseTool):
             top = _resolve_top_level_item(item)
             if self._is_annotation(top) and not top.isSelected():
                 top.setSelected(True)
-

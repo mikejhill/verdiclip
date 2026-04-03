@@ -58,15 +58,19 @@ class WindowCapture:
             )
             if result == 0:
                 return QRect(
-                    rect.left, rect.top,
-                    rect.right - rect.left, rect.bottom - rect.top,
+                    rect.left,
+                    rect.top,
+                    rect.right - rect.left,
+                    rect.bottom - rect.top,
                 )
 
         rect = ctypes.wintypes.RECT()
         user32.GetWindowRect(hwnd, ctypes.byref(rect))
         return QRect(
-            rect.left, rect.top,
-            rect.right - rect.left, rect.bottom - rect.top,
+            rect.left,
+            rect.top,
+            rect.right - rect.left,
+            rect.bottom - rect.top,
         )
 
     @staticmethod
@@ -87,14 +91,18 @@ class WindowCapture:
 
         title = cls.get_window_title(hwnd)
         rect = cls.get_window_rect(hwnd, include_decorations)
-        logger.info("Capturing window '%s' at (%d,%d %dx%d)",
-                     title, rect.x(), rect.y(), rect.width(), rect.height())
+        logger.info(
+            "Capturing window '%s' at (%d,%d %dx%d)",
+            title,
+            rect.x(),
+            rect.y(),
+            rect.width(),
+            rect.height(),
+        )
         return ScreenCapture.capture_region(rect)
 
     @classmethod
-    def capture_window_by_handle(
-        cls, hwnd: int, include_decorations: bool = True
-    ) -> QPixmap:
+    def capture_window_by_handle(cls, hwnd: int, include_decorations: bool = True) -> QPixmap:
         """Capture a specific window by its handle."""
         rect = cls.get_window_rect(hwnd, include_decorations)
         return ScreenCapture.capture_region(rect)
@@ -143,8 +151,10 @@ class WindowCapture:
                 user32.GetWindowRect(hwnd, ctypes.byref(rect))
 
             qrect = QRect(
-                rect.left, rect.top,
-                rect.right - rect.left, rect.bottom - rect.top,
+                rect.left,
+                rect.top,
+                rect.right - rect.left,
+                rect.bottom - rect.top,
             )
             if qrect.width() >= _MIN_WINDOW_DIMENSION and qrect.height() >= _MIN_WINDOW_DIMENSION:
                 windows.append((hwnd, title, qrect))

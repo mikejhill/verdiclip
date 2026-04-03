@@ -57,9 +57,7 @@ class TestAutoSave:
             cfg.set(f"save.{key}", val)
         return cfg
 
-    def test_creates_file_in_configured_directory(
-        self, qapp, tmp_path: Path
-    ) -> None:
+    def test_creates_file_in_configured_directory(self, qapp, tmp_path: Path) -> None:
         cfg = self._make_config(tmp_path)
         pixmap = QPixmap(40, 40)
         pixmap.fill(Qt.GlobalColor.blue)
@@ -74,9 +72,7 @@ class TestAutoSave:
         )
         assert saved.suffix == ".png", f"Expected saved.suffix to be '.png', got {saved.suffix}"
 
-    def test_creates_save_directory_if_missing(
-        self, qapp, tmp_path: Path
-    ) -> None:
+    def test_creates_save_directory_if_missing(self, qapp, tmp_path: Path) -> None:
         nested = tmp_path / "a" / "b" / "c"
         cfg = Config(config_path=tmp_path / "config.json")
         cfg.set("save.default_directory", str(nested))
@@ -89,12 +85,8 @@ class TestAutoSave:
         assert result is not None, f"Expected result to not be None, got {result}"
         assert nested.is_dir(), f"Expected nested.is_dir() to be truthy, got {nested.is_dir()}"
 
-    def test_uses_filename_pattern_with_counter(
-        self, qapp, tmp_path: Path
-    ) -> None:
-        cfg = self._make_config(
-            tmp_path, filename_pattern="capture_{counter}"
-        )
+    def test_uses_filename_pattern_with_counter(self, qapp, tmp_path: Path) -> None:
+        cfg = self._make_config(tmp_path, filename_pattern="capture_{counter}")
         pixmap = QPixmap(10, 10)
         pixmap.fill(Qt.GlobalColor.red)
 
@@ -105,12 +97,8 @@ class TestAutoSave:
             f"Expected Path(result).stem to be 'capture_1', got {Path(result).stem}"
         )
 
-    def test_uses_filename_pattern_with_datetime(
-        self, qapp, tmp_path: Path
-    ) -> None:
-        cfg = self._make_config(
-            tmp_path, filename_pattern="shot_{datetime}"
-        )
+    def test_uses_filename_pattern_with_datetime(self, qapp, tmp_path: Path) -> None:
+        cfg = self._make_config(tmp_path, filename_pattern="shot_{datetime}")
         pixmap = QPixmap(10, 10)
         pixmap.fill(Qt.GlobalColor.red)
 
@@ -134,9 +122,7 @@ class TestAutoSave:
         )
 
     def test_jpg_quality_from_config(self, qapp, tmp_path: Path) -> None:
-        cfg = self._make_config(
-            tmp_path, default_format="jpg", jpg_quality=50
-        )
+        cfg = self._make_config(tmp_path, default_format="jpg", jpg_quality=50)
         pixmap = QPixmap(10, 10)
         pixmap.fill(Qt.GlobalColor.red)
         mock_save = MagicMock(return_value=True)
@@ -149,9 +135,7 @@ class TestAutoSave:
         assert fmt_arg == "JPG", f"Expected fmt_arg to be 'JPG', got {fmt_arg}"
         assert quality_arg == 50, f"Expected quality_arg to be 50, got {quality_arg}"
 
-    def test_returns_file_path_on_success(
-        self, qapp, tmp_path: Path
-    ) -> None:
+    def test_returns_file_path_on_success(self, qapp, tmp_path: Path) -> None:
         cfg = self._make_config(tmp_path)
         pixmap = QPixmap(10, 10)
         pixmap.fill(Qt.GlobalColor.red)
@@ -163,9 +147,7 @@ class TestAutoSave:
             f"Expected Path(result).exists() to be truthy, got {Path(result).exists()}"
         )
 
-    def test_returns_none_on_save_failure(
-        self, qapp, tmp_path: Path
-    ) -> None:
+    def test_returns_none_on_save_failure(self, qapp, tmp_path: Path) -> None:
         cfg = self._make_config(tmp_path)
         pixmap = QPixmap(10, 10)
         pixmap.fill(Qt.GlobalColor.red)
@@ -182,9 +164,7 @@ class TestAutoSave:
 
 
 class TestSaveWithDialog:
-    def test_calls_auto_save_when_enabled(
-        self, qapp, tmp_path: Path
-    ) -> None:
+    def test_calls_auto_save_when_enabled(self, qapp, tmp_path: Path) -> None:
         cfg = Config(config_path=tmp_path / "config.json")
         cfg.set("save.auto_save_enabled", True)
         cfg.set("save.default_directory", str(tmp_path))
@@ -192,26 +172,20 @@ class TestSaveWithDialog:
         pixmap = QPixmap(10, 10)
         pixmap.fill(Qt.GlobalColor.red)
 
-        with patch.object(
-            FileExporter, "auto_save", return_value="/fake/path.png"
-        ) as mock_auto:
+        with patch.object(FileExporter, "auto_save", return_value="/fake/path.png") as mock_auto:
             result = FileExporter.save_with_dialog(pixmap, cfg)
 
         mock_auto.assert_called_once_with(pixmap, cfg)
         assert result == "/fake/path.png", f"Expected result to be '/fake/path.png', got {result}"
 
-    def test_calls_save_as_when_auto_save_disabled(
-        self, qapp, tmp_path: Path
-    ) -> None:
+    def test_calls_save_as_when_auto_save_disabled(self, qapp, tmp_path: Path) -> None:
         cfg = Config(config_path=tmp_path / "config.json")
         cfg.set("save.auto_save_enabled", False)
 
         pixmap = QPixmap(10, 10)
         pixmap.fill(Qt.GlobalColor.red)
 
-        with patch.object(
-            FileExporter, "save_as", return_value="/dialog/path.png"
-        ) as mock_sa:
+        with patch.object(FileExporter, "save_as", return_value="/dialog/path.png") as mock_sa:
             result = FileExporter.save_with_dialog(pixmap, cfg)
 
         mock_sa.assert_called_once()
@@ -219,9 +193,7 @@ class TestSaveWithDialog:
             f"Expected result to be '/dialog/path.png', got {result}"
         )
 
-    def test_auto_save_success_skips_dialog(
-        self, qapp, tmp_path: Path
-    ) -> None:
+    def test_auto_save_success_skips_dialog(self, qapp, tmp_path: Path) -> None:
         cfg = Config(config_path=tmp_path / "config.json")
         cfg.set("save.auto_save_enabled", True)
         cfg.set("save.default_directory", str(tmp_path))
@@ -230,9 +202,7 @@ class TestSaveWithDialog:
         pixmap.fill(Qt.GlobalColor.red)
 
         with (
-            patch.object(
-                FileExporter, "auto_save", return_value="/auto/path.png"
-            ),
+            patch.object(FileExporter, "auto_save", return_value="/auto/path.png"),
             patch.object(FileExporter, "save_as") as mock_sa,
         ):
             result = FileExporter.save_with_dialog(pixmap, cfg)
@@ -247,9 +217,7 @@ class TestSaveWithDialog:
 
 
 class TestSaveAs:
-    def test_returns_none_when_dialog_cancelled(
-        self, qapp, tmp_path: Path
-    ) -> None:
+    def test_returns_none_when_dialog_cancelled(self, qapp, tmp_path: Path) -> None:
         pixmap = QPixmap(10, 10)
         pixmap.fill(Qt.GlobalColor.red)
 
@@ -261,9 +229,7 @@ class TestSaveAs:
 
         assert result is None, f"Expected result to be None, got {result}"
 
-    def test_adds_default_extension_when_none_provided(
-        self, qapp, tmp_path: Path
-    ) -> None:
+    def test_adds_default_extension_when_none_provided(self, qapp, tmp_path: Path) -> None:
         cfg = Config(config_path=tmp_path / "config.json")
         cfg.set("save.default_format", "png")
 
@@ -284,9 +250,7 @@ class TestSaveAs:
             f"Expected result.endswith('.png') to be truthy, got {result.endswith('.png')}"
         )
 
-    def test_calls_save_with_correct_format_and_quality(
-        self, qapp, tmp_path: Path
-    ) -> None:
+    def test_calls_save_with_correct_format_and_quality(self, qapp, tmp_path: Path) -> None:
         cfg = Config(config_path=tmp_path / "config.json")
         cfg.set("save.default_format", "jpg")
         cfg.set("save.jpg_quality", 75)

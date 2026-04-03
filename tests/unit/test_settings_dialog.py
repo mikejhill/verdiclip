@@ -414,8 +414,7 @@ class TestJpgQualityLabel:
             "Expected dialog to have a _jpg_quality_label attribute"
         )
         assert isinstance(dialog._jpg_quality_label, QLabel), (
-            f"Expected _jpg_quality_label to be QLabel,"
-            f" got {type(dialog._jpg_quality_label)}"
+            f"Expected _jpg_quality_label to be QLabel, got {type(dialog._jpg_quality_label)}"
         )
 
     def test_quality_label_matches_initial_value(self, qapp, tmp_config) -> None:

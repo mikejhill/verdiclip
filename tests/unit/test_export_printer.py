@@ -82,12 +82,8 @@ class TestPrintPixmap:
         pixmap.fill(Qt.GlobalColor.blue)
 
         with (
-            patch.object(
-                QPrintDialog, "exec", return_value=QPrintDialog.DialogCode.Accepted
-            ),
-            patch(
-                "verdiclip.export.printer._render_to_printer"
-            ) as mock_render,
+            patch.object(QPrintDialog, "exec", return_value=QPrintDialog.DialogCode.Accepted),
+            patch("verdiclip.export.printer._render_to_printer") as mock_render,
         ):
             result = PrinterExporter.print_pixmap(pixmap)
 
@@ -98,9 +94,7 @@ class TestPrintPixmap:
         pixmap = QPixmap(100, 100)
         pixmap.fill(Qt.GlobalColor.blue)
 
-        with patch.object(
-            QPrintDialog, "exec", return_value=QPrintDialog.DialogCode.Rejected
-        ):
+        with patch.object(QPrintDialog, "exec", return_value=QPrintDialog.DialogCode.Rejected):
             result = PrinterExporter.print_pixmap(pixmap)
 
         assert result is False, f"Expected result to be False, got {result}"

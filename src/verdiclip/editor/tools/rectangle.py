@@ -36,11 +36,13 @@ class RectangleTool(BaseTool):
         self._current_item: QGraphicsRectItem | None = None
 
     def activate(self, scene: QGraphicsScene, view: EditorCanvas) -> None:
+        """Set crosshair cursor and prepare for rectangle drawing."""
         super().activate(scene, view)
         if view:
             view.setCursor(Qt.CursorShape.CrossCursor)
 
     def mouse_press(self, scene_pos: QPointF, event: QMouseEvent) -> None:
+        """Begin drawing a rectangle from the click position."""
         if not self._scene or event.button() != Qt.MouseButton.LeftButton:
             return
         self._origin = scene_pos
@@ -53,6 +55,7 @@ class RectangleTool(BaseTool):
         self._scene.addItem(self._current_item)
 
     def mouse_move(self, scene_pos: QPointF, event: QMouseEvent) -> None:
+        """Resize the rectangle as the cursor moves, with Shift for squares."""
         if self._current_item is None or self._origin is None:
             return
 
@@ -73,6 +76,7 @@ class RectangleTool(BaseTool):
         self._current_item.setRect(rect)
 
     def mouse_release(self, scene_pos: QPointF, event: QMouseEvent) -> None:
+        """Finalize the rectangle or discard if too small."""
         if self._current_item:
             rect = self._current_item.rect()
             if rect.width() < 3 and rect.height() < 3:
@@ -86,10 +90,13 @@ class RectangleTool(BaseTool):
         self._origin = None
 
     def set_stroke_color(self, color: QColor) -> None:
+        """Update the stroke color for new rectangles."""
         self._stroke_color = color
 
     def set_fill_color(self, color: QColor) -> None:
+        """Update the fill color for new rectangles."""
         self._fill_color = color
 
     def set_stroke_width(self, width: int) -> None:
+        """Update the stroke width for new rectangles."""
         self._stroke_width = width

@@ -39,9 +39,7 @@ class TestTrayIconMenu:
         app = QApplication.instance()
         icon = TrayIcon(app, tmp_config)
         menu = icon.contextMenu()
-        action_texts = [
-            a.text().split("\t")[0] for a in menu.actions() if not a.isSeparator()
-        ]
+        action_texts = [a.text().split("\t")[0] for a in menu.actions() if not a.isSeparator()]
         expected = [
             "Capture Region",
             "Capture Window",
@@ -68,8 +66,7 @@ class TestTrayIconBehavior:
     def test_exit_app_hides_icon_and_quits(self, qapp, tmp_config) -> None:
         app = QApplication.instance()
         icon = TrayIcon(app, tmp_config)
-        with patch.object(icon, "hide") as mock_hide, \
-             patch.object(icon._app, "quit") as mock_quit:
+        with patch.object(icon, "hide") as mock_hide, patch.object(icon._app, "quit") as mock_quit:
             icon._exit_app()
             mock_hide.assert_called_once()
             mock_quit.assert_called_once()
@@ -106,8 +103,10 @@ class TestCaptureWindow:
         mock_pixmap = MagicMock(spec=QPixmap)
         mock_pixmap.isNull.return_value = False
         mock_editor = MagicMock()
-        with patch("verdiclip.capture.window.WindowCapture") as mock_wc, \
-             patch("verdiclip.editor.window.EditorWindow", return_value=mock_editor):
+        with (
+            patch("verdiclip.capture.window.WindowCapture") as mock_wc,
+            patch("verdiclip.editor.window.EditorWindow", return_value=mock_editor),
+        ):
             mock_wc.capture_active_window.return_value = mock_pixmap
             icon.capture_window()
             mock_wc.capture_active_window.assert_called_once()
@@ -118,8 +117,10 @@ class TestCaptureWindow:
         icon = TrayIcon(app, tmp_config)
         mock_pixmap = MagicMock(spec=QPixmap)
         mock_pixmap.isNull.return_value = False
-        with patch("verdiclip.capture.window.WindowCapture") as mock_wc, \
-             patch("verdiclip.editor.window.EditorWindow"):
+        with (
+            patch("verdiclip.capture.window.WindowCapture") as mock_wc,
+            patch("verdiclip.editor.window.EditorWindow"),
+        ):
             mock_wc.capture_active_window.return_value = mock_pixmap
             icon.capture_window()
             call_kwargs = mock_wc.capture_active_window.call_args
@@ -135,8 +136,10 @@ class TestCaptureScreen:
         mock_pixmap = MagicMock(spec=QPixmap)
         mock_pixmap.isNull.return_value = False
         mock_editor = MagicMock()
-        with patch("verdiclip.capture.screen.ScreenCapture") as mock_sc, \
-             patch("verdiclip.editor.window.EditorWindow", return_value=mock_editor):
+        with (
+            patch("verdiclip.capture.screen.ScreenCapture") as mock_sc,
+            patch("verdiclip.editor.window.EditorWindow", return_value=mock_editor),
+        ):
             mock_sc.capture_all_monitors.return_value = mock_pixmap
             icon.capture_screen()
             mock_sc.capture_all_monitors.assert_called_once()
@@ -225,7 +228,9 @@ class TestShowSettings:
             mock_dialog.settings_saved.connect.assert_called_once()
 
     def test_settings_dialog_reuses_existing_instance(
-        self, qapp, tmp_config,
+        self,
+        qapp,
+        tmp_config,
     ) -> None:
         """Calling _show_settings twice reuses the existing dialog."""
         app = QApplication.instance()
@@ -240,8 +245,7 @@ class TestShowSettings:
             icon._show_settings()
             icon._show_settings()
             assert mock_cls.call_count == 1, (
-                f"Expected SettingsDialog created once, "
-                f"but was created {mock_cls.call_count} times"
+                f"Expected SettingsDialog created once, but was created {mock_cls.call_count} times"
             )
 
     def test_reuses_existing_settings_dialog(self, qapp, tmp_config) -> None:
@@ -256,12 +260,9 @@ class TestShowSettings:
             icon._show_settings()
             icon._show_settings()
             assert mock_cls.call_count == 1, (
-                f"Expected SettingsDialog created once, "
-                f"got {mock_cls.call_count} times"
+                f"Expected SettingsDialog created once, got {mock_cls.call_count} times"
             )
-            assert mock_dialog.raise_.called, (
-                "Expected raise_() called on second show"
-            )
+            assert mock_dialog.raise_.called, "Expected raise_() called on second show"
 
 
 class TestAutoSave:
@@ -281,8 +282,9 @@ class TestAutoSave:
             mock_exporter.auto_save.return_value = "C:\\saved.png"
             mock_ew.return_value = MagicMock()
             icon._handle_capture(mock_pixmap)
-            mock_exporter.auto_save.assert_called_once_with(mock_pixmap, tmp_config), (
-                "Expected FileExporter.auto_save to be called once with the pixmap and config"
+            (
+                mock_exporter.auto_save.assert_called_once_with(mock_pixmap, tmp_config),
+                ("Expected FileExporter.auto_save to be called once with the pixmap and config"),
             )
 
     def test_auto_save_not_called_when_disabled(self, qapp, tmp_config) -> None:
@@ -298,9 +300,7 @@ class TestAutoSave:
         ):
             mock_ew.return_value = MagicMock()
             icon._handle_capture(mock_pixmap)
-            mock_exporter.auto_save.assert_not_called(), (
-                "Expected FileExporter.auto_save to NOT be called when auto_save_enabled is False"
-            )
+            mock_exporter.auto_save.assert_not_called()
 
     def test_editor_opens_regardless_of_autosave_enabled(self, qapp, tmp_config) -> None:
         """Editor opens even when auto-save is enabled."""
@@ -316,8 +316,9 @@ class TestAutoSave:
         ):
             mock_exporter.auto_save.return_value = "C:\\saved.png"
             icon._handle_capture(mock_pixmap)
-            mock_editor.show.assert_called_once(), (
-                "Expected editor.show() to be called once even with auto-save enabled"
+            (
+                mock_editor.show.assert_called_once(),
+                ("Expected editor.show() to be called once even with auto-save enabled"),
             )
 
     def test_editor_opens_regardless_of_autosave_disabled(self, qapp, tmp_config) -> None:
@@ -333,8 +334,9 @@ class TestAutoSave:
             patch("verdiclip.editor.window.EditorWindow", return_value=mock_editor),
         ):
             icon._handle_capture(mock_pixmap)
-            mock_editor.show.assert_called_once(), (
-                "Expected editor.show() to be called once even with auto-save disabled"
+            (
+                mock_editor.show.assert_called_once(),
+                ("Expected editor.show() to be called once even with auto-save disabled"),
             )
 
 
@@ -363,13 +365,19 @@ class TestCaptureWindowInteractive:
             mock_picker.window_captured = MagicMock()
             mock_picker_cls.return_value = mock_picker
             icon.capture_window_interactive()
-            mock_picker_cls.assert_called_once(), (
-                f"Expected WindowPicker constructor called once, "
-                f"call count: {mock_picker_cls.call_count}"
+            (
+                mock_picker_cls.assert_called_once(),
+                (
+                    f"Expected WindowPicker constructor called once, "
+                    f"call count: {mock_picker_cls.call_count}"
+                ),
             )
-            mock_picker.start.assert_called_once(), (
-                f"Expected picker.start() called once, "
-                f"call count: {mock_picker.start.call_count}"
+            (
+                mock_picker.start.assert_called_once(),
+                (
+                    f"Expected picker.start() called once, "
+                    f"call count: {mock_picker.start.call_count}"
+                ),
             )
 
     def test_stores_picker_as_active_capture(self, qapp, tmp_config) -> None:
@@ -393,7 +401,10 @@ class TestCaptureWindowInteractive:
             mock_picker.window_captured = MagicMock()
             mock_picker_cls.return_value = mock_picker
             icon.capture_window_interactive()
-            mock_picker.window_captured.connect.assert_called_once(), (
-                f"Expected window_captured.connect called once, "
-                f"call count: {mock_picker.window_captured.connect.call_count}"
+            (
+                mock_picker.window_captured.connect.assert_called_once(),
+                (
+                    f"Expected window_captured.connect called once, "
+                    f"call count: {mock_picker.window_captured.connect.call_count}"
+                ),
             )

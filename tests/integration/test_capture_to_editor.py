@@ -21,9 +21,7 @@ class TestCaptureOpensEditor:
         canvas = EditorCanvas()
         canvas.set_image(pixmap)
 
-        assert canvas.pixmap_item is not None, (
-            "pixmap_item should be set after set_image"
-        )
+        assert canvas.pixmap_item is not None, "pixmap_item should be set after set_image"
         assert isinstance(canvas.pixmap_item, QGraphicsPixmapItem), (
             f"Expected QGraphicsPixmapItem, got {type(canvas.pixmap_item).__name__}"
         )

@@ -33,9 +33,7 @@ class TestWindowPickerOverlayInit:
     def test_window_flags_include_tool(self, qapp) -> None:
         overlay = WindowPickerOverlay()
         flags = overlay.windowFlags()
-        assert flags & Qt.WindowType.Tool, (
-            f"Expected Tool flag in flags, got {flags}"
-        )
+        assert flags & Qt.WindowType.Tool, f"Expected Tool flag in flags, got {flags}"
 
     def test_cursor_is_cross(self, qapp) -> None:
         overlay = WindowPickerOverlay()
@@ -51,9 +49,7 @@ class TestWindowPickerOverlayInit:
 
     def test_windows_list_empty_initially(self, qapp) -> None:
         overlay = WindowPickerOverlay()
-        assert overlay._windows == [], (
-            f"Expected _windows to be empty list, got {overlay._windows}"
-        )
+        assert overlay._windows == [], f"Expected _windows to be empty list, got {overlay._windows}"
 
     def test_hovered_hwnd_zero_initially(self, qapp) -> None:
         overlay = WindowPickerOverlay()
@@ -86,12 +82,8 @@ class TestWindowPickerOverlayMousePress:
         event.button.return_value = Qt.MouseButton.LeftButton
         overlay.mousePressEvent(event)
 
-        assert len(emissions) == 1, (
-            f"Expected 1 window_selected emission, got {len(emissions)}"
-        )
-        assert emissions[0][0] == 12345, (
-            f"Expected hwnd 12345 in signal, got {emissions[0][0]}"
-        )
+        assert len(emissions) == 1, f"Expected 1 window_selected emission, got {len(emissions)}"
+        assert emissions[0][0] == 12345, f"Expected hwnd 12345 in signal, got {emissions[0][0]}"
         assert emissions[0][1] == QRect(10, 20, 640, 480), (
             f"Expected window rect in signal, got {emissions[0][1]}"
         )
@@ -107,9 +99,7 @@ class TestWindowPickerOverlayMousePress:
         event.button.return_value = Qt.MouseButton.LeftButton
         overlay.mousePressEvent(event)
 
-        assert len(emissions) == 0, (
-            f"Expected no window_selected emission, got {len(emissions)}"
-        )
+        assert len(emissions) == 0, f"Expected no window_selected emission, got {len(emissions)}"
 
     def test_right_click_emits_cancelled(self, qapp) -> None:
         overlay = WindowPickerOverlay()
@@ -121,9 +111,7 @@ class TestWindowPickerOverlayMousePress:
         event.button.return_value = Qt.MouseButton.RightButton
         overlay.mousePressEvent(event)
 
-        assert len(cancelled) == 1, (
-            f"Expected 1 cancelled emission, got {len(cancelled)}"
-        )
+        assert len(cancelled) == 1, f"Expected 1 cancelled emission, got {len(cancelled)}"
 
 
 # ---------------------------------------------------------------------------
@@ -142,9 +130,7 @@ class TestWindowPickerOverlayKeyPress:
         event.key.return_value = Qt.Key.Key_Escape
         overlay.keyPressEvent(event)
 
-        assert len(cancelled) == 1, (
-            f"Expected 1 cancelled emission on Escape, got {len(cancelled)}"
-        )
+        assert len(cancelled) == 1, f"Expected 1 cancelled emission on Escape, got {len(cancelled)}"
 
     @pytest.mark.skipif(
         not hasattr(QCursor, "pos"),
@@ -158,8 +144,10 @@ class TestWindowPickerOverlayKeyPress:
         event.key.return_value = Qt.Key.Key_Right
         event.modifiers.return_value = Qt.KeyboardModifier.NoModifier
 
-        with patch.object(QCursor, "pos", return_value=QPoint(100, 100)), \
-             patch.object(QCursor, "setPos") as mock_set_pos:
+        with (
+            patch.object(QCursor, "pos", return_value=QPoint(100, 100)),
+            patch.object(QCursor, "setPos") as mock_set_pos,
+        ):
             overlay.keyPressEvent(event)
             mock_set_pos.assert_called_once()
             new_pos = mock_set_pos.call_args[0][0]
@@ -179,8 +167,10 @@ class TestWindowPickerOverlayKeyPress:
         event.key.return_value = Qt.Key.Key_Down
         event.modifiers.return_value = Qt.KeyboardModifier.ControlModifier
 
-        with patch.object(QCursor, "pos", return_value=QPoint(100, 100)), \
-             patch.object(QCursor, "setPos") as mock_set_pos:
+        with (
+            patch.object(QCursor, "pos", return_value=QPoint(100, 100)),
+            patch.object(QCursor, "setPos") as mock_set_pos,
+        ):
             overlay.keyPressEvent(event)
             mock_set_pos.assert_called_once()
             new_pos = mock_set_pos.call_args[0][0]
@@ -258,9 +248,7 @@ class TestWindowPickerOverlayHitTest:
 
         overlay.mouseMoveEvent(event)
 
-        assert overlay._hovered_hwnd == 42, (
-            f"Expected hovered hwnd 42, got {overlay._hovered_hwnd}"
-        )
+        assert overlay._hovered_hwnd == 42, f"Expected hovered hwnd 42, got {overlay._hovered_hwnd}"
         assert overlay._hovered_rect == rect, (
             f"Expected hovered rect {rect}, got {overlay._hovered_rect}"
         )
@@ -284,17 +272,17 @@ class TestWindowPickerOverlayStart:
 
         overlay = WindowPickerOverlay()
         # Mock the show/activate calls to avoid display dependency
-        with patch.object(overlay, "show"), \
-             patch.object(overlay, "activateWindow"), \
-             patch.object(overlay, "raise_"), \
-             patch.object(overlay, "setGeometry"):
+        with (
+            patch.object(overlay, "show"),
+            patch.object(overlay, "activateWindow"),
+            patch.object(overlay, "raise_"),
+            patch.object(overlay, "setGeometry"),
+        ):
             overlay.start()
 
         mock_screen.capture_all_monitors.assert_called_once()
         mock_wincap.enumerate_visible_windows.assert_called_once()
-        assert overlay._background is not None, (
-            "Expected background to be captured after start()"
-        )
+        assert overlay._background is not None, "Expected background to be captured after start()"
         assert len(overlay._windows) == 1, (
             f"Expected 1 window enumerated, got {len(overlay._windows)}"
         )
@@ -323,9 +311,7 @@ class TestWindowPickerOverlayPaintEvent:
 
 class TestWindowPickerStart:
     @patch("verdiclip.capture.window_picker.WindowPickerOverlay")
-    def test_start_creates_overlay_and_connects_signals(
-        self, mock_overlay_cls, qapp
-    ) -> None:
+    def test_start_creates_overlay_and_connects_signals(self, mock_overlay_cls, qapp) -> None:
         mock_overlay = mock_overlay_cls.return_value
         mock_overlay.window_selected = MagicMock()
         mock_overlay.cancelled = MagicMock()
@@ -356,17 +342,11 @@ class TestWindowPickerOnWindowSelected:
         window_rect = QRect(100, 100, 640, 480)
         picker._on_window_selected(12345, window_rect)
 
-        assert len(captured) == 1, (
-            f"Expected 1 window_captured emission, got {len(captured)}"
-        )
+        assert len(captured) == 1, f"Expected 1 window_captured emission, got {len(captured)}"
         result = captured[0]
         assert not result.isNull(), "Expected captured pixmap to not be null"
-        assert result.width() == 640, (
-            f"Expected cropped width 640, got {result.width()}"
-        )
-        assert result.height() == 480, (
-            f"Expected cropped height 480, got {result.height()}"
-        )
+        assert result.width() == 640, f"Expected cropped width 640, got {result.width()}"
+        assert result.height() == 480, f"Expected cropped height 480, got {result.height()}"
 
     @patch("verdiclip.capture.window_picker.WindowCapture")
     def test_on_window_selected_falls_back_to_live_capture(self, mock_wincap, qapp) -> None:
@@ -385,6 +365,4 @@ class TestWindowPickerOnWindowSelected:
         mock_wincap.capture_window_by_handle.assert_called_once_with(
             12345, include_decorations=False
         )
-        assert len(captured) == 1, (
-            f"Expected 1 window_captured emission, got {len(captured)}"
-        )
+        assert len(captured) == 1, f"Expected 1 window_captured emission, got {len(captured)}"

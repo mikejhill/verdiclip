@@ -32,8 +32,11 @@ _ARROWHEAD_ANGLE = math.radians(25)
 # Shared geometry helpers
 # ---------------------------------------------------------------------------
 
+
 def _build_arrowhead_path(
-    p1: QPointF, p2: QPointF, stroke_width: int = 3,
+    p1: QPointF,
+    p2: QPointF,
+    stroke_width: int = 3,
 ) -> QPainterPath:
     """Return a filled triangle path for an arrowhead pointing from *p1* to *p2*.
 
@@ -57,7 +60,7 @@ def _build_arrowhead_path(
     )
 
     path = QPainterPath()
-    path.moveTo(p2)    # Tip of the arrow
+    path.moveTo(p2)  # Tip of the arrow
     path.lineTo(left)
     path.lineTo(right)
     path.closeSubpath()
@@ -81,6 +84,7 @@ def _snap_45(origin: QPointF, pos: QPointF) -> QPointF:
 # ---------------------------------------------------------------------------
 # ArrowItem — persistent annotation item
 # ---------------------------------------------------------------------------
+
 
 class ArrowItem(QGraphicsItemGroup):
     """Selectable arrow annotation comprising a shaft line and a filled arrowhead.
@@ -121,7 +125,7 @@ class ArrowItem(QGraphicsItemGroup):
         self._logical_p2 = QPointF(p2)
         self.update_endpoints(p1, p2)
 
-    def boundingRect(self) -> QRectF:  # noqa: N802
+    def boundingRect(self) -> QRectF:
         """Return combined bounding rect of shaft and head children.
 
         QGraphicsItemGroup.boundingRect() can return empty when children are
@@ -204,6 +208,7 @@ class ArrowItem(QGraphicsItemGroup):
 # ArrowTool — drawing interaction
 # ---------------------------------------------------------------------------
 
+
 class ArrowTool(BaseTool):
     """Draw lines with arrowheads."""
 
@@ -219,11 +224,13 @@ class ArrowTool(BaseTool):
         self._arrow: ArrowItem | None = None
 
     def activate(self, scene: QGraphicsScene, view: EditorCanvas) -> None:
+        """Set crosshair cursor and prepare for arrow drawing."""
         super().activate(scene, view)
         if view:
             view.setCursor(Qt.CursorShape.CrossCursor)
 
     def mouse_press(self, scene_pos: QPointF, event: QMouseEvent) -> None:
+        """Begin drawing an arrow from the click position."""
         if not self._scene or event.button() != Qt.MouseButton.LeftButton:
             return
         self._origin = scene_pos
@@ -231,6 +238,7 @@ class ArrowTool(BaseTool):
         self._scene.addItem(self._arrow)
 
     def mouse_move(self, scene_pos: QPointF, event: QMouseEvent) -> None:
+        """Update the arrow endpoint as the cursor moves."""
         if self._arrow is None or self._origin is None:
             return
         end = scene_pos
@@ -239,6 +247,7 @@ class ArrowTool(BaseTool):
         self._arrow.update_endpoints(self._origin, end)
 
     def mouse_release(self, scene_pos: QPointF, event: QMouseEvent) -> None:
+        """Finalize the arrow or discard if too short."""
         if self._arrow and self._origin:
             length = QLineF(self._origin, scene_pos).length()
             if length < 5:
@@ -251,7 +260,9 @@ class ArrowTool(BaseTool):
         self._origin = None
 
     def set_stroke_color(self, color: QColor) -> None:
+        """Update the stroke color for new arrows."""
         self._stroke_color = color
 
     def set_stroke_width(self, width: int) -> None:
+        """Update the stroke width for new arrows."""
         self._stroke_width = width

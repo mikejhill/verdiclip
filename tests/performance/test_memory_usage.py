@@ -9,7 +9,7 @@ class TestIdleMemory:
     def test_idle_memory(self) -> None:
         tracemalloc.start()
 
-        import verdiclip  # noqa: F401
+        import verdiclip
         import verdiclip.config  # noqa: F401
 
         _current, peak = tracemalloc.get_traced_memory()

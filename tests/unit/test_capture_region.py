@@ -240,9 +240,7 @@ class TestRegionSelectorPaintEvent:
         with patch("verdiclip.capture.region.QPainter") as mock_cls:
             painter = mock_cls.return_value
             selector.paintEvent(event)
-            painter.drawPixmap.assert_any_call(
-                0, 0, selector._background
-            )
+            painter.drawPixmap.assert_any_call(0, 0, selector._background)
 
     def test_paint_crosshair_when_not_selecting(self, qapp) -> None:
         """Crosshair lines drawn when cursor set, not selecting."""
@@ -303,9 +301,7 @@ class TestRegionSelectorPaintEvent:
             patch.object(selector, "_draw_magnifier") as mag,
         ):
             selector.paintEvent(event)
-            mag.assert_called_once_with(
-                mock_cls.return_value, QPoint(400, 300)
-            )
+            mag.assert_called_once_with(mock_cls.return_value, QPoint(400, 300))
 
 
 class TestRegionSelectorDrawMagnifier:
@@ -362,9 +358,7 @@ class TestRegionCaptureWorkflow:
     """Tests for RegionCapture signal handling (lines 200-208)."""
 
     @patch("verdiclip.capture.region.ScreenCapture")
-    def test_on_captured_callback_invoked(
-        self, mock_screen, qapp
-    ) -> None:
+    def test_on_captured_callback_invoked(self, mock_screen, qapp) -> None:
         """region_selected crops from frozen background and invokes callback."""
         bg = QPixmap(100, 100)
         bg.fill(Qt.GlobalColor.blue)
@@ -372,9 +366,7 @@ class TestRegionCaptureWorkflow:
 
         captured = []
         rc = RegionCapture()
-        rc.start_selection(
-            on_captured=lambda p: captured.append(p)
-        )
+        rc.start_selection(on_captured=lambda p: captured.append(p))
 
         test_rect = QRect(10, 10, 50, 50)
         rc._selector.region_selected.emit(test_rect)
@@ -389,19 +381,13 @@ class TestRegionCaptureWorkflow:
         assert not pixmap.isNull(), "Expected cropped pixmap to be non-null"
 
     @patch("verdiclip.capture.region.ScreenCapture")
-    def test_on_cancelled_callback_invoked(
-        self, mock_screen, qapp
-    ) -> None:
+    def test_on_cancelled_callback_invoked(self, mock_screen, qapp) -> None:
         """selection_cancelled triggers cancel callback."""
-        mock_screen.capture_all_monitors.return_value = QPixmap(
-            100, 100
-        )
+        mock_screen.capture_all_monitors.return_value = QPixmap(100, 100)
 
         cancelled = []
         rc = RegionCapture()
-        rc.start_selection(
-            on_cancelled=lambda: cancelled.append(True)
-        )
+        rc.start_selection(on_cancelled=lambda: cancelled.append(True))
         rc._selector.selection_cancelled.emit()
 
         assert len(cancelled) == 1, f"Expected len(cancelled) to equal 1, got {len(cancelled)}"
@@ -429,9 +415,7 @@ class TestRegionSelectorMultiMonitor:
             assert geo.x() == -1920, (
                 f"Expected geometry x to equal -1920 (virtual left edge), got {geo.x()}"
             )
-            assert geo.y() == 0, (
-                f"Expected geometry y to equal 0, got {geo.y()}"
-            )
+            assert geo.y() == 0, f"Expected geometry y to equal 0, got {geo.y()}"
             assert geo.width() == 5760, (
                 f"Expected geometry width to equal 5760 (total virtual width), got {geo.width()}"
             )
@@ -440,9 +424,7 @@ class TestRegionSelectorMultiMonitor:
             )
 
     @patch("verdiclip.capture.region.ScreenCapture")
-    def test_virtual_offset_stored_from_geometry_top_left(
-        self, mock_screen, qapp
-    ) -> None:
+    def test_virtual_offset_stored_from_geometry_top_left(self, mock_screen, qapp) -> None:
         """start() stores _virtual_offset from the virtual geometry's top-left corner."""
         mock_screen.capture_all_monitors.return_value = QPixmap(5760, 1080)
         mock_primary = MagicMock()
@@ -458,15 +440,13 @@ class TestRegionSelectorMultiMonitor:
             assert offset.x() == -1920, (
                 f"Expected _virtual_offset.x() to equal -1920, got {offset.x()}"
             )
-            assert offset.y() == 0, (
-                f"Expected _virtual_offset.y() to equal 0, got {offset.y()}"
-            )
+            assert offset.y() == 0, f"Expected _virtual_offset.y() to equal 0, got {offset.y()}"
 
     @patch("verdiclip.capture.region.ScreenCapture")
     def test_mouse_release_emits_coordinates_translated_by_virtual_offset(
         self, mock_screen, qapp
     ) -> None:
-        """mouseReleaseEvent emits screen_rect translated by _virtual_offset."""
+        """MouseReleaseEvent emits screen_rect translated by _virtual_offset."""
         mock_screen.capture_all_monitors.return_value = QPixmap(5760, 1080)
         mock_primary = MagicMock()
         mock_primary.virtualGeometry.return_value = QRect(-1920, 0, 5760, 1080)
@@ -493,9 +473,7 @@ class TestRegionSelectorMultiMonitor:
 
             selector.mouseReleaseEvent(event)
 
-            assert len(emitted) == 1, (
-                f"Expected exactly 1 signal emission, got {len(emitted)}"
-            )
+            assert len(emitted) == 1, f"Expected exactly 1 signal emission, got {len(emitted)}"
             rect = emitted[0]
             # Widget rect (100,100)→(300,300) translated by offset (-1920, 0)
             assert rect.x() == 100 + (-1920), (
@@ -503,8 +481,7 @@ class TestRegionSelectorMultiMonitor:
                 f" got {rect.x()}"
             )
             assert rect.y() == 100 + 0, (
-                f"Expected emitted rect y to equal 100 (widget y + offset 0),"
-                f" got {rect.y()}"
+                f"Expected emitted rect y to equal 100 (widget y + offset 0), got {rect.y()}"
             )
             assert rect.width() == 201, (
                 f"Expected emitted rect width to equal 201, got {rect.width()}"

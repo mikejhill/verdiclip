@@ -31,19 +31,13 @@ class TestUndoRedo:
         history = EditorHistory()
 
         history.push(AddItemCommand(scene, item, "Add rect"))
-        assert item in scene.items(), (
-            "Expected item in scene after AddItemCommand push"
-        )
+        assert item in scene.items(), "Expected item in scene after AddItemCommand push"
 
         history.undo()
-        assert item not in scene.items(), (
-            "Expected item removed from scene after undo"
-        )
+        assert item not in scene.items(), "Expected item removed from scene after undo"
 
         history.redo()
-        assert item in scene.items(), (
-            "Expected item back in scene after redo"
-        )
+        assert item in scene.items(), "Expected item back in scene after redo"
 
 
 class TestCanUndoRedoStates:
@@ -137,9 +131,7 @@ class TestRemoveItemCommand:
         cmd.redo()
         cmd.undo()
 
-        assert item in scene.items(), (
-            "Expected item back in scene after RemoveItemCommand.undo()"
-        )
+        assert item in scene.items(), "Expected item back in scene after RemoveItemCommand.undo()"
 
 
 class TestMoveItemCommand:
@@ -152,12 +144,8 @@ class TestMoveItemCommand:
         cmd = MoveItemCommand(item, (10.0, 20.0), (100.0, 200.0), "Move rect")
         cmd.redo()
 
-        assert item.pos().x() == 100.0, (
-            f"Expected item x=100.0 after redo, got {item.pos().x()}"
-        )
-        assert item.pos().y() == 200.0, (
-            f"Expected item y=200.0 after redo, got {item.pos().y()}"
-        )
+        assert item.pos().x() == 100.0, f"Expected item x=100.0 after redo, got {item.pos().x()}"
+        assert item.pos().y() == 200.0, f"Expected item y=200.0 after redo, got {item.pos().y()}"
 
     def test_undo_moves_item_to_old_pos(self, qapp) -> None:
         scene = QGraphicsScene()
@@ -169,12 +157,8 @@ class TestMoveItemCommand:
         cmd.redo()
         cmd.undo()
 
-        assert item.pos().x() == 10.0, (
-            f"Expected item x=10.0 after undo, got {item.pos().x()}"
-        )
-        assert item.pos().y() == 20.0, (
-            f"Expected item y=20.0 after undo, got {item.pos().y()}"
-        )
+        assert item.pos().x() == 10.0, f"Expected item x=10.0 after undo, got {item.pos().x()}"
+        assert item.pos().y() == 20.0, f"Expected item y=20.0 after undo, got {item.pos().y()}"
 
 
 class TestEditorHistoryStack:
@@ -252,8 +236,9 @@ class TestCropCommand:
         cmd = CropCommand(canvas, old_pixmap, new_pixmap, removed, [], (0.0, 0.0))
         cmd.redo()
 
-        canvas._replace_image.assert_not_called(), (
-            "Expected _replace_image NOT called on first redo (no-op)"
+        (
+            canvas._replace_image.assert_not_called(),
+            ("Expected _replace_image NOT called on first redo (no-op)"),
         )
 
     def test_second_redo_applies_new_pixmap(self, qapp) -> None:
@@ -268,12 +253,14 @@ class TestCropCommand:
         removed = [QGraphicsRectItem(0, 0, 10, 10)]
 
         cmd = CropCommand(canvas, old_pixmap, new_pixmap, removed, [], (0.0, 0.0))
-        cmd.redo()   # first redo (no-op)
-        cmd.undo()   # undo
-        cmd.redo()   # second redo — should apply
+        cmd.redo()  # first redo (no-op)
+        cmd.undo()  # undo
+        cmd.redo()  # second redo — should apply
 
         canvas._replace_image.assert_called_with(
-            new_pixmap, removed, remove=True,
+            new_pixmap,
+            removed,
+            remove=True,
         )
 
     def test_undo_restores_old_pixmap(self, qapp) -> None:
@@ -288,11 +275,13 @@ class TestCropCommand:
         removed = [QGraphicsRectItem(0, 0, 10, 10)]
 
         cmd = CropCommand(canvas, old_pixmap, new_pixmap, removed, [], (0.0, 0.0))
-        cmd.redo()   # first redo (no-op)
+        cmd.redo()  # first redo (no-op)
         cmd.undo()
 
         canvas._replace_image.assert_called_once_with(
-            old_pixmap, removed, remove=False,
+            old_pixmap,
+            removed,
+            remove=False,
         )
 
     def test_undo_redo_cycle_with_history(self, qapp) -> None:
@@ -310,21 +299,20 @@ class TestCropCommand:
         cmd = CropCommand(canvas, old_pixmap, new_pixmap, removed, [], (0.0, 0.0))
         history.push(cmd)
 
-        assert history.can_undo() is True, (
-            "Expected can_undo() True after pushing CropCommand"
-        )
+        assert history.can_undo() is True, "Expected can_undo() True after pushing CropCommand"
         # First redo was no-op, so _replace_image should not have been called yet
         canvas._replace_image.assert_not_called()
 
         history.undo()
         canvas._replace_image.assert_called_once_with(
-            old_pixmap, removed, remove=False,
+            old_pixmap,
+            removed,
+            remove=False,
         )
 
         history.redo()
         assert canvas._replace_image.call_count == 2, (
-            f"Expected 2 _replace_image calls (undo + redo), "
-            f"got {canvas._replace_image.call_count}"
+            f"Expected 2 _replace_image calls (undo + redo), got {canvas._replace_image.call_count}"
         )
 
     def test_crop_command_description(self, qapp) -> None:
@@ -335,9 +323,7 @@ class TestCropCommand:
 
         canvas = MagicMock()
         cmd = CropCommand(canvas, QPixmap(100, 100), QPixmap(50, 50), [], [], (0.0, 0.0))
-        assert cmd.text() == "Crop image", (
-            f"Expected description 'Crop image', got '{cmd.text()}'"
-        )
+        assert cmd.text() == "Crop image", f"Expected description 'Crop image', got '{cmd.text()}'"
 
 
 # ---------------------------------------------------------------------------
@@ -393,7 +379,6 @@ class TestResizeItemCommand:
     def test_undo_restores_rect(self, qapp) -> None:
         from PySide6.QtCore import QRectF
 
-
         scene = QGraphicsScene()
         item = QGraphicsRectItem(10, 20, 80, 60)
         scene.addItem(item)
@@ -411,7 +396,6 @@ class TestResizeItemCommand:
 
     def test_redo_applies_new_geometry(self, qapp) -> None:
         from PySide6.QtCore import QRectF
-
 
         scene = QGraphicsScene()
         item = QGraphicsRectItem(10, 20, 80, 60)
@@ -458,7 +442,6 @@ class TestResizeHandles:
 
     def test_create_handles_ellipse(self, qapp) -> None:
         from verdiclip.editor.tools.handles import create_handles_for_item
-
 
         scene = QGraphicsScene()
         item = QGraphicsEllipseItem(0, 0, 60, 40)

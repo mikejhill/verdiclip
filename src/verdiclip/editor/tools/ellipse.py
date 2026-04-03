@@ -36,11 +36,13 @@ class EllipseTool(BaseTool):
         self._current_item: QGraphicsEllipseItem | None = None
 
     def activate(self, scene: QGraphicsScene, view: EditorCanvas) -> None:
+        """Set crosshair cursor and prepare for ellipse drawing."""
         super().activate(scene, view)
         if view:
             view.setCursor(Qt.CursorShape.CrossCursor)
 
     def mouse_press(self, scene_pos: QPointF, event: QMouseEvent) -> None:
+        """Begin drawing an ellipse from the click position."""
         if not self._scene or event.button() != Qt.MouseButton.LeftButton:
             return
         self._origin = scene_pos
@@ -51,6 +53,7 @@ class EllipseTool(BaseTool):
         self._scene.addItem(self._current_item)
 
     def mouse_move(self, scene_pos: QPointF, event: QMouseEvent) -> None:
+        """Resize the ellipse as the cursor moves, with Shift for circles."""
         if self._current_item is None or self._origin is None:
             return
         rect = QRectF(self._origin, scene_pos).normalized()
@@ -67,6 +70,7 @@ class EllipseTool(BaseTool):
         self._current_item.setRect(rect)
 
     def mouse_release(self, scene_pos: QPointF, event: QMouseEvent) -> None:
+        """Finalize the ellipse or discard if too small."""
         if self._current_item:
             rect = self._current_item.rect()
             if rect.width() < 3 and rect.height() < 3:
@@ -78,10 +82,13 @@ class EllipseTool(BaseTool):
         self._origin = None
 
     def set_stroke_color(self, color: QColor) -> None:
+        """Update the stroke color for new ellipses."""
         self._stroke_color = color
 
     def set_fill_color(self, color: QColor) -> None:
+        """Update the fill color for new ellipses."""
         self._fill_color = color
 
     def set_stroke_width(self, width: int) -> None:
+        """Update the stroke width for new ellipses."""
         self._stroke_width = width

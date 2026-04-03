@@ -36,17 +36,17 @@ def qapp() -> Generator[QApplication, None, None]:
     app = QApplication.instance()
     if app is None:
         app = QApplication([])
-    yield app
+    return app
 
 
-@pytest.fixture()
+@pytest.fixture
 def tmp_config(tmp_path: Path) -> Config:
     """Provide a Config instance backed by a temporary file."""
     config_path = tmp_path / "config.json"
     return Config(config_path=config_path)
 
 
-@pytest.fixture()
+@pytest.fixture
 def sample_config_file(tmp_path: Path) -> Path:
     """Create a sample config file and return its path."""
     config_path = tmp_path / "config.json"
@@ -93,7 +93,8 @@ def simulate_draw(
 
 
 def make_scene_with_background(
-    width: int = 200, height: int = 200,
+    width: int = 200,
+    height: int = 200,
 ) -> tuple[QGraphicsScene, QGraphicsPixmapItem]:
     """Create a scene with a background QGraphicsPixmapItem at zValue -1000."""
     scene = QGraphicsScene()
@@ -105,7 +106,7 @@ def make_scene_with_background(
     return scene, bg
 
 
-@pytest.fixture()
+@pytest.fixture
 def drawing_context(qapp) -> tuple[QGraphicsScene, QGraphicsView]:
     """Provide a fresh QGraphicsScene and QGraphicsView pair for tool tests."""
     scene = QGraphicsScene()
@@ -113,7 +114,7 @@ def drawing_context(qapp) -> tuple[QGraphicsScene, QGraphicsView]:
     return scene, view
 
 
-@pytest.fixture()
+@pytest.fixture
 def drawing_context_with_bg(qapp) -> tuple[QGraphicsScene, QGraphicsView, QGraphicsPixmapItem]:
     """Provide a scene with a background pixmap, view, and the background item."""
     scene, bg = make_scene_with_background()

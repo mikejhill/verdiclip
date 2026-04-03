@@ -23,12 +23,8 @@ class TestEditorExportToFile:
 
         flattened = canvas.get_flattened_pixmap()
         assert not flattened.isNull(), "Flattened pixmap should not be null"
-        assert flattened.width() == 200, (
-            f"Expected flattened width 200, got {flattened.width()}"
-        )
-        assert flattened.height() == 200, (
-            f"Expected flattened height 200, got {flattened.height()}"
-        )
+        assert flattened.width() == 200, f"Expected flattened width 200, got {flattened.width()}"
+        assert flattened.height() == 200, f"Expected flattened height 200, got {flattened.height()}"
 
         output_path = tmp_path / "export_test.png"
         success = flattened.save(str(output_path), "PNG")

@@ -452,11 +452,13 @@ Dev-only dependencies (not shipped):
 | pytest-benchmark | BSD-2 | Performance benchmarks |
 | pytest-cov | MIT | Coverage reporting |
 | ruff | MIT | Linting and formatting |
+| ty | MIT | Static type checking |
 | pyinstaller | GPL-2.0+ | Executable packaging (build tool only) |
 
 ### 11.5 Code Quality
 
 - Lint-clean with ruff.
+- Type-check clean with ty.
 - Type hints on all public APIs.
 - Comprehensive test suite (unit, integration, performance).
 - Conventional Commits for all git history.

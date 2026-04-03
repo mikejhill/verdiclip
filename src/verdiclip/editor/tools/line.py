@@ -35,11 +35,13 @@ class LineTool(BaseTool):
         self._current_item: QGraphicsLineItem | None = None
 
     def activate(self, scene: QGraphicsScene, view: EditorCanvas) -> None:
+        """Set crosshair cursor and prepare for line drawing."""
         super().activate(scene, view)
         if view:
             view.setCursor(Qt.CursorShape.CrossCursor)
 
     def mouse_press(self, scene_pos: QPointF, event: QMouseEvent) -> None:
+        """Begin drawing a line from the click position."""
         if not self._scene or event.button() != Qt.MouseButton.LeftButton:
             return
         self._origin = scene_pos
@@ -49,6 +51,7 @@ class LineTool(BaseTool):
         self._scene.addItem(self._current_item)
 
     def mouse_move(self, scene_pos: QPointF, event: QMouseEvent) -> None:
+        """Update the line endpoint, with Shift for angle snapping."""
         if self._current_item is None or self._origin is None:
             return
         end = scene_pos
@@ -57,6 +60,7 @@ class LineTool(BaseTool):
         self._current_item.setLine(QLineF(self._origin, end))
 
     def mouse_release(self, scene_pos: QPointF, event: QMouseEvent) -> None:
+        """Finalize the line or discard if too short."""
         if self._current_item:
             line = self._current_item.line()
             if line.length() < 3:
@@ -82,7 +86,9 @@ class LineTool(BaseTool):
         )
 
     def set_stroke_color(self, color: QColor) -> None:
+        """Update the stroke color for new lines."""
         self._stroke_color = color
 
     def set_stroke_width(self, width: int) -> None:
+        """Update the stroke width for new lines."""
         self._stroke_width = width

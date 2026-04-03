@@ -30,24 +30,19 @@ class TestMultiToolAnnotation:
 
         # Draw a rectangle
         rect_tool = RectangleTool(stroke_color=QColor("#FF0000"))
-        simulate_draw(rect_tool, scene, QGraphicsView(scene),
-                      QPointF(10, 10), QPointF(100, 80))
+        simulate_draw(rect_tool, scene, QGraphicsView(scene), QPointF(10, 10), QPointF(100, 80))
 
         # Draw an arrow
         arrow_tool = ArrowTool(stroke_color=QColor("#0000FF"))
-        simulate_draw(arrow_tool, scene, QGraphicsView(scene),
-                      QPointF(120, 50), QPointF(200, 50))
+        simulate_draw(arrow_tool, scene, QGraphicsView(scene), QPointF(120, 50), QPointF(200, 50))
 
         # Draw a highlight
         hl_tool = HighlightTool()
-        simulate_draw(hl_tool, scene, QGraphicsView(scene),
-                      QPointF(50, 100), QPointF(150, 130))
+        simulate_draw(hl_tool, scene, QGraphicsView(scene), QPointF(50, 100), QPointF(150, 130))
 
         # We should have at least 3 annotation items (excluding background/boundary)
         annotations = [i for i in scene.items() if 0 <= i.zValue() < 9000]
-        assert len(annotations) >= 3, (
-            f"Expected at least 3 annotations, got {len(annotations)}"
-        )
+        assert len(annotations) >= 3, f"Expected at least 3 annotations, got {len(annotations)}"
 
         # Export should produce a valid, non-null pixmap
         flattened = canvas.get_flattened_pixmap()
@@ -83,7 +78,7 @@ class TestUndoRedoWorkflow:
         assert len(_annotations()) == 1, "Should have 1 annotation after draw"
 
         # Undo should remove it
-        if hasattr(canvas, '_history') and canvas._history:
+        if hasattr(canvas, "_history") and canvas._history:
             canvas._history.undo()
             assert len(_annotations()) == 0, "Should have 0 annotations after undo"
 
@@ -100,7 +95,7 @@ class TestCaptureAnnotateExport:
     """Full workflow: capture → annotate → export to multiple formats."""
 
     def test_capture_annotate_export_png_jpg(self, qapp, tmp_path: Path) -> None:
-        from verdiclip.capture.screen import ScreenCapture  # noqa: PLC0415
+        from verdiclip.capture.screen import ScreenCapture
 
         pixmap = ScreenCapture.capture_primary_monitor()
         assert not pixmap.isNull(), "Capture should produce a non-null pixmap"

@@ -37,15 +37,18 @@ class CropTool(BaseTool):
         self._dim_items: list[QGraphicsRectItem] = []
 
     def activate(self, scene: QGraphicsScene, view: EditorCanvas) -> None:
+        """Set crosshair cursor and prepare for crop selection."""
         super().activate(scene, view)
         if view:
             view.setCursor(Qt.CursorShape.CrossCursor)
 
     def deactivate(self) -> None:
+        """Clear crop UI elements and deactivate the tool."""
         self._clear_crop_ui()
         super().deactivate()
 
     def mouse_press(self, scene_pos: QPointF, event: QMouseEvent) -> None:
+        """Begin a new crop selection at the click position."""
         if not self._scene or event.button() != Qt.MouseButton.LeftButton:
             return
 
@@ -58,12 +61,14 @@ class CropTool(BaseTool):
         self._scene.addItem(self._crop_rect_item)
 
     def mouse_move(self, scene_pos: QPointF, event: QMouseEvent) -> None:
+        """Resize the crop rectangle as the cursor moves."""
         if self._crop_rect_item is None or self._origin is None:
             return
         rect = QRectF(self._origin, scene_pos).normalized()
         self._crop_rect_item.setRect(rect)
 
     def mouse_release(self, scene_pos: QPointF, event: QMouseEvent) -> None:
+        """Finalize and apply the crop selection."""
         if self._crop_rect_item is None or self._origin is None:
             return
 
@@ -119,17 +124,16 @@ class CropTool(BaseTool):
                 removed_items.append(item)
 
         # Record all annotation positions BEFORE shifting
-        item_positions = [
-            (item, item.pos().x(), item.pos().y())
-            for item in annotation_items
-        ]
+        item_positions = [(item, item.pos().x(), item.pos().y()) for item in annotation_items]
 
         # Create the cropped pixmap directly from the background
         src_rect = QRectF(crop_rect)
         bg_pixmap = bg_item.pixmap()
         result = bg_pixmap.copy(
-            int(src_rect.x()), int(src_rect.y()),
-            int(src_rect.width()), int(src_rect.height()),
+            int(src_rect.x()),
+            int(src_rect.y()),
+            int(src_rect.width()),
+            int(src_rect.height()),
         )
 
         # Adjust remaining annotation positions relative to new origin
@@ -144,7 +148,9 @@ class CropTool(BaseTool):
         self._clear_crop_ui()
         if self._view and hasattr(self._view, "crop_undoable"):
             self._view.crop_undoable(
-                result, removed_items, item_positions,
+                result,
+                removed_items,
+                item_positions,
                 (offset_x, offset_y),
             )
         elif self._view and hasattr(self._view, "set_image"):

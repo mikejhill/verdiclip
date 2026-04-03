@@ -37,15 +37,18 @@ class TextTool(BaseTool):
         self._active_item: QGraphicsTextItem | None = None
 
     def activate(self, scene: QGraphicsScene, view: EditorCanvas) -> None:
+        """Set I-beam cursor and prepare for text placement."""
         super().activate(scene, view)
         if view:
             view.setCursor(Qt.CursorShape.IBeamCursor)
 
     def deactivate(self) -> None:
+        """Finalize active text and deactivate the tool."""
         self._finalize_text()
         super().deactivate()
 
     def mouse_press(self, scene_pos: QPointF, event: QMouseEvent) -> None:
+        """Place a new text item or edit an existing one at the click position."""
         if not self._scene or event.button() != Qt.MouseButton.LeftButton:
             return
 
@@ -76,10 +79,10 @@ class TextTool(BaseTool):
         logger.debug("Text item placed at (%.0f, %.0f)", scene_pos.x(), scene_pos.y())
 
     def mouse_move(self, scene_pos: QPointF, event: QMouseEvent) -> None:
-        pass  # No drag behavior for text tool
+        """No-op; text is placed on click."""
 
     def mouse_release(self, scene_pos: QPointF, event: QMouseEvent) -> None:
-        pass  # Text editing is handled by the QGraphicsTextItem itself
+        """No-op; text editing is handled by the text item."""
 
     def _finalize_text(self) -> None:
         """Stop editing the active text item."""
@@ -90,7 +93,9 @@ class TextTool(BaseTool):
             self._active_item = None
 
     def set_color(self, color: QColor) -> None:
+        """Update the text color for new annotations."""
         self._color = color
 
     def set_font(self, font: QFont) -> None:
+        """Update the font for new text annotations."""
         self._font = font

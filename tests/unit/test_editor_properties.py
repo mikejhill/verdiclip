@@ -22,12 +22,8 @@ class TestColorButtonInit:
 
     def test_fixed_size_28x28(self, qapp) -> None:
         btn = ColorButton(QColor("#000000"))
-        assert btn.width() == 28, (
-            f"Expected button width 28, got {btn.width()}"
-        )
-        assert btn.height() == 28, (
-            f"Expected button height 28, got {btn.height()}"
-        )
+        assert btn.width() == 28, f"Expected button width 28, got {btn.width()}"
+        assert btn.height() == 28, f"Expected button height 28, got {btn.height()}"
 
 
 class TestColorButtonProperty:
@@ -67,9 +63,7 @@ class TestPropertiesPanelDefaults:
 
     def test_stroke_width_default(self, qapp) -> None:
         panel = PropertiesPanel()
-        assert panel.stroke_width == 3, (
-            f"Expected default stroke width 3, got {panel.stroke_width}"
-        )
+        assert panel.stroke_width == 3, f"Expected default stroke width 3, got {panel.stroke_width}"
 
     def test_current_font_default(self, qapp) -> None:
         panel = PropertiesPanel()
@@ -77,9 +71,7 @@ class TestPropertiesPanelDefaults:
         assert font.family() == "Arial", (
             f"Expected default font family 'Arial', got '{font.family()}'"
         )
-        assert font.pointSize() == 14, (
-            f"Expected default font size 14, got {font.pointSize()}"
-        )
+        assert font.pointSize() == 14, f"Expected default font size 14, got {font.pointSize()}"
 
 
 class TestPropertiesPanelSetStrokeColor:
@@ -106,9 +98,7 @@ class TestPropertiesPanelSetStrokeWidth:
     def test_updates_width(self, qapp) -> None:
         panel = PropertiesPanel()
         panel.set_stroke_width(10)
-        assert panel.stroke_width == 10, (
-            f"Expected stroke width 10, got {panel.stroke_width}"
-        )
+        assert panel.stroke_width == 10, f"Expected stroke width 10, got {panel.stroke_width}"
 
 
 class TestPropertiesPanelStrokeWidthSignal:

@@ -221,9 +221,18 @@ class TestDeserialiseEdgeCases:
         assert len(restored) == 0, "Unknown types should be silently skipped"
 
     def test_missing_pos_defaults_to_origin(self, qapp) -> None:
-        data = [{"type": "rect", "x": 0, "y": 0, "w": 50, "h": 50,
-                 "pen_color": "#000000", "pen_width": 1,
-                 "brush_color": "#00000000"}]
+        data = [
+            {
+                "type": "rect",
+                "x": 0,
+                "y": 0,
+                "w": 50,
+                "h": 50,
+                "pen_color": "#000000",
+                "pen_width": 1,
+                "brush_color": "#00000000",
+            }
+        ]
         restored = _deserialise_items(data)
         assert len(restored) == 1
         assert restored[0].pos() == QPointF(0, 0)

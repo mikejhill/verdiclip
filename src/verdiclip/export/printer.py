@@ -27,9 +27,7 @@ class PrinterExporter:
             True if printing was initiated.
         """
         printer = QPrinter(QPrinter.PrinterMode.HighResolution)
-        printer.setPageOrientation(
-            _best_orientation(pixmap.width(), pixmap.height())
-        )
+        printer.setPageOrientation(_best_orientation(pixmap.width(), pixmap.height()))
 
         dialog = QPrintDialog(printer, parent)
         dialog.setWindowTitle("Print Screenshot")
@@ -46,9 +44,7 @@ class PrinterExporter:
     def print_preview(pixmap: QPixmap, parent: QWidget | None = None) -> None:
         """Show a print preview dialog."""
         printer = QPrinter(QPrinter.PrinterMode.HighResolution)
-        printer.setPageOrientation(
-            _best_orientation(pixmap.width(), pixmap.height())
-        )
+        printer.setPageOrientation(_best_orientation(pixmap.width(), pixmap.height()))
 
         def render(p: QPrinter) -> None:
             _render_to_printer(pixmap, p)
@@ -60,7 +56,8 @@ class PrinterExporter:
 
 def _best_orientation(width: int, height: int) -> QPageLayout.Orientation:
     """Return the best page orientation for the given image dimensions."""
-    from PySide6.QtGui import QPageLayout  # noqa: PLC0415
+    from PySide6.QtGui import QPageLayout
+
     if width > height:
         return QPageLayout.Orientation.Landscape
     return QPageLayout.Orientation.Portrait

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import ClassVar
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QFont
@@ -41,7 +42,9 @@ class ColorButton(QPushButton):
 
     def _pick_color(self) -> None:
         color = QColorDialog.getColor(
-            self._color, self.parentWidget(), "Choose Color",
+            self._color,
+            self.parentWidget(),
+            "Choose Color",
             QColorDialog.ColorDialogOption.ShowAlphaChannel,
         )
         if color.isValid():
@@ -51,6 +54,7 @@ class ColorButton(QPushButton):
 
     @property
     def color(self) -> QColor:
+        """Return the current color."""
         return self._color
 
     @color.setter
@@ -69,7 +73,11 @@ class PropertiesPanel(QWidget):
     start_cap_changed = Signal(str)
     end_cap_changed = Signal(str)
 
-    _CAP_OPTIONS = [("None", "none"), ("Round", "round"), ("Arrow", "arrow")]
+    _CAP_OPTIONS: ClassVar[list[tuple[str, str]]] = [
+        ("None", "none"),
+        ("Round", "round"),
+        ("Arrow", "arrow"),
+    ]
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -112,9 +120,7 @@ class PropertiesPanel(QWidget):
         layout.addWidget(self._width_slider)
         self._width_value_label = QLabel("3")
         self._width_value_label.setFixedWidth(20)
-        self._width_slider.valueChanged.connect(
-            lambda v: self._width_value_label.setText(str(v))
-        )
+        self._width_slider.valueChanged.connect(lambda v: self._width_value_label.setText(str(v)))
         layout.addWidget(self._width_value_label)
 
         # --- Font family (each entry rendered in its own face) ---
@@ -186,8 +192,12 @@ class PropertiesPanel(QWidget):
         self.font_changed.emit(font)
 
     def _set_caps_visible(self, visible: bool) -> None:
-        for w in (self._start_cap_label, self._start_cap_combo,
-                  self._end_cap_label, self._end_cap_combo):
+        for w in (
+            self._start_cap_label,
+            self._start_cap_combo,
+            self._end_cap_label,
+            self._end_cap_combo,
+        ):
             w.setVisible(visible)
 
     # ------------------------------------------------------------------
@@ -219,30 +229,36 @@ class PropertiesPanel(QWidget):
 
     @property
     def stroke_color(self) -> QColor:
+        """Return the current stroke color."""
         return self._stroke_btn.color
 
     @property
     def fill_color(self) -> QColor:
+        """Return the current fill color, transparent if no-fill is active."""
         if self._no_fill_btn.isChecked():
             return QColor(0, 0, 0, 0)
         return self._fill_btn.color
 
     @property
     def stroke_width(self) -> int:
+        """Return the current stroke width."""
         return self._width_slider.value()
 
     @property
     def current_font(self) -> QFont:
+        """Return the current font with size applied."""
         font = self._font_combo.currentFont()
         font.setPointSize(self._font_size.value())
         return font
 
     @property
     def start_cap(self) -> str:
+        """Return the selected start cap style."""
         return self._CAP_OPTIONS[self._start_cap_combo.currentIndex()][1]
 
     @property
     def end_cap(self) -> str:
+        """Return the selected end cap style."""
         return self._CAP_OPTIONS[self._end_cap_combo.currentIndex()][1]
 
     # ------------------------------------------------------------------
@@ -275,4 +291,3 @@ class PropertiesPanel(QWidget):
         self._font_size.blockSignals(True)
         self._font_size.setValue(max(8, min(72, font.pointSize())))
         self._font_size.blockSignals(False)
-

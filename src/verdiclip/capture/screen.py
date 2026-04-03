@@ -6,6 +6,7 @@ import logging
 from typing import TYPE_CHECKING
 
 import mss
+import mss.screenshot
 import mss.tools
 from PIL import Image
 from PySide6.QtGui import QImage, QPixmap
@@ -16,7 +17,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _mss_to_pixmap(sct_img) -> QPixmap:
+def _mss_to_pixmap(sct_img: mss.screenshot.ScreenShot) -> QPixmap:
     """Convert an mss screenshot to a QPixmap.
 
     The resulting pixmap always has ``devicePixelRatio == 1`` because mss
@@ -64,8 +65,7 @@ class ScreenCapture:
         with mss.mss() as sct:
             if index < 1 or index >= len(sct.monitors):
                 raise ValueError(
-                    f"Monitor index {index} out of range. "
-                    f"Available: 1-{len(sct.monitors) - 1}"
+                    f"Monitor index {index} out of range. Available: 1-{len(sct.monitors) - 1}"
                 )
             monitor = sct.monitors[index]
             raw = sct.grab(monitor)
@@ -87,7 +87,10 @@ class ScreenCapture:
             pixmap = _mss_to_pixmap(raw)
             logger.info(
                 "Captured region (%d,%d %dx%d)",
-                rect.x(), rect.y(), rect.width(), rect.height(),
+                rect.x(),
+                rect.y(),
+                rect.width(),
+                rect.height(),
             )
             return pixmap
 

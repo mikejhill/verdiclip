@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 class ToolType(Enum):
     """Available editor tools."""
+
     SELECT = auto()
     CROP = auto()
     RECTANGLE = auto()
@@ -39,17 +40,17 @@ class ToolType(Enum):
 
 
 _TOOL_CONFIG: dict[ToolType, tuple[str, str, str]] = {
-    ToolType.SELECT:    ("Select",      "V", "Select and move items"),
-    ToolType.CROP:      ("Crop",        "C", "Crop the image"),
-    ToolType.RECTANGLE: ("Rectangle",   "R", "Draw a rectangle"),
-    ToolType.ELLIPSE:   ("Ellipse",     "E", "Draw an ellipse"),
-    ToolType.LINE:      ("Line",        "L", "Draw a line"),
-    ToolType.ARROW:     ("Arrow",       "A", "Draw an arrow"),
-    ToolType.TEXT:       ("Text",        "T", "Add text annotation"),
-    ToolType.NUMBER:    ("Number",      "N", "Add numbered marker"),
-    ToolType.HIGHLIGHT: ("Highlight",   "H", "Highlight an area"),
-    ToolType.OBFUSCATE: ("Obfuscate",   "O", "Obfuscate/pixelate an area"),
-    ToolType.FREEHAND:  ("Freehand",    "F", "Draw freehand"),
+    ToolType.SELECT: ("Select", "V", "Select and move items"),
+    ToolType.CROP: ("Crop", "C", "Crop the image"),
+    ToolType.RECTANGLE: ("Rectangle", "R", "Draw a rectangle"),
+    ToolType.ELLIPSE: ("Ellipse", "E", "Draw an ellipse"),
+    ToolType.LINE: ("Line", "L", "Draw a line"),
+    ToolType.ARROW: ("Arrow", "A", "Draw an arrow"),
+    ToolType.TEXT: ("Text", "T", "Add text annotation"),
+    ToolType.NUMBER: ("Number", "N", "Add numbered marker"),
+    ToolType.HIGHLIGHT: ("Highlight", "H", "Highlight an area"),
+    ToolType.OBFUSCATE: ("Obfuscate", "O", "Obfuscate/pixelate an area"),
+    ToolType.FREEHAND: ("Freehand", "F", "Draw freehand"),
 }
 
 
@@ -66,10 +67,17 @@ def _create_tool_icon(tool_type: ToolType) -> QIcon:
 
     if tool_type == ToolType.SELECT:
         # Arrow cursor
-        points = QPolygon([
-            _qpoint(4, 2), _qpoint(4, 18), _qpoint(9, 14),
-            _qpoint(14, 20), _qpoint(16, 18), _qpoint(11, 12), _qpoint(16, 10),
-        ])
+        points = QPolygon(
+            [
+                _qpoint(4, 2),
+                _qpoint(4, 18),
+                _qpoint(9, 14),
+                _qpoint(14, 20),
+                _qpoint(16, 18),
+                _qpoint(11, 12),
+                _qpoint(16, 10),
+            ]
+        )
         p.setBrush(QColor(220, 220, 220))
         p.drawPolygon(points)
     elif tool_type == ToolType.CROP:
@@ -115,6 +123,7 @@ def _create_tool_icon(tool_type: ToolType) -> QIcon:
                 p.drawRect(2 + col * 5, 2 + row * 5, 5, 5)
     elif tool_type == ToolType.FREEHAND:
         from PySide6.QtGui import QPainterPath
+
         path = QPainterPath()
         path.moveTo(3, 16)
         path.cubicTo(6, 4, 12, 20, 21, 8)
@@ -147,13 +156,13 @@ class EditorToolbar(QToolBar):
         self._actions: dict[ToolType, QAction] = {}
 
         for tool_type in ToolType:
-            name, shortcut, tooltip = _TOOL_CONFIG[tool_type]
+            _name, shortcut, tooltip = _TOOL_CONFIG[tool_type]
             action = QAction(_create_tool_icon(tool_type), "", self)
             action.setCheckable(True)
             action.setToolTip(f"{tooltip} ({shortcut})")
             action.setShortcut(QKeySequence(shortcut))
             action.setData(tool_type)
-            action.triggered.connect(lambda checked, tt=tool_type: self._on_tool_selected(tt))
+            action.triggered.connect(lambda _checked, tt=tool_type: self._on_tool_selected(tt))
 
             self._action_group.addAction(action)
             self._actions[tool_type] = action

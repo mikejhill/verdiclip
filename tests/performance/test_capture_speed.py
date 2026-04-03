@@ -12,9 +12,7 @@ class TestFullscreenCaptureSpeed:
         result = benchmark(ScreenCapture.capture_primary_monitor)
         assert not result.isNull(), "Fullscreen capture returned a null pixmap"
         mean = benchmark.stats.stats.mean
-        assert mean < 0.200, (
-            f"Fullscreen capture mean {mean:.3f}s exceeds 200ms target"
-        )
+        assert mean < 0.200, f"Fullscreen capture mean {mean:.3f}s exceeds 200ms target"
 
 
 class TestRegionCaptureSpeed:
@@ -23,6 +21,4 @@ class TestRegionCaptureSpeed:
         result = benchmark(ScreenCapture.capture_region, rect)
         assert not result.isNull(), "Region capture returned a null pixmap"
         mean = benchmark.stats.stats.mean
-        assert mean < 0.200, (
-            f"Region capture mean {mean:.3f}s exceeds 200ms target"
-        )
+        assert mean < 0.200, f"Region capture mean {mean:.3f}s exceeds 200ms target"

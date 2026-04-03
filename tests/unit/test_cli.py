@@ -49,64 +49,104 @@ class TestBuildParser:
 
     def test_capture_region_mode_parsed(self) -> None:
         parser = build_parser()
-        args = parser.parse_args([
-            "capture", "region",
-            "--region", "10,20,300,400",
-            "-o", "test.jpg",
-            "--format", "jpg",
-            "--quality", "80",
-            "--delay", "2.5",
-        ])
+        args = parser.parse_args(
+            [
+                "capture",
+                "region",
+                "--region",
+                "10,20,300,400",
+                "-o",
+                "test.jpg",
+                "--format",
+                "jpg",
+                "--quality",
+                "80",
+                "--delay",
+                "2.5",
+            ]
+        )
         assert args.mode == "region", f"Expected args.mode to equal 'region', got {args.mode}"
 
     def test_capture_region_flag_parsed(self) -> None:
         parser = build_parser()
-        args = parser.parse_args([
-            "capture", "region",
-            "--region", "10,20,300,400",
-            "-o", "test.jpg",
-            "--format", "jpg",
-            "--quality", "80",
-            "--delay", "2.5",
-        ])
+        args = parser.parse_args(
+            [
+                "capture",
+                "region",
+                "--region",
+                "10,20,300,400",
+                "-o",
+                "test.jpg",
+                "--format",
+                "jpg",
+                "--quality",
+                "80",
+                "--delay",
+                "2.5",
+            ]
+        )
         assert args.region == "10,20,300,400", (
             f"Expected args.region to equal '10,20,300,400', got {args.region}"
         )
 
     def test_capture_format_flag_parsed(self) -> None:
         parser = build_parser()
-        args = parser.parse_args([
-            "capture", "region",
-            "--region", "10,20,300,400",
-            "-o", "test.jpg",
-            "--format", "jpg",
-            "--quality", "80",
-            "--delay", "2.5",
-        ])
+        args = parser.parse_args(
+            [
+                "capture",
+                "region",
+                "--region",
+                "10,20,300,400",
+                "-o",
+                "test.jpg",
+                "--format",
+                "jpg",
+                "--quality",
+                "80",
+                "--delay",
+                "2.5",
+            ]
+        )
         assert args.format == "jpg", f"Expected args.format to equal 'jpg', got {args.format}"
 
     def test_capture_quality_flag_parsed(self) -> None:
         parser = build_parser()
-        args = parser.parse_args([
-            "capture", "region",
-            "--region", "10,20,300,400",
-            "-o", "test.jpg",
-            "--format", "jpg",
-            "--quality", "80",
-            "--delay", "2.5",
-        ])
+        args = parser.parse_args(
+            [
+                "capture",
+                "region",
+                "--region",
+                "10,20,300,400",
+                "-o",
+                "test.jpg",
+                "--format",
+                "jpg",
+                "--quality",
+                "80",
+                "--delay",
+                "2.5",
+            ]
+        )
         assert args.quality == 80, f"Expected args.quality to equal 80, got {args.quality}"
 
     def test_capture_delay_flag_parsed(self) -> None:
         parser = build_parser()
-        args = parser.parse_args([
-            "capture", "region",
-            "--region", "10,20,300,400",
-            "-o", "test.jpg",
-            "--format", "jpg",
-            "--quality", "80",
-            "--delay", "2.5",
-        ])
+        args = parser.parse_args(
+            [
+                "capture",
+                "region",
+                "--region",
+                "10,20,300,400",
+                "-o",
+                "test.jpg",
+                "--format",
+                "jpg",
+                "--quality",
+                "80",
+                "--delay",
+                "2.5",
+            ]
+        )
         assert args.delay == 2.5, f"Expected args.delay to equal 2.5, got {args.delay}"
 
     def test_capture_clipboard_flag(self) -> None:
@@ -166,7 +206,7 @@ class TestParseRegion:
             _parse_region("10,20,100,-50")
 
     def test_non_numeric(self) -> None:
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="invalid literal"):
             _parse_region("abc,def,ghi,jkl")
 
 
@@ -294,9 +334,16 @@ class TestCaptureRegion:
     def test_capture_region_to_file(self, qapp, tmp_path) -> None:
         output = tmp_path / "region.png"
         parser = build_parser()
-        args = parser.parse_args([
-            "capture", "region", "--region", "0,0,200,150", "-o", str(output),
-        ])
+        args = parser.parse_args(
+            [
+                "capture",
+                "region",
+                "--region",
+                "0,0,200,150",
+                "-o",
+                str(output),
+            ]
+        )
         result = run_cli(args)
         assert result == 0, f"Expected result to equal 0, got {result}"
         assert output.exists(), "Expected output.exists() to be truthy"
@@ -343,9 +390,16 @@ class TestCaptureDelay:
     def test_capture_with_delay(self, qapp, tmp_path) -> None:
         output = tmp_path / "delayed.png"
         parser = build_parser()
-        args = parser.parse_args([
-            "capture", "screen", "-o", str(output), "--delay", "0.1",
-        ])
+        args = parser.parse_args(
+            [
+                "capture",
+                "screen",
+                "-o",
+                str(output),
+                "--delay",
+                "0.1",
+            ]
+        )
         result = run_cli(args)
         assert result == 0, f"Expected result to equal 0, got {result}"
         assert output.exists(), "Expected output.exists() to be truthy"
@@ -361,9 +415,16 @@ class TestCaptureFormats:
     def test_capture_with_format(self, qapp, tmp_path, fmt) -> None:
         output = tmp_path / f"test.{fmt}"
         parser = build_parser()
-        args = parser.parse_args([
-            "capture", "screen", "-o", str(output), "--format", fmt,
-        ])
+        args = parser.parse_args(
+            [
+                "capture",
+                "screen",
+                "-o",
+                str(output),
+                "--format",
+                fmt,
+            ]
+        )
         result = run_cli(args)
         assert result == 0, f"Expected result to equal 0, got {result}"
         assert output.exists(), "Expected output.exists() to be truthy"
@@ -379,9 +440,16 @@ class TestCaptureFormats:
     def test_extension_added_when_missing(self, qapp, tmp_path) -> None:
         output = tmp_path / "noext"
         parser = build_parser()
-        args = parser.parse_args([
-            "capture", "screen", "-o", str(output), "--format", "png",
-        ])
+        args = parser.parse_args(
+            [
+                "capture",
+                "screen",
+                "-o",
+                str(output),
+                "--format",
+                "png",
+            ]
+        )
         result = run_cli(args)
         assert result == 0, f"Expected result to equal 0, got {result}"
         assert (tmp_path / "noext.png").exists(), (

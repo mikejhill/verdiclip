@@ -23,9 +23,7 @@ class TestGetWindowRect:
         if not hwnd:
             pytest.skip("No foreground window available in this environment")
         rect = WindowCapture.get_window_rect(hwnd)
-        assert isinstance(rect, QRect), (
-            f"Expected QRect, got {type(rect).__name__}"
-        )
+        assert isinstance(rect, QRect), f"Expected QRect, got {type(rect).__name__}"
         assert rect.width() > 0, f"Window width should be positive, got {rect.width()}"
         assert rect.height() > 0, f"Window height should be positive, got {rect.height()}"
 
@@ -34,9 +32,7 @@ class TestGetWindowRect:
         if not hwnd:
             pytest.skip("No foreground window available in this environment")
         rect = WindowCapture.get_window_rect(hwnd, include_decorations=False)
-        assert isinstance(rect, QRect), (
-            f"Expected QRect, got {type(rect).__name__}"
-        )
+        assert isinstance(rect, QRect), f"Expected QRect, got {type(rect).__name__}"
         assert rect.width() > 0, f"Window width should be positive, got {rect.width()}"
         assert rect.height() > 0, f"Window height should be positive, got {rect.height()}"
 
@@ -75,9 +71,7 @@ class TestCaptureWindowByHandle:
         if not hwnd:
             pytest.skip("No foreground window available in this environment")
         pixmap = WindowCapture.capture_window_by_handle(hwnd)
-        assert isinstance(pixmap, QPixmap), (
-            f"Expected QPixmap, got {type(pixmap).__name__}"
-        )
+        assert isinstance(pixmap, QPixmap), f"Expected QPixmap, got {type(pixmap).__name__}"
         assert not pixmap.isNull(), "capture_window_by_handle returned null pixmap"
 
 
@@ -85,27 +79,19 @@ class TestGetWindowRectMocked:
     """Mocked ctypes tests for deterministic Win32 coverage."""
 
     @patch("verdiclip.capture.window.dwmapi")
-    def test_dwm_success_returns_extended_frame(
-        self, mock_dwmapi
-    ) -> None:
+    def test_dwm_success_returns_extended_frame(self, mock_dwmapi) -> None:
         """DwmGetWindowAttribute success uses DWM bounds."""
         mock_dwmapi.DwmGetWindowAttribute.return_value = 0
-        rect = WindowCapture.get_window_rect(
-            12345, include_decorations=False
-        )
+        rect = WindowCapture.get_window_rect(12345, include_decorations=False)
         assert isinstance(rect, QRect), f"Expected QRect from DWM path, got {type(rect).__name__}"
         mock_dwmapi.DwmGetWindowAttribute.assert_called_once()
 
     @patch("verdiclip.capture.window.user32")
     @patch("verdiclip.capture.window.dwmapi")
-    def test_dwm_failure_falls_back_to_getwindowrect(
-        self, mock_dwmapi, mock_user32
-    ) -> None:
+    def test_dwm_failure_falls_back_to_getwindowrect(self, mock_dwmapi, mock_user32) -> None:
         """When DWM fails, falls back to user32.GetWindowRect."""
         mock_dwmapi.DwmGetWindowAttribute.return_value = -1
-        rect = WindowCapture.get_window_rect(
-            12345, include_decorations=False
-        )
+        rect = WindowCapture.get_window_rect(12345, include_decorations=False)
         assert isinstance(rect, QRect), (
             f"Expected QRect from fallback path, got {type(rect).__name__}"
         )
@@ -140,9 +126,7 @@ class TestCaptureActiveWindowMocked:
 
     @patch("verdiclip.capture.window.ScreenCapture")
     @patch.object(WindowCapture, "get_foreground_window_handle")
-    def test_no_hwnd_falls_back_to_primary(
-        self, mock_hwnd, mock_screen
-    ) -> None:
+    def test_no_hwnd_falls_back_to_primary(self, mock_hwnd, mock_screen) -> None:
         """Null hwnd falls back to primary monitor capture."""
         mock_hwnd.return_value = 0
         expected = MagicMock()
@@ -161,9 +145,7 @@ class TestCaptureWindowByHandleMocked:
 
     @patch("verdiclip.capture.window.ScreenCapture")
     @patch.object(WindowCapture, "get_window_rect")
-    def test_captures_specified_window(
-        self, mock_rect, mock_screen
-    ) -> None:
+    def test_captures_specified_window(self, mock_rect, mock_screen) -> None:
         """Captures window region by handle."""
         mock_rect.return_value = QRect(10, 20, 400, 300)
         expected = MagicMock()
@@ -179,15 +161,11 @@ class TestCaptureWindowByHandleMocked:
 
     @patch("verdiclip.capture.window.ScreenCapture")
     @patch.object(WindowCapture, "get_window_rect")
-    def test_without_decorations(
-        self, mock_rect, mock_screen
-    ) -> None:
+    def test_without_decorations(self, mock_rect, mock_screen) -> None:
         """Passes include_decorations=False through."""
         mock_rect.return_value = QRect(10, 20, 400, 300)
         mock_screen.capture_region.return_value = MagicMock()
 
-        WindowCapture.capture_window_by_handle(
-            99999, include_decorations=False
-        )
+        WindowCapture.capture_window_by_handle(99999, include_decorations=False)
 
         mock_rect.assert_called_once_with(99999, False)

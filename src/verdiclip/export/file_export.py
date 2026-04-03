@@ -55,10 +55,10 @@ class FileExporter:
             default_dir = config.get("save.default_directory", "")
             default_fmt = config.get("save.default_format", "png")
 
-        filter_list = [_ALL_FILTER] + list(_FORMAT_FILTERS.values())
+        filter_list = [_ALL_FILTER, *list(_FORMAT_FILTERS.values())]
         selected_filter = _FORMAT_FILTERS.get(default_fmt, _FORMAT_FILTERS["png"])
 
-        file_path, chosen_filter = QFileDialog.getSaveFileName(
+        file_path, _chosen_filter = QFileDialog.getSaveFileName(
             parent,
             "Save Screenshot",
             default_dir,
@@ -83,9 +83,8 @@ class FileExporter:
         if success:
             logger.info("Image saved to %s", path)
             return str(path)
-        else:
-            logger.error("Failed to save image to %s", path)
-            return None
+        logger.error("Failed to save image to %s", path)
+        return None
 
     @staticmethod
     def auto_save(pixmap: QPixmap, config: Config) -> str | None:
@@ -116,9 +115,8 @@ class FileExporter:
         if success:
             logger.info("Auto-saved to %s", file_path)
             return str(file_path)
-        else:
-            logger.error("Auto-save failed: %s", file_path)
-            return None
+        logger.error("Auto-save failed: %s", file_path)
+        return None
 
     @staticmethod
     def _get_next_counter(directory: Path, extension: str) -> int:

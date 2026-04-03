@@ -34,7 +34,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Capture mode: 'screen' (full screen), 'region' (x,y,w,h), 'window' (active window).",
     )
     capture_parser.add_argument(
-        "-o", "--output",
+        "-o",
+        "--output",
         type=str,
         default=None,
         help="Output file path (e.g., screenshot.png). If omitted, auto-generates in CWD.",
@@ -113,14 +114,12 @@ def _parse_region(region_str: str) -> tuple[int, int, int, int]:
 
 def run_cli(args: argparse.Namespace) -> int:
     """Execute the CLI command. Returns exit code."""
-
     if args.command == "capture":
         return _handle_capture(args)
-    elif args.command == "open":
+    if args.command == "open":
         return _handle_open(args)
-    else:
-        build_parser().print_help()
-        return 0
+    build_parser().print_help()
+    return 0
 
 
 def _handle_capture(args: argparse.Namespace) -> int:
@@ -184,9 +183,8 @@ def _handle_capture(args: argparse.Namespace) -> int:
             # Process events so clipboard data persists
             app.processEvents()
             return 0
-        else:
-            print("Error: Failed to copy to clipboard.", file=sys.stderr)
-            return 1
+        print("Error: Failed to copy to clipboard.", file=sys.stderr)
+        return 1
 
     fmt = args.format
     if args.output:
@@ -211,9 +209,8 @@ def _handle_capture(args: argparse.Namespace) -> int:
     if success:
         print(f"Saved: {output_path}")
         return 0
-    else:
-        print(f"Error: Failed to save to {output_path}", file=sys.stderr)
-        return 1
+    print(f"Error: Failed to save to {output_path}", file=sys.stderr)
+    return 1
 
 
 def _handle_open(args: argparse.Namespace) -> int:

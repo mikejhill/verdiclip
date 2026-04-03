@@ -75,8 +75,10 @@ class RegionSelector(QWidget):
         self._virtual_offset = virtual_geo.topLeft()
         logger.debug(
             "Region selector overlay shown: %dx%d at (%d,%d)",
-            virtual_geo.width(), virtual_geo.height(),
-            virtual_geo.x(), virtual_geo.y(),
+            virtual_geo.width(),
+            virtual_geo.height(),
+            virtual_geo.x(),
+            virtual_geo.y(),
         )
 
     def _selection_rect(self) -> QRect | None:
@@ -108,7 +110,7 @@ class RegionSelector(QWidget):
             painter.drawRect(selection)
 
             # Dimension label
-            label = f"{selection.width()} × {selection.height()}"
+            label = f"{selection.width()} × {selection.height()}"  # noqa: RUF001
             font = QFont("Segoe UI", _DIMENSION_FONT_SIZE)
             painter.setFont(font)
             painter.setPen(Qt.GlobalColor.white)
@@ -135,7 +137,8 @@ class RegionSelector(QWidget):
         src_rect = QRect(
             pos.x() - src_size // 2,
             pos.y() - src_size // 2,
-            src_size, src_size,
+            src_size,
+            src_size,
         )
 
         # Position magnifier in a corner that doesn't overlap cursor
@@ -190,9 +193,12 @@ class RegionSelector(QWidget):
                 screen_rect = selection.translated(self._virtual_offset)
                 logger.info(
                     "Region selected: widget(%d,%d) screen(%d,%d) %dx%d",
-                    selection.x(), selection.y(),
-                    screen_rect.x(), screen_rect.y(),
-                    selection.width(), selection.height(),
+                    selection.x(),
+                    selection.y(),
+                    screen_rect.x(),
+                    screen_rect.y(),
+                    selection.width(),
+                    selection.height(),
                 )
                 self.hide()
                 self.region_selected.emit(screen_rect)
@@ -246,6 +252,7 @@ class RegionCapture:
         selector = self._selector
 
         if on_captured:
+
             def handle_region(rect: QRect) -> None:
                 self._last_region = rect
                 # Crop from the frozen background captured when the overlay appeared,

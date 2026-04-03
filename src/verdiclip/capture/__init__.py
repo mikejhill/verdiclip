@@ -5,4 +5,4 @@ from verdiclip.capture.repeat import RepeatCapture
 from verdiclip.capture.screen import ScreenCapture
 from verdiclip.capture.window import WindowCapture
 
-__all__ = ["RegionCapture", "ScreenCapture", "WindowCapture", "RepeatCapture"]
+__all__ = ["RegionCapture", "RepeatCapture", "ScreenCapture", "WindowCapture"]

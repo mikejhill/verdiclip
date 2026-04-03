@@ -34,16 +34,6 @@ Repository = "https://github.com/mikejhill/verdiclip"
 Issues = "https://github.com/mikejhill/verdiclip/issues"
 Documentation = "https://github.com/mikejhill/verdiclip/tree/main/docs"
 
-[project.optional-dependencies]
-dev = [
-    "pytest>=8.0,<9",
-    "pytest-qt>=4.4,<5",
-    "pytest-benchmark>=5.0,<6",
-    "pytest-cov>=6.0,<7",
-    "ruff>=0.9,<1",
-    "pyright>=1.1,<2",
-]
-
 [project.scripts]
 verdiclip = "verdiclip.__main__:main"
 
@@ -54,25 +44,57 @@ verdiclip-gui = "verdiclip.__main__:main"
 requires = ["uv_build>=0.11.1,<0.12.0"]
 build-backend = "uv_build"
 
+[dependency-groups]
+dev = [
+    "pytest>=8.0,<9",
+    "pytest-qt>=4.4,<5",
+    "pytest-benchmark>=5.0,<6",
+    "pytest-cov>=6.0,<7",
+    "ruff>=0.9,<1",
+    "ty>=0.0.1",
+]
+
 [tool.ruff]
 target-version = "py312"
 line-length = 100
+src = ["src", "tests"]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "N", "UP", "B", "A", "SIM", "TCH"]
-ignore = ["N802", "N803"]  # Qt overrides use camelCase (e.g., paintEvent, mousePressEvent)
+select = ["E", "W", "F", "I", "N", "UP", "B", "SIM", "RUF", "D", "ANN", "PT", "RET", "ARG"]
+ignore = [
+    "D100",   # Missing docstring in public module (module header docstring suffices)
+    "D104",   # Missing docstring in public package
+    "D107",   # Missing docstring in __init__ (class docstring suffices)
+    "N802",   # Qt overrides use camelCase (e.g., paintEvent, mousePressEvent)
+    "N803",   # Qt callback parameters use camelCase
+    "ANN401", # Dynamically typed expressions (Any) — needed for Qt/pynput interop
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.isort]
+known-first-party = ["verdiclip"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = [
+    "D101",   # Missing docstring in public class (test classes are self-documenting)
+    "D102",   # Missing docstring in public method (test methods are self-documenting)
+    "D103",   # Missing docstring in public function (test helpers are self-documenting)
+    "ANN",    # Type annotations not required in tests
+    "ARG",    # Unused arguments common in fixtures/parametrize
+]
+"src/verdiclip/editor/tools/*.py" = [
+    "ARG002", # Qt override signatures require unused params (event, scene_pos)
+]
+"src/verdiclip/capture/*.py" = [
+    "ARG002", # Qt override signatures require unused params
+]
+
+[tool.ty.environment]
+python-version = "3.12"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v --tb=short"
 qt_api = "pyside6"
-
-[tool.pyright]
-pythonVersion = "3.12"
-include = ["src"]
-typeCheckingMode = "standard"
-
-[dependency-groups]
-dev = [
-    "pyright>=1.1.408",
-]

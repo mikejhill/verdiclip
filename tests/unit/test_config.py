@@ -83,9 +83,7 @@ class TestSetAndPersist:
 class TestMergePreservesExisting:
     """Existing values in config file aren't overwritten by defaults; missing keys get defaults."""
 
-    def test_merge_preserves_existing_and_fills_missing(
-        self, sample_config_file: Path
-    ) -> None:
+    def test_merge_preserves_existing_and_fills_missing(self, sample_config_file: Path) -> None:
         config = Config(config_path=sample_config_file)
         assert config.get("capture.default_action") == "clipboard", (
             "Existing 'clipboard' value should be preserved, not overwritten by default"
@@ -93,9 +91,7 @@ class TestMergePreservesExisting:
         assert config.get("save.default_format") == "jpg", (
             "Existing 'jpg' value should be preserved, not overwritten by 'png' default"
         )
-        assert config.get("save.jpg_quality") == 75, (
-            "Existing jpg_quality=75 should be preserved"
-        )
+        assert config.get("save.jpg_quality") == 75, "Existing jpg_quality=75 should be preserved"
         assert config.get("capture.include_cursor") is False, (
             "Missing key should be filled with default value"
         )

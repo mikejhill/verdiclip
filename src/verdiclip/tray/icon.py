@@ -189,6 +189,7 @@ class TrayIcon(QSystemTrayIcon):
         logger.info("Tray: Repeat last capture requested.")
         if self._last_capture_type == "region" and self._last_region:
             from verdiclip.capture.screen import ScreenCapture
+
             pixmap = ScreenCapture.capture_region(self._last_region)
             self._handle_capture(pixmap)
         elif self._last_capture_type == "window":
@@ -209,6 +210,7 @@ class TrayIcon(QSystemTrayIcon):
         # Auto-save if enabled
         if self._config.get("save.auto_save_enabled", False):
             from verdiclip.export.file_export import FileExporter
+
             path = FileExporter.auto_save(pixmap, self._config)
             if path:
                 logger.info("Auto-saved capture to %s", path)
@@ -270,6 +272,7 @@ class TrayIcon(QSystemTrayIcon):
         self.rebuild_menu()
         # Reload hotkeys if app controller is connected
         from verdiclip.app import VerdiClipApp
+
         app = self._app.property("verdiclip_controller")
         if isinstance(app, VerdiClipApp):
             app.reload_hotkeys()

@@ -52,7 +52,7 @@ def _install_signal_handlers() -> None:
     from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QApplication
 
-    def _on_sigint(_signum: int, _frame) -> None:
+    def _on_sigint(_signum: int, _frame: object) -> None:
         logger = logging.getLogger("verdiclip")
         logger.info("SIGINT received — shutting down.")
         app = QApplication.instance()
@@ -71,7 +71,7 @@ def _install_signal_handlers() -> None:
     # Python reference and allows GC to destroy the timer.
     app = QApplication.instance()
     if app:
-        app._sigint_timer = timer  # type: ignore[attr-defined]
+        app._sigint_timer = timer  # type: ignore[attr-defined]  # ty: ignore[invalid-assignment]
 
 
 def main() -> None:

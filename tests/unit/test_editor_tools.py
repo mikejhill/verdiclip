@@ -82,7 +82,7 @@ class TestRectangleTool:
         tool = RectangleTool()
         simulate_draw(tool, scene, view, QPointF(10, 20), QPointF(110, 80))
 
-        rect_item = [i for i in scene.items() if isinstance(i, QGraphicsRectItem)][0]
+        rect_item = next(i for i in scene.items() if isinstance(i, QGraphicsRectItem))
         rect = rect_item.rect()
         assert abs(rect.width() - 100) < 1, (
             f"Expected abs(rect.width() - 100) < 1, got {abs(rect.width() - 100)}"
@@ -105,7 +105,7 @@ class TestRectangleTool:
         tool.mouse_move(QPointF(110, 60), shift_event)
         tool.mouse_release(QPointF(110, 60), release_event)
 
-        rect_item = [i for i in scene.items() if isinstance(i, QGraphicsRectItem)][0]
+        rect_item = next(i for i in scene.items() if isinstance(i, QGraphicsRectItem))
         rect = rect_item.rect()
         assert abs(rect.width() - rect.height()) < 1, (
             f"Expected abs() < 1, got {abs(rect.width() - rect.height())}"
@@ -119,7 +119,7 @@ class TestRectangleTool:
         tool = RectangleTool(stroke_color=stroke, fill_color=fill)
         simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(110, 110))
 
-        rect_item = [i for i in scene.items() if isinstance(i, QGraphicsRectItem)][0]
+        rect_item = next(i for i in scene.items() if isinstance(i, QGraphicsRectItem))
         assert rect_item.pen().color().name() == stroke.name(), (
             f"Expected name() to be name(), got {rect_item.pen().color().name()}"
         )
@@ -133,7 +133,7 @@ class TestRectangleTool:
         tool = RectangleTool()
         simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(110, 110))
 
-        rect_item = [i for i in scene.items() if isinstance(i, QGraphicsRectItem)][0]
+        rect_item = next(i for i in scene.items() if isinstance(i, QGraphicsRectItem))
         flags = rect_item.flags()
         assert flags & QGraphicsRectItem.GraphicsItemFlag.ItemIsSelectable, (
             f"Expected ItemIsSelectable flag to be set, got {flags}"
@@ -172,7 +172,7 @@ class TestEllipseTool:
         tool.mouse_move(QPointF(110, 60), shift_event)
         tool.mouse_release(QPointF(110, 60), release_event)
 
-        ellipse_item = [i for i in scene.items() if isinstance(i, QGraphicsEllipseItem)][0]
+        ellipse_item = next(i for i in scene.items() if isinstance(i, QGraphicsEllipseItem))
         rect = ellipse_item.rect()
         assert abs(rect.width() - rect.height()) < 1, (
             f"Expected abs() < 1, got {abs(rect.width() - rect.height())}"
@@ -186,7 +186,7 @@ class TestEllipseTool:
         tool = EllipseTool(stroke_color=stroke, fill_color=fill)
         simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(110, 110))
 
-        ellipse_item = [i for i in scene.items() if isinstance(i, QGraphicsEllipseItem)][0]
+        ellipse_item = next(i for i in scene.items() if isinstance(i, QGraphicsEllipseItem))
         assert ellipse_item.pen().color().name() == stroke.name(), (
             f"Expected name() to be name(), got {ellipse_item.pen().color().name()}"
         )
@@ -200,7 +200,7 @@ class TestEllipseTool:
         tool = EllipseTool()
         simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(110, 110))
 
-        ellipse_item = [i for i in scene.items() if isinstance(i, QGraphicsEllipseItem)][0]
+        ellipse_item = next(i for i in scene.items() if isinstance(i, QGraphicsEllipseItem))
         flags = ellipse_item.flags()
         assert flags & QGraphicsEllipseItem.GraphicsItemFlag.ItemIsSelectable, (
             f"Expected ItemIsSelectable flag to be set, got {flags}"
@@ -231,7 +231,7 @@ class TestLineTool:
         tool = LineTool()
         simulate_draw(tool, scene, view, QPointF(10, 20), QPointF(110, 80))
 
-        line_item = [i for i in scene.items() if isinstance(i, QGraphicsLineItem)][0]
+        line_item = next(i for i in scene.items() if isinstance(i, QGraphicsLineItem))
         line = line_item.line()
         assert abs(line.p1().x() - 10) < 1, (
             f"Expected abs(line.p1().x() - 10) < 1, got {abs(line.p1().x() - 10)}"
@@ -261,7 +261,7 @@ class TestLineTool:
         tool.mouse_move(QPointF(100, 105), shift_event)
         tool.mouse_release(QPointF(100, 105), release_event)
 
-        line_item = [i for i in scene.items() if isinstance(i, QGraphicsLineItem)][0]
+        line_item = next(i for i in scene.items() if isinstance(i, QGraphicsLineItem))
         line = line_item.line()
         # At 45 degrees, dx and dy should be approximately equal
         assert abs(line.p2().x() - line.p2().y()) < 2, (
@@ -275,7 +275,7 @@ class TestLineTool:
         tool = LineTool(stroke_color=stroke)
         simulate_draw(tool, scene, view, QPointF(0, 0), QPointF(100, 100))
 
-        line_item = [i for i in scene.items() if isinstance(i, QGraphicsLineItem)][0]
+        line_item = next(i for i in scene.items() if isinstance(i, QGraphicsLineItem))
         assert line_item.pen().color().name() == stroke.name(), (
             f"Expected name() to be name(), got {line_item.pen().color().name()}"
         )
@@ -286,7 +286,7 @@ class TestLineTool:
         tool = LineTool()
         simulate_draw(tool, scene, view, QPointF(0, 0), QPointF(100, 100))
 
-        line_item = [i for i in scene.items() if isinstance(i, QGraphicsLineItem)][0]
+        line_item = next(i for i in scene.items() if isinstance(i, QGraphicsLineItem))
         flags = line_item.flags()
         assert flags & QGraphicsLineItem.GraphicsItemFlag.ItemIsSelectable, (
             f"Expected ItemIsSelectable flag to be set, got {flags}"
@@ -354,7 +354,8 @@ class TestArrowTool:
         assert len(groups) == 0, f"Expected len(groups) to be 0, got {len(groups)}"
 
     def test_group_is_selectable_and_movable(self, qapp) -> None:
-        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        from verdiclip.editor.tools.arrow import ArrowItem
+
         scene = QGraphicsScene()
         view = QGraphicsView(scene)
         tool = ArrowTool()
@@ -381,7 +382,7 @@ class TestArrowTool:
 
     def test_bounding_rect_covers_children(self, qapp) -> None:
         """ArrowItem.boundingRect must return non-empty rect encompassing child items."""
-        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        from verdiclip.editor.tools.arrow import ArrowItem
 
         scene = QGraphicsScene()
         view = QGraphicsView(scene)
@@ -400,11 +401,11 @@ class TestArrowTool:
 
     def test_crop_preserves_arrows_inside_region(self, qapp) -> None:
         """Cropping should preserve arrows that overlap the crop region."""
-        from PySide6.QtGui import QColor, QPixmap  # noqa: PLC0415
+        from PySide6.QtGui import QColor, QPixmap
 
-        from verdiclip.editor.canvas import EditorCanvas  # noqa: PLC0415
-        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
-        from verdiclip.editor.tools.crop import CropTool  # noqa: PLC0415
+        from verdiclip.editor.canvas import EditorCanvas
+        from verdiclip.editor.tools.arrow import ArrowItem
+        from verdiclip.editor.tools.crop import CropTool
 
         canvas = EditorCanvas()
         pixmap = QPixmap(400, 300)
@@ -463,7 +464,7 @@ class TestFreehandTool:
             tool.mouse_move(QPointF(i * 5, i * 5), event)
         tool.mouse_release(QPointF(95, 95), event)
 
-        path_item = [i for i in scene.items() if isinstance(i, QGraphicsPathItem)][0]
+        path_item = next(i for i in scene.items() if isinstance(i, QGraphicsPathItem))
         assert path_item.pen().color().name() == stroke.name(), (
             f"Expected name() to be name(), got {path_item.pen().color().name()}"
         )
@@ -494,7 +495,7 @@ class TestFreehandTool:
             tool.mouse_move(QPointF(i * 5, i * 5), event)
         tool.mouse_release(QPointF(95, 95), event)
 
-        path_item = [i for i in scene.items() if isinstance(i, QGraphicsPathItem)][0]
+        path_item = next(i for i in scene.items() if isinstance(i, QGraphicsPathItem))
         flags = path_item.flags()
         assert flags & QGraphicsPathItem.GraphicsItemFlag.ItemIsSelectable, (
             f"Expected ItemIsSelectable flag to be set, got {flags}"
@@ -645,7 +646,7 @@ class TestTextTool:
         event = make_mouse_event()
         tool.mouse_press(QPointF(50, 50), event)
 
-        text_item = [i for i in scene.items() if isinstance(i, QGraphicsTextItem)][0]
+        text_item = next(i for i in scene.items() if isinstance(i, QGraphicsTextItem))
         assert text_item.defaultTextColor().name() == color.name(), (
             f"Expected name() to be name(), got {text_item.defaultTextColor().name()}"
         )
@@ -659,7 +660,7 @@ class TestTextTool:
         event = make_mouse_event()
         tool.mouse_press(QPointF(50, 50), event)
 
-        text_item = [i for i in scene.items() if isinstance(i, QGraphicsTextItem)][0]
+        text_item = next(i for i in scene.items() if isinstance(i, QGraphicsTextItem))
         flags = text_item.flags()
         assert flags & QGraphicsTextItem.GraphicsItemFlag.ItemIsSelectable, (
             f"Expected ItemIsSelectable flag to be set, got {flags}"
@@ -696,6 +697,7 @@ class TestNumberTool:
 
     def test_creates_marker_with_ellipse_and_text(self, qapp) -> None:
         from verdiclip.editor.tools.number import NumberMarkerItem
+
         scene = QGraphicsScene()
         view = QGraphicsView(scene)
         tool = NumberTool()
@@ -706,9 +708,7 @@ class TestNumberTool:
 
         markers = [i for i in scene.items() if isinstance(i, NumberMarkerItem)]
         assert len(markers) == 1, f"Expected 1 NumberMarkerItem, got {len(markers)}"
-        assert markers[0].value == "1", (
-            f"Expected marker value '1', got '{markers[0].value}'"
-        )
+        assert markers[0].value == "1", f"Expected marker value '1', got '{markers[0].value}'"
 
     def test_reset_counter(self, qapp) -> None:
         scene = QGraphicsScene()
@@ -736,6 +736,7 @@ class TestNumberTool:
     def test_marker_value_editable(self, qapp) -> None:
         """NumberMarkerItem value can be set and read."""
         from verdiclip.editor.tools.number import NumberMarkerItem
+
         marker = NumberMarkerItem("1", QColor("#E74C3C"), QColor("#FFFFFF"))
         assert marker.value == "1", f"Expected value '1', got '{marker.value}'"
 
@@ -745,12 +746,14 @@ class TestNumberTool:
     def test_marker_accepts_non_numeric_value(self, qapp) -> None:
         """NumberMarkerItem accepts non-numeric values like 'A' or 'X'."""
         from verdiclip.editor.tools.number import NumberMarkerItem
+
         marker = NumberMarkerItem("A", QColor("#E74C3C"), QColor("#FFFFFF"))
         assert marker.value == "A", f"Expected value 'A', got '{marker.value}'"
 
     def test_next_counter_after_numeric_edit(self, qapp) -> None:
         """After editing a marker to numeric value, next counter follows it."""
         from verdiclip.editor.tools.number import NumberMarkerItem
+
         scene = QGraphicsScene()
         view = QGraphicsView(scene)
         tool = NumberTool()
@@ -805,6 +808,7 @@ class TestNumberTool:
     def test_marker_is_selectable_not_movable(self, qapp) -> None:
         """Markers are selectable but not ItemIsMovable (SelectTool handles drag)."""
         from verdiclip.editor.tools.number import NumberMarkerItem
+
         scene = QGraphicsScene()
         view = QGraphicsView(scene)
         tool = NumberTool()
@@ -824,32 +828,38 @@ class TestNumberTool:
         )
 
     def test_marker_text_updates_when_value_changed(
-        self, qapp,
+        self,
+        qapp,
     ) -> None:
         """Changing value property updates the _text_item display."""
         from verdiclip.editor.tools.number import NumberMarkerItem
+
         marker = NumberMarkerItem(
-            "1", QColor("#E74C3C"), QColor("#FFFFFF"),
+            "1",
+            QColor("#E74C3C"),
+            QColor("#FFFFFF"),
         )
         assert marker._text_item.text() == "1", (
-            f"Precondition: expected text '1', "
-            f"got '{marker._text_item.text()}'"
+            f"Precondition: expected text '1', got '{marker._text_item.text()}'"
         )
 
         marker.value = "99"
 
         assert marker._text_item.text() == "99", (
-            f"Expected _text_item.text() '99' after value change, "
-            f"got '{marker._text_item.text()}'"
+            f"Expected _text_item.text() '99' after value change, got '{marker._text_item.text()}'"
         )
 
     def test_marker_non_numeric_value_displays_correctly(
-        self, qapp,
+        self,
+        qapp,
     ) -> None:
         """Non-numeric value like 'X' is rendered in _text_item."""
         from verdiclip.editor.tools.number import NumberMarkerItem
+
         marker = NumberMarkerItem(
-            "A", QColor("#E74C3C"), QColor("#FFFFFF"),
+            "A",
+            QColor("#E74C3C"),
+            QColor("#FFFFFF"),
         )
 
         marker.value = "X"
@@ -881,7 +891,7 @@ class TestHighlightTool:
         tool = HighlightTool()
         simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(110, 110))
 
-        rect_item = [i for i in scene.items() if isinstance(i, QGraphicsRectItem)][0]
+        rect_item = next(i for i in scene.items() if isinstance(i, QGraphicsRectItem))
         brush_color = rect_item.brush().color()
         assert brush_color.alpha() < 255, (
             f"Expected brush_color.alpha() < 255, got {brush_color.alpha()}"
@@ -896,7 +906,7 @@ class TestHighlightTool:
         tool = HighlightTool()
         simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(110, 110))
 
-        rect_item = [i for i in scene.items() if isinstance(i, QGraphicsRectItem)][0]
+        rect_item = next(i for i in scene.items() if isinstance(i, QGraphicsRectItem))
         assert rect_item.pen().style() == Qt.PenStyle.NoPen, (
             f"Expected style() to be NoPen, got {rect_item.pen().style()}"
         )
@@ -935,7 +945,7 @@ class TestHighlightTool:
         tool = HighlightTool(color=custom)
         simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(110, 110))
 
-        rect_item = [i for i in scene.items() if isinstance(i, QGraphicsRectItem)][0]
+        rect_item = next(i for i in scene.items() if isinstance(i, QGraphicsRectItem))
         assert rect_item.brush().color().green() == 255, (
             f"Expected green() to be 255, got {rect_item.brush().color().green()}"
         )
@@ -949,7 +959,7 @@ class TestHighlightTool:
         tool = HighlightTool()
         simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(110, 110))
 
-        rect_item = [i for i in scene.items() if isinstance(i, QGraphicsRectItem)][0]
+        rect_item = next(i for i in scene.items() if isinstance(i, QGraphicsRectItem))
         flags = rect_item.flags()
         assert flags & QGraphicsRectItem.GraphicsItemFlag.ItemIsSelectable, (
             f"Expected ItemIsSelectable flag to be set, got {flags}"
@@ -966,43 +976,37 @@ class TestHighlightTool:
 
 class TestObfuscateTool:
     def test_pixelates_region_of_background(self, qapp) -> None:
-        scene, bg = make_scene_with_background(200, 200)
+        scene, _bg = make_scene_with_background(200, 200)
         view = QGraphicsView(scene)
         tool = ObfuscateTool()
         simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(100, 100))
 
         # Should have the background + an ObfuscationItem overlay
-        obfuscation_items = [
-            i for i in scene.items() if isinstance(i, ObfuscationItem)
-        ]
+        obfuscation_items = [i for i in scene.items() if isinstance(i, ObfuscationItem)]
         assert len(obfuscation_items) == 1, (
             f"Expected 1 ObfuscationItem, got {len(obfuscation_items)}"
         )
 
     def test_too_small_draw_discarded(self, qapp) -> None:
-        scene, bg = make_scene_with_background(200, 200)
+        scene, _bg = make_scene_with_background(200, 200)
         view = QGraphicsView(scene)
         tool = ObfuscateTool()
         simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(12, 12))
 
         # Only background should remain
-        obfuscation_items = [
-            i for i in scene.items() if isinstance(i, ObfuscationItem)
-        ]
+        obfuscation_items = [i for i in scene.items() if isinstance(i, ObfuscationItem)]
         assert len(obfuscation_items) == 0, (
             f"Expected 0 ObfuscationItem, got {len(obfuscation_items)}"
         )
 
     def test_too_narrow_draw_discarded(self, qapp) -> None:
-        scene, bg = make_scene_with_background(200, 200)
+        scene, _bg = make_scene_with_background(200, 200)
         view = QGraphicsView(scene)
         tool = ObfuscateTool()
         # Width is ok (90) but height is too small (3)
         simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(100, 13))
 
-        obfuscation_items = [
-            i for i in scene.items() if isinstance(i, ObfuscationItem)
-        ]
+        obfuscation_items = [i for i in scene.items() if isinstance(i, ObfuscationItem)]
         assert len(obfuscation_items) == 0, (
             f"Expected 0 ObfuscationItem, got {len(obfuscation_items)}"
         )
@@ -1014,9 +1018,7 @@ class TestObfuscateTool:
         simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(100, 100))
 
         # No background means no pixelation overlay
-        obfuscation_items = [
-            i for i in scene.items() if isinstance(i, ObfuscationItem)
-        ]
+        obfuscation_items = [i for i in scene.items() if isinstance(i, ObfuscationItem)]
         assert len(obfuscation_items) == 0, (
             f"Expected 0 ObfuscationItem, got {len(obfuscation_items)}"
         )
@@ -1031,7 +1033,7 @@ class TestObfuscateTool:
         assert result.height() == 100, f"Expected result.height() to be 100, got {result.height()}"
 
     def test_right_click_ignored(self, qapp) -> None:
-        scene, bg = make_scene_with_background(200, 200)
+        scene, _bg = make_scene_with_background(200, 200)
         view = QGraphicsView(scene)
         tool = ObfuscateTool()
         tool.activate(scene, view)
@@ -1042,22 +1044,18 @@ class TestObfuscateTool:
         tool.mouse_release(QPointF(100, 100), make_mouse_event())
 
         # Only background should remain — right-click didn't set origin
-        obfuscation_items = [
-            i for i in scene.items() if isinstance(i, ObfuscationItem)
-        ]
+        obfuscation_items = [i for i in scene.items() if isinstance(i, ObfuscationItem)]
         assert len(obfuscation_items) == 0, (
             f"Expected 0 ObfuscationItem, got {len(obfuscation_items)}"
         )
 
     def test_overlay_is_selectable_and_movable(self, qapp) -> None:
-        scene, bg = make_scene_with_background(200, 200)
+        scene, _bg = make_scene_with_background(200, 200)
         view = QGraphicsView(scene)
         tool = ObfuscateTool()
         simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(100, 100))
 
-        overlays = [
-            i for i in scene.items() if isinstance(i, ObfuscationItem)
-        ]
+        overlays = [i for i in scene.items() if isinstance(i, ObfuscationItem)]
         overlay = overlays[0]
         flags = overlay.flags()
         assert flags & QGraphicsPixmapItem.GraphicsItemFlag.ItemIsSelectable, (
@@ -1068,14 +1066,12 @@ class TestObfuscateTool:
         )
 
     def test_overlay_refreshes_on_move(self, qapp) -> None:
-        scene, bg = make_scene_with_background(200, 200)
+        scene, _bg = make_scene_with_background(200, 200)
         view = QGraphicsView(scene)
         tool = ObfuscateTool()
         simulate_draw(tool, scene, view, QPointF(10, 10), QPointF(60, 60))
 
-        overlays = [
-            i for i in scene.items() if isinstance(i, ObfuscationItem)
-        ]
+        overlays = [i for i in scene.items() if isinstance(i, ObfuscationItem)]
         overlay = overlays[0]
         pixmap_before = overlay.pixmap().toImage()
 
@@ -1089,10 +1085,12 @@ class TestObfuscateTool:
         )
 
     def test_obfuscation_item_set_size_refreshes_pixelation(
-        self, qapp,
+        self,
+        qapp,
     ) -> None:
         """set_size updates the internal pixmap to reflect the new size."""
         from PySide6.QtCore import QSizeF
+
         scene, bg = make_scene_with_background(200, 200)
 
         item = ObfuscationItem(bg, QSizeF(40, 40))
@@ -1103,9 +1101,7 @@ class TestObfuscateTool:
         item.set_size(QSizeF(80, 80))
         pixmap_after = item.pixmap()
 
-        assert not pixmap_after.isNull(), (
-            "Expected non-null pixmap after set_size"
-        )
+        assert not pixmap_after.isNull(), "Expected non-null pixmap after set_size"
         assert (
             pixmap_after.width() != pixmap_before.width()
             or pixmap_after.height() != pixmap_before.height()
@@ -1116,10 +1112,11 @@ class TestObfuscateTool:
         )
 
     def test_obfuscation_item_border_visible_during_creation(
-        self, qapp,
+        self,
+        qapp,
     ) -> None:
         """During mouse_move, preview item should have _show_border True."""
-        scene, bg = make_scene_with_background(200, 200)
+        scene, _bg = make_scene_with_background(200, 200)
         view = QGraphicsView(scene)
         tool = ObfuscateTool()
         tool.activate(scene, view)
@@ -1129,36 +1126,31 @@ class TestObfuscateTool:
         move_event = make_mouse_event()
         tool.mouse_move(QPointF(80, 80), move_event)
 
-        assert tool._preview_item is not None, (
-            "Expected _preview_item to exist during mouse_move"
-        )
+        assert tool._preview_item is not None, "Expected _preview_item to exist during mouse_move"
         assert tool._preview_item._show_border is True, (
-            "Expected _show_border True during creation, "
-            f"got {tool._preview_item._show_border}"
+            f"Expected _show_border True during creation, got {tool._preview_item._show_border}"
         )
 
     def test_obfuscation_item_border_hidden_after_finalize(
-        self, qapp,
+        self,
+        qapp,
     ) -> None:
         """After mouse_release the finalized item has _show_border False."""
-        scene, bg = make_scene_with_background(200, 200)
+        scene, _bg = make_scene_with_background(200, 200)
         view = QGraphicsView(scene)
         tool = ObfuscateTool()
         simulate_draw(
-            tool, scene, view,
-            QPointF(10, 10), QPointF(80, 80),
+            tool,
+            scene,
+            view,
+            QPointF(10, 10),
+            QPointF(80, 80),
         )
 
-        overlays = [
-            i for i in scene.items()
-            if isinstance(i, ObfuscationItem)
-        ]
-        assert len(overlays) == 1, (
-            f"Expected 1 ObfuscationItem, got {len(overlays)}"
-        )
+        overlays = [i for i in scene.items() if isinstance(i, ObfuscationItem)]
+        assert len(overlays) == 1, f"Expected 1 ObfuscationItem, got {len(overlays)}"
         assert overlays[0]._show_border is False, (
-            "Expected _show_border False after finalize, "
-            f"got {overlays[0]._show_border}"
+            f"Expected _show_border False after finalize, got {overlays[0]._show_border}"
         )
 
 
@@ -1170,7 +1162,7 @@ class TestObfuscateTool:
 class TestCropTool:
     def test_crop_rect_visible_during_drag(self, qapp) -> None:
         """Crop rect is visible during mouse_move (before release)."""
-        scene, bg = make_scene_with_background(400, 400)
+        scene, _bg = make_scene_with_background(400, 400)
         view = QGraphicsView(scene)
         tool = CropTool()
         tool.activate(scene, view)
@@ -1179,15 +1171,13 @@ class TestCropTool:
         tool.mouse_press(QPointF(10, 10), event)
         tool.mouse_move(QPointF(200, 200), event)
 
-        assert tool._crop_rect_item is not None, (
-            "Expected crop rect to be visible during drag"
-        )
+        assert tool._crop_rect_item is not None, "Expected crop rect to be visible during drag"
         rect = tool._crop_rect_item.rect()
         assert rect.width() >= 10, f"Expected rect.width() >= 10, got {rect.width()}"
         assert rect.height() >= 10, f"Expected rect.height() >= 10, got {rect.height()}"
 
     def test_crop_rect_has_high_zvalue(self, qapp) -> None:
-        scene, bg = make_scene_with_background(400, 400)
+        scene, _bg = make_scene_with_background(400, 400)
         view = QGraphicsView(scene)
         tool = CropTool()
         tool.activate(scene, view)
@@ -1204,7 +1194,7 @@ class TestCropTool:
 
     def test_mouse_release_applies_crop(self, qapp) -> None:
         """Crop is applied immediately on mouse release."""
-        scene, bg = make_scene_with_background(400, 400)
+        scene, _bg = make_scene_with_background(400, 400)
         view = QGraphicsView(scene)
         tool = CropTool()
         tool.activate(scene, view)
@@ -1220,15 +1210,13 @@ class TestCropTool:
         )
         # Scene should have a new background pixmap
         pixmap_items = [i for i in scene.items() if isinstance(i, QGraphicsPixmapItem)]
-        assert len(pixmap_items) == 1, (
-            f"Expected 1 pixmap item after crop, got {len(pixmap_items)}"
-        )
+        assert len(pixmap_items) == 1, f"Expected 1 pixmap item after crop, got {len(pixmap_items)}"
         assert pixmap_items[0].zValue() == -1000, (
             f"Expected zValue -1000, got {pixmap_items[0].zValue()}"
         )
 
     def test_too_small_crop_discarded_on_release(self, qapp) -> None:
-        scene, bg = make_scene_with_background(400, 400)
+        scene, _bg = make_scene_with_background(400, 400)
         view = QGraphicsView(scene)
         tool = CropTool()
         tool.activate(scene, view)
@@ -1244,7 +1232,7 @@ class TestCropTool:
 
     def test_cancel_crop_clears_ui_during_drag(self, qapp) -> None:
         """Cancel clears the crop rect before mouse release."""
-        scene, bg = make_scene_with_background(400, 400)
+        scene, _bg = make_scene_with_background(400, 400)
         view = QGraphicsView(scene)
         tool = CropTool()
         tool.activate(scene, view)
@@ -1262,7 +1250,7 @@ class TestCropTool:
         assert tool._origin is None, f"Expected tool._origin to be None, got {tool._origin}"
 
     def test_deactivate_clears_crop_ui(self, qapp) -> None:
-        scene, bg = make_scene_with_background(400, 400)
+        scene, _bg = make_scene_with_background(400, 400)
         view = QGraphicsView(scene)
         tool = CropTool()
         tool.activate(scene, view)
@@ -1279,7 +1267,7 @@ class TestCropTool:
         assert tool._origin is None, f"Expected tool._origin to be None, got {tool._origin}"
 
     def test_right_click_ignored(self, qapp) -> None:
-        scene, bg = make_scene_with_background(400, 400)
+        scene, _bg = make_scene_with_background(400, 400)
         view = QGraphicsView(scene)
         tool = CropTool()
         tool.activate(scene, view)
@@ -1292,7 +1280,7 @@ class TestCropTool:
         )
 
     def test_apply_crop_without_selection_does_nothing(self, qapp) -> None:
-        scene, bg = make_scene_with_background(400, 400)
+        scene, _bg = make_scene_with_background(400, 400)
         view = QGraphicsView(scene)
         tool = CropTool()
         tool.activate(scene, view)
@@ -1321,9 +1309,7 @@ class TestCropTool:
 
         # No pixmap items should exist since there was no background
         pixmap_items = [i for i in scene.items() if isinstance(i, QGraphicsPixmapItem)]
-        assert len(pixmap_items) == 0, (
-            f"Expected no pixmap items, got {len(pixmap_items)}"
-        )
+        assert len(pixmap_items) == 0, f"Expected no pixmap items, got {len(pixmap_items)}"
 
 
 # ---------------------------------------------------------------------------
@@ -1496,19 +1482,19 @@ class TestSelectTool:
 
         # Delta is (50, 60), original pos was (10, 20) → new pos (60, 80)
         assert abs(rect_item.pos().x() - 60) < 1, (
-            f"Expected abs(rect_item.pos().x() - 60) < 1, "
-            f"got {abs(rect_item.pos().x() - 60)}"
+            f"Expected abs(rect_item.pos().x() - 60) < 1, got {abs(rect_item.pos().x() - 60)}"
         )
         assert abs(rect_item.pos().y() - 80) < 1, (
-            f"Expected abs(rect_item.pos().y() - 80) < 1, "
-            f"got {abs(rect_item.pos().y() - 80)}"
+            f"Expected abs(rect_item.pos().y() - 80) < 1, got {abs(rect_item.pos().y() - 80)}"
         )
 
     def test_select_tool_cannot_select_boundary_item(
-        self, qapp,
+        self,
+        qapp,
     ) -> None:
         """Boundary rect (zValue >= Z_BOUNDARY) must not be selectable."""
         from verdiclip.editor.canvas import EditorCanvas
+
         canvas = EditorCanvas()
         pixmap = QPixmap(200, 200)
         pixmap.fill(QColor(100, 100, 100))
@@ -1522,9 +1508,7 @@ class TestSelectTool:
         tool.mouse_press(QPointF(100, 100), event)
 
         boundary = canvas._boundary_item
-        assert boundary is not None, (
-            "Precondition: boundary item should exist"
-        )
+        assert boundary is not None, "Precondition: boundary item should exist"
         assert not boundary.isSelected(), (
             "Boundary rect must NOT be selected by SelectTool, "
             f"but isSelected() returned {boundary.isSelected()}"
@@ -1540,6 +1524,7 @@ def _make_canvas_with_history():
     """Create an EditorCanvas with image and undo history wired up."""
     from verdiclip.editor.canvas import EditorCanvas
     from verdiclip.editor.history import EditorHistory
+
     canvas = EditorCanvas()
     pixmap = QPixmap(200, 200)
     pixmap.fill(QColor(200, 200, 200))
@@ -1559,16 +1544,20 @@ class TestRectangleToolUndo:
         tool.mouse_move(QPointF(100, 100), event)
         tool.mouse_release(QPointF(100, 100), event)
 
-        rects = [i for i in canvas._scene.items() if isinstance(i, QGraphicsRectItem)
-                 and i.zValue() > -1000]
-        assert len(rects) >= 1, (
-            f"Expected at least 1 drawn rectangle, got {len(rects)}"
-        )
+        rects = [
+            i
+            for i in canvas._scene.items()
+            if isinstance(i, QGraphicsRectItem) and i.zValue() > -1000
+        ]
+        assert len(rects) >= 1, f"Expected at least 1 drawn rectangle, got {len(rects)}"
         assert history.can_undo, "Expected undo to be available after drawing rectangle"
 
         history.undo()
-        rects_after = [i for i in canvas._scene.items() if isinstance(i, QGraphicsRectItem)
-                       and i.zValue() > -1000]
+        rects_after = [
+            i
+            for i in canvas._scene.items()
+            if isinstance(i, QGraphicsRectItem) and i.zValue() > -1000
+        ]
         # The boundary item is also a QGraphicsRectItem — filter by zValue
         drawn_rects = [r for r in rects_after if r.zValue() < 9000]
         assert len(drawn_rects) == 0, (
@@ -1613,9 +1602,7 @@ class TestLineToolUndo:
 
         history.undo()
         lines_after = [i for i in canvas._scene.items() if isinstance(i, QGraphicsLineItem)]
-        assert len(lines_after) == 0, (
-            f"Expected 0 lines after undo, got {len(lines_after)}"
-        )
+        assert len(lines_after) == 0, f"Expected 0 lines after undo, got {len(lines_after)}"
 
 
 class TestHighlightToolUndo:
@@ -1632,11 +1619,12 @@ class TestHighlightToolUndo:
         history.undo()
 
         # Only boundary rect and pixmap should remain
-        rects = [i for i in canvas._scene.items()
-                 if isinstance(i, QGraphicsRectItem) and i.zValue() < 9000 and i.zValue() > -1000]
-        assert len(rects) == 0, (
-            f"Expected 0 highlight rects after undo, got {len(rects)}"
-        )
+        rects = [
+            i
+            for i in canvas._scene.items()
+            if isinstance(i, QGraphicsRectItem) and i.zValue() < 9000 and i.zValue() > -1000
+        ]
+        assert len(rects) == 0, f"Expected 0 highlight rects after undo, got {len(rects)}"
 
 
 class TestFreehandToolUndo:
@@ -1675,14 +1663,13 @@ class TestArrowToolUndo:
         history.undo()
         # After undo, the arrow group should be gone
         groups = [i for i in canvas._scene.items() if isinstance(i, QGraphicsItemGroup)]
-        assert len(groups) == 0, (
-            f"Expected 0 arrow groups after undo, got {len(groups)}"
-        )
+        assert len(groups) == 0, f"Expected 0 arrow groups after undo, got {len(groups)}"
 
 
 class TestNumberToolUndo:
     def test_number_marker_is_undoable(self, qapp) -> None:
         from verdiclip.editor.tools.number import NumberMarkerItem
+
         canvas, history = _make_canvas_with_history()
         tool = NumberTool()
         tool.activate(canvas._scene, canvas)
@@ -1695,9 +1682,7 @@ class TestNumberToolUndo:
 
         history.undo()
         markers_after = [i for i in canvas._scene.items() if isinstance(i, NumberMarkerItem)]
-        assert len(markers_after) == 0, (
-            f"Expected 0 markers after undo, got {len(markers_after)}"
-        )
+        assert len(markers_after) == 0, f"Expected 0 markers after undo, got {len(markers_after)}"
 
 
 class TestTextToolUndo:
@@ -1714,9 +1699,7 @@ class TestTextToolUndo:
 
         history.undo()
         texts_after = [i for i in canvas._scene.items() if isinstance(i, QGraphicsTextItem)]
-        assert len(texts_after) == 0, (
-            f"Expected 0 text items after undo, got {len(texts_after)}"
-        )
+        assert len(texts_after) == 0, f"Expected 0 text items after undo, got {len(texts_after)}"
 
 
 # ---------------------------------------------------------------------------
@@ -1736,9 +1719,7 @@ class TestTextToolFinalizeWithFont:
         tool.mouse_press(QPointF(30, 30), event)
 
         text_items = [i for i in scene.items() if isinstance(i, QGraphicsTextItem)]
-        assert len(text_items) == 1, (
-            f"Expected 1 text item after click, got {len(text_items)}"
-        )
+        assert len(text_items) == 1, f"Expected 1 text item after click, got {len(text_items)}"
         item_font = text_items[0].font()
         assert item_font.family() == "Consolas", (
             f"Expected font family 'Consolas', got '{item_font.family()}'"
@@ -1767,8 +1748,7 @@ class TestTextToolFinalizeWithFont:
             f"Expected text content 'Hello World', got '{text_items[0].toPlainText()}'"
         )
         assert text_items[0].textInteractionFlags() == Qt.TextInteractionFlag.NoTextInteraction, (
-            f"Expected NoTextInteraction after finalize, "
-            f"got {text_items[0].textInteractionFlags()}"
+            f"Expected NoTextInteraction after finalize, got {text_items[0].textInteractionFlags()}"
         )
 
 
@@ -1790,9 +1770,7 @@ class TestNumberToolAutoIncrement:
 
         text_items = [i for i in scene.items() if isinstance(i, QGraphicsSimpleTextItem)]
         labels = sorted([item.text() for item in text_items])
-        assert labels == ["1", "2", "3"], (
-            f"Expected marker labels ['1', '2', '3'], got {labels}"
-        )
+        assert labels == ["1", "2", "3"], f"Expected marker labels ['1', '2', '3'], got {labels}"
 
     def test_counter_value_matches_placement_count(self, qapp) -> None:
         scene = QGraphicsScene()
@@ -1845,9 +1823,7 @@ class TestFreehandToolPathPoints:
 
         tool.mouse_release(QPointF(40, 40), event)
         paths = [i for i in scene.items() if isinstance(i, QGraphicsPathItem)]
-        assert len(paths) == 1, (
-            f"Expected 1 path item after drawing, got {len(paths)}"
-        )
+        assert len(paths) == 1, f"Expected 1 path item after drawing, got {len(paths)}"
 
     def test_path_grows_with_each_move(self, qapp) -> None:
         scene = QGraphicsScene()
@@ -1887,9 +1863,7 @@ class TestResolveTopLevelItem:
         scene.addItem(rect)
 
         result = _resolve_top_level_item(rect)
-        assert result is rect, (
-            f"Expected the same item back when it has no parent, got {result}"
-        )
+        assert result is rect, f"Expected the same item back when it has no parent, got {result}"
 
     def test_walks_single_parent(self, qapp) -> None:
         """A child should resolve to its parent."""
@@ -1901,9 +1875,7 @@ class TestResolveTopLevelItem:
         scene.addItem(parent)
 
         result = _resolve_top_level_item(child)
-        assert result is parent, (
-            f"Expected child to resolve to parent, got {result}"
-        )
+        assert result is parent, f"Expected child to resolve to parent, got {result}"
 
     def test_walks_nested_parents(self, qapp) -> None:
         """A deeply nested item should resolve to the top-level ancestor."""
@@ -1916,9 +1888,7 @@ class TestResolveTopLevelItem:
         scene.addItem(grandparent)
 
         result = _resolve_top_level_item(child)
-        assert result is grandparent, (
-            f"Expected child to resolve to grandparent, got {result}"
-        )
+        assert result is grandparent, f"Expected child to resolve to grandparent, got {result}"
 
     def test_click_on_child_selects_parent_item(self, qapp) -> None:
         """Clicking on a child graphics item should select the top-level parent."""
@@ -1965,12 +1935,9 @@ class TestSelectToolRubberBand:
         assert tool._rubber_banding is True, (
             f"Expected _rubber_banding to be True, got {tool._rubber_banding}"
         )
-        assert tool._rubber_band_rect is not None, (
-            "Expected _rubber_band_rect to be created"
-        )
+        assert tool._rubber_band_rect is not None, "Expected _rubber_band_rect to be created"
         assert tool._rubber_band_rect.zValue() > 9000, (
-            f"Expected rubber band zValue > Z_BOUNDARY, "
-            f"got {tool._rubber_band_rect.zValue()}"
+            f"Expected rubber band zValue > Z_BOUNDARY, got {tool._rubber_band_rect.zValue()}"
         )
 
     def test_rubber_band_rect_updates_on_move(self, qapp) -> None:
@@ -1989,12 +1956,8 @@ class TestSelectToolRubberBand:
         tool.mouse_move(QPointF(200, 200), move_event)
 
         rect = tool._rubber_band_rect.rect()
-        assert rect.width() > 0, (
-            f"Expected rubber band width > 0, got {rect.width()}"
-        )
-        assert rect.height() > 0, (
-            f"Expected rubber band height > 0, got {rect.height()}"
-        )
+        assert rect.width() > 0, f"Expected rubber band width > 0, got {rect.width()}"
+        assert rect.height() > 0, f"Expected rubber band height > 0, got {rect.height()}"
 
     def test_rubber_band_selects_items_within(self, qapp) -> None:
         """Items within the rubber band area should be selected on release."""
@@ -2027,15 +1990,9 @@ class TestSelectToolRubberBand:
         release_event = make_mouse_event()
         tool.mouse_release(QPointF(100, 100), release_event)
 
-        assert item1.isSelected(), (
-            "Expected item1 inside rubber band to be selected"
-        )
-        assert item2.isSelected(), (
-            "Expected item2 inside rubber band to be selected"
-        )
-        assert not item3.isSelected(), (
-            "Expected item3 outside rubber band to NOT be selected"
-        )
+        assert item1.isSelected(), "Expected item1 inside rubber band to be selected"
+        assert item2.isSelected(), "Expected item2 inside rubber band to be selected"
+        assert not item3.isSelected(), "Expected item3 outside rubber band to NOT be selected"
 
     def test_rubber_band_cleaned_up_on_release(self, qapp) -> None:
         """Rubber band rect should be removed from scene after release."""
@@ -2051,15 +2008,12 @@ class TestSelectToolRubberBand:
         tool.mouse_move(QPointF(200, 200), event)
         tool.mouse_release(QPointF(200, 200), event)
 
-        assert tool._rubber_band_rect is None, (
-            "Expected _rubber_band_rect to be None after release"
-        )
+        assert tool._rubber_band_rect is None, "Expected _rubber_band_rect to be None after release"
         assert tool._rubber_banding is False, (
             f"Expected _rubber_banding to be False, got {tool._rubber_banding}"
         )
         rubber_rects = [
-            i for i in scene.items()
-            if isinstance(i, QGraphicsRectItem) and i.zValue() > 9000
+            i for i in scene.items() if isinstance(i, QGraphicsRectItem) and i.zValue() > 9000
         ]
         assert len(rubber_rects) == 0, (
             f"Expected 0 rubber band rects in scene, got {len(rubber_rects)}"
@@ -2084,12 +2038,8 @@ class TestSelectToolRubberBand:
         tool.mouse_move(QPointF(300, 300), event)
         tool.mouse_release(QPointF(300, 300), event)
 
-        assert annotation.isSelected(), (
-            "Annotation inside band should be selected"
-        )
-        assert not bg.isSelected(), (
-            "Background item should NOT be selected by rubber band"
-        )
+        assert annotation.isSelected(), "Annotation inside band should be selected"
+        assert not bg.isSelected(), "Background item should NOT be selected by rubber band"
 
 
 # ---------------------------------------------------------------------------
@@ -2117,12 +2067,8 @@ class TestSelectToolSelectAll:
         tool.activate(scene, view)
         tool.select_all()
 
-        assert item1.isSelected(), (
-            "Expected item1 to be selected by select_all"
-        )
-        assert item2.isSelected(), (
-            "Expected item2 to be selected by select_all"
-        )
+        assert item1.isSelected(), "Expected item1 to be selected by select_all"
+        assert item2.isSelected(), "Expected item2 to be selected by select_all"
 
     def test_select_all_ignores_background(self, qapp) -> None:
         """select_all should not select background items."""
@@ -2138,12 +2084,8 @@ class TestSelectToolSelectAll:
         tool.activate(scene, view)
         tool.select_all()
 
-        assert annotation.isSelected(), (
-            "Annotation should be selected by select_all"
-        )
-        assert not bg.isSelected(), (
-            "Background should NOT be selected by select_all"
-        )
+        assert annotation.isSelected(), "Annotation should be selected by select_all"
+        assert not bg.isSelected(), "Background should NOT be selected by select_all"
 
     def test_select_all_ignores_boundary(self, qapp) -> None:
         """select_all should not select boundary items."""
@@ -2165,12 +2107,8 @@ class TestSelectToolSelectAll:
         tool.activate(scene, view)
         tool.select_all()
 
-        assert annotation.isSelected(), (
-            "Annotation should be selected by select_all"
-        )
-        assert not boundary.isSelected(), (
-            "Boundary should NOT be selected by select_all"
-        )
+        assert annotation.isSelected(), "Annotation should be selected by select_all"
+        assert not boundary.isSelected(), "Boundary should NOT be selected by select_all"
 
     def test_select_all_noop_without_scene(self, qapp) -> None:
         """select_all should be a no-op when tool has no scene."""
@@ -2213,12 +2151,8 @@ class TestSelectToolCtrlClick:
         )
         tool.mouse_press(QPointF(125, 125), ctrl_event)
 
-        assert item1.isSelected(), (
-            "Expected item1 to remain selected during Ctrl+click"
-        )
-        assert item2.isSelected(), (
-            "Expected item2 to be added to selection on Ctrl+click"
-        )
+        assert item1.isSelected(), "Expected item1 to remain selected during Ctrl+click"
+        assert item2.isSelected(), "Expected item2 to be added to selection on Ctrl+click"
 
     def test_click_without_ctrl_deselects_others(self, qapp) -> None:
         """Normal click (no Ctrl) should deselect existing items."""
@@ -2245,9 +2179,7 @@ class TestSelectToolCtrlClick:
         tool.mouse_press(QPointF(25, 25), event)
 
         assert item1.isSelected(), "Clicked item should be selected"
-        assert not item2.isSelected(), (
-            "Other item should be deselected on normal click (no Ctrl)"
-        )
+        assert not item2.isSelected(), "Other item should be deselected on normal click (no Ctrl)"
 
 
 # ---------------------------------------------------------------------------
@@ -2263,15 +2195,13 @@ class TestSelectToolCtrlClick:
 class TestObfuscateToolExtendsPastImageBounds:
     def test_drag_past_top_left_allows_negative_position(self, qapp) -> None:
         """Dragging from inside to past top-left should allow negative coordinates."""
-        scene, bg = make_scene_with_background(100, 100)
+        scene, _bg = make_scene_with_background(100, 100)
         view = QGraphicsView(scene)
         tool = ObfuscateTool()
         simulate_draw(tool, scene, view, QPointF(50, 50), QPointF(-20, -20))
 
         overlays = [i for i in scene.items() if isinstance(i, ObfuscationItem)]
-        assert len(overlays) == 1, (
-            f"Expected 1 ObfuscationItem, got {len(overlays)}"
-        )
+        assert len(overlays) == 1, f"Expected 1 ObfuscationItem, got {len(overlays)}"
         item = overlays[0]
         assert item.pos().x() < 0, (
             f"Expected negative pos.x when dragged past top-left, got {item.pos().x()}"
@@ -2282,15 +2212,13 @@ class TestObfuscateToolExtendsPastImageBounds:
 
     def test_drag_past_top_left_preserves_full_size(self, qapp) -> None:
         """Size should reflect the full drag area (70x70 from (50,50) to (-20,-20))."""
-        scene, bg = make_scene_with_background(100, 100)
+        scene, _bg = make_scene_with_background(100, 100)
         view = QGraphicsView(scene)
         tool = ObfuscateTool()
         simulate_draw(tool, scene, view, QPointF(50, 50), QPointF(-20, -20))
 
         overlays = [i for i in scene.items() if isinstance(i, ObfuscationItem)]
-        assert len(overlays) == 1, (
-            f"Expected 1 ObfuscationItem, got {len(overlays)}"
-        )
+        assert len(overlays) == 1, f"Expected 1 ObfuscationItem, got {len(overlays)}"
         item = overlays[0]
         assert abs(item._size.width() - 70) < 1, (
             f"Expected _size.width ~70 (full drag), got {item._size.width()}"
@@ -2301,15 +2229,13 @@ class TestObfuscateToolExtendsPastImageBounds:
 
     def test_drag_past_bottom_right_allows_extended_size(self, qapp) -> None:
         """Dragging past bottom-right should create full-size item."""
-        scene, bg = make_scene_with_background(100, 100)
+        scene, _bg = make_scene_with_background(100, 100)
         view = QGraphicsView(scene)
         tool = ObfuscateTool()
         simulate_draw(tool, scene, view, QPointF(60, 60), QPointF(150, 150))
 
         overlays = [i for i in scene.items() if isinstance(i, ObfuscationItem)]
-        assert len(overlays) == 1, (
-            f"Expected 1 ObfuscationItem, got {len(overlays)}"
-        )
+        assert len(overlays) == 1, f"Expected 1 ObfuscationItem, got {len(overlays)}"
         item = overlays[0]
         assert abs(item._size.width() - 90) < 1, (
             f"Expected _size.width ~90 (full drag), got {item._size.width()}"
@@ -2320,28 +2246,22 @@ class TestObfuscateToolExtendsPastImageBounds:
 
     def test_pixmap_offset_when_extending_past_top(self, qapp) -> None:
         """When item extends past top-left, pixmap offset aligns with image region."""
-        scene, bg = make_scene_with_background(100, 100)
+        scene, _bg = make_scene_with_background(100, 100)
         view = QGraphicsView(scene)
         tool = ObfuscateTool()
         simulate_draw(tool, scene, view, QPointF(50, 50), QPointF(-20, -20))
 
         overlays = [i for i in scene.items() if isinstance(i, ObfuscationItem)]
-        assert len(overlays) == 1, (
-            f"Expected 1 ObfuscationItem, got {len(overlays)}"
-        )
+        assert len(overlays) == 1, f"Expected 1 ObfuscationItem, got {len(overlays)}"
         item = overlays[0]
         # The item starts at (-20, -20), so the pixmap offset should be (20, 20)
         # to align with the image starting at (0, 0)
-        assert item.offset().x() > 0, (
-            f"Expected positive pixmap x offset, got {item.offset().x()}"
-        )
-        assert item.offset().y() > 0, (
-            f"Expected positive pixmap y offset, got {item.offset().y()}"
-        )
+        assert item.offset().x() > 0, f"Expected positive pixmap x offset, got {item.offset().x()}"
+        assert item.offset().y() > 0, f"Expected positive pixmap y offset, got {item.offset().y()}"
 
     def test_fully_outside_image_creates_empty_obfuscation(self, qapp) -> None:
         """Dragging entirely outside the image creates an item with empty pixmap."""
-        scene, bg = make_scene_with_background(100, 100)
+        scene, _bg = make_scene_with_background(100, 100)
         view = QGraphicsView(scene)
         tool = ObfuscateTool()
         simulate_draw(tool, scene, view, QPointF(-50, -50), QPointF(-10, -10))
@@ -2364,7 +2284,7 @@ class TestObfuscateToolExtendsPastImageBounds:
 class TestCropToolClampToImageBounds:
     def test_crop_past_bottom_right_clamps_to_image_size(self, qapp) -> None:
         """Crop rect extending beyond image is clamped to image bounds."""
-        scene, bg = make_scene_with_background(100, 100)
+        scene, _bg = make_scene_with_background(100, 100)
         view = QGraphicsView(scene)
         tool = CropTool()
         tool.activate(scene, view)
@@ -2379,19 +2299,15 @@ class TestCropToolClampToImageBounds:
         assert len(pixmap_items) >= 1, (
             f"Expected at least 1 pixmap item after crop, got {len(pixmap_items)}"
         )
-        bg_item = [i for i in pixmap_items if i.zValue() <= -1000][0]
+        bg_item = next(i for i in pixmap_items if i.zValue() <= -1000)
         w = bg_item.pixmap().width()
         h = bg_item.pixmap().height()
-        assert w == 90, (
-            f"Expected cropped width 90 (clamped to image), got {w}"
-        )
-        assert h == 90, (
-            f"Expected cropped height 90 (clamped to image), got {h}"
-        )
+        assert w == 90, f"Expected cropped width 90 (clamped to image), got {w}"
+        assert h == 90, f"Expected cropped height 90 (clamped to image), got {h}"
 
     def test_crop_past_top_left_clamps_to_zero(self, qapp) -> None:
         """Crop starting before (0,0) is clamped to image origin."""
-        scene, bg = make_scene_with_background(100, 100)
+        scene, _bg = make_scene_with_background(100, 100)
         view = QGraphicsView(scene)
         tool = CropTool()
         tool.activate(scene, view)
@@ -2402,19 +2318,15 @@ class TestCropToolClampToImageBounds:
         tool.mouse_release(QPointF(50, 50), event)
 
         pixmap_items = [i for i in scene.items() if isinstance(i, QGraphicsPixmapItem)]
-        bg_item = [i for i in pixmap_items if i.zValue() <= -1000][0]
+        bg_item = next(i for i in pixmap_items if i.zValue() <= -1000)
         w = bg_item.pixmap().width()
         h = bg_item.pixmap().height()
-        assert w == 50, (
-            f"Expected cropped width 50 (clamped at origin), got {w}"
-        )
-        assert h == 50, (
-            f"Expected cropped height 50 (clamped at origin), got {h}"
-        )
+        assert w == 50, f"Expected cropped width 50 (clamped at origin), got {w}"
+        assert h == 50, f"Expected cropped height 50 (clamped at origin), got {h}"
 
     def test_crop_entirely_outside_does_nothing(self, qapp) -> None:
         """Crop rect entirely outside the image should not change the background."""
-        scene, bg = make_scene_with_background(100, 100)
+        scene, _bg = make_scene_with_background(100, 100)
         view = QGraphicsView(scene)
         tool = CropTool()
         tool.activate(scene, view)
@@ -2426,8 +2338,7 @@ class TestCropToolClampToImageBounds:
 
         # Background should be unchanged — 100x100
         pixmap_items = [
-            i for i in scene.items()
-            if isinstance(i, QGraphicsPixmapItem) and i.zValue() <= -1000
+            i for i in scene.items() if isinstance(i, QGraphicsPixmapItem) and i.zValue() <= -1000
         ]
         assert len(pixmap_items) == 1, (
             f"Expected 1 background pixmap (unchanged), got {len(pixmap_items)}"
@@ -2457,15 +2368,9 @@ class TestObfuscationItemSetGeometry:
         assert abs(item.pos().y() - 60) < 1, (
             f"Expected pos.y ~60 after set_geometry, got {item.pos().y()}"
         )
-        assert item._size.width() == 80, (
-            f"Expected _size.width 80, got {item._size.width()}"
-        )
-        assert item._size.height() == 70, (
-            f"Expected _size.height 70, got {item._size.height()}"
-        )
-        assert not item.pixmap().isNull(), (
-            "Expected non-null pixmap after set_geometry"
-        )
+        assert item._size.width() == 80, f"Expected _size.width 80, got {item._size.width()}"
+        assert item._size.height() == 70, f"Expected _size.height 70, got {item._size.height()}"
+        assert not item.pixmap().isNull(), "Expected non-null pixmap after set_geometry"
 
     def test_set_geometry_prevents_double_refresh(self, qapp) -> None:
         """_updating_geometry flag should prevent extra refresh from itemChange."""
@@ -2488,12 +2393,12 @@ class TestObfuscationItemSetGeometry:
         item.set_geometry(QPointF(50, 60), QSizeF(80, 70))
 
         assert len(refresh_calls) == 1, (
-            f"Expected exactly 1 refresh call during set_geometry, "
-            f"got {len(refresh_calls)}"
+            f"Expected exactly 1 refresh call during set_geometry, got {len(refresh_calls)}"
         )
 
     def test_updating_geometry_flag_reset_after_set_geometry(
-        self, qapp,
+        self,
+        qapp,
     ) -> None:
         """_updating_geometry should be False after set_geometry completes."""
         from PySide6.QtCore import QSizeF
@@ -2520,8 +2425,11 @@ class TestSelectToolFindAnnotationAt:
     """Test that _find_annotation_at correctly skips non-annotation items."""
 
     def test_find_annotation_at_skips_boundary_rect(self, qapp) -> None:
-        """Regression: boundary rect (z=Z_BOUNDARY) intercepted itemAt, preventing
-        annotation selection. _find_annotation_at should skip it."""
+        """Regression: boundary rect intercepted itemAt.
+
+        z=Z_BOUNDARY prevented annotation selection. _find_annotation_at
+        should skip it.
+        """
         from verdiclip.editor import Z_BACKGROUND, Z_BOUNDARY
 
         scene = QGraphicsScene()
@@ -2571,17 +2479,13 @@ class TestSelectToolFindAnnotationAt:
         tool.activate(scene, view)
 
         found = tool._find_annotation_at(QPointF(100, 100))
-        assert found is None, (
-            f"Expected None when no annotation at position, got {found}"
-        )
+        assert found is None, f"Expected None when no annotation at position, got {found}"
 
     def test_find_annotation_at_returns_none_without_scene(self, qapp) -> None:
         """_find_annotation_at should return None when tool has no scene."""
         tool = SelectTool()
         found = tool._find_annotation_at(QPointF(50, 50))
-        assert found is None, (
-            "Expected None when tool has no scene"
-        )
+        assert found is None, "Expected None when tool has no scene"
 
 
 # ---------------------------------------------------------------------------
@@ -2668,7 +2572,7 @@ class TestObfuscationItemBoundingRect:
     """Test that ObfuscationItem's boundingRect reflects the full _size."""
 
     def test_bounding_rect_matches_full_size(self, qapp) -> None:
-        """boundingRect should cover the full item size, not just the pixmap area."""
+        """BoundingRect should cover the full item size, not just the pixmap area."""
         from PySide6.QtCore import QSizeF
 
         scene, bg = make_scene_with_background(100, 100)
@@ -2678,12 +2582,8 @@ class TestObfuscationItemBoundingRect:
         scene.addItem(item)
 
         rect = item.boundingRect()
-        assert abs(rect.width() - 80) < 1, (
-            f"Expected boundingRect width ~80, got {rect.width()}"
-        )
-        assert abs(rect.height() - 60) < 1, (
-            f"Expected boundingRect height ~60, got {rect.height()}"
-        )
+        assert abs(rect.width() - 80) < 1, f"Expected boundingRect width ~80, got {rect.width()}"
+        assert abs(rect.height() - 60) < 1, f"Expected boundingRect height ~60, got {rect.height()}"
 
 
 # ---------------------------------------------------------------------------
@@ -2693,7 +2593,7 @@ class TestObfuscationItemBoundingRect:
 
 class TestSelectToolHandles:
     def test_update_selection_handles_adds_handles(self, qapp) -> None:
-        from verdiclip.editor.tools.handles import ResizeHandle  # noqa: PLC0415
+        from verdiclip.editor.tools.handles import ResizeHandle
 
         scene = QGraphicsScene()
         view = QGraphicsView(scene)
@@ -2711,7 +2611,7 @@ class TestSelectToolHandles:
             assert h.scene() is scene, "Handle not added to scene"
 
     def test_clear_handles_removes_from_scene(self, qapp) -> None:
-        from verdiclip.editor.tools.handles import ResizeHandle  # noqa: PLC0415
+        from verdiclip.editor.tools.handles import ResizeHandle
 
         scene = QGraphicsScene()
         view = QGraphicsView(scene)
@@ -2773,6 +2673,7 @@ class TestSelectToolHandles:
 # Sharp corners: MiterJoin on rectangles, NoPen/FlatCap on arrows
 # ---------------------------------------------------------------------------
 
+
 class TestRectangleMiterJoin:
     """Rectangle pen must use MiterJoin for sharp corners at all stroke widths."""
 
@@ -2793,21 +2694,24 @@ class TestArrowItemSharpTip:
     """ArrowItem shaft must use FlatCap and arrowhead must use NoPen for a sharp tip."""
 
     def test_shaft_uses_flat_cap(self, qapp) -> None:
-        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        from verdiclip.editor.tools.arrow import ArrowItem
+
         item = ArrowItem(QPointF(0, 0), QPointF(100, 0), QColor("#FF0000"), 3)
         assert item._shaft.pen().capStyle() == Qt.PenCapStyle.FlatCap, (
             f"Expected FlatCap on shaft, got {item._shaft.pen().capStyle()}"
         )
 
     def test_arrowhead_has_no_pen(self, qapp) -> None:
-        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        from verdiclip.editor.tools.arrow import ArrowItem
+
         item = ArrowItem(QPointF(0, 0), QPointF(100, 0), QColor("#FF0000"), 3)
         assert item._head.pen().style() == Qt.PenStyle.NoPen, (
             f"Expected NoPen on arrowhead, got {item._head.pen().style()}"
         )
 
     def test_arrowhead_brush_matches_stroke_color(self, qapp) -> None:
-        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        from verdiclip.editor.tools.arrow import ArrowItem
+
         color = QColor("#00AABB")
         item = ArrowItem(QPointF(0, 0), QPointF(100, 0), color, 3)
         assert item._head.brush().color().name() == color.name(), (
@@ -2819,11 +2723,13 @@ class TestArrowItemSharpTip:
 # ArrowItem geometry API
 # ---------------------------------------------------------------------------
 
+
 class TestArrowItemGeometry:
     """ArrowItem endpoint accessors and update_endpoints."""
 
     def test_update_endpoints_changes_shaft_line(self, qapp) -> None:
-        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        from verdiclip.editor.tools.arrow import ArrowItem
+
         item = ArrowItem(QPointF(0, 0), QPointF(50, 50), QColor("#FF0000"), 2)
         item.update_endpoints(QPointF(10, 20), QPointF(90, 80))
         # shaft_line returns the logical endpoints (p2 is the arrowhead tip)
@@ -2832,57 +2738,53 @@ class TestArrowItemGeometry:
         assert abs(line.p2().x() - 90) < 0.5
         # The visual shaft should be shorter (ending at the arrowhead base)
         visual = item._shaft.line()
-        assert visual.p2().x() < 90, (
-            "Visual shaft p2 should be shorter than the logical endpoint"
-        )
+        assert visual.p2().x() < 90, "Visual shaft p2 should be shorter than the logical endpoint"
 
     def test_get_scene_p1_p2_without_pos_offset(self, qapp) -> None:
         """When item pos() is (0,0), scene coords equal local coords."""
-        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        from verdiclip.editor.tools.arrow import ArrowItem
+
         scene = QGraphicsScene()
         item = ArrowItem(QPointF(10, 20), QPointF(80, 60), QColor("#FF0000"), 2)
         scene.addItem(item)
         sp1 = item.get_scene_p1()
         sp2 = item.get_scene_p2()
-        assert abs(sp1.x() - 10) < 0.5 and abs(sp1.y() - 20) < 0.5, (
-            f"Expected scene_p1 ~(10, 20), got ({sp1.x():.1f}, {sp1.y():.1f})"
-        )
-        assert abs(sp2.x() - 80) < 0.5 and abs(sp2.y() - 60) < 0.5, (
-            f"Expected scene_p2 ~(80, 60), got ({sp2.x():.1f}, {sp2.y():.1f})"
-        )
+        assert abs(sp1.x() - 10) < 0.5
+        assert abs(sp1.y() - 20) < 0.5
+        assert abs(sp2.x() - 80) < 0.5
+        assert abs(sp2.y() - 60) < 0.5
 
     def test_set_scene_p1_moves_tail(self, qapp) -> None:
-        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        from verdiclip.editor.tools.arrow import ArrowItem
+
         scene = QGraphicsScene()
         item = ArrowItem(QPointF(0, 0), QPointF(100, 0), QColor("#FF0000"), 2)
         scene.addItem(item)
         item.set_scene_p1(QPointF(30, 30))
         sp1 = item.get_scene_p1()
-        assert abs(sp1.x() - 30) < 0.5 and abs(sp1.y() - 30) < 0.5, (
-            f"Expected tail at (30, 30), got ({sp1.x():.1f}, {sp1.y():.1f})"
-        )
+        assert abs(sp1.x() - 30) < 0.5
+        assert abs(sp1.y() - 30) < 0.5
         # Tip should remain unchanged
         sp2 = item.get_scene_p2()
-        assert abs(sp2.x() - 100) < 0.5, (
-            f"Expected tip x ~100, got {sp2.x():.1f}"
-        )
+        assert abs(sp2.x() - 100) < 0.5, f"Expected tip x ~100, got {sp2.x():.1f}"
 
     def test_set_scene_p2_moves_tip(self, qapp) -> None:
-        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        from verdiclip.editor.tools.arrow import ArrowItem
+
         scene = QGraphicsScene()
         item = ArrowItem(QPointF(0, 0), QPointF(100, 0), QColor("#FF0000"), 2)
         scene.addItem(item)
         item.set_scene_p2(QPointF(200, 50))
         sp2 = item.get_scene_p2()
-        assert abs(sp2.x() - 200) < 0.5 and abs(sp2.y() - 50) < 0.5, (
-            f"Expected tip at (200, 50), got ({sp2.x():.1f}, {sp2.y():.1f})"
-        )
+        assert abs(sp2.x() - 200) < 0.5
+        assert abs(sp2.y() - 50) < 0.5
         # Tail should remain unchanged
         sp1 = item.get_scene_p1()
         assert abs(sp1.x()) < 0.5, f"Expected tail x ~0, got {sp1.x():.1f}"
 
     def test_set_stroke_color_updates_shaft_and_head(self, qapp) -> None:
-        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        from verdiclip.editor.tools.arrow import ArrowItem
+
         item = ArrowItem(QPointF(0, 0), QPointF(100, 0), QColor("#FF0000"), 2)
         new_color = QColor("#00FF00")
         item.set_stroke_color(new_color)
@@ -2890,7 +2792,8 @@ class TestArrowItemGeometry:
         assert item._head.brush().color().name() == new_color.name()
 
     def test_set_stroke_width_updates_shaft_pen(self, qapp) -> None:
-        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        from verdiclip.editor.tools.arrow import ArrowItem
+
         item = ArrowItem(QPointF(0, 0), QPointF(100, 0), QColor("#FF0000"), 2)
         item.set_stroke_width(10)
         assert item._shaft.pen().width() == 10, (
@@ -2902,12 +2805,13 @@ class TestArrowItemGeometry:
 # Arrow endpoint handles (LINE_P1 / LINE_P2)
 # ---------------------------------------------------------------------------
 
+
 class TestArrowItemHandles:
     """Handles system creates LINE_P1/LINE_P2 handles for ArrowItem."""
 
     def test_create_handles_returns_two_line_handles(self, qapp) -> None:
-        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
-        from verdiclip.editor.tools.handles import (  # noqa: PLC0415
+        from verdiclip.editor.tools.arrow import ArrowItem
+        from verdiclip.editor.tools.handles import (
             HandleRole,
             create_handles_for_item,
         )
@@ -2923,8 +2827,8 @@ class TestArrowItemHandles:
         assert HandleRole.LINE_P2 in roles, "Expected LINE_P2 handle"
 
     def test_apply_resize_p2_moves_tip(self, qapp) -> None:
-        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
-        from verdiclip.editor.tools.handles import HandleRole, apply_resize  # noqa: PLC0415
+        from verdiclip.editor.tools.arrow import ArrowItem
+        from verdiclip.editor.tools.handles import HandleRole, apply_resize
 
         scene = QGraphicsScene()
         item = ArrowItem(QPointF(0, 0), QPointF(100, 0), QColor("#FF0000"), 2)
@@ -2941,8 +2845,8 @@ class TestArrowItemHandles:
         )
 
     def test_apply_resize_p1_moves_tail_only(self, qapp) -> None:
-        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
-        from verdiclip.editor.tools.handles import HandleRole, apply_resize  # noqa: PLC0415
+        from verdiclip.editor.tools.arrow import ArrowItem
+        from verdiclip.editor.tools.handles import HandleRole, apply_resize
 
         scene = QGraphicsScene()
         item = ArrowItem(QPointF(0, 0), QPointF(100, 0), QColor("#FF0000"), 2)
@@ -2952,47 +2856,44 @@ class TestArrowItemHandles:
         new_p1 = item.get_scene_p1()
         new_p2 = item.get_scene_p2()
 
-        assert abs(new_p1.x() - (-10)) < 0.5, (
-            f"Expected p1.x ~-10, got {new_p1.x():.1f}"
-        )
-        assert abs(new_p2.x() - original_p2.x()) < 0.5, (
-            "p2 should not move when only p1 is dragged"
-        )
+        assert abs(new_p1.x() - (-10)) < 0.5, f"Expected p1.x ~-10, got {new_p1.x():.1f}"
+        assert abs(new_p2.x() - original_p2.x()) < 0.5, "p2 should not move when only p1 is dragged"
 
 
 # ---------------------------------------------------------------------------
 # 45-degree snap: LineTool and ArrowTool
 # ---------------------------------------------------------------------------
 
+
 class TestLineToolSnap45:
     """LineTool Shift-snap must snap to 45-degree increments."""
 
     def test_snap_horizontal_stays_horizontal(self, qapp) -> None:
-        from verdiclip.editor.tools.line import LineTool  # noqa: PLC0415
+        from verdiclip.editor.tools.line import LineTool
+
         origin = QPointF(0, 0)
         # Nearly horizontal — should snap to 0°
         result = LineTool._snap_angle(origin, QPointF(100, 5))
-        assert abs(result.y()) < 1.0, (
-            f"Expected y ~0 for horizontal snap, got {result.y():.2f}"
-        )
+        assert abs(result.y()) < 1.0, f"Expected y ~0 for horizontal snap, got {result.y():.2f}"
 
     def test_snap_45_degrees(self, qapp) -> None:
-        from verdiclip.editor.tools.line import LineTool  # noqa: PLC0415
+        from verdiclip.editor.tools.line import LineTool
+
         origin = QPointF(0, 0)
         # 40° input → should snap to 45°
         import math
+
         target = QPointF(100 * math.cos(math.radians(40)), 100 * math.sin(math.radians(40)))
         result = LineTool._snap_angle(origin, target)
         angle = math.degrees(math.atan2(result.y(), result.x()))
-        assert abs(angle - 45.0) < 1.0, (
-            f"Expected snap to 45°, got {angle:.1f}°"
-        )
+        assert abs(angle - 45.0) < 1.0, f"Expected snap to 45°, got {angle:.1f}°"
 
     def test_snap_does_not_snap_to_15_degrees(self, qapp) -> None:
         """Verify old 15° snap no longer occurs — 15° input should snap to 0° or 45°, not 15°."""
         import math
 
-        from verdiclip.editor.tools.line import LineTool  # noqa: PLC0415
+        from verdiclip.editor.tools.line import LineTool
+
         origin = QPointF(0, 0)
         target = QPointF(100 * math.cos(math.radians(15)), 100 * math.sin(math.radians(15)))
         result = LineTool._snap_angle(origin, target)
@@ -3007,17 +2908,26 @@ class TestLineToolSnap45:
         view = QGraphicsView(scene)
         tool = LineTool()
         simulate_draw(
-            tool, scene, view, QPointF(0, 0), QPointF(80, 30),
+            tool,
+            scene,
+            view,
+            QPointF(0, 0),
+            QPointF(80, 30),
             modifiers=Qt.KeyboardModifier.ShiftModifier,
         )
         lines = [i for i in scene.items() if isinstance(i, QGraphicsLineItem)]
         assert len(lines) == 1
         line = lines[0].line()
         import math
-        angle = abs(math.degrees(math.atan2(
-            line.p2().y() - line.p1().y(),
-            line.p2().x() - line.p1().x(),
-        )))
+
+        angle = abs(
+            math.degrees(
+                math.atan2(
+                    line.p2().y() - line.p1().y(),
+                    line.p2().x() - line.p1().x(),
+                )
+            )
+        )
         # Must be 0°, 45°, 90°, or 135°
         snapped_angles = [0, 45, 90, 135, 180]
         assert any(abs(angle - a) < 1.0 for a in snapped_angles), (
@@ -3029,7 +2939,8 @@ class TestArrowSnap45:
     """ArrowTool Shift-snap must snap to 45-degree increments."""
 
     def test_snap_45_function_horizontal(self, qapp) -> None:
-        from verdiclip.editor.tools.arrow import _snap_45  # noqa: PLC0415
+        from verdiclip.editor.tools.arrow import _snap_45
+
         origin = QPointF(0, 0)
         result = _snap_45(origin, QPointF(100, 3))
         assert abs(result.y()) < 1.0, (
@@ -3039,7 +2950,8 @@ class TestArrowSnap45:
     def test_snap_45_function_diagonal(self, qapp) -> None:
         import math
 
-        from verdiclip.editor.tools.arrow import _snap_45  # noqa: PLC0415
+        from verdiclip.editor.tools.arrow import _snap_45
+
         origin = QPointF(0, 0)
         # ~40° → should snap to 45°
         target = QPointF(100 * math.cos(math.radians(40)), 100 * math.sin(math.radians(40)))
@@ -3051,11 +2963,16 @@ class TestArrowSnap45:
         """ArrowTool with Shift produces an arrow whose angle is a 45° multiple."""
         import math
 
-        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        from verdiclip.editor.tools.arrow import ArrowItem
+
         scene = QGraphicsScene()
         view = QGraphicsView(scene)
         simulate_draw(
-            ArrowTool(), scene, view, QPointF(0, 0), QPointF(80, 30),
+            ArrowTool(),
+            scene,
+            view,
+            QPointF(0, 0),
+            QPointF(80, 30),
             modifiers=Qt.KeyboardModifier.ShiftModifier,
         )
         groups = [i for i in scene.items() if isinstance(i, ArrowItem)]
@@ -3073,15 +2990,16 @@ class TestArrowSnap45:
 # Counter (NumberMarkerItem) 1:1 resize handles
 # ---------------------------------------------------------------------------
 
+
 class TestNumberMarkerResizeHandles:
     """NumberMarkerItem gets exactly 4 corner handles and resizes uniformly."""
 
     def test_create_handles_returns_four_corner_handles(self, qapp) -> None:
-        from verdiclip.editor.tools.handles import (  # noqa: PLC0415
+        from verdiclip.editor.tools.handles import (
             HandleRole,
             create_handles_for_item,
         )
-        from verdiclip.editor.tools.number import NumberMarkerItem  # noqa: PLC0415
+        from verdiclip.editor.tools.number import NumberMarkerItem
 
         scene = QGraphicsScene()
         item = NumberMarkerItem("1", QColor("#FF0000"), QColor("#FFFFFF"))
@@ -3101,8 +3019,8 @@ class TestNumberMarkerResizeHandles:
         assert HandleRole.E not in roles, "Edge-midpoint E handle should not exist for markers"
 
     def test_resize_se_grows_radius_uniformly(self, qapp) -> None:
-        from verdiclip.editor.tools.handles import HandleRole, apply_resize  # noqa: PLC0415
-        from verdiclip.editor.tools.number import NumberMarkerItem  # noqa: PLC0415
+        from verdiclip.editor.tools.handles import HandleRole, apply_resize
+        from verdiclip.editor.tools.number import NumberMarkerItem
 
         scene = QGraphicsScene()
         item = NumberMarkerItem("1", QColor("#FF0000"), QColor("#FFFFFF"))
@@ -3114,14 +3032,13 @@ class TestNumberMarkerResizeHandles:
 
         # Width and height must remain equal (circle stays circular)
         assert abs(new_rect.width() - new_rect.height()) < 0.5, (
-            f"Expected w == h after resize, got "
-            f"w={new_rect.width():.1f} h={new_rect.height():.1f}"
+            f"Expected w == h after resize, got w={new_rect.width():.1f} h={new_rect.height():.1f}"
         )
         assert new_rect.width() > original_w, "Expected circle to grow after SE drag"
 
     def test_resize_nw_grows_radius_uniformly(self, qapp) -> None:
-        from verdiclip.editor.tools.handles import HandleRole, apply_resize  # noqa: PLC0415
-        from verdiclip.editor.tools.number import NumberMarkerItem  # noqa: PLC0415
+        from verdiclip.editor.tools.handles import HandleRole, apply_resize
+        from verdiclip.editor.tools.number import NumberMarkerItem
 
         scene = QGraphicsScene()
         item = NumberMarkerItem("1", QColor("#FF0000"), QColor("#FFFFFF"))
@@ -3135,10 +3052,10 @@ class TestNumberMarkerResizeHandles:
         assert new_rect.width() > original_w, "Expected circle to grow after NW drag"
 
     def test_resize_calls_center_text(self, qapp) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
+        from unittest.mock import patch
 
-        from verdiclip.editor.tools.handles import HandleRole, apply_resize  # noqa: PLC0415
-        from verdiclip.editor.tools.number import NumberMarkerItem  # noqa: PLC0415
+        from verdiclip.editor.tools.handles import HandleRole, apply_resize
+        from verdiclip.editor.tools.number import NumberMarkerItem
 
         scene = QGraphicsScene()
         item = NumberMarkerItem("1", QColor("#FF0000"), QColor("#FFFFFF"))
@@ -3149,12 +3066,12 @@ class TestNumberMarkerResizeHandles:
             mock_center.assert_called_once()
 
     def test_resize_minimum_radius_enforced(self, qapp) -> None:
-        from verdiclip.editor.tools.handles import (  # noqa: PLC0415
+        from verdiclip.editor.tools.handles import (
             _MIN_MARKER_RADIUS,
             HandleRole,
             apply_resize,
         )
-        from verdiclip.editor.tools.number import NumberMarkerItem  # noqa: PLC0415
+        from verdiclip.editor.tools.number import NumberMarkerItem
 
         scene = QGraphicsScene()
         item = NumberMarkerItem("1", QColor("#FF0000"), QColor("#FFFFFF"))
@@ -3172,11 +3089,13 @@ class TestNumberMarkerResizeHandles:
 # ArrowItem arrowhead scaling with stroke width
 # ---------------------------------------------------------------------------
 
+
 class TestArrowHeadScaling:
     """Arrowhead must scale proportionally with stroke width."""
 
     def test_head_path_grows_with_width(self, qapp) -> None:
-        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        from verdiclip.editor.tools.arrow import ArrowItem
+
         thin = ArrowItem(QPointF(0, 0), QPointF(100, 0), QColor("#FF0000"), 1)
         thick = ArrowItem(QPointF(0, 0), QPointF(100, 0), QColor("#FF0000"), 15)
         thin_bounds = thin._head.boundingRect()
@@ -3186,7 +3105,8 @@ class TestArrowHeadScaling:
         )
 
     def test_set_stroke_width_rebuilds_head(self, qapp) -> None:
-        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        from verdiclip.editor.tools.arrow import ArrowItem
+
         item = ArrowItem(QPointF(0, 0), QPointF(100, 0), QColor("#FF0000"), 2)
         original_bounds = item._head.boundingRect()
         item.set_stroke_width(20)
@@ -3200,12 +3120,13 @@ class TestArrowHeadScaling:
 # Crop tool preserves arrow items
 # ---------------------------------------------------------------------------
 
+
 class TestCropPreservesArrows:
     """Crop must not remove arrows that are within the crop region."""
 
     def test_arrow_inside_crop_survives(self, qapp) -> None:
-        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
-        from verdiclip.editor.tools.crop import CropTool  # noqa: PLC0415
+        from verdiclip.editor.tools.arrow import ArrowItem
+        from verdiclip.editor.tools.crop import CropTool
 
         scene, _bg = make_scene_with_background(200, 200)
         view = QGraphicsView(scene)
@@ -3220,12 +3141,14 @@ class TestCropPreservesArrows:
         tool._origin = QPointF(0, 0)
         tool._crop_rect_item = QGraphicsRectItem()
         tool._crop_rect_item.setRect(QRectF(0, 0, 100, 100))
-        from verdiclip.editor import Z_CROP_OVERLAY  # noqa: PLC0415
+        from verdiclip.editor import Z_CROP_OVERLAY
+
         tool._crop_rect_item.setZValue(Z_CROP_OVERLAY)
         scene.addItem(tool._crop_rect_item)
 
         # Check that the annotation list does NOT include arrow children
-        from verdiclip.editor import Z_BACKGROUND, Z_BOUNDARY  # noqa: PLC0415
+        from verdiclip.editor import Z_BACKGROUND, Z_BOUNDARY
+
         annotation_items = []
         for item in scene.items():
             if item is _bg or item is tool._crop_rect_item:
@@ -3244,7 +3167,7 @@ class TestCropPreservesArrows:
 
     def test_crop_does_not_double_count_arrow_children(self, qapp) -> None:
         """Arrow child items (shaft, head) should not be treated as separate annotations."""
-        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        from verdiclip.editor.tools.arrow import ArrowItem
 
         scene, _bg = make_scene_with_background(200, 200)
 
@@ -3252,11 +3175,9 @@ class TestCropPreservesArrows:
         scene.addItem(arrow)
 
         # Count what scene.items() returns vs top-level only
-        from verdiclip.editor import Z_BACKGROUND, Z_BOUNDARY  # noqa: PLC0415
-        all_annotation = [
-            i for i in scene.items()
-            if Z_BACKGROUND < i.zValue() < Z_BOUNDARY
-        ]
+        from verdiclip.editor import Z_BACKGROUND, Z_BOUNDARY
+
+        all_annotation = [i for i in scene.items() if Z_BACKGROUND < i.zValue() < Z_BOUNDARY]
         top_level = [i for i in all_annotation if i.parentItem() is None]
 
         # The arrow group has child items (shaft + head)
@@ -3264,20 +3185,19 @@ class TestCropPreservesArrows:
             "scene.items() should return more items than top-level items "
             "(ArrowItem children should be present)"
         )
-        assert len(top_level) == 1, (
-            f"Expected 1 top-level annotation, got {len(top_level)}"
-        )
+        assert len(top_level) == 1, f"Expected 1 top-level annotation, got {len(top_level)}"
 
 
 # ---------------------------------------------------------------------------
 # Shift snap during endpoint handle modification
 # ---------------------------------------------------------------------------
 
+
 class TestShiftSnapDuringResize:
     """Shift key should snap line/arrow endpoints to 45° during handle drags."""
 
     def test_snap_endpoint_delta_snaps_to_45(self, qapp) -> None:
-        from verdiclip.editor.tools.handles import (  # noqa: PLC0415
+        from verdiclip.editor.tools.handles import (
             HandleRole,
         )
 
@@ -3307,6 +3227,7 @@ class TestShiftSnapDuringResize:
         # Compute the snapped delta — should snap to 45° diagonal
         delta = tool._snap_endpoint_delta(p2_handle, QPointF(140, 35))
         import math
+
         # The delta should move the endpoint to a 45° angle from P1 (0,0)
         new_pos = QPointF(100, 0) + delta
         angle = abs(math.degrees(math.atan2(new_pos.y(), new_pos.x())))
@@ -3320,15 +3241,17 @@ class TestShiftSnapDuringResize:
 # Esc key behavior
 # ---------------------------------------------------------------------------
 
+
 class TestEscKeyBehavior:
     """Esc should deactivate non-Select tools in a single press."""
 
     def test_esc_with_non_select_tool_emits_switch(self, qapp) -> None:
         """Non-Select tool + Esc → switch to Select."""
-        from verdiclip.editor.tools.line import LineTool  # noqa: PLC0415
+        from verdiclip.editor.tools.line import LineTool
 
-        scene, _bg = make_scene_with_background()
-        from verdiclip.editor.canvas import EditorCanvas  # noqa: PLC0415
+        _scene, _bg = make_scene_with_background()
+        from verdiclip.editor.canvas import EditorCanvas
+
         canvas = EditorCanvas()
         canvas.set_image(QPixmap(100, 100))
         canvas.set_tool(LineTool())
@@ -3338,7 +3261,8 @@ class TestEscKeyBehavior:
             lambda: signal_received.append(True),
         )
 
-        from unittest.mock import MagicMock  # noqa: PLC0415
+        from unittest.mock import MagicMock
+
         event = MagicMock()
         event.key.return_value = Qt.Key.Key_Escape
         event.modifiers.return_value = Qt.KeyboardModifier.NoModifier
@@ -3353,31 +3277,32 @@ class TestEscKeyBehavior:
 # Arrow shaft shortened for pointy tips
 # ---------------------------------------------------------------------------
 
+
 class TestArrowShaftShortened:
     """Visual shaft must end at the arrowhead base, not at the tip."""
 
     def test_shaft_p2_shorter_than_logical_p2(self, qapp) -> None:
-        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        from verdiclip.editor.tools.arrow import ArrowItem
+
         item = ArrowItem(QPointF(0, 0), QPointF(100, 0), QColor("#FF0000"), 3)
         visual_p2_x = item._shaft.line().p2().x()
         logical_p2_x = item.shaft_line.p2().x()
         assert visual_p2_x < logical_p2_x, (
-            f"Visual shaft ({visual_p2_x:.1f}) should be shorter than "
-            f"logical ({logical_p2_x:.1f})"
+            f"Visual shaft ({visual_p2_x:.1f}) should be shorter than logical ({logical_p2_x:.1f})"
         )
 
     def test_thick_stroke_shaft_much_shorter(self, qapp) -> None:
-        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        from verdiclip.editor.tools.arrow import ArrowItem
+
         thin = ArrowItem(QPointF(0, 0), QPointF(100, 0), QColor("#FF0000"), 1)
         thick = ArrowItem(QPointF(0, 0), QPointF(100, 0), QColor("#FF0000"), 20)
         thin_gap = thin.shaft_line.p2().x() - thin._shaft.line().p2().x()
         thick_gap = thick.shaft_line.p2().x() - thick._shaft.line().p2().x()
-        assert thick_gap > thin_gap, (
-            "Thicker strokes should produce a larger shaft shortening"
-        )
+        assert thick_gap > thin_gap, "Thicker strokes should produce a larger shaft shortening"
 
     def test_logical_endpoints_match_update_args(self, qapp) -> None:
-        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        from verdiclip.editor.tools.arrow import ArrowItem
+
         item = ArrowItem(QPointF(0, 0), QPointF(50, 50), QColor("#FF0000"), 5)
         item.update_endpoints(QPointF(10, 20), QPointF(80, 90))
         assert abs(item.shaft_line.p1().x() - 10) < 0.5
@@ -3390,11 +3315,13 @@ class TestArrowShaftShortened:
 # Arrow keys move selected elements
 # ---------------------------------------------------------------------------
 
+
 class TestArrowKeysMove:
     """Arrow keys should move selected items by 1px (or 10px with Ctrl)."""
 
     def test_right_arrow_moves_item(self, qapp) -> None:
-        from verdiclip.editor.canvas import EditorCanvas  # noqa: PLC0415
+        from verdiclip.editor.canvas import EditorCanvas
+
         canvas = EditorCanvas()
         canvas.set_image(QPixmap(200, 200))
         item = canvas.scene.addRect(10, 10, 30, 30)
@@ -3402,7 +3329,8 @@ class TestArrowKeysMove:
         item.setSelected(True)
         original_x = item.pos().x()
 
-        from unittest.mock import MagicMock  # noqa: PLC0415
+        from unittest.mock import MagicMock
+
         event = MagicMock()
         event.key.return_value = Qt.Key.Key_Right
         event.modifiers.return_value = Qt.KeyboardModifier.NoModifier
@@ -3413,7 +3341,8 @@ class TestArrowKeysMove:
         )
 
     def test_ctrl_down_arrow_moves_10px(self, qapp) -> None:
-        from verdiclip.editor.canvas import EditorCanvas  # noqa: PLC0415
+        from verdiclip.editor.canvas import EditorCanvas
+
         canvas = EditorCanvas()
         canvas.set_image(QPixmap(200, 200))
         item = canvas.scene.addRect(10, 10, 30, 30)
@@ -3421,7 +3350,8 @@ class TestArrowKeysMove:
         item.setSelected(True)
         original_y = item.pos().y()
 
-        from unittest.mock import MagicMock  # noqa: PLC0415
+        from unittest.mock import MagicMock
+
         event = MagicMock()
         event.key.return_value = Qt.Key.Key_Down
         event.modifiers.return_value = Qt.KeyboardModifier.ControlModifier
@@ -3432,11 +3362,13 @@ class TestArrowKeysMove:
         )
 
     def test_arrow_key_no_selection_no_crash(self, qapp) -> None:
-        from verdiclip.editor.canvas import EditorCanvas  # noqa: PLC0415
+        from verdiclip.editor.canvas import EditorCanvas
+
         canvas = EditorCanvas()
         canvas.set_image(QPixmap(200, 200))
 
-        from unittest.mock import MagicMock  # noqa: PLC0415
+        from unittest.mock import MagicMock
+
         event = MagicMock()
         event.key.return_value = Qt.Key.Key_Left
         event.modifiers.return_value = Qt.KeyboardModifier.NoModifier
@@ -3449,9 +3381,6 @@ class TestArrowKeysMove:
 # These consolidate redundant per-tool tests for behaviors shared across
 # all (or most) drawing tools: right-click ignored, too-small discarded,
 # items selectable but not movable, set_stroke_color, set_stroke_width.
-
-
-
 
 
 # Tools that use the standard (start, end) draw pattern
@@ -3529,18 +3458,14 @@ class TestCommonToolBehaviors:
         tool = tool_cls()
         color = QColor("#0000FF")
         tool.set_stroke_color(color)
-        assert tool._stroke_color == color, (
-            f"{tool_cls.__name__}: stroke color not updated"
-        )
+        assert tool._stroke_color == color, f"{tool_cls.__name__}: stroke color not updated"
 
     @pytest.mark.parametrize("tool_cls", _STROKE_WIDTH_TOOLS)
     def test_set_stroke_width(self, qapp, tool_cls) -> None:
         """Setting stroke width updates the tool's internal state."""
         tool = tool_cls()
         tool.set_stroke_width(9)
-        assert tool._stroke_width == 9, (
-            f"{tool_cls.__name__}: stroke width not updated"
-        )
+        assert tool._stroke_width == 9, f"{tool_cls.__name__}: stroke width not updated"
 
     @pytest.mark.parametrize("tool_cls", _FILL_COLOR_TOOLS)
     def test_set_fill_color(self, qapp, tool_cls) -> None:
@@ -3548,6 +3473,4 @@ class TestCommonToolBehaviors:
         tool = tool_cls()
         color = QColor(255, 0, 0, 100)
         tool.set_fill_color(color)
-        assert tool._fill_color == color, (
-            f"{tool_cls.__name__}: fill color not updated"
-        )
+        assert tool._fill_color == color, f"{tool_cls.__name__}: fill color not updated"

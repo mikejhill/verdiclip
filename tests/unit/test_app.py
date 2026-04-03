@@ -57,12 +57,8 @@ class TestCleanup:
 
         app._cleanup()
 
-        mock_hk.stop.assert_called_once(), (
-            "Expected _cleanup to call hotkey_manager.stop()"
-        )
-        assert app._hotkey_manager is None, (
-            "Expected _hotkey_manager to be None after cleanup"
-        )
+        mock_hk.stop.assert_called_once(), ("Expected _cleanup to call hotkey_manager.stop()")
+        assert app._hotkey_manager is None, "Expected _hotkey_manager to be None after cleanup"
 
     def test_cleanup_hides_tray_icon(self, qapp: QApplication) -> None:
         app = VerdiClipApp([])
@@ -74,9 +70,7 @@ class TestCleanup:
 
         app._cleanup()
 
-        mock_tray.hide.assert_called_once(), (
-            "Expected _cleanup to call tray_icon.hide()"
-        )
+        mock_tray.hide.assert_called_once(), ("Expected _cleanup to call tray_icon.hide()")
 
     def test_cleanup_detaches_shared_memory(self, qapp: QApplication) -> None:
         app = VerdiClipApp([])
@@ -87,12 +81,14 @@ class TestCleanup:
 
         app._cleanup()
 
-        app._shared_memory.detach.assert_called_once(), (
-            "Expected _cleanup to detach shared memory"
+        (
+            app._shared_memory.detach.assert_called_once(),
+            ("Expected _cleanup to detach shared memory"),
         )
 
     def test_cleanup_skips_detach_when_not_attached(
-        self, qapp: QApplication,
+        self,
+        qapp: QApplication,
     ) -> None:
         app = VerdiClipApp([])
         app._hotkey_manager = None
@@ -102,8 +98,9 @@ class TestCleanup:
 
         app._cleanup()
 
-        app._shared_memory.detach.assert_not_called(), (
-            "Expected _cleanup to skip detach when not attached"
+        (
+            app._shared_memory.detach.assert_not_called(),
+            ("Expected _cleanup to skip detach when not attached"),
         )
 
     def test_cleanup_handles_all_none(self, qapp: QApplication) -> None:
@@ -190,9 +187,7 @@ class TestConfigProperty:
     def test_returns_config_when_set(self, qapp: QApplication, tmp_config: Config) -> None:
         app = VerdiClipApp([])
         app._config = tmp_config
-        assert app.config is tmp_config, (
-            f"Expected config to be tmp_config, got {app.config}"
-        )
+        assert app.config is tmp_config, f"Expected config to be tmp_config, got {app.config}"
 
 
 class TestIsAlreadyRunningTrue:
@@ -212,7 +207,8 @@ class TestRun:
     """VerdiClipApp.run orchestration."""
 
     def test_returns_1_when_already_running(
-        self, qapp: QApplication,
+        self,
+        qapp: QApplication,
     ) -> None:
         app = VerdiClipApp([])
         app._shared_memory = MagicMock()
@@ -241,7 +237,8 @@ class TestRun:
         mock_config_cls.assert_called_once()
 
     def test_shared_memory_create_failure_continues(
-        self, qapp: QApplication,
+        self,
+        qapp: QApplication,
     ) -> None:
         app = VerdiClipApp([])
         app._shared_memory = MagicMock()
@@ -270,7 +267,10 @@ class TestSetupTray:
 
     @patch("verdiclip.tray.icon.TrayIcon")
     def test_creates_and_shows_tray(
-        self, mock_tray_cls, qapp: QApplication, tmp_config: Config,
+        self,
+        mock_tray_cls,
+        qapp: QApplication,
+        tmp_config: Config,
     ) -> None:
         app = VerdiClipApp([])
         app._qt_app = qapp
@@ -292,7 +292,10 @@ class TestSetupHotkeys:
 
     @patch("verdiclip.hotkeys.manager.HotkeyManager")
     def test_creates_and_starts_hotkeys(
-        self, mock_hk_cls, qapp: QApplication, tmp_config: Config,
+        self,
+        mock_hk_cls,
+        qapp: QApplication,
+        tmp_config: Config,
     ) -> None:
         app = VerdiClipApp([])
         app._config = tmp_config
@@ -326,8 +329,7 @@ class TestHotkeyRegistration:
         calls = {args[0][0]: args[0][1] for args in app._hotkey_manager.register.call_args_list}
         expected_key = tmp_config.get("hotkeys.region")
         assert expected_key in calls, (
-            f"Expected hotkey '{expected_key}' to be registered, "
-            f"got keys: {list(calls.keys())}"
+            f"Expected hotkey '{expected_key}' to be registered, got keys: {list(calls.keys())}"
         )
         assert calls[expected_key] is app._tray_icon.capture_region, (
             f"Expected region hotkey bound to capture_region, got {calls[expected_key]}"
@@ -339,8 +341,7 @@ class TestHotkeyRegistration:
         calls = {args[0][0]: args[0][1] for args in app._hotkey_manager.register.call_args_list}
         expected_key = tmp_config.get("hotkeys.fullscreen")
         assert expected_key in calls, (
-            f"Expected hotkey '{expected_key}' to be registered, "
-            f"got keys: {list(calls.keys())}"
+            f"Expected hotkey '{expected_key}' to be registered, got keys: {list(calls.keys())}"
         )
         assert calls[expected_key] is app._tray_icon.capture_screen, (
             f"Expected fullscreen hotkey bound to capture_screen, got {calls[expected_key]}"
@@ -352,8 +353,7 @@ class TestHotkeyRegistration:
         calls = {args[0][0]: args[0][1] for args in app._hotkey_manager.register.call_args_list}
         expected_key = tmp_config.get("hotkeys.window")
         assert expected_key in calls, (
-            f"Expected hotkey '{expected_key}' to be registered, "
-            f"got keys: {list(calls.keys())}"
+            f"Expected hotkey '{expected_key}' to be registered, got keys: {list(calls.keys())}"
         )
         assert calls[expected_key] is app._tray_icon.capture_window, (
             f"Expected window hotkey bound to capture_window, got {calls[expected_key]}"
@@ -365,34 +365,36 @@ class TestHotkeyRegistration:
         calls = {args[0][0]: args[0][1] for args in app._hotkey_manager.register.call_args_list}
         expected_key = tmp_config.get("hotkeys.repeat")
         assert expected_key in calls, (
-            f"Expected hotkey '{expected_key}' to be registered, "
-            f"got keys: {list(calls.keys())}"
+            f"Expected hotkey '{expected_key}' to be registered, got keys: {list(calls.keys())}"
         )
         assert calls[expected_key] is app._tray_icon.capture_repeat, (
             f"Expected repeat hotkey bound to capture_repeat, got {calls[expected_key]}"
         )
 
     def test_empty_hotkey_is_not_registered(
-        self, qapp: QApplication, tmp_config: Config,
+        self,
+        qapp: QApplication,
+        tmp_config: Config,
     ) -> None:
         tmp_config.set("hotkeys.region", "")
         app = self._make_app(qapp, tmp_config)
         app._register_hotkeys()
-        registered_callbacks = [
-            args[0][1] for args in app._hotkey_manager.register.call_args_list
-        ]
+        registered_callbacks = [args[0][1] for args in app._hotkey_manager.register.call_args_list]
         assert app._tray_icon.capture_region not in registered_callbacks, (
             "Expected capture_region NOT to be registered when hotkey is empty string, "
             f"but it was found among {len(registered_callbacks)} registered callbacks"
         )
 
     def test_reload_hotkeys_clears_and_reregisters(
-        self, qapp: QApplication, tmp_config: Config,
+        self,
+        qapp: QApplication,
+        tmp_config: Config,
     ) -> None:
         app = self._make_app(qapp, tmp_config)
         app.reload_hotkeys()
-        app._hotkey_manager.reload_from_config.assert_called_once_with(), (
-            "Expected reload_from_config() to be called once during reload_hotkeys()"
+        (
+            app._hotkey_manager.reload_from_config.assert_called_once_with(),
+            ("Expected reload_from_config() to be called once during reload_hotkeys()"),
         )
         assert app._hotkey_manager.register.call_count > 0, (
             "Expected register() to be called after reload_from_config(), "

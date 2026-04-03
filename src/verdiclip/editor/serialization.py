@@ -14,20 +14,23 @@ if TYPE_CHECKING:
 # Element serialisation helpers (for copy-paste)
 # ---------------------------------------------------------------------------
 
+
 def _serialise_items(items: list[QGraphicsItem]) -> list[dict[str, Any]]:
     """Convert scene items into serialisable dicts for the internal clipboard."""
-    from PySide6.QtWidgets import (  # noqa: PLC0415
+    from PySide6.QtWidgets import (
         QGraphicsEllipseItem,
         QGraphicsLineItem,
         QGraphicsRectItem,
         QGraphicsTextItem,
     )
+
     result: list[dict[str, Any]] = []
     for item in items:
         data: dict[str, Any] = {"pos_x": item.pos().x(), "pos_y": item.pos().y()}
 
         try:
-            from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+            from verdiclip.editor.tools.arrow import ArrowItem
+
             if isinstance(item, ArrowItem):
                 data["type"] = "arrow"
                 data["p1_x"] = item.shaft_line.p1().x()
@@ -42,7 +45,8 @@ def _serialise_items(items: list[QGraphicsItem]) -> list[dict[str, Any]]:
             pass
 
         try:
-            from verdiclip.editor.tools.obfuscate import ObfuscationItem  # noqa: PLC0415
+            from verdiclip.editor.tools.obfuscate import ObfuscationItem
+
             if isinstance(item, ObfuscationItem):
                 data["type"] = "obfuscation"
                 data["w"] = item._size.width()
@@ -53,7 +57,8 @@ def _serialise_items(items: list[QGraphicsItem]) -> list[dict[str, Any]]:
             pass
 
         try:
-            from verdiclip.editor.tools.number import NumberMarkerItem  # noqa: PLC0415
+            from verdiclip.editor.tools.number import NumberMarkerItem
+
             if isinstance(item, NumberMarkerItem):
                 data["type"] = "number"
                 data["value"] = item.value
@@ -111,22 +116,24 @@ def _serialise_items(items: list[QGraphicsItem]) -> list[dict[str, Any]]:
 
 def _deserialise_items(data_list: list[dict[str, Any]]) -> list[QGraphicsItem]:
     """Reconstruct scene items from serialised dicts."""
-    from PySide6.QtCore import QLineF, QPointF, QRectF  # noqa: PLC0415
-    from PySide6.QtGui import QFont, QPen  # noqa: PLC0415
-    from PySide6.QtWidgets import (  # noqa: PLC0415
+    from PySide6.QtCore import QLineF, QPointF, QRectF
+    from PySide6.QtGui import QFont, QPen
+    from PySide6.QtWidgets import (
         QGraphicsEllipseItem,
         QGraphicsLineItem,
         QGraphicsPixmapItem,
         QGraphicsRectItem,
         QGraphicsTextItem,
     )
+
     items: list[QGraphicsItem] = []
     for d in data_list:
         t = d.get("type")
         pos = QPointF(d.get("pos_x", 0), d.get("pos_y", 0))
 
         if t == "arrow":
-            from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+            from verdiclip.editor.tools.arrow import ArrowItem
+
             item = ArrowItem(
                 QPointF(d["p1_x"], d["p1_y"]),
                 QPointF(d["p2_x"], d["p2_y"]),
@@ -137,19 +144,21 @@ def _deserialise_items(data_list: list[dict[str, Any]]) -> list[QGraphicsItem]:
             items.append(item)
 
         elif t == "obfuscation":
-            from PySide6.QtCore import QSizeF  # noqa: PLC0415
+            from PySide6.QtCore import QSizeF
 
-            from verdiclip.editor.tools.obfuscate import ObfuscationItem  # noqa: PLC0415
+            from verdiclip.editor.tools.obfuscate import ObfuscationItem
+
             size = QSizeF(d["w"], d["h"])
             # bg_item is supplied post-deserialisation when added to a scene;
-            # use a 1×1 transparent placeholder so the constructor succeeds.
+            # use a 1x1 transparent placeholder so the constructor succeeds.
             placeholder = QGraphicsPixmapItem()
             item = ObfuscationItem(placeholder, size)
             item.setPos(pos)
             items.append(item)
 
         elif t == "number":
-            from verdiclip.editor.tools.number import NumberMarkerItem  # noqa: PLC0415
+            from verdiclip.editor.tools.number import NumberMarkerItem
+
             item = NumberMarkerItem(d["value"], QColor(d["bg_color"]), QColor(d["text_color"]))
             r = d.get("radius", 16)
             item.setRect(QRectF(-r, -r, 2 * r, 2 * r))
@@ -176,9 +185,12 @@ def _deserialise_items(data_list: list[dict[str, Any]]) -> list[QGraphicsItem]:
             items.append(item)
 
         elif t == "line":
-            item = QGraphicsLineItem(QLineF(
-                QPointF(d["x1"], d["y1"]), QPointF(d["x2"], d["y2"]),
-            ))
+            item = QGraphicsLineItem(
+                QLineF(
+                    QPointF(d["x1"], d["y1"]),
+                    QPointF(d["x2"], d["y2"]),
+                )
+            )
             item.setPen(QPen(QColor(d["pen_color"]), d["pen_width"]))
             item.setFlag(QGraphicsLineItem.GraphicsItemFlag.ItemIsSelectable)
             item.setPos(pos)
@@ -200,23 +212,26 @@ def _deserialise_items(data_list: list[dict[str, Any]]) -> list[QGraphicsItem]:
 # Item-level property application helpers
 # ---------------------------------------------------------------------------
 
+
 def _apply_stroke_to_item(item: object, color: QColor) -> None:
     """Apply *color* as the stroke (pen) of *item* in-place."""
     # ArrowItem has its own setter that keeps shaft + head in sync.
     try:
-        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        from verdiclip.editor.tools.arrow import ArrowItem
+
         if isinstance(item, ArrowItem):
             item.set_stroke_color(color)
             return
     except ImportError:
         pass
 
-    from PySide6.QtWidgets import (  # noqa: PLC0415
+    from PySide6.QtWidgets import (
         QGraphicsEllipseItem,
         QGraphicsLineItem,
         QGraphicsRectItem,
         QGraphicsTextItem,
     )
+
     if isinstance(item, (QGraphicsRectItem, QGraphicsEllipseItem, QGraphicsLineItem)):
         pen = item.pen()
         pen.setColor(color)
@@ -227,7 +242,8 @@ def _apply_stroke_to_item(item: object, color: QColor) -> None:
 
 def _apply_fill_to_item(item: object, color: QColor) -> None:
     """Apply *color* as the fill (brush) of *item* in-place."""
-    from PySide6.QtWidgets import QGraphicsEllipseItem, QGraphicsRectItem  # noqa: PLC0415
+    from PySide6.QtWidgets import QGraphicsEllipseItem, QGraphicsRectItem
+
     if isinstance(item, (QGraphicsRectItem, QGraphicsEllipseItem)):
         item.setBrush(QBrush(color))
 
@@ -236,18 +252,20 @@ def _apply_width_to_item(item: object, width: int) -> None:
     """Apply *width* as the pen width of *item* in-place."""
     # ArrowItem has its own setter that preserves cap style.
     try:
-        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        from verdiclip.editor.tools.arrow import ArrowItem
+
         if isinstance(item, ArrowItem):
             item.set_stroke_width(width)
             return
     except ImportError:
         pass
 
-    from PySide6.QtWidgets import (  # noqa: PLC0415
+    from PySide6.QtWidgets import (
         QGraphicsEllipseItem,
         QGraphicsLineItem,
         QGraphicsRectItem,
     )
+
     if isinstance(item, (QGraphicsRectItem, QGraphicsEllipseItem, QGraphicsLineItem)):
         pen = item.pen()
         pen.setWidth(width)

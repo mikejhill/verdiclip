@@ -91,15 +91,18 @@ class NumberTool(BaseTool):
         self._active_editor: QLineEdit | None = None
 
     def activate(self, scene: QGraphicsScene, view: EditorCanvas) -> None:
+        """Set crosshair cursor and prepare for marker placement."""
         super().activate(scene, view)
         if view:
             view.setCursor(Qt.CursorShape.CrossCursor)
 
     def deactivate(self) -> None:
+        """Dismiss any active editor and deactivate the tool."""
         self._dismiss_editor()
         super().deactivate()
 
     def mouse_press(self, scene_pos: QPointF, event: QMouseEvent) -> None:
+        """Place a new numbered marker at the click position."""
         if not self._scene or event.button() != Qt.MouseButton.LeftButton:
             return
 
@@ -111,10 +114,10 @@ class NumberTool(BaseTool):
         self._place_marker(scene_pos, str(self._counter))
 
     def mouse_move(self, scene_pos: QPointF, event: QMouseEvent) -> None:
-        pass
+        """No-op; markers are placed on click only."""
 
     def mouse_release(self, scene_pos: QPointF, event: QMouseEvent) -> None:
-        pass
+        """No-op; markers are placed on click only."""
 
     def _place_marker(self, center: QPointF, value: str) -> None:
         """Place a numbered circle marker at the given position."""
@@ -179,7 +182,9 @@ class NumberTool(BaseTool):
         logger.debug("Number counter reset.")
 
     def set_bg_color(self, color: QColor) -> None:
+        """Update the background color for new markers."""
         self._bg_color = color
 
     def set_text_color(self, color: QColor) -> None:
+        """Update the text color for new markers."""
         self._text_color = color

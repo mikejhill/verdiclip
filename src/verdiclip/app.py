@@ -99,7 +99,7 @@ class VerdiClipApp:
 
     def _setup_tray(self) -> None:
         """Initialize the system tray icon."""
-        from verdiclip.tray.icon import TrayIcon  # noqa: PLC0415
+        from verdiclip.tray.icon import TrayIcon
 
         assert self._qt_app is not None
         assert self._config is not None
@@ -109,7 +109,7 @@ class VerdiClipApp:
 
     def _setup_hotkeys(self) -> None:
         """Initialize global hotkey listener and register capture callbacks."""
-        from verdiclip.hotkeys.manager import HotkeyManager  # noqa: PLC0415
+        from verdiclip.hotkeys.manager import HotkeyManager
 
         assert self._config is not None
         self._hotkey_manager = HotkeyManager(self._config)

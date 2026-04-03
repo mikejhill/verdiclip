@@ -20,7 +20,10 @@ class AddItemCommand(QUndoCommand):
     """Command to add a graphics item to the scene."""
 
     def __init__(
-        self, scene: QGraphicsScene, item: QGraphicsItem, description: str = "Add item",
+        self,
+        scene: QGraphicsScene,
+        item: QGraphicsItem,
+        description: str = "Add item",
     ) -> None:
         super().__init__(description)
         self._scene = scene
@@ -28,6 +31,7 @@ class AddItemCommand(QUndoCommand):
         self._already_added = False
 
     def redo(self) -> None:
+        """Re-add the item to the scene."""
         # On first push the item is already in the scene
         if self._already_added:
             self._already_added = False
@@ -35,6 +39,7 @@ class AddItemCommand(QUndoCommand):
         self._scene.addItem(self._item)
 
     def undo(self) -> None:
+        """Remove the item from the scene."""
         self._scene.removeItem(self._item)
 
 
@@ -42,16 +47,21 @@ class RemoveItemCommand(QUndoCommand):
     """Command to remove a graphics item from the scene."""
 
     def __init__(
-        self, scene: QGraphicsScene, item: QGraphicsItem, description: str = "Remove item",
-    ):
+        self,
+        scene: QGraphicsScene,
+        item: QGraphicsItem,
+        description: str = "Remove item",
+    ) -> None:
         super().__init__(description)
         self._scene = scene
         self._item = item
 
     def redo(self) -> None:
+        """Remove the item from the scene."""
         self._scene.removeItem(self._item)
 
     def undo(self) -> None:
+        """Re-add the item to the scene."""
         self._scene.addItem(self._item)
 
 
@@ -64,16 +74,18 @@ class MoveItemCommand(QUndoCommand):
         old_pos: tuple[float, float],
         new_pos: tuple[float, float],
         description: str = "Move item",
-    ):
+    ) -> None:
         super().__init__(description)
         self._item = item
         self._old_pos = old_pos
         self._new_pos = new_pos
 
     def redo(self) -> None:
+        """Move the item to the new position."""
         self._item.setPos(self._new_pos[0], self._new_pos[1])
 
     def undo(self) -> None:
+        """Restore the item to the old position."""
         self._item.setPos(self._old_pos[0], self._old_pos[1])
 
 
@@ -84,7 +96,7 @@ class MultipleMoveCommand(QUndoCommand):
         self,
         moves: list[tuple[Any, Any, Any]],
         description: str = "Move items",
-    ):
+    ) -> None:
         """Initialise with a list of ``(item, old_pos, new_pos)`` tuples.
 
         Each position is a ``(float, float)`` pair or a ``QPointF``.
@@ -93,6 +105,7 @@ class MultipleMoveCommand(QUndoCommand):
         self._moves = moves
 
     def redo(self) -> None:
+        """Move all items to their new positions."""
         for item, _old, new in self._moves:
             if hasattr(new, "x"):
                 item.setPos(new.x(), new.y())
@@ -100,6 +113,7 @@ class MultipleMoveCommand(QUndoCommand):
                 item.setPos(new[0], new[1])
 
     def undo(self) -> None:
+        """Restore all items to their old positions."""
         for item, old, _new in self._moves:
             if hasattr(old, "x"):
                 item.setPos(old.x(), old.y())
@@ -130,9 +144,11 @@ class ResizeItemCommand(QUndoCommand):
         self._new = new_geometry
 
     def redo(self) -> None:
+        """Apply the new geometry to the item."""
         _apply_geometry(self._item, self._new)
 
     def undo(self) -> None:
+        """Restore the old geometry on the item."""
         _apply_geometry(self._item, self._old)
 
 
@@ -142,7 +158,8 @@ def capture_geometry(item: QGraphicsItem) -> dict[str, Any]:
 
     # ArrowItem: store both scene endpoints
     try:
-        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        from verdiclip.editor.tools.arrow import ArrowItem
+
         if isinstance(item, ArrowItem):
             return {"type": "arrow", "p1": item.get_scene_p1(), "p2": item.get_scene_p2()}
     except ImportError:
@@ -150,7 +167,8 @@ def capture_geometry(item: QGraphicsItem) -> dict[str, Any]:
 
     # NumberMarkerItem: store bounding rect (radius encodes size)
     try:
-        from verdiclip.editor.tools.number import NumberMarkerItem  # noqa: PLC0415
+        from verdiclip.editor.tools.number import NumberMarkerItem
+
         if isinstance(item, NumberMarkerItem):
             return {"type": "number_marker", "rect": item.rect()}
     except ImportError:
@@ -161,7 +179,8 @@ def capture_geometry(item: QGraphicsItem) -> dict[str, Any]:
     if isinstance(item, QGraphicsLineItem):
         return {"type": "line", "line": item.line()}
     try:
-        from verdiclip.editor.tools.obfuscate import ObfuscationItem  # noqa: PLC0415
+        from verdiclip.editor.tools.obfuscate import ObfuscationItem
+
         if isinstance(item, ObfuscationItem):
             return {"type": "obfuscate", "pos": item.pos(), "size": item._size}
     except ImportError:
@@ -174,7 +193,8 @@ def _apply_geometry(item: Any, geometry: dict[str, Any]) -> None:
     gtype = geometry.get("type")
     if gtype == "arrow":
         try:
-            from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+            from verdiclip.editor.tools.arrow import ArrowItem
+
             if isinstance(item, ArrowItem):
                 item.set_scene_p1(geometry["p1"])
                 item.set_scene_p2(geometry["p2"])
@@ -214,6 +234,7 @@ class CropCommand(QUndoCommand):
         self._first_redo = True
 
     def redo(self) -> None:
+        """Apply the crop by replacing the image and removing clipped items."""
         if self._first_redo:
             self._first_redo = False
             return
@@ -226,6 +247,7 @@ class CropCommand(QUndoCommand):
                 item.setPos(pos.x() - ox, pos.y() - oy)
 
     def undo(self) -> None:
+        """Restore the original image and item positions."""
         self._canvas._replace_image(self._old_pixmap, self._removed_items, remove=False)
         # Restore all items to their original positions
         for item, old_x, old_y in self._item_positions:
@@ -257,9 +279,11 @@ class EditorHistory:
             logger.debug("Redo: %s", text)
 
     def can_undo(self) -> bool:
+        """Return whether an undo operation is available."""
         return self._stack.canUndo()
 
     def can_redo(self) -> bool:
+        """Return whether a redo operation is available."""
         return self._stack.canRedo()
 
     def clear(self) -> None:

@@ -66,9 +66,14 @@ class SettingsDialog(QDialog):
         form = QFormLayout(widget)
 
         self._capture_action = QComboBox()
-        self._capture_action.addItems([
-            "Open in Editor", "Save to File", "Copy to Clipboard", "Show Menu",
-        ])
+        self._capture_action.addItems(
+            [
+                "Open in Editor",
+                "Save to File",
+                "Copy to Clipboard",
+                "Show Menu",
+            ]
+        )
         form.addRow("After capture:", self._capture_action)
 
         self._include_cursor = QCheckBox("Include mouse cursor in captures")
@@ -107,9 +112,7 @@ class SettingsDialog(QDialog):
         jpg_layout.addWidget(self._jpg_quality)
         self._jpg_quality_label = QLabel("90")
         self._jpg_quality_label.setFixedWidth(28)
-        self._jpg_quality.valueChanged.connect(
-            lambda v: self._jpg_quality_label.setText(str(v))
-        )
+        self._jpg_quality.valueChanged.connect(lambda v: self._jpg_quality_label.setText(str(v)))
         jpg_layout.addWidget(self._jpg_quality_label)
         self._jpg_quality_row_label = QLabel("JPG quality:")
         self._jpg_quality_row_widget = QWidget()
@@ -229,27 +232,29 @@ class SettingsDialog(QDialog):
         action_map = {0: "editor", 1: "file", 2: "clipboard", 3: "menu"}
         action = action_map.get(self._capture_action.currentIndex(), "editor")
 
-        self._config.set_many({
-            "capture.default_action": action,
-            "capture.include_cursor": self._include_cursor.isChecked(),
-            "capture.region_magnifier": self._region_magnifier.isChecked(),
-            "capture.window_decorations": self._window_decorations.isChecked(),
-            "save.default_directory": self._save_dir.text(),
-            "save.default_format": self._save_format.currentText().lower(),
-            "save.jpg_quality": self._jpg_quality.value(),
-            "save.auto_save_enabled": self._auto_save.isChecked(),
-            "save.filename_pattern": self._filename_pattern.text(),
-            "editor.default_stroke_width": self._stroke_width.value(),
-            "editor.default_font_family": self._font_family.currentText(),
-            "editor.default_font_size": self._font_size.value(),
-            "hotkeys.region": self._hotkey_region.text(),
-            "hotkeys.fullscreen": self._hotkey_fullscreen.text(),
-            "hotkeys.window": self._hotkey_window.text(),
-            "hotkeys.window_pick": self._hotkey_window_pick.text(),
-            "hotkeys.repeat": self._hotkey_repeat.text(),
-            "startup.run_at_login": self._run_at_login.isChecked(),
-            "startup.minimize_to_tray": self._minimize_to_tray.isChecked(),
-        })
+        self._config.set_many(
+            {
+                "capture.default_action": action,
+                "capture.include_cursor": self._include_cursor.isChecked(),
+                "capture.region_magnifier": self._region_magnifier.isChecked(),
+                "capture.window_decorations": self._window_decorations.isChecked(),
+                "save.default_directory": self._save_dir.text(),
+                "save.default_format": self._save_format.currentText().lower(),
+                "save.jpg_quality": self._jpg_quality.value(),
+                "save.auto_save_enabled": self._auto_save.isChecked(),
+                "save.filename_pattern": self._filename_pattern.text(),
+                "editor.default_stroke_width": self._stroke_width.value(),
+                "editor.default_font_family": self._font_family.currentText(),
+                "editor.default_font_size": self._font_size.value(),
+                "hotkeys.region": self._hotkey_region.text(),
+                "hotkeys.fullscreen": self._hotkey_fullscreen.text(),
+                "hotkeys.window": self._hotkey_window.text(),
+                "hotkeys.window_pick": self._hotkey_window_pick.text(),
+                "hotkeys.repeat": self._hotkey_repeat.text(),
+                "startup.run_at_login": self._run_at_login.isChecked(),
+                "startup.minimize_to_tray": self._minimize_to_tray.isChecked(),
+            }
+        )
 
         logger.info("Settings saved.")
         self.settings_saved.emit()

@@ -71,7 +71,7 @@ class ObfuscationItem(QGraphicsPixmapItem):
         self._show_border = show
         self.update()
 
-    def boundingRect(self) -> QRectF:  # noqa: N802
+    def boundingRect(self) -> QRectF:
         """Return the full item rect (not just the pixmap portion)."""
         base = QRectF(0, 0, self._size.width(), self._size.height())
         if self._show_border:
@@ -80,16 +80,19 @@ class ObfuscationItem(QGraphicsPixmapItem):
         return base
 
     def paint(
-        self, painter: QPainter, option: QStyleOptionGraphicsItem,
+        self,
+        painter: QPainter,
+        option: QStyleOptionGraphicsItem,
         widget: QWidget | None = None,
     ) -> None:
         """Draw the pixelated pixmap with a dashed border."""
-        super().paint(painter, option, widget)  # pyright: ignore[reportArgumentType]
+        super().paint(painter, option, widget)  # ty: ignore[invalid-argument-type]
         if self._show_border:
             painter.setPen(self._border_pen)
             painter.drawRect(QRectF(0, 0, self._size.width(), self._size.height()))
 
-    def itemChange(self, change: QGraphicsPixmapItem.GraphicsItemChange, value: object) -> object:  # noqa: N802
+    def itemChange(self, change: QGraphicsPixmapItem.GraphicsItemChange, value: object) -> object:
+        """Refresh pixelation when the item position changes."""
         if (
             change == QGraphicsPixmapItem.GraphicsItemChange.ItemPositionHasChanged
             and not self._updating_geometry
@@ -129,16 +132,19 @@ class ObfuscateTool(BaseTool):
         self._preview_item: ObfuscationItem | None = None
 
     def activate(self, scene: QGraphicsScene, view: EditorCanvas) -> None:
+        """Set crosshair cursor and prepare for obfuscation drawing."""
         super().activate(scene, view)
         if view:
             view.setCursor(Qt.CursorShape.CrossCursor)
 
     def mouse_press(self, scene_pos: QPointF, event: QMouseEvent) -> None:
+        """Record the starting point for the obfuscation region."""
         if not self._scene or event.button() != Qt.MouseButton.LeftButton:
             return
         self._origin = scene_pos
 
     def mouse_move(self, scene_pos: QPointF, event: QMouseEvent) -> None:
+        """Update the pixelated preview as the cursor moves."""
         if self._origin is None or self._scene is None:
             return
 
@@ -152,13 +158,15 @@ class ObfuscateTool(BaseTool):
 
         if self._preview_item is None:
             self._preview_item = ObfuscationItem(
-                bg_item, rect.size(),
+                bg_item,
+                rect.size(),
             )
             self._scene.addItem(self._preview_item)
 
         self._preview_item.set_geometry(rect.topLeft(), rect.size())
 
     def mouse_release(self, scene_pos: QPointF, event: QMouseEvent) -> None:
+        """Finalize the obfuscation region or discard if too small."""
         if self._origin is None or self._scene is None:
             self._origin = None
             self._preview_item = None
@@ -179,7 +187,10 @@ class ObfuscateTool(BaseTool):
             self._preview_item.set_show_border(False)
             logger.debug(
                 "Obfuscation applied at (%.0f,%.0f) %.0fx%.0f",
-                rect.x(), rect.y(), rect.width(), rect.height(),
+                rect.x(),
+                rect.y(),
+                rect.width(),
+                rect.height(),
             )
         else:
             # No preview (e.g. very fast click-release) — create item directly
@@ -212,7 +223,10 @@ class ObfuscateTool(BaseTool):
         self._scene.addItem(item)
         logger.debug(
             "Obfuscation applied at (%.0f,%.0f) %.0fx%.0f",
-            rect.x(), rect.y(), rect.width(), rect.height(),
+            rect.x(),
+            rect.y(),
+            rect.width(),
+            rect.height(),
         )
 
     @staticmethod

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import QRectF, Qt, Signal
+from PySide6.QtCore import QPoint, QRectF, Qt, Signal
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -52,6 +52,7 @@ class EditorCanvas(QGraphicsView):
         self._scene = QGraphicsScene(self)
         self.setScene(self._scene)
         from PySide6.QtGui import QPainter
+
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         self.setDragMode(QGraphicsView.DragMode.NoDrag)
@@ -108,7 +109,9 @@ class EditorCanvas(QGraphicsView):
         self._scene.setSceneRect(expanded)
 
     def crop_undoable(
-        self, new_pixmap: QPixmap, removed_items: list[QGraphicsItem],
+        self,
+        new_pixmap: QPixmap,
+        removed_items: list[QGraphicsItem],
         item_positions: list[tuple[QGraphicsItem, float, float]],
         crop_offset: tuple[float, float],
     ) -> None:
@@ -135,9 +138,14 @@ class EditorCanvas(QGraphicsView):
             return
 
         from verdiclip.editor.history import CropCommand
+
         cmd = CropCommand(
-            self, old_pixmap, new_pixmap, removed_items,
-            item_positions, crop_offset,
+            self,
+            old_pixmap,
+            new_pixmap,
+            removed_items,
+            item_positions,
+            crop_offset,
         )
         self._history.push(cmd)
         logger.info("Crop applied (undoable): %dx%d", new_pixmap.width(), new_pixmap.height())
@@ -174,9 +182,10 @@ class EditorCanvas(QGraphicsView):
         if tool:
             tool.activate(self._scene, self)
 
-    def add_item_undoable(self, item, description: str = "Add item") -> None:
+    def add_item_undoable(self, item: QGraphicsItem, description: str = "Add item") -> None:
         """Register a scene item with the undo stack (item already in scene)."""
         from verdiclip.editor.history import AddItemCommand
+
         if self._history:
             cmd = AddItemCommand(self._scene, item, description)
             cmd._already_added = True
@@ -184,10 +193,14 @@ class EditorCanvas(QGraphicsView):
         # Item is already in the scene from the tool's mouse_press
 
     def add_move_undoable(
-        self, item, old_pos: tuple[float, float], new_pos: tuple[float, float],
+        self,
+        item: QGraphicsItem,
+        old_pos: tuple[float, float],
+        new_pos: tuple[float, float],
     ) -> None:
         """Record an item move on the undo stack."""
         from verdiclip.editor.history import MoveItemCommand
+
         if self._history:
             cmd = MoveItemCommand(item, old_pos, new_pos)
             self._history.push(cmd)
@@ -195,14 +208,19 @@ class EditorCanvas(QGraphicsView):
     def add_moves_undoable(self, moves: list[tuple[Any, Any, Any]]) -> None:
         """Record a simultaneous multi-item move as a single undo command."""
         from verdiclip.editor.history import MultipleMoveCommand
+
         if self._history and moves:
             self._history.push(MultipleMoveCommand(moves))
 
     def add_resize_undoable(
-        self, item: QGraphicsItem, old_geometry: dict[str, Any], new_geometry: dict[str, Any],
+        self,
+        item: QGraphicsItem,
+        old_geometry: dict[str, Any],
+        new_geometry: dict[str, Any],
     ) -> None:
         """Record an item resize on the undo stack."""
         from verdiclip.editor.history import ResizeItemCommand
+
         if self._history:
             self._history.push(ResizeItemCommand(item, old_geometry, new_geometry))
 
@@ -221,9 +239,7 @@ class EditorCanvas(QGraphicsView):
         elif event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
             # Shift+scroll: horizontal scrolling at normal speed
             delta = event.angleDelta().y()
-            self.horizontalScrollBar().setValue(
-                self.horizontalScrollBar().value() - delta
-            )
+            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta)
             event.accept()
         else:
             super().wheelEvent(event)
@@ -245,12 +261,14 @@ class EditorCanvas(QGraphicsView):
         """Handle double-click to open inline editors (e.g., number markers)."""
         if self._current_tool:
             from verdiclip.editor.tools.select import SelectTool
+
             if isinstance(self._current_tool, SelectTool):
                 item = self._current_tool._find_annotation_at(
                     self.mapToScene(event.position().toPoint()),
                 )
                 if item:
                     from verdiclip.editor.tools.number import NumberMarkerItem
+
                     if isinstance(item, NumberMarkerItem):
                         self.number_editor_requested.emit(item)
                         event.accept()
@@ -262,12 +280,8 @@ class EditorCanvas(QGraphicsView):
         if self._is_panning:
             delta = event.position() - self._pan_start
             self._pan_start = event.position()
-            self.horizontalScrollBar().setValue(
-                int(self.horizontalScrollBar().value() - delta.x())
-            )
-            self.verticalScrollBar().setValue(
-                int(self.verticalScrollBar().value() - delta.y())
-            )
+            self.horizontalScrollBar().setValue(int(self.horizontalScrollBar().value() - delta.x()))
+            self.verticalScrollBar().setValue(int(self.verticalScrollBar().value() - delta.y()))
             event.accept()
         elif self._current_tool:
             scene_pos = self.mapToScene(event.position().toPoint())
@@ -290,7 +304,8 @@ class EditorCanvas(QGraphicsView):
     def keyPressEvent(self, event: QKeyEvent) -> None:
         """Handle key presses — Delete removes items, Enter confirms crop, Esc deselects."""
         # If a text item is being edited, let the scene/item handle the key event first.
-        from PySide6.QtWidgets import QGraphicsTextItem  # noqa: PLC0415
+        from PySide6.QtWidgets import QGraphicsTextItem
+
         focus = self._scene.focusItem()
         if (
             isinstance(focus, QGraphicsTextItem)
@@ -302,12 +317,13 @@ class EditorCanvas(QGraphicsView):
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
             self._delete_selected_items()
         elif event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-            from verdiclip.editor.tools.crop import CropTool  # noqa: PLC0415
+            from verdiclip.editor.tools.crop import CropTool
+
             if isinstance(self._current_tool, CropTool):
                 self._current_tool.apply_crop()
         elif event.key() == Qt.Key.Key_Escape:
-            from verdiclip.editor.tools.crop import CropTool as CropTool_  # noqa: PLC0415
-            from verdiclip.editor.tools.select import SelectTool  # noqa: PLC0415
+            from verdiclip.editor.tools.crop import CropTool as CropTool_
+            from verdiclip.editor.tools.select import SelectTool
 
             is_select = isinstance(self._current_tool, SelectTool)
 
@@ -327,15 +343,17 @@ class EditorCanvas(QGraphicsView):
                     item.setSelected(False)
                 self.switch_to_select_requested.emit()
         elif (
-            event.key() == Qt.Key.Key_A
-            and event.modifiers() & Qt.KeyboardModifier.ControlModifier
+            event.key() == Qt.Key.Key_A and event.modifiers() & Qt.KeyboardModifier.ControlModifier
         ):
             from verdiclip.editor.tools.select import SelectTool
+
             if isinstance(self._current_tool, SelectTool):
                 self._current_tool.select_all()
         elif event.key() in (
-            Qt.Key.Key_Left, Qt.Key.Key_Right,
-            Qt.Key.Key_Up, Qt.Key.Key_Down,
+            Qt.Key.Key_Left,
+            Qt.Key.Key_Right,
+            Qt.Key.Key_Up,
+            Qt.Key.Key_Down,
         ):
             selected = self._scene.selectedItems()
             if selected:
@@ -349,7 +367,8 @@ class EditorCanvas(QGraphicsView):
                     dy = -step
                 elif event.key() == Qt.Key.Key_Down:
                     dy = step
-                from PySide6.QtCore import QPointF as _QPointF  # noqa: PLC0415
+                from PySide6.QtCore import QPointF as _QPointF
+
                 offset = _QPointF(dx, dy)
                 for item in selected:
                     item.setPos(item.pos() + offset)
@@ -368,6 +387,7 @@ class EditorCanvas(QGraphicsView):
     def _delete_selected_items(self) -> None:
         """Remove all currently selected annotation items from the scene."""
         from verdiclip.editor.history import RemoveItemCommand
+
         selected = self._scene.selectedItems()
         removed = 0
         for item in selected:
@@ -409,7 +429,7 @@ class EditorCanvas(QGraphicsView):
         self._zoom_level = self.transform().m11()
         self.zoom_changed.emit(self._zoom_level)
 
-    def _zoom_to_point(self, factor: float, view_pos) -> None:
+    def _zoom_to_point(self, factor: float, view_pos: QPoint) -> None:
         """Zoom anchored to a specific viewport pixel position."""
         new_zoom = self._zoom_level * factor
         if not (_MIN_ZOOM <= new_zoom <= _MAX_ZOOM):
@@ -421,24 +441,23 @@ class EditorCanvas(QGraphicsView):
         # Map the same scene point to new viewport coords and adjust scroll
         new_view_pos = self.mapFromScene(scene_pos)
         delta = new_view_pos - view_pos
-        self.horizontalScrollBar().setValue(
-            self.horizontalScrollBar().value() + int(delta.x())
-        )
-        self.verticalScrollBar().setValue(
-            self.verticalScrollBar().value() + int(delta.y())
-        )
+        self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() + int(delta.x()))
+        self.verticalScrollBar().setValue(self.verticalScrollBar().value() + int(delta.y()))
         self.zoom_changed.emit(self._zoom_level)
 
     @property
     def zoom_level(self) -> float:
+        """Return the current zoom level."""
         return self._zoom_level
 
     @property
-    def scene(self) -> QGraphicsScene:  # pyright: ignore[reportIncompatibleMethodOverride]
+    def scene(self) -> QGraphicsScene:  # type: ignore[override]
+        """Return the graphics scene."""
         return self._scene
 
     @property
     def pixmap_item(self) -> QGraphicsPixmapItem | None:
+        """Return the background pixmap item, if any."""
         return self._pixmap_item
 
     def get_flattened_pixmap(self) -> QPixmap:
@@ -457,6 +476,7 @@ class EditorCanvas(QGraphicsView):
         pixmap = QPixmap(int(rect.width()), int(rect.height()))
         pixmap.fill(Qt.GlobalColor.transparent)
         from PySide6.QtGui import QPainter
+
         painter = QPainter(pixmap)
         self._scene.render(painter, QRectF(pixmap.rect()), rect)
         painter.end()
@@ -466,9 +486,3 @@ class EditorCanvas(QGraphicsView):
         return pixmap
 
 
-# Backward-compatible re-exports (moved to dedicated modules)
-from verdiclip.editor.serialization import (  # noqa: F401, E402
-    _deserialise_items,
-    _serialise_items,
-)
-from verdiclip.editor.window import EditorWindow  # noqa: F401, E402

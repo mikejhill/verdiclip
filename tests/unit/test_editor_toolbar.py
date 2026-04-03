@@ -13,8 +13,17 @@ from verdiclip.editor.toolbar import EditorToolbar, ToolType
 # ---------------------------------------------------------------------------
 
 _EXPECTED_TOOL_TYPES = [
-    "SELECT", "CROP", "RECTANGLE", "ELLIPSE", "LINE", "ARROW",
-    "TEXT", "NUMBER", "HIGHLIGHT", "OBFUSCATE", "FREEHAND",
+    "SELECT",
+    "CROP",
+    "RECTANGLE",
+    "ELLIPSE",
+    "LINE",
+    "ARROW",
+    "TEXT",
+    "NUMBER",
+    "HIGHLIGHT",
+    "OBFUSCATE",
+    "FREEHAND",
 ]
 
 
@@ -38,9 +47,7 @@ class TestEditorToolbarActions:
             f"Expected {len(ToolType)} actions, got {len(toolbar._actions)}"
         )
         for tool_type in ToolType:
-            assert tool_type in toolbar._actions, (
-                f"Expected {tool_type} in toolbar actions"
-            )
+            assert tool_type in toolbar._actions, f"Expected {tool_type} in toolbar actions"
 
 
 class TestEditorToolbarCurrentTool:
@@ -92,9 +99,17 @@ class TestEditorToolbarOrientation:
 # ---------------------------------------------------------------------------
 
 _TOOL_SHORTCUTS: dict[str, str] = {
-    "SELECT": "V", "CROP": "C", "RECTANGLE": "R", "ELLIPSE": "E",
-    "LINE": "L", "ARROW": "A", "TEXT": "T", "NUMBER": "N",
-    "HIGHLIGHT": "H", "OBFUSCATE": "O", "FREEHAND": "F",
+    "SELECT": "V",
+    "CROP": "C",
+    "RECTANGLE": "R",
+    "ELLIPSE": "E",
+    "LINE": "L",
+    "ARROW": "A",
+    "TEXT": "T",
+    "NUMBER": "N",
+    "HIGHLIGHT": "H",
+    "OBFUSCATE": "O",
+    "FREEHAND": "F",
 }
 
 

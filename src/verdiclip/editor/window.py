@@ -11,6 +11,7 @@ from PySide6.QtGui import (
     QAction,
     QColor,
     QFont,
+    QKeyEvent,
     QKeySequence,
     QPixmap,
 )
@@ -205,7 +206,7 @@ class EditorWindow(QMainWindow):
 
         # Permanent labels for image info (right side)
         w, h = self._image_size
-        self._dim_label = QLabel(f"{w} × {h} px")
+        self._dim_label = QLabel(f"{w} × {h} px")  # noqa: RUF001
         self._statusbar.addPermanentWidget(self._dim_label)
 
         # Zoom control: clickable label that toggles a slider popup
@@ -318,7 +319,8 @@ class EditorWindow(QMainWindow):
         tool = self._canvas.current_tool
         if tool and hasattr(tool, "set_font"):
             tool.set_font(font)
-        from PySide6.QtWidgets import QGraphicsTextItem  # noqa: PLC0415
+        from PySide6.QtWidgets import QGraphicsTextItem
+
         for item in self._canvas.scene.selectedItems():
             if isinstance(item, QGraphicsTextItem):
                 item.setFont(font)
@@ -355,6 +357,7 @@ class EditorWindow(QMainWindow):
             popup_x = btn_pos.x() - half_popup + half_btn
             popup_y = btn_pos.y() - self._zoom_slider_widget.sizeHint().height()
             from PySide6.QtCore import QPoint
+
             self._zoom_slider_widget.move(QPoint(popup_x, popup_y))
             self._zoom_slider_widget.show()
 
@@ -382,12 +385,14 @@ class EditorWindow(QMainWindow):
     # Key events — intercept Esc when focus is on toolbar / properties
     # ------------------------------------------------------------------
 
-    def keyPressEvent(self, event) -> None:
+    def keyPressEvent(self, event: QKeyEvent) -> None:
         """Forward Esc and arrow keys to the canvas even when a toolbar widget has focus."""
         if event.key() in (
             Qt.Key.Key_Escape,
-            Qt.Key.Key_Left, Qt.Key.Key_Right,
-            Qt.Key.Key_Up, Qt.Key.Key_Down,
+            Qt.Key.Key_Left,
+            Qt.Key.Key_Right,
+            Qt.Key.Key_Up,
+            Qt.Key.Key_Down,
         ):
             self._canvas.setFocus()
             self._canvas.keyPressEvent(event)
@@ -396,7 +401,7 @@ class EditorWindow(QMainWindow):
 
     def _on_tool_changed(self, tool_type: ToolType) -> None:
         """Handle tool selection from toolbar."""
-        from verdiclip.editor.tools.select import SelectTool  # noqa: PLC0415
+        from verdiclip.editor.tools.select import SelectTool
 
         # Clear handles when leaving the Select tool
         prev_tool = self._canvas.current_tool
@@ -427,16 +432,15 @@ class EditorWindow(QMainWindow):
 
     def _on_selection_changed(self) -> None:
         """Sync the properties panel with the selected item and update handles."""
-        from verdiclip.editor.tools.number import NumberMarkerItem, NumberTool  # noqa: PLC0415
-        from verdiclip.editor.tools.select import SelectTool  # noqa: PLC0415
+        from verdiclip.editor.tools.number import NumberMarkerItem, NumberTool
+        from verdiclip.editor.tools.select import SelectTool
 
         selected = self._canvas.scene.selectedItems()
 
         # Dismiss the number editor when a non-counter item is selected
         number_tool = self._tools.get(ToolType.NUMBER)
-        if (
-            isinstance(number_tool, NumberTool)
-            and not (len(selected) == 1 and isinstance(selected[0], NumberMarkerItem))
+        if isinstance(number_tool, NumberTool) and not (
+            len(selected) == 1 and isinstance(selected[0], NumberMarkerItem)
         ):
             number_tool._dismiss_editor()
 
@@ -455,9 +459,9 @@ class EditorWindow(QMainWindow):
             # No selection → restore default toolbar for the current tool
             self._update_properties_visibility(self._toolbar.current_tool)
 
-    def _on_number_editor_requested(self, marker) -> None:
+    def _on_number_editor_requested(self, marker: object) -> None:
         """Open inline editor for a NumberMarkerItem on double-click."""
-        from verdiclip.editor.tools.number import NumberMarkerItem, NumberTool  # noqa: PLC0415
+        from verdiclip.editor.tools.number import NumberMarkerItem, NumberTool
 
         if isinstance(marker, NumberMarkerItem):
             number_tool = self._tools.get(ToolType.NUMBER)
@@ -475,7 +479,7 @@ class EditorWindow(QMainWindow):
         item = selected[0]
         self._updating_from_selection = True
         try:
-            from PySide6.QtWidgets import (  # noqa: PLC0415
+            from PySide6.QtWidgets import (
                 QGraphicsEllipseItem,
                 QGraphicsLineItem,
                 QGraphicsRectItem,
@@ -483,14 +487,16 @@ class EditorWindow(QMainWindow):
             )
 
             try:
-                from verdiclip.editor.tools.obfuscate import ObfuscationItem  # noqa: PLC0415
+                from verdiclip.editor.tools.obfuscate import ObfuscationItem
+
                 _is_obfuscation = isinstance(item, ObfuscationItem)
             except ImportError:
                 _is_obfuscation = False
 
             # ArrowItem: read shaft colour and width
             try:
-                from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+                from verdiclip.editor.tools.arrow import ArrowItem
+
                 if isinstance(item, ArrowItem):
                     pen = item._shaft.pen()
                     self._properties.set_stroke_color(pen.color())
@@ -505,7 +511,8 @@ class EditorWindow(QMainWindow):
                 self._properties.set_stroke_color(pen.color())
                 self._properties.set_stroke_width(max(1, int(pen.widthF())))
                 brush = item.brush()
-                from PySide6.QtCore import Qt as _Qt  # noqa: PLC0415
+                from PySide6.QtCore import Qt as _Qt
+
                 if brush.style() == _Qt.BrushStyle.NoBrush or brush.color().alpha() == 0:
                     self._properties.set_fill_color(QColor(0, 0, 0, 0))
                 else:
@@ -538,25 +545,34 @@ class EditorWindow(QMainWindow):
         """
         if tool_type == ToolType.SELECT:
             self._properties.set_visible_properties(
-                stroke=True, fill=True, width=True, font=False, caps=False,
+                stroke=True,
+                fill=True,
+                width=True,
+                font=False,
+                caps=False,
             )
             return
         show_stroke = tool_type not in (ToolType.CROP, ToolType.OBFUSCATE)
         show_fill = tool_type in (ToolType.RECTANGLE, ToolType.ELLIPSE, ToolType.HIGHLIGHT)
         show_width = tool_type not in (
-            ToolType.CROP, ToolType.OBFUSCATE,
-            ToolType.TEXT, ToolType.NUMBER,
+            ToolType.CROP,
+            ToolType.OBFUSCATE,
+            ToolType.TEXT,
+            ToolType.NUMBER,
         )
         show_font = tool_type in (ToolType.TEXT, ToolType.NUMBER)
         show_caps = tool_type in (ToolType.LINE, ToolType.ARROW)
         self._properties.set_visible_properties(
-            stroke=show_stroke, fill=show_fill, width=show_width,
-            font=show_font, caps=show_caps,
+            stroke=show_stroke,
+            fill=show_fill,
+            width=show_width,
+            font=show_font,
+            caps=show_caps,
         )
 
     def _update_properties_visibility_for_item(self, item: object) -> None:
         """Show or hide properties based on the type of the selected item."""
-        from PySide6.QtWidgets import (  # noqa: PLC0415
+        from PySide6.QtWidgets import (
             QGraphicsEllipseItem,
             QGraphicsLineItem,
             QGraphicsRectItem,
@@ -565,10 +581,15 @@ class EditorWindow(QMainWindow):
 
         # ArrowItem: stroke + width + caps
         try:
-            from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+            from verdiclip.editor.tools.arrow import ArrowItem
+
             if isinstance(item, ArrowItem):
                 self._properties.set_visible_properties(
-                    stroke=True, fill=False, width=True, font=False, caps=True,
+                    stroke=True,
+                    fill=False,
+                    width=True,
+                    font=False,
+                    caps=True,
                 )
                 return
         except ImportError:
@@ -576,20 +597,34 @@ class EditorWindow(QMainWindow):
 
         if isinstance(item, (QGraphicsRectItem, QGraphicsEllipseItem)):
             self._properties.set_visible_properties(
-                stroke=True, fill=True, width=True, font=False, caps=False,
+                stroke=True,
+                fill=True,
+                width=True,
+                font=False,
+                caps=False,
             )
         elif isinstance(item, QGraphicsLineItem):
             self._properties.set_visible_properties(
-                stroke=True, fill=False, width=True, font=False, caps=True,
+                stroke=True,
+                fill=False,
+                width=True,
+                font=False,
+                caps=True,
             )
         elif isinstance(item, QGraphicsTextItem):
             self._properties.set_visible_properties(
-                stroke=True, fill=False, width=False, font=True, caps=False,
+                stroke=True,
+                fill=False,
+                width=False,
+                font=True,
+                caps=False,
             )
 
     def _open_file(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Open Image", "",
+            self,
+            "Open Image",
+            "",
             "Images (*.png *.jpg *.jpeg *.bmp *.gif *.tiff *.webp);;All Files (*)",
         )
         if file_path:
@@ -601,6 +636,7 @@ class EditorWindow(QMainWindow):
 
     def _save_file(self) -> None:
         from verdiclip.export.file_export import FileExporter
+
         path = FileExporter.save_with_dialog(
             self._canvas.get_flattened_pixmap(), self._config, self
         )
@@ -610,6 +646,7 @@ class EditorWindow(QMainWindow):
 
     def _save_file_as(self) -> None:
         from verdiclip.export.file_export import FileExporter
+
         path = FileExporter.save_as(self._canvas.get_flattened_pixmap(), self)
         if path:
             self._file_path = path
@@ -623,6 +660,7 @@ class EditorWindow(QMainWindow):
 
     def _copy_to_clipboard(self) -> None:
         from verdiclip.export.clipboard import ClipboardExporter
+
         ClipboardExporter.copy(self._canvas.get_flattened_pixmap())
         self._statusbar.showMessage("Copied to clipboard", 3000)
 
@@ -651,7 +689,8 @@ class EditorWindow(QMainWindow):
             return
 
         # Offset so the paste isn't exactly on top of the original
-        from PySide6.QtCore import QPointF  # noqa: PLC0415
+        from PySide6.QtCore import QPointF
+
         offset = QPointF(15, 15)
         for item in pasted:
             item.setPos(item.pos() + offset)
@@ -665,4 +704,5 @@ class EditorWindow(QMainWindow):
 
     def _print(self) -> None:
         from verdiclip.export.printer import PrinterExporter
+
         PrinterExporter.print_pixmap(self._canvas.get_flattened_pixmap(), self)

@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 class CaptureType(Enum):
     """Types of screenshot capture."""
+
     REGION = auto()
     FULLSCREEN = auto()
     ACTIVE_WINDOW = auto()
@@ -30,6 +31,7 @@ class CaptureType(Enum):
 @dataclass
 class LastCapture:
     """Stores information about the last capture for repeat functionality."""
+
     capture_type: CaptureType
     region: QRect | None = None
 
@@ -78,13 +80,12 @@ class RepeatCapture:
                 if self._last.region:
                     logger.info("Repeating region capture at saved region.")
                     return ScreenCapture.capture_region(self._last.region)
-                elif on_region_needed:
+                if on_region_needed:
                     logger.info("Repeating region capture (prompting for region).")
                     on_region_needed()
                     return None
-                else:
-                    logger.warning("Cannot repeat region capture without UI callback.")
-                    return None
+                logger.warning("Cannot repeat region capture without UI callback.")
+                return None
 
             case CaptureType.WINDOW_PICK:
                 if on_region_needed:

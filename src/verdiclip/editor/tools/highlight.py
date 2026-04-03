@@ -31,11 +31,13 @@ class HighlightTool(BaseTool):
         self._current_item: QGraphicsRectItem | None = None
 
     def activate(self, scene: QGraphicsScene, view: EditorCanvas) -> None:
+        """Set crosshair cursor and prepare for highlight drawing."""
         super().activate(scene, view)
         if view:
             view.setCursor(Qt.CursorShape.CrossCursor)
 
     def mouse_press(self, scene_pos: QPointF, event: QMouseEvent) -> None:
+        """Begin drawing a highlight rectangle at the click position."""
         if not self._scene or event.button() != Qt.MouseButton.LeftButton:
             return
         self._origin = scene_pos
@@ -46,12 +48,14 @@ class HighlightTool(BaseTool):
         self._scene.addItem(self._current_item)
 
     def mouse_move(self, scene_pos: QPointF, event: QMouseEvent) -> None:
+        """Resize the highlight rectangle as the cursor moves."""
         if self._current_item is None or self._origin is None:
             return
         rect = QRectF(self._origin, scene_pos).normalized()
         self._current_item.setRect(rect)
 
     def mouse_release(self, scene_pos: QPointF, event: QMouseEvent) -> None:
+        """Finalize the highlight or discard if too small."""
         if self._current_item:
             rect = self._current_item.rect()
             if rect.width() < 5 and rect.height() < 5 and self._scene:
