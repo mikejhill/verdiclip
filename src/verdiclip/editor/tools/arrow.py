@@ -116,6 +116,8 @@ class ArrowItem(QGraphicsItemGroup):
         self.addToGroup(self._head)
 
         self.setFlag(QGraphicsItemGroup.GraphicsItemFlag.ItemIsSelectable)
+        self._logical_p1 = QPointF(p1)
+        self._logical_p2 = QPointF(p2)
         self.update_endpoints(p1, p2)
 
     # ------------------------------------------------------------------
@@ -124,31 +126,47 @@ class ArrowItem(QGraphicsItemGroup):
 
     def update_endpoints(self, p1: QPointF, p2: QPointF) -> None:
         """Set shaft and arrowhead geometry for *p1* → *p2* (item-local coords)."""
-        self._shaft.setLine(QLineF(p1, p2))
+        self._logical_p1 = QPointF(p1)
+        self._logical_p2 = QPointF(p2)
         self._head.setPath(_build_arrowhead_path(p1, p2, self._stroke_width))
+        # Shorten shaft so it ends at the arrowhead base, preventing the
+        # thick stroke from covering the pointed tip.
+        dx = p2.x() - p1.x()
+        dy = p2.y() - p1.y()
+        length = math.sqrt(dx * dx + dy * dy)
+        if length > 0:
+            head_length = _ARROWHEAD_LENGTH + self._stroke_width * 1.5
+            ratio = max(0, (length - head_length)) / length
+            shaft_p2 = QPointF(
+                p1.x() + dx * ratio,
+                p1.y() + dy * ratio,
+            )
+            self._shaft.setLine(QLineF(p1, shaft_p2))
+        else:
+            self._shaft.setLine(QLineF(p1, p2))
 
     @property
     def shaft_line(self) -> QLineF:
-        """The shaft as a local-coordinate line."""
-        return self._shaft.line()
+        """The logical endpoint-to-endpoint line (item-local coordinates)."""
+        return QLineF(self._logical_p1, self._logical_p2)
 
     def get_scene_p1(self) -> QPointF:
         """Return the tail endpoint in scene coordinates."""
-        return self.mapToScene(self._shaft.line().p1())
+        return self.mapToScene(self._logical_p1)
 
     def get_scene_p2(self) -> QPointF:
         """Return the tip (arrowhead) endpoint in scene coordinates."""
-        return self.mapToScene(self._shaft.line().p2())
+        return self.mapToScene(self._logical_p2)
 
     def set_scene_p1(self, scene_pos: QPointF) -> None:
         """Move the tail endpoint, keeping the tip fixed (scene coords)."""
         local = self.mapFromScene(scene_pos)
-        self.update_endpoints(local, self._shaft.line().p2())
+        self.update_endpoints(local, self._logical_p2)
 
     def set_scene_p2(self, scene_pos: QPointF) -> None:
         """Move the tip endpoint, keeping the tail fixed (scene coords)."""
         local = self.mapFromScene(scene_pos)
-        self.update_endpoints(self._shaft.line().p1(), local)
+        self.update_endpoints(self._logical_p1, local)
 
     # ------------------------------------------------------------------
     # Property setters (for the properties panel)
@@ -168,9 +186,8 @@ class ArrowItem(QGraphicsItemGroup):
         pen = self._shaft.pen()
         pen.setWidth(width)
         self._shaft.setPen(pen)
-        # Rebuild arrowhead so it scales with the new width
-        line = self._shaft.line()
-        self._head.setPath(_build_arrowhead_path(line.p1(), line.p2(), width))
+        # Rebuild shaft and arrowhead with the new width
+        self.update_endpoints(self._logical_p1, self._logical_p2)
 
 
 # ---------------------------------------------------------------------------

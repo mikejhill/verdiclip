@@ -302,7 +302,6 @@ class EditorCanvas(QGraphicsView):
 
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
             self._delete_selected_items()
-            self._delete_selected_items()
         elif event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             if self._current_tool and hasattr(self._current_tool, "apply_crop"):
                 self._current_tool.apply_crop()
@@ -335,6 +334,26 @@ class EditorCanvas(QGraphicsView):
             from verdiclip.editor.tools.select import SelectTool
             if isinstance(self._current_tool, SelectTool):
                 self._current_tool.select_all()
+        elif event.key() in (
+            Qt.Key.Key_Left, Qt.Key.Key_Right,
+            Qt.Key.Key_Up, Qt.Key.Key_Down,
+        ):
+            selected = self._scene.selectedItems()
+            if selected:
+                step = 10 if event.modifiers() & Qt.KeyboardModifier.ControlModifier else 1
+                dx, dy = 0.0, 0.0
+                if event.key() == Qt.Key.Key_Left:
+                    dx = -step
+                elif event.key() == Qt.Key.Key_Right:
+                    dx = step
+                elif event.key() == Qt.Key.Key_Up:
+                    dy = -step
+                elif event.key() == Qt.Key.Key_Down:
+                    dy = step
+                from PySide6.QtCore import QPointF as _QPointF  # noqa: PLC0415
+                offset = _QPointF(dx, dy)
+                for item in selected:
+                    item.setPos(item.pos() + offset)
         else:
             super().keyPressEvent(event)
 
@@ -783,6 +802,22 @@ class EditorWindow(QMainWindow):
     def _update_zoom_label(self) -> None:
         pct = int(self._canvas.zoom_level * 100)
         self._zoom_button.setText(f"{pct}%")
+
+    # ------------------------------------------------------------------
+    # Key events — intercept Esc when focus is on toolbar / properties
+    # ------------------------------------------------------------------
+
+    def keyPressEvent(self, event) -> None:
+        """Forward Esc and arrow keys to the canvas even when a toolbar widget has focus."""
+        if event.key() in (
+            Qt.Key.Key_Escape,
+            Qt.Key.Key_Left, Qt.Key.Key_Right,
+            Qt.Key.Key_Up, Qt.Key.Key_Down,
+        ):
+            self._canvas.setFocus()
+            self._canvas.keyPressEvent(event)
+            return
+        super().keyPressEvent(event)
 
     def _on_tool_changed(self, tool_type: ToolType) -> None:
         """Handle tool selection from toolbar."""

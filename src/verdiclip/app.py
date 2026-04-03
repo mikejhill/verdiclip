@@ -6,7 +6,7 @@ import logging
 import sys
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QSharedMemory
+from PySide6.QtCore import QSharedMemory, Qt
 from PySide6.QtWidgets import QApplication
 
 from verdiclip import __app_name__, __version__
@@ -40,7 +40,13 @@ class VerdiClipApp:
         return False
 
     def _init_qt(self) -> QApplication:
-        """Initialize the Qt application."""
+        """Initialize the Qt application with proper DPI handling."""
+        # Ensure Qt maps logical coordinates to physical pixels 1:1 so
+        # mss screen captures (which use physical pixels) align correctly
+        # with the overlay geometry on high-DPI / scaled displays.
+        QApplication.setHighDpiScaleFactorRoundingPolicy(
+            Qt.HighDpiScaleFactorRoundingPolicy.PassThrough,
+        )
         app = QApplication(self._argv)
         app.setApplicationName(__app_name__)
         app.setApplicationVersion(__version__)

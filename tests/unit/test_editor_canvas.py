@@ -1970,3 +1970,54 @@ class TestEditorCanvasDefaultToolbar:
             mock_svp.assert_called_once_with(
                 stroke=True, fill=True, width=True, font=False, caps=False,
             )
+
+
+# ---------------------------------------------------------------------------
+# EditorWindow — Esc forwarded from toolbar to canvas
+# ---------------------------------------------------------------------------
+
+
+class TestEditorWindowEscForward:
+    def test_esc_forwarded_to_canvas(self, qapp, tmp_config) -> None:
+        """Pressing Esc on EditorWindow should forward to canvas."""
+        from unittest.mock import MagicMock
+        from unittest.mock import patch as _patch
+
+        window = EditorWindow(QPixmap(100, 100), tmp_config)
+
+        with _patch.object(window._canvas, "keyPressEvent") as mock_kpe:
+            event = MagicMock()
+            event.key.return_value = Qt.Key.Key_Escape
+            event.modifiers.return_value = Qt.KeyboardModifier.NoModifier
+            window.keyPressEvent(event)
+            mock_kpe.assert_called_once()
+
+    def test_arrow_keys_forwarded_to_canvas(self, qapp, tmp_config) -> None:
+        """Pressing arrow keys on EditorWindow should forward to canvas."""
+        from unittest.mock import MagicMock
+        from unittest.mock import patch as _patch
+
+        window = EditorWindow(QPixmap(100, 100), tmp_config)
+
+        with _patch.object(window._canvas, "keyPressEvent") as mock_kpe:
+            event = MagicMock()
+            event.key.return_value = Qt.Key.Key_Right
+            event.modifiers.return_value = Qt.KeyboardModifier.NoModifier
+            window.keyPressEvent(event)
+            mock_kpe.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# DPI awareness — screen capture pixmap
+# ---------------------------------------------------------------------------
+
+
+class TestScreenCaptureDPI:
+    def test_mss_pixmap_device_pixel_ratio_is_one(self, qapp) -> None:
+        """Captured pixmaps should have devicePixelRatio == 1."""
+        from verdiclip.capture.screen import ScreenCapture
+
+        pixmap = ScreenCapture.capture_primary_monitor()
+        assert pixmap.devicePixelRatio() == 1.0, (
+            f"Expected devicePixelRatio 1.0, got {pixmap.devicePixelRatio()}"
+        )

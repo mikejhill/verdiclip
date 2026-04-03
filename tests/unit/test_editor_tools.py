@@ -2992,9 +2992,15 @@ class TestArrowItemGeometry:
         from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
         item = ArrowItem(QPointF(0, 0), QPointF(50, 50), QColor("#FF0000"), 2)
         item.update_endpoints(QPointF(10, 20), QPointF(90, 80))
-        line = item._shaft.line()
+        # shaft_line returns the logical endpoints (p2 is the arrowhead tip)
+        line = item.shaft_line
         assert abs(line.p1().x() - 10) < 0.5
         assert abs(line.p2().x() - 90) < 0.5
+        # The visual shaft should be shorter (ending at the arrowhead base)
+        visual = item._shaft.line()
+        assert visual.p2().x() < 90, (
+            "Visual shaft p2 should be shorter than the logical endpoint"
+        )
 
     def test_get_scene_p1_p2_without_pos_offset(self, qapp) -> None:
         """When item pos() is (0,0), scene coords equal local coords."""
@@ -3507,3 +3513,97 @@ class TestEscKeyBehavior:
         assert len(signal_received) == 1, (
             f"Expected switch signal emitted, got {len(signal_received)}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Arrow shaft shortened for pointy tips
+# ---------------------------------------------------------------------------
+
+class TestArrowShaftShortened:
+    """Visual shaft must end at the arrowhead base, not at the tip."""
+
+    def test_shaft_p2_shorter_than_logical_p2(self, qapp) -> None:
+        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        item = ArrowItem(QPointF(0, 0), QPointF(100, 0), QColor("#FF0000"), 3)
+        visual_p2_x = item._shaft.line().p2().x()
+        logical_p2_x = item.shaft_line.p2().x()
+        assert visual_p2_x < logical_p2_x, (
+            f"Visual shaft ({visual_p2_x:.1f}) should be shorter than "
+            f"logical ({logical_p2_x:.1f})"
+        )
+
+    def test_thick_stroke_shaft_much_shorter(self, qapp) -> None:
+        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        thin = ArrowItem(QPointF(0, 0), QPointF(100, 0), QColor("#FF0000"), 1)
+        thick = ArrowItem(QPointF(0, 0), QPointF(100, 0), QColor("#FF0000"), 20)
+        thin_gap = thin.shaft_line.p2().x() - thin._shaft.line().p2().x()
+        thick_gap = thick.shaft_line.p2().x() - thick._shaft.line().p2().x()
+        assert thick_gap > thin_gap, (
+            "Thicker strokes should produce a larger shaft shortening"
+        )
+
+    def test_logical_endpoints_match_update_args(self, qapp) -> None:
+        from verdiclip.editor.tools.arrow import ArrowItem  # noqa: PLC0415
+        item = ArrowItem(QPointF(0, 0), QPointF(50, 50), QColor("#FF0000"), 5)
+        item.update_endpoints(QPointF(10, 20), QPointF(80, 90))
+        assert abs(item.shaft_line.p1().x() - 10) < 0.5
+        assert abs(item.shaft_line.p1().y() - 20) < 0.5
+        assert abs(item.shaft_line.p2().x() - 80) < 0.5
+        assert abs(item.shaft_line.p2().y() - 90) < 0.5
+
+
+# ---------------------------------------------------------------------------
+# Arrow keys move selected elements
+# ---------------------------------------------------------------------------
+
+class TestArrowKeysMove:
+    """Arrow keys should move selected items by 1px (or 10px with Ctrl)."""
+
+    def test_right_arrow_moves_item(self, qapp) -> None:
+        from verdiclip.editor.canvas import EditorCanvas  # noqa: PLC0415
+        canvas = EditorCanvas()
+        canvas.set_image(QPixmap(200, 200))
+        item = canvas.scene.addRect(10, 10, 30, 30)
+        item.setFlag(QGraphicsItemGroup.GraphicsItemFlag.ItemIsSelectable)
+        item.setSelected(True)
+        original_x = item.pos().x()
+
+        from unittest.mock import MagicMock  # noqa: PLC0415
+        event = MagicMock()
+        event.key.return_value = Qt.Key.Key_Right
+        event.modifiers.return_value = Qt.KeyboardModifier.NoModifier
+        canvas.keyPressEvent(event)
+
+        assert item.pos().x() == original_x + 1, (
+            f"Expected x to move by 1, got delta {item.pos().x() - original_x}"
+        )
+
+    def test_ctrl_down_arrow_moves_10px(self, qapp) -> None:
+        from verdiclip.editor.canvas import EditorCanvas  # noqa: PLC0415
+        canvas = EditorCanvas()
+        canvas.set_image(QPixmap(200, 200))
+        item = canvas.scene.addRect(10, 10, 30, 30)
+        item.setFlag(QGraphicsItemGroup.GraphicsItemFlag.ItemIsSelectable)
+        item.setSelected(True)
+        original_y = item.pos().y()
+
+        from unittest.mock import MagicMock  # noqa: PLC0415
+        event = MagicMock()
+        event.key.return_value = Qt.Key.Key_Down
+        event.modifiers.return_value = Qt.KeyboardModifier.ControlModifier
+        canvas.keyPressEvent(event)
+
+        assert item.pos().y() == original_y + 10, (
+            f"Expected y to move by 10, got delta {item.pos().y() - original_y}"
+        )
+
+    def test_arrow_key_no_selection_no_crash(self, qapp) -> None:
+        from verdiclip.editor.canvas import EditorCanvas  # noqa: PLC0415
+        canvas = EditorCanvas()
+        canvas.set_image(QPixmap(200, 200))
+
+        from unittest.mock import MagicMock  # noqa: PLC0415
+        event = MagicMock()
+        event.key.return_value = Qt.Key.Key_Left
+        event.modifiers.return_value = Qt.KeyboardModifier.NoModifier
+        canvas.keyPressEvent(event)  # should not raise

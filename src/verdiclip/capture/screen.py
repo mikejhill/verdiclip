@@ -17,7 +17,11 @@ logger = logging.getLogger(__name__)
 
 
 def _mss_to_pixmap(sct_img) -> QPixmap:
-    """Convert an mss screenshot to a QPixmap."""
+    """Convert an mss screenshot to a QPixmap.
+
+    The resulting pixmap always has ``devicePixelRatio == 1`` because mss
+    captures at physical resolution regardless of display scaling.
+    """
     img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
     qimage = QImage(
         img.tobytes("raw", "RGB"),
@@ -26,7 +30,9 @@ def _mss_to_pixmap(sct_img) -> QPixmap:
         3 * img.width,
         QImage.Format.Format_RGB888,
     )
-    return QPixmap.fromImage(qimage)
+    pixmap = QPixmap.fromImage(qimage)
+    pixmap.setDevicePixelRatio(1)
+    return pixmap
 
 
 class ScreenCapture:
