@@ -1,100 +1,133 @@
 [project]
 name = "verdiclip"
-version = "0.1.0"
-description = "A performant screenshot and annotation tool for Windows, inspired by Greenshot."
+version = "0.2.0"
+description = "Fast, faithful screenshot capture and annotation for Windows."
 readme = "README.md"
 license = "MIT"
-authors = [
-    { name = "Mike Hill", email = "mike@mikejhill.com" }
-]
-requires-python = ">=3.12"
+license-files = ["LICENSE", "ATTRIBUTION.md"]
+authors = [{ name = "Mike Hill", email = "mike@mikejhill.com" }]
+requires-python = ">=3.13"
 keywords = ["screenshot", "annotation", "screen-capture", "windows"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Win32 (MS Windows)",
     "Intended Audience :: End Users/Desktop",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: Microsoft :: Windows",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.13",
-    "Topic :: Multimedia :: Graphics :: Capture :: Screen Capture",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Multimedia :: Graphics :: Editors",
+    "Topic :: Multimedia :: Graphics :: Capture :: Screen Capture",
 ]
 dependencies = [
-    "PySide6>=6.7,<7",
-    "Pillow>=10.0,<12",
-    "mss>=9.0,<10",
-    "pynput>=1.7,<2",
+    "mss>=10.2.0",
+    "pyside6-essentials>=6.11.2",
 ]
 
 [project.urls]
 Homepage = "https://github.com/mikejhill/verdiclip"
-Repository = "https://github.com/mikejhill/verdiclip"
+Documentation = "https://github.com/mikejhill/verdiclip#readme"
+Changelog = "https://github.com/mikejhill/verdiclip/blob/main/CHANGELOG.md"
 Issues = "https://github.com/mikejhill/verdiclip/issues"
-Documentation = "https://github.com/mikejhill/verdiclip/tree/main/docs"
 
 [project.scripts]
-verdiclip = "verdiclip.__main__:main"
+verdiclip = "verdiclip.__main__:Application.main"
 
 [project.gui-scripts]
-verdiclip-gui = "verdiclip.__main__:main"
+verdiclip-gui = "verdiclip.__main__:Application.main"
 
 [build-system]
 requires = ["uv_build>=0.11.1,<0.12.0"]
 build-backend = "uv_build"
 
-[dependency-groups]
-dev = [
-    "pytest>=8.0,<9",
-    "pytest-qt>=4.4,<5",
-    "pytest-benchmark>=5.0,<6",
-    "pytest-cov>=6.0,<7",
-    "ruff>=0.9,<1",
-    "ty>=0.0.1",
-]
-
 [tool.ruff]
-target-version = "py312"
-line-length = 100
+target-version = "py313"
+line-length = 88
 src = ["src", "tests"]
 
 [tool.ruff.lint]
-select = ["E", "W", "F", "I", "N", "UP", "B", "SIM", "RUF", "D", "ANN", "PT", "RET", "ARG"]
+select = [
+    "A", "ANN", "ARG", "B", "BLE", "C4", "C90", "D", "DTZ", "E", "ERA", "F",
+    "FA", "FBT", "G", "I", "LOG", "N", "PERF", "PGH", "PIE", "PL", "PT", "PTH",
+    "RET", "RSE", "RUF", "S", "SIM", "T20", "TID", "TRY", "UP", "W",
+]
 ignore = [
-    "D100",   # Missing docstring in public module (module header docstring suffices)
-    "D104",   # Missing docstring in public package
-    "D107",   # Missing docstring in __init__ (class docstring suffices)
-    "N802",   # Qt overrides use camelCase (e.g., paintEvent, mousePressEvent)
-    "N803",   # Qt callback parameters use camelCase
-    "ANN401", # Dynamically typed expressions (Any) — needed for Qt/pynput interop
+    "D107",    # __init__ docstring: the class docstring covers it
+    "TRY003",  # long messages in raise: context-rich messages are required here
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "PLR2004"]
+
+[tool.ruff.lint.pep8-naming]
+# Qt virtual overrides must keep Qt's camelCase names.
+extend-ignore-names = [
+    "paintEvent", "mousePressEvent", "mouseMoveEvent", "mouseReleaseEvent",
+    "mouseDoubleClickEvent", "keyPressEvent", "keyReleaseEvent", "wheelEvent",
+    "resizeEvent", "closeEvent", "showEvent", "focusOutEvent", "dragEnterEvent",
+    "dropEvent", "nativeEventFilter", "leaveEvent", "enterEvent", "sizeHint",
 ]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
-[tool.ruff.lint.isort]
-known-first-party = ["verdiclip"]
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
 
-[tool.ruff.lint.per-file-ignores]
-"tests/**/*.py" = [
-    "D101",   # Missing docstring in public class (test classes are self-documenting)
-    "D102",   # Missing docstring in public method (test methods are self-documenting)
-    "D103",   # Missing docstring in public function (test helpers are self-documenting)
-    "ANN",    # Type annotations not required in tests
-    "ARG",    # Unused arguments common in fixtures/parametrize
-]
-"src/verdiclip/editor/tools/*.py" = [
-    "ARG002", # Qt override signatures require unused params (event, scene_pos)
-]
-"src/verdiclip/capture/*.py" = [
-    "ARG002", # Qt override signatures require unused params
-]
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.format]
+docstring-code-format = true
 
 [tool.ty.environment]
-python-version = "3.12"
+# A Windows-only app: type-check against Windows APIs on any host
+python-platform = "win32"
+
+[tool.ty.rules]
+all = "error"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-v --tb=short"
+addopts = ["--strict-markers", "--strict-config", "-ra", "--import-mode=importlib"]
+xfail_strict = true
 qt_api = "pyside6"
+markers = [
+    "ux: user journey test proving a UX contract item",
+    "ux_budget: journey test that enforces a latency budget",
+]
+
+[tool.coverage.run]
+source = ["verdiclip"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+skip_covered = true
+exclude_also = ["if __name__ == .__main__.:"]
+
+[tool.poe.tasks]
+format = { cmd = "ruff format .", help = "Format code" }
+format-check = { cmd = "ruff format --check .", help = "Check formatting" }
+lint = { cmd = "ruff check .", help = "Lint code" }
+lint-fix = { cmd = "ruff check . --fix", help = "Lint and auto-fix" }
+typecheck = { cmd = "ty check", help = "Type check (strict)" }
+test = { cmd = "pytest --cov", help = "Run tests with coverage" }
+ux = { cmd = "pytest -m ux tests/ux", help = "Run UX journey tests only" }
+ux-gallery = { cmd = "python scripts/ux_gallery.py", help = "Render key screens in light and dark themes into docs/ux/gallery for design review" }
+ux-snapshots = { cmd = "pytest -m ux tests/ux --ux-snapshots=docs/ux/snapshots", help = "Run UX journeys and save a PNG per step for review" }
+lint-workflows = { shell = "uvx --from actionlint-py actionlint && uvx zizmor --offline .github/workflows", help = "Lint GitHub Actions workflows (actionlint + zizmor)" }
+fix = { sequence = ["format", "lint-fix"], help = "Auto-fix formatting and lint" }
+check = { sequence = ["format-check", "lint", "typecheck", "test"], help = "Run every quality gate" }
+
+[dependency-groups]
+dev = [
+    "poethepoet>=0.48.0",
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+    "pytest-qt>=4.5.0",
+    "ruff>=0.16.10",
+    "ty>=0.0.85",
+]

@@ -1,708 +1,638 @@
-"""Main editor window with toolbar, properties panel, and canvas."""
+"""The editor window: tools, actions, menus, and delivery for one document."""
 
 from __future__ import annotations
 
 import logging
-import os
-from typing import TYPE_CHECKING
+from collections.abc import Callable
+from pathlib import Path
+from typing import Final, override
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, QMimeData, QSize, Qt, Signal
 from PySide6.QtGui import (
     QAction,
-    QColor,
-    QFont,
-    QKeyEvent,
+    QActionGroup,
+    QCloseEvent,
+    QDragEnterEvent,
+    QDropEvent,
+    QGuiApplication,
+    QImage,
     QKeySequence,
-    QPixmap,
+    QShowEvent,
 )
 from PySide6.QtWidgets import (
     QFileDialog,
+    QLabel,
     QMainWindow,
-    QSlider,
-    QStatusBar,
+    QMenu,
+    QMessageBox,
+    QToolBar,
+    QToolButton,
     QWidget,
 )
 
-from verdiclip import __app_name__
-from verdiclip.editor.canvas import EditorCanvas
-from verdiclip.editor.history import EditorHistory
-from verdiclip.editor.properties import PropertiesPanel
-from verdiclip.editor.serialization import (
-    _apply_fill_to_item,
-    _apply_stroke_to_item,
-    _apply_width_to_item,
-    _deserialise_items,
-    _serialise_items,
+from verdiclip.document.annotations import CounterMarker, LabeledBox, TextNote
+from verdiclip.document.style import Style
+from verdiclip.editor.canvas import CanvasView
+from verdiclip.editor.chrome import (
+    BUTTON_SIZE,
+    COMPACT_BUTTON_SIZE,
+    ICON_SIZE,
+    ChromeStyle,
 )
-from verdiclip.editor.toolbar import EditorToolbar, ToolType
-
-if TYPE_CHECKING:
-    from PySide6.QtWidgets import QGraphicsItem
-
-    from verdiclip.config import Config
-    from verdiclip.editor.tools.base import BaseTool
+from verdiclip.editor.icons import IconFactory
+from verdiclip.editor.session import EditorSession, ToolId
+from verdiclip.editor.style_bar import FIELD_LAYOUT, KIND_TOOLS, StyleBar
+from verdiclip.editor.tools import TOOL_TYPES, Tool
+from verdiclip.exceptions import AppError, CodecError
+from verdiclip.geometry import Point
+from verdiclip.output.delivery import ImageDelivery
+from verdiclip.render.renderer import Renderer
+from verdiclip.settings import ImageFormat
 
 logger = logging.getLogger(__name__)
 
+ANNOTATION_MIME: Final = "application/x-verdiclip-annotations+json"
+STATUS_TIMEOUT_MS: Final = 4000
+TOOL_GROUPS: Final = (
+    (ToolId.SELECT, ToolId.CROP),
+    (ToolId.RECTANGLE, ToolId.ELLIPSE, ToolId.LINE, ToolId.ARROW, ToolId.FREEHAND),
+    (ToolId.TEXT, ToolId.COUNTER),
+    (ToolId.HIGHLIGHT, ToolId.OBFUSCATE),
+)
+ACTION_GROUPS: Final = (("copy_image", "save"), ("undo", "redo"), ("settings",))
+IMAGE_FILTER: Final = "Images (*.png *.jpg *.jpeg *.bmp *.gif *.tif *.tiff *.webp)"
+
 
 class EditorWindow(QMainWindow):
-    """Main editor window with canvas, toolbar, and properties."""
+    """Edit one document and deliver it."""
 
-    def __init__(self, pixmap: QPixmap, config: Config, file_path: str = "") -> None:
-        super().__init__()
-        self._config = config
-        self._history = EditorHistory()
-        self._tools: dict[ToolType, BaseTool] = {}
-        self._file_path = file_path
-        self._image_size = (pixmap.width(), pixmap.height())
-        # Guard flag: True while the properties panel is being updated from a
-        # selected item's state, preventing feedback loops with tool setters.
-        self._updating_from_selection = False
+    open_image_requested = Signal(object)  # Path
+    settings_requested = Signal()
 
-        title = f"{__app_name__} — Editor"
-        if file_path:
-            title = f"{os.path.basename(file_path)} — {__app_name__} Editor"
-        self.setWindowTitle(title)
-        self.setMinimumSize(800, 600)
-        self.resize(1200, 800)
-
-        self._setup_canvas(pixmap)
-        self._setup_toolbar()
-        self._setup_properties()
-        self._setup_menus()
-        self._setup_statusbar()
-        self._register_tools()
-
-        # Set initial tool
-        self._on_tool_changed(ToolType.SELECT)
-
-    def _setup_canvas(self, pixmap: QPixmap) -> None:
-        self._canvas = EditorCanvas()
-        self._canvas.set_history(self._history)
-        self.setCentralWidget(self._canvas)
-        self._canvas.set_image(pixmap)
-        self._canvas.zoom_changed.connect(self._on_zoom_changed)
-        self._canvas.switch_to_select_requested.connect(self._switch_to_select)
-        self._canvas.number_editor_requested.connect(self._on_number_editor_requested)
-        self._canvas.scene.selectionChanged.connect(self._on_selection_changed)
-
-    def _setup_toolbar(self) -> None:
-        self._toolbar = EditorToolbar()
-        self._toolbar.tool_changed.connect(self._on_tool_changed)
-        self.addToolBar(Qt.ToolBarArea.LeftToolBarArea, self._toolbar)
-
-    def _setup_properties(self) -> None:
-        self._properties = PropertiesPanel()
-        props_toolbar = self.addToolBar("Properties")
-        props_toolbar.setMovable(False)
-        props_toolbar.addWidget(self._properties)
-
-    def _setup_menus(self) -> None:
-        menubar = self.menuBar()
-
-        # File menu
-        file_menu = menubar.addMenu("&File")
-
-        open_action = QAction("&Open...", self)
-        open_action.setShortcut(QKeySequence.StandardKey.Open)
-        open_action.triggered.connect(self._open_file)
-        file_menu.addAction(open_action)
-
-        save_action = QAction("&Save", self)
-        save_action.setShortcut(QKeySequence.StandardKey.Save)
-        save_action.triggered.connect(self._save_file)
-        file_menu.addAction(save_action)
-
-        save_as_action = QAction("Save &As...", self)
-        save_as_action.setShortcut(QKeySequence.StandardKey.SaveAs)
-        save_as_action.triggered.connect(self._save_file_as)
-        file_menu.addAction(save_as_action)
-
-        file_menu.addSeparator()
-
-        copy_action = QAction("Copy Image to &Clipboard", self)
-        copy_action.setShortcut(QKeySequence("Ctrl+Shift+C"))
-        copy_action.triggered.connect(self._copy_to_clipboard)
-        file_menu.addAction(copy_action)
-
-        print_action = QAction("&Print...", self)
-        print_action.setShortcut(QKeySequence.StandardKey.Print)
-        print_action.triggered.connect(self._print)
-        file_menu.addAction(print_action)
-
-        file_menu.addSeparator()
-
-        close_action = QAction("C&lose", self)
-        close_action.setShortcut(QKeySequence("Ctrl+W"))
-        close_action.triggered.connect(self.close)
-        file_menu.addAction(close_action)
-
-        # Edit menu
-        edit_menu = menubar.addMenu("&Edit")
-
-        undo_action = QAction("&Undo", self)
-        undo_action.setShortcut(QKeySequence.StandardKey.Undo)
-        undo_action.triggered.connect(self._history.undo)
-        edit_menu.addAction(undo_action)
-
-        redo_action = QAction("&Redo", self)
-        redo_action.setShortcut(QKeySequence.StandardKey.Redo)
-        redo_action.triggered.connect(self._history.redo)
-        edit_menu.addAction(redo_action)
-
-        edit_menu.addSeparator()
-
-        copy_el_action = QAction("&Copy", self)
-        copy_el_action.setShortcut(QKeySequence.StandardKey.Copy)
-        copy_el_action.triggered.connect(self._copy_elements)
-        edit_menu.addAction(copy_el_action)
-
-        paste_el_action = QAction("&Paste", self)
-        paste_el_action.setShortcut(QKeySequence.StandardKey.Paste)
-        paste_el_action.triggered.connect(self._paste_elements)
-        edit_menu.addAction(paste_el_action)
-
-        edit_menu.addSeparator()
-
-        delete_action = QAction("&Delete Selected", self)
-        delete_action.setShortcut(QKeySequence.StandardKey.Delete)
-        delete_action.triggered.connect(self._canvas.delete_selected)
-        edit_menu.addAction(delete_action)
-
-        # View menu
-        view_menu = menubar.addMenu("&View")
-
-        zoom_in_action = QAction("Zoom &In", self)
-        zoom_in_action.setShortcut(QKeySequence("Ctrl+="))
-        zoom_in_action.triggered.connect(self._zoom_in)
-        view_menu.addAction(zoom_in_action)
-
-        zoom_out_action = QAction("Zoom &Out", self)
-        zoom_out_action.setShortcut(QKeySequence("Ctrl+-"))
-        zoom_out_action.triggered.connect(self._zoom_out)
-        view_menu.addAction(zoom_out_action)
-
-        zoom_100_action = QAction("Zoom &100%", self)
-        zoom_100_action.setShortcut(QKeySequence("Ctrl+0"))
-        zoom_100_action.triggered.connect(self._zoom_100)
-        view_menu.addAction(zoom_100_action)
-
-        zoom_fit_action = QAction("Zoom to &Fit", self)
-        zoom_fit_action.setShortcut(QKeySequence("Ctrl+Shift+F"))
-        zoom_fit_action.triggered.connect(self._zoom_fit)
-        view_menu.addAction(zoom_fit_action)
-
-    def _setup_statusbar(self) -> None:
-        from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout
-
-        self._statusbar = QStatusBar()
-        self.setStatusBar(self._statusbar)
-
-        # File name label (left side via showMessage fallback)
-        self._file_label = QLabel("")
-        self._statusbar.addWidget(self._file_label)
-        if self._file_path:
-            self._file_label.setText(os.path.basename(self._file_path))
-
-        # Permanent labels for image info (right side)
-        w, h = self._image_size
-        self._dim_label = QLabel(f"{w} × {h} px")  # noqa: RUF001
-        self._statusbar.addPermanentWidget(self._dim_label)
-
-        # Zoom control: clickable label that toggles a slider popup
-        self._zoom_button = QPushButton("100%")
-        self._zoom_button.setFlat(True)
-        self._zoom_button.setToolTip("Click to adjust zoom level")
-        self._zoom_button.setFixedWidth(60)
-        self._zoom_button.clicked.connect(self._toggle_zoom_slider)
-        self._statusbar.addPermanentWidget(self._zoom_button)
-
-        # Zoom-to-fit button (icon)
-        self._zoom_fit_button = QPushButton("⊞")
-        self._zoom_fit_button.setFlat(True)
-        self._zoom_fit_button.setToolTip("Zoom to fit image in viewport")
-        self._zoom_fit_button.setFixedWidth(28)
-        self._zoom_fit_button.clicked.connect(self._zoom_fit)
-        self._statusbar.addPermanentWidget(self._zoom_fit_button)
-
-        # Zoom slider popup (hidden by default)
-        self._zoom_slider_widget = QWidget(self)
-        slider_layout = QVBoxLayout(self._zoom_slider_widget)
-        slider_layout.setContentsMargins(4, 4, 4, 4)
-
-        slider_row = QHBoxLayout()
-        self._zoom_slider_label_min = QLabel("10%")
-        self._zoom_slider = QSlider(Qt.Orientation.Horizontal)
-        self._zoom_slider.setRange(10, 400)
-        self._zoom_slider.setValue(100)
-        self._zoom_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
-        self._zoom_slider.setTickInterval(50)
-        self._zoom_slider_label_max = QLabel("400%")
-        slider_row.addWidget(self._zoom_slider_label_min)
-        slider_row.addWidget(self._zoom_slider)
-        slider_row.addWidget(self._zoom_slider_label_max)
-        slider_layout.addLayout(slider_row)
-
-        self._zoom_slider_widget.setFixedWidth(300)
-        self._zoom_slider_widget.setWindowFlags(
-            Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint
-        )
-        self._zoom_slider.valueChanged.connect(self._on_zoom_slider_changed)
-
-        self._statusbar.showMessage("Ready")
-
-    def _register_tools(self) -> None:
-        """Create and register all tool instances."""
-        from verdiclip.editor.tools.arrow import ArrowTool
-        from verdiclip.editor.tools.crop import CropTool
-        from verdiclip.editor.tools.ellipse import EllipseTool
-        from verdiclip.editor.tools.freehand import FreehandTool
-        from verdiclip.editor.tools.highlight import HighlightTool
-        from verdiclip.editor.tools.line import LineTool
-        from verdiclip.editor.tools.number import NumberTool
-        from verdiclip.editor.tools.obfuscate import ObfuscateTool
-        from verdiclip.editor.tools.rectangle import RectangleTool
-        from verdiclip.editor.tools.select import SelectTool
-        from verdiclip.editor.tools.text import TextTool
-
-        self._tools = {
-            ToolType.SELECT: SelectTool(),
-            ToolType.CROP: CropTool(),
-            ToolType.RECTANGLE: RectangleTool(),
-            ToolType.ELLIPSE: EllipseTool(),
-            ToolType.LINE: LineTool(),
-            ToolType.ARROW: ArrowTool(),
-            ToolType.TEXT: TextTool(),
-            ToolType.NUMBER: NumberTool(),
-            ToolType.HIGHLIGHT: HighlightTool(),
-            ToolType.OBFUSCATE: ObfuscateTool(),
-            ToolType.FREEHAND: FreehandTool(),
+    def __init__(
+        self,
+        session: EditorSession,
+        delivery: ImageDelivery,
+        *,
+        title: str = "",
+        source_path: Path | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._session = session
+        self._delivery = delivery
+        self._renderer = Renderer()
+        self._title = title or "Screenshot"
+        self._saved_path = source_path
+        self._icons = IconFactory(self.palette().windowText().color())
+        self._canvas = CanvasView(session, self._renderer, self)
+        self._style_bar = StyleBar(self)
+        self._tools: dict[ToolId, Tool] = {
+            t.tool_id: t(session, self) for t in TOOL_TYPES
         }
+        self._tool_actions: dict[ToolId, QAction] = {}
+        self._actions: dict[str, QAction] = {}
+        self._hint = QLabel()
+        self._position = QLabel()
+        self._size = QLabel()
+        self._zoom = QToolButton()
+        self._shown_once = False
+        self._chrome_bars: tuple[QToolBar, ...] = ()
+        self._build()
+        self.activate_tool(ToolId.SELECT)
+        self._refresh_chrome()
 
-        # Wire properties panel signals to active tools
-        self._properties.stroke_color_changed.connect(self._update_tool_stroke_color)
-        self._properties.fill_color_changed.connect(self._update_tool_fill_color)
-        self._properties.stroke_width_changed.connect(self._update_tool_stroke_width)
-        self._properties.font_changed.connect(self._update_tool_font)
+    # Public API
 
-    def _update_tool_stroke_color(self, color: QColor) -> None:
-        if self._updating_from_selection:
-            return
-        tool = self._canvas.current_tool
-        if tool and hasattr(tool, "set_stroke_color"):
-            tool.set_stroke_color(color)
-        # Apply to currently selected items
-        for item in self._canvas.scene.selectedItems():
-            _apply_stroke_to_item(item, color)
+    @property
+    def session(self) -> EditorSession:
+        """Return the editing session."""
+        return self._session
 
-    def _update_tool_fill_color(self, color: QColor) -> None:
-        if self._updating_from_selection:
-            return
-        tool = self._canvas.current_tool
-        if tool and hasattr(tool, "set_fill_color"):
-            tool.set_fill_color(color)
-        for item in self._canvas.scene.selectedItems():
-            _apply_fill_to_item(item, color)
+    @property
+    def canvas(self) -> CanvasView:
+        """Return the canvas."""
+        return self._canvas
 
-    def _update_tool_stroke_width(self, width: int) -> None:
-        if self._updating_from_selection:
-            return
-        tool = self._canvas.current_tool
-        if tool and hasattr(tool, "set_stroke_width"):
-            tool.set_stroke_width(width)
-        for item in self._canvas.scene.selectedItems():
-            _apply_width_to_item(item, width)
+    @property
+    def saved_path(self) -> Path | None:
+        """Return where the document was last saved, if anywhere."""
+        return self._saved_path
 
-    def _update_tool_font(self, font: QFont) -> None:
-        if self._updating_from_selection:
-            return
-        tool = self._canvas.current_tool
-        if tool and hasattr(tool, "set_font"):
-            tool.set_font(font)
-        from PySide6.QtWidgets import QGraphicsTextItem
+    def action(self, name: str) -> QAction:
+        """Return the named action (for tests and the tray)."""
+        return self._actions[name]
 
-        for item in self._canvas.scene.selectedItems():
-            if isinstance(item, QGraphicsTextItem):
-                item.setFont(font)
+    def flattened(self) -> QImage:
+        """Return the cropped image with annotations, as exported."""
+        self._canvas.editors.commit()
+        return self._renderer.flatten(self._session.document)
 
-    def _zoom_in(self) -> None:
-        self._canvas.zoom_in()
+    # ToolHost
 
-    def _zoom_out(self) -> None:
-        self._canvas.zoom_out()
+    def activate_tool(self, tool: ToolId) -> None:
+        """Switch to ``tool``."""
+        self._canvas.set_tool(self._tools[tool])
+        self._tool_actions[tool].setChecked(True)
+        self._hint.setText(self._tools[tool].hint)
+        self._sync_style_bar()
 
-    def _zoom_100(self) -> None:
-        self._canvas.zoom_reset()
+    def edit_text(self, note: TextNote | None, at: Point) -> None:
+        """Open the inline text editor."""
+        self._canvas.editors.edit_text(note, at)
 
-    def _zoom_fit(self) -> None:
-        self._canvas.zoom_fit()
+    def edit_counter(self, marker: CounterMarker) -> None:
+        """Open the inline counter label editor."""
+        self._canvas.editors.edit_counter(marker)
 
-    def _on_zoom_changed(self, zoom_level: float) -> None:
-        """Update the zoom display whenever the canvas zoom changes."""
-        pct = int(zoom_level * 100)
-        self._zoom_button.setText(f"{pct}%")
-        # Sync the slider without triggering a recursive zoom change
-        self._zoom_slider.blockSignals(True)
-        self._zoom_slider.setValue(max(10, min(400, pct)))
-        self._zoom_slider.blockSignals(False)
+    def edit_box_text(self, box: LabeledBox) -> None:
+        """Open the inline editor for the text inside a rectangle or ellipse."""
+        self._canvas.editors.edit_box_text(box)
 
-    def _toggle_zoom_slider(self) -> None:
-        """Show or hide the zoom slider popup above the zoom button."""
-        if self._zoom_slider_widget.isVisible():
-            self._zoom_slider_widget.hide()
-        else:
-            btn_pos = self._zoom_button.mapToGlobal(self._zoom_button.rect().topLeft())
-            half_popup = self._zoom_slider_widget.width() // 2
-            half_btn = self._zoom_button.width() // 2
-            popup_x = btn_pos.x() - half_popup + half_btn
-            popup_y = btn_pos.y() - self._zoom_slider_widget.sizeHint().height()
-            from PySide6.QtCore import QPoint
-
-            self._zoom_slider_widget.move(QPoint(popup_x, popup_y))
-            self._zoom_slider_widget.show()
-
-    def _on_zoom_slider_changed(self, value: int) -> None:
-        """Apply zoom level from the slider, snapping to 10% intervals."""
-        snap_interval = 10
-        snapped = round(value / snap_interval) * snap_interval
-        snapped = max(10, min(400, snapped))
-        if self._zoom_slider.value() != snapped:
-            self._zoom_slider.blockSignals(True)
-            self._zoom_slider.setValue(snapped)
-            self._zoom_slider.blockSignals(False)
-        target_zoom = snapped / 100.0
-        current_zoom = self._canvas.zoom_level
-        if abs(current_zoom - target_zoom) > 0.001:
-            factor = target_zoom / current_zoom
-            center = self._canvas.viewport().rect().center()
-            self._canvas._zoom_to_point(factor, center)
-
-    def _update_zoom_label(self) -> None:
-        pct = int(self._canvas.zoom_level * 100)
-        self._zoom_button.setText(f"{pct}%")
-
-    # ------------------------------------------------------------------
-    # Key events — intercept Esc when focus is on toolbar / properties
-    # ------------------------------------------------------------------
-
-    def keyPressEvent(self, event: QKeyEvent) -> None:
-        """Forward Esc and arrow keys to the canvas even when a toolbar widget has focus."""
-        if event.key() in (
-            Qt.Key.Key_Escape,
-            Qt.Key.Key_Left,
-            Qt.Key.Key_Right,
-            Qt.Key.Key_Up,
-            Qt.Key.Key_Down,
-        ):
-            self._canvas.setFocus()
-            self._canvas.keyPressEvent(event)
-            return
-        super().keyPressEvent(event)
-
-    def _on_tool_changed(self, tool_type: ToolType) -> None:
-        """Handle tool selection from toolbar."""
-        from verdiclip.editor.tools.select import SelectTool
-
-        # Clear handles when leaving the Select tool
-        prev_tool = self._canvas.current_tool
-        if isinstance(prev_tool, SelectTool):
-            prev_tool.clear_handles()
-
-        tool = self._tools.get(tool_type)
-
-        # Sync current panel values to the incoming tool
-        if tool is not None:
-            if hasattr(tool, "set_stroke_color"):
-                tool.set_stroke_color(self._properties.stroke_color)
-            if hasattr(tool, "set_fill_color"):
-                tool.set_fill_color(self._properties.fill_color)
-            if hasattr(tool, "set_stroke_width"):
-                tool.set_stroke_width(self._properties.stroke_width)
-            if hasattr(tool, "set_font"):
-                tool.set_font(self._properties.current_font)
-
-        self._canvas.set_tool(tool)
-        self._update_properties_visibility(tool_type)
-        self._statusbar.showMessage(f"Tool: {tool_type.name.title()}")
-        logger.debug("Switched to tool: %s", tool_type.name)
-
-    def _switch_to_select(self) -> None:
-        """Switch to the Select tool (triggered by Esc when nothing is selected)."""
-        self._toolbar.set_tool(ToolType.SELECT)
-
-    def _on_selection_changed(self) -> None:
-        """Sync the properties panel with the selected item and update handles."""
-        from verdiclip.editor.tools.number import NumberMarkerItem, NumberTool
-        from verdiclip.editor.tools.select import SelectTool
-
-        selected = self._canvas.scene.selectedItems()
-
-        # Dismiss the number editor when a non-counter item is selected
-        number_tool = self._tools.get(ToolType.NUMBER)
-        if isinstance(number_tool, NumberTool) and not (
-            len(selected) == 1 and isinstance(selected[0], NumberMarkerItem)
-        ):
-            number_tool._dismiss_editor()
-
-        # Update resize handles (only for Select tool)
-        select_tool = self._tools.get(ToolType.SELECT)
-        if isinstance(select_tool, SelectTool):
-            if self._canvas.current_tool is select_tool:
-                select_tool.update_selection_handles(selected)
-            else:
-                select_tool.clear_handles()
-
-        if selected:
-            # Read back properties from a single selected item
-            self._sync_properties_from_selection(selected)
-        else:
-            # No selection → restore default toolbar for the current tool
-            self._update_properties_visibility(self._toolbar.current_tool)
-
-    def _on_number_editor_requested(self, marker: object) -> None:
-        """Open inline editor for a NumberMarkerItem on double-click."""
-        from verdiclip.editor.tools.number import NumberMarkerItem, NumberTool
-
-        if isinstance(marker, NumberMarkerItem):
-            number_tool = self._tools.get(ToolType.NUMBER)
-            if isinstance(number_tool, NumberTool):
-                number_tool.show_editor_for(marker)
-
-    def _sync_properties_from_selection(self, selected: list[QGraphicsItem]) -> None:
-        """Read properties from the single selected item into the properties panel.
-
-        Blocked by ``_updating_from_selection`` to prevent recursive signal loops.
-        """
+    def edit_selected_text(self) -> bool:
+        """Edit the text of the single selected annotation, if it has any."""
+        selected = self._session.selected()
         if len(selected) != 1:
-            return
+            return False
+        target = selected[0]
+        if isinstance(target, LabeledBox):
+            self.edit_box_text(target)
+        elif isinstance(target, TextNote):
+            self.edit_text(target, target.rect.top_left)
+        elif isinstance(target, CounterMarker):
+            self.edit_counter(target)
+        else:
+            return False
+        return True
 
-        item = selected[0]
-        self._updating_from_selection = True
-        try:
-            from PySide6.QtWidgets import (
-                QGraphicsEllipseItem,
-                QGraphicsLineItem,
-                QGraphicsRectItem,
-                QGraphicsTextItem,
+    # Delivery actions
+
+    def copy_image(self) -> bool:
+        """Copy the flattened image to the clipboard."""
+        if not self._deliver(lambda: self._delivery.copy(self.flattened())):
+            return False
+        self.statusBar().showMessage("Image copied to clipboard", STATUS_TIMEOUT_MS)
+        return True
+
+    def save(self) -> bool:
+        """Save to the last path, or to an automatic name (UX-OUT-02)."""
+        path = self._saved_path
+        if path is None or not self._is_writable_format(path):
+            path = self._delivery.auto_path(title=self._title)
+        return self._save_to(path)
+
+    def save_as(self) -> bool:
+        """Ask for a path and save there."""
+        start = self._saved_path or self._delivery.auto_path(title=self._title)
+        filters = ";;".join(
+            f"{f.value.upper()} image (*.{f.value})" for f in ImageFormat
+        )
+        chosen, _ = QFileDialog.getSaveFileName(
+            self, "Save image as", str(start), filters
+        )
+        if not chosen:
+            return False
+        return self._save_to(Path(chosen))
+
+    def print_image(self) -> bool:
+        """Print the flattened image."""
+        printed = False
+
+        def run() -> None:
+            nonlocal printed
+            printed = self._delivery.print_image(self.flattened(), self)
+
+        if not self._deliver(run, mark=False) or not printed:
+            return False
+        self._session.history.mark_delivered()
+        return True
+
+    # Building
+
+    def _build(self) -> None:
+        """Assemble the window."""
+        self.setWindowIcon(self._icons.brand())
+        self.setAcceptDrops(True)
+        self.setCentralWidget(self._canvas)
+        self._build_actions()
+        self._build_menus()
+        self._build_toolbars()
+        self._build_status_bar()
+        self._session.history.subscribe(self._refresh_chrome)
+        self._session.selection.subscribe(self._sync_style_bar)
+        self._canvas.zoom_changed.connect(lambda _z: self._refresh_zoom())
+        self._canvas.cursor_moved.connect(self._show_position)
+        self._canvas.escape_unhandled.connect(self._on_escape)
+        self._canvas.enter_unhandled.connect(self._on_enter)
+        self._style_bar.style_changed.connect(self._on_style_changed)
+        self.resize(self._initial_size())
+
+    def _add_action(
+        self,
+        name: str,
+        text: str,
+        shortcut: QKeySequence | QKeySequence.StandardKey | str | None,
+        slot: Callable[[], object],
+    ) -> QAction:
+        """Create, register, and return an action."""
+        action = QAction(text, self)
+        if shortcut is not None:
+            action.setShortcut(QKeySequence(shortcut))
+            native = QKeySequence.SequenceFormat.NativeText
+            keys = action.shortcut().toString(native)
+            plain = text.replace("&", "").replace("…", "")
+            action.setToolTip(f"{plain} ({keys})")
+        action.triggered.connect(lambda _checked=False: slot())
+        self.addAction(action)
+        self._actions[name] = action
+        return action
+
+    def _build_actions(self) -> None:
+        """Create every command action with its shortcut."""
+        s = self._session
+        canvas = self._canvas
+        self._add_action(
+            "open", "&Open image…", QKeySequence.StandardKey.Open, self._open
+        )
+        self._add_action("save", "&Save", QKeySequence.StandardKey.Save, self.save)
+        self._add_action("save_as", "Save &as…", "Ctrl+Shift+S", self.save_as)
+        self._add_action("copy_image", "Copy &image", "Ctrl+Shift+C", self.copy_image)
+        self._add_action(
+            "print", "&Print…", QKeySequence.StandardKey.Print, self.print_image
+        )
+        self._add_action(
+            "settings", "Se&ttings…", "Ctrl+,", self.settings_requested.emit
+        )
+        self._add_action("close", "&Close", "Ctrl+W", self.close)
+        self._add_action("undo", "&Undo", QKeySequence.StandardKey.Undo, self._undo)
+        redo = self._add_action("redo", "&Redo", "Ctrl+Y", self._redo)
+        redo.setShortcuts([QKeySequence("Ctrl+Y"), QKeySequence("Ctrl+Shift+Z")])
+        # Toolbar buttons keep short labels; menus show "Undo Draw arrow"
+        self._actions["undo"].setIconText("Undo")
+        redo.setIconText("Redo")
+        self._add_action("copy", "&Copy", QKeySequence.StandardKey.Copy, self._copy)
+        self._add_action("paste", "&Paste", QKeySequence.StandardKey.Paste, self._paste)
+        delete = self._add_action("delete", "&Delete", "Delete", s.delete_selected)
+        delete.setShortcuts([QKeySequence("Delete"), QKeySequence("Backspace")])
+        self._add_action(
+            "select_all",
+            "Select &all",
+            QKeySequence.StandardKey.SelectAll,
+            self._select_all,
+        )
+        self._add_action("edit_text", "Edit &text", "F2", self.edit_selected_text)
+        self._add_action(
+            "forward",
+            "Bring &forward",
+            "Ctrl+]",
+            lambda: s.restack_selected(forward=True),
+        )
+        self._add_action(
+            "backward",
+            "Send &backward",
+            "Ctrl+[",
+            lambda: s.restack_selected(forward=False),
+        )
+        zoom_in = self._add_action("zoom_in", "Zoom &in", "Ctrl+=", canvas.zoom_in)
+        zoom_in.setShortcuts([QKeySequence("Ctrl+="), QKeySequence("Ctrl++")])
+        self._add_action("zoom_out", "Zoom &out", "Ctrl+-", canvas.zoom_out)
+        self._add_action("zoom_actual", "&Actual size", "Ctrl+0", canvas.zoom_actual)
+        self._add_action("zoom_fit", "&Fit to window", "Ctrl+Shift+F", canvas.zoom_fit)
+        group = QActionGroup(self)
+        for tool_type in TOOL_TYPES:
+            tool_id = tool_type.tool_id
+            action = self._add_action(
+                f"tool_{tool_id.value}",
+                tool_type.label,
+                tool_type.shortcut,
+                lambda t=tool_id: self.activate_tool(t),
             )
+            action.setCheckable(True)
+            action.setIcon(self._icons.tool(tool_id))
+            action.setToolTip(
+                f"{tool_type.label} ({tool_type.shortcut}) — {tool_type.hint}"
+            )
+            group.addAction(action)
+            self._tool_actions[tool_id] = action
 
-            try:
-                from verdiclip.editor.tools.obfuscate import ObfuscationItem
-
-                _is_obfuscation = isinstance(item, ObfuscationItem)
-            except ImportError:
-                _is_obfuscation = False
-
-            # ArrowItem: read shaft colour and width
-            try:
-                from verdiclip.editor.tools.arrow import ArrowItem
-
-                if isinstance(item, ArrowItem):
-                    pen = item._shaft.pen()
-                    self._properties.set_stroke_color(pen.color())
-                    self._properties.set_stroke_width(max(1, int(pen.widthF())))
-                    self._update_properties_visibility_for_item(item)
-                    return
-            except ImportError:
-                pass
-
-            if isinstance(item, (QGraphicsRectItem, QGraphicsEllipseItem)):
-                pen = item.pen()
-                self._properties.set_stroke_color(pen.color())
-                self._properties.set_stroke_width(max(1, int(pen.widthF())))
-                brush = item.brush()
-                from PySide6.QtCore import Qt as _Qt
-
-                if brush.style() == _Qt.BrushStyle.NoBrush or brush.color().alpha() == 0:
-                    self._properties.set_fill_color(QColor(0, 0, 0, 0))
+    def _build_menus(self) -> None:
+        """Create the menu bar."""
+        bar = self.menuBar()
+        layout = {
+            "&File": [
+                "open",
+                None,
+                "save",
+                "save_as",
+                "copy_image",
+                "print",
+                None,
+                "settings",
+                None,
+                "close",
+            ],
+            "&Edit": [
+                "undo",
+                "redo",
+                None,
+                "copy",
+                "paste",
+                "delete",
+                "select_all",
+                "edit_text",
+                None,
+                "forward",
+                "backward",
+            ],
+            "&View": ["zoom_in", "zoom_out", "zoom_actual", "zoom_fit"],
+        }
+        for title, names in layout.items():
+            menu = bar.addMenu(title)
+            for name in names:
+                if name is None:
+                    menu.addSeparator()
                 else:
-                    self._properties.set_fill_color(brush.color())
-                self._update_properties_visibility_for_item(item)
+                    menu.addAction(self._actions[name])
+        tools = bar.addMenu("&Tools")
+        for action in self._tool_actions.values():
+            tools.addAction(action)
 
-            elif isinstance(item, QGraphicsLineItem):
-                pen = item.pen()
-                self._properties.set_stroke_color(pen.color())
-                self._properties.set_stroke_width(max(1, int(pen.widthF())))
-                self._update_properties_visibility_for_item(item)
+    def _build_toolbars(self) -> None:
+        """Create the grouped tool palette, the icon action bar, and the style bar."""
+        palette = QToolBar("Tools", self)
+        palette.setMovable(False)
+        palette.setIconSize(QSize(ICON_SIZE, ICON_SIZE))
+        for group in TOOL_GROUPS:
+            for tool_id in group:
+                palette.addAction(self._tool_actions[tool_id])
+            if group is not TOOL_GROUPS[-1]:
+                palette.addSeparator()
+        self.addToolBar(Qt.ToolBarArea.LeftToolBarArea, palette)
+        actions = QToolBar("Actions", self)
+        actions.setMovable(False)
+        actions.setIconSize(QSize(ICON_SIZE, ICON_SIZE))
+        actions.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        for group in ACTION_GROUPS:
+            for name in group:
+                actions.addAction(self._actions[name])
+            actions.addSeparator()
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, actions)
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self._style_bar)
+        # One fixed height for the top row so switching tools never moves the canvas
+        height = max(self._style_bar.tallest_height(), BUTTON_SIZE + 8)
+        actions.setFixedHeight(height)
+        self._style_bar.setFixedHeight(height)
+        self._chrome_bars = (palette, actions, self._style_bar)
+        self._apply_chrome()
 
-            elif isinstance(item, QGraphicsTextItem):
-                self._properties.set_stroke_color(item.defaultTextColor())
-                self._properties.set_font(item.font())
-                self._update_properties_visibility_for_item(item)
+    def _apply_chrome(self) -> None:
+        """Restyle toolbars and redraw icons for the current theme."""
+        chrome = ChromeStyle(self.palette())
+        self._icons = IconFactory(self.palette().windowText().color())
+        for bar in self._chrome_bars:
+            compact = bar is self._style_bar
+            size = COMPACT_BUTTON_SIZE if compact else BUTTON_SIZE
+            bar.setStyleSheet(chrome.toolbar_sheet(size))
+        for tool_id, action in self._tool_actions.items():
+            action.setIcon(self._icons.tool(tool_id))
+        for group in ACTION_GROUPS:
+            for name in group:
+                self._actions[name].setIcon(self._icons.action(name))
 
-            elif _is_obfuscation:
-                # Obfuscation has no configurable stroke/fill
-                self._properties.set_visible_properties(stroke=False, fill=False, width=False)
-
-        finally:
-            self._updating_from_selection = False
-
-    def _update_properties_visibility(self, tool_type: ToolType) -> None:
-        """Show or hide properties based on the active tool type.
-
-        The SELECT tool shows stroke, fill, and width so users can configure
-        defaults for new elements even when nothing is selected.
-        """
-        if tool_type == ToolType.SELECT:
-            self._properties.set_visible_properties(
-                stroke=True,
-                fill=True,
-                width=True,
-                font=False,
-                caps=False,
+    def _build_status_bar(self) -> None:
+        """Create the status bar: hint, position, size, zoom."""
+        status = self.statusBar()
+        status.addWidget(self._hint, 1)
+        self._position.setMinimumWidth(
+            self.fontMetrics().horizontalAdvance("00000, 00000")
+        )
+        self._position.setToolTip("Pointer position in image pixels")
+        status.addPermanentWidget(self._position)
+        status.addPermanentWidget(self._size)
+        menu = QMenu(self._zoom)
+        for percent in (25, 50, 100, 200, 400):
+            act = menu.addAction(f"{percent}%")
+            act.triggered.connect(
+                lambda _=False, z=percent / 100: self._canvas.set_zoom(z)
             )
+        menu.addAction(self._actions["zoom_fit"])
+        self._zoom.setMenu(menu)
+        self._zoom.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self._zoom.setToolTip("Zoom (Ctrl+wheel)")
+        status.addPermanentWidget(self._zoom)
+
+    def _initial_size(self) -> QSize:
+        """Return a window size that fits the image within 85% of the screen."""
+        screen = self.screen().availableGeometry()
+        crop = self._session.document.crop
+        width = min(int(screen.width() * 0.85), int(crop.width) + 160)
+        height = min(int(screen.height() * 0.85), int(crop.height) + 170)
+        return QSize(max(720, width), max(480, height))
+
+    # Event handlers
+
+    @override
+    def showEvent(self, event: QShowEvent) -> None:
+        """Apply the initial zoom once the viewport has its real size."""
+        super().showEvent(event)
+        if not self._shown_once:
+            self._shown_once = True
+            self._canvas.show_initial()
+            self._canvas.setFocus()
+
+    @override
+    def changeEvent(self, event: QEvent) -> None:
+        """Redraw tool icons in the new ink color when the theme changes."""
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.PaletteChange and self._chrome_bars:
+            self._apply_chrome()
+
+    @override
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """Ask before discarding undelivered changes (UX-G-06)."""
+        self._canvas.editors.commit()
+        if self._session.history.is_delivered:
+            event.accept()
             return
-        show_stroke = tool_type not in (ToolType.CROP, ToolType.OBFUSCATE)
-        show_fill = tool_type in (ToolType.RECTANGLE, ToolType.ELLIPSE, ToolType.HIGHLIGHT)
-        show_width = tool_type not in (
-            ToolType.CROP,
-            ToolType.OBFUSCATE,
-            ToolType.TEXT,
-            ToolType.NUMBER,
-        )
-        show_font = tool_type in (ToolType.TEXT, ToolType.NUMBER)
-        show_caps = tool_type in (ToolType.LINE, ToolType.ARROW)
-        self._properties.set_visible_properties(
-            stroke=show_stroke,
-            fill=show_fill,
-            width=show_width,
-            font=show_font,
-            caps=show_caps,
-        )
-
-    def _update_properties_visibility_for_item(self, item: object) -> None:
-        """Show or hide properties based on the type of the selected item."""
-        from PySide6.QtWidgets import (
-            QGraphicsEllipseItem,
-            QGraphicsLineItem,
-            QGraphicsRectItem,
-            QGraphicsTextItem,
-        )
-
-        # ArrowItem: stroke + width + caps
-        try:
-            from verdiclip.editor.tools.arrow import ArrowItem
-
-            if isinstance(item, ArrowItem):
-                self._properties.set_visible_properties(
-                    stroke=True,
-                    fill=False,
-                    width=True,
-                    font=False,
-                    caps=True,
-                )
-                return
-        except ImportError:
-            pass
-
-        if isinstance(item, (QGraphicsRectItem, QGraphicsEllipseItem)):
-            self._properties.set_visible_properties(
-                stroke=True,
-                fill=True,
-                width=True,
-                font=False,
-                caps=False,
-            )
-        elif isinstance(item, QGraphicsLineItem):
-            self._properties.set_visible_properties(
-                stroke=True,
-                fill=False,
-                width=True,
-                font=False,
-                caps=True,
-            )
-        elif isinstance(item, QGraphicsTextItem):
-            self._properties.set_visible_properties(
-                stroke=True,
-                fill=False,
-                width=False,
-                font=True,
-                caps=False,
-            )
-
-    def _open_file(self) -> None:
-        file_path, _ = QFileDialog.getOpenFileName(
+        answer = QMessageBox.question(
             self,
-            "Open Image",
-            "",
-            "Images (*.png *.jpg *.jpeg *.bmp *.gif *.tiff *.webp);;All Files (*)",
+            "Unsaved changes",
+            "This image has changes that were not saved or copied.",
+            QMessageBox.StandardButton.Save
+            | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Save,
         )
-        if file_path:
-            pixmap = QPixmap(file_path)
-            if not pixmap.isNull():
-                self._canvas.set_image(pixmap)
-                self._history.clear()
-                self._update_title(file_path)
+        if answer == QMessageBox.StandardButton.Discard or (
+            answer == QMessageBox.StandardButton.Save and self.save()
+        ):
+            event.accept()
+        else:
+            event.ignore()
 
-    def _save_file(self) -> None:
-        from verdiclip.export.file_export import FileExporter
+    @override
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        """Accept dragged image files."""
+        if any(Path(u.toLocalFile()).suffix for u in event.mimeData().urls()):
+            event.acceptProposedAction()
 
-        path = FileExporter.save_with_dialog(
-            self._canvas.get_flattened_pixmap(), self._config, self
+    @override
+    def dropEvent(self, event: QDropEvent) -> None:
+        """Open dropped image files in new editors."""
+        for url in event.mimeData().urls():
+            if url.isLocalFile():
+                self.open_image_requested.emit(Path(url.toLocalFile()))
+        event.acceptProposedAction()
+
+    def _on_escape(self) -> None:
+        """Return to the Select tool when Esc has nothing else to cancel."""
+        if self._canvas.tool is not self._tools[ToolId.SELECT]:
+            self.activate_tool(ToolId.SELECT)
+
+    def _on_enter(self) -> None:
+        """Enter edits the selection's text; otherwise copy and close (UX-OUT-07)."""
+        if self.edit_selected_text():
+            return
+        selecting = self._canvas.tool is self._tools[ToolId.SELECT]
+        if selecting and len(self._session.selection) == 0 and self.copy_image():
+            self.close()
+
+    def _on_style_changed(self, change: Callable[[Style], Style]) -> None:
+        """Apply a style edit to the selection and to the matching tool defaults."""
+        selected = self._session.selected()
+        if selected:
+            self._session.restyle_selected(change)
+            for kind in {a.kind for a in selected}:
+                tool = KIND_TOOLS[kind]
+                self._session.styles.set(tool, change(self._session.styles.get(tool)))
+            return
+        tool = self._current_tool_id()
+        self._session.styles.set(tool, change(self._session.styles.get(tool)))
+
+    # Edit actions
+
+    def _copy(self) -> None:
+        """Copy selected annotations, or the whole image when nothing is selected."""
+        text = self._session.copy_selected()
+        if text is None:
+            self.copy_image()
+            return
+        mime = QMimeData()
+        mime.setData(ANNOTATION_MIME, text.encode("utf-8"))
+        clipboard = QGuiApplication.clipboard()
+        clipboard.setMimeData(mime)
+        count = len(self._session.selection)
+        self.statusBar().showMessage(f"Copied {count} annotation(s)", STATUS_TIMEOUT_MS)
+
+    def _paste(self) -> None:
+        """Paste annotations copied from any VerdiClip editor."""
+        mime = QGuiApplication.clipboard().mimeData()
+        if not mime.hasFormat(ANNOTATION_MIME):
+            self.statusBar().showMessage(
+                "Nothing to paste: copy annotations first", STATUS_TIMEOUT_MS
+            )
+            return
+        try:
+            self._session.paste(
+                bytes(mime.data(ANNOTATION_MIME).data()).decode("utf-8")
+            )
+        except (CodecError, UnicodeDecodeError) as err:
+            logger.warning("Paste failed: %s", err)
+            self.statusBar().showMessage(
+                "Clipboard annotations could not be read", STATUS_TIMEOUT_MS
+            )
+
+    def _undo(self) -> None:
+        """Close any in-place editor, then undo."""
+        self._canvas.editors.commit()
+        self._session.history.undo()
+
+    def _redo(self) -> None:
+        """Close any in-place editor, then redo."""
+        self._canvas.editors.commit()
+        self._session.history.redo()
+
+    def _select_all(self) -> None:
+        """Select every annotation and switch to the Select tool."""
+        self.activate_tool(ToolId.SELECT)
+        self._session.select_all()
+
+    def _open(self) -> None:
+        """Ask for an image file and request an editor for it."""
+        chosen, _ = QFileDialog.getOpenFileName(
+            self, "Open image", str(self._delivery.settings.directory), IMAGE_FILTER
         )
-        if path:
-            self._file_path = path
-            self._update_title(path)
+        if chosen:
+            self.open_image_requested.emit(Path(chosen))
 
-    def _save_file_as(self) -> None:
-        from verdiclip.export.file_export import FileExporter
+    # Internals
 
-        path = FileExporter.save_as(self._canvas.get_flattened_pixmap(), self)
-        if path:
-            self._file_path = path
-            self._update_title(path)
+    def _deliver(self, run: Callable[[], object], *, mark: bool = True) -> bool:
+        """Run a delivery, reporting failures to the user (UX-OUT-04)."""
+        try:
+            run()
+        except AppError as err:
+            QMessageBox.warning(self, "VerdiClip", str(err))
+            return False
+        if mark:
+            self._session.history.mark_delivered()
+        return True
 
-    def _update_title(self, file_path: str) -> None:
-        """Update the window title and file label to reflect the save location."""
-        basename = os.path.basename(file_path)
-        self.setWindowTitle(f"{basename} — {__app_name__} Editor")
-        self._file_label.setText(file_path)
+    def _save_to(self, path: Path) -> bool:
+        """Save to ``path`` and remember it."""
+        if not self._deliver(lambda: self._delivery.save(self.flattened(), path)):
+            return False
+        self._saved_path = path
+        self.statusBar().showMessage(f"Saved {path}", STATUS_TIMEOUT_MS)
+        self._refresh_chrome()
+        return True
 
-    def _copy_to_clipboard(self) -> None:
-        from verdiclip.export.clipboard import ClipboardExporter
+    def _is_writable_format(self, path: Path) -> bool:
+        """Return True if ``path`` has an extension VerdiClip can write."""
+        try:
+            self._delivery.format_for(path)
+        except AppError:
+            return False
+        return True
 
-        ClipboardExporter.copy(self._canvas.get_flattened_pixmap())
-        self._statusbar.showMessage("Copied to clipboard", 3000)
+    def _current_tool_id(self) -> ToolId:
+        """Return the active tool's id."""
+        tool = self._canvas.tool
+        return tool.tool_id if tool is not None else ToolId.SELECT
 
-    # ------------------------------------------------------------------
-    # Element copy / paste
-    # ------------------------------------------------------------------
-
-    def _copy_elements(self) -> None:
-        """Duplicate selected annotation elements into an internal clipboard."""
-        selected = self._canvas.scene.selectedItems()
-        if not selected:
-            self._statusbar.showMessage("Nothing selected to copy", 2000)
+    def _sync_style_bar(self) -> None:
+        """Show the selection's style, or the active tool's defaults."""
+        selected = self._session.selected()
+        if selected:
+            tool = KIND_TOOLS[selected[0].kind]
+            self._style_bar.show_for(FIELD_LAYOUT[tool], selected[0].style)
             return
-        self._element_clipboard = _serialise_items(selected)
-        n = len(self._element_clipboard)
-        self._statusbar.showMessage(f"Copied {n} element{'s' if n != 1 else ''}", 2000)
+        tool = self._current_tool_id()
+        self._style_bar.show_for(FIELD_LAYOUT[tool], self._session.styles.get(tool))
 
-    def _paste_elements(self) -> None:
-        """Paste previously copied elements with a small offset."""
-        if not hasattr(self, "_element_clipboard") or not self._element_clipboard:
-            self._statusbar.showMessage("Nothing to paste", 2000)
+    def _refresh_chrome(self) -> None:
+        """Update title, undo/redo state, and size label."""
+        history = self._session.history
+        self._actions["undo"].setEnabled(history.can_undo)
+        self._actions["redo"].setEnabled(history.can_redo)
+        self._actions["undo"].setText(f"&Undo {history.undo_text}".strip())
+        self._actions["redo"].setText(f"&Redo {history.redo_text}".strip())
+        name = self._saved_path.name if self._saved_path is not None else self._title
+        marker = "" if history.is_delivered else " •"
+        self.setWindowTitle(f"{name}{marker} — VerdiClip")
+        crop = self._session.document.crop
+        self._size.setText(f"{int(crop.width)} × {int(crop.height)} px")  # noqa: RUF001
+        self._refresh_zoom()
+        self._sync_style_bar()
+
+    def _refresh_zoom(self) -> None:
+        """Show the zoom percentage."""
+        self._zoom.setText(f"{round(self._canvas.zoom * 100)}%")
+
+    def _show_position(self, point: Point | None) -> None:
+        """Show the pointer position relative to the visible image."""
+        if point is None:
+            self._position.setText("")
             return
-
-        pasted = _deserialise_items(self._element_clipboard)
-        if not pasted:
-            return
-
-        # Offset so the paste isn't exactly on top of the original
-        from PySide6.QtCore import QPointF
-
-        offset = QPointF(15, 15)
-        for item in pasted:
-            item.setPos(item.pos() + offset)
-            self._canvas.scene.addItem(item)
-            if hasattr(self._canvas, "add_item_undoable"):
-                self._canvas.add_item_undoable(item, "Paste element")
-            item.setSelected(True)
-
-        n = len(pasted)
-        self._statusbar.showMessage(f"Pasted {n} element{'s' if n != 1 else ''}", 2000)
-
-    def _print(self) -> None:
-        from verdiclip.export.printer import PrinterExporter
-
-        PrinterExporter.print_pixmap(self._canvas.get_flattened_pixmap(), self)
+        crop = self._session.document.crop
+        self._position.setText(f"{int(point.x - crop.x)}, {int(point.y - crop.y)}")

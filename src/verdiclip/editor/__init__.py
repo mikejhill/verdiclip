@@ -1,6 +1,3 @@
-"""VerdiClip image editor package."""
+"""Annotation editor: tools, canvas, and window."""
 
-# Z-value constants for QGraphicsItem stacking order
-Z_BACKGROUND = -1000
-Z_BOUNDARY = 9000
-Z_CROP_OVERLAY = 9999
+from __future__ import annotations

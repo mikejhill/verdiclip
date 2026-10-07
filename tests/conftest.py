@@ -1,122 +1,87 @@
-"""Shared test fixtures for VerdiClip tests."""
+"""Shared pytest configuration and fixtures for VerdiClip tests."""
 
 from __future__ import annotations
 
-import json
-from typing import TYPE_CHECKING
-from unittest.mock import MagicMock
+import os
+from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
-from PySide6.QtCore import QPointF, Qt
-from PySide6.QtGui import QColor, QPixmap
-from PySide6.QtWidgets import (
-    QApplication,
-    QGraphicsPixmapItem,
-    QGraphicsScene,
-    QGraphicsView,
-)
+from PySide6.QtGui import QColor, QGuiApplication, QImage, QPainter
 
-from verdiclip.config import Config
+from verdiclip.document.document import Document
+from verdiclip.editor.session import EditorSession
+from verdiclip.settings import EditorSettings, OutputSettings
 
-if TYPE_CHECKING:
-    from collections.abc import Generator
-    from pathlib import Path
-
-    from verdiclip.editor.tools.base import BaseTool
+WINDOWS_FONTS = Path("C:/Windows/Fonts")
 
 
-# ---------------------------------------------------------------------------
-# Application / config fixtures
-# ---------------------------------------------------------------------------
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """Add ``--ux-snapshots DIR`` to save a PNG for each journey step."""
+    parser.addoption(
+        "--ux-snapshots",
+        default="",
+        help="Directory to write UX journey step screenshots into.",
+    )
 
 
-@pytest.fixture(scope="session")
-def qapp() -> Generator[QApplication, None, None]:
-    """Provide a QApplication instance for the entire test session."""
-    app = QApplication.instance()
-    if app is None:
-        app = QApplication([])
-    return app
+def pytest_configure(config: pytest.Config) -> None:
+    """Run Qt headless with real fonts so rendering matches the desktop."""
+    del config
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    if WINDOWS_FONTS.is_dir():
+        os.environ.setdefault("QT_QPA_FONTDIR", str(WINDOWS_FONTS))
 
 
-@pytest.fixture
-def tmp_config(tmp_path: Path) -> Config:
-    """Provide a Config instance backed by a temporary file."""
-    config_path = tmp_path / "config.json"
-    return Config(config_path=config_path)
+@pytest.fixture(autouse=True)
+def clean_clipboard() -> Iterator[None]:
+    """Clear the clipboard after each Qt test.
 
-
-@pytest.fixture
-def sample_config_file(tmp_path: Path) -> Path:
-    """Create a sample config file and return its path."""
-    config_path = tmp_path / "config.json"
-    config_data = {
-        "capture": {"default_action": "clipboard"},
-        "save": {"default_format": "jpg", "jpg_quality": 75},
-    }
-    config_path.write_text(json.dumps(config_data), encoding="utf-8")
-    return config_path
-
-
-# ---------------------------------------------------------------------------
-# Drawing / tool test helpers
-# ---------------------------------------------------------------------------
-
-
-def make_mouse_event(
-    button: Qt.MouseButton = Qt.MouseButton.LeftButton,
-    modifiers: Qt.KeyboardModifier = Qt.KeyboardModifier.NoModifier,
-) -> MagicMock:
-    """Create a mock QMouseEvent with the given button and modifiers."""
-    event = MagicMock()
-    event.button.return_value = button
-    event.modifiers.return_value = modifiers
-    return event
-
-
-def simulate_draw(
-    tool: BaseTool,
-    scene: QGraphicsScene,
-    view: QGraphicsView,
-    start: QPointF,
-    end: QPointF,
-    modifiers: Qt.KeyboardModifier = Qt.KeyboardModifier.NoModifier,
-) -> None:
-    """Activate a tool and simulate a full press-move-release sequence."""
-    tool.activate(scene, view)
-    press_event = make_mouse_event()
-    move_event = make_mouse_event(modifiers=modifiers)
-    release_event = make_mouse_event()
-    tool.mouse_press(start, press_event)
-    tool.mouse_move(end, move_event)
-    tool.mouse_release(end, release_event)
-
-
-def make_scene_with_background(
-    width: int = 200,
-    height: int = 200,
-) -> tuple[QGraphicsScene, QGraphicsPixmapItem]:
-    """Create a scene with a background QGraphicsPixmapItem at zValue -1000."""
-    scene = QGraphicsScene()
-    pixmap = QPixmap(width, height)
-    pixmap.fill(QColor(100, 150, 200))
-    bg = QGraphicsPixmapItem(pixmap)
-    bg.setZValue(-1000)
-    scene.addItem(bg)
-    return scene, bg
+    Qt's offscreen platform crashes at exit if the clipboard still owns
+    Python-created QMimeData; real Windows does not.
+    """
+    yield
+    if QGuiApplication.instance() is not None:
+        QGuiApplication.clipboard().clear()
 
 
 @pytest.fixture
-def drawing_context(qapp) -> tuple[QGraphicsScene, QGraphicsView]:
-    """Provide a fresh QGraphicsScene and QGraphicsView pair for tool tests."""
-    scene = QGraphicsScene()
-    view = QGraphicsView(scene)
-    return scene, view
+def sample_image() -> QImage:
+    """A 400x300 white image with a dark bar and a black square, for pixel checks."""
+    image = QImage(400, 300, QImage.Format.Format_ARGB32_Premultiplied)
+    image.fill(QColor("white"))
+    painter = QPainter(image)
+    painter.fillRect(40, 40, 160, 20, QColor(30, 30, 30))
+    painter.fillRect(300, 200, 50, 50, QColor("black"))
+    painter.end()
+    return image
 
 
 @pytest.fixture
-def drawing_context_with_bg(qapp) -> tuple[QGraphicsScene, QGraphicsView, QGraphicsPixmapItem]:
-    """Provide a scene with a background pixmap, view, and the background item."""
-    scene, bg = make_scene_with_background()
-    view = QGraphicsView(scene)
-    return scene, view, bg
+def document(sample_image: QImage) -> Document:
+    """A document over ``sample_image``."""
+    return Document(sample_image)
+
+
+@pytest.fixture
+def session(document: Document) -> EditorSession:
+    """An editor session with default editor settings."""
+    return EditorSession(document, EditorSettings())
+
+
+@pytest.fixture
+def output_settings(tmp_path: Path) -> OutputSettings:
+    """Output settings that save into a temporary folder."""
+    return OutputSettings(directory=tmp_path / "out")
+
+
+@pytest.fixture
+def snapshot_dir(request: pytest.FixtureRequest) -> Iterator[Path | None]:
+    """Directory for UX snapshots, or None when not requested."""
+    option = str(request.config.getoption("--ux-snapshots"))
+    if not option:
+        yield None
+        return
+    path = Path(option)
+    path.mkdir(parents=True, exist_ok=True)
+    yield path

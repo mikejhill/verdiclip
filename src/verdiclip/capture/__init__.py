@@ -1,8 +1,3 @@
-"""Screenshot capture methods for VerdiClip."""
+"""Screen capture: freezing, selection overlay, and capture modes."""
 
-from verdiclip.capture.region import RegionCapture
-from verdiclip.capture.repeat import RepeatCapture
-from verdiclip.capture.screen import ScreenCapture
-from verdiclip.capture.window import WindowCapture
-
-__all__ = ["RegionCapture", "RepeatCapture", "ScreenCapture", "WindowCapture"]
+from __future__ import annotations

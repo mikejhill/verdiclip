@@ -1,0 +1,237 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  merge_group:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  FORCE_COLOR: "1"
+  UV_LOCKED: "1"
+  PYTHONUTF8: "1"
+
+jobs:
+  lint:
+    name: Format and lint
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - run: uv sync
+      - name: Check formatting
+        run: uv run ruff format --check --diff .
+      - name: Lint
+        run: uv run ruff check --output-format=github .
+
+  typecheck:
+    name: Type check (ty, every rule at error)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - run: uv sync
+      - run: uv run ty check --output-format github
+
+  test:
+    name: Tests (Python ${{ matrix.python }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python }}
+      - run: uv sync
+      - name: Unit, widget, platform, and UX journey tests
+        run: >-
+          uv run pytest --cov --cov-report=xml --cov-report=term
+          --junitxml=junit.xml
+          --ux-snapshots=docs/ux/snapshots
+      - name: Coverage summary
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path coverage.xml) {
+            $rate = ([xml](Get-Content coverage.xml)).coverage.'branch-rate'
+            $lines = ([xml](Get-Content coverage.xml)).coverage.'line-rate'
+            "### Coverage (Python ${{ matrix.python }})`n" +
+            "| Lines | Branches |`n|---|---|`n" +
+            ("| {0:P1} | {1:P1} |" -f [double]$lines, [double]$rate) >> $env:GITHUB_STEP_SUMMARY
+          }
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-reports-py${{ matrix.python }}
+          path: |
+            junit.xml
+            coverage.xml
+          if-no-files-found: ignore
+      - name: Upload UX journey snapshots
+        if: always() && matrix.python == '3.13'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ux-journey-snapshots
+          path: docs/ux/snapshots
+          if-no-files-found: ignore
+
+  ux-gallery:
+    name: UX gallery (light and dark)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - run: uv sync
+      - name: Render key screens in both themes
+        run: uv run poe ux-gallery
+      - name: Upload gallery for design review
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ux-gallery
+          path: docs/ux/gallery
+
+  build:
+    name: Build and verify distributions
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - name: Build sdist and wheel
+        run: uv build
+      - name: Check package metadata
+        run: uvx twine check --strict dist/*
+      - name: Install the wheel in a clean environment and run it
+        shell: pwsh
+        run: |
+          uv venv --python 3.13 .smoke
+          $wheel = (Get-ChildItem dist/*.whl).FullName
+          uv pip install --python .smoke $wheel
+          & .smoke/Scripts/verdiclip.exe --version
+          & .smoke/Scripts/python.exe -c "import verdiclip; assert verdiclip.VERSION != '0.0.0+unknown'"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/
+
+  audit:
+    name: Dependency vulnerability audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Audit locked runtime and dev dependencies
+        env:
+          NO_COLOR: "1"
+          FORCE_COLOR: ""
+        run: |
+          uv export --frozen --all-groups --no-emit-project --no-hashes --no-header             --output-file requirements-audit.txt
+          uvx pip-audit --strict --no-deps --disable-pip --requirement requirements-audit.txt
+
+  workflows:
+    name: Workflow lint and security
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: actionlint
+        uses: docker://rhysd/actionlint:1.7.12
+        with:
+          args: -color
+      - name: zizmor
+        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+
+  pr-title:
+    name: Conventional PR title
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    steps:
+      - uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            perf
+            docs
+            test
+            refactor
+            build
+            ci
+            chore
+            style
+            revert
+          requireScope: false
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: moderate
+          comment-summary-in-pr: on-failure
+
+  ci-passed:
+    name: CI passed
+    if: always()
+    needs: [lint, typecheck, test, ux-gallery, build, audit, workflows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every job to succeed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          for result in $RESULTS; do
+            if [ "$result" != "success" ]; then
+              echo "A required job finished with: $result"
+              exit 1
+            fi
+          done
