@@ -252,18 +252,16 @@ class SettingsCodec:
     @staticmethod
     def _encode_value(value: object) -> JsonValue:
         """Encode one setting value."""
-        match value:
-            case Color():
-                return value.hex
-            case Path():
-                return str(value)
-            case StrEnum():
-                return value.value
-            case bool() | int() | float() | str():
-                return value
-            case _:
-                msg = f"Cannot encode setting of type {type(value).__name__}"
-                raise TypeError(msg)
+        if isinstance(value, Color):
+            return value.hex
+        if isinstance(value, Path):
+            return str(value)
+        if isinstance(value, StrEnum):
+            return value.value
+        if isinstance(value, (bool, int, float, str)):
+            return value
+        msg = f"Cannot encode setting of type {type(value).__name__}"
+        raise TypeError(msg)
 
     @classmethod
     def _decode_value(cls, current: object, raw: JsonValue) -> object:

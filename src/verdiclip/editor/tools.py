@@ -436,20 +436,17 @@ class DrawingTool(Tool):
     @staticmethod
     def big_enough(annotation: Annotation) -> bool:
         """Return True if the annotation is large enough to keep."""
-        match annotation:
-            case LineShape():
-                return annotation.start.distance_to(annotation.end) >= MIN_DRAG
-            case FreehandShape():
-                return True
-            case BoxAnnotation():
-                # Measure the drawn rectangle, not its stroke-grown bounds
-                return (
-                    annotation.rect.width >= MIN_DRAG
-                    and annotation.rect.height >= MIN_DRAG
-                )
-            case _:
-                bounds = annotation.bounds
-                return bounds.width >= MIN_DRAG and bounds.height >= MIN_DRAG
+        if isinstance(annotation, LineShape):
+            return annotation.start.distance_to(annotation.end) >= MIN_DRAG
+        if isinstance(annotation, FreehandShape):
+            return True
+        # Boxes are measured by their drawn rectangle, not stroke-grown bounds
+        area = (
+            annotation.rect
+            if isinstance(annotation, BoxAnnotation)
+            else annotation.bounds
+        )
+        return area.width >= MIN_DRAG and area.height >= MIN_DRAG
 
 
 class BoxTool(DrawingTool):

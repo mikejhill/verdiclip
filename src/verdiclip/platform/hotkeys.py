@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import ctypes
+import ctypes.wintypes
 import logging
 import sys
 from collections.abc import Mapping
-from ctypes import wintypes
 from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
@@ -164,14 +164,14 @@ class Win32HotkeyApi:
             raise PlatformError(msg)
         self._user32 = ctypes.WinDLL("user32", use_last_error=True)
         self._user32.RegisterHotKey.argtypes = [
-            wintypes.HWND,
+            ctypes.wintypes.HWND,
             ctypes.c_int,
-            wintypes.UINT,
-            wintypes.UINT,
+            ctypes.wintypes.UINT,
+            ctypes.wintypes.UINT,
         ]
-        self._user32.RegisterHotKey.restype = wintypes.BOOL
-        self._user32.UnregisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int]
-        self._user32.UnregisterHotKey.restype = wintypes.BOOL
+        self._user32.RegisterHotKey.restype = ctypes.wintypes.BOOL
+        self._user32.UnregisterHotKey.argtypes = [ctypes.wintypes.HWND, ctypes.c_int]
+        self._user32.UnregisterHotKey.restype = ctypes.wintypes.BOOL
 
     def register(self, hwnd: int, hotkey_id: int, modifiers: int, vk: int) -> bool:
         """Register a window or thread shortcut."""
@@ -204,7 +204,7 @@ class _NativeHotkeyFilter(QAbstractNativeEventFilter):
         address = int(message)
         if event_bytes != b"windows_generic_MSG" or address == 0:
             return False, 0
-        native_message = wintypes.MSG.from_address(address)
+        native_message = ctypes.wintypes.MSG.from_address(address)
         if native_message.message != _WM_HOTKEY:
             return False, 0
         return self._service.handle_hotkey_message(int(native_message.wParam)), 0

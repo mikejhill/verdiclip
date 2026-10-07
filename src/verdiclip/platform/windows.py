@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import ctypes
+import ctypes.wintypes
 import sys
 from collections.abc import Sequence
-from ctypes import wintypes
 from dataclasses import dataclass
 from typing import Final, Protocol
 
@@ -83,36 +83,39 @@ class Win32WindowApi:
         self._user32 = ctypes.WinDLL("user32", use_last_error=True)
         self._dwmapi = ctypes.WinDLL("dwmapi", use_last_error=True)
         self._callback_type = ctypes.WINFUNCTYPE(
-            wintypes.BOOL, wintypes.HWND, wintypes.LPARAM
+            ctypes.wintypes.BOOL, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM
         )
-        self._user32.EnumWindows.argtypes = [self._callback_type, wintypes.LPARAM]
-        self._user32.EnumWindows.restype = wintypes.BOOL
+        self._user32.EnumWindows.argtypes = [
+            self._callback_type,
+            ctypes.wintypes.LPARAM,
+        ]
+        self._user32.EnumWindows.restype = ctypes.wintypes.BOOL
         for name in ("IsWindowVisible", "IsIconic"):
             function = getattr(self._user32, name)
-            function.argtypes = [wintypes.HWND]
-            function.restype = wintypes.BOOL
-        self._user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
-        self._user32.GetWindowLongW.restype = wintypes.LONG
-        self._user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+            function.argtypes = [ctypes.wintypes.HWND]
+            function.restype = ctypes.wintypes.BOOL
+        self._user32.GetWindowLongW.argtypes = [ctypes.wintypes.HWND, ctypes.c_int]
+        self._user32.GetWindowLongW.restype = ctypes.wintypes.LONG
+        self._user32.GetWindowTextLengthW.argtypes = [ctypes.wintypes.HWND]
         self._user32.GetWindowTextLengthW.restype = ctypes.c_int
         self._user32.GetWindowTextW.argtypes = [
-            wintypes.HWND,
-            wintypes.LPWSTR,
+            ctypes.wintypes.HWND,
+            ctypes.wintypes.LPWSTR,
             ctypes.c_int,
         ]
         self._user32.GetWindowTextW.restype = ctypes.c_int
         self._user32.GetWindowRect.argtypes = [
-            wintypes.HWND,
-            ctypes.POINTER(wintypes.RECT),
+            ctypes.wintypes.HWND,
+            ctypes.POINTER(ctypes.wintypes.RECT),
         ]
-        self._user32.GetWindowRect.restype = wintypes.BOOL
+        self._user32.GetWindowRect.restype = ctypes.wintypes.BOOL
         self._user32.GetForegroundWindow.argtypes = []
-        self._user32.GetForegroundWindow.restype = wintypes.HWND
+        self._user32.GetForegroundWindow.restype = ctypes.wintypes.HWND
         self._dwmapi.DwmGetWindowAttribute.argtypes = [
-            wintypes.HWND,
-            wintypes.DWORD,
+            ctypes.wintypes.HWND,
+            ctypes.wintypes.DWORD,
             ctypes.c_void_p,
-            wintypes.DWORD,
+            ctypes.wintypes.DWORD,
         ]
         self._dwmapi.DwmGetWindowAttribute.restype = ctypes.c_long
 
@@ -135,7 +138,7 @@ class Win32WindowApi:
 
     def is_cloaked(self, handle: int) -> bool:
         """Exclude cloaked windows and windows whose DWM state is unavailable."""
-        cloaked = wintypes.DWORD()
+        cloaked = ctypes.wintypes.DWORD()
         result = self._dwmapi.DwmGetWindowAttribute(
             handle, 14, ctypes.byref(cloaked), ctypes.sizeof(cloaked)
         )
@@ -154,7 +157,7 @@ class Win32WindowApi:
 
     def frame_bounds(self, handle: int) -> Rect:
         """Prefer DWM frame bounds and fall back to GetWindowRect."""
-        bounds = wintypes.RECT()
+        bounds = ctypes.wintypes.RECT()
         result = self._dwmapi.DwmGetWindowAttribute(
             handle, 9, ctypes.byref(bounds), ctypes.sizeof(bounds)
         )
