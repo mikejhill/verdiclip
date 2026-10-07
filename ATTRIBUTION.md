@@ -7,8 +7,8 @@ Windows. It was created as an original work inspired by the publicly observable
 features and user experience of [Greenshot](https://getgreenshot.org/), a free
 and open-source screenshot tool.
 
-The name "Verdi" is Italian for "green," intended as a respectful nod to the
-Greenshot project and its contributions to the screenshot tool ecosystem.
+VerdiClip is a distinct product with its own name and branding; it is not
+affiliated with, endorsed by, or named after Greenshot.
 
 ## Legal Notice
 

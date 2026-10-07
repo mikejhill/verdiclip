@@ -1,211 +1,104 @@
 # VerdiClip
 
-**A performant screenshot and annotation tool for Windows, inspired by Greenshot.**
+[![CI](https://github.com/mikejhill/verdiclip/actions/workflows/ci.yml/badge.svg)](https://github.com/mikejhill/verdiclip/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/verdiclip.svg)](https://pypi.org/project/verdiclip/)
+[![Python](https://img.shields.io/pypi/pyversions/verdiclip.svg)](https://pypi.org/project/verdiclip/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-> *"Verdi"* — Italian for *green*, a respectful nod to [Greenshot](https://getgreenshot.org/),
-> the excellent open-source screenshot tool that inspired this project.
+Fast, faithful screenshots for Windows: grab a precise piece of the screen, mark it up, and put it where it needs to go — in seconds.
 
----
+![VerdiClip editor in the light theme, showing numbered steps, a labeled callout, an arrow, a highlight, and an obfuscated password](docs/images/editor-light.png)
 
-## ✨ Features
+VerdiClip is an independent, clean-room project. See [ATTRIBUTION.md](ATTRIBUTION.md) for credits.
 
-### Screenshot Capture
-- **Region capture** — select any area of your screen with a precise crosshair overlay
-- **Window capture** — capture the active window or click any window to grab it
-- **Full-screen capture** — capture your entire display (multi-monitor supported)
-- **Repeat last** — instantly retake the same type of screenshot
+## Install
 
-### Image Editor
-- **Drawing tools** — rectangles, ellipses, lines, arrows, freehand pen
-- **Annotations** — text labels, auto-numbered step markers, semi-transparent highlights
-- **Obfuscation** — pixelate sensitive information
-- **Crop** — trim your screenshot to the perfect size
-- **Customizable** — stroke colors, fill colors, line widths, fonts
-- **Undo/Redo** — unlimited history during your session
-
-### Export
-- **Save to file** — PNG, JPG, BMP, GIF, TIFF with quality controls
-- **Copy to clipboard** — paste directly into any application
-- **Print** — send to any printer with preview
-- **Auto-save** — automatically save captures with configurable naming patterns
-
-### System Integration
-- **System tray** — runs quietly in the background
-- **Global hotkeys** — capture screenshots from anywhere, fully configurable
-- **Open existing images** — annotate any image file, not just screenshots
-- **Lightweight** — minimal memory footprint when idle
-
----
-
-## 🚀 Quick Start
-
-### Prerequisites
-- Windows 10 or later
-- Python 3.12+ and [uv](https://docs.astral.sh/uv/)
-
-### Install from Source
+Requires Windows 10 or later and Python 3.13+.
 
 ```bash
-git clone https://github.com/mikejhill/verdiclip.git
-cd verdiclip
-uv sync --all-extras
+uv tool install verdiclip
 ```
 
-### Run
+Or with pip: `pip install verdiclip`. Then run `verdiclip` (or `verdiclip-gui` for no console window) and VerdiClip sits in the system tray.
+
+## Capture
+
+| Do this | Press |
+| --- | --- |
+| Drag a region, or click a window | `PrtSc` (or left-click the tray icon) |
+| Capture the active window | `Alt+PrtSc` |
+| Capture every monitor | `Ctrl+PrtSc` |
+| Repeat the last capture | `Shift+PrtSc` |
+
+![The capture overlay: the frozen screen is dimmed, the window under the cursor is outlined with its title, and a magnifier shows the exact pixels](docs/images/capture.png)
+
+While selecting, the screen is frozen so you get exactly what you saw. A magnifier follows the cursor, arrow keys nudge it by a pixel (`Ctrl` for 10), clicking without dragging captures the window under the cursor, and `Esc` cancels.
+
+If Windows or another screenshot tool already owns `PrtSc`, VerdiClip tells you which hotkeys are taken; everything is still available from the tray menu, and you can choose other keys in Settings.
+
+## Annotate
+
+| Tools | | Actions | |
+| --- | --- | --- | --- |
+| `V` Select | `T` Text | `Ctrl+Shift+C` Copy image | `Ctrl+Z` / `Ctrl+Y` Undo / redo |
+| `C` Crop | `N` Counter | `Ctrl+S` Save (auto-named) | `Ctrl+C` / `Ctrl+V` Copy / paste marks |
+| `R` Rectangle | `H` Highlight | `Ctrl+Shift+S` Save as | `Delete` Remove selection |
+| `E` Ellipse | `O` Obfuscate | `Ctrl+P` Print | Arrows Nudge (`Ctrl` = 10 px) |
+| `L` Line | `F` Freehand | `Ctrl+wheel` Zoom | `Space`+drag Pan |
+| `A` Arrow | | `Ctrl+0` / `Ctrl+Shift+F` 100% / fit | `Esc` Back out one step |
+
+- **Labels in boxes.** After drawing a rectangle or ellipse, just type — the text is centered and wraps inside it. Double-click (or `Enter`/`F2`) to edit later; `Esc` skips.
+- **Shift** draws squares, circles, and 45° lines.
+- **Your styles stick.** Colors, fills, widths, and fonts you pick are remembered per tool for the next screenshot.
+- **Everything is undoable**, including crop, which never throws pixels away.
+- **The quickest path**: draw, `Esc` until nothing is selected, `Enter` — the image is on the clipboard and the editor closes. Nothing you haven't copied, saved, or printed is ever discarded without asking.
+
+![The editor in the dark theme](docs/images/editor-dark.png)
+
+## Settings
+
+Open from the tray menu or with `Ctrl+,` in any editor.
+
+![The Settings dialog: after-capture actions can be combined](docs/images/settings.png)
+
+- **After capturing** — any combination of: open in the editor, copy to the clipboard, save to the output folder.
+- **Hotkeys** — validated as you type; conflicts are reported.
+- **Output** — folder, file-name pattern (`{date}`, `{time}`, `{title}`, `{counter}`) with a live preview, format, JPEG quality.
+- **Editor** — default color, width, and font.
+- **General** — light, dark, or match-Windows theme; start at sign-in.
+
+## Command line
 
 ```bash
-uv run verdiclip
+verdiclip capture screen -o shot.png
+verdiclip capture region --region 0,0,1280,720 --clipboard
+verdiclip capture window --delay 3
+verdiclip open picture.png          # Opens in the running instance if there is one
 ```
 
-### Default Hotkeys
+## How it is built
 
-| Action           | Hotkey              |
-|------------------|---------------------|
-| Region capture   | `PrtSc`             |
-| Full screen      | `Ctrl+PrtSc`        |
-| Active window    | `Alt+PrtSc`         |
-| Window picker    | `Ctrl+Shift+PrtSc`  |
-| Repeat last      | `Shift+PrtSc`       |
+Start with [docs/design/philosophy.md](docs/design/philosophy.md): the core purpose, the principles, and the architecture. [docs/design/ux-contract.md](docs/design/ux-contract.md) specifies every interaction; each item has an automated journey test.
 
----
+In short: an edit session is an immutable base image, a non-destructive crop, and a list of immutable annotation values. The only way to change it is a command through the undo history, and one renderer draws both the canvas and the exported image.
 
-## 💻 CLI Usage
+## Development
 
-VerdiClip includes a command-line interface for headless screenshot capture and
-opening images directly in the editor.
-
-### Capture Subcommand
+Requires Windows 10+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-# Capture full screen
-uv run verdiclip capture screen -o screenshot.png
-
-# Capture specific monitor
-uv run verdiclip capture screen --monitor 1 -o monitor1.png
-
-# Capture region (coordinates)
-uv run verdiclip capture region --region 100,100,800,600 -o region.png
-
-# Capture active window
-uv run verdiclip capture window -o window.png
-
-# Copy to clipboard instead of file
-uv run verdiclip capture screen --clipboard
-
-# With delay
-uv run verdiclip capture screen --delay 3 -o delayed.png
+uv sync                  # Create .venv and install dependencies
+uv run verdiclip         # Run the tray app
+uv run poe               # List tasks
+uv run poe fix           # Format and auto-fix lint
+uv run poe check         # Format check, lint, strict type check, tests with coverage
+uv run poe ux            # UX journey tests only
+uv run poe ux-snapshots  # Journeys plus a PNG per step in docs/ux/snapshots
+uv run poe ux-gallery    # Key screens in light and dark themes (docs/ux/gallery)
 ```
 
-**Capture options:**
+`uv run poe check` is the quality gate: ruff (broad rule set), ty with every rule at error, and pytest with ≥ 90% branch coverage. Regenerate the README screenshots with `uv run python scripts/ux_gallery.py --readme-dir docs/images`. Before a release, also run the manual checklist at the end of the UX contract. See [CONTRIBUTING.md](CONTRIBUTING.md) for commit conventions and releases.
 
-| Option        | Description                                              |
-|---------------|----------------------------------------------------------|
-| `mode`        | `screen`, `region`, or `window`                          |
-| `-o, --output`| Output file path (auto-generates if omitted)             |
-| `--region`    | Region coordinates `X,Y,W,H` (required for `region`)    |
-| `--monitor`   | Monitor index, 1-based (for `screen` mode)               |
-| `--format`    | Image format: `png`, `jpg`, `bmp`, `tiff`                |
-| `--quality`   | JPEG quality 1–100 (default: 90)                         |
-| `--delay`     | Delay in seconds before capturing (default: 0)           |
-| `--clipboard` | Copy to clipboard instead of saving to file              |
+## License
 
-### Open Subcommand
-
-```bash
-# Open image for editing
-uv run verdiclip open photo.png
-```
-
-### Version
-
-```bash
-uv run verdiclip --version
-```
-
----
-
-## ⚙️ Configuration
-
-Settings are stored in `%APPDATA%\VerdiClip\config.json` and can be edited
-through the **Settings** dialog (right-click the tray icon → Settings).
-
-Configurable options include:
-- Default save directory and image format
-- Auto-save behavior and filename patterns
-- Hotkey bindings
-- Editor defaults (colors, stroke width)
-- Startup behavior
-
----
-
-## 🛠️ Development
-
-### Setup
-
-```bash
-git clone https://github.com/mikejhill/verdiclip.git
-cd verdiclip
-uv sync --all-extras
-```
-
-### Run Tests
-
-```bash
-uv run pytest
-```
-
-### Run with Coverage
-
-```bash
-uv run pytest --cov=verdiclip --cov-report=html
-```
-
-### Lint
-
-```bash
-uv run ruff check src/ tests/
-```
-
-### Build Executable
-
-```powershell
-.\scripts\Build-Release.ps1
-```
-
----
-
-## 📁 Project Structure
-
-```
-verdiclip/
-├── src/verdiclip/       # Application source code
-│   ├── capture/         # Screenshot capture methods
-│   │   └── window_picker.py
-│   ├── editor/          # Image editor and annotation tools
-│   ├── export/          # File, clipboard, and print export
-│   ├── hotkeys/         # Global hotkey management
-│   ├── tray/            # System tray integration
-│   ├── ui/              # Settings and about dialogs
-│   ├── config.py        # Configuration management
-│   └── cli.py           # Command-line interface
-├── tests/               # Unit, integration, and performance tests
-├── resources/           # Icons and default configuration
-├── scripts/             # PowerShell build and setup scripts
-└── docs/                # Project documentation
-    ├── architecture/    #   System design and component overview
-    ├── guides/          #   User and developer guides
-    └── specifications/  #   Feature requirements
-```
-
----
-
-## 📄 License
-
-VerdiClip is licensed under the [MIT License](LICENSE).
-
-## 🙏 Attribution
-
-VerdiClip is an independent, clean-room implementation inspired by
-[Greenshot](https://getgreenshot.org/). No code, assets, or copyrighted
-materials from Greenshot are used. See [ATTRIBUTION.md](ATTRIBUTION.md) for
-details.
+[MIT](LICENSE)
