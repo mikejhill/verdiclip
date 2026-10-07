@@ -1,488 +1,556 @@
-"""Editor canvas (QGraphicsView subclass) for image annotation."""
+"""The zoomable, scrollable canvas that displays and edits a document."""
 
 from __future__ import annotations
 
-import logging
-from typing import TYPE_CHECKING, Any
+import math
+from typing import Final, override
 
-from PySide6.QtCore import QPoint, QRectF, Qt, Signal
+from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
     QBrush,
     QColor,
+    QImage,
+    QKeyEvent,
+    QMouseEvent,
+    QPainter,
+    QPaintEvent,
     QPen,
     QPixmap,
+    QResizeEvent,
     QWheelEvent,
 )
-from PySide6.QtWidgets import (
-    QGraphicsPixmapItem,
-    QGraphicsRectItem,
-    QGraphicsScene,
-    QGraphicsView,
-    QWidget,
+from PySide6.QtWidgets import QAbstractScrollArea, QWidget
+
+from verdiclip.document.annotations import (
+    Annotation,
+    HandleRole,
+    LabeledBox,
+    ObfuscateShape,
 )
+from verdiclip.editor.chrome import ChromeStyle
+from verdiclip.editor.inline_editors import InlineEditors
+from verdiclip.editor.session import EditorSession
+from verdiclip.editor.tools import CursorKind, Pointer, Tool
+from verdiclip.geometry import Point, Rect
+from verdiclip.render.renderer import Renderer
 
-from verdiclip.editor import Z_BACKGROUND, Z_BOUNDARY
+MIN_ZOOM: Final = 0.1
+MAX_ZOOM: Final = 16.0
+ZOOM_STEP: Final = 1.25
+HIT_TOLERANCE_PX: Final = 5.0
+HANDLE_SIZE_PX: Final = 8.0
+FIT_MARGIN_PX: Final = 24
+ACCENT: Final = QColor(0, 120, 215)
+CHECKER_LIGHT: Final = QColor(204, 204, 204)
+CHECKER_DARK: Final = QColor(153, 153, 153)
 
-if TYPE_CHECKING:
-    from PySide6.QtGui import (
-        QKeyEvent,
-        QMouseEvent,
-    )
-    from PySide6.QtWidgets import QGraphicsItem
-
-    from verdiclip.editor.history import EditorHistory
-    from verdiclip.editor.tools.base import BaseTool
-
-logger = logging.getLogger(__name__)
-
-_ZOOM_FACTOR = 1.15
-_MIN_ZOOM = 0.1
-_MAX_ZOOM = 16.0
+CURSORS: Final[dict[CursorKind, Qt.CursorShape]] = {
+    CursorKind.ARROW: Qt.CursorShape.ArrowCursor,
+    CursorKind.CROSS: Qt.CursorShape.CrossCursor,
+    CursorKind.MOVE: Qt.CursorShape.SizeAllCursor,
+    CursorKind.IBEAM: Qt.CursorShape.IBeamCursor,
+    CursorKind.POINT: Qt.CursorShape.PointingHandCursor,
+    CursorKind.RESIZE_H: Qt.CursorShape.SizeHorCursor,
+    CursorKind.RESIZE_V: Qt.CursorShape.SizeVerCursor,
+    CursorKind.RESIZE_FDIAG: Qt.CursorShape.SizeFDiagCursor,
+    CursorKind.RESIZE_BDIAG: Qt.CursorShape.SizeBDiagCursor,
+}
 
 
-class EditorCanvas(QGraphicsView):
-    """QGraphicsView-based canvas for image editing and annotation."""
+class CanvasView(QAbstractScrollArea):
+    """Displays the document through the renderer and routes input to the tool."""
 
-    switch_to_select_requested = Signal()
-    zoom_changed = Signal(float)  # Emitted with new zoom_level after any zoom change
-    number_editor_requested = Signal(object)  # Emitted with NumberMarkerItem on double-click
+    zoom_changed = Signal(float)
+    cursor_moved = Signal(object)  # Point in image coordinates, or None
+    escape_unhandled = Signal()
+    enter_unhandled = Signal()
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, session: EditorSession, renderer: Renderer, parent: QWidget | None = None
+    ) -> None:
         super().__init__(parent)
-        self._scene = QGraphicsScene(self)
-        self.setScene(self._scene)
-        from PySide6.QtGui import QPainter
+        self._session = session
+        self._renderer = renderer
+        self._tool: Tool | None = None
+        self._zoom = 1.0
+        self._pixmap = QPixmap.fromImage(session.document.image)
+        self._pan_anchor: QPointF | None = None
+        self._space_held = False
+        self._editors = InlineEditors(self, session)
+        self._backdrop = ChromeStyle(self.palette()).backdrop
+        self.viewport().setMouseTracking(True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setFrameShape(QAbstractScrollArea.Shape.NoFrame)
+        session.document.subscribe(self._on_document_changed)
+        session.selection.subscribe(self.refresh)
 
-        self.setRenderHint(QPainter.RenderHint.Antialiasing)
-        self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        self.setDragMode(QGraphicsView.DragMode.NoDrag)
-        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.NoAnchor)
-        self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
-        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-
-        # Solid neutral background — easy to distinguish from image content
-        self.setBackgroundBrush(QBrush(QColor(45, 45, 48)))
-
-        self._pixmap_item: QGraphicsPixmapItem | None = None
-        self._boundary_item: QGraphicsRectItem | None = None
-        self._zoom_level: float = 1.0
-        self._current_tool: BaseTool | None = None
-        self._is_panning = False
-        self._history: EditorHistory | None = None
-
-    def set_image(self, pixmap: QPixmap) -> None:
-        """Load an image onto the canvas at 100% zoom, centered."""
-        # Clear undo history first — commands hold references to scene items
-        if self._history:
-            self._history.clear()
-        self._scene.clear()
-        self._setup_background(pixmap)
-
-        self.resetTransform()
-        self._zoom_level = 1.0
-        self.centerOn(QRectF(pixmap.rect()).center())
-        logger.info("Image loaded: %dx%d", pixmap.width(), pixmap.height())
-
-    def _setup_background(self, pixmap: QPixmap) -> None:
-        """Set up the background pixmap and boundary rect."""
-        self._pixmap_item = QGraphicsPixmapItem(pixmap)
-        self._pixmap_item.setZValue(Z_BACKGROUND)
-        self._scene.addItem(self._pixmap_item)
-
-        # Draw a visible border around the image area
-        img_rect = QRectF(pixmap.rect())
-        border_pen = QPen(QColor(100, 100, 100), 1.0)
-        border_pen.setCosmetic(True)  # Constant width regardless of zoom
-        self._boundary_item = QGraphicsRectItem(img_rect)
-        self._boundary_item.setPen(border_pen)
-        self._boundary_item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
-        self._boundary_item.setZValue(Z_BOUNDARY)  # Above annotations, below nothing
-        self._boundary_item.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsSelectable, False)
-        self._boundary_item.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsMovable, False)
-        self._boundary_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
-        self._scene.addItem(self._boundary_item)
-
-        # Expand scene rect to allow placing items outside the image
-        margin = max(pixmap.width(), pixmap.height()) * 0.5
-        expanded = img_rect.adjusted(-margin, -margin, margin, margin)
-        self._scene.setSceneRect(expanded)
-
-    def crop_undoable(
-        self,
-        new_pixmap: QPixmap,
-        removed_items: list[QGraphicsItem],
-        item_positions: list[tuple[QGraphicsItem, float, float]],
-        crop_offset: tuple[float, float],
-    ) -> None:
-        """Replace the background with a cropped image while keeping undo history."""
-        if not self._pixmap_item:
-            self.set_image(new_pixmap)
-            return
-
-        old_pixmap = self._pixmap_item.pixmap()
-
-        # Remove items that fell outside the crop
-        for item in removed_items:
-            if item.scene():
-                self._scene.removeItem(item)
-
-        # Replace background and boundary (preserves annotation items)
-        self._scene.removeItem(self._pixmap_item)
-        if self._boundary_item:
-            self._scene.removeItem(self._boundary_item)
-        self._setup_background(new_pixmap)
-
-        if not self._history:
-            logger.info("Crop applied (no undo): %dx%d", new_pixmap.width(), new_pixmap.height())
-            return
-
-        from verdiclip.editor.history import CropCommand
-
-        cmd = CropCommand(
-            self,
-            old_pixmap,
-            new_pixmap,
-            removed_items,
-            item_positions,
-            crop_offset,
-        )
-        self._history.push(cmd)
-        logger.info("Crop applied (undoable): %dx%d", new_pixmap.width(), new_pixmap.height())
-
-    def _replace_image(self, pixmap: QPixmap, items: list[QGraphicsItem], *, remove: bool) -> None:
-        """Replace the background image during undo/redo of a crop.
-
-        Args:
-            pixmap: The new background pixmap.
-            items: Items that were removed by the crop.
-            remove: If True, remove *items* from scene (redo). If False, restore them (undo).
-        """
-        # Remove old background and boundary
-        if self._pixmap_item and self._pixmap_item.scene():
-            self._scene.removeItem(self._pixmap_item)
-        if self._boundary_item and self._boundary_item.scene():
-            self._scene.removeItem(self._boundary_item)
-
-        self._setup_background(pixmap)
-
-        for item in items:
-            if remove:
-                if item.scene():
-                    self._scene.removeItem(item)
-            else:
-                if not item.scene():
-                    self._scene.addItem(item)
-
-    def set_tool(self, tool: BaseTool | None) -> None:
-        """Set the active drawing tool."""
-        if self._current_tool:
-            self._current_tool.deactivate()
-        self._current_tool = tool
-        if tool:
-            tool.activate(self._scene, self)
-
-    def add_item_undoable(self, item: QGraphicsItem, description: str = "Add item") -> None:
-        """Register a scene item with the undo stack (item already in scene)."""
-        from verdiclip.editor.history import AddItemCommand
-
-        if self._history:
-            cmd = AddItemCommand(self._scene, item, description)
-            cmd._already_added = True
-            self._history.push(cmd)
-        # Item is already in the scene from the tool's mouse_press
-
-    def add_move_undoable(
-        self,
-        item: QGraphicsItem,
-        old_pos: tuple[float, float],
-        new_pos: tuple[float, float],
-    ) -> None:
-        """Record an item move on the undo stack."""
-        from verdiclip.editor.history import MoveItemCommand
-
-        if self._history:
-            cmd = MoveItemCommand(item, old_pos, new_pos)
-            self._history.push(cmd)
-
-    def add_moves_undoable(self, moves: list[tuple[Any, Any, Any]]) -> None:
-        """Record a simultaneous multi-item move as a single undo command."""
-        from verdiclip.editor.history import MultipleMoveCommand
-
-        if self._history and moves:
-            self._history.push(MultipleMoveCommand(moves))
-
-    def add_resize_undoable(
-        self,
-        item: QGraphicsItem,
-        old_geometry: dict[str, Any],
-        new_geometry: dict[str, Any],
-    ) -> None:
-        """Record an item resize on the undo stack."""
-        from verdiclip.editor.history import ResizeItemCommand
-
-        if self._history:
-            self._history.push(ResizeItemCommand(item, old_geometry, new_geometry))
-
-    def set_history(self, history: EditorHistory) -> None:
-        """Set the history instance for undo support."""
-        self._history = history
-
-    def wheelEvent(self, event: QWheelEvent) -> None:
-        """Zoom with Ctrl+scroll, scroll horizontally with Shift+scroll."""
-        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
-            factor = _ZOOM_FACTOR if event.angleDelta().y() > 0 else 1.0 / _ZOOM_FACTOR
-            # Zoom to the point under the cursor
-            view_pos = event.position()
-            self._zoom_to_point(factor, view_pos.toPoint())
-            event.accept()
-        elif event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
-            # Shift+scroll: horizontal scrolling at normal speed
-            delta = event.angleDelta().y()
-            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta)
-            event.accept()
-        else:
-            super().wheelEvent(event)
-
-    def mousePressEvent(self, event: QMouseEvent) -> None:
-        """Handle mouse press — pan with middle button, delegate to tool otherwise."""
-        if event.button() == Qt.MouseButton.MiddleButton:
-            self._is_panning = True
-            self._pan_start = event.position()
-            self.setCursor(Qt.CursorShape.ClosedHandCursor)
-            event.accept()
-        elif self._current_tool:
-            scene_pos = self.mapToScene(event.position().toPoint())
-            self._current_tool.mouse_press(scene_pos, event)
-        else:
-            super().mousePressEvent(event)
-
-    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
-        """Handle double-click to open inline editors (e.g., number markers)."""
-        if self._current_tool:
-            from verdiclip.editor.tools.select import SelectTool
-
-            if isinstance(self._current_tool, SelectTool):
-                item = self._current_tool._find_annotation_at(
-                    self.mapToScene(event.position().toPoint()),
-                )
-                if item:
-                    from verdiclip.editor.tools.number import NumberMarkerItem
-
-                    if isinstance(item, NumberMarkerItem):
-                        self.number_editor_requested.emit(item)
-                        event.accept()
-                        return
-        super().mouseDoubleClickEvent(event)
-
-    def mouseMoveEvent(self, event: QMouseEvent) -> None:
-        """Handle mouse move — pan or delegate to tool."""
-        if self._is_panning:
-            delta = event.position() - self._pan_start
-            self._pan_start = event.position()
-            self.horizontalScrollBar().setValue(int(self.horizontalScrollBar().value() - delta.x()))
-            self.verticalScrollBar().setValue(int(self.verticalScrollBar().value() - delta.y()))
-            event.accept()
-        elif self._current_tool:
-            scene_pos = self.mapToScene(event.position().toPoint())
-            self._current_tool.mouse_move(scene_pos, event)
-        else:
-            super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
-        """Handle mouse release — stop pan or delegate to tool."""
-        if event.button() == Qt.MouseButton.MiddleButton and self._is_panning:
-            self._is_panning = False
-            self.setCursor(Qt.CursorShape.ArrowCursor)
-            event.accept()
-        elif self._current_tool:
-            scene_pos = self.mapToScene(event.position().toPoint())
-            self._current_tool.mouse_release(scene_pos, event)
-        else:
-            super().mouseReleaseEvent(event)
-
-    def keyPressEvent(self, event: QKeyEvent) -> None:
-        """Handle key presses — Delete removes items, Enter confirms crop, Esc deselects."""
-        # If a text item is being edited, let the scene/item handle the key event first.
-        from PySide6.QtWidgets import QGraphicsTextItem
-
-        focus = self._scene.focusItem()
-        if (
-            isinstance(focus, QGraphicsTextItem)
-            and focus.textInteractionFlags() & Qt.TextInteractionFlag.TextEditorInteraction
-        ):
-            super().keyPressEvent(event)
-            return
-
-        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
-            self._delete_selected_items()
-        elif event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-            from verdiclip.editor.tools.crop import CropTool
-
-            if isinstance(self._current_tool, CropTool):
-                self._current_tool.apply_crop()
-        elif event.key() == Qt.Key.Key_Escape:
-            from verdiclip.editor.tools.crop import CropTool as CropTool_
-            from verdiclip.editor.tools.select import SelectTool
-
-            is_select = isinstance(self._current_tool, SelectTool)
-
-            # Cancel active crop UI if present
-            if (
-                isinstance(self._current_tool, CropTool_)
-                and self._current_tool._crop_rect_item is not None
-            ):
-                self._current_tool.cancel_crop()
-            # Select tool: deselect any selected items
-            elif is_select and self._scene.selectedItems():
-                for item in self._scene.selectedItems():
-                    item.setSelected(False)
-            # Non-Select tool (or no tool): deselect and switch to Select
-            elif not is_select:
-                for item in self._scene.selectedItems():
-                    item.setSelected(False)
-                self.switch_to_select_requested.emit()
-        elif (
-            event.key() == Qt.Key.Key_A and event.modifiers() & Qt.KeyboardModifier.ControlModifier
-        ):
-            from verdiclip.editor.tools.select import SelectTool
-
-            if isinstance(self._current_tool, SelectTool):
-                self._current_tool.select_all()
-        elif event.key() in (
-            Qt.Key.Key_Left,
-            Qt.Key.Key_Right,
-            Qt.Key.Key_Up,
-            Qt.Key.Key_Down,
-        ):
-            selected = self._scene.selectedItems()
-            if selected:
-                step = 10 if event.modifiers() & Qt.KeyboardModifier.ControlModifier else 1
-                dx, dy = 0.0, 0.0
-                if event.key() == Qt.Key.Key_Left:
-                    dx = -step
-                elif event.key() == Qt.Key.Key_Right:
-                    dx = step
-                elif event.key() == Qt.Key.Key_Up:
-                    dy = -step
-                elif event.key() == Qt.Key.Key_Down:
-                    dy = step
-                from PySide6.QtCore import QPointF as _QPointF
-
-                offset = _QPointF(dx, dy)
-                for item in selected:
-                    item.setPos(item.pos() + offset)
-        else:
-            super().keyPressEvent(event)
+    # Properties
 
     @property
-    def current_tool(self) -> BaseTool | None:
-        """Return the currently active tool."""
-        return self._current_tool
+    def zoom(self) -> float:
+        """Return the zoom factor (1.0 = 100%)."""
+        return self._zoom
 
-    def delete_selected(self) -> None:
-        """Delete all selected items (excluding background and boundary)."""
-        self._delete_selected_items()
+    @property
+    def tool(self) -> Tool | None:
+        """Return the active tool."""
+        return self._tool
 
-    def _delete_selected_items(self) -> None:
-        """Remove all currently selected annotation items from the scene."""
-        from verdiclip.editor.history import RemoveItemCommand
+    @property
+    def editors(self) -> InlineEditors:
+        """Return the inline text and counter editors."""
+        return self._editors
 
-        selected = self._scene.selectedItems()
-        removed = 0
-        for item in selected:
-            if item is self._pixmap_item or item is self._boundary_item:
-                continue
-            if self._history:
-                cmd = RemoveItemCommand(self._scene, item, "Delete item")
-                self._history.push(cmd)
-            else:
-                self._scene.removeItem(item)
-            removed += 1
-        if removed:
-            logger.info("Deleted %d annotation item(s)", removed)
+    @property
+    def tolerance(self) -> float:
+        """Return the hit tolerance in image pixels at the current zoom."""
+        return HIT_TOLERANCE_PX / self._zoom
+
+    # Tool
+
+    def set_tool(self, tool: Tool) -> None:
+        """Make ``tool`` active."""
+        if self._tool is not None:
+            self._tool.deactivate()
+        self._editors.commit()
+        self._tool = tool
+        self.viewport().setCursor(CURSORS[tool.cursor(Pointer(Point(-1e9, -1e9)))])
+        self.refresh()
+
+    # Coordinates
+
+    def origin(self) -> QPointF:
+        """Return where the crop's top-left corner sits in the viewport.
+
+        Centering snaps to whole pixels so 100% zoom stays pixel-crisp.
+        """
+        crop = self._session.document.crop
+        content_w = crop.width * self._zoom
+        content_h = crop.height * self._zoom
+        vp = self.viewport()
+        x = (
+            (vp.width() - content_w) // 2
+            if content_w < vp.width()
+            else -self.horizontalScrollBar().value()
+        )
+        y = (
+            (vp.height() - content_h) // 2
+            if content_h < vp.height()
+            else -self.verticalScrollBar().value()
+        )
+        return QPointF(x, y)
+
+    def to_view(self, point: Point) -> QPointF:
+        """Map image coordinates to viewport coordinates."""
+        crop = self._session.document.crop
+        o = self.origin()
+        return QPointF(
+            o.x() + (point.x - crop.x) * self._zoom,
+            o.y() + (point.y - crop.y) * self._zoom,
+        )
+
+    def to_image(self, pos: QPointF) -> Point:
+        """Map viewport coordinates to image coordinates."""
+        crop = self._session.document.crop
+        o = self.origin()
+        return Point(
+            crop.x + (pos.x() - o.x()) / self._zoom,
+            crop.y + (pos.y() - o.y()) / self._zoom,
+        )
+
+    def rect_to_view(self, rect: Rect) -> QRectF:
+        """Map an image rectangle to the viewport."""
+        top_left = self.to_view(rect.top_left)
+        return QRectF(
+            top_left.x(),
+            top_left.y(),
+            rect.width * self._zoom,
+            rect.height * self._zoom,
+        )
+
+    # Zoom
+
+    def set_zoom(self, zoom: float, anchor: QPointF | None = None) -> None:
+        """Zoom to ``zoom``, keeping the image point under ``anchor`` fixed."""
+        zoom = min(MAX_ZOOM, max(MIN_ZOOM, zoom))
+        if math.isclose(zoom, self._zoom):
+            return
+        vp_center = QPointF(self.viewport().width() / 2, self.viewport().height() / 2)
+        anchor_view = anchor if anchor is not None else vp_center
+        fixed = self.to_image(anchor_view)
+        self._zoom = zoom
+        self._update_scrollbars()
+        drift = self.to_view(fixed) - anchor_view
+        self.horizontalScrollBar().setValue(
+            self.horizontalScrollBar().value() + round(drift.x())
+        )
+        self.verticalScrollBar().setValue(
+            self.verticalScrollBar().value() + round(drift.y())
+        )
+        self._editors.reposition()
+        self.zoom_changed.emit(self._zoom)
+        self.refresh()
 
     def zoom_in(self) -> None:
-        """Zoom in by one step (anchored to viewport center for menu/keyboard)."""
-        center = self.viewport().rect().center()
-        self._zoom_to_point(_ZOOM_FACTOR, center)
+        """Zoom in one step around the viewport center."""
+        self.set_zoom(self._zoom * ZOOM_STEP)
 
     def zoom_out(self) -> None:
-        """Zoom out by one step (anchored to viewport center for menu/keyboard)."""
-        center = self.viewport().rect().center()
-        self._zoom_to_point(1.0 / _ZOOM_FACTOR, center)
+        """Zoom out one step around the viewport center."""
+        self.set_zoom(self._zoom / ZOOM_STEP)
 
-    def zoom_reset(self) -> None:
-        """Reset to 100% zoom, centered on the image."""
-        self.resetTransform()
-        self._zoom_level = 1.0
-        if self._pixmap_item:
-            self.centerOn(self._pixmap_item)
-        self.zoom_changed.emit(self._zoom_level)
+    def zoom_actual(self) -> None:
+        """Zoom to 100%."""
+        self.set_zoom(1.0)
 
     def zoom_fit(self) -> None:
-        """Fit the image in the viewport."""
-        if self._pixmap_item:
-            self.fitInView(self._pixmap_item, Qt.AspectRatioMode.KeepAspectRatio)
+        """Zoom so the whole visible image fits the viewport."""
+        self.set_zoom(self.fit_zoom())
+
+    def fit_zoom(self) -> float:
+        """Return the zoom at which the visible image fits the viewport."""
+        crop = self._session.document.crop
+        vp = self.viewport()
+        avail_w = max(1, vp.width() - FIT_MARGIN_PX)
+        avail_h = max(1, vp.height() - FIT_MARGIN_PX)
+        return min(avail_w / crop.width, avail_h / crop.height)
+
+    def show_initial(self) -> None:
+        """Show at 100%, or fit if larger than the viewport (UX-CAP-11)."""
+        self._update_scrollbars()
+        if self.fit_zoom() < 1.0:
+            self.zoom_fit()
+
+    def refresh(self) -> None:
+        """Repaint the viewport."""
+        self.viewport().update()
+
+    # Painting
+
+    @override
+    def paintEvent(self, event: QPaintEvent) -> None:
+        """Paint backdrop, image, annotations, tool preview, and selection UI."""
+        del event
+        painter = QPainter(self.viewport())
+        try:
+            painter.fillRect(self.viewport().rect(), self._backdrop)
+            self._paint_document(painter)
+            self._paint_overlays(painter)
+        finally:
+            painter.end()
+
+    def _paint_document(self, painter: QPainter) -> None:
+        """Paint the cropped image with annotations in image coordinates."""
+        doc = self._session.document
+        crop = doc.crop
+        crop_view = self.rect_to_view(crop)
+        painter.fillRect(crop_view, self._checker_brush())
+        painter.save()
+        painter.setClipRect(crop_view)
+        o = self.origin()
+        painter.translate(o)
+        painter.scale(self._zoom, self._zoom)
+        painter.translate(-crop.x, -crop.y)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        smooth = self._zoom < 1.0
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, smooth)
+        painter.drawPixmap(QPointF(0, 0), self._pixmap)
+        shown = self._displayed(doc.visible_annotations)
+        self._renderer.paint_all(painter, doc.image, shown)
+        if self._tool is not None:
+            self._renderer.paint_all(painter, doc.image, self._tool.preview)
+        painter.restore()
+
+    def _displayed(self, annotations: tuple[Annotation, ...]) -> list[Annotation]:
+        """Return what to draw: the edited item is hidden, or just its label."""
+        editing = self._editors.editing_id
+        if editing is None:
+            return list(annotations)
+        shown: list[Annotation] = []
+        for annotation in annotations:
+            if annotation.id != editing:
+                shown.append(annotation)
+            elif isinstance(annotation, LabeledBox):
+                shown.append(annotation.with_text(""))
+        return shown
+
+    def _paint_overlays(self, painter: QPainter) -> None:
+        """Paint the tool frame, selection outlines, and handles in view space."""
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, on=False)
+        frame = self._tool.frame if self._tool is not None else None
+        if frame is not None:
+            self._paint_frame(painter, frame)
+        preview = self._tool.preview if self._tool is not None else ()
+        for annotation in preview:
+            if isinstance(annotation, ObfuscateShape):
+                self._paint_outline(painter, annotation)
+        selected = self._session.selected()
+        for annotation in selected:
+            # A lone line or arrow is clearer with just its endpoint handles
+            if len(selected) == 1 and HandleRole.START in annotation.handles():
+                continue
+            self._paint_outline(painter, annotation)
+        if len(selected) == 1:
+            self._paint_handles(painter, selected[0])
+
+    def _paint_frame(self, painter: QPainter, frame: Rect) -> None:
+        """Paint a rubber band or crop frame, dimming outside it for crops."""
+        frame_view = self.rect_to_view(frame)
+        dims = self._tool is not None and self._tool.dims_outside_frame
+        if dims:
+            crop_view = self.rect_to_view(self._session.document.crop)
+            painter.save()
+            painter.setClipRect(crop_view)
+            for part in self._outside(crop_view, frame_view):
+                painter.fillRect(part, QColor(0, 0, 0, 120))
+            painter.restore()
+        painter.setPen(QPen(ACCENT, 1, Qt.PenStyle.DashLine))
+        if dims:
+            painter.setBrush(Qt.BrushStyle.NoBrush)
         else:
-            self.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
-        self._zoom_level = self.transform().m11()
-        self.zoom_changed.emit(self._zoom_level)
+            painter.setBrush(QColor(0, 120, 215, 30))
+        painter.drawRect(frame_view)
 
-    def _zoom_to_point(self, factor: float, view_pos: QPoint) -> None:
-        """Zoom anchored to a specific viewport pixel position."""
-        new_zoom = self._zoom_level * factor
-        if not (_MIN_ZOOM <= new_zoom <= _MAX_ZOOM):
-            return
-        # Map the anchor point to scene coords before scaling
-        scene_pos = self.mapToScene(view_pos)
-        self.scale(factor, factor)
-        self._zoom_level = new_zoom
-        # Map the same scene point to new viewport coords and adjust scroll
-        new_view_pos = self.mapFromScene(scene_pos)
-        delta = new_view_pos - view_pos
-        self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() + int(delta.x()))
-        self.verticalScrollBar().setValue(self.verticalScrollBar().value() + int(delta.y()))
-        self.zoom_changed.emit(self._zoom_level)
+    @staticmethod
+    def _outside(outer: QRectF, inner: QRectF) -> list[QRectF]:
+        """Return up to four rectangles covering ``outer`` minus ``inner``."""
+        return [
+            QRectF(outer.left(), outer.top(), outer.width(), inner.top() - outer.top()),
+            QRectF(
+                outer.left(),
+                inner.bottom(),
+                outer.width(),
+                outer.bottom() - inner.bottom(),
+            ),
+            QRectF(
+                outer.left(), inner.top(), inner.left() - outer.left(), inner.height()
+            ),
+            QRectF(
+                inner.right(),
+                inner.top(),
+                outer.right() - inner.right(),
+                inner.height(),
+            ),
+        ]
 
-    @property
-    def zoom_level(self) -> float:
-        """Return the current zoom level."""
-        return self._zoom_level
+    def _paint_outline(self, painter: QPainter, annotation: Annotation) -> None:
+        """Paint a dashed selection outline around ``annotation``."""
+        painter.setPen(QPen(ACCENT, 1, Qt.PenStyle.DashLine))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRect(self.rect_to_view(annotation.bounds).adjusted(-2, -2, 2, 2))
 
-    @property
-    def scene(self) -> QGraphicsScene:  # type: ignore[override]
-        """Return the graphics scene."""
-        return self._scene
+    def _paint_handles(self, painter: QPainter, annotation: Annotation) -> None:
+        """Paint the grab handles of the single selected annotation."""
+        painter.setPen(QPen(ACCENT, 1))
+        painter.setBrush(QBrush(Qt.GlobalColor.white))
+        half = HANDLE_SIZE_PX / 2
+        for pos in annotation.handles().values():
+            center = self.to_view(pos)
+            painter.drawRect(
+                QRectF(
+                    center.x() - half, center.y() - half, HANDLE_SIZE_PX, HANDLE_SIZE_PX
+                )
+            )
 
-    @property
-    def pixmap_item(self) -> QGraphicsPixmapItem | None:
-        """Return the background pixmap item, if any."""
-        return self._pixmap_item
-
-    def get_flattened_pixmap(self) -> QPixmap:
-        """Render only the image area (with annotations) to a QPixmap."""
-        if self._pixmap_item:
-            rect = QRectF(self._pixmap_item.pixmap().rect())
-        else:
-            rect = self._scene.sceneRect()
-
-        # Temporarily hide the boundary border so it doesn't render into the export
-        boundary_was_visible = False
-        if self._boundary_item:
-            boundary_was_visible = self._boundary_item.isVisible()
-            self._boundary_item.setVisible(False)
-
-        pixmap = QPixmap(int(rect.width()), int(rect.height()))
-        pixmap.fill(Qt.GlobalColor.transparent)
-        from PySide6.QtGui import QPainter
-
-        painter = QPainter(pixmap)
-        self._scene.render(painter, QRectF(pixmap.rect()), rect)
+    @staticmethod
+    def _checker_brush() -> QBrush:
+        """Return a checkerboard brush for transparent areas."""
+        tile = QImage(16, 16, QImage.Format.Format_RGB32)
+        tile.fill(CHECKER_LIGHT)
+        painter = QPainter(tile)
+        painter.fillRect(0, 0, 8, 8, CHECKER_DARK)
+        painter.fillRect(8, 8, 8, 8, CHECKER_DARK)
         painter.end()
+        return QBrush(tile)
 
-        if self._boundary_item:
-            self._boundary_item.setVisible(boundary_was_visible)
-        return pixmap
+    # Input
 
+    def _pointer(self, event: QMouseEvent) -> Pointer:
+        """Build a Pointer from a mouse event."""
+        mods = event.modifiers()
+        return Pointer(
+            pos=self.to_image(event.position()),
+            shift=bool(mods & Qt.KeyboardModifier.ShiftModifier),
+            ctrl=bool(mods & Qt.KeyboardModifier.ControlModifier),
+            tolerance=self.tolerance,
+        )
 
+    @override
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        """Pan with middle button or Space+left; otherwise forward to the tool."""
+        self.setFocus()
+        button = event.button()
+        panning = button == Qt.MouseButton.MiddleButton or (
+            button == Qt.MouseButton.LeftButton and self._space_held
+        )
+        if panning:
+            self._pan_anchor = event.position()
+            self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
+            return
+        if button != Qt.MouseButton.LeftButton or self._tool is None:
+            return
+        self._editors.commit()
+        self._tool.press(self._pointer(event))
+        self.refresh()
+
+    @override
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        """Pan, drag with the tool, or update the hover cursor."""
+        pointer = self._pointer(event)
+        self.cursor_moved.emit(pointer.pos)
+        if self._pan_anchor is not None:
+            delta = event.position() - self._pan_anchor
+            self._pan_anchor = event.position()
+            h, v = self.horizontalScrollBar(), self.verticalScrollBar()
+            h.setValue(h.value() - round(delta.x()))
+            v.setValue(v.value() - round(delta.y()))
+            return
+        if self._tool is None:
+            return
+        if event.buttons() & Qt.MouseButton.LeftButton:
+            self._tool.move(pointer)
+            self.refresh()
+        else:
+            cursor = (
+                Qt.CursorShape.OpenHandCursor
+                if self._space_held
+                else CURSORS[self._tool.cursor(pointer)]
+            )
+            self.viewport().setCursor(cursor)
+
+    @override
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        """Finish panning or the tool gesture."""
+        if self._pan_anchor is not None:
+            self._pan_anchor = None
+            self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
+            return
+        if event.button() == Qt.MouseButton.LeftButton and self._tool is not None:
+            self._tool.release(self._pointer(event))
+            self.refresh()
+
+    @override
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        """Forward double-clicks to the tool."""
+        if event.button() == Qt.MouseButton.LeftButton and self._tool is not None:
+            self._tool.double_click(self._pointer(event))
+            self.refresh()
+
+    @override
+    def leaveEvent(self, event: QEvent) -> None:
+        """Clear the status-bar position when the pointer leaves."""
+        del event
+        self.cursor_moved.emit(None)
+
+    @override
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        """Ctrl zooms at the cursor, Shift scrolls horizontally, else scroll."""
+        mods = event.modifiers()
+        steps = event.angleDelta().y() / 120
+        if mods & Qt.KeyboardModifier.ControlModifier:
+            self.set_zoom(self._zoom * (ZOOM_STEP**steps), event.position())
+            event.accept()
+            return
+        if mods & Qt.KeyboardModifier.ShiftModifier:
+            bar = self.horizontalScrollBar()
+            bar.setValue(bar.value() - event.angleDelta().y())
+            event.accept()
+            return
+        super().wheelEvent(event)
+
+    @override
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        """Handle Esc, Enter, arrow-key nudges, and Space panning."""
+        key = event.key()
+        if key == Qt.Key.Key_Space and not event.isAutoRepeat():
+            self._space_held = True
+            self.viewport().setCursor(Qt.CursorShape.OpenHandCursor)
+            return
+        if key == Qt.Key.Key_Escape:
+            self._handle_escape()
+            return
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if self._tool is None or not self._tool.confirm():
+                self.enter_unhandled.emit()
+            self.refresh()
+            return
+        if self._nudge(event):
+            return
+        super().keyPressEvent(event)
+
+    @override
+    def keyReleaseEvent(self, event: QKeyEvent) -> None:
+        """Leave Space panning mode."""
+        if event.key() == Qt.Key.Key_Space and not event.isAutoRepeat():
+            self._space_held = False
+            self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
+            return
+        super().keyReleaseEvent(event)
+
+    def _handle_escape(self) -> None:
+        """Back out one level: tool work, then selection, then to Select tool."""
+        if self._tool is not None and self._tool.cancel():
+            self.refresh()
+            return
+        if len(self._session.selection):
+            self._session.selection.clear()
+            return
+        self.escape_unhandled.emit()
+
+    def _nudge(self, event: QKeyEvent) -> bool:
+        """Move the selection with the arrow keys; return True if handled."""
+        step = 10.0 if event.modifiers() & Qt.KeyboardModifier.ControlModifier else 1.0
+        deltas = {
+            Qt.Key.Key_Left: Point(-step, 0),
+            Qt.Key.Key_Right: Point(step, 0),
+            Qt.Key.Key_Up: Point(0, -step),
+            Qt.Key.Key_Down: Point(0, step),
+        }
+        delta = deltas.get(Qt.Key(event.key()))
+        if delta is None:
+            return False
+        return self._session.nudge_selected(delta)
+
+    # Layout
+
+    @override
+    def changeEvent(self, event: QEvent) -> None:
+        """Follow the theme: recolor the area around the image."""
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.PaletteChange:
+            self._backdrop = ChromeStyle(self.palette()).backdrop
+            self.refresh()
+
+    @override
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        """Keep scroll ranges in sync with the viewport size."""
+        super().resizeEvent(event)
+        self._update_scrollbars()
+        self._editors.reposition()
+
+    @override
+    def scrollContentsBy(self, dx: int, dy: int) -> None:
+        """Repaint and move inline editors when scrolled."""
+        del dx, dy
+        self._editors.reposition()
+        self.refresh()
+
+    def _update_scrollbars(self) -> None:
+        """Set scroll ranges from the zoomed content size."""
+        crop = self._session.document.crop
+        vp = self.viewport()
+        content_w = math.ceil(crop.width * self._zoom)
+        content_h = math.ceil(crop.height * self._zoom)
+        h, v = self.horizontalScrollBar(), self.verticalScrollBar()
+        h.setRange(0, max(0, content_w - vp.width()))
+        v.setRange(0, max(0, content_h - vp.height()))
+        h.setPageStep(vp.width())
+        v.setPageStep(vp.height())
+        h.setSingleStep(24)
+        v.setSingleStep(24)
+
+    def _on_document_changed(self) -> None:
+        """Re-layout after crops and repaint after any change."""
+        self._update_scrollbars()
+        self._editors.reposition()
+        self.refresh()

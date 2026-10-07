@@ -1,108 +1,163 @@
-"""Entry point for VerdiClip application."""
+"""Application entry point: tray app, headless capture, or open-in-editor."""
 
 from __future__ import annotations
 
 import logging
 import signal
 import sys
+import time
+from collections.abc import Sequence
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from types import FrameType
+from typing import Final
+
+from PySide6.QtCore import QTimer
+from PySide6.QtWidgets import QApplication
+
+from verdiclip import APP_NAME, VERSION
+from verdiclip.capture.grabber import MssScreenSource
+from verdiclip.cli import CliRequest, Command, CommandLine, HeadlessMode
+from verdiclip.exceptions import AppError, CaptureError
+from verdiclip.output.delivery import ImageDelivery
+from verdiclip.platform.hotkeys import HotkeyService
+from verdiclip.platform.startup import StartupRegistration
+from verdiclip.platform.windows import WindowLocator
+from verdiclip.settings import SettingsStore
+from verdiclip.shell.controller import AppController
+from verdiclip.shell.instance import SingleInstance
+
+logger = logging.getLogger(__name__)
+
+SIGNAL_POLL_MS: Final = 200
+LOG_BYTES: Final = 2 * 1024 * 1024
 
 
-def _setup_logging() -> None:
-    """Configure rotating file log and console output."""
-    log_dir = Path.home() / "AppData" / "Roaming" / "VerdiClip" / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
+class Application:
+    """Wire settings, logging, and services, then run the requested command."""
 
-    file_handler = RotatingFileHandler(
-        log_dir / "verdiclip.log",
-        maxBytes=5 * 1024 * 1024,
-        backupCount=3,
-        encoding="utf-8",
-    )
-    file_handler.setLevel(logging.DEBUG)
+    def __init__(self) -> None:
+        self._signal_timer: QTimer | None = None
 
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(logging.INFO)
+    @classmethod
+    def main(cls, argv: Sequence[str] | None = None) -> None:
+        """Run and exit with the resulting status code."""
+        sys.exit(cls().run(argv))
 
-    formatter = logging.Formatter(
-        "%(asctime)s [%(levelname)-8s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-    file_handler.setFormatter(formatter)
-    console_handler.setFormatter(formatter)
+    def run(self, argv: Sequence[str] | None = None) -> int:
+        """Run once and return a process exit code."""
+        request = CommandLine().parse(argv)
+        store = SettingsStore(SettingsStore.default_path())
+        self._configure_logging(request.log_level, store.path.parent / "logs")
+        try:
+            if request.command is Command.CAPTURE:
+                return self._run_capture(request, store)
+            return self._run_gui(request, store)
+        except AppError:
+            logger.exception("%s failed", APP_NAME)
+            return 1
+        except KeyboardInterrupt:
+            return 130
 
-    root_logger = logging.getLogger("verdiclip")
-    root_logger.setLevel(logging.DEBUG)
-    root_logger.addHandler(file_handler)
-    root_logger.addHandler(console_handler)
+    # Commands
 
+    def _run_gui(self, request: CliRequest, store: SettingsStore) -> int:
+        """Run the tray app, or forward to the one already running."""
+        app = QApplication.instance() or QApplication(sys.argv[:1])
+        if not isinstance(app, QApplication):
+            msg = "A non-widget Qt application is already running"
+            raise AppError(msg)
+        app.setApplicationName(APP_NAME)
+        app.setApplicationVersion(VERSION)
+        app.setQuitOnLastWindowClosed(False)
+        files = [str(p.resolve()) for p in request.files]
+        instance = SingleInstance()
+        if instance.forward(files):
+            logger.info("Forwarded to the running instance")
+            return 0
+        instance.listen()
+        controller = AppController(
+            store,
+            MssScreenSource(),
+            WindowLocator(),
+            HotkeyService(),
+            StartupRegistration(),
+        )
+        instance.message_received.connect(controller.handle_forwarded)
+        app.aboutToQuit.connect(controller.shutdown)
+        app.aboutToQuit.connect(instance.close)
+        self._install_sigint(app)
+        controller.start()
+        for path in request.files:
+            controller.open_image(path)
+        return app.exec()
 
-def _install_signal_handlers() -> None:
-    """Allow Ctrl+C to cleanly shut down the Qt event loop.
+    def _run_capture(self, request: CliRequest, store: SettingsStore) -> int:
+        """Capture without UI, then save or copy."""
+        app = QApplication.instance() or QApplication(sys.argv[:1])
+        del app
+        if request.delay:
+            time.sleep(request.delay)
+        frozen = MssScreenSource().freeze()
+        if request.mode is HeadlessMode.SCREEN:
+            image = frozen.image
+        elif request.mode is HeadlessMode.REGION and request.region is not None:
+            image = frozen.crop(request.region)
+        else:
+            window = WindowLocator().foreground()
+            if window is None:
+                msg = "There is no active window to capture"
+                raise CaptureError(msg)
+            image = frozen.crop(window.bounds)
+        delivery = ImageDelivery(store.load().output)
+        if request.to_clipboard:
+            delivery.copy(image)
+            sys.stdout.write("Copied to clipboard\n")
+            return 0
+        path = request.output or delivery.auto_path()
+        sys.stdout.write(f"{delivery.save(image, path)}\n")
+        return 0
 
-    Qt's C++ event loop swallows SIGINT by default, so Python's signal
-    handler never runs.  Two steps fix this:
+    # Infrastructure
 
-    1. Register a SIGINT handler that calls ``QApplication.quit()``.
-    2. Start a 0-second ``QTimer`` that fires periodically — its callback
-       is a no-op, but it transfers control back to Python long enough
-       for the interpreter to invoke the signal handler.
-    """
-    from PySide6.QtCore import QTimer
-    from PySide6.QtWidgets import QApplication
+    def _install_sigint(self, app: QApplication) -> None:
+        """Let Ctrl+C in the terminal quit promptly (UX-TRY-05)."""
 
-    def _on_sigint(_signum: int, _frame: object) -> None:
-        logger = logging.getLogger("verdiclip")
-        logger.info("SIGINT received — shutting down.")
-        app = QApplication.instance()
-        if app:
+        def on_sigint(_signum: int, _frame: FrameType | None) -> None:
+            logger.info("Interrupted; quitting")
             app.quit()
 
-    signal.signal(signal.SIGINT, _on_sigint)
+        signal.signal(signal.SIGINT, on_sigint)
+        # Qt's event loop blocks Python signal handling; wake it periodically
+        timer = QTimer()
+        timer.timeout.connect(lambda: None)
+        timer.start(SIGNAL_POLL_MS)
+        self._signal_timer = timer
 
-    # Periodic no-op timer lets the Python interpreter check for pending
-    # signals between Qt event-loop iterations.  200 ms is imperceptible.
-    timer = QTimer()
-    timer.timeout.connect(lambda: None)
-    timer.start(200)
-    # Prevent garbage collection — store as attribute on the QApplication
-    # instance.  setProperty() converts to QVariant, which loses the
-    # Python reference and allows GC to destroy the timer.
-    app = QApplication.instance()
-    if app:
-        app._sigint_timer = timer  # type: ignore[attr-defined]  # ty: ignore[invalid-assignment]
-
-
-def main() -> None:
-    """Launch VerdiClip in GUI (tray) mode or CLI mode."""
-    _setup_logging()
-    logger = logging.getLogger("verdiclip")
-
-    from verdiclip.cli import build_parser
-
-    parser = build_parser()
-    args = parser.parse_args()
-
-    if args.command is not None:
-        # CLI mode: capture or open
-        logger.info("VerdiClip CLI: %s", args.command)
-        from verdiclip.cli import run_cli
-
-        sys.exit(run_cli(args))
-    else:
-        # GUI tray mode (no subcommand)
-        from verdiclip import __version__
-
-        logger.info("Starting VerdiClip v%s (tray mode)", __version__)
-        from verdiclip.app import VerdiClipApp
-
-        app = VerdiClipApp(sys.argv)
-        # _install_signal_handlers must be called AFTER QApplication is
-        # created (inside app.run), so we hook into the run sequence.
-        app.register_post_init_hook(_install_signal_handlers)
-        sys.exit(app.run())
+    @staticmethod
+    def _configure_logging(level: str, log_dir: Path) -> None:
+        """Log to stderr and to a rotating file under the settings folder."""
+        handlers: list[logging.Handler] = [logging.StreamHandler(sys.stderr)]
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            handlers.append(
+                RotatingFileHandler(
+                    log_dir / "verdiclip.log",
+                    maxBytes=LOG_BYTES,
+                    backupCount=2,
+                    encoding="utf-8",
+                )
+            )
+        except OSError as err:
+            sys.stderr.write(f"File logging disabled: {err}\n")
+        logging.basicConfig(
+            level=level,
+            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+            datefmt="%Y-%m-%dT%H:%M:%S",
+            handlers=handlers,
+            force=True,
+        )
 
 
 if __name__ == "__main__":
-    main()
+    Application.main()

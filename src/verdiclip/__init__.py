@@ -1,4 +1,8 @@
-"""VerdiClip — A performant screenshot and annotation tool for Windows."""
+"""VerdiClip: fast, faithful screenshot capture and annotation for Windows."""
 
-__version__ = "0.1.0"
-__app_name__ = "VerdiClip"
+from __future__ import annotations
+
+from typing import Final
+
+APP_NAME: Final = "VerdiClip"
+VERSION: Final = "0.2.0"
