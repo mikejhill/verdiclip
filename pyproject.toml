@@ -4,6 +4,7 @@ version = "0.2.0"
 description = "Fast, faithful screenshot capture and annotation for Windows."
 readme = "README.md"
 license = "MIT"
+license-files = ["LICENSE", "ATTRIBUTION.md"]
 authors = [{ name = "Mike Hill", email = "mike@mikejhill.com" }]
 requires-python = ">=3.13"
 keywords = ["screenshot", "annotation", "screen-capture", "windows"]
@@ -12,7 +13,11 @@ classifiers = [
     "Environment :: Win32 (MS Windows)",
     "Intended Audience :: End Users/Desktop",
     "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Multimedia :: Graphics :: Editors",
     "Topic :: Multimedia :: Graphics :: Capture :: Screen Capture",
 ]
 dependencies = [
@@ -22,6 +27,9 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://github.com/mikejhill/verdiclip"
+Documentation = "https://github.com/mikejhill/verdiclip#readme"
+Changelog = "https://github.com/mikejhill/verdiclip/blob/main/CHANGELOG.md"
+Issues = "https://github.com/mikejhill/verdiclip/issues"
 
 [project.scripts]
 verdiclip = "verdiclip.__main__:Application.main"
@@ -73,6 +81,10 @@ max-complexity = 10
 [tool.ruff.format]
 docstring-code-format = true
 
+[tool.ty.environment]
+# A Windows-only app: type-check against Windows APIs on any host
+python-platform = "win32"
+
 [tool.ty.rules]
 all = "error"
 
@@ -106,6 +118,7 @@ test = { cmd = "pytest --cov", help = "Run tests with coverage" }
 ux = { cmd = "pytest -m ux tests/ux", help = "Run UX journey tests only" }
 ux-gallery = { cmd = "python scripts/ux_gallery.py", help = "Render key screens in light and dark themes into docs/ux/gallery for design review" }
 ux-snapshots = { cmd = "pytest -m ux tests/ux --ux-snapshots=docs/ux/snapshots", help = "Run UX journeys and save a PNG per step for review" }
+lint-workflows = { shell = "uvx --from actionlint-py actionlint && uvx zizmor --offline .github/workflows", help = "Lint GitHub Actions workflows (actionlint + zizmor)" }
 fix = { sequence = ["format", "lint-fix"], help = "Auto-fix formatting and lint" }
 check = { sequence = ["format-check", "lint", "typecheck", "test"], help = "Run every quality gate" }
 
