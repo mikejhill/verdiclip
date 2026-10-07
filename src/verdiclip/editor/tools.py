@@ -90,19 +90,15 @@ class ToolHost(Protocol):
 
     def edit_text(self, note: TextNote | None, at: Point) -> None:
         """Open the inline text editor for ``note`` (or a new note at ``at``)."""
-        ...
 
     def edit_counter(self, marker: CounterMarker) -> None:
         """Open the inline label editor for ``marker``."""
-        ...
 
     def edit_box_text(self, box: LabeledBox) -> None:
         """Open the inline editor for the text inside ``box``."""
-        ...
 
     def activate_tool(self, tool: ToolId) -> None:
         """Switch to ``tool``."""
-        ...
 
 
 class HandleDrag:
@@ -205,9 +201,8 @@ class Tool(ABC):
     def release(self, pointer: Pointer) -> None:
         """Handle the left-button release."""
 
-    def double_click(self, pointer: Pointer) -> None:
+    def double_click(self, pointer: Pointer) -> None:  # noqa: B027 — optional hook
         """Handle a double-click (default: ignore)."""
-        del pointer
 
     def edit_in_place(self, pointer: Pointer) -> bool:
         """Open the in-place editor for what is under the pointer, if editable.
@@ -237,9 +232,8 @@ class Tool(ABC):
             return False
         return True
 
-    def cursor(self, pointer: Pointer) -> CursorKind:
+    def cursor(self, pointer: Pointer) -> CursorKind:  # noqa: ARG002 — default ignores it
         """Return the cursor to show while hovering (default: crosshair)."""
-        del pointer
         return CursorKind.CROSS
 
     def cancel(self) -> bool:
@@ -315,7 +309,6 @@ class SelectTool(Tool):
     @override
     def release(self, pointer: Pointer) -> None:
         """Finish the active gesture."""
-        del pointer
         self._handles.end()
         if self._band is not None:
             found = [a.id for a in self._session.document.annotations_in(self._band)]
@@ -582,7 +575,6 @@ class FreehandTool(DrawingTool):
     @override
     def build(self, origin: Point, pointer: Pointer) -> Annotation | None:
         """Extend the stroke, skipping sub-pixel jitter."""
-        del origin
         if self._points and self._points[-1].distance_to(pointer.pos) >= 1:
             self._points.append(pointer.pos)
         if not self._points:
@@ -610,17 +602,14 @@ class TextTool(Tool):
     @override
     def move(self, pointer: Pointer) -> None:
         """Ignore motion."""
-        del pointer
 
     @override
     def release(self, pointer: Pointer) -> None:
         """Ignore release."""
-        del pointer
 
     @override
     def cursor(self, pointer: Pointer) -> CursorKind:
         """Show a text cursor."""
-        del pointer
         return CursorKind.IBEAM
 
 
@@ -648,12 +637,10 @@ class CounterTool(Tool):
     @override
     def move(self, pointer: Pointer) -> None:
         """Ignore motion."""
-        del pointer
 
     @override
     def release(self, pointer: Pointer) -> None:
         """Ignore release."""
-        del pointer
 
     @override
     def double_click(self, pointer: Pointer) -> None:
@@ -665,7 +652,6 @@ class CounterTool(Tool):
     @override
     def cursor(self, pointer: Pointer) -> CursorKind:
         """Show a pointing cursor."""
-        del pointer
         return CursorKind.POINT
 
 
@@ -720,7 +706,6 @@ class CropTool(Tool):
     @override
     def double_click(self, pointer: Pointer) -> None:
         """Apply the frame."""
-        del pointer
         self.confirm()
 
     @override

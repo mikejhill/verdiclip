@@ -31,35 +31,27 @@ class WindowApi(Protocol):
 
     def enumerate_handles(self) -> list[int]:
         """Return handles in top-to-bottom z-order."""
-        ...
 
     def is_visible(self, handle: int) -> bool:
         """Return whether the visibility flag is set."""
-        ...
 
     def is_iconic(self, handle: int) -> bool:
         """Return whether the window is minimized."""
-        ...
 
     def is_cloaked(self, handle: int) -> bool:
         """Return whether DWM hides the window."""
-        ...
 
     def ex_style(self, handle: int) -> int:
         """Return extended style flags."""
-        ...
 
     def title(self, handle: int) -> str:
         """Return the window caption."""
-        ...
 
     def frame_bounds(self, handle: int) -> Rect:
         """Return physical bounds excluding invisible DWM borders."""
-        ...
 
     def foreground_handle(self) -> int:
         """Return the foreground handle, or zero."""
-        ...
 
 
 class _WindowEnumeration:

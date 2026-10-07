@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, override
+from typing import Protocol, override
 
-from PySide6.QtCore import QEvent, Qt, Signal
+from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
     QFocusEvent,
     QKeyEvent,
@@ -35,8 +35,28 @@ from verdiclip.render.renderer import (
     Renderer,
 )
 
-if TYPE_CHECKING:
-    from verdiclip.editor.canvas import CanvasView
+
+class CanvasHost(Protocol):
+    """The canvas services the in-place editors need."""
+
+    @property
+    def zoom(self) -> float:
+        """Current zoom factor."""
+
+    def viewport(self) -> QWidget:
+        """Widget the editors are placed on."""
+
+    def to_view(self, point: Point) -> QPointF:
+        """Map image coordinates to the viewport."""
+
+    def rect_to_view(self, rect: Rect) -> QRectF:
+        """Map an image rectangle to the viewport."""
+
+    def refresh(self) -> None:
+        """Repaint the canvas."""
+
+    def setFocus(self) -> None:  # noqa: N802 — Qt method name
+        """Give the canvas keyboard focus."""
 
 
 class _TextBox(QPlainTextEdit):
@@ -121,7 +141,7 @@ class _LabelBox(QLineEdit):
 class InlineEditors:
     """Owns at most one open in-place editor and commits it as a command."""
 
-    def __init__(self, canvas: CanvasView, session: EditorSession) -> None:
+    def __init__(self, canvas: CanvasHost, session: EditorSession) -> None:
         self._canvas = canvas
         self._session = session
         self._widget: QWidget | None = None

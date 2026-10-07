@@ -245,7 +245,7 @@ class EditorSession:
         """
         try:
             # json.loads only ever produces JSON-compatible values
-            data = cast("JsonValue", json.loads(text))
+            data = cast(JsonValue, json.loads(text))
         except json.JSONDecodeError as err:
             msg = f"Clipboard does not hold VerdiClip annotations: {err}"
             raise CodecError(msg) from err

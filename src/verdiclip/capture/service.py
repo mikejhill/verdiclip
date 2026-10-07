@@ -26,11 +26,9 @@ class WindowSource(Protocol):
         self, *, exclude: frozenset[int] = ...
     ) -> Sequence[WindowTarget]:
         """Return visible windows, topmost first."""
-        ...
 
     def foreground(self) -> WindowTarget | None:
         """Return the active window, if any."""
-        ...
 
 
 class CaptureService(QObject):

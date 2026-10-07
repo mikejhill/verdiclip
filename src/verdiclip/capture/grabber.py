@@ -49,7 +49,6 @@ class ScreenSource(Protocol):
 
     def freeze(self) -> FrozenScreen:
         """Return a snapshot of every monitor."""
-        ...
 
 
 class MssScreenSource:

@@ -38,12 +38,10 @@ class WindowTarget(Protocol):
     @property
     def title(self) -> str:
         """Window title."""
-        ...
 
     @property
     def bounds(self) -> Rect:
         """Window rectangle in physical desktop pixels."""
-        ...
 
 
 class SelectionOverlay(QWidget):

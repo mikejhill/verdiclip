@@ -81,11 +81,14 @@ class CommandLine:
     def _parse_region(self, text: str) -> Rect:
         """Parse ``X,Y,W,H`` in physical desktop pixels."""
         try:
-            x, y, w, h = (int(part) for part in text.split(","))
+            values = [int(part) for part in text.split(",")]
         except ValueError:
+            values = []
+        if len(values) != 4:  # noqa: PLR2004 — x, y, width, height
             self._parser.error(
                 f"--region must be X,Y,WIDTH,HEIGHT integers, got {text!r}"
             )
+        x, y, w, h = values
         if w <= 0 or h <= 0:
             self._parser.error(
                 f"--region width and height must be positive, got {text!r}"

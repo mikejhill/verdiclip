@@ -28,6 +28,7 @@ jobs:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
+      actions: write
       contents: write
       pull-requests: write
       issues: write
@@ -38,11 +39,20 @@ jobs:
       - id: release
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
-          # A PAT or GitHub App token lets CI run on the release pull request;
-          # the default token works but GitHub won't trigger CI for its PRs.
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+      # Pull requests opened with the default token don't trigger workflows,
+      # but a dispatch does: run CI on the release branch so its checks
+      # (and branch protection) apply to the release pull request too.
+      - name: Run CI on the release pull request
+        if: steps.release.outputs.prs_created == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_JSON: ${{ steps.release.outputs.pr }}
+        run: |
+          branch=$(jq -r '.headBranchName' <<< "$PR_JSON")
+          gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$branch"
 
   ci:
     name: CI

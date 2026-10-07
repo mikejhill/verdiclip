@@ -19,15 +19,12 @@ class RegistryBackend(Protocol):
 
     def read_value(self, name: str) -> str | None:
         """Read a named string, returning None when absent."""
-        ...
 
     def write_value(self, name: str, value: str) -> None:
         """Write a named string value."""
-        ...
 
     def delete_value(self, name: str) -> None:
         """Delete a named value if it exists."""
-        ...
 
 
 class WinRegRunKey:

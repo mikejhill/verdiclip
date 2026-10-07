@@ -64,7 +64,7 @@ class StyleMemory:
             return {}
         try:
             # json.loads only ever produces JSON-compatible values
-            data = cast("JsonValue", json.loads(self._path.read_text(encoding="utf-8")))
+            data = cast(JsonValue, json.loads(self._path.read_text(encoding="utf-8")))
         except (OSError, json.JSONDecodeError) as err:
             logger.warning("Ignoring unreadable style memory %s: %s", self._path, err)
             return {}

@@ -149,11 +149,9 @@ class HotkeyApi(Protocol):
 
     def register(self, hwnd: int, hotkey_id: int, modifiers: int, vk: int) -> bool:
         """Register an exact shortcut."""
-        ...
 
     def unregister(self, hwnd: int, hotkey_id: int) -> bool:
         """Release a shortcut registration."""
-        ...
 
 
 class Win32HotkeyApi:
