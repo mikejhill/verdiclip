@@ -20,7 +20,7 @@ window state, or text the user can read — never internal state.
 | UX-G-03 | Every document change is undoable with `Ctrl+Z` and redoable with `Ctrl+Y` / `Ctrl+Shift+Z`. While a text editor is open, these undo typing first; with nothing typed they undo the document (e.g. the box just drawn). |
 | UX-G-04 | The canvas and every exported image are pixel-identical for the image area. |
 | UX-G-05 | Failures the user can act on (hotkey conflict, save failure) are shown to the user, not only logged. |
-| UX-G-06 | Closing an editor whose current state has not been delivered (copied, saved, printed) asks: Save / Discard / Cancel. |
+| UX-G-06 | Closing an editor whose current image hasn't been saved to a file or copied to the clipboard asks: Save / Discard / Cancel. This includes a fresh capture with no edits (unless an after-capture action already saved or copied it); an image opened from a file starts as saved. The prompt can be turned off in Settings → Editor (on by default) and the change applies to open editors immediately. |
 | UX-G-07 | Window chrome never jumps: switching tools or selecting items never changes the toolbar height or moves the canvas. |
 | UX-G-08 | Light, dark, or match-Windows theme applies to every window immediately, including toolbar icons. |
 

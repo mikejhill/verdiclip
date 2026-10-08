@@ -11,7 +11,7 @@ import pytest
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QColor, QGuiApplication, QImage
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QLabel, QMessageBox, QToolButton
+from PySide6.QtWidgets import QApplication, QLabel, QToolButton
 from pytestqt.qtbot import QtBot
 
 from verdiclip.document.document import Document
@@ -179,16 +179,6 @@ class Pixels:
     def is_white(color: QColor) -> bool:
         """True for near-white."""
         return min(color.red(), color.green(), color.blue()) > 240
-
-
-@pytest.fixture(autouse=True)
-def no_modal_dialogs(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Answer "Discard" to unsaved-change prompts so teardown never blocks."""
-    monkeypatch.setattr(
-        QMessageBox,
-        "question",
-        lambda *_args: QMessageBox.StandardButton.Discard,
-    )
 
 
 @pytest.fixture
