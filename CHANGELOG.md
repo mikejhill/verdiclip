@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/mikejhill/verdiclip/compare/v0.2.0...v0.2.1) (2026-10-08)
+
+
+### Bug Fixes
+
+* show capture guides and window highlight before the mouse moves ([#4](https://github.com/mikejhill/verdiclip/issues/4)) ([f80e117](https://github.com/mikejhill/verdiclip/commit/f80e1179785be096bb08c0e5fffed309f5bf6914))
+
 ## [0.2.0](https://github.com/mikejhill/verdiclip/compare/v0.1-legacy...v0.2.0) (2026-10-07)
 
 
