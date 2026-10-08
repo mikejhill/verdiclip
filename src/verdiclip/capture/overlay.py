@@ -17,6 +17,7 @@ from PySide6.QtGui import (
     QPaintEvent,
     QPen,
     QScreen,
+    QShowEvent,
 )
 from PySide6.QtWidgets import QWidget
 
@@ -291,6 +292,19 @@ class SelectionOverlay(QWidget):
             super().keyPressEvent(event)
             return
         QCursor.setPos(QCursor.pos() + delta)
+
+    @override
+    def showEvent(self, event: QShowEvent) -> None:
+        """Show guides and the window highlight at once, before any mouse move."""
+        super().showEvent(event)
+        self.sync_cursor()
+
+    def sync_cursor(self) -> None:
+        """Pick up the current pointer position (None if it's on another monitor)."""
+        local = self.mapFromGlobal(QCursor.pos())
+        inside = self.rect().contains(local)
+        self._cursor = Point(local.x(), local.y()) if inside else None
+        self.update()
 
     @override
     def leaveEvent(self, event: QEvent) -> None:

@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 import pytest
 from PySide6.QtCore import QPoint, Qt
-from PySide6.QtGui import QColor, QGuiApplication, QImage, QPainter
+from PySide6.QtGui import QColor, QCursor, QGuiApplication, QImage, QPainter
 from PySide6.QtTest import QTest
 from pytestqt.qtbot import QtBot
 from pytestqt.wait_signal import SignalBlocker
@@ -176,6 +176,26 @@ class TestRegionCapture:
         assert desktop.frames == 1
         qtbot.wait(20)
         assert desktop.frames == 1
+
+    def test_guides_and_highlight_appear_without_moving_the_mouse(
+        self, service: CaptureService
+    ) -> None:
+        """Pressing the hotkey with the mouse resting shows guides and highlight.
+
+        UX-CAP-01, UX-CAP-04.
+        """
+        QCursor.setPos(QPoint(200, 200))
+
+        service.capture_region()
+
+        overlay = service.overlays[0]
+        hovered = overlay.hovered_window()
+        assert hovered is not None
+        assert hovered.title == "Dialog"
+        shown = overlay.grab().toImage()
+        idle = QColor(shown.pixelColor(200, 20))  # On the vertical guide line
+        beside = QColor(shown.pixelColor(260, 20))  # Same row, off the guides
+        assert idle != beside, "the vertical guide line should be drawn already"
 
     def test_drag_captures_exact_frozen_pixels(
         self, service: CaptureService, desktop: FakeDesktop, qtbot: QtBot

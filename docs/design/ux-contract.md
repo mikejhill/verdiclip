@@ -28,7 +28,7 @@ window state, or text the user can read — never internal state.
 
 | ID | Given / When | Then |
 | --- | --- | --- |
-| UX-CAP-01 | User presses the region hotkey | Within 150 ms every monitor shows a frozen, dimmed copy of itself with a crosshair cursor. Moving content underneath does not change the overlay. |
+| UX-CAP-01 | User presses the region hotkey | Within 150 ms every monitor shows a frozen, dimmed copy of itself with a crosshair cursor. The guide lines, magnifier, and the highlight of the window under the cursor appear immediately, without touching the mouse. Moving content underneath does not change the overlay. |
 | UX-CAP-02 | User drags a rectangle on the overlay | The rectangle shows undimmed, with a border and a live `W × H` label in physical pixels. |
 | UX-CAP-03 | User releases after dragging ≥ 3 px in both directions | The overlay closes and the selected pixels — exactly the frozen pixels, at physical resolution — go to the after-capture action. |
 | UX-CAP-04 | User hovers a window on the overlay without dragging | The window under the cursor is highlighted with its title shown; a click (no drag) captures that window's frozen pixels. |
