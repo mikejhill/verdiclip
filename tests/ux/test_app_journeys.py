@@ -145,7 +145,7 @@ def make_app(qtbot: QtBot, tmp_path: Path) -> Iterator[AppFactory]:
             editor.session.history.mark_delivered()
             editor.close()
         app.controller.shutdown()
-    del qtbot
+    qtbot.wait(0)  # Let closed editors process their deferred deletes
 
 
 class TestAfterCapture:
