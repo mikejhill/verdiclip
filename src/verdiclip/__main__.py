@@ -20,11 +20,12 @@ from verdiclip.capture.grabber import MssScreenSource
 from verdiclip.cli import CliRequest, Command, CommandLine, HeadlessMode
 from verdiclip.exceptions import AppError, CaptureError
 from verdiclip.output.delivery import ImageDelivery
+from verdiclip.platform.associations import FileAssociations
 from verdiclip.platform.hotkeys import HotkeyService
 from verdiclip.platform.startup import StartupRegistration
 from verdiclip.platform.windows import WindowLocator
 from verdiclip.settings import SettingsStore
-from verdiclip.shell.controller import AppController
+from verdiclip.shell.controller import AppController, ShellIntegration
 from verdiclip.shell.instance import SingleInstance
 
 logger = logging.getLogger(__name__)
@@ -81,7 +82,7 @@ class Application:
             MssScreenSource(),
             WindowLocator(),
             HotkeyService(),
-            StartupRegistration(),
+            ShellIntegration(StartupRegistration(), FileAssociations()),
         )
         instance.message_received.connect(controller.handle_forwarded)
         app.aboutToQuit.connect(controller.shutdown)

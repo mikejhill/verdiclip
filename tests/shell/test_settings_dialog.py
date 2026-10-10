@@ -159,3 +159,12 @@ class TestSettingsDialog:
         combo.setCurrentIndex(combo.findData(Theme.LIGHT.value))
 
         assert dialog.result_settings().appearance.theme is Theme.LIGHT
+
+    def test_make_default_turns_on_open_with(
+        self, dialog: SettingsDialog, qtbot: QtBot
+    ) -> None:
+        """UX-TRY-07: the button checks Open with and asks the app to act."""
+        with qtbot.waitSignal(dialog.make_default_requested):
+            dialog.make_default_button().click()
+
+        assert dialog.result_settings().integration.open_with is True

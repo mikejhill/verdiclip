@@ -10,11 +10,12 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import QProcess, Qt
-from PySide6.QtGui import QGuiApplication, QImage
+from PySide6.QtCore import QProcess, Qt, QUrl
+from PySide6.QtGui import QDesktopServices, QGuiApplication, QImage
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon, QWidget
 from pytestqt.qtbot import QtBot
+from tests.platform.test_associations import FakeAssociationBackend
 from tests.ux.conftest import Stopwatch
 from tests.ux.test_capture_journeys import (
     CaptureOf,
@@ -29,10 +30,11 @@ from verdiclip.editor.session import ToolId
 from verdiclip.editor.style_bar import ColorButton
 from verdiclip.editor.window import EditorWindow
 from verdiclip.geometry import Rect
+from verdiclip.platform.associations import DEFAULT_APPS_URI, FileAssociations
 from verdiclip.platform.hotkeys import Hotkey, HotkeyService
 from verdiclip.platform.startup import StartupRegistration
-from verdiclip.settings import Settings, SettingsStore, Theme
-from verdiclip.shell.controller import AppController
+from verdiclip.settings import IntegrationSettings, Settings, SettingsStore, Theme
+from verdiclip.shell.controller import AppController, ShellIntegration
 from verdiclip.shell.instance import SingleInstance
 from verdiclip.shell.settings_dialog import SettingsDialog
 
@@ -90,6 +92,7 @@ class App:
     os_hotkeys: FakeHotkeys
     registry: FakeRegistry
     store: SettingsStore
+    associations: FakeAssociationBackend
 
     def press_hotkey(self, action: str) -> None:
         """Simulate Windows delivering WM_HOTKEY for ``action``."""
@@ -121,11 +124,18 @@ def make_app(qtbot: QtBot, tmp_path: Path) -> Iterator[AppFactory]:
         registry = FakeRegistry()
         windows = FakeWindows([FakeWindow("Notepad", Rect(10, 10, 300, 200), 1)])
         windows.active = windows.windows[0]
+        associations = FakeAssociationBackend()
         controller = AppController(
-            store, FakeDesktop(), windows, hotkeys, StartupRegistration(registry)
+            store,
+            FakeDesktop(),
+            windows,
+            hotkeys,
+            ShellIntegration(
+                StartupRegistration(registry), FileAssociations(associations)
+            ),
         )
         controller.start()
-        app = App(controller, hotkeys, os_hotkeys, registry, store)
+        app = App(controller, hotkeys, os_hotkeys, registry, store, associations)
         created.append(app)
         return app
 
@@ -302,6 +312,73 @@ class TestHotkeysAndSettings:
 
         assert enabled
         assert "VerdiClip" not in app.registry.values
+
+    def test_open_with_registers_and_unregisters(
+        self, make_app: AppFactory, tmp_path: Path
+    ) -> None:
+        """UX-TRY-07: the Open with checkbox really changes Explorer's registration."""
+        app = make_app()
+        current = app.controller.settings
+        command_key = r"Software\Classes\VerdiClip.Image\shell\open\command"
+
+        app.controller.apply_settings(
+            replace(current, integration=IntegrationSettings(open_with=True))
+        )
+        command = app.associations.keys[command_key][""]
+        icon = Path(
+            app.associations.keys[r"Software\VerdiClip\Capabilities"]["ApplicationIcon"]
+        )
+        app.controller.apply_settings(
+            replace(current, integration=IntegrationSettings(open_with=False))
+        )
+
+        assert command.endswith('-m verdiclip open "%1"')
+        assert icon == tmp_path / "verdiclip.ico"
+        assert not QImage(str(icon)).isNull()
+        assert command_key not in app.associations.keys
+        assert app.store.load().integration.open_with is False
+
+    def test_open_with_is_refreshed_at_start(self, make_app: AppFactory) -> None:
+        """UX-TRY-07: a moved install re-registers its current command on launch."""
+        app = make_app(Settings(integration=IntegrationSettings(open_with=True)))
+
+        command_key = r"Software\Classes\VerdiClip.Image\shell\open\command"
+        assert app.associations.keys[command_key][""].endswith('open "%1"')
+
+    def test_make_default_registers_and_opens_windows_settings(
+        self, make_app: AppFactory, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """UX-TRY-07: "Make default" registers, saves, and opens Default apps."""
+        opened: list[str] = []
+        monkeypatch.setattr(
+            QDesktopServices, "openUrl", lambda url: opened.append(url.toString())
+        )
+        app = make_app()
+
+        app.controller.make_default_image_app()
+        app.controller.make_default_image_app()
+
+        assert opened == [DEFAULT_APPS_URI, DEFAULT_APPS_URI]
+        assert QUrl(DEFAULT_APPS_URI).scheme() == "ms-settings"
+        assert app.store.load().integration.open_with is True
+        assert app.associations.notified == 2
+
+    def test_open_with_failure_is_reported(
+        self, make_app: AppFactory, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """UX-TRY-07: a registry failure becomes a warning, not a crash."""
+        app = make_app()
+        app.associations.error = PermissionError("denied")
+
+        with caplog.at_level(logging.WARNING):
+            app.controller.apply_settings(
+                replace(
+                    app.controller.settings,
+                    integration=IntegrationSettings(open_with=True),
+                )
+            )
+
+        assert "Could not change Open with" in caplog.text
 
     def test_editor_defaults_follow_settings(
         self, make_app: AppFactory, qtbot: QtBot

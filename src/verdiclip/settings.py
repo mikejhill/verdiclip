@@ -112,6 +112,13 @@ class StartupSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class IntegrationSettings:
+    """How VerdiClip hooks into Windows Explorer."""
+
+    open_with: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class Settings:
     """All user settings."""
 
@@ -121,6 +128,7 @@ class Settings:
     editor: EditorSettings = field(default_factory=EditorSettings)
     appearance: AppearanceSettings = field(default_factory=AppearanceSettings)
     startup: StartupSettings = field(default_factory=StartupSettings)
+    integration: IntegrationSettings = field(default_factory=IntegrationSettings)
 
 
 class SettingsStore:
@@ -179,6 +187,7 @@ type SettingsSection = (
     | EditorSettings
     | AppearanceSettings
     | StartupSettings
+    | IntegrationSettings
 )
 
 # Pre-0.2.1 files stored one choice; map it onto the independent switches

@@ -48,12 +48,13 @@ class IconFactory:
             painter.end()
         return QIcon(pixmap)
 
-    def brand(self) -> QIcon:
+    def brand(self, size: int = 64) -> QIcon:
         """Return the app icon: a white "V" on a green rounded square."""
-        pixmap = QPixmap(64, 64)
+        pixmap = QPixmap(size, size)
         pixmap.fill(Qt.GlobalColor.transparent)
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.scale(size / 64, size / 64)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(46, 160, 67))
         painter.drawRoundedRect(QRectF(2, 2, 60, 60), 14, 14)

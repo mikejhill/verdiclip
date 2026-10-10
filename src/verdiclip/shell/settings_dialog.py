@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Final
 
+from PySide6.QtCore import Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -36,6 +37,7 @@ from verdiclip.settings import (
     CaptureSettings,
     HotkeySettings,
     ImageFormat,
+    IntegrationSettings,
     OutputSettings,
     Settings,
     StartupSettings,
@@ -59,6 +61,8 @@ ERROR_STYLE: Final = "color: #c62828;"
 class SettingsDialog(QDialog):
     """Edit ``Settings``; ``result_settings`` holds the accepted values."""
 
+    make_default_requested = Signal()
+
     def __init__(self, settings: Settings, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("VerdiClip settings")
@@ -81,6 +85,8 @@ class SettingsDialog(QDialog):
         self._font = QFontComboBox()
         self._font_size = QSpinBox()
         self._run_at_login = QCheckBox("Start VerdiClip when I sign in to Windows")
+        self._open_with = QCheckBox("Show VerdiClip in “Open with” for image files")
+        self._make_default = QPushButton("Make VerdiClip the default image app…")
         self._buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
@@ -120,11 +126,16 @@ class SettingsDialog(QDialog):
             ),
             appearance=AppearanceSettings(theme=Theme(self._theme.currentData())),
             startup=StartupSettings(run_at_login=self._run_at_login.isChecked()),
+            integration=IntegrationSettings(open_with=self._open_with.isChecked()),
         )
 
     def hotkey_edit(self, name: str) -> QLineEdit:
         """Return the editor for hotkey ``name`` (for tests)."""
         return self._hotkeys[name]
+
+    def make_default_button(self) -> QPushButton:
+        """Return the "make default" button (for tests)."""
+        return self._make_default
 
     def ok_enabled(self) -> bool:
         """True when every field is valid."""
@@ -167,6 +178,15 @@ class SettingsDialog(QDialog):
         form = QFormLayout(tab)
         form.addRow("Theme:", self._theme)
         form.addRow(self._run_at_login)
+        self._make_default.setToolTip(
+            "Adds VerdiClip to Open with, then opens Windows Settings, "
+            "where you confirm it as the default."
+        )
+        self._make_default.clicked.connect(self._request_default)
+        files = QVBoxLayout()
+        files.addWidget(self._open_with)
+        files.addWidget(self._make_default)
+        form.addRow("Image files:", files)
         return tab
 
     def _hotkey_tab(self) -> QWidget:
@@ -250,6 +270,12 @@ class SettingsDialog(QDialog):
         self._font.setCurrentFont(QFont(settings.editor.font_family))
         self._font_size.setValue(settings.editor.font_size)
         self._run_at_login.setChecked(settings.startup.run_at_login)
+        self._open_with.setChecked(settings.integration.open_with)
+
+    def _request_default(self) -> None:
+        """Turn on Open with and ask the app to open the default-apps page."""
+        self._open_with.setChecked(True)
+        self.make_default_requested.emit()
 
     def _validate(self) -> None:
         """Show per-field problems and enable OK only when all fields are valid."""
