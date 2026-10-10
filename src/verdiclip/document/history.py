@@ -16,11 +16,12 @@ type HistoryListener = Callable[[], None]
 class History:
     """Execute, undo, and redo commands; track whether work has been delivered."""
 
-    def __init__(self, document: Document) -> None:
+    def __init__(self, document: Document, *, delivered: bool = True) -> None:
         self._document = document
         self._done: list[Command] = []
         self._undone: list[Command] = []
-        self._delivered_depth: int | None = 0
+        # A fresh capture starts undelivered; an opened file starts delivered
+        self._delivered_depth: int | None = 0 if delivered else None
         self._listeners: list[HistoryListener] = []
 
     @property

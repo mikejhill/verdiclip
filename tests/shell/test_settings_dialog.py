@@ -159,3 +159,17 @@ class TestSettingsDialog:
         combo.setCurrentIndex(combo.findData(Theme.LIGHT.value))
 
         assert dialog.result_settings().appearance.theme is Theme.LIGHT
+
+    def test_close_prompt_setting_round_trips(self, dialog: SettingsDialog) -> None:
+        """UX-G-06: the close prompt is on by default and can be turned off."""
+        box = next(
+            b
+            for b in dialog.findChildren(QCheckBox)
+            if b.text().startswith("Ask before")
+        )
+        default_on = box.isChecked()
+
+        box.setChecked(False)
+
+        assert default_on
+        assert dialog.result_settings().editor.confirm_unsaved_close is False

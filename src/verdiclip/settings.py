@@ -89,6 +89,12 @@ class EditorSettings:
     stroke_width: float = 3.0
     font_family: str = "Segoe UI"
     font_size: int = 18
+    confirm_unsaved_close: bool = True
+
+    @property
+    def style_defaults(self) -> tuple[Color, float, str, int]:
+        """Return the fields that define new annotations' default style."""
+        return (self.stroke_color, self.stroke_width, self.font_family, self.font_size)
 
     def __post_init__(self) -> None:
         """Reject sizes that cannot construct a valid annotation style."""

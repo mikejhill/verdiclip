@@ -141,9 +141,10 @@ class EditorSession:
         *,
         remembered: Mapping[ToolId, Style] | None = None,
         on_style_change: StyleListener | None = None,
+        delivered: bool = True,
     ) -> None:
         self._document = document
-        self._history = History(document)
+        self._history = History(document, delivered=delivered)
         self._selection = Selection()
         self._styles = ToolStyles(settings, remembered, on_style_change)
         self._codec = AnnotationCodec()
