@@ -48,6 +48,7 @@ from verdiclip.editor.chrome import (
     ICON_SIZE,
     ChromeStyle,
 )
+from verdiclip.editor.close_prompt import CloseChoice, ClosePrompt
 from verdiclip.editor.icons import IconFactory
 from verdiclip.editor.resize_dialog import ResizeDialog
 from verdiclip.editor.session import EditorSession, ToolId
@@ -117,6 +118,7 @@ class EditorWindow(QMainWindow):
         self._renderer = Renderer()
         self._title = title or "Screenshot"
         self._saved_path = source_path
+        self._copied = False
         self._icons = IconFactory(self.palette().windowText().color())
         self._canvas = CanvasView(session, self._renderer, self)
         self._style_bar = StyleBar(self)
@@ -208,6 +210,7 @@ class EditorWindow(QMainWindow):
         """Copy the flattened image to the clipboard."""
         if not self._deliver(lambda: self._delivery.copy(self.flattened())):
             return False
+        self._copied = True
         self.statusBar().showMessage("Image copied to clipboard", STATUS_TIMEOUT_MS)
         return True
 
@@ -531,17 +534,11 @@ class EditorWindow(QMainWindow):
         if not self._confirm_close or self._session.history.is_delivered:
             event.accept()
             return
-        answer = QMessageBox.question(
-            self,
-            "Unsaved changes",
-            "This image hasn't been saved or copied. Save it before closing?",
-            QMessageBox.StandardButton.Save
-            | QMessageBox.StandardButton.Discard
-            | QMessageBox.StandardButton.Cancel,
-            QMessageBox.StandardButton.Save,
-        )
-        if answer == QMessageBox.StandardButton.Discard or (
-            answer == QMessageBox.StandardButton.Save and self.save()
+        file_name = self._saved_path.name if self._saved_path is not None else None
+        prompt = ClosePrompt.describe(file_name=file_name, copied=self._copied)
+        answer = prompt.ask(self)
+        if answer is CloseChoice.DISCARD or (
+            answer is CloseChoice.SAVE and self.save()
         ):
             event.accept()
         else:

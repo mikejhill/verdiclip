@@ -11,7 +11,11 @@ from PySide6.QtGui import QDragEnterEvent, QDropEvent, QImage, QWheelEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMessageBox, QPlainTextEdit, QSpinBox
 from pytestqt.qtbot import QtBot
+from tests.editor.test_close_prompt import REAL_ASK, answer_when_open
 from tests.ux.conftest import NO_MODS, Pixels, User
+
+from verdiclip.editor.close_prompt import CloseChoice, ClosePrompt
+from verdiclip.settings import OutputSettings
 
 pytestmark = pytest.mark.ux
 
@@ -505,11 +509,11 @@ class TestSaving:
         """UX-G-06: Cancel keeps the editor open; after copying, closing doesn't ask."""
         asked: list[str] = []
 
-        def cancel(*args: object) -> QMessageBox.StandardButton:
-            asked.append(str(args[1]))
-            return QMessageBox.StandardButton.Cancel
+        def cancel(prompt: ClosePrompt, _parent: object) -> CloseChoice:
+            asked.append(prompt.message)
+            return CloseChoice.CANCEL
 
-        monkeypatch.setattr(QMessageBox, "question", cancel)
+        monkeypatch.setattr(ClosePrompt, "ask", cancel)
         user.key(Qt.Key.Key_R)
         user.drag((10, 10), (90, 90))
 
@@ -769,3 +773,50 @@ class TestLabelFirstBoxes:
 
         assert len(user.window.session.document.annotations) == 1
         assert user.window.canvas.editors.is_open
+
+
+@pytest.mark.usefixtures("real_close_prompt")
+class TestClosePromptKeyboard:
+    """UX-G-06: the real prompt answered from the keyboard, end to end."""
+
+    @pytest.fixture
+    def real_close_prompt(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Let the real dialog run instead of the suite-wide automatic answer."""
+        monkeypatch.setattr(ClosePrompt, "ask", REAL_ASK)
+
+    def _edit_then_close(self, user: User, key: Qt.Key) -> None:
+        """Draw a box, press Ctrl+W, and answer the prompt with ``key``."""
+        user.key(Qt.Key.Key_R)
+        user.drag((10, 10), (90, 90))
+        user.key(Qt.Key.Key_Escape)  # Skip the label
+        answer_when_open(lambda box: QTest.keyClick(box, key))
+        user.shortcut("Ctrl+W")
+
+    def test_n_closes_without_saving(
+        self, user: User, output_settings: OutputSettings, qtbot: QtBot
+    ) -> None:
+        """Ctrl+W then N: the editor closes and nothing is written."""
+        self._edit_then_close(user, Qt.Key.Key_N)
+
+        qtbot.waitUntil(lambda: not user.window.isVisible())
+        assert not any(output_settings.directory.glob("*"))
+
+    def test_s_saves_then_closes(
+        self, user: User, output_settings: OutputSettings, qtbot: QtBot
+    ) -> None:
+        """Ctrl+W then S: the image is saved to the output folder and closes."""
+        self._edit_then_close(user, Qt.Key.Key_S)
+
+        qtbot.waitUntil(lambda: not user.window.isVisible())
+        saved = list(output_settings.directory.glob("*.png"))
+        assert len(saved) == 1
+        assert Pixels.is_reddish(QImage(str(saved[0])).pixelColor(10, 50))
+
+    def test_esc_keeps_working(self, user: User) -> None:
+        """Ctrl+W then Esc: the editor and its edits stay."""
+        self._edit_then_close(user, Qt.Key.Key_Escape)
+
+        assert user.window.isVisible()
+        assert len(user.window.session.document.annotations) == 1
+        # Teardown closes the editor; don't let the real prompt block it
+        user.window.session.history.mark_delivered()

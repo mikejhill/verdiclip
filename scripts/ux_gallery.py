@@ -17,7 +17,7 @@ from typing import Final
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QColor, QGuiApplication, QImage, QMouseEvent, QPainter
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QMessageBox, QTabWidget, QWidget
+from PySide6.QtWidgets import QApplication, QTabWidget, QWidget
 
 from verdiclip.capture.grabber import FrozenScreen
 from verdiclip.capture.models import ScreenGeometry
@@ -33,6 +33,7 @@ from verdiclip.document.commands import AddAnnotations
 from verdiclip.document.document import Document
 from verdiclip.document.style import HIGHLIGHT_YELLOW, RED, WHITE, Color, Style
 from verdiclip.document.transform import Rotate
+from verdiclip.editor.close_prompt import CloseChoice, ClosePrompt
 from verdiclip.editor.resize_dialog import ResizeDialog
 from verdiclip.editor.session import EditorSession, ToolId
 from verdiclip.editor.window import EditorWindow
@@ -91,6 +92,9 @@ class Gallery:
             "editor-text-tool": lambda: self._editor(ToolId.TEXT, select=False),
             "editor-rotated": self._rotated_editor,
             "resize-dialog": lambda: ResizeDialog(720, 420),
+            "close-prompt": lambda: ClosePrompt.describe(
+                file_name=None, copied=False
+            ).build(None),
             "settings-capture": lambda: self._settings_tab(0),
             "settings-hotkeys": lambda: self._settings_tab(1),
             "settings-general": lambda: self._settings_tab(4),
@@ -227,7 +231,7 @@ class GalleryCommand:
         app = QApplication(sys.argv[:1])
         del app
         # Never show a modal prompt on the reviewer's real desktop
-        QMessageBox.question = lambda *_args: QMessageBox.StandardButton.Discard  # ty: ignore[invalid-assignment]  # script-only stub
+        ClosePrompt.ask = lambda *_args: CloseChoice.DISCARD  # ty: ignore[invalid-assignment]  # script-only stub
         written = Gallery(Path(args.out)).run()
         QGuiApplication.processEvents()
         if args.readme_dir:
