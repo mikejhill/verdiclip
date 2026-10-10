@@ -92,6 +92,9 @@ class Gallery:
             "editor-text-tool": lambda: self._editor(ToolId.TEXT, select=False),
             "editor-rotated": self._rotated_editor,
             "resize-dialog": lambda: ResizeDialog(720, 420),
+            "close-prompt": lambda: ClosePrompt.describe(
+                file_name=None, copied=False
+            ).build(None),
             "settings-capture": lambda: self._settings_tab(0),
             "settings-hotkeys": lambda: self._settings_tab(1),
             "settings-general": lambda: self._settings_tab(4),

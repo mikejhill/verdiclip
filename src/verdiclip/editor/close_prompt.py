@@ -75,8 +75,8 @@ class ClosePrompt:
             "This screenshot hasn't been saved or copied. Save it before closing?"
         )
 
-    def ask(self, parent: QWidget | None) -> CloseChoice:
-        """Show the prompt; S saves, N discards, Esc cancels."""
+    def build(self, parent: QWidget | None) -> QMessageBox:
+        """Return the dialog, not yet shown: S saves, N discards, Esc cancels."""
         box = QMessageBox(parent)
         box.setIcon(QMessageBox.Icon.Question)
         box.setWindowTitle("Unsaved changes")
@@ -90,10 +90,16 @@ class ClosePrompt:
             button.setStyle(style)
         box.setDefaultButton(save)
         box.setEscapeButton(cancel)
+        return box
+
+    def ask(self, parent: QWidget | None) -> CloseChoice:
+        """Show the prompt and return the answer."""
+        box = self.build(parent)
         box.exec()
-        clicked = box.clickedButton()
-        if clicked is save:
+        # Closing with the title-bar X counts as the escape button (Cancel)
+        role = box.buttonRole(box.clickedButton())
+        if role is QMessageBox.ButtonRole.AcceptRole:
             return CloseChoice.SAVE
-        if clicked is discard:
+        if role is QMessageBox.ButtonRole.DestructiveRole:
             return CloseChoice.DISCARD
         return CloseChoice.CANCEL
