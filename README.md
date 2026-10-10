@@ -46,12 +46,15 @@ If Windows or another screenshot tool already owns `PrtSc`, VerdiClip tells you 
 | `E` Ellipse | `O` Obfuscate | `Ctrl+P` Print | Arrows Nudge (`Ctrl` = 10 px) |
 | `L` Line | `F` Freehand | `Ctrl+wheel` Zoom | `Space`+drag Pan |
 | `A` Arrow | | `Ctrl+0` / `Ctrl+Shift+F` 100% / fit | `Esc` Back out one step |
+| | | `Ctrl+R` / `Ctrl+Shift+R` Rotate right / left | `Ctrl+Shift+H` / `Ctrl+Shift+V` Flip |
+| | | `Ctrl+Alt+I` Resize | |
 
 - **Labels in boxes.** After drawing a rectangle or ellipse, just type — the text is centered and wraps inside it. Double-click (or `Enter`/`F2`) to edit later; `Esc` skips.
 - **Shift** draws squares, circles, and 45° lines.
 - **Your styles stick.** Colors, fills, widths, and fonts you pick are remembered per tool for the next screenshot.
+- **Rotate, flip, and resize** from the Image menu or the toolbar's Image button. Your marks turn and scale with the picture; text stays upright. Resize works on what you see (after cropping), in pixels or percent, keeping the aspect ratio unless you untick it.
 - **Everything is undoable**, including crop, which never throws pixels away.
-- **The quickest path**: draw, `Esc` until nothing is selected, `Enter` — the image is on the clipboard and the editor closes. Nothing you haven't copied, saved, or printed is ever discarded without asking.
+- **The quickest path**: draw, `Esc` until nothing is selected, `Enter` — the image is on the clipboard and the editor closes. Closing an image you haven't copied or saved asks first (you can turn this off in Settings → Editor).
 
 ![The editor in the dark theme](docs/images/editor-dark.png)
 

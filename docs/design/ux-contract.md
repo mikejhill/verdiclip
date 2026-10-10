@@ -91,6 +91,14 @@ so it can be adjusted immediately; the tool stays active for the next mark.
 | UX-SEL-10 | `Ctrl+]` / `Ctrl+[` | Bring selected annotations forward / send backward. |
 | UX-SEL-11 | Change a tool's color, fill, width, or font (directly or via a selected item) | The choice is remembered for that tool and used by every later editor, including after restarting. Changing editor defaults in Settings resets the remembered choices. |
 
+## Editor: image
+
+| ID | Given / When | Then |
+| --- | --- | --- |
+| UX-IMG-01 | `Ctrl+R` / `Ctrl+Shift+R`, or Image → Rotate right / left | The image turns a quarter turn; every annotation and the crop turn with it, text stays upright, the selection is kept, and an open label editor is committed first. The canvas shows the new pixels immediately and the status bar shows the new size. One undo step restores the exact previous state. |
+| UX-IMG-02 | `Ctrl+Shift+H` / `Ctrl+Shift+V`, Image → Flip, or the toolbar's Image button | The image mirrors with annotations (arrowheads stay at their ends). The toolbar Image button opens a menu listing rotate, flip, and resize with their shortcuts in one click. |
+| UX-IMG-03 | `Ctrl+Alt+I` or Image → Resize… | A dialog opens at the visible (cropped) size with the width selected. Width, height, and percent stay in step while "Keep aspect ratio" is ticked (the default); unticking lets the sides differ, and ticking again re-links the height. OK scales the visible area to exactly that size, scaling stroke widths, fonts, and counters with it; Cancel, or OK with the size unchanged, does nothing. |
+
 ## Delivery
 
 | ID | Given / When | Then |

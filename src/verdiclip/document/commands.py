@@ -7,7 +7,8 @@ from collections.abc import Sequence
 from typing import override
 
 from verdiclip.document.annotations import Annotation
-from verdiclip.document.document import Document
+from verdiclip.document.document import Document, DocumentState
+from verdiclip.document.transform import ImageTransform
 from verdiclip.geometry import Rect
 
 
@@ -164,3 +165,27 @@ class SetCrop(Command):
     def revert(self, document: Document) -> None:
         """Restore the previous crop."""
         document.set_crop(self._before)
+
+
+class TransformImage(Command):
+    """Rotate, flip, or resize the whole document."""
+
+    def __init__(self, transform: ImageTransform) -> None:
+        super().__init__(transform.description)
+        self._transform = transform
+        self._before: DocumentState | None = None
+        self._after: DocumentState | None = None
+
+    @override
+    def apply(self, document: Document) -> None:
+        """Install the transformed state, computing it only once."""
+        if self._before is None or self._after is None:
+            self._before = document.state
+            self._after = self._transform.apply(self._before)
+        document.restore(self._after)
+
+    @override
+    def revert(self, document: Document) -> None:
+        """Restore the exact state from before."""
+        if self._before is not None:
+            document.restore(self._before)

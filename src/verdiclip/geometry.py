@@ -165,3 +165,37 @@ class Rect:
         return Rect(
             left, top, math.ceil(self.right) - left, math.ceil(self.bottom) - top
         )
+
+
+@dataclass(frozen=True, slots=True)
+class Affine:
+    """An affine map: ``x' = a*x + b*y + c`` and ``y' = d*x + e*y + f``."""
+
+    a: float
+    b: float
+    c: float
+    d: float
+    e: float
+    f: float
+
+    @property
+    def scale(self) -> float:
+        """Return the uniform scale factor (square root of the area ratio)."""
+        return math.sqrt(abs(self.a * self.e - self.b * self.d))
+
+    def map(self, point: Point) -> Point:
+        """Return ``point`` mapped."""
+        return Point(
+            self.a * point.x + self.b * point.y + self.c,
+            self.d * point.x + self.e * point.y + self.f,
+        )
+
+    def map_rect(self, rect: Rect) -> Rect:
+        """Return the bounds of ``rect`` mapped (exact for axis-aligned maps)."""
+        corners = [
+            rect.top_left,
+            Point(rect.right, rect.top),
+            rect.bottom_right,
+            Point(rect.left, rect.bottom),
+        ]
+        return Rect.bounding([self.map(p) for p in corners])

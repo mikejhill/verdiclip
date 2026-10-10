@@ -51,7 +51,7 @@ class History:
 
     @property
     def is_delivered(self) -> bool:
-        """True if the current state was copied, saved, or printed (or is pristine)."""
+        """True if the current state was copied or saved (or opened from a file)."""
         return self._delivered_depth == len(self._done)
 
     def subscribe(self, listener: HistoryListener) -> None:

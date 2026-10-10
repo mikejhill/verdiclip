@@ -21,6 +21,7 @@ from PySide6.QtGui import (
     QShowEvent,
 )
 from PySide6.QtWidgets import (
+    QDialog,
     QFileDialog,
     QLabel,
     QMainWindow,
@@ -33,6 +34,13 @@ from PySide6.QtWidgets import (
 
 from verdiclip.document.annotations import CounterMarker, LabeledBox, TextNote
 from verdiclip.document.style import Style
+from verdiclip.document.transform import (
+    Flip,
+    FlipAxis,
+    ImageTransform,
+    Resize,
+    Rotate,
+)
 from verdiclip.editor.canvas import CanvasView
 from verdiclip.editor.chrome import (
     BUTTON_SIZE,
@@ -41,6 +49,7 @@ from verdiclip.editor.chrome import (
     ChromeStyle,
 )
 from verdiclip.editor.icons import IconFactory
+from verdiclip.editor.resize_dialog import ResizeDialog
 from verdiclip.editor.session import EditorSession, ToolId
 from verdiclip.editor.style_bar import FIELD_LAYOUT, KIND_TOOLS, StyleBar
 from verdiclip.editor.tools import TOOL_TYPES, Tool
@@ -60,7 +69,19 @@ TOOL_GROUPS: Final = (
     (ToolId.TEXT, ToolId.COUNTER),
     (ToolId.HIGHLIGHT, ToolId.OBFUSCATE),
 )
-ACTION_GROUPS: Final = (("copy_image", "save"), ("undo", "redo"), ("settings",))
+ACTION_GROUPS: Final = (
+    ("copy_image", "save"),
+    ("undo", "redo"),
+    ("image",),
+    ("settings",),
+)
+IMAGE_ACTIONS: Final = (
+    "rotate_left",
+    "rotate_right",
+    "flip_horizontal",
+    "flip_vertical",
+    "resize",
+)
 IMAGE_FILTER: Final = "Images (*.png *.jpg *.jpeg *.bmp *.gif *.tif *.tiff *.webp)"
 
 
@@ -306,6 +327,37 @@ class EditorWindow(QMainWindow):
             "Ctrl+[",
             lambda: s.restack_selected(forward=False),
         )
+        self._add_action(
+            "rotate_right",
+            "Rotate &right",
+            "Ctrl+R",
+            lambda: self.transform_image(Rotate(clockwise=True)),
+        )
+        self._add_action(
+            "rotate_left",
+            "Rotate &left",
+            "Ctrl+Shift+R",
+            lambda: self.transform_image(Rotate(clockwise=False)),
+        )
+        self._add_action(
+            "flip_horizontal",
+            "Flip &horizontally",
+            "Ctrl+Shift+H",
+            lambda: self.transform_image(Flip(FlipAxis.HORIZONTAL)),
+        )
+        self._add_action(
+            "flip_vertical",
+            "Flip &vertically",
+            "Ctrl+Shift+V",
+            lambda: self.transform_image(Flip(FlipAxis.VERTICAL)),
+        )
+        self._add_action("resize", "Re&size…", "Ctrl+Alt+I", self.resize_image)
+        image = self._add_action("image", "&Image", None, lambda: None)
+        image.setToolTip("Rotate, flip, or resize the image")
+        image_menu = QMenu(self)
+        for name in IMAGE_ACTIONS:
+            image_menu.addAction(self._actions[name])
+        image.setMenu(image_menu)
         zoom_in = self._add_action("zoom_in", "Zoom &in", "Ctrl+=", canvas.zoom_in)
         zoom_in.setShortcuts([QKeySequence("Ctrl+="), QKeySequence("Ctrl++")])
         self._add_action("zoom_out", "Zoom &out", "Ctrl+-", canvas.zoom_out)
@@ -357,6 +409,15 @@ class EditorWindow(QMainWindow):
                 "forward",
                 "backward",
             ],
+            "&Image": [
+                "rotate_left",
+                "rotate_right",
+                None,
+                "flip_horizontal",
+                "flip_vertical",
+                None,
+                "resize",
+            ],
             "&View": ["zoom_in", "zoom_out", "zoom_actual", "zoom_fit"],
         }
         for title, names in layout.items():
@@ -390,6 +451,9 @@ class EditorWindow(QMainWindow):
                 actions.addAction(self._actions[name])
             actions.addSeparator()
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, actions)
+        image_button = actions.widgetForAction(self._actions["image"])
+        if isinstance(image_button, QToolButton):
+            image_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self._style_bar)
         # One fixed height for the top row so switching tools never moves the canvas
         height = max(self._style_bar.tallest_height(), BUTTON_SIZE + 8)
@@ -554,6 +618,27 @@ class EditorWindow(QMainWindow):
             self.statusBar().showMessage(
                 "Clipboard annotations could not be read", STATUS_TIMEOUT_MS
             )
+
+    def transform_image(self, transform: ImageTransform) -> None:
+        """Commit any in-place editor, then rotate, flip, or resize (UX-IMG-01)."""
+        self._canvas.editors.commit()
+        self._session.transform_image(transform)
+        crop = self._session.document.crop
+        self.statusBar().showMessage(
+            f"{transform.description}: {crop.width:.0f} × {crop.height:.0f} px",  # noqa: RUF001
+            STATUS_TIMEOUT_MS,
+        )
+
+    def resize_image(self) -> None:
+        """Ask for a new size, then resize the visible image (UX-IMG-03)."""
+        crop = self._session.document.crop.rounded()
+        dialog = ResizeDialog(int(crop.width), int(crop.height), self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        width, height = dialog.result_size()
+        if (width, height) == (int(crop.width), int(crop.height)):
+            return
+        self.transform_image(Resize(width, height))
 
     def _undo(self) -> None:
         """Close any in-place editor, then undo."""

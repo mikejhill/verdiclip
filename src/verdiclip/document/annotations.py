@@ -14,7 +14,7 @@ from enum import StrEnum
 from typing import ClassVar, Final, Self, override
 
 from verdiclip.document.style import Style
-from verdiclip.geometry import Point, Rect
+from verdiclip.geometry import Affine, Point, Rect
 
 type JsonValue = (
     str | int | float | bool | list[JsonValue] | dict[str, JsonValue] | None
@@ -87,6 +87,18 @@ class Annotation(ABC):
     @abstractmethod
     def geometry_json(self) -> JsonObject:
         """Return the type-specific fields for encoding."""
+
+    @abstractmethod
+    def mapped(self, transform: Affine) -> Self:
+        """Return a copy with only the geometry mapped by ``transform``."""
+
+    def transformed(self, transform: Affine) -> Self:
+        """Return a copy mapped by ``transform``, scaling strokes and fonts too."""
+        moved = self.mapped(transform)
+        scale = transform.scale
+        if math.isclose(scale, 1.0):
+            return moved
+        return replace(moved, style=self.style.scaled(scale))
 
     def with_style(self, style: Style) -> Self:
         """Return a copy drawn with ``style``."""
@@ -203,6 +215,11 @@ class BoxAnnotation(Annotation):
     def translated(self, delta: Point) -> Self:
         """Return a copy moved by ``delta``."""
         return replace(self, rect=self.rect.translated(delta))
+
+    @override
+    def mapped(self, transform: Affine) -> Self:
+        """Return a copy with the rectangle mapped."""
+        return replace(self, rect=transform.map_rect(self.rect))
 
     @override
     def handles(self) -> dict[HandleRole, Point]:
@@ -355,6 +372,13 @@ class LineShape(Annotation):
         return replace(self, start=self.start + delta, end=self.end + delta)
 
     @override
+    def mapped(self, transform: Affine) -> Self:
+        """Return a copy with both endpoints mapped."""
+        return replace(
+            self, start=transform.map(self.start), end=transform.map(self.end)
+        )
+
+    @override
     def handles(self) -> dict[HandleRole, Point]:
         """Return the two endpoint handles."""
         return {HandleRole.START: self.start, HandleRole.END: self.end}
@@ -448,6 +472,11 @@ class FreehandShape(Annotation):
         return replace(self, points=tuple(p + delta for p in self.points))
 
     @override
+    def mapped(self, transform: Affine) -> Self:
+        """Return a copy with every point mapped."""
+        return replace(self, points=tuple(transform.map(p) for p in self.points))
+
+    @override
     def handles(self) -> dict[HandleRole, Point]:
         """Return no handles; freehand strokes only move."""
         return {}
@@ -492,6 +521,15 @@ class TextNote(Annotation):
     def translated(self, delta: Point) -> Self:
         """Return a copy moved by ``delta``."""
         return replace(self, rect=self.rect.translated(delta))
+
+    @override
+    def mapped(self, transform: Affine) -> Self:
+        """Return a copy centered on the mapped center; text stays upright."""
+        center = transform.map(self.rect.center)
+        width = self.rect.width * transform.scale
+        height = self.rect.height * transform.scale
+        rect = Rect(center.x - width / 2, center.y - height / 2, width, height)
+        return replace(self, rect=rect)
 
     @override
     def handles(self) -> dict[HandleRole, Point]:
@@ -547,6 +585,15 @@ class CounterMarker(Annotation):
     def translated(self, delta: Point) -> Self:
         """Return a copy moved by ``delta``."""
         return replace(self, center=self.center + delta)
+
+    @override
+    def mapped(self, transform: Affine) -> Self:
+        """Return a copy with the center mapped and the radius scaled."""
+        return replace(
+            self,
+            center=transform.map(self.center),
+            radius=self.radius * transform.scale,
+        )
 
     @override
     def handles(self) -> dict[HandleRole, Point]:
