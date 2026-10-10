@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton
+from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton, QStyle
 from pytestqt.qtbot import QtBot
 
 from verdiclip.editor.close_prompt import CloseChoice, ClosePrompt
@@ -42,13 +42,15 @@ class TestKeyboard:
         monkeypatch.undo()
 
     @staticmethod
-    def answer_with(key: Qt.Key, seen: list[list[str]]) -> None:
+    def answer_with(key: Qt.Key, seen: dict[str, int]) -> None:
         """Press ``key`` in the prompt once it opens, recording its buttons."""
 
         def press() -> None:
             box = QApplication.activeModalWidget()
             assert isinstance(box, QMessageBox), "the close prompt should be open"
-            seen.append([b.text() for b in box.findChildren(QPushButton)])
+            underline = QStyle.StyleHint.SH_UnderlineShortcut
+            for button in box.findChildren(QPushButton):
+                seen[button.text()] = button.style().styleHint(underline, None, button)
             QTest.keyClick(box, key)
 
         QTimer.singleShot(0, press)
@@ -67,10 +69,12 @@ class TestKeyboard:
     ) -> None:
         """Each answer is one key press, shown as an underlined letter."""
         del qtbot
-        seen: list[list[str]] = []
+        seen: dict[str, int] = {}
         self.answer_with(key, seen)
 
         answer = ClosePrompt("Save it?").ask(None)
 
         assert answer is expected
-        assert {"&Save", "Do&n't save"} <= set(seen[0])
+        # Underlined without holding Alt, unlike the Windows default
+        assert seen["&Save"] == 1
+        assert seen["Do&n't save"] == 1

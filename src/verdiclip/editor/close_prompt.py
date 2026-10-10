@@ -4,9 +4,42 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Self
+from typing import Self, override
 
-from PySide6.QtWidgets import QMessageBox, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QMessageBox,
+    QProxyStyle,
+    QStyle,
+    QStyleFactory,
+    QStyleHintReturn,
+    QStyleOption,
+    QWidget,
+)
+
+
+class UnderlinedShortcuts(QProxyStyle):
+    """The app's style, except access-key letters are always underlined.
+
+    Windows hides them until Alt is pressed, which hides the S and N shortcuts
+    exactly when they would help.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(QStyleFactory.create(QApplication.style().name()))
+
+    @override
+    def styleHint(
+        self,
+        hint: QStyle.StyleHint,
+        option: QStyleOption | None = None,
+        widget: QWidget | None = None,
+        returnData: QStyleHintReturn | None = None,
+    ) -> int:
+        """Always underline shortcut letters; defer everything else."""
+        if hint is QStyle.StyleHint.SH_UnderlineShortcut:
+            return 1
+        return super().styleHint(hint, option, widget, returnData)
 
 
 class CloseChoice(StrEnum):
@@ -51,6 +84,10 @@ class ClosePrompt:
         save = box.addButton("&Save", QMessageBox.ButtonRole.AcceptRole)
         discard = box.addButton("Do&n't save", QMessageBox.ButtonRole.DestructiveRole)
         cancel = box.addButton(QMessageBox.StandardButton.Cancel)
+        style = UnderlinedShortcuts()
+        style.setParent(box)
+        for button in (save, discard):
+            button.setStyle(style)
         box.setDefaultButton(save)
         box.setEscapeButton(cancel)
         box.exec()
