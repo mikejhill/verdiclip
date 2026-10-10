@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from typing import Final, Protocol, override
 
@@ -26,11 +27,12 @@ from verdiclip.capture.models import ScreenGeometry
 from verdiclip.geometry import Point, Rect
 
 DRAG_THRESHOLD: Final = 3.0
-MAGNIFIER_SOURCE_PX: Final = 30
+MAGNIFIER_SOURCE_PX: Final = 31  # Odd, so the cursor pixel sits dead center
 MAGNIFIER_ZOOM: Final = 4
 MAGNIFIER_OFFSET: Final = 24
 DIM: Final = QColor(0, 0, 0, 110)
 ACCENT: Final = QColor(0, 120, 215)
+RETICLE: Final = QColor(255, 0, 0, 140)
 
 
 class WindowTarget(Protocol):
@@ -192,45 +194,66 @@ class SelectionOverlay(QWidget):
 
     def _paint_magnifier(self, painter: QPainter, cursor: Point) -> None:
         """Draw a 4x loupe of the pixels around the cursor (UX-CAP-06)."""
-        physical = self._geometry.to_physical(cursor)
+        px, py = self._cursor_pixel(cursor)
         half = MAGNIFIER_SOURCE_PX // 2
-        source = Rect(
-            round(physical.x) - half,
-            round(physical.y) - half,
-            MAGNIFIER_SOURCE_PX,
-            MAGNIFIER_SOURCE_PX,
+        patch = self._patch(
+            Rect(px - half, py - half, MAGNIFIER_SOURCE_PX, MAGNIFIER_SOURCE_PX)
         )
-        patch = self._patch(source)
         size = MAGNIFIER_SOURCE_PX * MAGNIFIER_ZOOM
-        x = cursor.x + MAGNIFIER_OFFSET
-        y = cursor.y + MAGNIFIER_OFFSET
+        x = round(cursor.x) + MAGNIFIER_OFFSET
+        y = round(cursor.y) + MAGNIFIER_OFFSET
         if x + size > self.width():
-            x = cursor.x - MAGNIFIER_OFFSET - size
+            x = round(cursor.x) - MAGNIFIER_OFFSET - size
         if y + size + 20 > self.height():
-            y = cursor.y - MAGNIFIER_OFFSET - size - 20
+            y = round(cursor.y) - MAGNIFIER_OFFSET - size - 20
         target = QRectF(x, y, size, size)
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, on=False)
         painter.drawImage(target, patch)
         painter.restore()
+        self._paint_reticle(painter, target)
         # Dark outer and light inner edge so the loupe reads on any content
         painter.setPen(QPen(QColor(20, 20, 20, 230), 1))
         painter.drawRect(target.adjusted(-2, -2, 2, 2))
         painter.setPen(QPen(Qt.GlobalColor.white, 2))
         painter.drawRect(target)
-        center = target.center()
-        painter.setPen(QPen(QColor(255, 0, 0, 200), 1))
-        painter.drawLine(
-            QPointF(center.x() - 8, center.y()), QPointF(center.x() + 8, center.y())
-        )
-        painter.drawLine(
-            QPointF(center.x(), center.y() - 8), QPointF(center.x(), center.y() + 8)
-        )
         coords = QRectF(x, y + size, size, 20)
         painter.fillRect(coords, QColor(20, 20, 20, 220))
         painter.setPen(Qt.GlobalColor.white)
-        label = f"{int(physical.x)}, {int(physical.y)}"
-        painter.drawText(coords, int(Qt.AlignmentFlag.AlignCenter.value), label)
+        painter.drawText(coords, int(Qt.AlignmentFlag.AlignCenter.value), f"{px}, {py}")
+
+    @staticmethod
+    def _paint_reticle(painter: QPainter, loupe: QRectF) -> None:
+        """Cross the loupe with bands one source pixel wide, framing the center pixel.
+
+        The bands stop one pixel short of the center so the pixel under the
+        cursor stays unobscured; its outline marks exactly what will be captured.
+        """
+        cell = MAGNIFIER_ZOOM
+        center = QRectF(
+            loupe.x() + (MAGNIFIER_SOURCE_PX // 2) * cell,
+            loupe.y() + (MAGNIFIER_SOURCE_PX // 2) * cell,
+            cell,
+            cell,
+        )
+        gap = center.adjusted(-cell, -cell, cell, cell)
+        bands = (
+            QRectF(loupe.left(), center.top(), gap.left() - loupe.left(), cell),
+            QRectF(gap.right(), center.top(), loupe.right() - gap.right(), cell),
+            QRectF(center.left(), loupe.top(), cell, gap.top() - loupe.top()),
+            QRectF(center.left(), gap.bottom(), cell, loupe.bottom() - gap.bottom()),
+        )
+        for band in bands:
+            painter.fillRect(band, RETICLE)
+        painter.setPen(QPen(RETICLE, 1))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        # An aliased 1 px pen covers x..x+w, so this rings the cell just outside it
+        painter.drawRect(QRectF(center.x() - 1, center.y() - 1, cell + 1, cell + 1))
+
+    def _cursor_pixel(self, cursor: Point) -> tuple[int, int]:
+        """Return the physical pixel under ``cursor`` (floored, so negative x works)."""
+        physical = self._geometry.to_physical(cursor)
+        return math.floor(physical.x), math.floor(physical.y)
 
     def _patch(self, source: Rect) -> QImage:
         """Return ``source`` pixels from the frozen desktop, black outside it."""
@@ -278,7 +301,11 @@ class SelectionOverlay(QWidget):
         """Report a dragged region, a clicked window, or this whole monitor."""
         if event.button() != Qt.MouseButton.LeftButton or self._press is None:
             return
-        self._cursor = self._local(event)
+        self._finish(self._local(event))
+
+    def _finish(self, at: Point) -> None:
+        """End a press at ``at``: report a region, a window, or this monitor."""
+        self._cursor = at
         selection = self.selection()
         self._press = None
         self._dragging = False
@@ -298,9 +325,12 @@ class SelectionOverlay(QWidget):
 
     @override
     def keyPressEvent(self, event: QKeyEvent) -> None:
-        """Cancel on Esc; move the cursor with arrow keys (Ctrl = 10 px)."""
+        """Cancel on Esc; Enter starts/ends a selection; arrows move (Ctrl = 10 px)."""
         if event.key() == Qt.Key.Key_Escape:
             self.cancelled.emit()
+            return
+        if event.key() in {Qt.Key.Key_Return, Qt.Key.Key_Enter}:
+            self._enter()
             return
         step = 10 if event.modifiers() & Qt.KeyboardModifier.ControlModifier else 1
         moves = {
@@ -314,6 +344,17 @@ class SelectionOverlay(QWidget):
             super().keyPressEvent(event)
             return
         QCursor.setPos(QCursor.pos() + delta)
+
+    def _enter(self) -> None:
+        """Press at the cursor, or finish the press already started (UX-CAP-15)."""
+        if self._cursor is None:
+            return
+        if self._press is None:
+            self._press = self._cursor
+            self._dragging = False
+            self.update()
+        else:
+            self._finish(self._cursor)
 
     @override
     def showEvent(self, event: QShowEvent) -> None:
