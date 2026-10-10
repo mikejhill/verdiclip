@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final
 
@@ -28,9 +29,10 @@ from verdiclip.editor.style_memory import StyleMemory
 from verdiclip.editor.window import IMAGE_FILTER, EditorOptions, EditorWindow
 from verdiclip.exceptions import AppError, HotkeyError
 from verdiclip.output.delivery import ImageDelivery
+from verdiclip.platform.associations import DEFAULT_APPS_URI, FileAssociations
 from verdiclip.platform.hotkeys import Hotkey, HotkeyService
 from verdiclip.platform.startup import StartupRegistration
-from verdiclip.settings import Settings, SettingsStore
+from verdiclip.settings import IntegrationSettings, Settings, SettingsStore
 from verdiclip.shell.settings_dialog import HOTKEY_FIELDS, SettingsDialog
 from verdiclip.shell.theme import ThemeManager
 from verdiclip.shell.tray import TrayCommands, TrayIcon
@@ -38,6 +40,14 @@ from verdiclip.shell.tray import TrayCommands, TrayIcon
 logger = logging.getLogger(__name__)
 
 NOTIFY_MS: Final = 4000
+
+
+@dataclass(frozen=True, slots=True)
+class ShellIntegration:
+    """Windows registrations kept in sync with the settings."""
+
+    startup: StartupRegistration
+    associations: FileAssociations
 
 
 class AppController(QObject):
@@ -49,19 +59,21 @@ class AppController(QObject):
         screens: ScreenSource,
         windows: WindowSource,
         hotkeys: HotkeyService,
-        startup: StartupRegistration,
+        integration: ShellIntegration,
     ) -> None:
         super().__init__()
         self._store = store
         self._settings = store.load()
         self._styles = StyleMemory(store.path.with_name("styles.json"))
         self._hotkeys = hotkeys
-        self._startup = startup
+        self._startup = integration.startup
+        self._associations = integration.associations
         self._capture = CaptureService(
             screens, windows, show_magnifier=self._settings.capture.show_magnifier
         )
         self._editors: list[EditorWindow] = []
-        self._icon = IconFactory(QApplication.palette().windowText().color()).brand()
+        self._icon_factory = IconFactory(QApplication.palette().windowText().color())
+        self._icon = self._icon_factory.brand()
         self._tray = TrayIcon(self._icon, self._tray_commands())
         self._last_saved_folder: Path | None = None
         self._capture.captured.connect(self._on_captured)
@@ -100,6 +112,9 @@ class AppController(QObject):
         ThemeManager.apply(self._settings.appearance.theme)
         self._tray.show()
         self._apply_hotkeys()
+        if self._settings.integration.open_with:
+            # Refresh the command in case the install moved since registering
+            self._apply_open_with()
         logger.info("%s %s ready", APP_NAME, VERSION)
 
     def shutdown(self) -> None:
@@ -241,8 +256,22 @@ class AppController(QObject):
         """Edit and apply settings, from the tray or an editor (UX-TRY-04)."""
         dialog = SettingsDialog(self._settings, parent)
         dialog.setWindowIcon(self._icon)
+        dialog.make_default_requested.connect(self.make_default_image_app)
         if dialog.exec() == SettingsDialog.DialogCode.Accepted:
             self.apply_settings(dialog.result_settings())
+
+    def make_default_image_app(self) -> None:
+        """Register for Open with, then open Windows' default-apps page.
+
+        Windows only lets the user choose the default handler, so the page
+        is where they confirm it (UX-TRY-07).
+        """
+        enabled = IntegrationSettings(open_with=True)
+        if self._settings.integration != enabled:
+            self.apply_settings(replace(self._settings, integration=enabled))
+        else:
+            self._apply_open_with()
+        QDesktopServices.openUrl(QUrl(DEFAULT_APPS_URI))
 
     def apply_settings(self, settings: Settings) -> None:
         """Persist ``settings`` and apply them immediately."""
@@ -253,12 +282,14 @@ class AppController(QObject):
         if settings.editor.style_defaults != self._settings.editor.style_defaults:
             # New defaults in Settings replace per-tool choices made in editors
             self._styles.forget()
-        self._settings = settings
+        previous, self._settings = self._settings, settings
         for editor in self._editors:
             editor.set_confirm_close(confirm=settings.editor.confirm_unsaved_close)
         ThemeManager.apply(settings.appearance.theme)
         self._capture.set_show_magnifier(show=settings.capture.show_magnifier)
         self._apply_startup()
+        if settings.integration != previous.integration:
+            self._apply_open_with()
         self._apply_hotkeys()
 
     def _show_about(self) -> None:
@@ -317,6 +348,21 @@ class AppController(QObject):
                 self._startup.disable()
         except AppError as err:
             self._notify("Could not change startup setting", str(err), warning=True)
+
+    def _apply_open_with(self) -> None:
+        """Add or remove VerdiClip from Explorer's Open with menu."""
+        try:
+            if self._settings.integration.open_with:
+                icon = self._store.path.with_name("verdiclip.ico")
+                if not self._icon_factory.brand(256).pixmap(256).save(str(icon)):
+                    logger.warning("Could not write %s", icon)
+                self._associations.register(
+                    f'{self._launch_command()} open "%1"', str(icon)
+                )
+            else:
+                self._associations.unregister()
+        except AppError as err:
+            self._notify("Could not change Open with", str(err), warning=True)
 
     @staticmethod
     def _launch_command() -> str:

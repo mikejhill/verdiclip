@@ -65,7 +65,7 @@ Open from the tray menu or with `Ctrl+,` in any editor.
 - **Hotkeys** — validated as you type; conflicts are reported.
 - **Output** — folder, file-name pattern (`{date}`, `{time}`, `{title}`, `{counter}`) with a live preview, format, JPEG quality.
 - **Editor** — default color, width, and font.
-- **General** — light, dark, or match-Windows theme; start at sign-in.
+- **General** — light, dark, or match-Windows theme; start at sign-in; show VerdiClip in Explorer's **Open with** menu for images. **Make VerdiClip the default image app…** opens Windows Settings at VerdiClip's Default apps page, where you choose it as the default (Windows requires you to confirm this yourself).
 
 ## Command line
 
