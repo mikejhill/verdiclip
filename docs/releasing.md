@@ -5,7 +5,7 @@ Releases are automatic. Versions follow [SemVer](https://semver.org/) and are co
 ## How a release happens
 
 1. Pull requests are squash-merged into `main`; the PR title (checked by CI) becomes the commit message.
-2. On every push to `main`, the **Release** workflow opens or updates a release pull request titled `chore: release X.Y.Z`. It bumps the version in `pyproject.toml` and `uv.lock`, updates `CHANGELOG.md`, and dispatches CI on the release branch so the pull request gets the usual checks. (A `RELEASE_PLEASE_TOKEN` secret is optional; without it the default token is used.)
+2. On every push to `main`, the **Release** workflow opens or updates a release pull request titled `chore: release X.Y.Z`. It bumps the version in `pyproject.toml` and `uv.lock`, updates `CHANGELOG.md`, and approves the pull request's CI runs (GitHub holds runs on bot-opened pull requests for approval), so the release pull request gets the usual required checks. (A `RELEASE_PLEASE_TOKEN` secret is optional; without it the default token is used.)
 3. Merging the release pull request tags `vX.Y.Z` and creates the GitHub release. The same workflow then:
    - runs the full CI suite against the release commit,
    - builds the sdist and wheel once and checks the version matches the tag,
