@@ -302,9 +302,8 @@ class AppController(QObject):
             f"About {APP_NAME}",
             f"<b>{APP_NAME} {VERSION}</b>"
             "<p>Fast, faithful screenshots with annotation.</p>"
-            "<p>Inspired by <a href='https://getgreenshot.org/'>Greenshot</a>; "
-            "an independent, "
-            "clean-room implementation. MIT licensed.</p>",
+            "<p>Inspired by <a href='https://getgreenshot.org/'>Greenshot</a>. "
+            "MIT licensed.</p>",
         )
 
     def request_exit(self) -> None:
