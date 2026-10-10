@@ -112,8 +112,11 @@ class AppController(QObject):
         ThemeManager.apply(self._settings.appearance.theme)
         self._tray.show()
         self._apply_hotkeys()
+        # Re-assert Windows registrations so they survive moved installs and
+        # registrations that were lost or written somewhere else
+        if self._settings.startup.run_at_login:
+            self._apply_startup()
         if self._settings.integration.open_with:
-            # Refresh the command in case the install moved since registering
             self._apply_open_with()
         logger.info("%s %s ready", APP_NAME, VERSION)
 

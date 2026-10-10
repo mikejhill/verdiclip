@@ -119,7 +119,7 @@ so it can be adjusted immediately; the tool stays active for the next mark.
 | UX-TRY-02 | Left-click tray icon | Starts a region capture. |
 | UX-TRY-03 | Right-click tray icon | Menu: capture actions (with hotkeys), Open Image…, Settings…, About, Exit. |
 | UX-TRY-06 | `Ctrl+,` or File → Settings… in an editor | Opens the same Settings dialog as the tray. |
-| UX-TRY-04 | Settings saved | Hotkeys re-register immediately and menu labels update; conflicts reported per UX-CAP-10. Every visible setting changes behavior. |
+| UX-TRY-04 | Settings saved | Hotkeys re-register immediately and menu labels update; conflicts reported per UX-CAP-10. Every visible setting changes behavior. Run-at-login and Open with, when on, are also rewritten at every launch so they follow a moved install and repair lost entries. |
 | UX-TRY-07 | Settings → General → Image files | "Show VerdiClip in Open with" registers VerdiClip for PNG, JPEG, BMP, GIF, TIFF, and WebP under the current user (no admin prompt), so Explorer's "Open with" lists it by name and icon; opening a file there opens it in an editor of the running instance. Unchecking removes only VerdiClip's entries. "Make VerdiClip the default image app…" turns that on and opens Windows' Default apps page for VerdiClip, where the user confirms; Windows does not let apps set their own default. |
 | UX-TRY-05 | Ctrl+C in the launching terminal / Exit | App quits within 1 s; open editors with undelivered work prompt per UX-G-06 (Exit only). |
 
