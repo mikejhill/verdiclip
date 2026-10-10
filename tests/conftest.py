@@ -8,9 +8,9 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtGui import QColor, QGuiApplication, QImage, QPainter
-from PySide6.QtWidgets import QMessageBox
 
 from verdiclip.document.document import Document
+from verdiclip.editor.close_prompt import CloseChoice, ClosePrompt
 from verdiclip.editor.session import EditorSession
 from verdiclip.settings import EditorSettings, OutputSettings
 
@@ -37,11 +37,7 @@ def pytest_configure(config: pytest.Config) -> None:
 @pytest.fixture(autouse=True)
 def no_modal_dialogs(monkeypatch: pytest.MonkeyPatch) -> None:
     """Answer "Discard" to unsaved-change prompts so teardown never blocks."""
-    monkeypatch.setattr(
-        QMessageBox,
-        "question",
-        lambda *_args: QMessageBox.StandardButton.Discard,
-    )
+    monkeypatch.setattr(ClosePrompt, "ask", lambda *_args: CloseChoice.DISCARD)
 
 
 @pytest.fixture(autouse=True)

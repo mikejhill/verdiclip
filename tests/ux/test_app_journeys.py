@@ -13,7 +13,7 @@ import pytest
 from PySide6.QtCore import QProcess, Qt, QUrl
 from PySide6.QtGui import QDesktopServices, QGuiApplication, QImage
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon, QWidget
+from PySide6.QtWidgets import QApplication, QSystemTrayIcon, QWidget
 from pytestqt.qtbot import QtBot
 from tests.platform.test_associations import FakeAssociationBackend
 from tests.ux.conftest import Stopwatch
@@ -26,6 +26,7 @@ from tests.ux.test_capture_journeys import (
 
 from verdiclip.document.commands import SetCrop
 from verdiclip.document.style import Color
+from verdiclip.editor.close_prompt import CloseChoice, ClosePrompt
 from verdiclip.editor.session import ToolId
 from verdiclip.editor.style_bar import ColorButton
 from verdiclip.editor.window import EditorWindow
@@ -487,11 +488,11 @@ class TestClosePrompt:
         """Record every close prompt and answer Cancel."""
         prompts: list[str] = []
 
-        def cancel(*args: object) -> QMessageBox.StandardButton:
-            prompts.append(str(args[2]))
-            return QMessageBox.StandardButton.Cancel
+        def cancel(prompt: ClosePrompt, _parent: object) -> CloseChoice:
+            prompts.append(prompt.message)
+            return CloseChoice.CANCEL
 
-        monkeypatch.setattr(QMessageBox, "question", cancel)
+        monkeypatch.setattr(ClosePrompt, "ask", cancel)
         return prompts
 
     def _capture(self, app: App, qtbot: QtBot) -> EditorWindow:
@@ -560,6 +561,47 @@ class TestClosePrompt:
 
         assert asked == []
         assert not editor.isVisible()
+
+    def test_edited_file_names_the_file(
+        self, make_app: AppFactory, tmp_path: Path, asked: list[str]
+    ) -> None:
+        """UX-G-06: an opened file with new edits asks to save changes to it."""
+        picture = tmp_path / "existing.png"
+        QImage(20, 20, QImage.Format.Format_RGB32).save(str(picture))
+        editor = make_app().controller.open_image(picture)
+        assert editor is not None
+        editor.session.history.execute(SetCrop(Rect(0, 0, 20, 20), Rect(0, 0, 9, 9)))
+
+        editor.close()
+
+        assert asked == ["Save changes to “existing.png” before closing?"]
+
+    def test_saved_then_edited_names_the_saved_file(
+        self, make_app: AppFactory, qtbot: QtBot, asked: list[str]
+    ) -> None:
+        """UX-G-06: after saving, later edits are described as changes to that file."""
+        editor = self._capture(make_app(), qtbot)
+        assert editor.save()
+        saved = editor.saved_path
+        assert saved is not None
+        editor.session.history.execute(SetCrop(Rect(0, 0, 50, 50), Rect(0, 0, 9, 9)))
+
+        editor.close()
+
+        assert asked == [f"Save changes to “{saved.name}” before closing?"]
+
+    def test_copied_then_edited_says_so(
+        self, make_app: AppFactory, qtbot: QtBot, asked: list[str]
+    ) -> None:
+        """UX-G-06: after copying, later edits are described as such."""
+        editor = self._capture(make_app(), qtbot)
+        assert editor.copy_image()
+        editor.session.history.execute(SetCrop(Rect(0, 0, 50, 50), Rect(0, 0, 9, 9)))
+
+        editor.close()
+
+        assert len(asked) == 1
+        assert "changed since you copied it" in asked[0]
 
     def test_opened_file_closes_without_asking(
         self, make_app: AppFactory, tmp_path: Path, asked: list[str]
@@ -708,9 +750,7 @@ class TestExit:
         editor.session.history.execute(
             SetCrop(editor.session.document.crop, Rect(0, 0, 10, 10))
         )
-        monkeypatch.setattr(
-            QMessageBox, "question", lambda *_: QMessageBox.StandardButton.Cancel
-        )
+        monkeypatch.setattr(ClosePrompt, "ask", lambda *_: CloseChoice.CANCEL)
         quits: list[bool] = []
         monkeypatch.setattr(QApplication, "quit", lambda: quits.append(True))
 

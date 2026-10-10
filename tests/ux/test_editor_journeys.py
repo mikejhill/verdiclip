@@ -13,6 +13,8 @@ from PySide6.QtWidgets import QApplication, QMessageBox, QPlainTextEdit, QSpinBo
 from pytestqt.qtbot import QtBot
 from tests.ux.conftest import NO_MODS, Pixels, User
 
+from verdiclip.editor.close_prompt import CloseChoice, ClosePrompt
+
 pytestmark = pytest.mark.ux
 
 CTRL = Qt.KeyboardModifier.ControlModifier
@@ -505,11 +507,11 @@ class TestSaving:
         """UX-G-06: Cancel keeps the editor open; after copying, closing doesn't ask."""
         asked: list[str] = []
 
-        def cancel(*args: object) -> QMessageBox.StandardButton:
-            asked.append(str(args[1]))
-            return QMessageBox.StandardButton.Cancel
+        def cancel(prompt: ClosePrompt, _parent: object) -> CloseChoice:
+            asked.append(prompt.message)
+            return CloseChoice.CANCEL
 
-        monkeypatch.setattr(QMessageBox, "question", cancel)
+        monkeypatch.setattr(ClosePrompt, "ask", cancel)
         user.key(Qt.Key.Key_R)
         user.drag((10, 10), (90, 90))
 
