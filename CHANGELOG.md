@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.3.0](https://github.com/mikejhill/verdiclip/compare/v0.2.1...v0.3.0) (2026-10-10)
+
+
+### Features
+
+* ask before closing a capture that wasn't saved or copied ([#6](https://github.com/mikejhill/verdiclip/issues/6)) ([7729379](https://github.com/mikejhill/verdiclip/commit/772937997a89fc92568739db0ccb8e70ad1bc188))
+* offer VerdiClip in Explorer's Open with menu for images ([#9](https://github.com/mikejhill/verdiclip/issues/9)) ([cafb1bc](https://github.com/mikejhill/verdiclip/commit/cafb1bc33617ebf5133fd60a6f8f74bdffb91eca))
+* rotate, flip, and resize images in the editor ([#11](https://github.com/mikejhill/verdiclip/issues/11)) ([fd8209b](https://github.com/mikejhill/verdiclip/commit/fd8209b7be86c810bc33b0e12714173aa467c40a))
+
+
+### Bug Fixes
+
+* highlight windows that span monitors on every monitor ([#7](https://github.com/mikejhill/verdiclip/issues/7)) ([bc5f032](https://github.com/mikejhill/verdiclip/commit/bc5f032dbba036fce70642edbc1c74a4c0b4b43d))
+* re-apply run-at-login and Open with registrations on launch ([#12](https://github.com/mikejhill/verdiclip/issues/12)) ([c466b1c](https://github.com/mikejhill/verdiclip/commit/c466b1c3620be19618cc749d9608949e69ab1ab0))
+* word the close prompt for what would be lost and add S/N shortcuts ([#13](https://github.com/mikejhill/verdiclip/issues/13)) ([3cac693](https://github.com/mikejhill/verdiclip/commit/3cac6932653899e2d086433989255f397d3163c7))
+
+
+### Documentation
+
+* simplify attribution to a plain credit ([#14](https://github.com/mikejhill/verdiclip/issues/14)) ([8ea308c](https://github.com/mikejhill/verdiclip/commit/8ea308cc5ee088d8b5cd29f8fd72609bb9c7ba03))
+
 ## [0.2.1](https://github.com/mikejhill/verdiclip/compare/v0.2.0...v0.2.1) (2026-10-08)
 
 
