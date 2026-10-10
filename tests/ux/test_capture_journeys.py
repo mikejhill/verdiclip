@@ -6,7 +6,7 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 
 import pytest
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QEvent, QPoint, Qt
 from PySide6.QtGui import QColor, QCursor, QGuiApplication, QImage, QPainter
 from PySide6.QtTest import QTest
 from pytestqt.qtbot import QtBot
@@ -272,6 +272,107 @@ class TestRegionCapture:
         capture = CaptureOf.signal(signal)
         assert capture.mode is CaptureMode.WINDOW
         assert capture.image.width() > 3
+
+    def test_enter_starts_and_finishes_a_selection(
+        self, service: CaptureService, qtbot: QtBot
+    ) -> None:
+        """UX-CAP-15: Enter presses at the cursor, and Enter again releases."""
+        service.capture_region()
+        overlay = Overlay(service)
+        overlay.hover((90, 90))
+        QTest.keyClick(overlay.widget, Qt.Key.Key_Return)
+        overlay.hover((160, 140))
+
+        assert overlay.widget.selection() == Rect(90, 90, 70, 50)
+        with qtbot.waitSignal(service.captured) as signal:
+            QTest.keyClick(overlay.widget, Qt.Key.Key_Enter)
+
+        capture = CaptureOf.signal(signal)
+        assert capture.mode is CaptureMode.REGION
+        assert (capture.image.width(), capture.image.height()) == (70, 50)
+
+    def test_enter_twice_without_moving_captures_window(
+        self, service: CaptureService, qtbot: QtBot
+    ) -> None:
+        """UX-CAP-15: like a click, Enter-Enter in place picks the window beneath."""
+        service.capture_region()
+        overlay = Overlay(service)
+        overlay.hover((200, 200))
+        QTest.keyClick(overlay.widget, Qt.Key.Key_Return)
+
+        with qtbot.waitSignal(service.captured) as signal:
+            QTest.keyClick(overlay.widget, Qt.Key.Key_Return)
+
+        capture = CaptureOf.signal(signal)
+        assert capture.mode is CaptureMode.WINDOW
+        assert capture.title == "Dialog"
+
+    def test_enter_with_cursor_on_another_monitor_does_nothing(self) -> None:
+        """UX-CAP-15: an overlay without the cursor ignores Enter."""
+        desktop = QImage(400, 300, QImage.Format.Format_RGB32)
+        desktop.fill(QColor(128, 128, 128))
+        bounds = Rect(0, 0, 400, 300)
+        overlay = SelectionOverlay(
+            ScreenGeometry("only", bounds, bounds, 1.0),
+            QGuiApplication.primaryScreen(),
+            FrozenScreen(desktop, bounds),
+            [],
+            show_magnifier=False,
+        )
+        chosen: list[object] = []
+        overlay.region_chosen.connect(chosen.append)
+        overlay.show()
+        overlay.leaveEvent(QEvent(QEvent.Type.Leave))
+
+        QTest.keyClick(overlay, Qt.Key.Key_Return)
+        QTest.keyClick(overlay, Qt.Key.Key_Return)
+
+        assert chosen == []
+        overlay.close()
+
+
+class TestMagnifier:
+    """The loupe that follows the cursor."""
+
+    def test_reticle_is_one_image_pixel_wide_around_the_cursor_pixel(self) -> None:
+        """UX-CAP-06: bands one zoomed pixel wide frame the unobscured cursor pixel."""
+        desktop = QImage(800, 600, QImage.Format.Format_RGB32)
+        desktop.fill(QColor(128, 128, 128))
+        desktop.setPixelColor(100, 100, QColor("white"))
+        bounds = Rect(0, 0, 800, 600)
+        overlay = SelectionOverlay(
+            ScreenGeometry("only", bounds, bounds, 1.0),
+            QGuiApplication.primaryScreen(),
+            FrozenScreen(desktop, bounds),
+            [],
+            show_magnifier=True,
+        )
+        overlay.show()
+        QTest.mouseMove(overlay, QPoint(100, 100))
+
+        shown = overlay.grab().toImage()
+        overlay.close()
+
+        # Loupe at cursor + 24; the cursor pixel is cell 15 of 31, 4 px per cell
+        cell = 124 + 15 * 4
+        gray = QColor(128, 128, 128)
+
+        def reddish(x: int, y: int) -> bool:
+            color = shown.pixelColor(x, y)
+            return color.red() > 150 and color.green() < 100
+
+        for dx in range(4):
+            for dy in range(4):
+                assert shown.pixelColor(cell + dx, cell + dy) == QColor("white")
+        assert reddish(cell - 1, cell + 1)  # Outline just outside the cell
+        assert shown.pixelColor(cell - 3, cell + 1) == gray  # Gap before the band
+        for offset in range(4):  # Bands are exactly one cell thick
+            assert reddish(130, cell + offset)
+            assert reddish(cell + offset, 130)
+        assert shown.pixelColor(130, cell - 1) == gray
+        assert shown.pixelColor(130, cell + 4) == gray
+        assert shown.pixelColor(cell - 1, 130) == gray
+        assert shown.pixelColor(cell + 4, 130) == gray
 
 
 class TestWindowPicking:

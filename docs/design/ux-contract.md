@@ -33,7 +33,7 @@ window state, or text the user can read — never internal state.
 | UX-CAP-03 | User releases after dragging ≥ 3 px in both directions | The overlay closes and the selected pixels — exactly the frozen pixels, at physical resolution — go to the after-capture action. |
 | UX-CAP-04 | User hovers a window on the overlay without dragging | The window under the cursor is highlighted with its title shown — on every monitor it spans, not just the one with the cursor; a click (no drag) captures that window's frozen pixels. |
 | UX-CAP-05 | User presses `Esc` or right-clicks on the overlay | All overlays close; nothing is captured; no editor opens. |
-| UX-CAP-06 | During selection the user presses arrow keys | The cursor moves 1 px (10 px with `Ctrl`); a magnifier near the cursor shows the pixels at 4× zoom with a center crosshair. |
+| UX-CAP-06 | During selection the user presses arrow keys | The cursor moves 1 px (10 px with `Ctrl`); a magnifier near the cursor shows the pixels at 4× zoom. Its reticle crosses the whole magnifier in bands exactly one image pixel wide, centered on the pixel under the cursor, which is left unobscured and outlined, so the cursor can be lined up with on-screen edges to the pixel. The coordinates shown are that pixel's. |
 | UX-CAP-07 | User presses the full-screen hotkey | All monitors are captured immediately without an overlay. |
 | UX-CAP-08 | User presses the active-window hotkey | The foreground window is captured immediately (DWM bounds, no invisible borders). |
 | UX-CAP-09 | User presses the repeat hotkey after a region capture | The same screen region is captured again immediately, without an overlay. After a window/full capture, that capture kind is repeated. With no prior capture, it behaves like the region hotkey. |
@@ -42,6 +42,7 @@ window state, or text the user can read — never internal state.
 | UX-CAP-12 | *Copy to the clipboard* is on | The image is on the clipboard and a tray notification confirms it. |
 | UX-CAP-13 | *Save to the output folder* is on | The image is saved using the filename pattern; the notification shows the path and clicking it opens the folder. If the editor also opens, it is already linked to that file, so `Ctrl+S` overwrites it. |
 | UX-CAP-14 | Any combination of the three after-capture actions | All chosen actions run for every capture. Settings won't accept turning all three off. |
+| UX-CAP-15 | During selection the user presses `Enter` | The first `Enter` starts a selection at the cursor, as a mouse press would; the arrow keys (or the mouse) then extend it. The second `Enter` finishes it exactly like releasing the mouse: a region, or — without a ≥ 3 px drag — the window or monitor under the cursor. |
 
 ## Editor: canvas and navigation
 
