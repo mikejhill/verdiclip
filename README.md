@@ -9,7 +9,7 @@ Fast, faithful screenshots for Windows: grab a precise piece of the screen, mark
 
 ![VerdiClip editor in the light theme, showing numbered steps, a labeled callout, an arrow, a highlight, and an obfuscated password](docs/images/editor-light.png)
 
-VerdiClip is an independent, clean-room project. See [ATTRIBUTION.md](ATTRIBUTION.md) for credits.
+VerdiClip is an independent project. See [ATTRIBUTION.md](ATTRIBUTION.md) for credits.
 
 ## Install
 
