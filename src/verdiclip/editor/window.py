@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, override
 
@@ -63,6 +64,15 @@ ACTION_GROUPS: Final = (("copy_image", "save"), ("undo", "redo"), ("settings",))
 IMAGE_FILTER: Final = "Images (*.png *.jpg *.jpeg *.bmp *.gif *.tif *.tiff *.webp)"
 
 
+@dataclass(frozen=True, slots=True)
+class EditorOptions:
+    """How an editor window presents its document."""
+
+    title: str = ""
+    source_path: Path | None = None
+    confirm_close: bool = True
+
+
 class EditorWindow(QMainWindow):
     """Edit one document and deliver it."""
 
@@ -73,12 +83,14 @@ class EditorWindow(QMainWindow):
         self,
         session: EditorSession,
         delivery: ImageDelivery,
-        *,
-        title: str = "",
-        source_path: Path | None = None,
+        options: EditorOptions | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
+        options = options or EditorOptions()
+        title = options.title
+        source_path = options.source_path
+        self._confirm_close = options.confirm_close
         self._session = session
         self._delivery = delivery
         self._renderer = Renderer()
@@ -122,6 +134,10 @@ class EditorWindow(QMainWindow):
     def action(self, name: str) -> QAction:
         """Return the named action (for tests and the tray)."""
         return self._actions[name]
+
+    def set_confirm_close(self, *, confirm: bool) -> None:
+        """Turn the unsaved-changes prompt on or off."""
+        self._confirm_close = confirm
 
     def flattened(self) -> QImage:
         """Return the cropped image with annotations, as exported."""
@@ -195,17 +211,14 @@ class EditorWindow(QMainWindow):
         return self._save_to(Path(chosen))
 
     def print_image(self) -> bool:
-        """Print the flattened image."""
+        """Print the flattened image (printing doesn't count as saving it)."""
         printed = False
 
         def run() -> None:
             nonlocal printed
             printed = self._delivery.print_image(self.flattened(), self)
 
-        if not self._deliver(run, mark=False) or not printed:
-            return False
-        self._session.history.mark_delivered()
-        return True
+        return self._deliver(run, mark=False) and printed
 
     # Building
 
@@ -449,15 +462,15 @@ class EditorWindow(QMainWindow):
 
     @override
     def closeEvent(self, event: QCloseEvent) -> None:
-        """Ask before discarding undelivered changes (UX-G-06)."""
+        """Ask before discarding an image that wasn't saved or copied (UX-G-06)."""
         self._canvas.editors.commit()
-        if self._session.history.is_delivered:
+        if not self._confirm_close or self._session.history.is_delivered:
             event.accept()
             return
         answer = QMessageBox.question(
             self,
             "Unsaved changes",
-            "This image has changes that were not saved or copied.",
+            "This image hasn't been saved or copied. Save it before closing?",
             QMessageBox.StandardButton.Save
             | QMessageBox.StandardButton.Discard
             | QMessageBox.StandardButton.Cancel,

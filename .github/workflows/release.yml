@@ -42,9 +42,9 @@ jobs:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
-      # Pull requests opened with the default token don't trigger workflows,
-      # but a dispatch does: run CI on the release branch so its checks
-      # (and branch protection) apply to the release pull request too.
+      # GitHub holds pull_request runs on bot-opened PRs for approval, and the
+      # required "CI passed" check only counts runs from the PR itself.
+      # Approve those runs; if none appear, dispatch CI on the branch instead.
       - name: Run CI on the release pull request
         if: steps.release.outputs.prs_created == 'true'
         env:
@@ -52,6 +52,24 @@ jobs:
           PR_JSON: ${{ steps.release.outputs.pr }}
         run: |
           branch=$(jq -r '.headBranchName' <<< "$PR_JSON")
+          for attempt in $(seq 1 18); do
+            ids=$(gh run list --repo "$GITHUB_REPOSITORY" --branch "$branch"               --event pull_request --status action_required               --json databaseId --jq '.[].databaseId')
+            if [ -n "$ids" ]; then
+              approved=true
+              for id in $ids; do
+                if gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runs/$id/approve"; then
+                  echo "Approved run $id"
+                else
+                  approved=false
+                fi
+              done
+              if [ "$approved" = true ]; then exit 0; fi
+              break
+            fi
+            echo "Waiting for pull request runs (attempt $attempt)"
+            sleep 10
+          done
+          echo "Could not approve pull request runs; dispatching CI on $branch"
           gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$branch"
 
   ci:

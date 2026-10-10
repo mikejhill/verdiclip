@@ -458,6 +458,102 @@ class TestSettingsEverywhere:
         assert requested[-1] == scheme
 
 
+class TestClosePrompt:
+    """Closing never silently loses a screenshot that wasn't saved or copied."""
+
+    @pytest.fixture
+    def asked(self, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+        """Record every close prompt and answer Cancel."""
+        prompts: list[str] = []
+
+        def cancel(*args: object) -> QMessageBox.StandardButton:
+            prompts.append(str(args[2]))
+            return QMessageBox.StandardButton.Cancel
+
+        monkeypatch.setattr(QMessageBox, "question", cancel)
+        return prompts
+
+    def _capture(self, app: App, qtbot: QtBot) -> EditorWindow:
+        """Capture the full screen and return the new editor."""
+        app.press_hotkey("fullscreen")
+        qtbot.waitUntil(lambda: len(app.controller.editors) == 1)
+        return app.controller.editors[0]
+
+    def test_fresh_capture_asks_before_closing(
+        self, make_app: AppFactory, qtbot: QtBot, asked: list[str]
+    ) -> None:
+        """UX-G-06: closing an untouched capture asks; Cancel keeps it open."""
+        editor = self._capture(make_app(), qtbot)
+
+        editor.close()
+
+        assert len(asked) == 1
+        assert "saved or copied" in asked[0]
+        assert editor.isVisible()
+
+    @pytest.mark.parametrize("shortcut", ["Ctrl+Shift+C", "Ctrl+S"])
+    def test_copied_or_saved_capture_closes_without_asking(
+        self, make_app: AppFactory, qtbot: QtBot, asked: list[str], shortcut: str
+    ) -> None:
+        """UX-G-06: copying or saving counts as saved."""
+        editor = self._capture(make_app(), qtbot)
+        editor.activateWindow()
+        qtbot.waitUntil(lambda: QApplication.activeWindow() is editor)
+        mods = Qt.KeyboardModifier.ControlModifier
+        if "Shift" in shortcut:
+            mods |= Qt.KeyboardModifier.ShiftModifier
+        key = Qt.Key.Key_C if shortcut.endswith("C") else Qt.Key.Key_S
+
+        QTest.keyClick(editor.canvas, key, mods)
+        editor.close()
+
+        assert asked == []
+        assert not editor.isVisible()
+
+    def test_capture_already_copied_by_after_capture_action(
+        self, make_app: AppFactory, qtbot: QtBot, asked: list[str]
+    ) -> None:
+        """UX-G-06: if the capture was auto-copied, closing doesn't ask."""
+        settings = Settings()
+        both = replace(settings.capture, open_editor=True, copy_to_clipboard=True)
+        editor = self._capture(make_app(replace(settings, capture=both)), qtbot)
+
+        editor.close()
+
+        assert asked == []
+
+    def test_turning_the_prompt_off_applies_to_open_editors(
+        self, make_app: AppFactory, qtbot: QtBot, asked: list[str]
+    ) -> None:
+        """UX-G-06: the setting switches the prompt off, even for open editors."""
+        app = make_app()
+        editor = self._capture(app, qtbot)
+        current = app.controller.settings
+        app.controller.apply_settings(
+            replace(
+                current, editor=replace(current.editor, confirm_unsaved_close=False)
+            )
+        )
+
+        editor.close()
+
+        assert asked == []
+        assert not editor.isVisible()
+
+    def test_opened_file_closes_without_asking(
+        self, make_app: AppFactory, tmp_path: Path, asked: list[str]
+    ) -> None:
+        """UX-G-06: an image opened from disk is already saved."""
+        picture = tmp_path / "existing.png"
+        QImage(20, 20, QImage.Format.Format_RGB32).save(str(picture))
+        editor = make_app().controller.open_image(picture)
+        assert editor is not None
+
+        editor.close()
+
+        assert asked == []
+
+
 class TestRememberedStyles:
     """Style choices carry over to the next screenshot."""
 

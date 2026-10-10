@@ -84,6 +84,9 @@ class SettingsDialog(QDialog):
         self._width = QDoubleSpinBox()
         self._font = QFontComboBox()
         self._font_size = QSpinBox()
+        self._confirm_close = QCheckBox(
+            "Ask before closing an image that hasn't been saved or copied"
+        )
         self._run_at_login = QCheckBox("Start VerdiClip when I sign in to Windows")
         self._open_with = QCheckBox("Show VerdiClip in “Open with” for image files")
         self._make_default = QPushButton("Make VerdiClip the default image app…")
@@ -123,6 +126,7 @@ class SettingsDialog(QDialog):
                 stroke_width=self._width.value(),
                 font_family=self._font.currentFont().family(),
                 font_size=self._font_size.value(),
+                confirm_unsaved_close=self._confirm_close.isChecked(),
             ),
             appearance=AppearanceSettings(theme=Theme(self._theme.currentData())),
             startup=StartupSettings(run_at_login=self._run_at_login.isChecked()),
@@ -243,6 +247,7 @@ class SettingsDialog(QDialog):
         form.addRow("Line width:", self._width)
         form.addRow("Font:", self._font)
         form.addRow("Font size:", self._font_size)
+        form.addRow("Closing:", self._confirm_close)
         return tab
 
     # Behavior
@@ -269,6 +274,7 @@ class SettingsDialog(QDialog):
         self._width.setValue(settings.editor.stroke_width)
         self._font.setCurrentFont(QFont(settings.editor.font_family))
         self._font_size.setValue(settings.editor.font_size)
+        self._confirm_close.setChecked(settings.editor.confirm_unsaved_close)
         self._run_at_login.setChecked(settings.startup.run_at_login)
         self._open_with.setChecked(settings.integration.open_with)
 

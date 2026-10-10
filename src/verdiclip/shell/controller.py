@@ -26,7 +26,7 @@ from verdiclip.document.document import Document
 from verdiclip.editor.icons import IconFactory
 from verdiclip.editor.session import EditorSession
 from verdiclip.editor.style_memory import StyleMemory
-from verdiclip.editor.window import IMAGE_FILTER, EditorWindow
+from verdiclip.editor.window import IMAGE_FILTER, EditorOptions, EditorWindow
 from verdiclip.exceptions import AppError, HotkeyError
 from verdiclip.output.delivery import ImageDelivery
 from verdiclip.platform.associations import DEFAULT_APPS_URI, FileAssociations
@@ -168,7 +168,10 @@ class AppController(QObject):
         except AppError as err:
             self._notify("Could not deliver the capture", str(err), warning=True)
         if actions.open_editor or not actions.has_action:
-            self.open_editor(capture.image, title=capture.title, source=saved)
+            delivered = saved is not None or actions.copy_to_clipboard
+            self.open_editor(
+                capture.image, title=capture.title, source=saved, delivered=delivered
+            )
         if done:
             hint = "\nClick to open the folder." if saved is not None else ""
             self._notify("Screenshot captured", "\n".join(done) + hint)
@@ -176,21 +179,27 @@ class AppController(QObject):
     # Editors
 
     def open_editor(
-        self, image: QImage, *, title: str = "", source: Path | None = None
+        self,
+        image: QImage,
+        *,
+        title: str = "",
+        source: Path | None = None,
+        delivered: bool = False,
     ) -> EditorWindow:
-        """Open an editor on ``image``."""
+        """Open an editor; ``delivered`` means it's already saved or copied."""
         session = EditorSession(
             Document(image),
             self._settings.editor,
             remembered=self._styles.load(),
             on_style_change=self._styles.remember,
+            delivered=delivered,
         )
-        editor = EditorWindow(
-            session,
-            ImageDelivery(self._settings.output),
+        options = EditorOptions(
             title=title,
             source_path=source,
+            confirm_close=self._settings.editor.confirm_unsaved_close,
         )
+        editor = EditorWindow(session, ImageDelivery(self._settings.output), options)
         editor.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         editor.open_image_requested.connect(self.open_image)
         editor.settings_requested.connect(lambda e=editor: self.show_settings(e))
@@ -213,7 +222,7 @@ class AppController(QObject):
                 warning=True,
             )
             return None
-        return self.open_editor(image, title=path.stem, source=path)
+        return self.open_editor(image, title=path.stem, source=path, delivered=True)
 
     def _forget(self, editor: EditorWindow) -> None:
         """Drop a closed editor."""
@@ -270,10 +279,12 @@ class AppController(QObject):
             self._store.save(settings)
         except AppError as err:
             self._notify("Settings not saved", str(err), warning=True)
-        if settings.editor != self._settings.editor:
+        if settings.editor.style_defaults != self._settings.editor.style_defaults:
             # New defaults in Settings replace per-tool choices made in editors
             self._styles.forget()
         previous, self._settings = self._settings, settings
+        for editor in self._editors:
+            editor.set_confirm_close(confirm=settings.editor.confirm_unsaved_close)
         ThemeManager.apply(settings.appearance.theme)
         self._capture.set_show_magnifier(show=settings.capture.show_magnifier)
         self._apply_startup()

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtGui import QColor, QGuiApplication, QImage, QPainter
+from PySide6.QtWidgets import QMessageBox
 
 from verdiclip.document.document import Document
 from verdiclip.editor.session import EditorSession
@@ -31,6 +32,16 @@ def pytest_configure(config: pytest.Config) -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     if WINDOWS_FONTS.is_dir():
         os.environ.setdefault("QT_QPA_FONTDIR", str(WINDOWS_FONTS))
+
+
+@pytest.fixture(autouse=True)
+def no_modal_dialogs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Answer "Discard" to unsaved-change prompts so teardown never blocks."""
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *_args: QMessageBox.StandardButton.Discard,
+    )
 
 
 @pytest.fixture(autouse=True)
