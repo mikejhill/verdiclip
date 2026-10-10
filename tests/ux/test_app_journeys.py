@@ -33,7 +33,13 @@ from verdiclip.geometry import Rect
 from verdiclip.platform.associations import DEFAULT_APPS_URI, FileAssociations
 from verdiclip.platform.hotkeys import Hotkey, HotkeyService
 from verdiclip.platform.startup import StartupRegistration
-from verdiclip.settings import IntegrationSettings, Settings, SettingsStore, Theme
+from verdiclip.settings import (
+    IntegrationSettings,
+    Settings,
+    SettingsStore,
+    StartupSettings,
+    Theme,
+)
 from verdiclip.shell.controller import AppController, ShellIntegration
 from verdiclip.shell.instance import SingleInstance
 from verdiclip.shell.settings_dialog import SettingsDialog
@@ -337,6 +343,21 @@ class TestHotkeysAndSettings:
         assert not QImage(str(icon)).isNull()
         assert command_key not in app.associations.keys
         assert app.store.load().integration.open_with is False
+
+    def test_run_at_login_is_refreshed_at_start(self, make_app: AppFactory) -> None:
+        """UX-TRY-04: a lost or outdated startup entry is rewritten on launch."""
+        settings = Settings(startup=StartupSettings(run_at_login=True))
+
+        app = make_app(settings)
+
+        assert app.registry.values["VerdiClip"].endswith("-m verdiclip")
+
+    def test_registrations_are_left_alone_when_off(self, make_app: AppFactory) -> None:
+        """UX-TRY-04, UX-TRY-07: launching never adds entries the user turned off."""
+        app = make_app()
+
+        assert app.registry.values == {}
+        assert app.associations.keys == {}
 
     def test_open_with_is_refreshed_at_start(self, make_app: AppFactory) -> None:
         """UX-TRY-07: a moved install re-registers its current command on launch."""
