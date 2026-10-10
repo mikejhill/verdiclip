@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/mikejhill/verdiclip/compare/v0.3.0...v0.4.0) (2026-10-10)
+
+
+### Features
+
+* pixel-exact magnifier reticle and Enter to start/finish a selection ([#15](https://github.com/mikejhill/verdiclip/issues/15)) ([c5a22fc](https://github.com/mikejhill/verdiclip/commit/c5a22fcd96137aa6a439cfeda50fc00a205672e3))
+
 ## [0.3.0](https://github.com/mikejhill/verdiclip/compare/v0.2.1...v0.3.0) (2026-10-10)
 
 
