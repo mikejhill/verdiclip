@@ -15,10 +15,12 @@ from verdiclip.document.commands import (
     RemoveAnnotations,
     ReorderAnnotations,
     ReplaceAnnotations,
+    TransformImage,
 )
 from verdiclip.document.document import Document
 from verdiclip.document.history import History
 from verdiclip.document.style import HIGHLIGHT_YELLOW, TRANSPARENT, WHITE, Style
+from verdiclip.document.transform import ImageTransform
 from verdiclip.exceptions import CodecError
 from verdiclip.geometry import Point
 from verdiclip.settings import EditorSettings
@@ -179,6 +181,10 @@ class EditorSession:
     def select_all(self) -> None:
         """Select every visible annotation."""
         self._selection.set(a.id for a in self._document.visible_annotations)
+
+    def transform_image(self, transform: ImageTransform) -> None:
+        """Rotate, flip, or resize the whole image as one undo step."""
+        self._history.execute(TransformImage(transform))
 
     def delete_selected(self) -> bool:
         """Remove the selection; return True if anything was removed."""

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import ctypes
+import ctypes.wintypes
 import sys
-from ctypes import wintypes
 from dataclasses import dataclass, field
 from unittest.mock import Mock
 
@@ -152,7 +152,9 @@ class NativeWindowBoundary:
     ) -> int:
         """Write a frame or cloaking flag through the native output pointer."""
         value = (
-            wintypes.DWORD(1) if attribute == 14 else wintypes.RECT(-20, -10, 80, 90)
+            ctypes.wintypes.DWORD(1)
+            if attribute == 14
+            else ctypes.wintypes.RECT(-20, -10, 80, 90)
         )
         ctypes.memmove(output, ctypes.byref(value), ctypes.sizeof(value))
         return 0
@@ -160,7 +162,7 @@ class NativeWindowBoundary:
     @staticmethod
     def window_rect(_handle: int, output: ctypes.c_void_p) -> int:
         """Write fallback window bounds through the native output pointer."""
-        value = wintypes.RECT(1, 2, 31, 42)
+        value = ctypes.wintypes.RECT(1, 2, 31, 42)
         ctypes.memmove(output, ctypes.byref(value), ctypes.sizeof(value))
         return 1
 
@@ -207,7 +209,7 @@ class TestWin32WindowApi:
         assert api.title(12) == "Native"
         assert api.frame_bounds(12) == Rect(-20, -10, 100, 100)
         assert api.foreground_handle() == 12
-        assert native_window_library.GetForegroundWindow.restype is wintypes.HWND
+        assert native_window_library.GetForegroundWindow.restype is ctypes.wintypes.HWND
         native_window_library.GetWindowRect.assert_not_called()
 
     def test_failures_and_fallback(self, native_window_library: Mock) -> None:

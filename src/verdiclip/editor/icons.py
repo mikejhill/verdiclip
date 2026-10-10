@@ -173,6 +173,7 @@ class IconFactory:
             "undo": lambda q: self._draw_curved_arrow(q, mirror=False),
             "redo": lambda q: self._draw_curved_arrow(q, mirror=True),
             "settings": self._draw_gear,
+            "image": self._draw_rotate_frame,
         }
         drawers[name](p)
 
@@ -215,6 +216,15 @@ class IconFactory:
         p.drawPath(path)
         p.setBrush(self._ink)
         p.drawPolygon(QPolygonF([QPointF(6, 20), QPointF(18, 11), QPointF(18, 29)]))
+
+    def _draw_rotate_frame(self, p: QPainter) -> None:
+        """A picture frame with a turning arrow: rotate, flip, resize."""
+        p.drawRoundedRect(QRectF(7, 17, 24, 24), 3, 3)
+        path = QPainterPath(QPointF(20, 9))
+        path.cubicTo(QPointF(32, 4), QPointF(42, 12), QPointF(41, 26))
+        p.drawPath(path)
+        p.setBrush(self._ink)
+        p.drawPolygon(QPolygonF([QPointF(35, 24), QPointF(47, 24), QPointF(41, 33)]))
 
     def _draw_gear(self, p: QPainter) -> None:
         """A cog wheel."""

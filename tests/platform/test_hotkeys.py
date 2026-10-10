@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import ctypes
-from ctypes import wintypes
+import ctypes.wintypes
 from unittest.mock import Mock
 
 import pytest
@@ -173,8 +173,9 @@ class TestHotkeyService:
         finally:
             service.close()
 
+    @pytest.mark.usefixtures("qtbot")
     def test_release_failure_is_logged_not_raised(
-        self, qtbot: QtBot, caplog: pytest.LogCaptureFixture
+        self, caplog: pytest.LogCaptureFixture
     ) -> None:
         """A failed unregister is logged and the binding is still forgotten."""
         api = FakeHotkeyApi()
@@ -186,13 +187,12 @@ class TestHotkeyService:
 
         assert "capture" not in service.registered
         assert "did not unregister" in caplog.text
-        del qtbot
 
     def test_native_filter(self, qtbot: QtBot) -> None:
         """Only recognized generic WM_HOTKEY messages dispatch a signal."""
         service = HotkeyService(FakeHotkeyApi())
         event_filter = _NativeHotkeyFilter(service)
-        message = wintypes.MSG()
+        message = ctypes.wintypes.MSG()
         address = ctypes.addressof(message)
 
         try:
@@ -225,7 +225,7 @@ class TestHotkeyService:
         """Qt passes the MSG pointer as a shiboken VoidPtr; it must still dispatch."""
         service = HotkeyService(FakeHotkeyApi())
         event_filter = _NativeHotkeyFilter(service)
-        message = wintypes.MSG()
+        message = ctypes.wintypes.MSG()
         message.message = 0x0312
         message.wParam = 1
         pointer = shiboken6.VoidPtr(ctypes.addressof(message))
@@ -280,8 +280,8 @@ class TestWin32HotkeyApi:
         assert not api.unregister(0, 1)
         library.RegisterHotKey.assert_called_once_with(0, 1, 0x4002, 65)
         library.UnregisterHotKey.assert_called_once_with(0, 1)
-        assert library.RegisterHotKey.restype is wintypes.BOOL
-        assert library.UnregisterHotKey.argtypes == [wintypes.HWND, ctypes.c_int]
+        assert library.RegisterHotKey.restype is ctypes.wintypes.BOOL
+        assert library.UnregisterHotKey.argtypes == [ctypes.wintypes.HWND, ctypes.c_int]
 
     def test_non_windows(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Non-Windows construction fails without accessing native libraries."""

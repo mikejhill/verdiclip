@@ -32,6 +32,8 @@ from verdiclip.document.annotations import (
 from verdiclip.document.commands import AddAnnotations
 from verdiclip.document.document import Document
 from verdiclip.document.style import HIGHLIGHT_YELLOW, RED, WHITE, Color, Style
+from verdiclip.document.transform import Rotate
+from verdiclip.editor.resize_dialog import ResizeDialog
 from verdiclip.editor.session import EditorSession, ToolId
 from verdiclip.editor.window import EditorWindow
 from verdiclip.geometry import Point, Rect
@@ -87,13 +89,15 @@ class Gallery:
                 ToolId.RECTANGLE, select=True
             ),
             "editor-text-tool": lambda: self._editor(ToolId.TEXT, select=False),
+            "editor-rotated": self._rotated_editor,
+            "resize-dialog": lambda: ResizeDialog(720, 420),
             "settings-capture": lambda: self._settings_tab(0),
             "settings-hotkeys": lambda: self._settings_tab(1),
             "settings-general": lambda: self._settings_tab(4),
             "capture-overlay": self._overlay,
         }
 
-    def _editor(self, tool: ToolId, *, select: bool) -> QWidget:
+    def _editor(self, tool: ToolId, *, select: bool) -> EditorWindow:
         """Return an editor over a sample screenshot with a few annotations."""
         session = EditorSession(Document(self._sample()), self._settings.editor)
         callout = Style(fill=Color(255, 255, 255), width=3, font_size=15)
@@ -117,6 +121,12 @@ class Gallery:
         window.activate_tool(tool)
         if select:
             session.selection.set([box.id])
+        return window
+
+    def _rotated_editor(self) -> QWidget:
+        """Return the sample editor after Rotate left, with the box selected."""
+        window = self._editor(ToolId.SELECT, select=True)
+        window.transform_image(Rotate(clockwise=False))
         return window
 
     def _overlay(self) -> QWidget:

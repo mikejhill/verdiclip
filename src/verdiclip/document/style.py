@@ -83,3 +83,11 @@ class Style:
         if self.font_size <= 0:
             msg = f"Style font size must be positive, got {self.font_size}"
             raise ValueError(msg)
+
+    def scaled(self, factor: float) -> Style:
+        """Return the style with stroke width and font size multiplied."""
+        return replace(
+            self,
+            width=self.width * factor,
+            font_size=max(1, round(self.font_size * factor)),
+        )

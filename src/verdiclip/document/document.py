@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass
 
 from PySide6.QtGui import QImage
 
@@ -13,6 +14,15 @@ from verdiclip.geometry import Point, Rect
 logger = logging.getLogger(__name__)
 
 type DocumentListener = Callable[[], None]
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentState:
+    """Everything a whole-image change replaces: pixels, crop, and annotations."""
+
+    image: QImage
+    crop: Rect
+    annotations: tuple[Annotation, ...]
 
 
 class Document:
@@ -68,6 +78,11 @@ class Document:
             return str(int(self._last_counter_label) + 1)
         except ValueError:
             return "1"
+
+    @property
+    def state(self) -> DocumentState:
+        """Return the image, crop, and annotations together."""
+        return DocumentState(self._image, self._crop, tuple(self._annotations))
 
     def find(self, annotation_id: str) -> Annotation | None:
         """Return the annotation with ``annotation_id`` if present."""
@@ -150,6 +165,21 @@ class Document:
             msg = f"Crop {crop} does not overlap the image {self._image_rect}"
             raise ValueError(msg)
         self._crop = clamped
+        self._notify()
+
+    def restore(self, state: DocumentState) -> None:
+        """Replace the image, crop, and annotations (rotate, flip, resize)."""
+        if state.image.isNull():
+            msg = "Document image must not be null"
+            raise ValueError(msg)
+        self._image = state.image.convertToFormat(
+            QImage.Format.Format_ARGB32_Premultiplied
+        )
+        self._image_rect = Rect(0, 0, self._image.width(), self._image.height())
+        self._crop = state.crop.intersected(self._image_rect)
+        if self._crop.is_empty:
+            self._crop = self._image_rect
+        self._annotations = list(state.annotations)
         self._notify()
 
     # Internals

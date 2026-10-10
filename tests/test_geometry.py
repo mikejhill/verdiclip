@@ -6,7 +6,7 @@ import math
 
 import pytest
 
-from verdiclip.geometry import Point, Rect
+from verdiclip.geometry import Affine, Point, Rect
 
 
 class TestPoint:
@@ -116,3 +116,23 @@ class TestRect:
         assert Rect(0, 0, 1, 1).adjusted(-2).is_empty
         assert Rect(0, 0, 1, 1).united(Rect(3, 4, 2, 2)) == Rect(0, 0, 5, 6)
         assert Rect(0, 0, 1, 1).contains(Point(1, 1))
+
+
+class TestAffine:
+    """Affine maps used by rotate, flip, and resize."""
+
+    def test_map_and_scale(self) -> None:
+        """A quarter turn keeps scale 1; a 2x/3x stretch has area scale sqrt(6)."""
+        turn = Affine(0, -1, 10, 1, 0, 0)
+        stretch = Affine(2, 0, 1, 0, 3, -1)
+
+        assert turn.map(Point(2, 3)) == Point(7, 2)
+        assert turn.scale == 1
+        assert stretch.map(Point(1, 1)) == Point(3, 2)
+        assert stretch.scale == pytest.approx(6**0.5)
+
+    def test_map_rect_normalizes(self) -> None:
+        """Mirrored rectangles come back with positive sizes."""
+        mirror = Affine(-1, 0, 100, 0, 1, 0)
+
+        assert mirror.map_rect(Rect(10, 20, 30, 40)) == Rect(60, 20, 30, 40)

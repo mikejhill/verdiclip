@@ -127,6 +127,7 @@ src/verdiclip/
 │   ├── annotations.py   Annotation types (frozen), labeled boxes, handles, hit testing
 │   ├── document.py      Document (image + crop + annotations)
 │   ├── commands.py      Command protocol + implementations
+│   ├── transform.py     Rotate, flip, resize: pixels, crop, and annotations together
 │   ├── history.py       Undo/redo stack, "delivered" tracking
 │   └── codec.py         Annotation and Style ⇄ JSON (copy/paste, remembered styles)
 ├── render/
@@ -136,6 +137,7 @@ src/verdiclip/
 │   ├── tools.py         Tool protocol + one class per tool → emits Commands
 │   ├── canvas.py        CanvasView (custom paint, zoom/pan, selection UI)
 │   ├── inline_editors.py In-place text, counter, and box-label editors
+│   ├── resize_dialog.py Resize in pixels or percent, aspect ratio linked
 │   ├── style_bar.py     Stroke / fill / width / font controls
 │   ├── style_memory.py  Remembers each tool's last style across editors and restarts
 │   ├── chrome.py        Theme-aware toolbar styling and canvas backdrop

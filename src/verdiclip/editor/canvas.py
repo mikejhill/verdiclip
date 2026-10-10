@@ -74,6 +74,7 @@ class CanvasView(QAbstractScrollArea):
         self._tool: Tool | None = None
         self._zoom = 1.0
         self._pixmap = QPixmap.fromImage(session.document.image)
+        self._pixmap_key = session.document.image.cacheKey()
         self._pan_anchor: QPointF | None = None
         self._space_held = False
         self._editors = InlineEditors(self, session)
@@ -551,6 +552,11 @@ class CanvasView(QAbstractScrollArea):
 
     def _on_document_changed(self) -> None:
         """Re-layout after crops and repaint after any change."""
+        image = self._session.document.image
+        if image.cacheKey() != self._pixmap_key:
+            # Rotate, flip, and resize replace the base pixels
+            self._pixmap = QPixmap.fromImage(image)
+            self._pixmap_key = image.cacheKey()
         self._update_scrollbars()
         self._editors.reposition()
         self.refresh()

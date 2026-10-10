@@ -61,3 +61,14 @@ class TestStyle:
         """Non-positive stroke or font sizes are rejected."""
         with pytest.raises(ValueError, match="must be positive"):
             Style(width=width, font_size=font_size)
+
+
+class TestStyleScaling:
+    """Styles scale with resized images."""
+
+    def test_scaled_multiplies_width_and_rounds_font(self) -> None:
+        """Fonts never drop below one point."""
+        style = Style(width=4.0, font_size=15)
+
+        assert style.scaled(0.5) == Style(width=2.0, font_size=8)
+        assert style.scaled(0.01).font_size == 1

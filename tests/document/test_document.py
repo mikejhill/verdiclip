@@ -8,7 +8,7 @@ import pytest
 from PySide6.QtGui import QImage
 
 from verdiclip.document.annotations import CounterMarker, RectangleShape
-from verdiclip.document.document import Document
+from verdiclip.document.document import Document, DocumentState
 from verdiclip.document.style import RED, Style
 from verdiclip.geometry import Point, Rect
 
@@ -97,3 +97,38 @@ class TestDocument:
         document.replace([marker.with_label("A")])
 
         assert document.next_counter_label == "1"
+
+
+class TestRestore:
+    """Whole-state replacement used by rotate, flip, and resize."""
+
+    def test_restore_replaces_image_crop_and_annotations(
+        self, document: Document
+    ) -> None:
+        """Listeners hear about it and sizes follow the new image."""
+        calls: list[int] = []
+        document.subscribe(lambda: calls.append(1))
+        image = QImage(50, 60, QImage.Format.Format_RGB32)
+        image.fill(0)
+        box = RectangleShape(rect=Rect(1, 2, 3, 4))
+
+        document.restore(DocumentState(image, Rect(5, 5, 10, 10), (box,)))
+
+        assert document.image_rect == Rect(0, 0, 50, 60)
+        assert document.crop == Rect(5, 5, 10, 10)
+        assert document.annotations == (box,)
+        assert document.image.format() == QImage.Format.Format_ARGB32_Premultiplied
+        assert calls == [1]
+
+    def test_restore_falls_back_to_full_crop(self, document: Document) -> None:
+        """A crop outside the new image becomes the whole image."""
+        image = QImage(50, 60, QImage.Format.Format_ARGB32_Premultiplied)
+
+        document.restore(DocumentState(image, Rect(500, 500, 10, 10), ()))
+
+        assert document.crop == Rect(0, 0, 50, 60)
+
+    def test_restore_rejects_null_images(self, document: Document) -> None:
+        """A null image would break painting."""
+        with pytest.raises(ValueError, match="null"):
+            document.restore(DocumentState(QImage(), Rect(0, 0, 1, 1), ()))
