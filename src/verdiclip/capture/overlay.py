@@ -51,6 +51,7 @@ class SelectionOverlay(QWidget):
     region_chosen = Signal(object)  # Rect (physical)
     window_chosen = Signal(object, str)  # Rect (physical), title
     cancelled = Signal()
+    hover_changed = Signal(object)  # WindowTarget | None under this overlay's cursor
 
     def __init__(
         self,
@@ -71,6 +72,8 @@ class SelectionOverlay(QWidget):
         self._press: Point | None = None
         self._cursor: Point | None = None
         self._dragging = False
+        self._announced: WindowTarget | None = None
+        self._shared: WindowTarget | None = None
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
@@ -96,6 +99,19 @@ class SelectionOverlay(QWidget):
             return None
         physical = self._geometry.to_physical(self._cursor)
         return next((w for w in self._windows if w.bounds.contains(physical)), None)
+
+    @property
+    def announced_hover(self) -> WindowTarget | None:
+        """Return the window this overlay last reported as hovered."""
+        return self._announced
+
+    def set_shared_highlight(self, window: WindowTarget | None) -> None:
+        """Highlight a window hovered on another monitor (for windows that span)."""
+        if window is not None and not window.bounds.intersects(self._geometry.physical):
+            window = None
+        if window is not self._shared:
+            self._shared = window
+            self.update()
 
     def selection(self) -> Rect | None:
         """Return the dragged rectangle in local logical coordinates."""
@@ -131,9 +147,12 @@ class SelectionOverlay(QWidget):
         if window is not None:
             local = self._geometry.local_rect(window.bounds)
             self._reveal(painter, local, window.title)
+        elif self._shared is not None:
+            # Another monitor's cursor is over a window that reaches onto this one
+            self._reveal(painter, self._geometry.local_rect(self._shared.bounds), "")
 
     def _reveal(self, painter: QPainter, area: Rect, label: str) -> None:
-        """Undim ``area``, outline it, and show ``label`` beside it."""
+        """Undim ``area``, outline it, and show ``label`` (if any) beside it."""
         rect = QRectF(area.x, area.y, area.width, area.height)
         painter.drawImage(
             rect,
@@ -148,6 +167,8 @@ class SelectionOverlay(QWidget):
         painter.setPen(QPen(ACCENT, 2))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRect(rect)
+        if not label:
+            return
         font = QFont("Segoe UI")
         font.setPixelSize(13)
         painter.setFont(font)
@@ -249,6 +270,7 @@ class SelectionOverlay(QWidget):
             and self._press.distance_to(self._cursor) >= DRAG_THRESHOLD
         ):
             self._dragging = True
+        self._announce_hover()
         self.update()
 
     @override
@@ -304,6 +326,7 @@ class SelectionOverlay(QWidget):
         local = self.mapFromGlobal(QCursor.pos())
         inside = self.rect().contains(local)
         self._cursor = Point(local.x(), local.y()) if inside else None
+        self._announce_hover()
         self.update()
 
     @override
@@ -312,9 +335,17 @@ class SelectionOverlay(QWidget):
         del event
         if self._press is None:
             self._cursor = None
+            self._announce_hover()
             self.update()
 
     # Internals
+
+    def _announce_hover(self) -> None:
+        """Tell other monitors the window under this cursor (none while dragging)."""
+        window = None if self._dragging else self.hovered_window()
+        if window is not self._announced:
+            self._announced = window
+            self.hover_changed.emit(window)
 
     @staticmethod
     def _local(event: QMouseEvent) -> Point:

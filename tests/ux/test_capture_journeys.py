@@ -14,7 +14,7 @@ from pytestqt.wait_signal import SignalBlocker
 from tests.ux.conftest import Stopwatch
 
 from verdiclip.capture.grabber import FrozenScreen
-from verdiclip.capture.models import Capture, CaptureMode
+from verdiclip.capture.models import Capture, CaptureMode, ScreenGeometry
 from verdiclip.capture.overlay import SelectionOverlay
 from verdiclip.capture.service import CaptureService
 from verdiclip.exceptions import CaptureError
@@ -422,3 +422,40 @@ class TestImmediateCaptures:
             service.repeat_last()
 
         assert CaptureOf.signal(signal).mode is CaptureMode.FULLSCREEN
+
+
+class TestSpanningWindows:
+    """A window that spans monitors is highlighted on every monitor it covers."""
+
+    def test_hovering_lights_up_the_whole_window_across_monitors(self) -> None:
+        """UX-CAP-04: the part of the window on the other monitor is undimmed too."""
+        desktop = QImage(800, 300, QImage.Format.Format_RGB32)
+        desktop.fill(QColor(200, 200, 200))
+        frozen = FrozenScreen(desktop, Rect(0, 0, 800, 300))
+        screen = QGuiApplication.primaryScreen()
+        left_bounds, right_bounds = Rect(0, 0, 400, 300), Rect(400, 0, 400, 300)
+        spanning = FakeWindow("Spreadsheet", Rect(300, 50, 200, 100))
+        left, right = (
+            SelectionOverlay(
+                ScreenGeometry(name, bounds, bounds, 1.0),
+                screen,
+                frozen,
+                [spanning],
+                show_magnifier=False,
+            )
+            for name, bounds in (("left", left_bounds), ("right", right_bounds))
+        )
+        for overlay in (left, right):
+            overlay.show()
+        CaptureService.link_hover([left, right])
+
+        QTest.mouseMove(left, QPoint(350, 100))
+
+        undimmed = QColor(200, 200, 200)
+        right_pixels = right.grab().toImage()
+        assert right_pixels.pixelColor(50, 100) == undimmed  # Inside, on the right
+        assert right_pixels.pixelColor(150, 100) != undimmed  # Outside stays dim
+        QTest.mouseMove(left, QPoint(50, 250))
+        assert right.grab().toImage().pixelColor(50, 100) != undimmed
+        for overlay in (left, right):
+            overlay.close()
