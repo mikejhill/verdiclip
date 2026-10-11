@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/mikejhill/verdiclip/compare/v0.4.0...v0.4.1) (2026-10-11)
+
+
+### Bug Fixes
+
+* add detached Python launchers for the checkout ([#17](https://github.com/mikejhill/verdiclip/issues/17)) ([9affa4f](https://github.com/mikejhill/verdiclip/commit/9affa4f1f9a422ed212bb9b057852db68e2e3eff))
+
 ## [0.4.0](https://github.com/mikejhill/verdiclip/compare/v0.3.0...v0.4.0) (2026-10-10)
 
 
