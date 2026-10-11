@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.2](https://github.com/mikejhill/verdiclip/compare/v0.4.1...v0.4.2) (2026-10-11)
+
+
+### Bug Fixes
+
+* keep checked boxes visible after switching themes ([#19](https://github.com/mikejhill/verdiclip/issues/19)) ([de4f73c](https://github.com/mikejhill/verdiclip/commit/de4f73c12bdd836baba7977207a3265049b9e4e1))
+
 ## [0.4.1](https://github.com/mikejhill/verdiclip/compare/v0.4.0...v0.4.1) (2026-10-11)
 
 
