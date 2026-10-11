@@ -89,6 +89,17 @@ In short: an edit session is an immutable base image, a non-destructive crop, an
 
 Requires Windows 10+ and [uv](https://docs.astral.sh/uv/).
 
+### Run from the checkout
+
+Run `uv sync` once in the repository root to create `.venv` and install dependencies. Then use either root launcher:
+
+- Double-click [Run-VerdiClip.bat](Run-VerdiClip.bat) in Explorer.
+- From PowerShell, run `.\Run-VerdiClip.ps1` (see [Run-VerdiClip.ps1](Run-VerdiClip.ps1)).
+
+Both run `.venv\Scripts\pythonw.exe -m verdiclip` directly and return immediately, starting the tray app without a console window. A terminal opened by double-clicking the batch file closes after launch; an existing terminal stays available. The scripts work from any current directory and require Windows. If `.venv` is missing, run `uv sync` before trying again.
+
+### Development commands
+
 ```bash
 uv sync                  # Create .venv and install dependencies
 uv run verdiclip         # Run the tray app
