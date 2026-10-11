@@ -6,6 +6,7 @@ from typing import ClassVar
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication
+from PySide6.QtWidgets import QApplication, QStyleFactory
 
 from verdiclip.settings import Theme
 
@@ -18,8 +19,27 @@ class ThemeManager:
         Theme.LIGHT: Qt.ColorScheme.Light,
         Theme.DARK: Qt.ColorScheme.Dark,
     }
+    _watching: ClassVar[bool] = False
 
     @classmethod
     def apply(cls, theme: Theme) -> None:
         """Apply ``theme`` to every window immediately."""
-        QGuiApplication.styleHints().setColorScheme(cls.SCHEMES[theme])
+        hints = QGuiApplication.styleHints()
+        if not cls._watching:
+            # Also catches Windows switching modes under "Match Windows"
+            hints.colorSchemeChanged.connect(cls.refresh_style)
+            cls._watching = True
+        hints.setColorScheme(cls.SCHEMES[theme])
+
+    @classmethod
+    def refresh_style(cls) -> None:
+        """Replace the app style with a fresh instance of the same style.
+
+        Qt's windows11 style keeps colors from the previous scheme after a
+        switch, which paints checked checkboxes in the window color (invisible
+        in dark mode). A new instance picks up the current scheme.
+        """
+        app = QApplication.instance()
+        if not isinstance(app, QApplication):
+            return
+        app.setStyle(QStyleFactory.create(app.style().name()))
