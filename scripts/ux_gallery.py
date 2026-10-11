@@ -68,6 +68,7 @@ class Gallery:
     def __init__(self, out_dir: Path) -> None:
         self._out = out_dir
         self._settings = Settings()
+        self._after_show: Callable[[], None] | None = None
 
     def run(self) -> list[Path]:
         """Render every scene in light and dark; return the files written."""
@@ -130,7 +131,9 @@ class Gallery:
     def _rotated_editor(self) -> QWidget:
         """Return the sample editor after Rotate left, with the box selected."""
         window = self._editor(ToolId.SELECT, select=True)
-        window.transform_image(Rotate(clockwise=False))
+        # Rotate once shown, as a user would: a status message posted before show
+        # leaves the tool hint drawn underneath it, and the zoom isn't refit
+        self._after_show = lambda: window.transform_image(Rotate(clockwise=False))
         return window
 
     def _overlay(self) -> QWidget:
@@ -168,11 +171,16 @@ class Gallery:
         widget.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
         widget.show()
         QTest.qWait(50)
+        if self._after_show is not None:
+            self._after_show()
+            self._after_show = None
+            QTest.qWait(50)
         if isinstance(widget, EditorWindow):
             QTest.mouseMove(widget.canvas.viewport(), QPoint(500, 300))
         if isinstance(widget, SelectionOverlay):
-            # Off-screen widgets don't get synthetic cursor moves; send one directly
-            pos = QPointF(438, 320)
+            # Off-screen widgets don't get synthetic cursor moves; send one directly.
+            # Rest on the "Sign in" text so the magnifier shows real pixel detail.
+            pos = QPointF(374, 305)
             move = QMouseEvent(
                 QEvent.Type.MouseMove,
                 pos,
