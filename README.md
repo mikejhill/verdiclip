@@ -7,7 +7,7 @@
 
 Fast, faithful screenshots for Windows: grab a precise piece of the screen, mark it up, and put it where it needs to go — in seconds.
 
-![VerdiClip editor in the light theme, showing numbered steps, a labeled callout, an arrow, a highlight, and an obfuscated password](docs/images/editor-light.png)
+![The VerdiClip editor in the dark theme, showing numbered steps, a labeled callout, an arrow, a highlight, and an obfuscated password](docs/images/editor.png)
 
 VerdiClip is an independent project. See [ATTRIBUTION.md](ATTRIBUTION.md) for credits.
 
@@ -56,19 +56,21 @@ If Windows or another screenshot tool already owns `PrtSc`, VerdiClip tells you 
 - **Everything is undoable**, including crop, which never throws pixels away.
 - **The quickest path**: draw, `Esc` until nothing is selected, `Enter` — the image is on the clipboard and the editor closes. Closing an image you haven't copied or saved asks first (you can turn this off in Settings → Editor).
 
-![The editor in the dark theme](docs/images/editor-dark.png)
+![The same screenshot rotated left: the marks turn with the picture and the callout's label stays upright](docs/images/editor-rotated.png)
 
 ## Settings
 
 Open from the tray menu or with `Ctrl+,` in any editor.
 
-![The Settings dialog: after-capture actions can be combined](docs/images/settings.png)
+![Settings → Capture: after-capture actions can be combined](docs/images/settings-capture.png)
 
 - **After capturing** — any combination of: open in the editor, copy to the clipboard, save to the output folder.
 - **Hotkeys** — validated as you type; conflicts are reported.
 - **Output** — folder, file-name pattern (`{date}`, `{time}`, `{title}`, `{counter}`) with a live preview, format, JPEG quality.
 - **Editor** — default color, width, and font.
 - **General** — light, dark, or match-Windows theme; start at sign-in; show VerdiClip in Explorer's **Open with** menu for images. **Make VerdiClip the default image app…** opens Windows Settings at VerdiClip's Default apps page, where you choose it as the default (Windows requires you to confirm this yourself).
+
+![Settings → General: theme, start at sign-in, and the Open with integration](docs/images/settings-general.png)
 
 ## Command line
 

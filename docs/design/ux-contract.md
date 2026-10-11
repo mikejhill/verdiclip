@@ -22,7 +22,7 @@ window state, or text the user can read — never internal state.
 | UX-G-05 | Failures the user can act on (hotkey conflict, save failure) are shown to the user, not only logged. |
 | UX-G-06 | Closing an editor whose current image hasn't been saved to a file or copied to the clipboard asks: **Save** (`S`, `Enter`) / **Don't save** (`N`) / **Cancel** (`Esc`). The question matches what would be lost: "Save changes to “<file>”" for an image opened from or saved to a file, "has changed since you copied it" for a copied screenshot with newer edits, and "hasn't been saved or copied" otherwise. This includes a fresh capture with no edits (unless an after-capture action already saved or copied it); an image opened from a file starts as saved. The prompt can be turned off in Settings → Editor (on by default) and the change applies to open editors immediately. |
 | UX-G-07 | Window chrome never jumps: switching tools or selecting items never changes the toolbar height or moves the canvas. |
-| UX-G-08 | Light, dark, or match-Windows theme applies to every window immediately, including toolbar icons. |
+| UX-G-08 | Light, dark, or match-Windows theme applies to every window immediately, including toolbar icons. Controls stay legible after any switch (checked boxes show the accent fill in either mode), including when Windows changes mode under match-Windows. |
 
 ## Capture
 
@@ -138,4 +138,4 @@ second monitor at a different DPI. Check these by hand on Windows 11:
 - [ ] Clipboard paste into Paint, Word, Slack, and a browser.
 - [ ] Print preview to "Microsoft Print to PDF".
 - [ ] Settings → General → Image files: VerdiClip appears in Explorer's "Open with" for a `.png` with its name and icon, opens the file in the running instance, and "Make default…" lands on VerdiClip's Default apps page.
-- [ ] Settings → General → Theme: Light, Dark, and Match Windows each restyle open editors (menus, toolbars, tool icons) without restarting.
+- [ ] Settings → General → Theme: Light, Dark, and Match Windows each restyle open editors (menus, toolbars, tool icons) without restarting; after switching Light → Dark, reopen Settings and confirm checked boxes are clearly visible.

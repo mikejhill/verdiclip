@@ -15,7 +15,14 @@ from pathlib import Path
 from typing import Final
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
-from PySide6.QtGui import QColor, QGuiApplication, QImage, QMouseEvent, QPainter
+from PySide6.QtGui import (
+    QColor,
+    QGuiApplication,
+    QImage,
+    QMouseEvent,
+    QPainter,
+    QPalette,
+)
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QTabWidget, QWidget
 
@@ -47,10 +54,17 @@ type Scene = Callable[[], QWidget]
 
 STEP: Final = Style(stroke=WHITE, fill=RED, font_size=14)
 README_IMAGES: Final = {
-    "light-editor-rectangle-selected": "editor-light.png",
-    "dark-editor-rectangle-selected": "editor-dark.png",
+    "dark-editor-rectangle-selected": "editor.png",
     "dark-capture-overlay": "capture.png",
-    "light-settings-capture": "settings.png",
+    "dark-editor-rotated": "editor-rotated.png",
+    "dark-settings-capture": "settings-capture.png",
+    "dark-settings-general": "settings-general.png",
+}
+
+# Windows 11's default accent, as each mode shows it
+DEFAULT_ACCENT: Final = {
+    Theme.LIGHT: QColor(0, 95, 184),
+    Theme.DARK: QColor(96, 205, 255),
 }
 
 
@@ -68,6 +82,7 @@ class Gallery:
     def __init__(self, out_dir: Path) -> None:
         self._out = out_dir
         self._settings = Settings()
+        self._after_show: Callable[[], None] | None = None
 
     def run(self) -> list[Path]:
         """Render every scene in light and dark; return the files written."""
@@ -75,10 +90,18 @@ class Gallery:
         written: list[Path] = []
         for theme in (Theme.LIGHT, Theme.DARK):
             ThemeManager.apply(theme)
+            self._use_default_accent(theme)
             QApplication.processEvents()
             for name, scene in self._scenes().items():
                 written.append(self._render(f"{theme.value}-{name}", scene))
         return written
+
+    @staticmethod
+    def _use_default_accent(theme: Theme) -> None:
+        """Use Windows' default accent so docs don't show this PC's personal color."""
+        palette = QApplication.palette()
+        palette.setColor(QPalette.ColorRole.Accent, DEFAULT_ACCENT[theme])
+        QApplication.setPalette(palette)
 
     # Scenes
 
@@ -128,9 +151,16 @@ class Gallery:
         return window
 
     def _rotated_editor(self) -> QWidget:
-        """Return the sample editor after Rotate left, with the box selected."""
+        """Return the sample editor after Rotate left and Fit, with the box selected."""
         window = self._editor(ToolId.SELECT, select=True)
-        window.transform_image(Rotate(clockwise=False))
+
+        def rotate() -> None:
+            window.transform_image(Rotate(clockwise=False))
+            window.canvas.zoom_fit()
+
+        # Rotate once shown, as a user would: a status message posted before
+        # show leaves the tool hint drawn underneath it
+        self._after_show = rotate
         return window
 
     def _overlay(self) -> QWidget:
@@ -168,11 +198,16 @@ class Gallery:
         widget.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
         widget.show()
         QTest.qWait(50)
+        if self._after_show is not None:
+            self._after_show()
+            self._after_show = None
+            QTest.qWait(50)
         if isinstance(widget, EditorWindow):
             QTest.mouseMove(widget.canvas.viewport(), QPoint(500, 300))
         if isinstance(widget, SelectionOverlay):
-            # Off-screen widgets don't get synthetic cursor moves; send one directly
-            pos = QPointF(438, 320)
+            # Off-screen widgets don't get synthetic cursor moves; send one directly.
+            # Rest on the "Sign in" text so the magnifier shows real pixel detail.
+            pos = QPointF(374, 305)
             move = QMouseEvent(
                 QEvent.Type.MouseMove,
                 pos,
