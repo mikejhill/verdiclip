@@ -182,3 +182,15 @@ class TestSettingsDialog:
             dialog.make_default_button().click()
 
         assert dialog.result_settings().integration.open_with is True
+
+    def test_start_menu_checkbox_round_trips(self, dialog: SettingsDialog) -> None:
+        """UX-TRY-08: the Start menu checkbox is on by default and can be cleared."""
+        box = next(
+            b for b in dialog.findChildren(QCheckBox) if "Start menu" in b.text()
+        )
+        default_on = box.isChecked()
+
+        box.setChecked(False)
+
+        assert default_on
+        assert dialog.result_settings().integration.start_menu is False

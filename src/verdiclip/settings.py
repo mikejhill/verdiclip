@@ -119,9 +119,10 @@ class StartupSettings:
 
 @dataclass(frozen=True, slots=True)
 class IntegrationSettings:
-    """How VerdiClip hooks into Windows Explorer."""
+    """How VerdiClip hooks into Windows Explorer and the Start menu."""
 
     open_with: bool = False
+    start_menu: bool = True
 
 
 @dataclass(frozen=True, slots=True)

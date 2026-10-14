@@ -16,6 +16,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon, QWidget
 from pytestqt.qtbot import QtBot
 from tests.platform.test_associations import FakeAssociationBackend
+from tests.platform.test_shortcuts import FakeShortcutBackend
 from tests.ux.conftest import Stopwatch
 from tests.ux.test_capture_journeys import (
     CaptureOf,
@@ -33,6 +34,7 @@ from verdiclip.editor.window import EditorWindow
 from verdiclip.geometry import Rect
 from verdiclip.platform.associations import DEFAULT_APPS_URI, FileAssociations
 from verdiclip.platform.hotkeys import Hotkey, HotkeyService
+from verdiclip.platform.shortcuts import ShortcutRegistration
 from verdiclip.platform.startup import StartupRegistration
 from verdiclip.settings import (
     IntegrationSettings,
@@ -73,7 +75,7 @@ class FakeHotkeys:
 
 @dataclass(slots=True)
 class FakeRegistry:
-    """The Run key."""
+    """The legacy Run key."""
 
     values: dict[str, str] = field(default_factory=dict)
 
@@ -90,6 +92,14 @@ class FakeRegistry:
         self.values.pop(name, None)
 
 
+@dataclass(frozen=True, slots=True)
+class ShortcutFolders:
+    """Stand-ins for the user's Startup and Start menu Programs folders."""
+
+    startup: Path
+    programs: Path
+
+
 @dataclass(slots=True)
 class App:
     """A controller over fakes, plus handles to the fakes."""
@@ -100,6 +110,18 @@ class App:
     registry: FakeRegistry
     store: SettingsStore
     associations: FakeAssociationBackend
+    links: FakeShortcutBackend
+    folders: ShortcutFolders
+
+    @property
+    def startup_shortcut(self) -> Path:
+        """Return where the Startup-folder shortcut goes."""
+        return self.folders.startup / "VerdiClip.lnk"
+
+    @property
+    def start_menu_shortcut(self) -> Path:
+        """Return where the Start menu shortcut goes."""
+        return self.folders.programs / "VerdiClip.lnk"
 
     def press_hotkey(self, action: str) -> None:
         """Simulate Windows delivering WM_HOTKEY for ``action``."""
@@ -132,17 +154,32 @@ def make_app(qtbot: QtBot, tmp_path: Path) -> Iterator[AppFactory]:
         windows = FakeWindows([FakeWindow("Notepad", Rect(10, 10, 300, 200), 1)])
         windows.active = windows.windows[0]
         associations = FakeAssociationBackend()
+        links = FakeShortcutBackend()
+        folders = ShortcutFolders(tmp_path / "Startup", tmp_path / "Programs")
         controller = AppController(
             store,
             FakeDesktop(),
             windows,
             hotkeys,
             ShellIntegration(
-                StartupRegistration(registry), FileAssociations(associations)
+                StartupRegistration(
+                    ShortcutRegistration(folders.startup, links), registry
+                ),
+                FileAssociations(associations),
+                ShortcutRegistration(folders.programs, links),
             ),
         )
         controller.start()
-        app = App(controller, hotkeys, os_hotkeys, registry, store, associations)
+        app = App(
+            controller,
+            hotkeys,
+            os_hotkeys,
+            registry,
+            store,
+            associations,
+            links,
+            folders,
+        )
         created.append(app)
         return app
 
@@ -300,25 +337,32 @@ class TestHotkeysAndSettings:
         assert app.store.load().hotkeys.fullscreen == "ctrl+alt+f9"
 
     def test_run_at_login_writes_and_removes_startup_entry(
-        self, make_app: AppFactory
+        self, make_app: AppFactory, tmp_path: Path
     ) -> None:
         """The run-at-login checkbox really changes the Windows startup entry.
 
-        UX-TRY-04.
+        UX-TRY-04: a "VerdiClip" shortcut with the app icon in the Startup
+        folder, which Windows lists by that name; the pre-0.5 Run value goes.
         """
         app = make_app()
+        app.registry.values["VerdiClip"] = '"pythonw.exe" -m verdiclip'
         current = app.controller.settings
 
         app.controller.apply_settings(
             replace(current, startup=replace(current.startup, run_at_login=True))
         )
-        enabled = "VerdiClip" in app.registry.values
+        shortcut = app.links.files.get(app.startup_shortcut)
         app.controller.apply_settings(
             replace(current, startup=replace(current.startup, run_at_login=False))
         )
 
-        assert enabled
-        assert "VerdiClip" not in app.registry.values
+        assert shortcut is not None
+        assert shortcut.arguments == "-m verdiclip"
+        assert shortcut.target.name.lower().startswith("python")
+        assert shortcut.icon == tmp_path / "verdiclip.ico"
+        assert not QImage(str(shortcut.icon)).isNull()
+        assert app.startup_shortcut not in app.links.files
+        assert app.registry.values == {}
 
     def test_open_with_registers_and_unregisters(
         self, make_app: AppFactory, tmp_path: Path
@@ -351,14 +395,41 @@ class TestHotkeysAndSettings:
 
         app = make_app(settings)
 
-        assert app.registry.values["VerdiClip"].endswith("-m verdiclip")
+        assert app.links.files[app.startup_shortcut].arguments == "-m verdiclip"
 
     def test_registrations_are_left_alone_when_off(self, make_app: AppFactory) -> None:
-        """UX-TRY-04, UX-TRY-07: launching never adds entries the user turned off."""
-        app = make_app()
+        """UX-TRY-04, 07, 08: launching never adds entries the user turned off."""
+        settings = Settings(integration=IntegrationSettings(start_menu=False))
+
+        app = make_app(settings)
 
         assert app.registry.values == {}
         assert app.associations.keys == {}
+        assert app.links.files == {}
+
+    def test_start_menu_entry_by_default(self, make_app: AppFactory) -> None:
+        """UX-TRY-08: VerdiClip is in the Start menu unless the user opts out."""
+        app = make_app()
+
+        shortcut = app.links.files[app.start_menu_shortcut]
+
+        assert shortcut.arguments == "-m verdiclip"
+        assert shortcut.description
+        assert app.startup_shortcut not in app.links.files
+
+    def test_start_menu_entry_follows_setting(self, make_app: AppFactory) -> None:
+        """UX-TRY-08: unchecking removes the entry; rechecking restores it."""
+        app = make_app()
+        current = app.controller.settings
+        off = replace(current, integration=IntegrationSettings(start_menu=False))
+
+        app.controller.apply_settings(off)
+        removed = app.start_menu_shortcut not in app.links.files
+        app.controller.apply_settings(current)
+
+        assert removed
+        assert app.start_menu_shortcut in app.links.files
+        assert app.store.load().integration.start_menu is True
 
     def test_open_with_is_refreshed_at_start(self, make_app: AppFactory) -> None:
         """UX-TRY-07: a moved install re-registers its current command on launch."""

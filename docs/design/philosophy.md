@@ -154,7 +154,8 @@ src/verdiclip/
 ├── platform/          Windows-only adapters (ctypes), behind typed interfaces
 │   ├── hotkeys.py       HotkeyService (RegisterHotKey + native event filter)
 │   ├── windows.py       WindowLocator (z-ordered top-level windows, DWM bounds)
-│   └── startup.py       Run-at-login registry entry
+│   ├── shortcuts.py     Named, iconed .lnk files (IShellLinkW via COM)
+│   └── startup.py       Run-at-login Startup-folder shortcut
 └── shell/             The always-running app
     ├── controller.py    AppController: hotkeys → capture → after-capture actions
     ├── instance.py      Single instance + forwarding a second launch's files
