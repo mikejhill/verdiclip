@@ -120,8 +120,9 @@ so it can be adjusted immediately; the tool stays active for the next mark.
 | UX-TRY-02 | Left-click tray icon | Starts a region capture. |
 | UX-TRY-03 | Right-click tray icon | Menu: capture actions (with hotkeys), Open Image…, Settings…, About, Exit. |
 | UX-TRY-06 | `Ctrl+,` or File → Settings… in an editor | Opens the same Settings dialog as the tray. |
-| UX-TRY-04 | Settings saved | Hotkeys re-register immediately and menu labels update; conflicts reported per UX-CAP-10. Every visible setting changes behavior. Run-at-login and Open with, when on, are also rewritten at every launch so they follow a moved install and repair lost entries. |
+| UX-TRY-04 | Settings saved | Hotkeys re-register immediately and menu labels update; conflicts reported per UX-CAP-10. Every visible setting changes behavior. Run-at-login is a "VerdiClip" shortcut with the app icon in the user's Startup folder, so Settings → Apps → Startup and Task Manager list it by name and icon (it replaces the pre-0.5 Run-key value, which is removed). Run-at-login, Open with, and the Start menu entry, when on, are also rewritten at every launch so they follow a moved install and repair lost entries. |
 | UX-TRY-07 | Settings → General → Image files | "Show VerdiClip in Open with" registers VerdiClip for PNG, JPEG, BMP, GIF, TIFF, and WebP under the current user (no admin prompt), so Explorer's "Open with" lists it by name and icon; opening a file there opens it in an editor of the running instance. Unchecking removes only VerdiClip's entries. "Make VerdiClip the default image app…" turns that on and opens Windows' Default apps page for VerdiClip, where the user confirms; Windows does not let apps set their own default. |
+| UX-TRY-08 | Settings → General → "Show VerdiClip in the Start menu" | On by default: a "VerdiClip" shortcut with the app icon in the user's Start menu Programs folder, so searching Start for VerdiClip starts it (or notifies the running instance per UX-TRY-01). Unchecking removes only that shortcut. |
 | UX-TRY-05 | Ctrl+C in the launching terminal / Exit | App quits within 1 s; open editors with undelivered work prompt per UX-G-06 (Exit only). |
 
 ---
@@ -138,4 +139,5 @@ second monitor at a different DPI. Check these by hand on Windows 11:
 - [ ] Clipboard paste into Paint, Word, Slack, and a browser.
 - [ ] Print preview to "Microsoft Print to PDF".
 - [ ] Settings → General → Image files: VerdiClip appears in Explorer's "Open with" for a `.png` with its name and icon, opens the file in the running instance, and "Make default…" lands on VerdiClip's Default apps page.
+- [ ] Settings → General → "Start VerdiClip when I sign in": Settings → Apps → Startup lists "VerdiClip" with its icon, and it starts after signing out and in. Searching Start for "VerdiClip" finds the Start menu entry and launches it.
 - [ ] Settings → General → Theme: Light, Dark, and Match Windows each restyle open editors (menus, toolbars, tool icons) without restarting; after switching Light → Dark, reopen Settings and confirm checked boxes are clearly visible.

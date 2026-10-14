@@ -9,7 +9,9 @@ from typing import Protocol
 if sys.platform == "win32":
     import winreg
 
+from verdiclip import APP_NAME
 from verdiclip.exceptions import PlatformError
+from verdiclip.platform.shortcuts import Shortcut, ShortcutRegistration
 
 logger = logging.getLogger(__name__)
 
@@ -80,37 +82,43 @@ class WinRegRunKey:
 
 
 class StartupRegistration:
-    """Enable or disable a named login command through an injected backend."""
+    """Run the app at sign-in through a named, iconed Startup-folder shortcut.
+
+    Versions before 0.5 used a Run-key value, which Windows lists under the
+    interpreter's name and icon; enabling or disabling also removes that value.
+    """
 
     def __init__(
-        self, backend: RegistryBackend | None = None, value_name: str = "VerdiClip"
+        self,
+        shortcut: ShortcutRegistration,
+        legacy: RegistryBackend,
+        value_name: str = APP_NAME,
     ) -> None:
-        """Store the backend and application-specific registry value name."""
-        self._backend = backend if backend is not None else WinRegRunKey()
+        """Store the Startup-folder shortcut and the legacy Run-key backend."""
+        self._shortcut = shortcut
+        self._legacy = legacy
         self._value_name = value_name
 
     def is_enabled(self) -> bool:
-        """Return whether a nonempty command is registered."""
-        try:
-            return bool(self._backend.read_value(self._value_name))
-        except OSError as err:
-            msg = f"Could not read startup registration {self._value_name!r}"
-            raise PlatformError(msg) from err
+        """Return whether the Startup-folder shortcut exists."""
+        return self._shortcut.is_enabled()
 
-    def enable(self, command: str) -> None:
-        """Store the caller's complete, quoted startup command."""
-        try:
-            self._backend.write_value(self._value_name, command)
-        except OSError as err:
-            msg = f"Could not enable startup registration {self._value_name!r}"
-            raise PlatformError(msg) from err
+    def enable(self, shortcut: Shortcut) -> None:
+        """Write the shortcut and retire any legacy Run-key value."""
+        self._shortcut.enable(shortcut)
+        self._remove_legacy()
 
     def disable(self) -> None:
-        """Remove the registration, accepting an already absent value."""
+        """Remove the shortcut and any legacy Run-key value."""
+        self._shortcut.disable()
+        self._remove_legacy()
+
+    def _remove_legacy(self) -> None:
+        """Delete the pre-0.5 Run-key value, accepting an absent one."""
         try:
-            self._backend.delete_value(self._value_name)
+            self._legacy.delete_value(self._value_name)
         except FileNotFoundError:
             logger.debug("Startup registration %s is already absent", self._value_name)
         except OSError as err:
-            msg = f"Could not disable startup registration {self._value_name!r}"
+            msg = f"Could not remove old startup registration {self._value_name!r}"
             raise PlatformError(msg) from err

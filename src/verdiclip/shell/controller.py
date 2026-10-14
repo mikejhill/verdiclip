@@ -31,6 +31,7 @@ from verdiclip.exceptions import AppError, HotkeyError
 from verdiclip.output.delivery import ImageDelivery
 from verdiclip.platform.associations import DEFAULT_APPS_URI, FileAssociations
 from verdiclip.platform.hotkeys import Hotkey, HotkeyService
+from verdiclip.platform.shortcuts import Shortcut, ShortcutRegistration
 from verdiclip.platform.startup import StartupRegistration
 from verdiclip.settings import IntegrationSettings, Settings, SettingsStore
 from verdiclip.shell.settings_dialog import HOTKEY_FIELDS, SettingsDialog
@@ -48,6 +49,7 @@ class ShellIntegration:
 
     startup: StartupRegistration
     associations: FileAssociations
+    start_menu: ShortcutRegistration
 
 
 class AppController(QObject):
@@ -68,6 +70,7 @@ class AppController(QObject):
         self._hotkeys = hotkeys
         self._startup = integration.startup
         self._associations = integration.associations
+        self._start_menu = integration.start_menu
         self._capture = CaptureService(
             screens, windows, show_magnifier=self._settings.capture.show_magnifier
         )
@@ -118,6 +121,8 @@ class AppController(QObject):
             self._apply_startup()
         if self._settings.integration.open_with:
             self._apply_open_with()
+        if self._settings.integration.start_menu:
+            self._apply_start_menu()
         logger.info("%s %s ready", APP_NAME, VERSION)
 
     def shutdown(self) -> None:
@@ -291,8 +296,10 @@ class AppController(QObject):
         ThemeManager.apply(settings.appearance.theme)
         self._capture.set_show_magnifier(show=settings.capture.show_magnifier)
         self._apply_startup()
-        if settings.integration != previous.integration:
+        if settings.integration.open_with != previous.integration.open_with:
             self._apply_open_with()
+        if settings.integration.start_menu != previous.integration.start_menu:
+            self._apply_start_menu()
         self._apply_hotkeys()
 
     def _show_about(self) -> None:
@@ -342,10 +349,10 @@ class AppController(QObject):
             )
 
     def _apply_startup(self) -> None:
-        """Add or remove the run-at-login entry."""
+        """Add or remove the run-at-login shortcut."""
         try:
             if self._settings.startup.run_at_login:
-                self._startup.enable(self._launch_command())
+                self._startup.enable(self._shortcut())
             else:
                 self._startup.disable()
         except AppError as err:
@@ -355,24 +362,52 @@ class AppController(QObject):
         """Add or remove VerdiClip from Explorer's Open with menu."""
         try:
             if self._settings.integration.open_with:
-                icon = self._store.path.with_name("verdiclip.ico")
-                if not self._icon_factory.brand(256).pixmap(256).save(str(icon)):
-                    logger.warning("Could not write %s", icon)
                 self._associations.register(
-                    f'{self._launch_command()} open "%1"', str(icon)
+                    f'{self._launch_command()} open "%1"', str(self._brand_icon())
                 )
             else:
                 self._associations.unregister()
         except AppError as err:
             self._notify("Could not change Open with", str(err), warning=True)
 
-    @staticmethod
-    def _launch_command() -> str:
+    def _apply_start_menu(self) -> None:
+        """Add or remove VerdiClip's Start menu shortcut."""
+        try:
+            if self._settings.integration.start_menu:
+                self._start_menu.enable(self._shortcut())
+            else:
+                self._start_menu.disable()
+        except AppError as err:
+            self._notify("Could not change Start menu entry", str(err), warning=True)
+
+    def _brand_icon(self) -> Path:
+        """Write the app icon next to the settings file and return its path."""
+        icon = self._store.path.with_name("verdiclip.ico")
+        if not self._icon_factory.brand(256).pixmap(256).save(str(icon)):
+            logger.warning("Could not write %s", icon)
+        return icon
+
+    def _shortcut(self) -> Shortcut:
+        """Return a shortcut that starts VerdiClip in the tray."""
+        return Shortcut(
+            target=self._runner(),
+            arguments="-m verdiclip",
+            working_directory=Path.home(),
+            icon=self._brand_icon(),
+            description="Fast, faithful screenshot capture and annotation",
+        )
+
+    @classmethod
+    def _launch_command(cls) -> str:
         """Return the command line that starts VerdiClip in the tray."""
+        return f'"{cls._runner()}" -m verdiclip'
+
+    @staticmethod
+    def _runner() -> Path:
+        """Return the console-less interpreter when there is one."""
         executable = Path(sys.executable)
         gui = executable.with_name("pythonw.exe")
-        runner = gui if gui.exists() else executable
-        return f'"{runner}" -m verdiclip'
+        return gui if gui.exists() else executable
 
     def _notify(self, title: str, message: str, *, warning: bool = False) -> None:
         """Show a tray balloon."""

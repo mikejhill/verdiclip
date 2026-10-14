@@ -22,7 +22,12 @@ from verdiclip.exceptions import AppError, CaptureError
 from verdiclip.output.delivery import ImageDelivery
 from verdiclip.platform.associations import FileAssociations
 from verdiclip.platform.hotkeys import HotkeyService
-from verdiclip.platform.startup import StartupRegistration
+from verdiclip.platform.shortcuts import (
+    KnownFolder,
+    ShellLinkBackend,
+    ShortcutRegistration,
+)
+from verdiclip.platform.startup import StartupRegistration, WinRegRunKey
 from verdiclip.platform.windows import WindowLocator
 from verdiclip.settings import SettingsStore
 from verdiclip.shell.controller import AppController, ShellIntegration
@@ -77,12 +82,22 @@ class Application:
             logger.info("Forwarded to the running instance")
             return 0
         instance.listen()
+        links = ShellLinkBackend()
         controller = AppController(
             store,
             MssScreenSource(),
             WindowLocator(),
             HotkeyService(),
-            ShellIntegration(StartupRegistration(), FileAssociations()),
+            ShellIntegration(
+                StartupRegistration(
+                    ShortcutRegistration(
+                        links.known_folder(KnownFolder.STARTUP), links
+                    ),
+                    WinRegRunKey(),
+                ),
+                FileAssociations(),
+                ShortcutRegistration(links.known_folder(KnownFolder.PROGRAMS), links),
+            ),
         )
         instance.message_received.connect(controller.handle_forwarded)
         app.aboutToQuit.connect(controller.shutdown)

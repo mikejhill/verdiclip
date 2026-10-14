@@ -1,14 +1,16 @@
-"""Verify login registration using fake registry backends and native calls."""
+"""Verify login registration using fakes and mocked native registry calls."""
 
 from __future__ import annotations
 
-from functools import partial
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from tests.platform.test_shortcuts import FakeShortcutBackend, sample
 
 from verdiclip.exceptions import PlatformError
 from verdiclip.platform import startup
+from verdiclip.platform.shortcuts import ShortcutRegistration
 from verdiclip.platform.startup import StartupRegistration, WinRegRunKey
 
 
@@ -40,61 +42,75 @@ class FakeRegistryBackend:
 
 
 class TestStartupRegistration:
-    """Login command persistence and contextual error conversion."""
+    """Startup-folder shortcut plus cleanup of the legacy Run-key value."""
 
-    def test_lifecycle(self) -> None:
-        """Commands preserve quoting and disable is idempotent."""
-        backend = FakeRegistryBackend()
-        registration = StartupRegistration(backend)
-        command = '"C:\\Program Files\\VerdiClip\\verdiclip.exe" --tray'
+    @pytest.fixture
+    def parts(
+        self, tmp_path: Path
+    ) -> tuple[StartupRegistration, FakeShortcutBackend, FakeRegistryBackend]:
+        """Return a registration over fakes, with a pre-0.5 Run value present."""
+        links = FakeShortcutBackend()
+        legacy = FakeRegistryBackend()
+        legacy.values["VerdiClip"] = '"pythonw.exe" -m verdiclip'
+        registration = StartupRegistration(
+            ShortcutRegistration(tmp_path, links), legacy
+        )
+        return registration, links, legacy
 
+    def test_lifecycle(
+        self,
+        parts: tuple[StartupRegistration, FakeShortcutBackend, FakeRegistryBackend],
+        tmp_path: Path,
+    ) -> None:
+        """Enable writes the shortcut and retires the Run value; disable removes."""
+        registration, links, legacy = parts
+
+        registration.enable(sample(tmp_path))
+        enabled = registration.is_enabled()
+        retired = dict(legacy.values)
+        registration.disable()
+        registration.disable()
+
+        assert enabled
+        assert retired == {}
+        assert links.files == {}
         assert not registration.is_enabled()
-        registration.enable(command)
+
+    def test_disable_removes_legacy(
+        self,
+        parts: tuple[StartupRegistration, FakeShortcutBackend, FakeRegistryBackend],
+    ) -> None:
+        """Turning startup off also clears a Run value an older version wrote."""
+        registration, _, legacy = parts
+
+        registration.disable()
+
+        assert legacy.values == {}
+
+    def test_legacy_missing(self, tmp_path: Path) -> None:
+        """A missing Run key does not make enable fail."""
+        legacy = FakeRegistryBackend()
+        legacy.error = FileNotFoundError("absent")
+        registration = StartupRegistration(
+            ShortcutRegistration(tmp_path, FakeShortcutBackend()), legacy
+        )
+
+        registration.enable(sample(tmp_path))
+
         assert registration.is_enabled()
-        assert backend.values == {"VerdiClip": command}
-        registration.disable()
-        registration.disable()
-        assert not registration.is_enabled()
 
-    def test_custom_name_and_empty(self) -> None:
-        """Custom value names isolate registrations and empty values are disabled."""
-        backend = FakeRegistryBackend()
-        registration = StartupRegistration(backend, "Custom")
+    def test_legacy_error(self, tmp_path: Path) -> None:
+        """Run-key failures become contextual chained PlatformErrors."""
+        legacy = FakeRegistryBackend()
+        legacy.error = PermissionError("denied")
+        registration = StartupRegistration(
+            ShortcutRegistration(tmp_path, FakeShortcutBackend()), legacy
+        )
 
-        registration.enable("")
+        with pytest.raises(PlatformError, match="old startup registration") as caught:
+            registration.disable()
 
-        assert backend.values == {"Custom": ""}
-        assert not registration.is_enabled()
-
-    @pytest.mark.parametrize("operation", ["read", "enable", "disable"])
-    def test_errors(self, operation: str) -> None:
-        """Registry OS failures become contextual chained PlatformErrors."""
-        backend = FakeRegistryBackend()
-        backend.error = PermissionError("denied")
-        registration = StartupRegistration(backend)
-        actions = {
-            "read": registration.is_enabled,
-            "enable": partial(registration.enable, "command"),
-            "disable": registration.disable,
-        }
-
-        with pytest.raises(PlatformError, match="startup registration") as caught:
-            actions[operation]()
-
-        assert caught.value.__cause__ is backend.error
-
-    def test_missing_disable(self) -> None:
-        """Backends may report missing values without making disable fail."""
-        backend = FakeRegistryBackend()
-        backend.error = FileNotFoundError("absent")
-
-        StartupRegistration(backend).disable()
-
-    def test_default_backend(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Omitted backends construct the current-user Run-key adapter."""
-        monkeypatch.setattr(startup, "WinRegRunKey", FakeRegistryBackend)
-
-        assert not StartupRegistration().is_enabled()
+        assert caught.value.__cause__ is legacy.error
 
 
 @pytest.fixture

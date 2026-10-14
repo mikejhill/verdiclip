@@ -88,6 +88,7 @@ class SettingsDialog(QDialog):
             "Ask before closing an image that hasn't been saved or copied"
         )
         self._run_at_login = QCheckBox("Start VerdiClip when I sign in to Windows")
+        self._start_menu = QCheckBox("Show VerdiClip in the Start menu")
         self._open_with = QCheckBox("Show VerdiClip in “Open with” for image files")
         self._make_default = QPushButton("Make VerdiClip the default image app…")
         self._buttons = QDialogButtonBox(
@@ -130,7 +131,10 @@ class SettingsDialog(QDialog):
             ),
             appearance=AppearanceSettings(theme=Theme(self._theme.currentData())),
             startup=StartupSettings(run_at_login=self._run_at_login.isChecked()),
-            integration=IntegrationSettings(open_with=self._open_with.isChecked()),
+            integration=IntegrationSettings(
+                open_with=self._open_with.isChecked(),
+                start_menu=self._start_menu.isChecked(),
+            ),
         )
 
     def hotkey_edit(self, name: str) -> QLineEdit:
@@ -182,6 +186,7 @@ class SettingsDialog(QDialog):
         form = QFormLayout(tab)
         form.addRow("Theme:", self._theme)
         form.addRow(self._run_at_login)
+        form.addRow(self._start_menu)
         self._make_default.setToolTip(
             "Adds VerdiClip to Open with, then opens Windows Settings, "
             "where you confirm it as the default."
@@ -277,6 +282,7 @@ class SettingsDialog(QDialog):
         self._confirm_close.setChecked(settings.editor.confirm_unsaved_close)
         self._run_at_login.setChecked(settings.startup.run_at_login)
         self._open_with.setChecked(settings.integration.open_with)
+        self._start_menu.setChecked(settings.integration.start_menu)
 
     def _request_default(self) -> None:
         """Turn on Open with and ask the app to open the default-apps page."""
