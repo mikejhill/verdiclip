@@ -52,10 +52,10 @@ from verdiclip.editor.close_prompt import CloseChoice, ClosePrompt
 from verdiclip.editor.icons import IconFactory
 from verdiclip.editor.resize_dialog import ResizeDialog
 from verdiclip.editor.session import EditorSession, ToolId
-from verdiclip.editor.style_bar import FIELD_LAYOUT, KIND_TOOLS, StyleBar
+from verdiclip.editor.style_bar import FIELD_LAYOUT, KIND_TOOLS, StyleBar, TextFit
 from verdiclip.editor.tools import TOOL_TYPES, Tool
 from verdiclip.exceptions import AppError, CodecError
-from verdiclip.geometry import Point
+from verdiclip.geometry import Point, Rect
 from verdiclip.output.delivery import ImageDelivery
 from verdiclip.render.renderer import Renderer
 from verdiclip.settings import ImageFormat
@@ -176,9 +176,11 @@ class EditorWindow(QMainWindow):
         self._hint.setText(self._tools[tool].hint)
         self._sync_style_bar()
 
-    def edit_text(self, note: TextNote | None, at: Point) -> None:
+    def edit_text(
+        self, note: TextNote | None, at: Point, box: Rect | None = None
+    ) -> None:
         """Open the inline text editor."""
-        self._canvas.editors.edit_text(note, at)
+        self._canvas.editors.edit_text(note, at, box)
 
     def edit_counter(self, marker: CounterMarker) -> None:
         """Open the inline counter label editor."""
@@ -262,6 +264,7 @@ class EditorWindow(QMainWindow):
         self._canvas.escape_unhandled.connect(self._on_escape)
         self._canvas.enter_unhandled.connect(self._on_enter)
         self._style_bar.style_changed.connect(self._on_style_changed)
+        self._style_bar.auto_fit_toggled.connect(self._on_auto_fit_toggled)
         self.resize(self._initial_size())
 
     def _add_action(
@@ -473,6 +476,7 @@ class EditorWindow(QMainWindow):
             compact = bar is self._style_bar
             size = COMPACT_BUTTON_SIZE if compact else BUTTON_SIZE
             bar.setStyleSheet(chrome.toolbar_sheet(size))
+        self._style_bar.set_icons(self._icons)
         for tool_id, action in self._tool_actions.items():
             action.setIcon(self._icons.tool(tool_id))
         for group in ACTION_GROUPS:
@@ -571,11 +575,21 @@ class EditorWindow(QMainWindow):
         if selecting and len(self._session.selection) == 0 and self.copy_image():
             self.close()
 
+    def _on_auto_fit_toggled(self, on: bool) -> None:  # noqa: FBT001 — Qt signal payload
+        """Size selected text to its text, or keep its box, after finishing typing."""
+        self._canvas.editors.commit()
+        self._session.set_auto_fit(on=on, fit=Renderer.fit)
+
     def _on_style_changed(self, change: Callable[[Style], Style]) -> None:
-        """Apply a style edit to the selection and to the matching tool defaults."""
+        """Apply a style edit to the selection and to the matching tool defaults.
+
+        An open text editor is committed first, as if the bar had taken focus,
+        so the edit and the text being typed can't drift apart.
+        """
+        self._canvas.editors.commit()
         selected = self._session.selected()
         if selected:
-            self._session.restyle_selected(change)
+            self._session.restyle_selected(change, Renderer.fit)
             for kind in {a.kind for a in selected}:
                 tool = KIND_TOOLS[kind]
                 self._session.styles.set(tool, change(self._session.styles.get(tool)))
@@ -699,8 +713,12 @@ class EditorWindow(QMainWindow):
         """Show the selection's style, or the active tool's defaults."""
         selected = self._session.selected()
         if selected:
-            tool = KIND_TOOLS[selected[0].kind]
-            self._style_bar.show_for(FIELD_LAYOUT[tool], selected[0].style)
+            first = selected[0]
+            fit = TextFit.NONE
+            if isinstance(first, TextNote):
+                fit = TextFit.AUTO if first.auto_fit else TextFit.FIXED
+            tool = KIND_TOOLS[first.kind]
+            self._style_bar.show_for(FIELD_LAYOUT[tool], first.style, fit)
             return
         tool = self._current_tool_id()
         self._style_bar.show_for(FIELD_LAYOUT[tool], self._session.styles.get(tool))

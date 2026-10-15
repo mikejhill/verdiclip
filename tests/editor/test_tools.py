@@ -40,13 +40,17 @@ class FakeToolHost:
 
     def __init__(self) -> None:
         self.text_calls: list[tuple[TextNote | None, Point]] = []
+        self.text_boxes: list[Rect | None] = []
         self.counter_calls: list[CounterMarker] = []
         self.activations: list[ToolId] = []
         self.box_calls: list[LabeledBox] = []
 
-    def edit_text(self, note: TextNote | None, at: Point) -> None:
+    def edit_text(
+        self, note: TextNote | None, at: Point, box: Rect | None = None
+    ) -> None:
         """Record a text editing request."""
         self.text_calls.append((note, at))
+        self.text_boxes.append(box)
 
     def edit_counter(self, marker: CounterMarker) -> None:
         """Record a counter editing request."""
@@ -390,6 +394,25 @@ class TestHandleDrag:
         assert session.history.undo_text == "Draw"
 
 
+class TestDrawingToolCancel:
+    """Esc during a handle drag with a drawing tool."""
+
+    def test_cancel_ends_a_handle_drag(self, session: EditorSession) -> None:
+        """Later motion after Esc no longer resizes the shape."""
+        shape = RectangleShape(rect=Rect(20, 100, 50, 50))
+        session.history.execute(AddAnnotations([shape], "Draw"))
+        session.selection.set([shape.id])
+        tool = RectangleTool(session, FakeToolHost())
+        tool.press(Pointer(Point(70, 150)))
+        tool.move(Pointer(Point(90, 170)))
+        resized = session.document.annotations[0]
+
+        assert tool.cancel()
+        tool.move(Pointer(Point(200, 250)))
+
+        assert session.document.annotations == (resized,)
+
+
 class TestTextTool:
     """Text editor requests."""
 
@@ -408,6 +431,63 @@ class TestTextTool:
         assert host.text_calls == [(note, note.rect.top_left), (None, Point(200, 200))]
         assert session.document.annotations == (note,)
         assert tool.preview == ()
+        assert not tool.cancel()
+
+    def test_drag_makes_a_fixed_box(self, session: EditorSession) -> None:
+        """A drag shows a frame, then asks for a new note of the dragged size."""
+        host = FakeToolHost()
+        tool = TextTool(session, host)
+
+        tool.press(Pointer(Point(100, 50)))
+        tool.move(Pointer(Point(40, 150)))
+        frame = tool.frame
+        tool.release(Pointer(Point(40, 150)))
+
+        assert frame == Rect(40, 50, 60, 100)
+        assert tool.frame is None
+        assert host.text_calls == [(None, Point(40, 50))]
+        assert host.text_boxes == [Rect(40, 50, 60, 100)]
+
+    def test_resize_selected_text_and_cancel(self, session: EditorSession) -> None:
+        """Handles of the selected note resize it; Esc abandons a box drag."""
+        note = TextNote(rect=Rect(20, 100, 50, 50), text="Note")
+        session.history.execute(AddAnnotations([note], "Draw"))
+        session.selection.set([note.id])
+        host = FakeToolHost()
+        tool = TextTool(session, host)
+        corner = Pointer(Point(70, 150))
+
+        assert tool.cursor(corner) is CursorKind.RESIZE_FDIAG
+        tool.press(corner)
+        tool.move(Pointer(Point(90, 170)))
+        tool.release(Pointer(Point(90, 170)))
+        tool.release(Pointer(Point(90, 170)))
+
+        resized = session.document.annotations[0]
+        assert isinstance(resized, TextNote)
+        assert resized.rect == Rect(20, 100, 70, 70)
+        assert not resized.auto_fit
+        assert host.text_calls == []
+        tool.press(Pointer(Point(300, 20)))
+        assert tool.cancel()
+        assert not tool.cancel()
+        tool.release(Pointer(Point(300, 20)))
+        assert host.text_calls == []
+
+    def test_cancel_ends_a_handle_drag(self, session: EditorSession) -> None:
+        """Esc mid-resize stops the drag, so later motion changes nothing."""
+        note = TextNote(rect=Rect(20, 100, 50, 50), text="Note")
+        session.history.execute(AddAnnotations([note], "Draw"))
+        session.selection.set([note.id])
+        tool = TextTool(session, FakeToolHost())
+        tool.press(Pointer(Point(70, 150)))
+        tool.move(Pointer(Point(90, 170)))
+        resized = session.document.annotations[0]
+
+        assert tool.cancel()
+        tool.move(Pointer(Point(200, 250)))
+
+        assert session.document.annotations == (resized,)
         assert not tool.cancel()
 
 

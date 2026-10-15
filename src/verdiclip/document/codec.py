@@ -21,7 +21,7 @@ from verdiclip.document.annotations import (
     RectangleShape,
     TextNote,
 )
-from verdiclip.document.style import Color, Style
+from verdiclip.document.style import TRANSPARENT, Color, HAlign, Style, VAlign
 from verdiclip.exceptions import CodecError
 from verdiclip.geometry import Point, Rect
 
@@ -40,6 +40,10 @@ class StyleCodec:
             "font_size": style.font_size,
             "bold": style.bold,
             "italic": style.italic,
+            "outline": style.outline.hex,
+            "shadow": style.shadow,
+            "h_align": style.h_align.value,
+            "v_align": style.v_align.value,
         }
 
     @staticmethod
@@ -59,6 +63,11 @@ class StyleCodec:
                 font_size=s.integer("font_size"),
                 bold=s.boolean("bold"),
                 italic=s.boolean("italic"),
+                # Fields added later are optional so older data still loads
+                outline=Color.from_hex(s.optional_string("outline", TRANSPARENT.hex)),
+                shadow=s.optional_boolean("shadow", default=False),
+                h_align=HAlign(s.optional_string("h_align", HAlign.LEFT)),
+                v_align=VAlign(s.optional_string("v_align", VAlign.TOP)),
             )
         except ValueError as err:
             msg = f"Invalid style: {err}"
@@ -155,7 +164,11 @@ class AnnotationCodec:
             return FreehandShape(id=ident, style=style, points=points)
         if kind is AnnotationKind.TEXT:
             return TextNote(
-                id=ident, style=style, rect=r.rect("rect"), text=r.string("text")
+                id=ident,
+                style=style,
+                rect=r.rect("rect"),
+                text=r.string("text"),
+                auto_fit=r.optional_boolean("auto_fit", default=True),
             )
         return CounterMarker(
             id=ident,
@@ -194,9 +207,13 @@ class _JsonReader:
             raise self._type_error(key, "a string", value)
         return value
 
-    def optional_string(self, key: str) -> str:
-        """Return a string field, or "" when absent (older clipboard data)."""
-        return self.string(key) if key in self._data else ""
+    def optional_string(self, key: str, default: str = "") -> str:
+        """Return a string field, or ``default`` when absent (older data)."""
+        return self.string(key) if key in self._data else default
+
+    def optional_boolean(self, key: str, *, default: bool) -> bool:
+        """Return a boolean field, or ``default`` when absent (older data)."""
+        return self.boolean(key) if key in self._data else default
 
     def boolean(self, key: str) -> bool:
         """Return a boolean field."""

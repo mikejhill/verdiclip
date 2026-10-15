@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 from PySide6.QtCore import QPointF
 from PySide6.QtGui import QColor, QImage, QPainter
@@ -21,9 +23,16 @@ from verdiclip.document.annotations import (
     TextNote,
 )
 from verdiclip.document.document import Document
-from verdiclip.document.style import HIGHLIGHT_YELLOW, RED, Color, Style
+from verdiclip.document.style import (
+    HIGHLIGHT_YELLOW,
+    RED,
+    Color,
+    HAlign,
+    Style,
+    VAlign,
+)
 from verdiclip.geometry import Point, Rect
-from verdiclip.render.renderer import QtConvert, Renderer
+from verdiclip.render.renderer import TEXT_PADDING, QtConvert, Renderer
 
 
 class TestQtConvert:
@@ -243,3 +252,251 @@ class TestRenderer:
 
         assert image == document.image
         assert "No painter for BoxAnnotation" in caplog.text
+
+
+class TestTextBoxesAndShadows:
+    """Outlines, alignment, fitting, and drop shadows."""
+
+    @staticmethod
+    def _dark_columns(image: QImage, rect: Rect, color: QColor) -> list[int]:
+        """Return the x positions in ``rect`` holding pixels near ``color``."""
+        found = []
+        for x in range(int(rect.left), int(rect.right)):
+            for y in range(int(rect.top), int(rect.bottom)):
+                pixel = image.pixelColor(x, y)
+                distance = abs(pixel.red() - color.red()) + abs(
+                    pixel.green() - color.green()
+                )
+                if distance < 60:
+                    found.append(x)
+                    break
+        return found
+
+    def test_outline_and_fill(self, qapp: QApplication, document: Document) -> None:
+        """An outlined note paints its border color and its background."""
+        assert qapp is not None
+        style = Style(fill=Color(0, 0, 255), outline=Color(0, 255, 0), width=6)
+        document.insert(
+            [(0, TextNote(rect=Rect(40, 120, 120, 60), text="", style=style))]
+        )
+
+        image = Renderer().flatten(document)
+
+        assert image.pixelColor(40, 150) == QColor(0, 255, 0)
+        assert image.pixelColor(100, 150) == QColor(0, 0, 255)
+
+    @pytest.mark.parametrize(
+        ("h_align", "v_align", "side"),
+        [
+            (HAlign.LEFT, VAlign.TOP, "left"),
+            (HAlign.RIGHT, VAlign.BOTTOM, "right"),
+            (HAlign.CENTER, VAlign.MIDDLE, "center"),
+        ],
+    )
+    def test_alignment(
+        self,
+        qapp: QApplication,
+        document: Document,
+        h_align: HAlign,
+        v_align: VAlign,
+        side: str,
+    ) -> None:
+        """Fixed-size text sits where its alignment puts it."""
+        assert qapp is not None
+        box = Rect(20, 120, 360, 120)
+        style = Style(fill=Color(255, 255, 255), h_align=h_align, v_align=v_align)
+        note = TextNote(rect=box, text="ab", style=style, auto_fit=False)
+        document.insert([(0, note)])
+
+        image = Renderer().flatten(document)
+
+        columns = self._dark_columns(image, box, QtConvert.color(RED))
+        assert columns
+        middle = (columns[0] + columns[-1]) / 2
+        expected = {"left": 40, "center": 200, "right": 360}[side]
+        assert abs(middle - expected) < 30
+
+    def test_fixed_text_wraps_and_clips(
+        self, qapp: QApplication, document: Document
+    ) -> None:
+        """Long text in a fixed box never paints outside the box."""
+        assert qapp is not None
+        box = Rect(100, 120, 60, 30)
+        note = TextNote(rect=box, text="word " * 40, auto_fit=False)
+        document.insert([(0, note)])
+
+        image = Renderer().flatten(document)
+
+        outside = Rect(100, 152, 60, 40)
+        assert not self._dark_columns(image, outside, QtConvert.color(RED))
+
+    def test_fit(self, qapp: QApplication) -> None:
+        """Fitting sizes auto-fit text, leaves fixed text and other shapes alone."""
+        assert qapp is not None
+        style = Style(outline=Color(0, 0, 0), width=8)
+        note = TextNote(rect=Rect(5, 5, 1, 1), text="Hi", style=style)
+        fixed = TextNote(rect=Rect(5, 5, 1, 1), text="Hi", auto_fit=False)
+        shape = RectangleShape(rect=Rect(0, 0, 1, 1))
+
+        fitted = Renderer.fit(note)
+
+        assert isinstance(fitted, TextNote)
+        assert (fitted.rect.width, fitted.rect.height) == pytest.approx(
+            Renderer.measure_text("Hi", style)
+        )
+        assert Renderer.fit(fixed) is fixed
+        assert Renderer.fit(shape) is shape
+        assert Renderer.text_inset(style) == TEXT_PADDING + 4
+        assert Renderer.text_inset(Style(width=8)) == TEXT_PADDING
+
+    @pytest.mark.parametrize(
+        "annotation",
+        [
+            RectangleShape(rect=Rect(60, 120, 100, 60), style=Style(shadow=True)),
+            RectangleShape(
+                rect=Rect(60, 120, 100, 60),
+                style=Style(shadow=True, fill=Color(0, 0, 255)),
+            ),
+            TextNote(
+                rect=Rect(60, 120, 100, 60),
+                text="",
+                style=Style(shadow=True, fill=Color(0, 0, 255)),
+            ),
+            TextNote(
+                rect=Rect(60, 120, 100, 60),
+                text="",
+                style=Style(shadow=True, outline=Color(0, 0, 255)),
+            ),
+        ],
+        ids=["hollow-rectangle", "filled-rectangle", "filled-text", "outlined-text"],
+    )
+    def test_shadow_below_right(
+        self, qapp: QApplication, document: Document, annotation: Annotation
+    ) -> None:
+        """A shadow darkens the image just past the bottom-right edges only."""
+        assert qapp is not None
+        plain = Document(document.image)
+        plain.insert(
+            [(0, replace(annotation, style=replace(annotation.style, shadow=False)))]
+        )
+        document.insert([(0, annotation)])
+
+        shadowed = Renderer().flatten(document)
+        flat = Renderer().flatten(plain)
+
+        below = (110, 186)
+        above = (110, 114)
+        assert (
+            shadowed.pixelColor(*below).lightness()
+            < flat.pixelColor(*below).lightness()
+        )
+        assert shadowed.pixelColor(*above) == flat.pixelColor(*above)
+
+    def test_caption_shadow(self, qapp: QApplication, document: Document) -> None:
+        """Text with no box casts a shadow of its letters."""
+        assert qapp is not None
+        style = Style(shadow=True, font_size=40)
+        note = Renderer.fit(TextNote(rect=Rect(40, 120, 1, 1), text="WW", style=style))
+        plain = Document(document.image)
+        plain.insert([(0, replace(note, style=replace(style, shadow=False)))])
+        document.insert([(0, note)])
+
+        shadowed = Renderer().flatten(document)
+        flat = Renderer().flatten(plain)
+
+        bounds = note.bounds.adjusted(4).rounded()
+        assert any(
+            shadowed.pixelColor(x, y) != flat.pixelColor(x, y)
+            for y in range(int(bounds.top), int(bounds.bottom))
+            for x in range(int(bounds.left), int(bounds.right))
+        )
+
+    def test_long_words_wrap_like_the_editor(
+        self, qapp: QApplication, document: Document
+    ) -> None:
+        """A word wider than a fixed box breaks across lines instead of clipping."""
+        assert qapp is not None
+        box = Rect(100, 100, 80, 150)
+        note = TextNote(rect=box, text="abcdefghijklmnopqrstuvwxyz", auto_fit=False)
+        document.insert([(0, note)])
+
+        image = Renderer().flatten(document)
+
+        rows = [
+            y
+            for y in range(int(box.top), int(box.bottom))
+            if self._dark_columns(
+                image, Rect(box.x, y, box.width, 1), QtConvert.color(RED)
+            )
+        ]
+        assert rows[-1] - rows[0] > 3 * note.style.font_size
+
+    def test_crop_keeps_a_visible_shadow(
+        self, qapp: QApplication, document: Document
+    ) -> None:
+        """A crop showing only an annotation's shadow still exports that shadow."""
+        assert qapp is not None
+        shape = RectangleShape(rect=Rect(20, 20, 40, 40), style=Style(shadow=True))
+        document.insert([(0, shape)])
+        document.set_crop(Rect(64, 30, 20, 20))
+
+        image = Renderer().flatten(document)
+
+        assert document.visible_annotations == (shape,)
+        assert image.pixelColor(0, 10) != QColor("white")
+
+    @pytest.mark.parametrize("kind", ["rectangle", "text"])
+    def test_thick_outline_still_casts_a_shadow(
+        self, qapp: QApplication, document: Document, kind: str
+    ) -> None:
+        """The shadow follows the outer edge of a thick outline, not just the fill."""
+        assert qapp is not None
+        fill = Color(0, 0, 255)
+        rect = Rect(60, 120, 100, 60)
+        annotation: Annotation = (
+            RectangleShape(rect=rect, style=Style(width=20, fill=fill, shadow=True))
+            if kind == "rectangle"
+            else TextNote(
+                rect=rect,
+                text="",
+                style=Style(width=20, fill=fill, outline=RED, shadow=True),
+            )
+        )
+        plain = Document(document.image)
+        plain.insert(
+            [(0, replace(annotation, style=replace(annotation.style, shadow=False)))]
+        )
+        document.insert([(0, annotation)])
+
+        shadowed = Renderer().flatten(document)
+        flat = Renderer().flatten(plain)
+
+        past_outline = (110, 193)
+        assert (
+            shadowed.pixelColor(*past_outline).lightness()
+            < flat.pixelColor(*past_outline).lightness()
+        )
+
+    @pytest.mark.parametrize("kind", ["text", "label"])
+    def test_box_clipping_keeps_the_callers_clip(
+        self, qapp: QApplication, kind: str
+    ) -> None:
+        """Clipping text to its box never paints outside the canvas's crop clip."""
+        assert qapp is not None
+        image = QImage(200, 100, QImage.Format.Format_ARGB32)
+        image.fill(QColor("white"))
+        rect = Rect(0, 0, 200, 100)
+        style = Style(font_size=40, h_align=HAlign.RIGHT)
+        annotation: Annotation = (
+            TextNote(rect=rect, text="WWW", style=style, auto_fit=False)
+            if kind == "text"
+            else RectangleShape(rect=rect, text="WWWWWW", style=style)
+        )
+        painter = QPainter(image)
+        painter.setClipRect(0, 0, 100, 100)
+        Renderer().paint(painter, image, annotation)
+        painter.end()
+
+        assert not self._dark_columns(
+            image, Rect(110, 0, 80, 100), QtConvert.color(RED)
+        )

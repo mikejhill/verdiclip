@@ -15,7 +15,7 @@ def test_field_labels_keep_clear_of_the_separator_before_them(qtbot: QtBot) -> N
 
     labels = bar.findChildren(QLabel)
 
-    assert len(labels) == 3
+    assert len(labels) == 4  # Line, fill, outline, and width
     for label in labels:
         margins = label.contentsMargins()
         assert margins.left() == LABEL_MARGINS[0] > 0

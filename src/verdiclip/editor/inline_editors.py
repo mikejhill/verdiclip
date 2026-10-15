@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Protocol, override
+from typing import Final, Protocol, override
 
 from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
@@ -15,6 +15,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QFrame, QLineEdit, QPlainTextEdit, QTextEdit, QWidget
 
 from verdiclip.document.annotations import (
+    Annotation,
     CounterMarker,
     LabeledBox,
     RectangleShape,
@@ -25,15 +26,18 @@ from verdiclip.document.commands import (
     RemoveAnnotations,
     ReplaceAnnotations,
 )
-from verdiclip.document.style import Style
+from verdiclip.document.style import Style, VAlign
 from verdiclip.editor.session import EditorSession, ToolId
 from verdiclip.geometry import Point, Rect
 from verdiclip.render.renderer import (
     ELLIPSE_LABEL_INSET,
-    TEXT_PADDING,
+    H_ALIGN,
+    V_SHARE,
     QtConvert,
     Renderer,
 )
+
+EDITOR_FRAME: Final = 1  # Editor border width in screen pixels
 
 
 class CanvasHost(Protocol):
@@ -148,6 +152,7 @@ class InlineEditors:
         self._note: TextNote | None = None
         self._marker: CounterMarker | None = None
         self._box: LabeledBox | None = None
+        self._fixed: Rect | None = None
         self._anchor = Point(0, 0)
         self._style = Style()
 
@@ -163,6 +168,13 @@ class InlineEditors:
         return None
 
     @property
+    def new_box(self) -> TextNote | None:
+        """Return the empty box being typed into for a new fixed-size note."""
+        if self._widget is None or self._note is not None or self._fixed is None:
+            return None
+        return TextNote(rect=self._fixed, text="", style=self._style, auto_fit=False)
+
+    @property
     def is_open(self) -> bool:
         """True while an editor is showing."""
         return self._widget is not None
@@ -172,24 +184,47 @@ class InlineEditors:
         """Return the open editor widget, if any."""
         return self._widget
 
-    def edit_text(self, note: TextNote | None, at: Point) -> None:
-        """Open a text editor for ``note``, or for a new note at ``at``."""
+    def edit_text(
+        self, note: TextNote | None, at: Point, box: Rect | None = None
+    ) -> None:
+        """Open a text editor for ``note``, or for a new note at ``at``.
+
+        A new note with ``box`` (or a fixed-size ``note``) is edited inside its
+        box, wrapped and aligned as it will be drawn.
+        """
         self.commit()
+        if note is not None:
+            # The style bar acts on the selection, so it must be this note
+            self._session.selection.set([note.id])
         self._note = note
         self._anchor = note.rect.top_left if note is not None else at
         self._style = (
             note.style if note is not None else self._session.styles.get(ToolId.TEXT)
         )
-        box = _TextBox(self._canvas.viewport())
-        box.setFrameShape(QFrame.Shape.NoFrame)
-        box.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        box.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        box.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        box.setPlainText(note.text if note is not None else "")
-        box.textChanged.connect(self.reposition)
-        box.finished.connect(self.commit)
-        self._open(box)
-        box.moveCursor(box.textCursor().MoveOperation.End)
+        if note is not None:
+            self._fixed = None if note.auto_fit else note.rect
+        else:
+            self._fixed = box
+        if self._fixed is not None:
+            editor = self._wrapping_editor(
+                note.text if note is not None else "",
+                H_ALIGN[self._style.h_align],
+                "Type text (Esc to finish)",
+            )
+            self._open(editor, transparent=True)
+            editor.moveCursor(QTextCursor.MoveOperation.End)
+            editor.document().clearUndoRedoStacks()
+            return
+        text_box = _TextBox(self._canvas.viewport())
+        text_box.setFrameShape(QFrame.Shape.NoFrame)
+        text_box.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        text_box.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        text_box.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        text_box.setPlainText(note.text if note is not None else "")
+        text_box.textChanged.connect(self.reposition)
+        text_box.finished.connect(self.commit)
+        self._open(text_box)
+        text_box.moveCursor(text_box.textCursor().MoveOperation.End)
 
     def edit_counter(self, marker: CounterMarker) -> None:
         """Open a label editor centered on ``marker``."""
@@ -208,20 +243,10 @@ class InlineEditors:
         self.commit()
         self._box = box
         self._style = box.style
-        editor = _BoxTextEdit(self._canvas.viewport())
-        editor.setFrameShape(QFrame.Shape.NoFrame)
-        editor.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        editor.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        editor.setAcceptRichText(False)
-        editor.setPlaceholderText("Type a label (Esc to skip)")
-        editor.setPlainText(box.text)
-        option = editor.document().defaultTextOption()
-        option.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        option.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
-        editor.document().setDefaultTextOption(option)
+        editor = self._wrapping_editor(
+            box.text, Qt.AlignmentFlag.AlignHCenter, "Type a label (Esc to skip)"
+        )
         editor.selectAll()
-        editor.textChanged.connect(self._center_box_editor)
-        editor.finished.connect(self.commit)
         self._open(editor, transparent=True)
         editor.moveCursor(QTextCursor.MoveOperation.End)
         # Setup is not the user's typing; keep it out of the editor's undo history
@@ -235,13 +260,16 @@ class InlineEditors:
         self._widget = None
         if isinstance(widget, _TextBox):
             self._commit_text(widget.toPlainText().rstrip())
-        elif isinstance(widget, _BoxTextEdit):
+        elif isinstance(widget, _BoxTextEdit) and self._box is not None:
             self._commit_box(widget.toPlainText().strip())
+        elif isinstance(widget, _BoxTextEdit):
+            self._commit_text(widget.toPlainText().rstrip())
         elif isinstance(widget, _LabelBox):
             self._commit_label(widget.text().strip())
         self._note = None
         self._marker = None
         self._box = None
+        self._fixed = None
         widget.hide()
         widget.deleteLater()
         self._canvas.setFocus()
@@ -259,7 +287,8 @@ class InlineEditors:
         if isinstance(widget, _TextBox):
             w, h = Renderer.measure_text(widget.toPlainText() + "  ", self._style)
             top_left = self._canvas.to_view(self._anchor)
-            widget.document().setDocumentMargin(TEXT_PADDING * zoom)
+            inset = Renderer.text_inset(self._style)
+            widget.document().setDocumentMargin(inset * zoom)
             widget.setGeometry(
                 round(top_left.x()),
                 round(top_left.y()),
@@ -267,7 +296,7 @@ class InlineEditors:
                 round(h * zoom) + 8,
             )
         elif isinstance(widget, _BoxTextEdit):
-            self._center_box_editor()
+            self._place_box_editor()
         elif self._marker is not None:
             center = self._canvas.to_view(self._marker.center)
             width = max(48.0, self._marker.radius * 3 * zoom)
@@ -281,20 +310,53 @@ class InlineEditors:
 
     # Internals
 
-    def _center_box_editor(self) -> None:
-        """Size the box editor to its wrapped text and center it in the box."""
-        widget, box = self._widget, self._box
-        if not isinstance(widget, _BoxTextEdit) or box is None:
+    def _wrapping_editor(
+        self, text: str, align: Qt.AlignmentFlag, placeholder: str
+    ) -> _BoxTextEdit:
+        """Return a frameless editor that wraps ``text`` inside a box."""
+        editor = _BoxTextEdit(self._canvas.viewport())
+        editor.setFrameShape(QFrame.Shape.NoFrame)
+        editor.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        editor.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        editor.setAcceptRichText(False)
+        editor.setPlaceholderText(placeholder)
+        editor.setPlainText(text)
+        option = editor.document().defaultTextOption()
+        option.setAlignment(align)
+        option.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        editor.document().setDefaultTextOption(option)
+        editor.textChanged.connect(self._place_box_editor)
+        editor.finished.connect(self.commit)
+        return editor
+
+    def _place_box_editor(self) -> None:
+        """Size the box editor to its wrapped text and align it in the box."""
+        widget = self._widget
+        if not isinstance(widget, _BoxTextEdit):
             return
-        inset = 0.0 if isinstance(box, RectangleShape) else ELLIPSE_LABEL_INSET
-        area = self._canvas.rect_to_view(Renderer.label_area(box, inset=inset))
+        if self._box is not None:
+            box = self._box
+            inset = 0.0 if isinstance(box, RectangleShape) else ELLIPSE_LABEL_INSET
+            area = self._canvas.rect_to_view(Renderer.label_area(box, inset=inset))
+            share = V_SHARE[VAlign.MIDDLE]
+        elif self._fixed is not None:
+            inner = self._fixed.adjusted(-Renderer.text_inset(self._style))
+            area = self._canvas.rect_to_view(inner)
+            share = V_SHARE[self._style.v_align]
+        else:  # pragma: no cover - a wrapping editor always has a box
+            return
         widget.document().setDocumentMargin(0)
-        widget.document().setTextWidth(area.width())
+        widget.document().setTextWidth(max(1.0, area.width()))
         line = widget.fontMetrics().lineSpacing()
         height = min(area.height(), max(line, widget.document().size().height()))
-        top = area.top() + (area.height() - height) / 2
+        top = area.top() + (area.height() - height) * share
+        # The dashed frame sits outside the area so text wraps at the same
+        # width it is drawn with
         widget.setGeometry(
-            round(area.left()), round(top), round(area.width()), round(height) + 2
+            round(area.left()) - EDITOR_FRAME,
+            round(top) - EDITOR_FRAME,
+            round(area.width()) + 2 * EDITOR_FRAME,
+            round(height) + 2 + 2 * EDITOR_FRAME,
         )
 
     def _open(self, widget: QWidget, *, transparent: bool = False) -> None:
@@ -302,7 +364,8 @@ class InlineEditors:
         color = QtConvert.color(self._style.stroke).name()
         background = "transparent" if transparent else "rgba(255,255,255,0.85)"
         widget.setStyleSheet(
-            f"background: {background}; color: {color}; border: 1px dashed #0078d7;"
+            f"background: {background}; color: {color};"
+            f" border: {EDITOR_FRAME}px dashed #0078d7;"
         )
         self._widget = widget
         self.reposition()
@@ -310,19 +373,37 @@ class InlineEditors:
         widget.setFocus()
         self._canvas.refresh()
 
+    def _current[T: Annotation](self, edited: T | None) -> T | None:
+        """Return the document's latest version of ``edited``.
+
+        The style bar can change an annotation while its editor is open (for
+        example Auto-fit), so commits build on that, not the opening snapshot.
+        """
+        if edited is None:
+            return None
+        current = self._session.document.find(edited.id)
+        return current if isinstance(current, type(edited)) else None
+
     def _commit_text(self, text: str) -> None:
         """Add, change, or remove the note."""
         history = self._session.history
-        note = self._note
+        note = self._current(self._note)
+        if note is None and self._note is not None:
+            return  # Deleted (e.g. undone) while being edited
         if note is None:
             if not text:
                 return
-            w, h = Renderer.measure_text(text, self._style)
-            created = TextNote(
-                rect=Rect(self._anchor.x, self._anchor.y, w, h),
-                text=text,
-                style=self._style,
-            )
+            if self._fixed is not None:
+                created = TextNote(
+                    rect=self._fixed, text=text, style=self._style, auto_fit=False
+                )
+            else:
+                w, h = Renderer.measure_text(text, self._style)
+                created = TextNote(
+                    rect=Rect(self._anchor.x, self._anchor.y, w, h),
+                    text=text,
+                    style=self._style,
+                )
             history.execute(AddAnnotations([created], "Add text"))
             self._session.selection.set([created.id])
             return
@@ -330,13 +411,12 @@ class InlineEditors:
             history.execute(RemoveAnnotations([note.id], "Delete text"))
             return
         if text != note.text:
-            w, h = Renderer.measure_text(text, note.style)
-            edited = note.with_text(text, Rect(note.rect.x, note.rect.y, w, h))
+            edited = Renderer.fit(note.with_text(text, note.rect))
             history.execute(ReplaceAnnotations([note], [edited], "Edit text"))
 
     def _commit_box(self, text: str) -> None:
         """Change the box's label if it changed (empty text clears it)."""
-        box = self._box
+        box = self._current(self._box)
         if box is None or text == box.text:
             return
         self._session.history.execute(
@@ -345,7 +425,7 @@ class InlineEditors:
 
     def _commit_label(self, label: str) -> None:
         """Relabel the counter if the label changed and is not empty."""
-        marker = self._marker
+        marker = self._current(self._marker)
         if marker is None or not label or label == marker.label:
             return
         self._session.history.execute(

@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, replace
+from enum import StrEnum
 from typing import Final, Self
+
+from verdiclip.geometry import Rect
 
 _HEX_PATTERN: Final = re.compile(r"^#([0-9a-fA-F]{6})([0-9a-fA-F]{2})?$")
 
@@ -57,6 +60,24 @@ RED: Final = Color(0xE5, 0x1C, 0x23)
 WHITE: Final = Color(255, 255, 255)
 BLACK: Final = Color(0, 0, 0)
 HIGHLIGHT_YELLOW: Final = Color(0xFF, 0xEB, 0x3B, 0x80)
+SHADOW_OFFSET: Final = 4.0  # Shadows fall this far below and to the right
+SHADOW_BLUR: Final = 4.0  # How far a shadow's soft edge spreads past its shape
+
+
+class HAlign(StrEnum):
+    """Horizontal text alignment inside a box."""
+
+    LEFT = "left"
+    CENTER = "center"
+    RIGHT = "right"
+
+
+class VAlign(StrEnum):
+    """Vertical text alignment inside a box."""
+
+    TOP = "top"
+    MIDDLE = "middle"
+    BOTTOM = "bottom"
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,7 +85,8 @@ class Style:
     """How an annotation is drawn.
 
     ``width`` is the stroke width in image pixels; for obfuscation it is the
-    pixelation block size.
+    pixelation block size, and for text the outline width. ``outline`` is the
+    border color of text boxes (transparent for none).
     """
 
     stroke: Color = RED
@@ -74,6 +96,10 @@ class Style:
     font_size: int = 16
     bold: bool = False
     italic: bool = False
+    outline: Color = TRANSPARENT
+    shadow: bool = False
+    h_align: HAlign = HAlign.LEFT
+    v_align: VAlign = VAlign.TOP
 
     def __post_init__(self) -> None:
         """Reject non-positive sizes."""
@@ -83,6 +109,13 @@ class Style:
         if self.font_size <= 0:
             msg = f"Style font size must be positive, got {self.font_size}"
             raise ValueError(msg)
+
+    def shadowed(self, bounds: Rect) -> Rect:
+        """Return ``bounds`` grown to cover this style's drop shadow, if any."""
+        if not self.shadow:
+            return bounds
+        reach = SHADOW_OFFSET + SHADOW_BLUR
+        return Rect(bounds.x, bounds.y, bounds.width + reach, bounds.height + reach)
 
     def scaled(self, factor: float) -> Style:
         """Return the style with stroke width and font size multiplied."""

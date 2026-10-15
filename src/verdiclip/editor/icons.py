@@ -79,7 +79,62 @@ class IconFactory:
         painter.end()
         return QIcon(pixmap)
 
+    def style(self, name: str) -> QIcon:
+        """Return the icon for a style-bar toggle (align_left, shadow, ...)."""
+        pixmap, painter = self._canvas()
+        try:
+            self._draw_style(painter, name)
+        finally:
+            painter.end()
+        return QIcon(pixmap)
+
     # Internals
+
+    def _draw_style(self, p: QPainter, name: str) -> None:
+        """Draw the glyph for style toggle ``name``."""
+        lengths = (32, 22, 32, 18)
+        if name in {"align_left", "align_center", "align_right"}:
+            share = {"align_left": 0.0, "align_center": 0.5, "align_right": 1.0}[name]
+            for row, length in enumerate(lengths):
+                x = 8 + (32 - length) * share
+                y = 12 + 8 * row
+                p.drawLine(QPointF(x, y), QPointF(x + length, y))
+        elif name in {"align_top", "align_middle", "align_bottom"}:
+            p.setPen(self._pen(3))
+            p.drawRect(QRectF(6, 6, 36, 36))
+            p.setPen(self._pen(4))
+            top = {"align_top": 14.0, "align_middle": 20.5, "align_bottom": 27.0}[name]
+            for row in range(2):
+                p.drawLine(QPointF(14, top + 7 * row), QPointF(34, top + 7 * row))
+        elif name == "shadow":
+            shade = QColor(self._ink)
+            shade.setAlpha(110)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(shade)
+            p.drawRect(QRectF(14, 16, 28, 24))
+            p.setPen(self._pen(3))
+            p.setBrush(self._paper)
+            p.drawRect(QRectF(7, 8, 28, 24))
+        else:  # auto_fit: a "T" hugged by corner brackets
+            font = QFont("Segoe UI", 1)
+            font.setPixelSize(26)
+            font.setBold(True)
+            p.setFont(font)
+            p.drawText(
+                QRectF(0, 0, SIZE, SIZE), int(Qt.AlignmentFlag.AlignCenter.value), "T"
+            )
+            p.setPen(self._pen(3))
+            for x, y, dx, dy in (
+                (7, 7, 1, 1),
+                (41, 7, -1, 1),
+                (7, 41, 1, -1),
+                (41, 41, -1, -1),
+            ):
+                p.drawPolyline(
+                    QPolygonF(
+                        [QPointF(x, y + 9 * dy), QPointF(x, y), QPointF(x + 9 * dx, y)]
+                    )
+                )
 
     def _canvas(self) -> tuple[QPixmap, QPainter]:
         """Return a transparent pixmap and a painter set up with the ink pen."""

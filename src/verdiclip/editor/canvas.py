@@ -26,6 +26,7 @@ from verdiclip.document.annotations import (
     HandleRole,
     LabeledBox,
     ObfuscateShape,
+    TextNote,
 )
 from verdiclip.editor.chrome import ChromeStyle
 from verdiclip.editor.inline_editors import InlineEditors
@@ -265,6 +266,9 @@ class CanvasView(QAbstractScrollArea):
     def _displayed(self, annotations: tuple[Annotation, ...]) -> list[Annotation]:
         """Return what to draw: the edited item is hidden, or just its label."""
         editing = self._editors.editing_id
+        new_box = self._editors.new_box
+        if new_box is not None:
+            return [*annotations, new_box]
         if editing is None:
             return list(annotations)
         shown: list[Annotation] = []
@@ -273,6 +277,8 @@ class CanvasView(QAbstractScrollArea):
                 shown.append(annotation)
             elif isinstance(annotation, LabeledBox):
                 shown.append(annotation.with_text(""))
+            elif isinstance(annotation, TextNote) and not annotation.auto_fit:
+                shown.append(annotation.with_text("", annotation.rect))
         return shown
 
     def _paint_overlays(self, painter: QPainter) -> None:

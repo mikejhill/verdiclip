@@ -275,6 +275,12 @@ class RectangleShape(LabeledBox):
     kind: ClassVar[AnnotationKind] = AnnotationKind.RECTANGLE
 
     @override
+    @property
+    def bounds(self) -> Rect:
+        """Return the rectangle grown by half the stroke and its shadow."""
+        return self.style.shadowed(self.rect.adjusted(self.style.width / 2))
+
+    @override
     def hit_test(self, point: Point, tolerance: float) -> bool:
         """Return True on the outline, or anywhere inside when solid."""
         grow = self.style.width / 2 + tolerance
@@ -500,22 +506,40 @@ class FreehandShape(Annotation):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class TextNote(Annotation):
-    """Text in a box; ``rect`` is measured by the renderer when text changes."""
+    """Text in a box.
+
+    When ``auto_fit`` is set the renderer sizes ``rect`` to the text whenever
+    the text or style changes; otherwise the box keeps its size and the text
+    wraps and aligns inside it.
+    """
 
     kind: ClassVar[AnnotationKind] = AnnotationKind.TEXT
     rect: Rect
     text: str
+    auto_fit: bool = True
+
+    @property
+    def has_outline(self) -> bool:
+        """True when the box border is drawn."""
+        return not self.style.outline.is_transparent
 
     @override
     @property
     def bounds(self) -> Rect:
-        """Return the text box."""
+        """Return the text box, grown by half its outline and its shadow."""
+        return self.style.shadowed(self.box_bounds)
+
+    @property
+    def box_bounds(self) -> Rect:
+        """Return the drawn box: the rectangle plus the outer half of the outline."""
+        if self.has_outline:
+            return self.rect.adjusted(self.style.width / 2)
         return self.rect
 
     @override
     def hit_test(self, point: Point, tolerance: float) -> bool:
-        """Return True anywhere in the text box."""
-        return self.rect.adjusted(tolerance).contains(point)
+        """Return True anywhere in the text box (not its shadow)."""
+        return self.box_bounds.adjusted(tolerance).contains(point)
 
     @override
     def translated(self, delta: Point) -> Self:
@@ -533,26 +557,39 @@ class TextNote(Annotation):
 
     @override
     def handles(self) -> dict[HandleRole, Point]:
-        """Return no handles; text is sized by its font."""
-        return {}
+        """Return the eight box handles; resizing fixes the box size."""
+        return Geometry.box_handles(self.rect)
 
     @override
     def with_handle_moved(
         self, role: HandleRole, point: Point, *, constrain: bool
     ) -> Self:
-        """Return self; text has no handles."""
-        del role, point, constrain
-        return self
+        """Return a fixed-size copy resized from ``role``."""
+        rect = Geometry.resize_box(self.rect, role, point, constrain=constrain)
+        return replace(self, rect=rect, auto_fit=False)
 
     def with_text(self, text: str, rect: Rect) -> Self:
-        """Return a copy with new text and its measured box."""
+        """Return a copy with new text and its box."""
         return replace(self, text=text, rect=rect)
+
+    def fitted(self, width: float, height: float) -> Self:
+        """Return an auto-fit copy sized ``width`` x ``height`` at the same corner."""
+        rect = Rect(self.rect.x, self.rect.y, width, height)
+        return replace(self, rect=rect, auto_fit=True)
+
+    def with_auto_fit(self, *, on: bool) -> Self:
+        """Return a copy that follows its text's size (``on``) or keeps its own."""
+        return replace(self, auto_fit=on)
 
     @override
     def geometry_json(self) -> JsonObject:
-        """Return the box and text as JSON."""
+        """Return the box, text, and sizing mode as JSON."""
         r = self.rect
-        return {"rect": [r.x, r.y, r.width, r.height], "text": self.text}
+        return {
+            "rect": [r.x, r.y, r.width, r.height],
+            "text": self.text,
+            "auto_fit": self.auto_fit,
+        }
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
