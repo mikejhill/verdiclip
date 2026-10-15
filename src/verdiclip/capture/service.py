@@ -106,13 +106,20 @@ class CaptureService(QObject):
         self._activate_under_cursor()
 
     def capture_fullscreen(self) -> None:
-        """Capture every monitor immediately."""
+        """Capture the monitor under the cursor immediately."""
+        screen = (
+            QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
+        )
+        area = ScreenGeometry.from_screen(screen).physical
         try:
             frozen = self._screens.freeze()
+            image = frozen.crop(area)
         except AppError as err:
             self._fail(err)
             return
-        self._emit(frozen.image, CaptureMode.FULLSCREEN, frozen.bounds, "Screen")
+        area = area.rounded().intersected(frozen.bounds)
+        self._emit(image, CaptureMode.FULLSCREEN, area, "Screen")
+        self._last_area = None  # Repeat captures whichever monitor has the cursor
 
     def capture_active_window(self) -> None:
         """Capture the foreground window immediately."""

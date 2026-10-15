@@ -56,6 +56,23 @@ class FakeDesktop:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class WideDesktop:
+    """The Qt screen plus a monitor ``extra`` that Qt doesn't know about."""
+
+    extra: Rect
+
+    def freeze(self) -> FrozenScreen:
+        """Return a desktop image covering the Qt screen and ``extra``."""
+        geo = QGuiApplication.primaryScreen().virtualGeometry()
+        bounds = Rect(geo.x(), geo.y(), geo.width(), geo.height()).united(self.extra)
+        image = QImage(
+            int(bounds.width), int(bounds.height), QImage.Format.Format_RGB32
+        )
+        image.fill(QColor("gray"))
+        return FrozenScreen(image=image, bounds=bounds)
+
+
 @dataclass(slots=True)
 class FakeWindows:
     """Windows on the fake desktop, topmost first."""
@@ -415,16 +432,25 @@ class TestWindowPicking:
 class TestImmediateCaptures:
     """Full screen, active window, and repeat."""
 
-    def test_fullscreen_captures_whole_desktop(
-        self, service: CaptureService, qtbot: QtBot
+    def test_fullscreen_captures_only_the_cursor_monitor(
+        self, windows: FakeWindows, qtbot: QtBot
     ) -> None:
-        """UX-CAP-07: full screen is captured immediately without an overlay."""
+        """UX-CAP-07: only the monitor under the cursor, immediately, no overlay."""
+        screen = QGuiApplication.primaryScreen().geometry()
+        wide = WideDesktop(extra=Rect(screen.width(), 0, 500, screen.height()))
+        service = CaptureService(wide, windows)
+        QCursor.setPos(screen.center())
+
         with qtbot.waitSignal(service.captured) as signal:
             service.capture_fullscreen()
 
         capture = CaptureOf.signal(signal)
-        geo = QGuiApplication.primaryScreen().virtualGeometry()
-        assert capture.image.width() == geo.width()
+        assert capture.mode is CaptureMode.FULLSCREEN
+        assert (capture.image.width(), capture.image.height()) == (
+            screen.width(),
+            screen.height(),
+        )
+        assert capture.area == Rect(0, 0, screen.width(), screen.height())
         assert not service.is_selecting
 
     def test_active_window_uses_its_bounds(
