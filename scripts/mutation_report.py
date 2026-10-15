@@ -12,12 +12,16 @@ true``, prints a Markdown report, and exits non-zero when the score is below
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import subprocess
 import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 DETECTED: Final = frozenset({"killed", "timeout", "caught by type check", "segfault"})
 UNDETECTED: Final = frozenset({"survived", "no tests", "suspicious"})
@@ -51,12 +55,18 @@ class MutationReport:
     statuses: Counter[str] = field(default_factory=Counter)
 
     @classmethod
-    def parse(cls, text: str) -> MutationReport:
-        """Return the report for mutmut's ``name: status`` lines."""
+    def parse(cls, text: str, only: Sequence[str] = ()) -> MutationReport:
+        """Return the report for mutmut's ``name: status`` lines.
+
+        With ``only``, keep just the mutants matching one of those mutmut
+        patterns (``verdiclip.geometry.*``).
+        """
         report = cls()
         for line in text.splitlines():
             name, sep, status = line.strip().rpartition(": ")
             if not sep or "__mutmut_" not in name:
+                continue
+            if only and not any(fnmatch.fnmatchcase(name, p) for p in only):
                 continue
             report.statuses[status] += 1
             module = report.modules[name.rpartition(".")[0]]
@@ -136,8 +146,17 @@ def main() -> int:
         default=0,
         help="Include the diffs of this many missed mutants.",
     )
+    parser.add_argument(
+        "--only",
+        nargs="+",
+        default=[],
+        metavar="PATTERN",
+        help="Report only mutants matching these mutmut patterns.",
+    )
     args = parser.parse_args()
-    report = MutationReport.parse(args.results.read_text(encoding="utf-8"))
+    report = MutationReport.parse(
+        args.results.read_text(encoding="utf-8"), only=args.only
+    )
     sys.stdout.write(report.markdown(show_diffs=args.show_diffs))
     score = report.overall.score
     if score < args.fail_under:

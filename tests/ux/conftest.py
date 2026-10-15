@@ -27,6 +27,15 @@ NO_MODS = Qt.KeyboardModifier.NoModifier
 DRAG_STEPS = 6
 
 
+@pytest.fixture(autouse=True)
+def _application(qapp: QApplication) -> QApplication:
+    """Every journey builds widgets, so make sure a QApplication exists.
+
+    Without it a test that runs first, or alone, aborts the process.
+    """
+    return qapp
+
+
 class Stopwatch:
     """Measure elapsed wall time in milliseconds."""
 

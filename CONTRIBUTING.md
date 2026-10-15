@@ -36,6 +36,8 @@ uv run --group mutation mutmut run "verdiclip.geometry.*"   # one module
 uv run --group mutation mutmut show <mutant-name>      # what a survivor changed
 ```
 
+mutmut keeps its verdicts in `mutants/`, so running it again without a pattern retests only the functions you changed. A pattern retests every mutant it matches. Delete `mutants/` for a fresh score, for example after changing only tests. CI does the same: pull requests and pushes to `main` reuse cached verdicts, and the weekly run starts fresh.
+
 A surviving mutant is a change no test noticed: add an assertion that fails for it, or mark the line `# pragma: no mutate` if the change is truly equivalent.
 
 ## Commit messages

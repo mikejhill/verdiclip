@@ -7,6 +7,10 @@ signature, so a trampoline makes it pass them all: ``toggled(bool)`` into a
 caps the positional arguments at what the original function accepts, which
 is what PySide would have done for the unwrapped slot.
 
+It also runs each mutant's tests fastest first. mutmut stops at the first
+failure, so a mutant that a quick unit test catches never waits for the slow
+widget journeys that happen to cover the same code.
+
 mutmut loads this as a pytest plugin (``-p tests.mutation_support`` in
 ``[tool.mutmut]``), before any test imports a mutated ``verdiclip`` module.
 """
@@ -16,9 +20,13 @@ from __future__ import annotations
 import functools
 import importlib
 import inspect
+import json
 import sys
 from collections.abc import Callable
-from typing import Any
+from pathlib import Path
+from typing import Any, Final
+
+import pytest
 
 type Wrapper = Callable[[Callable[..., Any]], Callable[..., Any]]
 
@@ -78,3 +86,15 @@ class TrampolineArity:
 
 
 TrampolineArity.install()
+
+# Written by mutmut's stats run, in the mutants/ folder it runs the tests from
+STATS: Final = Path("mutmut-stats.json")
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Order tests by their duration in mutmut's stats run, fastest first."""
+    if "mutmut" not in sys.modules or not STATS.is_file():
+        return
+    durations = json.loads(STATS.read_text(encoding="utf-8")).get("duration_by_test")
+    if isinstance(durations, dict):
+        items.sort(key=lambda item: float(durations.get(item.nodeid, 0.0)))
