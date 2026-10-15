@@ -38,6 +38,7 @@ from verdiclip.editor.window import EditorWindow
 from verdiclip.geometry import Rect
 from verdiclip.platform.associations import DEFAULT_APPS_URI, FileAssociations
 from verdiclip.platform.hotkeys import Hotkey, HotkeyService
+from verdiclip.platform.launcher import LaunchCommand
 from verdiclip.platform.shortcuts import ShortcutRegistration
 from verdiclip.platform.startup import StartupRegistration
 from verdiclip.settings import (
@@ -47,6 +48,7 @@ from verdiclip.settings import (
     StartupSettings,
     Theme,
 )
+from verdiclip.shell import controller as controller_module
 from verdiclip.shell.controller import AppController, ShellIntegration
 from verdiclip.shell.instance import SingleInstance
 from verdiclip.shell.settings_dialog import SettingsDialog
@@ -155,13 +157,23 @@ class App:
         raise AssertionError(msg)
 
 
+PYTHONW = Path("C:/Python/pythonw.exe")
+
 type AppFactory = Callable[..., App]
 
 
 @pytest.fixture
-def make_app(qtbot: QtBot, tmp_path: Path) -> Iterator[AppFactory]:
+def make_app(
+    qtbot: QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[AppFactory]:
     """Return a factory for a started app with the given settings."""
     created: list[App] = []
+    # Launcher choice depends on the host's Python; its own tests cover it
+    monkeypatch.setattr(
+        controller_module,
+        "tray_launch",
+        lambda *_args: LaunchCommand(PYTHONW, "-m verdiclip"),
+    )
 
     def factory(settings: Settings | None = None, taken: set[str] | None = None) -> App:
         store = SettingsStore(tmp_path / "settings.json")
@@ -378,8 +390,8 @@ class TestHotkeysAndSettings:
         )
 
         assert shortcut is not None
-        assert shortcut.arguments.endswith("-m verdiclip")
-        assert shortcut.target.name.lower().startswith("python")
+        assert shortcut.arguments == "-m verdiclip"
+        assert shortcut.target == PYTHONW
         assert shortcut.icon == tmp_path / "verdiclip.ico"
         assert not QImage(str(shortcut.icon)).isNull()
         assert app.startup_shortcut not in app.links.files
@@ -404,7 +416,7 @@ class TestHotkeysAndSettings:
             replace(current, integration=IntegrationSettings(open_with=False))
         )
 
-        assert command.endswith('-m verdiclip open "%1"')
+        assert command == f'"{PYTHONW}" -m verdiclip open "%1"'
         assert icon == tmp_path / "verdiclip.ico"
         assert not QImage(str(icon)).isNull()
         assert command_key not in app.associations.keys
@@ -416,7 +428,7 @@ class TestHotkeysAndSettings:
 
         app = make_app(settings)
 
-        assert app.links.files[app.startup_shortcut].arguments.endswith("-m verdiclip")
+        assert app.links.files[app.startup_shortcut].arguments == "-m verdiclip"
 
     def test_registrations_are_left_alone_when_off(self, make_app: AppFactory) -> None:
         """UX-TRY-04, 07, 08: launching never adds entries the user turned off."""
@@ -434,7 +446,7 @@ class TestHotkeysAndSettings:
 
         shortcut = app.links.files[app.start_menu_shortcut]
 
-        assert shortcut.arguments.endswith("-m verdiclip")
+        assert shortcut.arguments == "-m verdiclip"
         assert shortcut.description
         assert app.startup_shortcut not in app.links.files
 
