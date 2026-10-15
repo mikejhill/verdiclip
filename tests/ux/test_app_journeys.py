@@ -17,6 +17,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon, QWidget
 from pytestqt.qtbot import QtBot
 from tests.platform.test_associations import FakeAssociationBackend
+from tests.platform.test_launcher import GUI, write_pe
 from tests.platform.test_shortcuts import FakeShortcutBackend
 from tests.ux.conftest import Stopwatch
 from tests.ux.test_capture_journeys import (
@@ -559,7 +560,7 @@ class TestHotkeysAndSettings:
         """UX-TRY-04, 08: a second checkout doesn't take over existing shortcuts."""
         main = tmp_path / "main" / "pythonw.exe"
         main.parent.mkdir()
-        main.touch()
+        write_pe(main, GUI)
         installed = Shortcut(main, "-m verdiclip", tmp_path, main, "VerdiClip")
         links = FakeShortcutBackend()
         folders = ShortcutFolders(tmp_path / "Startup", tmp_path / "Programs")

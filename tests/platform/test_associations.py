@@ -7,6 +7,7 @@ from operator import methodcaller
 from pathlib import Path
 
 import pytest
+from tests.platform.test_launcher import CONSOLE, GUI, write_pe
 
 from verdiclip.exceptions import PlatformError
 from verdiclip.platform import associations
@@ -92,16 +93,25 @@ class TestFileAssociations:
             (("own", "python.exe"), True),
             (("gone", "pythonw.exe"), True),
             (("other", "pythonw.exe"), False),
+            (("other", "python.exe"), True),
         ],
-        ids=["missing", "same_folder", "gone", "other_install"],
+        ids=["missing", "same_folder", "gone", "other_install", "other_console"],
     )
-    def test_refresh_keeps_only_another_existing_install(
-        self, tmp_path: Path, previous: tuple[str, str] | None, *, written: bool
+    def test_refresh_keeps_only_another_working_install(
+        self,
+        tmp_path: Path,
+        previous: tuple[str, str] | None,
+        *,
+        written: bool,
     ) -> None:
-        """A dev copy doesn't take over Open with; missing or stale ones are redone."""
+        """A dev copy doesn't take over Open with; missing or stale ones are redone.
+
+        Another install's command that opens a console is stale too: left
+        alone, Open with would keep opening a terminal.
+        """
         for folder in ("own", "other"):
-            (tmp_path / folder).mkdir()
-            (tmp_path / folder / "pythonw.exe").touch()
+            write_pe(tmp_path / folder / "pythonw.exe", GUI)
+            write_pe(tmp_path / folder / "python.exe", CONSOLE)
 
         def command(folder: str, program: str) -> str:
             return f'"{tmp_path / folder / program}" -m verdiclip open "%1"'
@@ -117,19 +127,33 @@ class TestFileAssociations:
         assert registrations.registered_command() == (new if written else old)
 
     @pytest.mark.parametrize(
-        ("installed_environment", "written"),
-        [("main", False), ("gone", True), ("worktree", True)],
+        ("installed_environment", "base_exists", "written"),
+        [
+            ("main", True, False),
+            ("main", False, True),
+            ("gone", True, True),
+            ("worktree", True, True),
+        ],
     )
     def test_refresh_tells_relay_commands_apart_by_environment(
-        self, tmp_path: Path, installed_environment: str, *, written: bool
+        self,
+        tmp_path: Path,
+        installed_environment: str,
+        *,
+        base_exists: bool,
+        written: bool,
     ) -> None:
-        """Relays share the base pythonw.exe; the environment decides ownership."""
+        """Relays share the base pythonw.exe; the environment decides ownership.
+
+        A relay whose base pythonw.exe is gone starts nothing, so it is redone.
+        """
+        base = tmp_path / "base" / "pythonw.exe"
+        if base_exists:
+            write_pe(base, GUI)
         for environment in ("main", "worktree"):
-            (tmp_path / environment).mkdir()
-            (tmp_path / environment / "python.exe").touch()
+            write_pe(tmp_path / environment / "python.exe", CONSOLE)
 
         def relay(environment: str) -> str:
-            base = tmp_path / "base" / "pythonw.exe"
             interpreter = tmp_path / environment / "python.exe"
             return f'"{base}" -c "{RELAY_CODE}" "{interpreter}" -m verdiclip open "%1"'
 

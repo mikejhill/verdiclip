@@ -111,10 +111,18 @@ def tray_launch(executable: Path, base_prefix: Path) -> LaunchCommand:
 
 
 def is_other_install(current: LaunchCommand, ours: LaunchCommand) -> bool:
-    """Return whether ``current`` runs another environment that still exists.
+    """Return whether ``current`` starts another environment, and starts it well.
 
     Environments are told apart by their interpreter's folder, so moving
     between ``python.exe``, ``pythonw.exe``, and the relay keeps them the same.
+    Another environment only counts while it still exists and ``current``
+    starts it without a console: a command from before console-less launches
+    (``python.exe``, or uv's console ``pythonw.exe``) is stale, and replacing
+    it is the only way it gets repaired.
     """
     environment = current.environment
-    return environment.parent != ours.environment.parent and environment.is_file()
+    return (
+        environment.parent != ours.environment.parent
+        and environment.is_file()
+        and is_windowless(current.program)
+    )
