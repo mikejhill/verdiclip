@@ -676,6 +676,19 @@ class TestMixedScaling:
         # Between the two in Qt's coordinates: snap to the nearer monitor's edge
         assert shared.to_physical(Point(2000, 10)) == Point(3840, 20)
 
+    def test_shared_edge_belongs_to_the_monitor_it_starts(self) -> None:
+        """The first column of a scaled monitor maps with that monitor's scale."""
+        normal = ScreenGeometry(
+            "monitor", Rect(0, 0, 1920, 1080), Rect(0, 0, 1920, 1080), 1.0
+        )
+        hidpi = ScreenGeometry(
+            "laptop", Rect(1920, 0, 1920, 1080), Rect(1920, 0, 3840, 2160), 2.0
+        )
+        shared = SharedSelection([normal, hidpi])
+
+        assert shared.to_physical(Point(1920, 200)) == Point(1920, 400)
+        assert shared.to_physical(Point(1919, 200)) == Point(1919, 200)
+
     def test_drag_from_scaled_monitor_onto_unscaled_one(self) -> None:
         """UX-CAP-03: the area spans both monitors in physical pixels."""
         hidpi = ScreenGeometry(

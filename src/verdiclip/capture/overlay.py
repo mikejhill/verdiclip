@@ -98,11 +98,15 @@ class SharedSelection(QObject):
 
         Qt keeps each monitor's top-left at its physical position and scales
         only its size, so the monitor holding a global position is found in
-        logical space, then the offset from its corner is scaled.
+        logical space (the right and bottom edges belong to the next monitor),
+        then the offset from its corner is scaled.
         """
-        screen = min(
-            self._screens, key=lambda s: _clamp(logical, s.logical).distance_to(logical)
-        )
+        screen = next((s for s in self._screens if _covers(s.logical, logical)), None)
+        if screen is None:  # Off every monitor (a gap): snap to the nearest
+            screen = min(
+                self._screens,
+                key=lambda s: _clamp(logical, s.logical).distance_to(logical),
+            )
         return screen.to_physical(
             _clamp(logical, screen.logical) - screen.logical.top_left
         )
