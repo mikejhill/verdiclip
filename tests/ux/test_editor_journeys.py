@@ -16,7 +16,13 @@ from PySide6.QtGui import (
     QWheelEvent,
 )
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QMessageBox, QPlainTextEdit, QSpinBox
+from PySide6.QtWidgets import (
+    QApplication,
+    QMessageBox,
+    QPlainTextEdit,
+    QSpinBox,
+    QTextEdit,
+)
 from pytestqt.qtbot import QtBot
 from tests.editor.test_close_prompt import REAL_ASK, answer_when_open
 from tests.ux.conftest import NO_MODS, Pixels, User
@@ -25,6 +31,7 @@ from verdiclip.document.annotations import TextNote
 from verdiclip.document.style import BLACK, WHITE, Color, HAlign, VAlign
 from verdiclip.editor.close_prompt import CloseChoice, ClosePrompt
 from verdiclip.editor.session import ToolId
+from verdiclip.geometry import Rect
 from verdiclip.render.renderer import QtConvert, Renderer
 from verdiclip.settings import OutputSettings
 
@@ -953,6 +960,13 @@ class TestTextBoxes:
         user.drag((100, 100), (260, 200))
         user.type_text("One")
         typing_new = user.window.canvas.viewport().grab().toImage()
+        editor = user.window.canvas.editors.widget
+        assert isinstance(editor, QTextEdit)
+        inset = Renderer.text_inset(styles.get(ToolId.TEXT))
+        wrap_width = user.window.canvas.rect_to_view(
+            Rect(100, 100, 160, 100).adjusted(-inset)
+        ).width()
+        assert editor.viewport().width() == round(wrap_width)
         user.key(Qt.Key.Key_Escape)
         added = user.window.session.document.annotations[0]
         assert isinstance(added, TextNote)

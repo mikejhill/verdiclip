@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Protocol, override
+from typing import Final, Protocol, override
 
 from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
@@ -36,6 +36,8 @@ from verdiclip.render.renderer import (
     QtConvert,
     Renderer,
 )
+
+EDITOR_FRAME: Final = 1  # Editor border width in screen pixels
 
 
 class CanvasHost(Protocol):
@@ -345,8 +347,13 @@ class InlineEditors:
         line = widget.fontMetrics().lineSpacing()
         height = min(area.height(), max(line, widget.document().size().height()))
         top = area.top() + (area.height() - height) * share
+        # The dashed frame sits outside the area so text wraps at the same
+        # width it is drawn with
         widget.setGeometry(
-            round(area.left()), round(top), round(area.width()), round(height) + 2
+            round(area.left()) - EDITOR_FRAME,
+            round(top) - EDITOR_FRAME,
+            round(area.width()) + 2 * EDITOR_FRAME,
+            round(height) + 2 + 2 * EDITOR_FRAME,
         )
 
     def _open(self, widget: QWidget, *, transparent: bool = False) -> None:
@@ -354,7 +361,8 @@ class InlineEditors:
         color = QtConvert.color(self._style.stroke).name()
         background = "transparent" if transparent else "rgba(255,255,255,0.85)"
         widget.setStyleSheet(
-            f"background: {background}; color: {color}; border: 1px dashed #0078d7;"
+            f"background: {background}; color: {color};"
+            f" border: {EDITOR_FRAME}px dashed #0078d7;"
         )
         self._widget = widget
         self.reposition()
