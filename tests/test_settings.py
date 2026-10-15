@@ -240,20 +240,37 @@ class TestLegacyMigration:
         ) == expected
 
     @pytest.mark.parametrize(
-        ("stored", "expected"),
+        ("version", "stored", "expected"),
         [
-            ("Screenshot {date} {time}", "{date} {time} {title}"),
-            ("Shot {counter}", "Shot {counter}"),
+            (1, "Screenshot {date} {time}", "{date} {time} {title}"),
+            (None, "Screenshot {date} {time}", "{date} {time} {title}"),
+            (1, "Shot {counter}", "Shot {counter}"),
         ],
-        ids=["old-default", "custom"],
+        ids=["old-default", "unversioned-old-default", "custom"],
     )
     def test_old_default_filename_pattern_gains_window_title(
-        self, tmp_path: Path, stored: str, expected: str
+        self, tmp_path: Path, version: int | None, stored: str, expected: str
     ) -> None:
-        """The pre-0.5 default pattern becomes the current one; custom ones stay."""
+        """A version-1 file's default pattern becomes the current one; custom stays."""
         path = tmp_path / "settings.json"
-        path.write_text(
-            json.dumps({"output": {"filename_pattern": stored}}), encoding="utf-8"
-        )
+        raw: dict[str, object] = {"output": {"filename_pattern": stored}}
+        if version is not None:
+            raw["version"] = version
+        path.write_text(json.dumps(raw), encoding="utf-8")
 
         assert SettingsStore(path).load().output.filename_pattern == expected
+
+    def test_old_pattern_chosen_after_upgrade_is_kept(self, tmp_path: Path) -> None:
+        """Choosing the old default pattern again survives a save and reload."""
+        store = SettingsStore(tmp_path / "settings.json")
+        settings = Settings()
+        chosen = replace(
+            settings,
+            output=replace(
+                settings.output, filename_pattern="Screenshot {date} {time}"
+            ),
+        )
+
+        store.save(chosen)
+
+        assert store.load().output.filename_pattern == "Screenshot {date} {time}"
