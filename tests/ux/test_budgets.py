@@ -30,12 +30,17 @@ UHD = (3840, 2160)
 
 
 @pytest.fixture(autouse=True)
-def settled_garbage() -> None:
-    """Collect earlier tests' garbage first, so no budget pays for it.
+def warm_and_settled(open_editor: Callable[[QImage], User]) -> None:
+    """Pay one-time costs first, so a budget never depends on test order.
 
-    Without this, a budget depends on which tests ran before it: a collection
-    of their leftover images can land inside the measured interval.
+    The first editor in a process loads Qt's fonts and styles (seconds on
+    Windows), and earlier tests' leftover images can be collected mid-timing.
+    A running VerdiClip has paid the first already; the budgets are per
+    capture, so a small editor opens and closes before each, then garbage
+    is collected.
     """
+    warm = open_editor(QImage(64, 48, QImage.Format.Format_RGB32))
+    warm.window.close()
     gc.collect()
 
 
