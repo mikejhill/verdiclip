@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.7.0](https://github.com/mikejhill/verdiclip/compare/v0.6.0...v0.7.0) (2026-10-15)
+
+
+### Features
+
+* text boxes with outlines, auto-fit or fixed size, alignment, and shadows ([#31](https://github.com/mikejhill/verdiclip/issues/31)) ([5351c36](https://github.com/mikejhill/verdiclip/commit/5351c366b971bd7165b7674411552639b2d82ceb))
+
+
+### Bug Fixes
+
+* repair Open with and shortcuts that still open a console ([#34](https://github.com/mikejhill/verdiclip/issues/34)) ([5e9b246](https://github.com/mikejhill/verdiclip/commit/5e9b2463e15822934b2a84133d0e61c8aec1a798))
+
 ## [0.6.0](https://github.com/mikejhill/verdiclip/compare/v0.5.0...v0.6.0) (2026-10-15)
 
 
