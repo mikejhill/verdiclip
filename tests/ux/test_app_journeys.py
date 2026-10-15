@@ -8,9 +8,10 @@ import uuid
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import override
 
 import pytest
-from PySide6.QtCore import QProcess, Qt, QUrl
+from PySide6.QtCore import QEvent, QObject, QProcess, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QGuiApplication, QImage
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon, QWidget
@@ -23,8 +24,11 @@ from tests.ux.test_capture_journeys import (
     FakeDesktop,
     FakeWindow,
     FakeWindows,
+    Overlay,
 )
 
+from verdiclip.capture.models import Capture
+from verdiclip.capture.overlay import SelectionOverlay
 from verdiclip.document.commands import SetCrop
 from verdiclip.document.style import Color
 from verdiclip.editor.close_prompt import CloseChoice, ClosePrompt
@@ -98,6 +102,23 @@ class ShortcutFolders:
 
     startup: Path
     programs: Path
+
+
+class BlockedWindows(QObject):
+    """Count capture overlays that a modal dialog blocks from input."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.overlays = 0
+
+    @override
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        """Count WindowBlocked events sent to an overlay."""
+        if event.type() == QEvent.Type.WindowBlocked and isinstance(
+            watched, SelectionOverlay
+        ):
+            self.overlays += 1
+        return False
 
 
 @dataclass(slots=True)
@@ -518,6 +539,35 @@ class TestSettingsEverywhere:
         QTest.keyClick(editor.canvas, Qt.Key.Key_Comma, ctrl)
 
         assert opened == [editor]
+
+    def test_region_capture_works_while_settings_are_open(
+        self, make_app: AppFactory, qtbot: QtBot
+    ) -> None:
+        """UX-TRY-04: open Settings never blocks the capture overlay's input."""
+        app = make_app()
+        captured: list[Capture] = []
+        app.controller.capture.captured.connect(captured.append)
+        blocked = BlockedWindows()
+        qt_app = QApplication.instance()
+        assert qt_app is not None
+        qt_app.installEventFilter(blocked)
+
+        def capture_then_close() -> None:
+            app.press_hotkey("region")
+            Overlay(app.controller.capture).drag((90, 90), (160, 140))
+            for widget in QApplication.topLevelWidgets():
+                if isinstance(widget, SettingsDialog):
+                    widget.reject()
+
+        QTimer.singleShot(0, capture_then_close)
+        try:
+            app.controller.show_settings()
+        finally:
+            qt_app.removeEventFilter(blocked)
+        qtbot.wait(0)
+
+        assert blocked.overlays == 0
+        assert [c.area for c in captured] == [Rect(90, 90, 70, 50)]
 
     @pytest.mark.parametrize(
         ("theme", "scheme"),
