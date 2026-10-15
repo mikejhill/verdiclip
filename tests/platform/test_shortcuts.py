@@ -8,6 +8,7 @@ from functools import partial
 from pathlib import Path
 
 import pytest
+from tests.platform.test_launcher import CONSOLE, GUI, write_pe
 
 from verdiclip.exceptions import PlatformError
 from verdiclip.platform import shortcuts
@@ -92,15 +93,26 @@ class TestShortcutRegistration:
         """A dev or worktree run doesn't take over the installed shortcut."""
         backend = FakeShortcutBackend()
         registration = ShortcutRegistration(tmp_path, backend)
-        other = tmp_path / "main" / "pythonw.exe"
-        other.parent.mkdir()
-        other.touch()
+        other = write_pe(tmp_path / "main" / "pythonw.exe", GUI)
         installed = replace(sample(tmp_path), target=other)
         backend.files[registration.path] = installed
 
         assert not registration.refresh(sample(tmp_path))
 
         assert backend.files[registration.path] == installed
+
+    def test_refresh_replaces_another_install_that_opens_a_console(
+        self, tmp_path: Path
+    ) -> None:
+        """A shortcut from before console-less launches is repaired, not kept."""
+        backend = FakeShortcutBackend()
+        registration = ShortcutRegistration(tmp_path, backend)
+        console = write_pe(tmp_path / "main" / "python.exe", CONSOLE)
+        backend.files[registration.path] = replace(sample(tmp_path), target=console)
+
+        assert registration.refresh(sample(tmp_path))
+
+        assert backend.files[registration.path] == sample(tmp_path)
 
     @pytest.mark.parametrize("previous", ["same", "same_folder", "gone"])
     def test_refresh_updates_own_or_stale_shortcut(
@@ -128,13 +140,16 @@ class TestShortcutRegistration:
         [("main", False), ("gone", True), ("worktree", True)],
     )
     def test_refresh_tells_relay_shortcuts_apart_by_environment(
-        self, tmp_path: Path, installed_environment: str, *, written: bool
+        self,
+        tmp_path: Path,
+        installed_environment: str,
+        *,
+        written: bool,
     ) -> None:
         """Relays share the base pythonw.exe; the environment decides ownership."""
-        base = tmp_path / "base" / "pythonw.exe"
+        base = write_pe(tmp_path / "base" / "pythonw.exe", GUI)
         for environment in ("main", "worktree"):
-            (tmp_path / environment).mkdir()
-            (tmp_path / environment / "python.exe").touch()
+            write_pe(tmp_path / environment / "python.exe", CONSOLE)
 
         def relay(environment: str) -> Shortcut:
             interpreter = tmp_path / environment / "python.exe"

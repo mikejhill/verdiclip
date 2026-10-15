@@ -27,6 +27,7 @@ def write_pe(path: Path, subsystem: int, *, signature: bytes = b"PE\0\0") -> Pat
     header[0x3C:0x40] = pe_at.to_bytes(4, "little")
     header[pe_at : pe_at + 4] = signature
     header[pe_at + 0x5C : pe_at + 0x5E] = subsystem.to_bytes(2, "little")
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(bytes(header))
     return path
 
