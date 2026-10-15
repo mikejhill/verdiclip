@@ -7,8 +7,8 @@ signature, so a trampoline makes it pass them all: ``toggled(bool)`` into a
 caps the positional arguments at what the original function accepts, which
 is what PySide would have done for the unwrapped slot.
 
-Import this before any ``verdiclip`` module, so the cap is in place when the
-mutated modules apply their decorators.
+mutmut loads this as a pytest plugin (``-p tests.mutation_support`` in
+``[tool.mutmut]``), before any test imports a mutated ``verdiclip`` module.
 """
 
 from __future__ import annotations

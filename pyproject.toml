@@ -143,5 +143,8 @@ mutation = [
 # POSIX only (it forks); run it on Linux or WSL with `uv run poe mutate`.
 source_paths = ["src/verdiclip/"]
 pytest_add_cli_args_test_selection = ["tests/"]
-pytest_add_cli_args = ["-p", "no:randomly", "-p", "no:cacheprovider"]
+# tests.mutation_support loads before any test imports verdiclip; see its docstring
+pytest_add_cli_args = [
+    "-p", "tests.mutation_support", "-p", "no:randomly", "-p", "no:cacheprovider",
+]
 mutate_only_covered_lines = true
