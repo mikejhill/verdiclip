@@ -264,9 +264,7 @@ class EditorWindow(QMainWindow):
         self._canvas.escape_unhandled.connect(self._on_escape)
         self._canvas.enter_unhandled.connect(self._on_enter)
         self._style_bar.style_changed.connect(self._on_style_changed)
-        self._style_bar.auto_fit_toggled.connect(
-            lambda on: self._session.set_auto_fit(on=on, fit=Renderer.fit)
-        )
+        self._style_bar.auto_fit_toggled.connect(self._on_auto_fit_toggled)
         self.resize(self._initial_size())
 
     def _add_action(
@@ -577,8 +575,18 @@ class EditorWindow(QMainWindow):
         if selecting and len(self._session.selection) == 0 and self.copy_image():
             self.close()
 
+    def _on_auto_fit_toggled(self, on: bool) -> None:  # noqa: FBT001 — Qt signal payload
+        """Size selected text to its text, or keep its box, after finishing typing."""
+        self._canvas.editors.commit()
+        self._session.set_auto_fit(on=on, fit=Renderer.fit)
+
     def _on_style_changed(self, change: Callable[[Style], Style]) -> None:
-        """Apply a style edit to the selection and to the matching tool defaults."""
+        """Apply a style edit to the selection and to the matching tool defaults.
+
+        An open text editor is committed first, as if the bar had taken focus,
+        so the edit and the text being typed can't drift apart.
+        """
+        self._canvas.editors.commit()
         selected = self._session.selected()
         if selected:
             self._session.restyle_selected(change, Renderer.fit)

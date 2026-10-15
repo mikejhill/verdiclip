@@ -973,20 +973,32 @@ class TestTextBoxes:
         for image in (typing_new, typing_again):
             assert image.pixelColor(corner) == QtConvert.color(BLUE)
 
-    def test_auto_fit_while_editing_survives_the_commit(self, user: User) -> None:
-        """Auto-fit pressed with the editor open is kept when typing finishes."""
+    def test_bar_changes_while_editing_finish_the_typing_first(
+        self, user: User
+    ) -> None:
+        """Auto-fit or alignment pressed mid-edit commits the text, then applies."""
         user.key(Qt.Key.Key_T)
         user.drag((100, 100), (300, 220))
         user.type_text("One")
         user.key(Qt.Key.Key_Escape)
         user.click((120, 120))
-
-        self._style_action(user, "Size the box to its text").trigger()
         user.type_text(" two")
-        user.key(Qt.Key.Key_Escape)
+
+        self._style_action(user, "Center horizontally").trigger()
+
+        centered = user.window.session.document.annotations[0]
+        assert isinstance(centered, TextNote)
+        assert centered.text == "One two"
+        assert centered.style.h_align is HAlign.CENTER
+        assert user.window.canvas.editors.widget is None
+
+        user.click((120, 120))
+        user.type_text("!")
+        self._style_action(user, "Size the box to its text").trigger()
 
         note = user.window.session.document.annotations[0]
         assert isinstance(note, TextNote)
         assert note.auto_fit
-        assert note.text == "One two"
+        assert note.text == "One two!"
         assert note.rect.width < 150
+        assert user.window.canvas.editors.widget is None
