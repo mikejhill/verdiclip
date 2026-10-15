@@ -18,6 +18,10 @@ logger = logging.getLogger(__name__)
 
 SETTINGS_VERSION: Final = 1
 
+DEFAULT_FILENAME_PATTERN: Final = "{date} {time} {title}"
+# The pre-0.5 default; files that still hold it get the current default
+_LEGACY_FILENAME_PATTERN: Final = "Screenshot {date} {time}"
+
 
 class Theme(StrEnum):
     """Window color scheme."""
@@ -70,7 +74,7 @@ class OutputSettings:
     directory: Path = field(
         default_factory=lambda: Path.home() / "Pictures" / "VerdiClip"
     )
-    filename_pattern: str = "Screenshot {date} {time}"
+    filename_pattern: str = DEFAULT_FILENAME_PATTERN
     image_format: ImageFormat = ImageFormat.PNG
     jpeg_quality: int = 90
 
@@ -241,6 +245,12 @@ class SettingsCodec:
     @staticmethod
     def _migrate(raw: dict[str, JsonValue]) -> None:
         """Upgrade older settings layouts in place."""
+        output = raw.get("output")
+        if (
+            isinstance(output, dict)
+            and output.get("filename_pattern") == _LEGACY_FILENAME_PATTERN
+        ):
+            output["filename_pattern"] = DEFAULT_FILENAME_PATTERN
         capture = raw.get("capture")
         if not isinstance(capture, dict):
             return

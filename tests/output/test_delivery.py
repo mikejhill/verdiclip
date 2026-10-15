@@ -82,10 +82,12 @@ class TestImageDelivery:
         """Automatic paths use the configured directory and filename pattern."""
         delivery = ImageDelivery(output_settings)
 
-        path = delivery.auto_path(moment=datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC))
+        path = delivery.auto_path(
+            title="Notepad", moment=datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+        )
 
         assert delivery.settings == output_settings
-        assert path == output_settings.directory / "Screenshot 2026-01-02 03-04-05.png"
+        assert path == output_settings.directory / "2026-01-02 03-04-05 Notepad.png"
 
     def test_copy(
         self, qapp: QApplication, sample_image: QImage, output_settings: OutputSettings

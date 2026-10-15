@@ -238,3 +238,22 @@ class TestLegacyMigration:
             capture.copy_to_clipboard,
             capture.save_to_file,
         ) == expected
+
+    @pytest.mark.parametrize(
+        ("stored", "expected"),
+        [
+            ("Screenshot {date} {time}", "{date} {time} {title}"),
+            ("Shot {counter}", "Shot {counter}"),
+        ],
+        ids=["old-default", "custom"],
+    )
+    def test_old_default_filename_pattern_gains_window_title(
+        self, tmp_path: Path, stored: str, expected: str
+    ) -> None:
+        """The pre-0.5 default pattern becomes the current one; custom ones stay."""
+        path = tmp_path / "settings.json"
+        path.write_text(
+            json.dumps({"output": {"filename_pattern": stored}}), encoding="utf-8"
+        )
+
+        assert SettingsStore(path).load().output.filename_pattern == expected
