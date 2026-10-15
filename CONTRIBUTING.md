@@ -16,6 +16,28 @@ uv run poe check   # Must pass before you open a pull request
 3. **Look at it.** Run `uv run poe ux-snapshots` and `uv run poe ux-gallery` and review the images in both themes.
 4. **Keep the gate green.** `uv run poe check` runs formatting, lint, strict type checking (ty, every rule at error), and tests with ≥ 90% branch coverage. Don't weaken the configuration to get a pass.
 
+## Test quality
+
+Coverage shows code ran, not that a test checked it. These keep the tests honest:
+
+| Check | Where | What it catches |
+| --- | --- | --- |
+| Branch coverage ≥ 90% | `poe test`, CI | Code no test runs |
+| Diff coverage ≥ 95% | CI, pull requests | New or changed lines without tests |
+| Random test order ([pytest-randomly](https://github.com/pytest-dev/pytest-randomly)) | Every run | Tests that pass only after another test; rerun a failure with the printed `-p randomly --randomly-seed=N` |
+| Property tests ([Hypothesis](https://hypothesis.readthedocs.io/)) | `tests/test_properties.py` | Edge cases hand-picked examples miss |
+| Mutation testing ([mutmut](https://github.com/boxed/mutmut)) | CI: changed modules on pull requests, everything weekly | Code that runs under test but whose behavior no assertion checks |
+
+Run mutation testing locally on Linux or WSL (mutmut forks, so not on native Windows):
+
+```bash
+uv run --group mutation poe mutate                     # whole package
+uv run --group mutation mutmut run "verdiclip.geometry.*"   # one module
+uv run --group mutation mutmut show <mutant-name>      # what a survivor changed
+```
+
+A surviving mutant is a change no test noticed: add an assertion that fails for it, or mark the line `# pragma: no mutate` if the change is truly equivalent.
+
 ## Commit messages
 
 Commits and pull request titles follow [Conventional Commits](https://www.conventionalcommits.org/). Releases are versioned automatically from them:

@@ -118,6 +118,7 @@ test = { cmd = "pytest --cov", help = "Run tests with coverage" }
 ux = { cmd = "pytest -m ux tests/ux", help = "Run UX journey tests only" }
 ux-gallery = { cmd = "python scripts/ux_gallery.py", help = "Render key screens in light and dark themes into docs/ux/gallery for design review" }
 ux-snapshots = { cmd = "pytest -m ux tests/ux --ux-snapshots=docs/ux/snapshots", help = "Run UX journeys and save a PNG per step for review" }
+mutate = { shell = "mutmut run && mutmut results --all true > mutants/results.txt && python scripts/mutation_report.py mutants/results.txt", help = "Mutation testing: prove the tests catch bugs (Linux or WSL; run via `uv run --group mutation poe mutate`)" }
 lint-workflows = { shell = "uvx --from actionlint-py actionlint && uvx zizmor --offline .github/workflows", help = "Lint GitHub Actions workflows (actionlint + zizmor)" }
 fix = { sequence = ["format", "lint-fix"], help = "Auto-fix formatting and lint" }
 check = { sequence = ["format-check", "lint", "typecheck", "test"], help = "Run every quality gate" }
