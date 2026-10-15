@@ -118,16 +118,36 @@ test = { cmd = "pytest --cov", help = "Run tests with coverage" }
 ux = { cmd = "pytest -m ux tests/ux", help = "Run UX journey tests only" }
 ux-gallery = { cmd = "python scripts/ux_gallery.py", help = "Render key screens in light and dark themes into docs/ux/gallery for design review" }
 ux-snapshots = { cmd = "pytest -m ux tests/ux --ux-snapshots=docs/ux/snapshots", help = "Run UX journeys and save a PNG per step for review" }
+mutate = { shell = "mutmut run && mutmut results --all true > mutants/results.txt && python scripts/mutation_report.py mutants/results.txt", help = "Mutation testing: prove the tests catch bugs (Linux or WSL; run via `uv run --group mutation poe mutate`)" }
 lint-workflows = { shell = "uvx --from actionlint-py actionlint && uvx zizmor --offline .github/workflows", help = "Lint GitHub Actions workflows (actionlint + zizmor)" }
 fix = { sequence = ["format", "lint-fix"], help = "Auto-fix formatting and lint" }
 check = { sequence = ["format-check", "lint", "typecheck", "test"], help = "Run every quality gate" }
 
 [dependency-groups]
 dev = [
+    "hypothesis>=6.169.2",
     "poethepoet>=0.48.0",
     "pytest>=9.1.1",
     "pytest-cov>=7.1.0",
     "pytest-qt>=4.5.0",
+    "pytest-randomly>=5.0.0",
     "ruff>=0.16.10",
     "ty>=0.0.85",
 ]
+mutation = [
+    "mutmut>=3.8.0",
+]
+
+[tool.mutmut]
+# Mutation testing: change the code in small ways and check a test fails.
+# POSIX only (it forks); run it on Linux or WSL with `uv run poe mutate`.
+source_paths = ["src/verdiclip/"]
+pytest_add_cli_args_test_selection = ["tests/"]
+# tests.mutation_support loads before any test imports verdiclip; see its docstring
+pytest_add_cli_args = [
+    "-p", "tests.mutation_support", "-p", "no:randomly", "-p", "no:cacheprovider",
+]
+mutate_only_covered_lines = true
+# Run each pytest session in a fresh fork of a server that never ran Qt: a
+# QApplication left over from an earlier session crashed CI runners
+process_isolation = "forkserver"

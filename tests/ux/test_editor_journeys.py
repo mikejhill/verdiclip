@@ -602,6 +602,9 @@ class TestPanning:
         viewport = large_user.window.canvas.viewport()
         spot = QPoint(300, 200)
         expected = large_user.window.canvas.to_image(QPointF(spot))
+        # Start elsewhere: Qt sends no move event if an earlier test left the
+        # pointer on ``spot`` already
+        QTest.mouseMove(viewport, spot + QPoint(40, 40))
 
         QTest.mouseMove(viewport, spot)
 

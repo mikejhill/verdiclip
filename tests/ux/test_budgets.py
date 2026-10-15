@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import statistics
 from collections.abc import Callable
 
@@ -26,6 +27,21 @@ from verdiclip.settings import OutputSettings
 pytestmark = [pytest.mark.ux, pytest.mark.ux_budget]
 
 UHD = (3840, 2160)
+
+
+@pytest.fixture(autouse=True)
+def warm_and_settled(open_editor: Callable[[QImage], User]) -> None:
+    """Pay one-time costs first, so a budget never depends on test order.
+
+    The first editor in a process loads Qt's fonts and styles (seconds on
+    Windows), and earlier tests' leftover images can be collected mid-timing.
+    A running VerdiClip has paid the first already; the budgets are per
+    capture, so a small editor opens and closes before each, then garbage
+    is collected.
+    """
+    warm = open_editor(QImage(64, 48, QImage.Format.Format_RGB32))
+    warm.window.close()
+    gc.collect()
 
 
 @pytest.fixture
