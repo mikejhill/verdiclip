@@ -111,7 +111,7 @@ class TestShortcutRegistration:
         own = sample(tmp_path).target
         target = {
             "same": own,
-            "same_folder": own.with_name("verdiclip-gui.exe"),
+            "same_folder": own.with_name("pythonw.exe"),
             "gone": tmp_path / "gone.exe",
         }[previous]
         backend.files[registration.path] = replace(

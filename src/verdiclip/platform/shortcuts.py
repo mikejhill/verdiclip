@@ -299,8 +299,9 @@ class ShortcutRegistration:
 
         Launching from a second checkout (a worktree or dev copy) must not take
         over the installed shortcut, but a missing shortcut, one for this same
-        environment (any program in the target's folder, so switching launchers
-        still applies), or one whose program is gone (a moved install) is
+        environment (any program in the target's folder, so moving between
+        ``python.exe`` and ``pythonw.exe`` still applies), or one whose program
+        is gone (a moved install) is
         rewritten. Returns whether it was written.
         """
         try:
