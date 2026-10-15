@@ -117,12 +117,12 @@ class AppController(QObject):
         self._tray.show()
         self._apply_hotkeys()
         # Re-assert Windows registrations so they survive moved installs and
-        # registrations that were lost; shortcuts that start another existing
+        # registrations that were lost; entries that start another existing
         # install (the user's main checkout, seen from a dev copy) are kept
         if self._settings.startup.run_at_login:
             self._apply_startup(keep_others=True)
         if self._settings.integration.open_with:
-            self._apply_open_with()
+            self._apply_open_with(keep_others=True)
         if self._settings.integration.start_menu:
             self._apply_start_menu(keep_others=True)
         logger.info("%s %s ready", APP_NAME, VERSION)
@@ -369,13 +369,19 @@ class AppController(QObject):
         except AppError as err:
             self._notify("Could not change startup setting", str(err), warning=True)
 
-    def _apply_open_with(self) -> None:
-        """Add or remove VerdiClip from Explorer's Open with menu."""
+    def _apply_open_with(self, *, keep_others: bool = False) -> None:
+        """Add or remove VerdiClip from Explorer's Open with menu.
+
+        ``keep_others`` leaves a registration that runs another existing install.
+        """
         try:
             if self._settings.integration.open_with:
-                self._associations.register(
-                    f'{self._launch().command_line} open "%1"', str(self._brand_icon())
-                )
+                command = f'{self._launch().command_line} open "%1"'
+                icon = str(self._brand_icon())
+                if keep_others:
+                    self._associations.refresh(command, icon)
+                else:
+                    self._associations.register(command, icon)
             else:
                 self._associations.unregister()
         except AppError as err:

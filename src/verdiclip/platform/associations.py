@@ -12,6 +12,7 @@ import ctypes
 import logging
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Final, Protocol
 
 if sys.platform == "win32":
@@ -43,6 +44,13 @@ _CAPABILITIES_KEY: Final = rf"{_APP_KEY}\Capabilities"
 _REGISTERED_APPS_KEY: Final = r"Software\RegisteredApplications"
 _SHCNE_ASSOCCHANGED: Final = 0x08000000
 _SHCNF_IDLIST: Final = 0x0000
+
+
+def _program(command: str) -> Path:
+    """Return the program a command line runs (first token, quotes removed)."""
+    if command.startswith('"'):
+        return Path(command[1:].partition('"')[0])
+    return Path(command.partition(" ")[0])
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,6 +211,27 @@ class FileAssociations:
             msg = "Could not add VerdiClip to Open with"
             raise PlatformError(msg) from err
         logger.info("Registered %s for %s", PROG_ID, ", ".join(EXTENSIONS))
+
+    def refresh(self, command: str, icon: str) -> bool:
+        """Register unless another install that still exists is registered.
+
+        Same rule as ``ShortcutRegistration.refresh``: a missing registration,
+        one for a program in the same folder as ``command``'s, or one whose
+        program is gone is (re)written; another copy of the app (a development
+        checkout, say) does not take over the installed one. Returns whether
+        the registration was written.
+
+        Raises:
+            PlatformError: If the registry cannot be read or written.
+        """
+        current = self.registered_command()
+        if current is not None:
+            program = _program(current)
+            if program.parent != _program(command).parent and program.is_file():
+                logger.info("Leaving Open with: it runs %s", program)
+                return False
+        self.register(command, icon)
+        return True
 
     def unregister(self) -> None:
         """Remove everything ``register`` wrote; absent entries are fine.
