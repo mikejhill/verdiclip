@@ -6,7 +6,7 @@ from dataclasses import replace
 
 import pytest
 
-from verdiclip.document.annotations import RectangleShape
+from verdiclip.document.annotations import Annotation, RectangleShape, TextNote
 from verdiclip.document.commands import AddAnnotations
 from verdiclip.document.style import HIGHLIGHT_YELLOW, RED, WHITE, Style
 from verdiclip.editor.session import EditorSession, Selection, ToolId, ToolStyles
@@ -51,6 +51,7 @@ class TestToolStyles:
         assert counter.fill == RED
         assert styles.get(ToolId.HIGHLIGHT).fill == HIGHLIGHT_YELLOW
         assert styles.get(ToolId.OBFUSCATE).width == 12
+        assert styles.get(ToolId.TEXT).fill == WHITE
         changed = Style(width=8)
         styles.set(ToolId.RECTANGLE, changed)
         assert styles.get(ToolId.RECTANGLE) == changed
@@ -170,3 +171,47 @@ class TestEditorSession:
             session.paste(text)
 
         assert not session.history.can_undo
+
+
+class TestTextSizing:
+    """Auto-fit text follows its style; fixed text keeps its box."""
+
+    @staticmethod
+    def _fit(annotation: Annotation) -> Annotation:
+        """Size auto-fit notes to 10 px per character, like a measuring renderer."""
+        if isinstance(annotation, TextNote) and annotation.auto_fit:
+            return annotation.fitted(10.0 * len(annotation.text), 20)
+        return annotation
+
+    def test_restyle_refits_only_auto_fit_text(self, session: EditorSession) -> None:
+        """A restyle with a fitter re-measures auto-fit notes in the same step."""
+        auto = TextNote(rect=Rect(0, 0, 1, 1), text="abc")
+        fixed = TextNote(rect=Rect(0, 50, 99, 99), text="abc", auto_fit=False)
+        session.history.execute(AddAnnotations([auto, fixed], "Add"))
+        session.selection.set([auto.id, fixed.id])
+
+        assert session.restyle_selected(lambda s: replace(s, bold=True), self._fit)
+
+        refit, kept = session.document.annotations
+        assert refit.bounds == Rect(0, 0, 30, 20)
+        assert kept.bounds == fixed.rect
+        assert session.history.undo_text == "Change style"
+
+    def test_set_auto_fit(self, session: EditorSession) -> None:
+        """Auto-fit can be switched off and back on for selected text only."""
+        note = TextNote(rect=Rect(5, 5, 200, 100), text="ab", auto_fit=False)
+        box = RectangleShape(rect=Rect(0, 0, 10, 10))
+        session.history.execute(AddAnnotations([note, box], "Add"))
+        session.selection.set([note.id, box.id])
+
+        assert session.set_auto_fit(on=True, fit=self._fit)
+        fitted = session.document.annotations[0]
+        assert isinstance(fitted, TextNote)
+        assert fitted.auto_fit
+        assert fitted.rect == Rect(5, 5, 20, 20)
+        assert session.history.undo_text == "Auto-fit text"
+        assert not session.set_auto_fit(on=True, fit=self._fit)
+
+        assert session.set_auto_fit(on=False, fit=self._fit)
+        assert session.history.undo_text == "Fix text size"
+        assert session.document.annotations[1] == box

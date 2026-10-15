@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from verdiclip.document.annotations import (
@@ -19,7 +21,7 @@ from verdiclip.document.annotations import (
     RectangleShape,
     TextNote,
 )
-from verdiclip.document.style import RED, Style
+from verdiclip.document.style import BLACK, RED, Style
 from verdiclip.geometry import Point, Rect
 
 
@@ -259,7 +261,7 @@ class TestTextNote:
     """Text content and immutable geometry."""
 
     def test_edit(self) -> None:
-        """Editing text installs the measured box without resize handles."""
+        """Editing text installs the new box; hit testing follows the box."""
         note = TextNote(rect=Rect(0, 0, 20, 20), text="old")
 
         edited = note.with_text("new", Rect(1, 2, 30, 40))
@@ -268,10 +270,41 @@ class TestTextNote:
         assert edited.bounds == Rect(1, 2, 30, 40)
         assert note.hit_test(Point(10, 10), 0)
         assert not note.hit_test(Point(50, 50), 0)
-        assert note.handles() == {}
-        assert (
-            note.with_handle_moved(HandleRole.END, Point(1, 1), constrain=False) is note
+
+    def test_resizing_fixes_the_size(self) -> None:
+        """Dragging a handle resizes the box and stops it fitting its text."""
+        note = TextNote(rect=Rect(0, 0, 20, 20), text="t")
+
+        resized = note.with_handle_moved(
+            HandleRole.BOTTOM_RIGHT, Point(50, 30), constrain=False
         )
+
+        assert note.handles() == Geometry.box_handles(note.rect)
+        assert resized.rect == Rect(0, 0, 50, 30)
+        assert not resized.auto_fit
+        assert note.auto_fit
+
+    def test_auto_fit_toggle_and_fitting(self) -> None:
+        """Fitting sizes the box at the same corner and turns auto-fit back on."""
+        fixed = TextNote(rect=Rect(5, 6, 100, 100), text="t", auto_fit=False)
+
+        fitted = fixed.fitted(30, 12)
+
+        assert fitted.rect == Rect(5, 6, 30, 12)
+        assert fitted.auto_fit
+        assert not fitted.with_auto_fit(on=False).auto_fit
+        assert fixed.with_auto_fit(on=True).rect == fixed.rect
+
+    def test_outline_grows_bounds_and_hit_area(self) -> None:
+        """An outline is drawn centered on the edge, so half of it is outside."""
+        style = Style(outline=BLACK, width=10)
+        note = TextNote(rect=Rect(0, 0, 20, 20), text="t", style=style)
+
+        assert note.has_outline
+        assert note.bounds == Rect(-5, -5, 30, 30)
+        assert note.hit_test(Point(-4, -4), 0)
+        assert not replace(note, style=Style(width=10)).hit_test(Point(-4, -4), 0)
+        assert note.geometry_json()["auto_fit"] is True
 
 
 class TestCounterMarker:

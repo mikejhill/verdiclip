@@ -3,18 +3,29 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QMimeData, QPoint, QPointF, Qt, QUrl
-from PySide6.QtGui import QDragEnterEvent, QDropEvent, QImage, QWheelEvent
+from PySide6.QtGui import (
+    QAction,
+    QDragEnterEvent,
+    QDropEvent,
+    QImage,
+    QWheelEvent,
+)
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMessageBox, QPlainTextEdit, QSpinBox
 from pytestqt.qtbot import QtBot
 from tests.editor.test_close_prompt import REAL_ASK, answer_when_open
 from tests.ux.conftest import NO_MODS, Pixels, User
 
+from verdiclip.document.annotations import TextNote
+from verdiclip.document.style import BLACK, WHITE, Color, HAlign, VAlign
 from verdiclip.editor.close_prompt import CloseChoice, ClosePrompt
+from verdiclip.editor.session import ToolId
+from verdiclip.render.renderer import QtConvert, Renderer
 from verdiclip.settings import OutputSettings
 
 pytestmark = pytest.mark.ux
@@ -823,3 +834,141 @@ class TestClosePromptKeyboard:
         assert len(user.window.session.document.annotations) == 1
         # Teardown closes the editor; don't let the real prompt block it
         user.window.session.history.mark_delivered()
+
+
+BLUE = Color(0, 0, 255)
+
+
+class TestTextBoxes:
+    """Text boxes: auto-fit or fixed size, outline, alignment, and shadow."""
+
+    @staticmethod
+    def _style_action(user: User, tip: str) -> QAction:
+        """Return the style-bar toggle with tooltip ``tip``."""
+        return next(a for a in user.window.findChildren(QAction) if a.toolTip() == tip)
+
+    def test_click_fits_text_and_drag_keeps_the_box(self, user: User) -> None:
+        """A click makes a box that fits; a drag makes a box of the dragged size."""
+        user.key(Qt.Key.Key_T)
+        user.click((40, 40))
+        user.type_text("Fit")
+        user.key(Qt.Key.Key_Escape)
+        user.drag((150, 100), (330, 220))
+        user.type_text("Fixed")
+        user.snap("typing-fixed")
+        user.key(Qt.Key.Key_Escape)
+
+        fitted, fixed = user.window.session.document.annotations
+        assert isinstance(fitted, TextNote)
+        assert isinstance(fixed, TextNote)
+        assert fitted.auto_fit
+        assert fitted.rect.width < 100
+        assert not fixed.auto_fit
+        assert (fixed.rect.width, fixed.rect.height) == pytest.approx((180, 120), abs=1)
+        assert fixed.text == "Fixed"
+        assert fitted.style.fill == WHITE
+        assert Pixels.is_white(Pixels.at(user.window.flattened(), 320, 210))
+
+    def test_alignment_shows_only_for_fixed_boxes_and_auto_fit_restores(
+        self, user: User
+    ) -> None:
+        """Fixed boxes offer alignment; Auto-fit shrinks the box back to its text."""
+        user.key(Qt.Key.Key_T)
+        user.click((40, 40))
+        user.type_text("Hello")
+        user.key(Qt.Key.Key_Escape)
+        center = self._style_action(user, "Center horizontally")
+        auto_fit = self._style_action(user, "Size the box to its text")
+        assert auto_fit.isVisible()
+        assert auto_fit.isChecked()
+        assert not center.isVisible()
+
+        auto_fit.trigger()
+        assert center.isVisible()
+        center.trigger()
+        self._style_action(user, "Align bottom").trigger()
+        note = user.window.session.document.annotations[0]
+        assert isinstance(note, TextNote)
+        assert not note.auto_fit
+        assert (note.style.h_align, note.style.v_align) == (
+            HAlign.CENTER,
+            VAlign.BOTTOM,
+        )
+
+        auto_fit.trigger()
+        refit = user.window.session.document.annotations[0]
+        assert isinstance(refit, TextNote)
+        assert refit.auto_fit
+        assert not center.isVisible()
+        assert user.window.action("undo").text().replace("&", "") == (
+            "Undo Auto-fit text"
+        )
+
+    def test_resizing_a_box_fixes_its_size(self, user: User) -> None:
+        """Dragging a handle of selected text resizes it and turns off auto-fit."""
+        user.key(Qt.Key.Key_T)
+        user.click((40, 40))
+        user.type_text("Grow")
+        user.key(Qt.Key.Key_Escape)
+        note = user.window.session.document.annotations[0]
+        assert isinstance(note, TextNote)
+        corner = note.rect.bottom_right
+
+        user.drag((corner.x, corner.y), (corner.x + 120, corner.y + 60))
+
+        resized = user.window.session.document.annotations[0]
+        assert isinstance(resized, TextNote)
+        assert not resized.auto_fit
+        assert resized.rect.width == pytest.approx(note.rect.width + 120, abs=1)
+
+    def test_outline_and_shadow_restyle_and_refit(self, user: User) -> None:
+        """An outline widens the auto-fit box; shadow toggles for text and boxes."""
+        user.key(Qt.Key.Key_T)
+        user.click((40, 40))
+        user.type_text("Edge")
+        user.key(Qt.Key.Key_Escape)
+        before = user.window.session.document.annotations[0]
+        assert isinstance(before, TextNote)
+
+        user.window.session.restyle_selected(
+            lambda s: replace(s, outline=BLACK, width=10), Renderer.fit
+        )
+        self._style_action(user, "Drop shadow").trigger()
+
+        after = user.window.session.document.annotations[0]
+        assert isinstance(after, TextNote)
+        assert after.style.shadow
+        assert after.rect.width == pytest.approx(before.rect.width + 10)
+        user.key(Qt.Key.Key_R)
+        user.key(Qt.Key.Key_Escape)
+        assert self._style_action(user, "Drop shadow").isVisible()
+        user.key(Qt.Key.Key_E)
+        assert not self._style_action(user, "Drop shadow").isVisible()
+
+    def test_editing_a_fixed_box_keeps_its_size(self, user: User) -> None:
+        """The box shows while typing; re-editing changes the words, not the box."""
+        styles = user.window.session.styles
+        styles.set(ToolId.TEXT, replace(styles.get(ToolId.TEXT), fill=BLUE))
+        user.key(Qt.Key.Key_T)
+        user.drag((100, 100), (260, 200))
+        user.type_text("One")
+        typing_new = user.window.canvas.viewport().grab().toImage()
+        user.key(Qt.Key.Key_Escape)
+        added = user.window.session.document.annotations[0]
+        assert isinstance(added, TextNote)
+
+        user.click((120, 120))
+        editor = QApplication.focusWidget()
+        assert editor is not None
+        assert not isinstance(editor, QPlainTextEdit)
+        user.type_text(" two")
+        typing_again = user.window.canvas.viewport().grab().toImage()
+        user.key(Qt.Key.Key_Escape)
+
+        note = user.window.session.document.annotations[0]
+        assert isinstance(note, TextNote)
+        assert note.text == "One two"
+        assert note.rect == added.rect
+        corner = user.view_point(250, 195)
+        for image in (typing_new, typing_again):
+            assert image.pixelColor(corner) == QtConvert.color(BLUE)

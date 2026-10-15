@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, replace
+from enum import StrEnum
 from typing import Final, Self
 
 _HEX_PATTERN: Final = re.compile(r"^#([0-9a-fA-F]{6})([0-9a-fA-F]{2})?$")
@@ -59,12 +60,29 @@ BLACK: Final = Color(0, 0, 0)
 HIGHLIGHT_YELLOW: Final = Color(0xFF, 0xEB, 0x3B, 0x80)
 
 
+class HAlign(StrEnum):
+    """Horizontal text alignment inside a box."""
+
+    LEFT = "left"
+    CENTER = "center"
+    RIGHT = "right"
+
+
+class VAlign(StrEnum):
+    """Vertical text alignment inside a box."""
+
+    TOP = "top"
+    MIDDLE = "middle"
+    BOTTOM = "bottom"
+
+
 @dataclass(frozen=True, slots=True)
 class Style:
     """How an annotation is drawn.
 
     ``width`` is the stroke width in image pixels; for obfuscation it is the
-    pixelation block size.
+    pixelation block size, and for text the outline width. ``outline`` is the
+    border color of text boxes (transparent for none).
     """
 
     stroke: Color = RED
@@ -74,6 +92,10 @@ class Style:
     font_size: int = 16
     bold: bool = False
     italic: bool = False
+    outline: Color = TRANSPARENT
+    shadow: bool = False
+    h_align: HAlign = HAlign.LEFT
+    v_align: VAlign = VAlign.TOP
 
     def __post_init__(self) -> None:
         """Reject non-positive sizes."""

@@ -66,7 +66,9 @@ so it can be adjusted immediately; the tool stays active for the next mark.
 | UX-TL-02 | Rectangle / Ellipse drag, `Shift` held | A square / circle. Rectangle corners are sharp (miter joins) at every stroke width. |
 | UX-TL-03 | Line / Arrow drag, `Shift` held | Angle snaps to 45° steps, during creation and when dragging an endpoint later. |
 | UX-TL-04 | Arrow at any width | The head is a pointed triangle sized proportionally to the width; the shaft never covers the tip. |
-| UX-TL-05 | Text: click | A text box opens for typing at the click point with the current font and stroke color. `Backspace`/`Delete` edit characters. `Esc` or clicking elsewhere commits; empty text is discarded. Double-click existing text to edit it. |
+| UX-TL-05 | Text: click | A text box opens for typing at the click point with the current font and stroke color, on a white background by default. The box auto-fits: it grows and shrinks with the text and its font. `Backspace`/`Delete` edit characters. `Esc` or clicking elsewhere commits; empty text is discarded. Double-click existing text to edit it. |
+| UX-TL-14 | Text: drag | A fixed-size text box of the dragged size opens for typing; text wraps inside it. Dragging a handle of selected text also fixes its size. With fixed text selected, the style bar offers horizontal (left, center, right) and vertical (top, middle, bottom) alignment, and **Auto-fit** sizes the box back to its text. |
+| UX-TL-15 | Text outline and shadows | Text boxes take an outline color (none by default) and width. Text boxes and rectangles have a **Shadow** toggle that draws a soft drop shadow below and to the right; text with no background or outline shadows its letters. |
 | UX-TL-06 | Counter: click | A filled circle with the next number. Next number = last placed/edited value + 1; if that value is not a number, start at 1. |
 | UX-TL-07 | Counter: double-click an existing counter | An inline editor opens to change its label (any text). Other counters are unaffected. |
 | UX-TL-08 | Highlight drag | A yellow, 50%-opacity rectangle that multiplies with the image (text underneath stays readable). |

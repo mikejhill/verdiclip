@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import replace
 from enum import StrEnum
 from typing import cast
 
-from verdiclip.document.annotations import Annotation, JsonValue
+from verdiclip.document.annotations import Annotation, JsonValue, TextNote
 from verdiclip.document.codec import AnnotationCodec
 from verdiclip.document.commands import (
     AddAnnotations,
@@ -29,6 +29,7 @@ PASTE_OFFSET = 10.0
 
 type SelectionListener = Callable[[], None]
 type StyleListener = Callable[["ToolId", Style], None]
+type Fitter = Callable[[Annotation], Annotation]
 
 
 class ToolId(StrEnum):
@@ -115,6 +116,7 @@ class ToolStyles:
         self._styles[ToolId.COUNTER] = replace(
             base, fill=settings.stroke_color, stroke=WHITE
         )
+        self._styles[ToolId.TEXT] = replace(base, fill=WHITE)
         self._styles[ToolId.HIGHLIGHT] = replace(base, fill=HIGHLIGHT_YELLOW)
         self._styles[ToolId.OBFUSCATE] = replace(base, width=12)
         self._styles.update(remembered or {})
@@ -205,19 +207,26 @@ class EditorSession:
         )
         return True
 
-    def restyle_selected(self, change: Callable[[Style], Style]) -> bool:
-        """Apply ``change`` to every selected annotation's style."""
+    def restyle_selected(
+        self, change: Callable[[Style], Style], fit: Fitter | None = None
+    ) -> bool:
+        """Apply ``change`` to every selected annotation's style.
+
+        ``fit`` re-measures annotations whose size follows their style, such
+        as auto-fit text after a font change.
+        """
         before = self.selected()
         after = [a.with_style(change(a.style)) for a in before]
-        changed = [(b, a) for b, a in zip(before, after, strict=True) if b != a]
-        if not changed:
-            return False
-        self._history.execute(
-            ReplaceAnnotations(
-                [b for b, _ in changed], [a for _, a in changed], "Change style"
-            )
-        )
-        return True
+        if fit is not None:
+            after = [fit(a) for a in after]
+        return self._replace_changed(before, after, "Change style")
+
+    def set_auto_fit(self, *, on: bool, fit: Fitter) -> bool:
+        """Size selected text boxes to their text (``on``) or keep their size."""
+        before = [a for a in self.selected() if isinstance(a, TextNote)]
+        after = [fit(a.with_auto_fit(on=on)) for a in before]
+        label = "Auto-fit text" if on else "Fix text size"
+        return self._replace_changed(before, after, label)
 
     def restack_selected(self, *, forward: bool) -> bool:
         """Move the selection one step up (``forward``) or down the stack."""
@@ -266,6 +275,18 @@ class EditorSession:
         return True
 
     # Internals
+
+    def _replace_changed(
+        self, before: Sequence[Annotation], after: Sequence[Annotation], label: str
+    ) -> bool:
+        """Record the pairs that differ as one undo step; return True if any did."""
+        changed = [(b, a) for b, a in zip(before, after, strict=True) if b != a]
+        if not changed:
+            return False
+        self._history.execute(
+            ReplaceAnnotations([b for b, _ in changed], [a for _, a in changed], label)
+        )
+        return True
 
     def _prune_selection(self) -> None:
         """Drop selected ids that are no longer in the document."""

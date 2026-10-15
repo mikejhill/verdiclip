@@ -18,6 +18,7 @@ from PySide6.QtGui import (
     QImage,
     QPainter,
     QPainterPath,
+    QPainterPathStroker,
     QPen,
     QPolygonF,
 )
@@ -36,12 +37,26 @@ from verdiclip.document.annotations import (
     TextNote,
 )
 from verdiclip.document.document import Document
-from verdiclip.document.style import Color, Style
+from verdiclip.document.style import Color, HAlign, Style, VAlign
 from verdiclip.geometry import Point, Rect
 
 logger = logging.getLogger(__name__)
 
 TEXT_PADDING: Final = 4.0
+SHADOW_OFFSET: Final = 4.0
+# Concentric strokes, widest first, that fade the shadow's edge
+_SHADOW_SPREADS: Final = (8.0, 5.0, 2.0)
+_SHADOW_ALPHA: Final = 28
+_H_ALIGN: Final = {
+    HAlign.LEFT: Qt.AlignmentFlag.AlignLeft,
+    HAlign.CENTER: Qt.AlignmentFlag.AlignHCenter,
+    HAlign.RIGHT: Qt.AlignmentFlag.AlignRight,
+}
+_V_ALIGN: Final = {
+    VAlign.TOP: Qt.AlignmentFlag.AlignTop,
+    VAlign.MIDDLE: Qt.AlignmentFlag.AlignVCenter,
+    VAlign.BOTTOM: Qt.AlignmentFlag.AlignBottom,
+}
 _PIXELATE_CACHE_SIZE: Final = 64
 # Fraction trimmed from each side so ellipse labels fit the inscribed rectangle
 ELLIPSE_LABEL_INSET: Final = (1 - 1 / math.sqrt(2)) / 2
@@ -121,13 +136,37 @@ class Renderer:
             painter.restore()
 
     @staticmethod
+    def text_inset(style: Style) -> float:
+        """Return the space between a text box's edge and its text."""
+        outline = 0.0 if style.outline.is_transparent else style.width / 2
+        return TEXT_PADDING + outline
+
+    @staticmethod
     def measure_text(text: str, style: Style) -> tuple[float, float]:
         """Return the padded width and height of ``text`` drawn in ``style``."""
         metrics = QFontMetricsF(QtConvert.font(style))
         lines = text.split("\n") or [""]
         width = max(metrics.horizontalAdvance(line) for line in lines)
         height = metrics.lineSpacing() * len(lines)
-        return width + 2 * TEXT_PADDING, height + 2 * TEXT_PADDING
+        inset = Renderer.text_inset(style)
+        return width + 2 * inset, height + 2 * inset
+
+    @staticmethod
+    def fit(annotation: Annotation) -> Annotation:
+        """Return ``annotation`` resized to its text when it is auto-fit text."""
+        if isinstance(annotation, TextNote) and annotation.auto_fit:
+            return annotation.fitted(
+                *Renderer.measure_text(annotation.text, annotation.style)
+            )
+        return annotation
+
+    @staticmethod
+    def text_flags(style: Style, *, wrap: bool) -> int:
+        """Return the Qt alignment flags for text drawn in ``style``."""
+        flags = _H_ALIGN[style.h_align] | _V_ALIGN[style.v_align]
+        if wrap:
+            flags |= Qt.TextFlag.TextWordWrap
+        return int(flags.value)
 
     # Dispatch
 
@@ -171,13 +210,13 @@ class Renderer:
 
     def _paint_rectangle(self, painter: QPainter, shape: RectangleShape) -> None:
         """Paint a rectangle with sharp (miter) corners."""
-        painter.setPen(
-            self._stroke_pen(
-                shape.style,
-                cap=Qt.PenCapStyle.SquareCap,
-                join=Qt.PenJoinStyle.MiterJoin,
-            )
+        pen = self._stroke_pen(
+            shape.style, cap=Qt.PenCapStyle.SquareCap, join=Qt.PenJoinStyle.MiterJoin
         )
+        if shape.style.shadow:
+            filled = not shape.style.fill.is_transparent
+            self._paint_shadow(painter, self._box_path(shape.rect, pen, filled=filled))
+        painter.setPen(pen)
         painter.setBrush(QBrush(QtConvert.color(shape.style.fill)))
         painter.drawRect(QtConvert.rect(shape.rect))
         self._paint_label(painter, shape)
@@ -193,6 +232,30 @@ class Renderer:
         painter.drawEllipse(QtConvert.rect(shape.rect))
         # Keep ellipse labels inside the curve: use the inscribed rectangle
         self._paint_label(painter, shape, inset=ELLIPSE_LABEL_INSET)
+
+    @staticmethod
+    def _box_path(rect: Rect, pen: QPen, *, filled: bool) -> QPainterPath:
+        """Return the area a box covers: all of it, or just its outline."""
+        path = QPainterPath()
+        path.addRect(QtConvert.rect(rect))
+        if filled:
+            return path
+        stroker = QPainterPathStroker(pen)
+        return stroker.createStroke(path)
+
+    @staticmethod
+    def _paint_shadow(painter: QPainter, path: QPainterPath) -> None:
+        """Paint a soft drop shadow of ``path`` below and to the right."""
+        painter.save()
+        painter.translate(SHADOW_OFFSET, SHADOW_OFFSET)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        color = QColor(0, 0, 0, _SHADOW_ALPHA)
+        for spread in _SHADOW_SPREADS:
+            pen = QPen(color, spread)
+            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            painter.strokePath(path, pen)
+        painter.fillPath(path, color)
+        painter.restore()
 
     @staticmethod
     def _paint_highlight(painter: QPainter, shape: HighlightShape) -> None:
@@ -293,17 +356,41 @@ class Renderer:
         painter.drawText(area, int(flags.value), box.text)
         painter.restore()
 
-    @staticmethod
-    def _paint_text(painter: QPainter, note: TextNote) -> None:
-        """Paint the text box background (if any) and its text."""
+    def _paint_text(self, painter: QPainter, note: TextNote) -> None:
+        """Paint the text box shadow, background, outline, and text."""
+        style = note.style
+        pen = QPen(QtConvert.color(style.outline), style.width)
+        pen.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
+        filled = not style.fill.is_transparent
+        if style.shadow and (filled or note.has_outline):
+            self._paint_shadow(painter, self._box_path(note.rect, pen, filled=filled))
+        elif style.shadow:
+            # A bare caption casts the shadow of its letters
+            shadow = QColor(0, 0, 0, 3 * _SHADOW_ALPHA)
+            self._draw_text(painter, note, shadow, offset=2.0)
         box = QtConvert.rect(note.rect)
-        if not note.style.fill.is_transparent:
-            painter.fillRect(box, QtConvert.color(note.style.fill))
+        if filled:
+            painter.fillRect(box, QtConvert.color(style.fill))
+        if note.has_outline:
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(box)
+        self._draw_text(painter, note, QtConvert.color(style.stroke))
+
+    def _draw_text(
+        self, painter: QPainter, note: TextNote, color: QColor, offset: float = 0.0
+    ) -> None:
+        """Draw a note's text; fixed-size boxes wrap and clip it to the box."""
+        inset = self.text_inset(note.style)
+        area = note.rect.adjusted(-inset).translated(Point(offset, offset))
+        painter.save()
+        if not note.auto_fit:
+            painter.setClipRect(QtConvert.rect(note.rect))
         painter.setFont(QtConvert.font(note.style))
-        painter.setPen(QtConvert.color(note.style.stroke))
-        inner = box.adjusted(TEXT_PADDING, TEXT_PADDING, -TEXT_PADDING, -TEXT_PADDING)
-        flags = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
-        painter.drawText(inner, int(flags.value), note.text)
+        painter.setPen(color)
+        flags = self.text_flags(note.style, wrap=not note.auto_fit)
+        painter.drawText(QtConvert.rect(area), flags, note.text)
+        painter.restore()
 
     @staticmethod
     def _paint_counter(painter: QPainter, marker: CounterMarker) -> None:

@@ -30,6 +30,7 @@ from verdiclip.editor.session import EditorSession, ToolId
 from verdiclip.geometry import Point, Rect
 
 MIN_DRAG: Final = 3.0
+MIN_TEXT_BOX: Final = 8.0  # A smaller text drag counts as a click
 HANDLE_REACH: Final = 2.0  # Handles are grabbable at this multiple of the tolerance
 
 
@@ -88,8 +89,13 @@ class Pointer:
 class ToolHost(Protocol):
     """UI services a tool may request from the editor."""
 
-    def edit_text(self, note: TextNote | None, at: Point) -> None:
-        """Open the inline text editor for ``note`` (or a new note at ``at``)."""
+    def edit_text(
+        self, note: TextNote | None, at: Point, box: Rect | None = None
+    ) -> None:
+        """Open the inline text editor for ``note`` (or a new note at ``at``).
+
+        A new note with ``box`` keeps that size instead of fitting its text.
+        """
 
     def edit_counter(self, marker: CounterMarker) -> None:
         """Open the inline label editor for ``marker``."""
@@ -580,34 +586,78 @@ class FreehandTool(DrawingTool):
 
 
 class TextTool(Tool):
-    """Place and edit text."""
+    """Place and edit text: click for a box that fits, drag for a fixed box."""
 
     tool_id = ToolId.TEXT
     label = "Text"
     shortcut = "T"
-    hint = "Click to type; click existing text to edit it; Esc to finish"
+    hint = (
+        "Click to type, or drag to draw a text box; click existing text to edit"
+        " it; Esc to finish"
+    )
+
+    def __init__(self, session: EditorSession, host: ToolHost) -> None:
+        super().__init__(session, host)
+        self._handles = HandleDrag(session)
+        self._origin: Point | None = None
+        self._frame: Rect | None = None
+
+    @property
+    @override
+    def frame(self) -> Rect | None:
+        """Return the box being dragged out."""
+        return self._frame
 
     @override
     def press(self, pointer: Pointer) -> None:
-        """Edit the text under the pointer or start a new note."""
+        """Resize the selection, edit the text under the pointer, or start a box."""
+        if self._handles.begin(pointer):
+            return
         hit = self._session.document.annotation_at(pointer.pos, pointer.tolerance)
         if isinstance(hit, TextNote):
             self._host.edit_text(hit, hit.rect.top_left)
-        else:
-            self._host.edit_text(None, pointer.pos)
+            return
+        self._origin = pointer.pos
 
     @override
     def move(self, pointer: Pointer) -> None:
-        """Ignore motion."""
+        """Continue the handle drag or the box."""
+        if self._handles.active:
+            self._handles.update(pointer)
+        elif self._origin is not None:
+            self._frame = Rect.from_points(self._origin, pointer.pos)
 
     @override
     def release(self, pointer: Pointer) -> None:
-        """Ignore release."""
+        """Open the editor for a fixed box if dragged, else a box that fits."""
+        if self._handles.active:
+            self._handles.end()
+            return
+        origin = self._origin
+        self._origin = None
+        self._frame = None
+        if origin is None:
+            return
+        box = Rect.from_points(origin, pointer.pos)
+        if box.width >= MIN_TEXT_BOX and box.height >= MIN_TEXT_BOX:
+            self._host.edit_text(None, box.top_left, box)
+        else:
+            self._host.edit_text(None, origin)
 
     @override
     def cursor(self, pointer: Pointer) -> CursorKind:
-        """Show a text cursor."""
-        return CursorKind.IBEAM
+        """Show resize cursors over handles of the selection, else a text cursor."""
+        handle = self._handles.handle_at(pointer)
+        return HANDLE_CURSORS[handle[1]] if handle is not None else CursorKind.IBEAM
+
+    @override
+    def cancel(self) -> bool:
+        """Abandon the box being dragged."""
+        if self._origin is None:
+            return False
+        self._origin = None
+        self._frame = None
+        return True
 
 
 class CounterTool(Tool):

@@ -19,6 +19,7 @@ from verdiclip.document.annotations import (
     TextNote,
 )
 from verdiclip.document.codec import AnnotationCodec
+from verdiclip.document.style import BLACK, HAlign, Style, VAlign
 from verdiclip.exceptions import CodecError
 from verdiclip.geometry import Point, Rect
 
@@ -37,6 +38,17 @@ class TestAnnotationCodec:
             ArrowShape(start=Point(1, 2), end=Point(3, 4)),
             FreehandShape(points=(Point(1, 2),)),
             TextNote(rect=Rect(1, 2, 30, 40), text="æ—¥æœ¬èªž\ntext"),
+            TextNote(
+                rect=Rect(1, 2, 30, 40),
+                text="boxed",
+                auto_fit=False,
+                style=Style(
+                    outline=BLACK,
+                    shadow=True,
+                    h_align=HAlign.RIGHT,
+                    v_align=VAlign.BOTTOM,
+                ),
+            ),
             CounterMarker(center=Point(1, 2), radius=12, label="A"),
         ],
         ids=[
@@ -48,6 +60,7 @@ class TestAnnotationCodec:
             "arrow",
             "freehand",
             "text",
+            "fixed-text",
             "counter",
         ],
     )
@@ -128,6 +141,9 @@ class TestAnnotationCodec:
             ("bold", 1),
             ("italic", "yes"),
             ("font_family", None),
+            ("shadow", "yes"),
+            ("h_align", "justify"),
+            ("outline", 0),
         ],
         ids=[
             "color",
@@ -136,6 +152,9 @@ class TestAnnotationCodec:
             "numeric-bold",
             "string-italic",
             "null-family",
+            "string-shadow",
+            "unknown-alignment",
+            "numeric-outline",
         ],
     )
     def test_invalid_style(self, field: str, value: JsonValue) -> None:
@@ -162,6 +181,22 @@ class TestAnnotationCodec:
 
         with pytest.raises(CodecError, match=r"must not be empty|must be"):
             codec.decode(data)
+
+    def test_older_data_gets_defaults(self) -> None:
+        """Styles and text saved before outlines and auto-fit still load."""
+        codec = AnnotationCodec()
+        data = codec.encode(TextNote(rect=Rect(0, 0, 10, 10), text="t"))
+        style = data["style"]
+        assert isinstance(style, dict)
+        for key in ("outline", "shadow", "h_align", "v_align"):
+            del style[key]
+        del data["auto_fit"]
+
+        decoded = codec.decode(data)
+
+        assert isinstance(decoded, TextNote)
+        assert decoded.auto_fit
+        assert decoded.style == Style()
 
     def test_empty_envelope(self) -> None:
         """An empty valid envelope decodes without annotations."""
