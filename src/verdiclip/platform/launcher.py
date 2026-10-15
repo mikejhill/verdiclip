@@ -28,6 +28,8 @@ RELAY_CODE: Final = (
     f"subprocess.Popen(sys.argv[1:],creationflags={CREATE_NO_WINDOW})"
 )
 
+_RELAY_PREFIX: Final = f'-c "{RELAY_CODE}" "'
+
 _PE_POINTER_OFFSET: Final = 0x3C
 _PE_SIGNATURE: Final = b"PE\0\0"
 _SUBSYSTEM_OFFSET: Final = 0x5C  # From the PE signature to OptionalHeader.Subsystem
@@ -45,6 +47,26 @@ class LaunchCommand:
     def command_line(self) -> str:
         """Return the quoted command line, as a registry command expects."""
         return f'"{self.program}" {self.arguments}'
+
+    @property
+    def environment(self) -> Path:
+        """Return the interpreter whose environment runs the app.
+
+        For the relay, ``program`` is the shared base ``pythonw.exe`` and the
+        environment's own interpreter is the first quoted argument.
+        """
+        if self.arguments.startswith(_RELAY_PREFIX):
+            return Path(self.arguments[len(_RELAY_PREFIX) :].partition('"')[0])
+        return self.program
+
+    @classmethod
+    def parse(cls, command_line: str) -> LaunchCommand:
+        """Split a command line into its program and the rest."""
+        if command_line.startswith('"'):
+            program, _, rest = command_line[1:].partition('"')
+        else:
+            program, _, rest = command_line.partition(" ")
+        return cls(Path(program), rest.lstrip())
 
 
 def is_windowless(program: Path) -> bool:
@@ -86,3 +108,13 @@ def tray_launch(executable: Path, base_prefix: Path) -> LaunchCommand:
         )
     logger.warning("No console-less Python for %s", executable)
     return LaunchCommand(executable, MODULE_ARGUMENTS)
+
+
+def is_other_install(current: LaunchCommand, ours: LaunchCommand) -> bool:
+    """Return whether ``current`` runs another environment that still exists.
+
+    Environments are told apart by their interpreter's folder, so moving
+    between ``python.exe``, ``pythonw.exe``, and the relay keeps them the same.
+    """
+    environment = current.environment
+    return environment.parent != ours.environment.parent and environment.is_file()

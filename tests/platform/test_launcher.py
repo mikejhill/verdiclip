@@ -149,3 +149,34 @@ class TestCommandLine:
         launch = LaunchCommand(Path("C:/Program Files/py/pythonw.exe"), "-m verdiclip")
 
         assert launch.command_line == f'"{launch.program}" -m verdiclip'
+
+    @pytest.mark.parametrize("quoted", [True, False])
+    def test_parse_round_trips(self, *, quoted: bool) -> None:
+        """A registry command splits back into program and arguments."""
+        program = Path(
+            "C:/Program Files/py/pythonw.exe" if quoted else "C:/py/pythonw.exe"
+        )
+        launch = LaunchCommand(program, '-m verdiclip open "%1"')
+        text = launch.command_line if quoted else f"{program} {launch.arguments}"
+
+        assert LaunchCommand.parse(text) == launch
+
+
+class TestEnvironment:
+    """Which environment a launch runs, through the relay or directly."""
+
+    def test_direct_launch_is_its_program(self) -> None:
+        """A venv pythonw.exe runs its own environment."""
+        program = Path("C:/main/.venv/Scripts/pythonw.exe")
+
+        assert LaunchCommand(program, "-m verdiclip").environment == program
+
+    def test_relay_is_the_interpreter_it_starts(self, tmp_path: Path) -> None:
+        """The relay's base pythonw.exe is shared; the quoted interpreter isn't."""
+        write_pe(tmp_path / "pythonw.exe", GUI)
+        interpreter = tmp_path / "venv" / "python.exe"
+
+        launch = tray_launch(interpreter, tmp_path)
+
+        assert launch.program == tmp_path / "pythonw.exe"
+        assert launch.environment == interpreter

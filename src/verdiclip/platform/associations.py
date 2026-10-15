@@ -12,7 +12,6 @@ import ctypes
 import logging
 import sys
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Final, Protocol
 
 if sys.platform == "win32":
@@ -20,6 +19,7 @@ if sys.platform == "win32":
 
 from verdiclip import APP_NAME
 from verdiclip.exceptions import PlatformError
+from verdiclip.platform.launcher import LaunchCommand, is_other_install
 
 logger = logging.getLogger(__name__)
 
@@ -44,13 +44,6 @@ _CAPABILITIES_KEY: Final = rf"{_APP_KEY}\Capabilities"
 _REGISTERED_APPS_KEY: Final = r"Software\RegisteredApplications"
 _SHCNE_ASSOCCHANGED: Final = 0x08000000
 _SHCNF_IDLIST: Final = 0x0000
-
-
-def _program(command: str) -> Path:
-    """Return the program a command line runs (first token, quotes removed)."""
-    if command.startswith('"'):
-        return Path(command[1:].partition('"')[0])
-    return Path(command.partition(" ")[0])
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,8 +209,8 @@ class FileAssociations:
         """Register unless another install that still exists is registered.
 
         Same rule as ``ShortcutRegistration.refresh``: a missing registration,
-        one for a program in the same folder as ``command``'s, or one whose
-        program is gone is (re)written; another copy of the app (a development
+        one that runs this environment, or one whose environment is gone is
+        (re)written; another copy of the app (a development
         checkout, say) does not take over the installed one. Returns whether
         the registration was written.
 
@@ -225,11 +218,11 @@ class FileAssociations:
             PlatformError: If the registry cannot be read or written.
         """
         current = self.registered_command()
-        if current is not None:
-            program = _program(current)
-            if program.parent != _program(command).parent and program.is_file():
-                logger.info("Leaving Open with: it runs %s", program)
-                return False
+        if current is not None and is_other_install(
+            LaunchCommand.parse(current), LaunchCommand.parse(command)
+        ):
+            logger.info("Leaving Open with: it runs %s", current)
+            return False
         self.register(command, icon)
         return True
 

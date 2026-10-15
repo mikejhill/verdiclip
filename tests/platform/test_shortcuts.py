@@ -11,6 +11,7 @@ import pytest
 
 from verdiclip.exceptions import PlatformError
 from verdiclip.platform import shortcuts
+from verdiclip.platform.launcher import RELAY_CODE
 from verdiclip.platform.shortcuts import (
     KnownFolder,
     ShellLinkBackend,
@@ -121,6 +122,33 @@ class TestShortcutRegistration:
         assert registration.refresh(sample(tmp_path))
 
         assert backend.files[registration.path] == sample(tmp_path)
+
+    @pytest.mark.parametrize(
+        ("installed_environment", "written"),
+        [("main", False), ("gone", True), ("worktree", True)],
+    )
+    def test_refresh_tells_relay_shortcuts_apart_by_environment(
+        self, tmp_path: Path, installed_environment: str, *, written: bool
+    ) -> None:
+        """Relays share the base pythonw.exe; the environment decides ownership."""
+        base = tmp_path / "base" / "pythonw.exe"
+        for environment in ("main", "worktree"):
+            (tmp_path / environment).mkdir()
+            (tmp_path / environment / "python.exe").touch()
+
+        def relay(environment: str) -> Shortcut:
+            interpreter = tmp_path / environment / "python.exe"
+            arguments = f'-c "{RELAY_CODE}" "{interpreter}" -m verdiclip'
+            return replace(sample(tmp_path), target=base, arguments=arguments)
+
+        backend = FakeShortcutBackend()
+        registration = ShortcutRegistration(tmp_path, backend)
+        backend.files[registration.path] = relay(installed_environment)
+
+        assert registration.refresh(relay("worktree")) is written
+
+        expected = "worktree" if written else installed_environment
+        assert backend.files[registration.path] == relay(expected)
 
     @pytest.mark.parametrize("operation", ["read", "enable", "disable", "refresh"])
     def test_errors(self, tmp_path: Path, operation: str) -> None:
