@@ -249,6 +249,7 @@ class AppController(QObject):
             capture_fullscreen=self._capture.capture_fullscreen,
             repeat_last=self._capture.repeat_last,
             open_image=self._ask_open_image,
+            open_folder=self.open_screenshots_folder,
             settings=self.show_settings,
             about=self._show_about,
             exit=self.request_exit,
@@ -261,6 +262,19 @@ class AppController(QObject):
         )
         if chosen:
             self.open_image(Path(chosen))
+
+    def open_screenshots_folder(self) -> None:
+        """Open the save folder in Explorer, creating it if needed."""
+        folder = self._settings.output.directory
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            self._notify(
+                "Can't open screenshots folder", f"{folder}: {error}", warning=True
+            )
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder))):
+            self._notify("Can't open screenshots folder", str(folder), warning=True)
 
     def show_settings(self, parent: QWidget | None = None) -> None:
         """Edit and apply settings, from the tray or an editor (UX-TRY-04)."""
