@@ -26,7 +26,7 @@ Coverage shows code ran, not that a test checked it. These keep the tests honest
 | Diff coverage ≥ 95% | CI, pull requests | New or changed lines without tests |
 | Random test order ([pytest-randomly](https://github.com/pytest-dev/pytest-randomly)) | Every run | Tests that pass only after another test; rerun a failure with the printed `-p randomly --randomly-seed=N` |
 | Property tests ([Hypothesis](https://hypothesis.readthedocs.io/)) | `tests/test_properties.py` | Edge cases hand-picked examples miss |
-| Mutation testing ([mutmut](https://github.com/boxed/mutmut)) | CI: changed modules on pull requests, everything weekly | Code that runs under test but whose behavior no assertion checks |
+| Mutation testing ([mutmut](https://github.com/boxed/mutmut)) | CI: report on the modules a pull request changes; weekly whole-package run must score ≥ `MUTATION_FLOOR` | Code that runs under test but whose behavior no assertion checks |
 
 Run mutation testing locally on Linux or WSL (mutmut forks, so not on native Windows):
 
