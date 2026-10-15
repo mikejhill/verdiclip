@@ -195,7 +195,7 @@ class SettingsDialog(QDialog):
         files = QVBoxLayout()
         files.addWidget(self._open_with)
         files.addWidget(self._make_default)
-        form.addRow("Image files:", files)
+        form.addRow(files)
         return tab
 
     def _hotkey_tab(self) -> QWidget:

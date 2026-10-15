@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from datetime import datetime
-from functools import partial
 from typing import Protocol
 
 from PySide6.QtCore import QObject, Signal
@@ -13,7 +12,11 @@ from PySide6.QtGui import QCursor, QGuiApplication, QImage
 
 from verdiclip.capture.grabber import FrozenScreen, ScreenSource
 from verdiclip.capture.models import Capture, CaptureMode, ScreenGeometry
-from verdiclip.capture.overlay import SelectionOverlay, WindowTarget
+from verdiclip.capture.overlay import (
+    SelectionOverlay,
+    SharedSelection,
+    WindowTarget,
+)
 from verdiclip.exceptions import AppError, CaptureError
 from verdiclip.geometry import Rect
 
@@ -83,20 +86,23 @@ class CaptureService(QObject):
             self._fail(err)
             return
         self._frozen = frozen
-        for screen in QGuiApplication.screens():
+        screens = QGuiApplication.screens()
+        # One selection across every monitor, so a drag can span them
+        shared = SharedSelection([ScreenGeometry.from_screen(s) for s in screens])
+        for screen in screens:
             overlay = SelectionOverlay(
                 ScreenGeometry.from_screen(screen),
                 screen,
                 frozen,
                 windows,
                 show_magnifier=self._show_magnifier,
+                shared=shared,
             )
             overlay.region_chosen.connect(self._on_region)
             overlay.window_chosen.connect(self._on_window)
             overlay.cancelled.connect(self._on_cancel)
             self._overlays.append(overlay)
             overlay.show()
-        self.link_hover(self._overlays)
         self._activate_under_cursor()
 
     def capture_fullscreen(self) -> None:
@@ -146,23 +152,6 @@ class CaptureService(QObject):
         """Close any open overlay without capturing."""
         if self.is_selecting:
             self._on_cancel()
-
-    @staticmethod
-    def link_hover(overlays: Sequence[SelectionOverlay]) -> None:
-        """Mirror each overlay's hovered window onto the other monitors it reaches."""
-        for source in overlays:
-            others = [o for o in overlays if o is not source]
-            source.hover_changed.connect(partial(CaptureService._mirror, others))
-            for target in others:
-                target.set_shared_highlight(source.announced_hover)
-
-    @staticmethod
-    def _mirror(
-        targets: Sequence[SelectionOverlay], window: WindowTarget | None
-    ) -> None:
-        """Show ``window`` as a shared highlight on each of ``targets``."""
-        for target in targets:
-            target.set_shared_highlight(window)
 
     # Overlay results
 

@@ -1,4 +1,4 @@
-"""Full-screen overlay on one monitor: drag a region or click a window."""
+"""Full-screen overlays, one per monitor: drag a region or click a window."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import math
 from collections.abc import Sequence
 from typing import Final, Protocol, override
 
-from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QCursor,
@@ -47,15 +47,122 @@ class WindowTarget(Protocol):
         """Window rectangle in physical desktop pixels."""
 
 
+class SharedSelection(QObject):
+    """The pointer and the drag, shared by the overlays on every monitor.
+
+    Positions are physical desktop pixels, so a selection can start on one
+    monitor and end on another, even when the monitors' scales differ.
+    """
+
+    changed = Signal()
+
+    def __init__(self, screens: Sequence[ScreenGeometry] = ()) -> None:
+        super().__init__()
+        self._screens = list(screens)
+        self._pointer: Point | None = None
+        self._anchor: Point | None = None
+        self._dragging = False
+
+    def add_screen(self, screen: ScreenGeometry) -> None:
+        """Include ``screen`` when mapping positions."""
+        if screen not in self._screens:
+            self._screens.append(screen)
+
+    @property
+    def pointer(self) -> Point | None:
+        """Return the pointer position, or None before it is known."""
+        return self._pointer
+
+    @property
+    def pressed(self) -> bool:
+        """True between a press (mouse or ``Enter``) and its release."""
+        return self._anchor is not None
+
+    @property
+    def dragging(self) -> bool:
+        """True once the pointer has moved past the drag threshold since the press."""
+        return self._dragging
+
+    def area(self) -> Rect | None:
+        """Return the dragged rectangle, snapped to whole pixels, while dragging."""
+        if not self._dragging or self._anchor is None or self._pointer is None:
+            return None
+        return Rect.from_points(self._anchor, self._pointer).rounded()
+
+    def screen_at(self, physical: Point) -> ScreenGeometry | None:
+        """Return the monitor showing ``physical``, if any."""
+        return next((s for s in self._screens if _covers(s.physical, physical)), None)
+
+    def to_physical(self, logical: Point) -> Point:
+        """Map a Qt global position to physical pixels on the nearest monitor.
+
+        Qt keeps each monitor's top-left at its physical position and scales
+        only its size, so the monitor holding a global position is found in
+        logical space, then the offset from its corner is scaled.
+        """
+        screen = min(
+            self._screens, key=lambda s: _clamp(logical, s.logical).distance_to(logical)
+        )
+        return screen.to_physical(
+            _clamp(logical, screen.logical) - screen.logical.top_left
+        )
+
+    def move_to(self, physical: Point) -> None:
+        """Move the pointer; a press becomes a drag past the threshold."""
+        self._track(physical)
+        self.changed.emit()
+
+    def press(self, physical: Point) -> None:
+        """Start a selection at ``physical``."""
+        self._pointer = self._anchor = physical
+        self._dragging = False
+        self.changed.emit()
+
+    def release(self, physical: Point) -> Rect | None:
+        """End the press at ``physical``; return the dragged area (None for a click)."""
+        self._track(physical)
+        area = self.area()
+        self._anchor = None
+        self._dragging = False
+        self.changed.emit()
+        return area
+
+    def _track(self, physical: Point) -> None:
+        """Record the pointer and start dragging once it moves far enough."""
+        self._pointer = physical
+        if (
+            self._anchor is not None
+            and self._anchor.distance_to(physical) >= DRAG_THRESHOLD
+        ):
+            self._dragging = True
+
+
+def _covers(area: Rect, point: Point) -> bool:
+    """Return True if ``point`` is on ``area`` (right and bottom edges excluded)."""
+    return area.left <= point.x < area.right and area.top <= point.y < area.bottom
+
+
+def _clamp(point: Point, area: Rect) -> Point:
+    """Return the point of ``area`` nearest to ``point``."""
+    return Point(
+        min(max(point.x, area.left), area.right),
+        min(max(point.y, area.top), area.bottom),
+    )
+
+
 class SelectionOverlay(QWidget):
-    """Shows the frozen screen of one monitor and reports the user's choice."""
+    """Shows the frozen screen of one monitor and reports the user's choice.
+
+    Overlays sharing one ``SharedSelection`` act as a single surface: the
+    selection and the window highlight continue across monitors, and ``Enter``
+    or a click on any of them acts at the pointer wherever it is.
+    """
 
     region_chosen = Signal(object)  # Rect (physical)
     window_chosen = Signal(object, str)  # Rect (physical), title
     cancelled = Signal()
-    hover_changed = Signal(object)  # WindowTarget | None under this overlay's cursor
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         geometry: ScreenGeometry,
         screen: QScreen,
@@ -63,19 +170,19 @@ class SelectionOverlay(QWidget):
         windows: Sequence[WindowTarget],
         *,
         show_magnifier: bool,
+        shared: SharedSelection | None = None,
     ) -> None:
         super().__init__(None)
         self._geometry = geometry
         self._frozen = frozen
         self._image = frozen.crop(geometry.physical)
         self._image.setDevicePixelRatio(geometry.scale)
-        self._windows = [w for w in windows if w.bounds.intersects(geometry.physical)]
+        self._windows = list(windows)
         self._show_magnifier = show_magnifier
-        self._press: Point | None = None
-        self._cursor: Point | None = None
-        self._dragging = False
-        self._announced: WindowTarget | None = None
-        self._shared: WindowTarget | None = None
+        self._shared = shared if shared is not None else SharedSelection()
+        self._shared.add_screen(geometry)
+        self._shared.changed.connect(self._on_shared_changed)
+        self._shown: tuple[object, ...] | None = None
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
@@ -95,31 +202,23 @@ class SelectionOverlay(QWidget):
         """Return the monitor this overlay covers."""
         return self._geometry
 
-    def hovered_window(self) -> WindowTarget | None:
-        """Return the topmost window under the cursor, if any."""
-        if self._cursor is None:
-            return None
-        physical = self._geometry.to_physical(self._cursor)
-        return next((w for w in self._windows if w.bounds.contains(physical)), None)
-
     @property
-    def announced_hover(self) -> WindowTarget | None:
-        """Return the window this overlay last reported as hovered."""
-        return self._announced
+    def shared(self) -> SharedSelection:
+        """Return the selection this overlay shares with the other monitors."""
+        return self._shared
 
-    def set_shared_highlight(self, window: WindowTarget | None) -> None:
-        """Highlight a window hovered on another monitor (for windows that span)."""
-        if window is not None and not window.bounds.intersects(self._geometry.physical):
-            window = None
-        if window is not self._shared:
-            self._shared = window
-            self.update()
+    def hovered_window(self) -> WindowTarget | None:
+        """Return the topmost window under the cursor, if the cursor is here."""
+        pointer = self._pointer_here()
+        return None if pointer is None else self._window_at(pointer)
 
     def selection(self) -> Rect | None:
-        """Return the dragged rectangle in local logical coordinates."""
-        if not self._dragging or self._press is None or self._cursor is None:
+        """Return the part of the dragged rectangle on this monitor (local logical)."""
+        area = self._shared.area()
+        if area is None:
             return None
-        return Rect.from_points(self._press, self._clamped(self._cursor))
+        here = area.intersected(self._geometry.physical)
+        return None if here.is_empty else self._geometry.local_rect(here)
 
     # Painting
 
@@ -133,25 +232,30 @@ class SelectionOverlay(QWidget):
             painter.fillRect(self.rect(), DIM)
             self._paint_target(painter)
             self._paint_crosshair(painter)
-            if self._show_magnifier and self._cursor is not None:
-                self._paint_magnifier(painter, self._cursor)
+            cursor = self._local_cursor()
+            if self._show_magnifier and cursor is not None:
+                self._paint_magnifier(painter, cursor)
         finally:
             painter.end()
 
     def _paint_target(self, painter: QPainter) -> None:
-        """Highlight the dragged region or the hovered window."""
+        """Highlight the dragged region or the window under the pointer."""
         selection = self.selection()
         if selection is not None:
-            size = self._physical_rect(selection)
-            self._reveal(painter, selection, f"{int(size.width)} × {int(size.height)}")  # noqa: RUF001
+            area = self._shared.area()
+            label = (
+                f"{int(area.width)} × {int(area.height)}"  # noqa: RUF001
+                if area is not None and self._pointer_here() is not None
+                else ""
+            )
+            self._reveal(painter, selection, label)
             return
-        window = self.hovered_window()
+        window = self._highlighted()
         if window is not None:
-            local = self._geometry.local_rect(window.bounds)
-            self._reveal(painter, local, window.title)
-        elif self._shared is not None:
-            # Another monitor's cursor is over a window that reaches onto this one
-            self._reveal(painter, self._geometry.local_rect(self._shared.bounds), "")
+            # The title shows on the cursor's monitor; other monitors the
+            # window reaches onto light up their part of it
+            title = window.title if self._pointer_here() is not None else ""
+            self._reveal(painter, self._geometry.local_rect(window.bounds), title)
 
     def _reveal(self, painter: QPainter, area: Rect, label: str) -> None:
         """Undim ``area``, outline it, and show ``label`` (if any) beside it."""
@@ -185,10 +289,11 @@ class SelectionOverlay(QWidget):
 
     def _paint_crosshair(self, painter: QPainter) -> None:
         """Draw guide lines through the cursor."""
-        if self._cursor is None or self._dragging:
+        cursor = self._local_cursor()
+        if cursor is None or self._shared.dragging:
             return
         painter.setPen(QPen(QColor(255, 255, 255, 140), 1, Qt.PenStyle.DashLine))
-        x, y = round(self._cursor.x), round(self._cursor.y)
+        x, y = round(cursor.x), round(cursor.y)
         painter.drawLine(x, 0, x, self.height())
         painter.drawLine(0, y, self.width(), y)
 
@@ -275,53 +380,48 @@ class SelectionOverlay(QWidget):
 
     @override
     def mousePressEvent(self, event: QMouseEvent) -> None:
-        """Start a selection on left press; cancel on right press."""
+        """Start a selection on left press; cancel on right press.
+
+        A left press while an ``Enter`` selection is open finishes it there.
+        """
         if event.button() == Qt.MouseButton.RightButton:
             self.cancelled.emit()
             return
-        if event.button() == Qt.MouseButton.LeftButton:
-            self._press = self._local(event)
-            self._cursor = self._press
-            self._dragging = False
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        at = self._physical(event)
+        if self._shared.pressed:
+            self._finish(at)
+        else:
+            self._shared.press(at)
 
     @override
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
-        """Track the cursor and start dragging past the threshold."""
-        self._cursor = self._local(event)
-        if (
-            self._press is not None
-            and self._press.distance_to(self._cursor) >= DRAG_THRESHOLD
-        ):
-            self._dragging = True
-        self._announce_hover()
-        self.update()
+        """Track the pointer, here or (while pressed) over another monitor."""
+        self._shared.move_to(self._physical(event))
 
     @override
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
-        """Report a dragged region, a clicked window, or this whole monitor."""
-        if event.button() != Qt.MouseButton.LeftButton or self._press is None:
+        """Report a dragged region, a clicked window, or the monitor clicked."""
+        if event.button() != Qt.MouseButton.LeftButton or not self._shared.pressed:
             return
-        self._finish(self._local(event))
+        self._finish(self._physical(event))
 
     def _finish(self, at: Point) -> None:
-        """End a press at ``at``: report a region, a window, or this monitor."""
-        self._cursor = at
-        selection = self.selection()
-        self._press = None
-        self._dragging = False
-        if selection is not None:
-            area = self._physical_rect(selection)
+        """End the press at ``at``: report a region, a window, or that monitor."""
+        area = self._shared.release(at)
+        if area is not None:
             if area.width >= DRAG_THRESHOLD and area.height >= DRAG_THRESHOLD:
                 self.region_chosen.emit(area)
-            self.update()
             return
-        window = self.hovered_window()
+        window = self._window_at(at)
         if window is not None:
             self.window_chosen.emit(
                 window.bounds.intersected(self._frozen.bounds), window.title
             )
-        else:
-            self.region_chosen.emit(self._geometry.physical)
+            return
+        screen = self._shared.screen_at(at) or self._geometry
+        self.region_chosen.emit(screen.physical)
 
     @override
     def keyPressEvent(self, event: QKeyEvent) -> None:
@@ -346,15 +446,17 @@ class SelectionOverlay(QWidget):
         QCursor.setPos(QCursor.pos() + delta)
 
     def _enter(self) -> None:
-        """Press at the cursor, or finish the press already started (UX-CAP-15)."""
-        if self._cursor is None:
+        """Press at the pointer, or finish the press already started (UX-CAP-15).
+
+        Works from whichever overlay has focus, wherever the pointer is.
+        """
+        pointer = self._shared.pointer
+        if pointer is None:
             return
-        if self._press is None:
-            self._press = self._cursor
-            self._dragging = False
-            self.update()
+        if self._shared.pressed:
+            self._finish(pointer)
         else:
-            self._finish(self._cursor)
+            self._shared.press(pointer)
 
     @override
     def showEvent(self, event: QShowEvent) -> None:
@@ -363,46 +465,59 @@ class SelectionOverlay(QWidget):
         self.sync_cursor()
 
     def sync_cursor(self) -> None:
-        """Pick up the current pointer position (None if it's on another monitor)."""
-        local = self.mapFromGlobal(QCursor.pos())
-        inside = self.rect().contains(local)
-        self._cursor = Point(local.x(), local.y()) if inside else None
-        self._announce_hover()
-        self.update()
+        """Pick up the current pointer position."""
+        pos = QCursor.pos()
+        self._shared.move_to(self._shared.to_physical(Point(pos.x(), pos.y())))
 
     @override
     def leaveEvent(self, event: QEvent) -> None:
         """Hide the crosshair when the cursor moves to another monitor."""
         del event
-        if self._press is None:
-            self._cursor = None
-            self._announce_hover()
-            self.update()
+        if not self._shared.pressed:
+            self.sync_cursor()
 
     # Internals
 
-    def _announce_hover(self) -> None:
-        """Tell other monitors the window under this cursor (none while dragging)."""
-        window = None if self._dragging else self.hovered_window()
-        if window is not self._announced:
-            self._announced = window
-            self.hover_changed.emit(window)
-
-    @staticmethod
-    def _local(event: QMouseEvent) -> Point:
-        """Return the event position in local logical coordinates."""
-        pos = event.position()
-        return Point(pos.x(), pos.y())
-
-    def _clamped(self, point: Point) -> Point:
-        """Clamp ``point`` to this overlay."""
-        return Point(
-            min(max(point.x, 0.0), float(self.width())),
-            min(max(point.y, 0.0), float(self.height())),
+    def _on_shared_changed(self) -> None:
+        """Repaint when what this monitor shows has changed."""
+        shown = (
+            self._local_cursor(),
+            self.selection(),
+            self._highlighted(),
+            self._pointer_here() is not None,
+            self._shared.area(),
         )
+        if shown != self._shown:
+            self._shown = shown
+            self.update()
 
-    def _physical_rect(self, local: Rect) -> Rect:
-        """Map a local logical rectangle to whole physical pixels."""
-        a = self._geometry.to_physical(local.top_left)
-        b = self._geometry.to_physical(local.bottom_right)
-        return Rect.from_points(a, b).rounded()
+    def _pointer_here(self) -> Point | None:
+        """Return the pointer (physical) if it is on this monitor."""
+        pointer = self._shared.pointer
+        if pointer is None or not _covers(self._geometry.physical, pointer):
+            return None
+        return pointer
+
+    def _local_cursor(self) -> Point | None:
+        """Return the pointer in local logical coordinates if it is on this monitor."""
+        pointer = self._pointer_here()
+        return None if pointer is None else self._geometry.to_local(pointer)
+
+    def _highlighted(self) -> WindowTarget | None:
+        """Return the window under the pointer if it reaches onto this monitor."""
+        pointer = self._shared.pointer
+        if pointer is None or self._shared.dragging:
+            return None
+        window = self._window_at(pointer)
+        if window is None or not window.bounds.intersects(self._geometry.physical):
+            return None
+        return window
+
+    def _window_at(self, physical: Point) -> WindowTarget | None:
+        """Return the topmost window at ``physical``."""
+        return next((w for w in self._windows if w.bounds.contains(physical)), None)
+
+    def _physical(self, event: QMouseEvent) -> Point:
+        """Return the event position in physical desktop pixels."""
+        pos = event.globalPosition()
+        return self._shared.to_physical(Point(pos.x(), pos.y()))

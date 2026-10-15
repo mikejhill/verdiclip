@@ -6,7 +6,7 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 
 import pytest
-from PySide6.QtCore import QEvent, QPoint, Qt
+from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QColor, QCursor, QGuiApplication, QImage, QPainter
 from PySide6.QtTest import QTest
 from pytestqt.qtbot import QtBot
@@ -15,10 +15,10 @@ from tests.ux.conftest import Stopwatch
 
 from verdiclip.capture.grabber import FrozenScreen
 from verdiclip.capture.models import Capture, CaptureMode, ScreenGeometry
-from verdiclip.capture.overlay import SelectionOverlay
+from verdiclip.capture.overlay import SelectionOverlay, SharedSelection
 from verdiclip.capture.service import CaptureService
 from verdiclip.exceptions import CaptureError
-from verdiclip.geometry import Rect
+from verdiclip.geometry import Point, Rect
 
 pytestmark = pytest.mark.ux
 
@@ -307,28 +307,22 @@ class TestRegionCapture:
         assert capture.mode is CaptureMode.WINDOW
         assert capture.title == "Dialog"
 
-    def test_enter_with_cursor_on_another_monitor_does_nothing(self) -> None:
-        """UX-CAP-15: an overlay without the cursor ignores Enter."""
-        desktop = QImage(400, 300, QImage.Format.Format_RGB32)
-        desktop.fill(QColor(128, 128, 128))
-        bounds = Rect(0, 0, 400, 300)
-        overlay = SelectionOverlay(
-            ScreenGeometry("only", bounds, bounds, 1.0),
-            QGuiApplication.primaryScreen(),
-            FrozenScreen(desktop, bounds),
-            [],
-            show_magnifier=False,
-        )
-        chosen: list[object] = []
-        overlay.region_chosen.connect(chosen.append)
-        overlay.show()
-        overlay.leaveEvent(QEvent(QEvent.Type.Leave))
+    def test_click_finishes_a_selection_started_with_enter(
+        self, service: CaptureService, qtbot: QtBot
+    ) -> None:
+        """UX-CAP-15: a click ends an Enter selection there, like a mouse release."""
+        service.capture_region()
+        overlay = Overlay(service)
+        overlay.hover((90, 90))
+        QTest.keyClick(overlay.widget, Qt.Key.Key_Return)
+        overlay.hover((160, 140))
 
-        QTest.keyClick(overlay, Qt.Key.Key_Return)
-        QTest.keyClick(overlay, Qt.Key.Key_Return)
+        with qtbot.waitSignal(service.captured) as signal:
+            overlay.click((160, 140))
 
-        assert chosen == []
-        overlay.close()
+        capture = CaptureOf.signal(signal)
+        assert capture.mode is CaptureMode.REGION
+        assert (capture.image.width(), capture.image.height()) == (70, 50)
 
 
 class TestMagnifier:
@@ -525,30 +519,161 @@ class TestImmediateCaptures:
         assert CaptureOf.signal(signal).mode is CaptureMode.FULLSCREEN
 
 
+class TwoMonitors:
+    """Overlays for two side-by-side 400 x 300 monitors sharing one selection."""
+
+    def __init__(self, windows: Sequence[FakeWindow] = ()) -> None:
+        image = QImage(800, 300, QImage.Format.Format_RGB32)
+        image.fill(QColor(200, 200, 200))
+        self.frozen = FrozenScreen(image, Rect(0, 0, 800, 300))
+        screens = [
+            ScreenGeometry(name, bounds, bounds, 1.0)
+            for name, bounds in (
+                ("left", Rect(0, 0, 400, 300)),
+                ("right", Rect(400, 0, 400, 300)),
+            )
+        ]
+        self.shared = SharedSelection(screens)
+        self.left, self.right = (
+            SelectionOverlay(
+                geometry,
+                QGuiApplication.primaryScreen(),
+                self.frozen,
+                windows,
+                show_magnifier=False,
+                shared=self.shared,
+            )
+            for geometry in screens
+        )
+        self.regions: list[Rect] = []
+        for overlay in (self.left, self.right):
+            overlay.region_chosen.connect(self.regions.append)
+            overlay.show()
+
+    def close(self) -> None:
+        """Close both overlays."""
+        for overlay in (self.left, self.right):
+            overlay.close()
+
+
+@pytest.fixture
+def two_monitors() -> Iterator[TwoMonitors]:
+    """Two monitors with nothing on them."""
+    monitors = TwoMonitors()
+    yield monitors
+    monitors.close()
+
+
+class TestAcrossMonitors:
+    """One selection that spans monitors, driven from either of them."""
+
+    def test_drag_continues_onto_the_next_monitor(
+        self, two_monitors: TwoMonitors
+    ) -> None:
+        """UX-CAP-02, UX-CAP-03: a drag can cross from one monitor to the next."""
+        left = two_monitors.left
+        no_mods = Qt.KeyboardModifier.NoModifier
+        QTest.mousePress(left, Qt.MouseButton.LeftButton, no_mods, QPoint(300, 50))
+        # The pressed overlay keeps the mouse, so its positions run off its edge
+        for x in (340, 420, 500):
+            QTest.mouseMove(left, QPoint(x, 150))
+
+        assert left.selection() == Rect(300, 50, 100, 100)
+        assert two_monitors.right.selection() == Rect(0, 50, 100, 100)
+        QTest.mouseRelease(left, Qt.MouseButton.LeftButton, no_mods, QPoint(500, 150))
+
+        assert two_monitors.regions == [Rect(300, 50, 200, 100)]
+
+    def test_enter_starts_where_the_cursor_is_not_where_focus_is(
+        self, two_monitors: TwoMonitors
+    ) -> None:
+        """UX-CAP-15: Enter works on every monitor, whichever overlay has focus."""
+        left, right = two_monitors.left, two_monitors.right
+        QTest.mouseMove(right, QPoint(20, 30))  # Pointer on the right monitor
+
+        QTest.keyClick(left, Qt.Key.Key_Return)  # Focus still on the left one
+        QTest.mouseMove(right, QPoint(120, 130))
+        QTest.keyClick(left, Qt.Key.Key_Return)
+
+        assert two_monitors.regions == [Rect(420, 30, 100, 100)]
+
+    def test_enter_selection_can_cross_monitors_and_end_with_a_click(
+        self, two_monitors: TwoMonitors
+    ) -> None:
+        """UX-CAP-15: start with Enter on one monitor, click to finish on another."""
+        left, right = two_monitors.left, two_monitors.right
+        QTest.mouseMove(left, QPoint(350, 40))
+        QTest.keyClick(left, Qt.Key.Key_Return)
+        QTest.mouseMove(right, QPoint(60, 90))
+
+        QTest.mouseClick(
+            right,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+            QPoint(60, 90),
+        )
+
+        assert two_monitors.regions == [Rect(350, 40, 110, 50)]
+
+    def test_click_on_empty_desktop_captures_the_clicked_monitor(
+        self, two_monitors: TwoMonitors
+    ) -> None:
+        """UX-CAP-04: a click where no window is captures that monitor."""
+        right = two_monitors.right
+        QTest.mouseMove(right, QPoint(60, 90))
+
+        QTest.mouseClick(
+            right,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+            QPoint(60, 90),
+        )
+
+        assert two_monitors.regions == [Rect(400, 0, 400, 300)]
+
+
+class TestMixedScaling:
+    """Monitors with different scale factors map to the right physical pixels."""
+
+    def test_positions_map_per_monitor(self) -> None:
+        """A 200% monitor beside a 100% one: each scales from its own corner."""
+        hidpi = ScreenGeometry(
+            "laptop", Rect(0, 0, 1920, 1080), Rect(0, 0, 3840, 2160), 2.0
+        )
+        normal = ScreenGeometry(
+            "monitor", Rect(3840, 0, 1920, 1080), Rect(3840, 0, 1920, 1080), 1.0
+        )
+        shared = SharedSelection([hidpi, normal])
+
+        assert shared.to_physical(Point(1000, 500)) == Point(2000, 1000)
+        assert shared.to_physical(Point(3900, 10)) == Point(3900, 10)
+        # Between the two in Qt's coordinates: snap to the nearer monitor's edge
+        assert shared.to_physical(Point(2000, 10)) == Point(3840, 20)
+
+    def test_drag_from_scaled_monitor_onto_unscaled_one(self) -> None:
+        """UX-CAP-03: the area spans both monitors in physical pixels."""
+        hidpi = ScreenGeometry(
+            "laptop", Rect(0, 0, 1920, 1080), Rect(0, 0, 3840, 2160), 2.0
+        )
+        normal = ScreenGeometry(
+            "monitor", Rect(3840, 0, 1920, 1080), Rect(3840, 0, 1920, 1080), 1.0
+        )
+        shared = SharedSelection([hidpi, normal])
+
+        shared.press(shared.to_physical(Point(1800, 100)))
+        area = shared.release(shared.to_physical(Point(4000, 300)))
+
+        assert area == Rect(3600, 200, 400, 100)
+
+
 class TestSpanningWindows:
     """A window that spans monitors is highlighted on every monitor it covers."""
 
     def test_hovering_lights_up_the_whole_window_across_monitors(self) -> None:
         """UX-CAP-04: the part of the window on the other monitor is undimmed too."""
-        desktop = QImage(800, 300, QImage.Format.Format_RGB32)
-        desktop.fill(QColor(200, 200, 200))
-        frozen = FrozenScreen(desktop, Rect(0, 0, 800, 300))
-        screen = QGuiApplication.primaryScreen()
-        left_bounds, right_bounds = Rect(0, 0, 400, 300), Rect(400, 0, 400, 300)
         spanning = FakeWindow("Spreadsheet", Rect(300, 50, 200, 100))
-        left, right = (
-            SelectionOverlay(
-                ScreenGeometry(name, bounds, bounds, 1.0),
-                screen,
-                frozen,
-                [spanning],
-                show_magnifier=False,
-            )
-            for name, bounds in (("left", left_bounds), ("right", right_bounds))
-        )
-        for overlay in (left, right):
-            overlay.show()
-        CaptureService.link_hover([left, right])
+        monitors = TwoMonitors([spanning])
+        left, right = monitors.left, monitors.right
 
         QTest.mouseMove(left, QPoint(350, 100))
 
@@ -558,5 +683,4 @@ class TestSpanningWindows:
         assert right_pixels.pixelColor(150, 100) != undimmed  # Outside stays dim
         QTest.mouseMove(left, QPoint(50, 250))
         assert right.grab().toImage().pixelColor(50, 100) != undimmed
-        for overlay in (left, right):
-            overlay.close()
+        monitors.close()
