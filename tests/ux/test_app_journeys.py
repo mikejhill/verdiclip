@@ -357,7 +357,7 @@ class TestHotkeysAndSettings:
         )
 
         assert shortcut is not None
-        assert shortcut.arguments == "-m verdiclip"
+        assert shortcut.arguments.endswith("-m verdiclip")
         assert shortcut.target.name.lower().startswith("python")
         assert shortcut.icon == tmp_path / "verdiclip.ico"
         assert not QImage(str(shortcut.icon)).isNull()
@@ -395,7 +395,7 @@ class TestHotkeysAndSettings:
 
         app = make_app(settings)
 
-        assert app.links.files[app.startup_shortcut].arguments == "-m verdiclip"
+        assert app.links.files[app.startup_shortcut].arguments.endswith("-m verdiclip")
 
     def test_registrations_are_left_alone_when_off(self, make_app: AppFactory) -> None:
         """UX-TRY-04, 07, 08: launching never adds entries the user turned off."""
@@ -413,7 +413,7 @@ class TestHotkeysAndSettings:
 
         shortcut = app.links.files[app.start_menu_shortcut]
 
-        assert shortcut.arguments == "-m verdiclip"
+        assert shortcut.arguments.endswith("-m verdiclip")
         assert shortcut.description
         assert app.startup_shortcut not in app.links.files
 

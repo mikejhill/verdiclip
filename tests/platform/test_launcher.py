@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
 
-from verdiclip.platform.launcher import LaunchCommand, is_windowless, tray_launch
+from verdiclip.platform.launcher import (
+    CREATE_NO_WINDOW,
+    RELAY_CODE,
+    LaunchCommand,
+    is_windowless,
+    tray_launch,
+)
 
 GUI = 2
 CONSOLE = 3
@@ -59,28 +66,79 @@ class TestIsWindowless:
 class TestTrayLaunch:
     """Choosing the program the shortcuts and Open with command run."""
 
-    def test_prefers_gui_pythonw(self, tmp_path: Path) -> None:
-        """A real pythonw.exe runs the module."""
-        python = write_pe(tmp_path / "python.exe", CONSOLE)
-        pythonw = write_pe(tmp_path / "pythonw.exe", GUI)
-        write_pe(tmp_path / "verdiclip-gui.exe", GUI)
+    @pytest.fixture
+    def env(self, tmp_path: Path) -> Path:
+        """Return a venv Scripts folder with a console python.exe."""
+        scripts = tmp_path / "venv" / "Scripts"
+        scripts.mkdir(parents=True)
+        write_pe(scripts / "python.exe", CONSOLE)
+        return scripts
 
-        assert tray_launch(python) == LaunchCommand(pythonw, "-m verdiclip")
+    @pytest.fixture
+    def base(self, tmp_path: Path) -> Path:
+        """Return a base installation with a GUI pythonw.exe."""
+        base = tmp_path / "Python 3.13"
+        base.mkdir()
+        write_pe(base / "pythonw.exe", GUI)
+        return base
 
-    def test_skips_console_pythonw_for_gui_script(self, tmp_path: Path) -> None:
-        """A uv console copy named pythonw.exe gives way to the entry point."""
-        python = write_pe(tmp_path / "python.exe", CONSOLE)
-        write_pe(tmp_path / "pythonw.exe", CONSOLE)
-        script = write_pe(tmp_path / "verdiclip-gui.exe", GUI)
+    def test_prefers_gui_pythonw_beside_interpreter(
+        self, env: Path, base: Path
+    ) -> None:
+        """Python's own venv launcher runs the module directly."""
+        pythonw = write_pe(env / "pythonw.exe", GUI)
 
-        assert tray_launch(python) == LaunchCommand(script, "")
+        assert tray_launch(env / "python.exe", base) == LaunchCommand(
+            pythonw, "-m verdiclip"
+        )
 
-    def test_falls_back_to_running_interpreter(self, tmp_path: Path) -> None:
-        """With no GUI candidate the app still starts, console and all."""
-        python = write_pe(tmp_path / "python.exe", CONSOLE)
-        write_pe(tmp_path / "pythonw.exe", CONSOLE)
+    def test_console_pythonw_relays_through_base(self, env: Path, base: Path) -> None:
+        """A uv console launcher named pythonw.exe is bypassed, not trusted."""
+        write_pe(env / "pythonw.exe", CONSOLE)
+        python = env / "python.exe"
 
-        assert tray_launch(python) == LaunchCommand(python, "-m verdiclip")
+        launch = tray_launch(python, base)
+
+        assert launch == LaunchCommand(
+            base / "pythonw.exe", f'-c "{RELAY_CODE}" "{python}" -m verdiclip'
+        )
+
+    def test_missing_pythonw_relays_through_base(self, env: Path, base: Path) -> None:
+        """An environment without pythonw.exe also uses the base installation."""
+        assert tray_launch(env / "python.exe", base).program == base / "pythonw.exe"
+
+    def test_falls_back_to_running_interpreter(self, env: Path, tmp_path: Path) -> None:
+        """With no GUI Python anywhere the app still starts, console and all."""
+        write_pe(env / "pythonw.exe", CONSOLE)
+        python = env / "python.exe"
+
+        assert tray_launch(python, tmp_path / "missing") == LaunchCommand(
+            python, "-m verdiclip"
+        )
+
+
+class TestRelayCode:
+    """The one-liner the base pythonw.exe runs."""
+
+    def test_starts_its_arguments_without_a_console(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Argv after -c becomes the child command, flagged CREATE_NO_WINDOW."""
+        calls: list[tuple[list[str], int]] = []
+
+        def popen(args: list[str], creationflags: int) -> None:
+            calls.append((args, creationflags))
+
+        monkeypatch.setattr(subprocess, "Popen", popen)
+        monkeypatch.setattr("sys.argv", ["-c", "C:/venv/python.exe", "-m", "x"])
+
+        exec(RELAY_CODE, {})  # noqa: S102 - the exact code the shortcut runs
+
+        assert calls == [(["C:/venv/python.exe", "-m", "x"], CREATE_NO_WINDOW)]
+
+    def test_has_no_double_quotes(self) -> None:
+        """The code sits inside a double-quoted command-line argument."""
+        assert '"' not in RELAY_CODE
 
 
 class TestCommandLine:
@@ -91,9 +149,3 @@ class TestCommandLine:
         launch = LaunchCommand(Path("C:/Program Files/py/pythonw.exe"), "-m verdiclip")
 
         assert launch.command_line == f'"{launch.program}" -m verdiclip'
-
-    def test_omits_empty_arguments(self) -> None:
-        """An entry point needs no trailing space."""
-        launch = LaunchCommand(Path("C:/env/verdiclip-gui.exe"), "")
-
-        assert launch.command_line == f'"{launch.program}"'

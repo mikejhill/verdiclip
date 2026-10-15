@@ -402,7 +402,7 @@ class AppController(QObject):
     @staticmethod
     def _launch() -> LaunchCommand:
         """Return the console-less command that starts VerdiClip in the tray."""
-        return tray_launch(Path(sys.executable))
+        return tray_launch(Path(sys.executable), Path(sys.base_prefix))
 
     def _notify(self, title: str, message: str, *, warning: bool = False) -> None:
         """Show a tray balloon."""

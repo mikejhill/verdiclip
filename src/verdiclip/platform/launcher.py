@@ -1,11 +1,12 @@
-"""Pick a program that starts VerdiClip without opening a console window.
+"""Pick a way to start VerdiClip that opens no console window.
 
 Shortcuts, the Startup entry, and Explorer's Open with command all launch the
 tray app. Windows opens a console for any console-subsystem program started
 outside a terminal, and it stays open for as long as the program runs. A
-``pythonw.exe`` is not always a GUI program: uv can write one into a virtual
-environment as a copy of its console launcher. So each candidate is checked by
-its PE header rather than trusted by name.
+virtual environment's ``pythonw.exe`` is not always a GUI program: uv writes
+its own console launcher under that name. So candidates are checked by their
+PE header rather than trusted by name, and only Python's own executables are
+ever used.
 """
 
 from __future__ import annotations
@@ -17,8 +18,15 @@ from typing import Final
 
 logger = logging.getLogger(__name__)
 
-GUI_SCRIPT: Final = "verdiclip-gui.exe"
 MODULE_ARGUMENTS: Final = "-m verdiclip"
+CREATE_NO_WINDOW: Final = 0x08000000
+
+# Run by the base interpreter's pythonw.exe: start the environment's own
+# interpreter (passed as the first argument) with no console, then exit.
+RELAY_CODE: Final = (
+    "import subprocess,sys;"
+    f"subprocess.Popen(sys.argv[1:],creationflags={CREATE_NO_WINDOW})"
+)
 
 _PE_POINTER_OFFSET: Final = 0x3C
 _PE_SIGNATURE: Final = b"PE\0\0"
@@ -36,8 +44,7 @@ class LaunchCommand:
     @property
     def command_line(self) -> str:
         """Return the quoted command line, as a registry command expects."""
-        quoted = f'"{self.program}"'
-        return f"{quoted} {self.arguments}" if self.arguments else quoted
+        return f'"{self.program}" {self.arguments}'
 
 
 def is_windowless(program: Path) -> bool:
@@ -59,19 +66,23 @@ def is_windowless(program: Path) -> bool:
     return subsystem == _SUBSYSTEM_WINDOWS_GUI
 
 
-def tray_launch(executable: Path) -> LaunchCommand:
-    """Return the console-less way to start VerdiClip from ``executable``'s folder.
+def tray_launch(executable: Path, base_prefix: Path) -> LaunchCommand:
+    """Return the console-less way to start VerdiClip.
 
-    Prefers the environment's ``pythonw.exe``, then the ``verdiclip-gui``
-    entry point, and falls back to ``executable`` itself when neither is a
-    GUI program.
+    ``executable`` is the running interpreter and ``base_prefix`` the Python
+    installation behind its environment. A real ``pythonw.exe`` next to
+    ``executable`` runs the module directly. Otherwise the installation's
+    ``pythonw.exe`` relays to ``executable`` with no console window, which
+    keeps the environment's packages. With neither, ``executable`` runs the
+    module itself and Windows shows its console.
     """
-    candidates = (
-        LaunchCommand(executable.with_name("pythonw.exe"), MODULE_ARGUMENTS),
-        LaunchCommand(executable.with_name(GUI_SCRIPT), ""),
-    )
-    for candidate in candidates:
-        if is_windowless(candidate.program):
-            return candidate
-    logger.warning("No console-less launcher next to %s", executable)
+    pythonw = executable.with_name("pythonw.exe")
+    if is_windowless(pythonw):
+        return LaunchCommand(pythonw, MODULE_ARGUMENTS)
+    base_pythonw = base_prefix / "pythonw.exe"
+    if is_windowless(base_pythonw):
+        return LaunchCommand(
+            base_pythonw, f'-c "{RELAY_CODE}" "{executable}" {MODULE_ARGUMENTS}'
+        )
+    logger.warning("No console-less Python for %s", executable)
     return LaunchCommand(executable, MODULE_ARGUMENTS)
