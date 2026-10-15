@@ -277,8 +277,26 @@ class TestAfterCapture:
 
         saved = list((tmp_path / "out").glob("*.png"))
         assert len(saved) == 1
+        assert saved[0].stem.endswith(" Notepad")
         assert str(saved[0]) in caplog.text
         assert app.controller.editors == ()
+
+    def test_window_capture_saved_from_editor_is_named_after_window(
+        self, make_app: AppFactory, tmp_path: Path, qtbot: QtBot
+    ) -> None:
+        """Ctrl+S right after a window capture names the file after the window.
+
+        UX-OUT-02.
+        """
+        app = make_app()
+
+        app.press_hotkey("window")
+        qtbot.waitUntil(lambda: len(app.controller.editors) == 1)
+        editor: EditorWindow = app.controller.editors[0]
+        editor.action("save").trigger()
+
+        saved = list((tmp_path / "out").glob("*.png"))
+        assert [p.stem.split(" ", 2)[2] for p in saved] == ["Notepad"]
 
     def test_all_three_actions_run_together(
         self, make_app: AppFactory, tmp_path: Path, qtbot: QtBot
