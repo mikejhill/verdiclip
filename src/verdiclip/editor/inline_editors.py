@@ -193,6 +193,9 @@ class InlineEditors:
         box, wrapped and aligned as it will be drawn.
         """
         self.commit()
+        if note is not None:
+            # The style bar acts on the selection, so it must be this note
+            self._session.selection.set([note.id])
         self._note = note
         self._anchor = note.rect.top_left if note is not None else at
         self._style = (

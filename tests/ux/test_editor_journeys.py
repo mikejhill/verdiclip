@@ -1016,3 +1016,25 @@ class TestTextBoxes:
         assert note.text == "One two!"
         assert note.rect.width < 150
         assert user.window.canvas.editors.widget is None
+
+    def test_editing_text_selects_it_for_the_style_bar(self, user: User) -> None:
+        """Opening a note's editor selects it, so bar changes reach that note."""
+        user.key(Qt.Key.Key_T)
+        user.drag((40, 40), (200, 100))
+        user.type_text("A")
+        user.key(Qt.Key.Key_Escape)
+        user.drag((40, 160), (200, 240))
+        user.type_text("B")
+        user.key(Qt.Key.Key_Escape)
+        first, second = user.window.session.document.annotations
+        assert user.window.session.selection.ids == (second.id,)
+
+        user.click((60, 60))
+        self._style_action(user, "Size the box to its text").trigger()
+
+        a, b = user.window.session.document.annotations
+        assert isinstance(a, TextNote)
+        assert isinstance(b, TextNote)
+        assert a.auto_fit
+        assert not b.auto_fit
+        assert first.id == a.id
