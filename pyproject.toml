@@ -148,3 +148,6 @@ pytest_add_cli_args = [
     "-p", "tests.mutation_support", "-p", "no:randomly", "-p", "no:cacheprovider",
 ]
 mutate_only_covered_lines = true
+# Run each pytest session in a fresh fork of a server that never ran Qt: a
+# QApplication left over from an earlier session crashed CI runners
+process_isolation = "forkserver"

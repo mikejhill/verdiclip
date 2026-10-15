@@ -90,7 +90,8 @@ class MutationReport:
             "| Module | Score | Caught | Missed |",
             "| --- | ---: | ---: | ---: |",
         ]
-        ranked = sorted(self.modules.items(), key=lambda item: item[1].score)
+        tested = [(n, m) for n, m in self.modules.items() if m.total]
+        ranked = sorted(tested, key=lambda item: item[1].score)
         lines += [
             f"| `{name}` | {m.score:.1f}% | {m.detected} | {len(m.undetected)} |"
             for name, m in ranked
