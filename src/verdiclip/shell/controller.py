@@ -31,6 +31,7 @@ from verdiclip.exceptions import AppError, HotkeyError
 from verdiclip.output.delivery import ImageDelivery
 from verdiclip.platform.associations import DEFAULT_APPS_URI, FileAssociations
 from verdiclip.platform.hotkeys import Hotkey, HotkeyService
+from verdiclip.platform.launcher import LaunchCommand, tray_launch
 from verdiclip.platform.shortcuts import Shortcut, ShortcutRegistration
 from verdiclip.platform.startup import StartupRegistration
 from verdiclip.settings import IntegrationSettings, Settings, SettingsStore
@@ -366,7 +367,7 @@ class AppController(QObject):
         try:
             if self._settings.integration.open_with:
                 self._associations.register(
-                    f'{self._launch_command()} open "%1"', str(self._brand_icon())
+                    f'{self._launch().command_line} open "%1"', str(self._brand_icon())
                 )
             else:
                 self._associations.unregister()
@@ -392,25 +393,19 @@ class AppController(QObject):
 
     def _shortcut(self) -> Shortcut:
         """Return a shortcut that starts VerdiClip in the tray."""
+        launch = self._launch()
         return Shortcut(
-            target=self._runner(),
-            arguments="-m verdiclip",
+            target=launch.program,
+            arguments=launch.arguments,
             working_directory=Path.home(),
             icon=self._brand_icon(),
             description="Fast, faithful screenshot capture and annotation",
         )
 
-    @classmethod
-    def _launch_command(cls) -> str:
-        """Return the command line that starts VerdiClip in the tray."""
-        return f'"{cls._runner()}" -m verdiclip'
-
     @staticmethod
-    def _runner() -> Path:
-        """Return the console-less interpreter when there is one."""
-        executable = Path(sys.executable)
-        gui = executable.with_name("pythonw.exe")
-        return gui if gui.exists() else executable
+    def _launch() -> LaunchCommand:
+        """Return the console-less command that starts VerdiClip in the tray."""
+        return tray_launch(Path(sys.executable), Path(sys.base_prefix))
 
     def _notify(self, title: str, message: str, *, warning: bool = False) -> None:
         """Show a tray balloon."""
