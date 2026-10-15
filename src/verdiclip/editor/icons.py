@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Final
 
 from PySide6.QtCore import QPointF, QRectF, Qt
@@ -19,6 +20,11 @@ from PySide6.QtGui import (
 from verdiclip.editor.session import ToolId
 
 SIZE: Final = 48  # Drawn at 2x and scaled down for crisp high-DPI icons
+GEAR_TEETH: Final = 6
+GEAR_TIP_RADIUS: Final = 20.0
+GEAR_ROOT_RADIUS: Final = 14.5
+GEAR_TIP_HALF_ANGLE: Final = 11.0  # Degrees either side of a tooth's center
+GEAR_ROOT_HALF_ANGLE: Final = 19.0
 
 
 class IconFactory:
@@ -227,13 +233,26 @@ class IconFactory:
         p.drawPolygon(QPolygonF([QPointF(35, 24), QPointF(47, 24), QPointF(41, 33)]))
 
     def _draw_gear(self, p: QPainter) -> None:
-        """A cog wheel."""
-        p.save()
-        p.translate(24, 24)
-        p.setPen(self._pen(6))
-        for _ in range(8):
-            p.drawLine(QPointF(0, -13), QPointF(0, -18))
-            p.rotate(45)
-        p.restore()
-        p.drawEllipse(QPointF(24, 24), 12, 12)
-        p.drawEllipse(QPointF(24, 24), 4.5, 4.5)
+        """A cog: one outline with six broad, flat-topped teeth and a hub hole.
+
+        Broad teeth joined into a single outline read as a cog; thin spokes
+        around a ring read as a sun.
+        """
+        outline = QPolygonF()
+        for tooth in range(GEAR_TEETH):
+            center = tooth * 360 / GEAR_TEETH
+            for angle, radius in (
+                (center - GEAR_ROOT_HALF_ANGLE, GEAR_ROOT_RADIUS),
+                (center - GEAR_TIP_HALF_ANGLE, GEAR_TIP_RADIUS),
+                (center + GEAR_TIP_HALF_ANGLE, GEAR_TIP_RADIUS),
+                (center + GEAR_ROOT_HALF_ANGLE, GEAR_ROOT_RADIUS),
+            ):
+                outline.append(_polar(angle, radius))
+        p.drawPolygon(outline)
+        p.drawEllipse(QPointF(SIZE / 2, SIZE / 2), 6, 6)
+
+
+def _polar(degrees: float, radius: float) -> QPointF:
+    """Return the icon point ``radius`` from the center at ``degrees``."""
+    rad = math.radians(degrees)
+    return QPointF(SIZE / 2 + radius * math.sin(rad), SIZE / 2 - radius * math.cos(rad))

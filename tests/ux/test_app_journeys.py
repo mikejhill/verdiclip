@@ -342,14 +342,80 @@ class TestAfterCapture:
         assert saved[0].name in editor.windowTitle()
         assert QGuiApplication.clipboard().image().width() == 300
 
-    def test_tray_left_click_starts_region_capture(self, make_app: AppFactory) -> None:
+    def test_tray_left_click_starts_region_capture(
+        self, make_app: AppFactory, qtbot: QtBot
+    ) -> None:
         """UX-TRY-02: clicking the tray icon starts a region capture."""
         app = make_app()
 
         app.controller.tray.activated.emit(QSystemTrayIcon.ActivationReason.Trigger)
 
-        assert app.controller.capture.is_selecting
+        qtbot.waitUntil(lambda: app.controller.capture.is_selecting)
         app.controller.capture.cancel()
+
+    def test_tray_double_click_opens_folder_without_capturing(
+        self,
+        make_app: AppFactory,
+        qtbot: QtBot,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """UX-TRY-02: double-clicking the tray icon opens the screenshots folder.
+
+        The first click of the pair must not start a capture.
+        """
+        opened: list[QUrl] = []
+        monkeypatch.setattr(
+            QDesktopServices, "openUrl", lambda url: opened.append(url) or True
+        )
+        app = make_app()
+        tray = app.controller.tray
+
+        tray.activated.emit(QSystemTrayIcon.ActivationReason.Trigger)
+        tray.activated.emit(QSystemTrayIcon.ActivationReason.DoubleClick)
+        qtbot.wait(QApplication.doubleClickInterval() + 100)
+
+        assert not app.controller.capture.is_selecting
+        assert [url.toLocalFile() for url in opened] == [str(tmp_path / "out")]
+        assert (tmp_path / "out").is_dir()
+
+    def test_tray_menu_opens_screenshots_folder(
+        self, make_app: AppFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """UX-TRY-03: "Open screenshots folder" opens the save folder."""
+        opened: list[QUrl] = []
+        monkeypatch.setattr(
+            QDesktopServices, "openUrl", lambda url: opened.append(url) or True
+        )
+        app = make_app()
+
+        app.controller.tray.action("folder").trigger()
+
+        assert [url.toLocalFile() for url in opened] == [str(tmp_path / "out")]
+
+    def test_unopenable_screenshots_folder_is_reported(
+        self,
+        make_app: AppFactory,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """UX-TRY-03: a folder that can't be created or opened becomes a warning."""
+        opened: list[QUrl] = []
+        monkeypatch.setattr(
+            QDesktopServices, "openUrl", lambda url: opened.append(url) and False
+        )
+        app = make_app()
+
+        app.controller.open_screenshots_folder()
+        (tmp_path / "out").rmdir()
+        (tmp_path / "out").write_text("not a folder")
+        app.controller.open_screenshots_folder()
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 2
+        assert all("Can't open screenshots folder" in r.message for r in warnings)
+        assert len(opened) == 1
 
 
 class TestHotkeysAndSettings:

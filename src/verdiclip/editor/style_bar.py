@@ -35,6 +35,8 @@ PALETTE: Final = (
     Color(0x75, 0x75, 0x75),
     Color(0xFF, 0xFF, 0xFF),
 )
+# Room before a field's label, so it doesn't sit on the separator before it
+LABEL_MARGINS: Final = (8, 0, 2, 0)
 
 
 class StyleField(StrEnum):
@@ -176,7 +178,6 @@ class StyleBar(QToolBar):
         self._width_label = QLabel()
         self._width = QSpinBox()
         self._width.setRange(1, 60)
-        self._font_label = QLabel()
         self._font = QFontComboBox()
         self._font.setMaximumWidth(170)
         self._font.setToolTip("Font")
@@ -225,7 +226,7 @@ class StyleBar(QToolBar):
         self._group(StyleField.STROKE, self._stroke_label, self._stroke)
         self._group(StyleField.FILL, self._fill_label, self._fill)
         self._group(StyleField.WIDTH, self._width_label, self._width)
-        self._group(StyleField.FONT, self._font_label, self._font, self._font_size)
+        self._group(StyleField.FONT, self._font, self._font_size)
         for action, tip in ((self._bold, "Bold"), (self._italic, "Italic")):
             font = QFont()
             font.setBold(action is self._bold)
@@ -260,6 +261,9 @@ class StyleBar(QToolBar):
 
     def _group(self, field: StyleField, *widgets: QWidget) -> None:
         """Add ``widgets`` and remember their actions for show/hide."""
+        for widget in widgets:
+            if isinstance(widget, QLabel):
+                widget.setContentsMargins(*LABEL_MARGINS)
         actions = [self.addWidget(w) for w in widgets]
         actions.append(self.addSeparator())
         self._actions[field] = actions
