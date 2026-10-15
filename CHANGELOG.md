@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.5.0](https://github.com/mikejhill/verdiclip/compare/v0.4.2...v0.5.0) (2026-10-15)
+
+
+### Features
+
+* label runs from a checkout as the next version's beta ([#25](https://github.com/mikejhill/verdiclip/issues/25)) ([708f1fe](https://github.com/mikejhill/verdiclip/commit/708f1fede275015c55300670945b8b7c08cd005d))
+* name window screenshots after their window by default ([#26](https://github.com/mikejhill/verdiclip/issues/26)) ([f63117c](https://github.com/mikejhill/verdiclip/commit/f63117c27a8a7fe2a3c184359d9ac6fe337144cd))
+* start at sign-in and appear in Start via named shortcuts ([#22](https://github.com/mikejhill/verdiclip/issues/22)) ([8afb121](https://github.com/mikejhill/verdiclip/commit/8afb121d9e226b8b50eee4683ca2af99a1f5c4fd))
+
+
+### Bug Fixes
+
+* don't let a second checkout take over shortcuts or Open with ([#28](https://github.com/mikejhill/verdiclip/issues/28)) ([59b07d1](https://github.com/mikejhill/verdiclip/commit/59b07d16ec36c7006efc479face0e135ab8e153d))
+* launch shortcuts without a console window ([#27](https://github.com/mikejhill/verdiclip/issues/27)) ([29e7e71](https://github.com/mikejhill/verdiclip/commit/29e7e7153b595d6d39d7d5f8a1e53b74b2896301))
+* span monitors, capture with Settings open, full screen = current monitor ([34da576](https://github.com/mikejhill/verdiclip/commit/34da5765410117b86a9e64f2798bca906f30331f))
+
 ## [0.4.2](https://github.com/mikejhill/verdiclip/compare/v0.4.1...v0.4.2) (2026-10-11)
 
 
