@@ -57,6 +57,7 @@ class CaptureService(QObject):
         self._frozen: FrozenScreen | None = None
         self._last_mode: CaptureMode | None = None
         self._last_area: Rect | None = None
+        self._last_title = ""
 
     @property
     def is_selecting(self) -> bool:
@@ -153,7 +154,7 @@ class CaptureService(QObject):
             except AppError as err:
                 self._fail(err)
                 return
-            self._emit(image, mode, area, "Screenshot")
+            self._emit(image, mode, area, self._last_title)
 
     def cancel(self) -> None:
         """Close any open overlay without capturing."""
@@ -194,6 +195,7 @@ class CaptureService(QObject):
         """Record for repeat and emit the capture."""
         self._last_mode = mode
         self._last_area = area
+        self._last_title = title
         logger.info("Captured %s %s", mode.value, area)
         self.captured.emit(
             Capture(

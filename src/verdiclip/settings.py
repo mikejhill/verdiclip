@@ -16,7 +16,12 @@ from verdiclip.exceptions import SettingsError
 
 logger = logging.getLogger(__name__)
 
-SETTINGS_VERSION: Final = 1
+# 2: the default filename pattern gained {title}
+SETTINGS_VERSION: Final = 2
+
+DEFAULT_FILENAME_PATTERN: Final = "{date} {time} {title}"
+# The version-1 default; version-1 files that still hold it get the current one
+_LEGACY_FILENAME_PATTERN: Final = "Screenshot {date} {time}"
 
 
 class Theme(StrEnum):
@@ -70,7 +75,7 @@ class OutputSettings:
     directory: Path = field(
         default_factory=lambda: Path.home() / "Pictures" / "VerdiClip"
     )
-    filename_pattern: str = "Screenshot {date} {time}"
+    filename_pattern: str = DEFAULT_FILENAME_PATTERN
     image_format: ImageFormat = ImageFormat.PNG
     jpeg_quality: int = 90
 
@@ -241,6 +246,14 @@ class SettingsCodec:
     @staticmethod
     def _migrate(raw: dict[str, JsonValue]) -> None:
         """Upgrade older settings layouts in place."""
+        version = raw.get("version", 1)
+        output = raw.get("output")
+        if (
+            version == 1
+            and isinstance(output, dict)
+            and output.get("filename_pattern") == _LEGACY_FILENAME_PATTERN
+        ):
+            output["filename_pattern"] = DEFAULT_FILENAME_PATTERN
         capture = raw.get("capture")
         if not isinstance(capture, dict):
             return

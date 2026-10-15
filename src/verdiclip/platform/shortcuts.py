@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 
 from verdiclip import APP_NAME
 from verdiclip.exceptions import PlatformError
+from verdiclip.platform.launcher import LaunchCommand, is_other_install
 
 logger = logging.getLogger(__name__)
 
@@ -293,6 +294,28 @@ class ShortcutRegistration:
         except OSError as err:
             msg = f"Could not create shortcut {self._path}"
             raise PlatformError(msg) from err
+
+    def refresh(self, shortcut: Shortcut) -> bool:
+        """Write the shortcut unless it starts a different install that still exists.
+
+        Launching from a second checkout (a worktree or dev copy) must not take
+        over the installed shortcut. A missing shortcut, one that runs this same
+        environment (any interpreter in its folder), or one whose environment is
+        gone (a moved install) is rewritten. Returns whether it was written.
+        """
+        try:
+            current = self._backend.read(self._path)
+        except OSError as err:
+            msg = f"Could not read shortcut {self._path}"
+            raise PlatformError(msg) from err
+        if current is not None and is_other_install(
+            LaunchCommand(current.target, current.arguments),
+            LaunchCommand(shortcut.target, shortcut.arguments),
+        ):
+            logger.info("Leaving %s: it starts %s", self._path, current.target)
+            return False
+        self.enable(shortcut)
+        return True
 
     def disable(self) -> None:
         """Remove the shortcut, accepting an already absent file."""

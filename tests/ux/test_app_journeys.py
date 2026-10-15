@@ -38,15 +38,18 @@ from verdiclip.editor.window import EditorWindow
 from verdiclip.geometry import Rect
 from verdiclip.platform.associations import DEFAULT_APPS_URI, FileAssociations
 from verdiclip.platform.hotkeys import Hotkey, HotkeyService
-from verdiclip.platform.shortcuts import ShortcutRegistration
+from verdiclip.platform.launcher import LaunchCommand
+from verdiclip.platform.shortcuts import Shortcut, ShortcutRegistration
 from verdiclip.platform.startup import StartupRegistration
 from verdiclip.settings import (
+    CaptureSettings,
     IntegrationSettings,
     Settings,
     SettingsStore,
     StartupSettings,
     Theme,
 )
+from verdiclip.shell import controller as controller_module
 from verdiclip.shell.controller import AppController, ShellIntegration
 from verdiclip.shell.instance import SingleInstance
 from verdiclip.shell.settings_dialog import SettingsDialog
@@ -155,15 +158,29 @@ class App:
         raise AssertionError(msg)
 
 
+PYTHONW = Path("C:/Python/pythonw.exe")
+
 type AppFactory = Callable[..., App]
 
 
 @pytest.fixture
-def make_app(qtbot: QtBot, tmp_path: Path) -> Iterator[AppFactory]:
+def make_app(
+    qtbot: QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[AppFactory]:
     """Return a factory for a started app with the given settings."""
     created: list[App] = []
+    # Launcher choice depends on the host's Python; its own tests cover it
+    monkeypatch.setattr(
+        controller_module,
+        "tray_launch",
+        lambda *_args: LaunchCommand(PYTHONW, "-m verdiclip"),
+    )
 
-    def factory(settings: Settings | None = None, taken: set[str] | None = None) -> App:
+    def factory(
+        settings: Settings | None = None,
+        taken: set[str] | None = None,
+        links: FakeShortcutBackend | None = None,
+    ) -> App:
         store = SettingsStore(tmp_path / "settings.json")
         base = settings or Settings()
         store.save(
@@ -175,7 +192,7 @@ def make_app(qtbot: QtBot, tmp_path: Path) -> Iterator[AppFactory]:
         windows = FakeWindows([FakeWindow("Notepad", Rect(10, 10, 300, 200), 1)])
         windows.active = windows.windows[0]
         associations = FakeAssociationBackend()
-        links = FakeShortcutBackend()
+        links = links if links is not None else FakeShortcutBackend()
         folders = ShortcutFolders(tmp_path / "Startup", tmp_path / "Programs")
         controller = AppController(
             store,
@@ -277,8 +294,26 @@ class TestAfterCapture:
 
         saved = list((tmp_path / "out").glob("*.png"))
         assert len(saved) == 1
+        assert saved[0].stem.endswith(" Notepad")
         assert str(saved[0]) in caplog.text
         assert app.controller.editors == ()
+
+    def test_window_capture_saved_from_editor_is_named_after_window(
+        self, make_app: AppFactory, tmp_path: Path, qtbot: QtBot
+    ) -> None:
+        """Ctrl+S right after a window capture names the file after the window.
+
+        UX-OUT-02.
+        """
+        app = make_app()
+
+        app.press_hotkey("window")
+        qtbot.waitUntil(lambda: len(app.controller.editors) == 1)
+        editor: EditorWindow = app.controller.editors[0]
+        editor.action("save").trigger()
+
+        saved = list((tmp_path / "out").glob("*.png"))
+        assert [p.stem.split(" ", 2)[2] for p in saved] == ["Notepad"]
 
     def test_all_three_actions_run_together(
         self, make_app: AppFactory, tmp_path: Path, qtbot: QtBot
@@ -379,7 +414,7 @@ class TestHotkeysAndSettings:
 
         assert shortcut is not None
         assert shortcut.arguments == "-m verdiclip"
-        assert shortcut.target.name.lower().startswith("python")
+        assert shortcut.target == PYTHONW
         assert shortcut.icon == tmp_path / "verdiclip.ico"
         assert not QImage(str(shortcut.icon)).isNull()
         assert app.startup_shortcut not in app.links.files
@@ -404,7 +439,7 @@ class TestHotkeysAndSettings:
             replace(current, integration=IntegrationSettings(open_with=False))
         )
 
-        assert command.endswith('-m verdiclip open "%1"')
+        assert command == f'"{PYTHONW}" -m verdiclip open "%1"'
         assert icon == tmp_path / "verdiclip.ico"
         assert not QImage(str(icon)).isNull()
         assert command_key not in app.associations.keys
@@ -451,6 +486,30 @@ class TestHotkeysAndSettings:
         assert removed
         assert app.start_menu_shortcut in app.links.files
         assert app.store.load().integration.start_menu is True
+
+    def test_launch_keeps_shortcuts_of_another_install(
+        self, make_app: AppFactory, tmp_path: Path
+    ) -> None:
+        """UX-TRY-04, 08: a second checkout doesn't take over existing shortcuts."""
+        main = tmp_path / "main" / "pythonw.exe"
+        main.parent.mkdir()
+        main.touch()
+        installed = Shortcut(main, "-m verdiclip", tmp_path, main, "VerdiClip")
+        links = FakeShortcutBackend()
+        folders = ShortcutFolders(tmp_path / "Startup", tmp_path / "Programs")
+        links.files[folders.programs / "VerdiClip.lnk"] = installed
+        links.files[folders.startup / "VerdiClip.lnk"] = installed
+        settings = Settings(startup=StartupSettings(run_at_login=True))
+
+        app = make_app(settings, links=links)
+        app.controller.apply_settings(
+            replace(
+                app.controller.settings, capture=CaptureSettings(copy_to_clipboard=True)
+            )
+        )
+
+        assert app.links.files[app.start_menu_shortcut] == installed
+        assert app.links.files[app.startup_shortcut] == installed
 
     def test_open_with_is_refreshed_at_start(self, make_app: AppFactory) -> None:
         """UX-TRY-07: a moved install re-registers its current command on launch."""

@@ -510,6 +510,23 @@ class TestImmediateCaptures:
         assert desktop.frames == 2
         assert b.image.pixelColor(2, 2) != a.image.pixelColor(2, 2)
 
+    def test_repeat_clicked_window_keeps_its_title(
+        self, service: CaptureService, qtbot: QtBot
+    ) -> None:
+        """Repeating a clicked-window capture keeps the window's title for naming.
+
+        UX-CAP-09.
+        """
+        service.capture_region()
+        with qtbot.waitSignal(service.captured) as first:
+            Overlay(service).click((110, 110))
+
+        with qtbot.waitSignal(service.captured) as second:
+            service.repeat_last()
+
+        assert CaptureOf.signal(first).mode is CaptureMode.WINDOW
+        assert CaptureOf.signal(second).title == "Editor"
+
     def test_repeat_with_nothing_to_repeat_opens_overlay(
         self, service: CaptureService
     ) -> None:

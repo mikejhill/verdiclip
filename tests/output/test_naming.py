@@ -25,9 +25,19 @@ class TestFilenamePattern:
             ("{title}", 'A/B:*?<>|"', "A_B_______.png"),
             ("...", "", "Screenshot.png"),
             ("{title}", "", "Screenshot.png"),
-            (" ", "", "Screenshot 2026-01-02 03-04-05.png"),
+            (" ", "Notepad", "2026-01-02 03-04-05 Notepad.png"),
+            ("{title}", "  Padded  ", "Padded.png"),
+            ("{title}", "x" * 79 + " tail", "x" * 79 + ".png"),
         ],
-        ids=["tokens", "invalid-chars", "empty-stem", "empty-title", "empty-pattern"],
+        ids=[
+            "tokens",
+            "invalid-chars",
+            "empty-stem",
+            "empty-title",
+            "empty-pattern",
+            "title-trimmed",
+            "long-title-cut",
+        ],
     )
     def test_expand(
         self, tmp_path: Path, pattern: str, title: str, expected: str

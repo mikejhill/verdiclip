@@ -108,6 +108,11 @@ class StartupRegistration:
         self._shortcut.enable(shortcut)
         self._remove_legacy()
 
+    def refresh(self, shortcut: Shortcut) -> None:
+        """Rewrite the shortcut as ``ShortcutRegistration.refresh`` allows."""
+        self._shortcut.refresh(shortcut)
+        self._remove_legacy()
+
     def disable(self) -> None:
         """Remove the shortcut and any legacy Run-key value."""
         self._shortcut.disable()

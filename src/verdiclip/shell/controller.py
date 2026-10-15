@@ -31,6 +31,7 @@ from verdiclip.exceptions import AppError, HotkeyError
 from verdiclip.output.delivery import ImageDelivery
 from verdiclip.platform.associations import DEFAULT_APPS_URI, FileAssociations
 from verdiclip.platform.hotkeys import Hotkey, HotkeyService
+from verdiclip.platform.launcher import LaunchCommand, tray_launch
 from verdiclip.platform.shortcuts import Shortcut, ShortcutRegistration
 from verdiclip.platform.startup import StartupRegistration
 from verdiclip.settings import IntegrationSettings, Settings, SettingsStore
@@ -116,13 +117,14 @@ class AppController(QObject):
         self._tray.show()
         self._apply_hotkeys()
         # Re-assert Windows registrations so they survive moved installs and
-        # registrations that were lost or written somewhere else
+        # registrations that were lost; entries that start another existing
+        # install (the user's main checkout, seen from a dev copy) are kept
         if self._settings.startup.run_at_login:
-            self._apply_startup()
+            self._apply_startup(keep_others=True)
         if self._settings.integration.open_with:
-            self._apply_open_with()
+            self._apply_open_with(keep_others=True)
         if self._settings.integration.start_menu:
-            self._apply_start_menu()
+            self._apply_start_menu(keep_others=True)
         logger.info("%s %s ready", APP_NAME, VERSION)
 
     def shutdown(self) -> None:
@@ -298,7 +300,8 @@ class AppController(QObject):
             editor.set_confirm_close(confirm=settings.editor.confirm_unsaved_close)
         ThemeManager.apply(settings.appearance.theme)
         self._capture.set_show_magnifier(show=settings.capture.show_magnifier)
-        self._apply_startup()
+        # Only turning it on (or off) moves it; saving other settings keeps it
+        self._apply_startup(keep_others=settings.startup == previous.startup)
         if settings.integration.open_with != previous.integration.open_with:
             self._apply_open_with()
         if settings.integration.start_menu != previous.integration.start_menu:
@@ -351,32 +354,48 @@ class AppController(QObject):
                 "Some hotkeys are unavailable", "\n".join(problems), warning=True
             )
 
-    def _apply_startup(self) -> None:
-        """Add or remove the run-at-login shortcut."""
+    def _apply_startup(self, *, keep_others: bool = False) -> None:
+        """Add or remove the run-at-login shortcut.
+
+        ``keep_others`` leaves a shortcut that starts another existing install.
+        """
         try:
-            if self._settings.startup.run_at_login:
+            if self._settings.startup.run_at_login and keep_others:
+                self._startup.refresh(self._shortcut())
+            elif self._settings.startup.run_at_login:
                 self._startup.enable(self._shortcut())
             else:
                 self._startup.disable()
         except AppError as err:
             self._notify("Could not change startup setting", str(err), warning=True)
 
-    def _apply_open_with(self) -> None:
-        """Add or remove VerdiClip from Explorer's Open with menu."""
+    def _apply_open_with(self, *, keep_others: bool = False) -> None:
+        """Add or remove VerdiClip from Explorer's Open with menu.
+
+        ``keep_others`` leaves a registration that runs another existing install.
+        """
         try:
             if self._settings.integration.open_with:
-                self._associations.register(
-                    f'{self._launch_command()} open "%1"', str(self._brand_icon())
-                )
+                command = f'{self._launch().command_line} open "%1"'
+                icon = str(self._brand_icon())
+                if keep_others:
+                    self._associations.refresh(command, icon)
+                else:
+                    self._associations.register(command, icon)
             else:
                 self._associations.unregister()
         except AppError as err:
             self._notify("Could not change Open with", str(err), warning=True)
 
-    def _apply_start_menu(self) -> None:
-        """Add or remove VerdiClip's Start menu shortcut."""
+    def _apply_start_menu(self, *, keep_others: bool = False) -> None:
+        """Add or remove VerdiClip's Start menu shortcut.
+
+        ``keep_others`` leaves a shortcut that starts another existing install.
+        """
         try:
-            if self._settings.integration.start_menu:
+            if self._settings.integration.start_menu and keep_others:
+                self._start_menu.refresh(self._shortcut())
+            elif self._settings.integration.start_menu:
                 self._start_menu.enable(self._shortcut())
             else:
                 self._start_menu.disable()
@@ -392,25 +411,19 @@ class AppController(QObject):
 
     def _shortcut(self) -> Shortcut:
         """Return a shortcut that starts VerdiClip in the tray."""
+        launch = self._launch()
         return Shortcut(
-            target=self._runner(),
-            arguments="-m verdiclip",
+            target=launch.program,
+            arguments=launch.arguments,
             working_directory=Path.home(),
             icon=self._brand_icon(),
             description="Fast, faithful screenshot capture and annotation",
         )
 
-    @classmethod
-    def _launch_command(cls) -> str:
-        """Return the command line that starts VerdiClip in the tray."""
-        return f'"{cls._runner()}" -m verdiclip'
-
     @staticmethod
-    def _runner() -> Path:
-        """Return the console-less interpreter when there is one."""
-        executable = Path(sys.executable)
-        gui = executable.with_name("pythonw.exe")
-        return gui if gui.exists() else executable
+    def _launch() -> LaunchCommand:
+        """Return the console-less command that starts VerdiClip in the tray."""
+        return tray_launch(Path(sys.executable), Path(sys.base_prefix))
 
     def _notify(self, title: str, message: str, *, warning: bool = False) -> None:
         """Show a tray balloon."""

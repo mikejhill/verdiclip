@@ -8,9 +8,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import ClassVar, Final
 
-from verdiclip.settings import ImageFormat
+from verdiclip.settings import DEFAULT_FILENAME_PATTERN, ImageFormat
 
 _INVALID_CHARS: Final = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+# Long browser titles would otherwise push paths past Windows' MAX_PATH
+MAX_TITLE_CHARS: Final = 80
 
 
 class FilenamePattern:
@@ -19,7 +21,7 @@ class FilenamePattern:
     TOKENS: ClassVar[frozenset[str]] = frozenset({"date", "time", "title", "counter"})
 
     def __init__(self, pattern: str) -> None:
-        self._pattern = pattern.strip() or "Screenshot {date} {time}"
+        self._pattern = pattern.strip() or DEFAULT_FILENAME_PATTERN
         self._validate()
 
     @property
@@ -57,7 +59,7 @@ class FilenamePattern:
         text = self._pattern.format(
             date=moment.strftime("%Y-%m-%d"),
             time=moment.strftime("%H-%M-%S"),
-            title=title or "Screenshot",
+            title=title.strip()[:MAX_TITLE_CHARS].rstrip() or "Screenshot",
             counter=counter,
         )
         cleaned = _INVALID_CHARS.sub("_", text).strip(" .")
