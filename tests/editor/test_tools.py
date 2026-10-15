@@ -394,6 +394,25 @@ class TestHandleDrag:
         assert session.history.undo_text == "Draw"
 
 
+class TestDrawingToolCancel:
+    """Esc during a handle drag with a drawing tool."""
+
+    def test_cancel_ends_a_handle_drag(self, session: EditorSession) -> None:
+        """Later motion after Esc no longer resizes the shape."""
+        shape = RectangleShape(rect=Rect(20, 100, 50, 50))
+        session.history.execute(AddAnnotations([shape], "Draw"))
+        session.selection.set([shape.id])
+        tool = RectangleTool(session, FakeToolHost())
+        tool.press(Pointer(Point(70, 150)))
+        tool.move(Pointer(Point(90, 170)))
+        resized = session.document.annotations[0]
+
+        assert tool.cancel()
+        tool.move(Pointer(Point(200, 250)))
+
+        assert session.document.annotations == (resized,)
+
+
 class TestTextTool:
     """Text editor requests."""
 
@@ -454,6 +473,22 @@ class TestTextTool:
         assert not tool.cancel()
         tool.release(Pointer(Point(300, 20)))
         assert host.text_calls == []
+
+    def test_cancel_ends_a_handle_drag(self, session: EditorSession) -> None:
+        """Esc mid-resize stops the drag, so later motion changes nothing."""
+        note = TextNote(rect=Rect(20, 100, 50, 50), text="Note")
+        session.history.execute(AddAnnotations([note], "Draw"))
+        session.selection.set([note.id])
+        tool = TextTool(session, FakeToolHost())
+        tool.press(Pointer(Point(70, 150)))
+        tool.move(Pointer(Point(90, 170)))
+        resized = session.document.annotations[0]
+
+        assert tool.cancel()
+        tool.move(Pointer(Point(200, 250)))
+
+        assert session.document.annotations == (resized,)
+        assert not tool.cancel()
 
 
 class TestCounterTool:

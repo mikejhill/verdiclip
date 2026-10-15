@@ -430,6 +430,7 @@ class DrawingTool(Tool):
     @override
     def cancel(self) -> bool:
         """Abandon the annotation being drawn, or clear the selection."""
+        self._handles.end()
         if self._preview is not None or self._origin is not None:
             self._origin = None
             self._preview = None
@@ -652,7 +653,10 @@ class TextTool(Tool):
 
     @override
     def cancel(self) -> bool:
-        """Abandon the box being dragged."""
+        """Abandon the box or handle drag in progress."""
+        if self._handles.active:
+            self._handles.end()
+            return True
         if self._origin is None:
             return False
         self._origin = None
