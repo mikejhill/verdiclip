@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Final, Protocol, override
+from typing import Protocol, override
 
 from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
@@ -25,18 +25,16 @@ from verdiclip.document.commands import (
     RemoveAnnotations,
     ReplaceAnnotations,
 )
-from verdiclip.document.style import HAlign, Style, VAlign
+from verdiclip.document.style import Style, VAlign
 from verdiclip.editor.session import EditorSession, ToolId
 from verdiclip.geometry import Point, Rect
-from verdiclip.render.renderer import ELLIPSE_LABEL_INSET, QtConvert, Renderer
-
-_EDITOR_ALIGN: Final = {
-    HAlign.LEFT: Qt.AlignmentFlag.AlignLeft,
-    HAlign.CENTER: Qt.AlignmentFlag.AlignHCenter,
-    HAlign.RIGHT: Qt.AlignmentFlag.AlignRight,
-}
-# Where the editor sits in leftover vertical space: 0 top, 0.5 middle, 1 bottom
-_EDITOR_V_SHARE: Final = {VAlign.TOP: 0.0, VAlign.MIDDLE: 0.5, VAlign.BOTTOM: 1.0}
+from verdiclip.render.renderer import (
+    ELLIPSE_LABEL_INSET,
+    H_ALIGN,
+    V_SHARE,
+    QtConvert,
+    Renderer,
+)
 
 
 class CanvasHost(Protocol):
@@ -204,7 +202,7 @@ class InlineEditors:
         if self._fixed is not None:
             editor = self._wrapping_editor(
                 note.text if note is not None else "",
-                _EDITOR_ALIGN[self._style.h_align],
+                H_ALIGN[self._style.h_align],
                 "Type text (Esc to finish)",
             )
             self._open(editor, transparent=True)
@@ -334,11 +332,11 @@ class InlineEditors:
             box = self._box
             inset = 0.0 if isinstance(box, RectangleShape) else ELLIPSE_LABEL_INSET
             area = self._canvas.rect_to_view(Renderer.label_area(box, inset=inset))
-            share = _EDITOR_V_SHARE[VAlign.MIDDLE]
+            share = V_SHARE[VAlign.MIDDLE]
         elif self._fixed is not None:
             inner = self._fixed.adjusted(-Renderer.text_inset(self._style))
             area = self._canvas.rect_to_view(inner)
-            share = _EDITOR_V_SHARE[self._style.v_align]
+            share = V_SHARE[self._style.v_align]
         else:  # pragma: no cover - a wrapping editor always has a box
             return
         widget.document().setDocumentMargin(0)

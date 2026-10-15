@@ -306,6 +306,15 @@ class TestTextNote:
         assert not replace(note, style=Style(width=10)).hit_test(Point(-4, -4), 0)
         assert note.geometry_json()["auto_fit"] is True
 
+    def test_shadow_grows_bounds_not_hit_area(self) -> None:
+        """Shadows extend bounds down and right; clicking the shadow misses."""
+        note = TextNote(rect=Rect(0, 0, 20, 20), text="t", style=Style(shadow=True))
+        box = RectangleShape(rect=Rect(0, 0, 20, 20), style=Style(width=2, shadow=True))
+
+        assert note.bounds == Rect(0, 0, 28, 28)
+        assert box.bounds == Rect(-1, -1, 30, 30)
+        assert not note.hit_test(Point(25, 25), 0)
+
 
 class TestCounterMarker:
     """Counter circular geometry and labels."""

@@ -275,6 +275,12 @@ class RectangleShape(LabeledBox):
     kind: ClassVar[AnnotationKind] = AnnotationKind.RECTANGLE
 
     @override
+    @property
+    def bounds(self) -> Rect:
+        """Return the rectangle grown by half the stroke and its shadow."""
+        return self.style.shadowed(self.rect.adjusted(self.style.width / 2))
+
+    @override
     def hit_test(self, point: Point, tolerance: float) -> bool:
         """Return True on the outline, or anywhere inside when solid."""
         grow = self.style.width / 2 + tolerance
@@ -520,15 +526,20 @@ class TextNote(Annotation):
     @override
     @property
     def bounds(self) -> Rect:
-        """Return the text box, grown by half the outline when there is one."""
+        """Return the text box, grown by half its outline and its shadow."""
+        return self.style.shadowed(self.box_bounds)
+
+    @property
+    def box_bounds(self) -> Rect:
+        """Return the drawn box: the rectangle plus the outer half of the outline."""
         if self.has_outline:
             return self.rect.adjusted(self.style.width / 2)
         return self.rect
 
     @override
     def hit_test(self, point: Point, tolerance: float) -> bool:
-        """Return True anywhere in the text box."""
-        return self.bounds.adjusted(tolerance).contains(point)
+        """Return True anywhere in the text box (not its shadow)."""
+        return self.box_bounds.adjusted(tolerance).contains(point)
 
     @override
     def translated(self, delta: Point) -> Self:

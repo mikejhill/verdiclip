@@ -21,6 +21,8 @@ from PySide6.QtGui import (
     QPainterPathStroker,
     QPen,
     QPolygonF,
+    QTextLayout,
+    QTextOption,
 )
 
 from verdiclip.document.annotations import (
@@ -37,21 +39,29 @@ from verdiclip.document.annotations import (
     TextNote,
 )
 from verdiclip.document.document import Document
-from verdiclip.document.style import Color, HAlign, Style, VAlign
+from verdiclip.document.style import (
+    SHADOW_BLUR,
+    SHADOW_OFFSET,
+    Color,
+    HAlign,
+    Style,
+    VAlign,
+)
 from verdiclip.geometry import Point, Rect
 
 logger = logging.getLogger(__name__)
 
 TEXT_PADDING: Final = 4.0
-SHADOW_OFFSET: Final = 4.0
 # Concentric strokes, widest first, that fade the shadow's edge
-_SHADOW_SPREADS: Final = (8.0, 5.0, 2.0)
+_SHADOW_SPREADS: Final = (2 * SHADOW_BLUR, 5.0, 2.0)
 _SHADOW_ALPHA: Final = 28
-_H_ALIGN: Final = {
+H_ALIGN: Final = {
     HAlign.LEFT: Qt.AlignmentFlag.AlignLeft,
     HAlign.CENTER: Qt.AlignmentFlag.AlignHCenter,
     HAlign.RIGHT: Qt.AlignmentFlag.AlignRight,
 }
+# Where wrapped text sits in leftover height: 0 top, 0.5 middle, 1 bottom
+V_SHARE: Final = {VAlign.TOP: 0.0, VAlign.MIDDLE: 0.5, VAlign.BOTTOM: 1.0}
 _V_ALIGN: Final = {
     VAlign.TOP: Qt.AlignmentFlag.AlignTop,
     VAlign.MIDDLE: Qt.AlignmentFlag.AlignVCenter,
@@ -161,12 +171,9 @@ class Renderer:
         return annotation
 
     @staticmethod
-    def text_flags(style: Style, *, wrap: bool) -> int:
+    def text_flags(style: Style) -> int:
         """Return the Qt alignment flags for text drawn in ``style``."""
-        flags = _H_ALIGN[style.h_align] | _V_ALIGN[style.v_align]
-        if wrap:
-            flags |= Qt.TextFlag.TextWordWrap
-        return int(flags.value)
+        return int((H_ALIGN[style.h_align] | _V_ALIGN[style.v_align]).value)
 
     # Dispatch
 
@@ -386,11 +393,36 @@ class Renderer:
         painter.save()
         if not note.auto_fit:
             painter.setClipRect(QtConvert.rect(note.rect))
-        painter.setFont(QtConvert.font(note.style))
+        font = QtConvert.font(note.style)
+        painter.setFont(font)
         painter.setPen(color)
-        flags = self.text_flags(note.style, wrap=not note.auto_fit)
-        painter.drawText(QtConvert.rect(area), flags, note.text)
+        if note.auto_fit:
+            flags = self.text_flags(note.style)
+            painter.drawText(QtConvert.rect(area), flags, note.text)
+        else:
+            self._draw_wrapped(painter, note, area, font)
         painter.restore()
+
+    @staticmethod
+    def _draw_wrapped(
+        painter: QPainter, note: TextNote, area: Rect, font: QFont
+    ) -> None:
+        """Draw text wrapped like the inline editor: at words, else anywhere."""
+        option = QTextOption(H_ALIGN[note.style.h_align])
+        option.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        # QTextLayout breaks lines only at the Unicode line separator
+        layout = QTextLayout(note.text.replace("\n", "\u2028"), font)
+        layout.setTextOption(option)
+        layout.beginLayout()
+        height = 0.0
+        while (line := layout.createLine()).isValid():
+            line.setLineWidth(area.width)
+            line.setPosition(QPointF(0, height))
+            height += line.height()
+        layout.endLayout()
+        share = V_SHARE[note.style.v_align]
+        top = area.y + (area.height - height) * share
+        layout.draw(painter, QPointF(area.x, top))
 
     @staticmethod
     def _paint_counter(painter: QPainter, marker: CounterMarker) -> None:

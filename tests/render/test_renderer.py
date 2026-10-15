@@ -410,3 +410,37 @@ class TestTextBoxesAndShadows:
             for y in range(int(bounds.top), int(bounds.bottom))
             for x in range(int(bounds.left), int(bounds.right))
         )
+
+    def test_long_words_wrap_like_the_editor(
+        self, qapp: QApplication, document: Document
+    ) -> None:
+        """A word wider than a fixed box breaks across lines instead of clipping."""
+        assert qapp is not None
+        box = Rect(100, 100, 80, 150)
+        note = TextNote(rect=box, text="abcdefghijklmnopqrstuvwxyz", auto_fit=False)
+        document.insert([(0, note)])
+
+        image = Renderer().flatten(document)
+
+        rows = [
+            y
+            for y in range(int(box.top), int(box.bottom))
+            if self._dark_columns(
+                image, Rect(box.x, y, box.width, 1), QtConvert.color(RED)
+            )
+        ]
+        assert rows[-1] - rows[0] > 3 * note.style.font_size
+
+    def test_crop_keeps_a_visible_shadow(
+        self, qapp: QApplication, document: Document
+    ) -> None:
+        """A crop showing only an annotation's shadow still exports that shadow."""
+        assert qapp is not None
+        shape = RectangleShape(rect=Rect(20, 20, 40, 40), style=Style(shadow=True))
+        document.insert([(0, shape)])
+        document.set_crop(Rect(64, 30, 20, 20))
+
+        image = Renderer().flatten(document)
+
+        assert document.visible_annotations == (shape,)
+        assert image.pixelColor(0, 10) != QColor("white")
