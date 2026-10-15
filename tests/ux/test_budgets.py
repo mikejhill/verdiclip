@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import statistics
 from collections.abc import Callable
 
@@ -26,6 +27,16 @@ from verdiclip.settings import OutputSettings
 pytestmark = [pytest.mark.ux, pytest.mark.ux_budget]
 
 UHD = (3840, 2160)
+
+
+@pytest.fixture(autouse=True)
+def settled_garbage() -> None:
+    """Collect earlier tests' garbage first, so no budget pays for it.
+
+    Without this, a budget depends on which tests ran before it: a collection
+    of their leftover images can land inside the measured interval.
+    """
+    gc.collect()
 
 
 @pytest.fixture

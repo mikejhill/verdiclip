@@ -57,3 +57,4 @@ htmlcov/
 # UX journey snapshots (regenerate with: uv run poe ux-snapshots)
 docs/ux/snapshots/
 docs/ux/gallery/
+mutants/

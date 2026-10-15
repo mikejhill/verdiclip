@@ -7,6 +7,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+import tests.mutation_support  # noqa: F401  # Before verdiclip: see its docstring
 from PySide6.QtGui import QColor, QGuiApplication, QImage, QPainter
 
 from verdiclip.document.document import Document
