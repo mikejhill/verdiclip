@@ -376,7 +376,7 @@ class TestAfterCapture:
         qtbot.wait(QApplication.doubleClickInterval() + 100)
 
         assert not app.controller.capture.is_selecting
-        assert [url.toLocalFile() for url in opened] == [str(tmp_path / "out")]
+        assert [Path(url.toLocalFile()) for url in opened] == [tmp_path / "out"]
         assert (tmp_path / "out").is_dir()
 
     def test_tray_menu_opens_screenshots_folder(
@@ -391,7 +391,7 @@ class TestAfterCapture:
 
         app.controller.tray.action("folder").trigger()
 
-        assert [url.toLocalFile() for url in opened] == [str(tmp_path / "out")]
+        assert [Path(url.toLocalFile()) for url in opened] == [tmp_path / "out"]
 
     def test_unopenable_screenshots_folder_is_reported(
         self,
