@@ -476,3 +476,27 @@ class TestTextBoxesAndShadows:
             shadowed.pixelColor(*past_outline).lightness()
             < flat.pixelColor(*past_outline).lightness()
         )
+
+    @pytest.mark.parametrize("kind", ["text", "label"])
+    def test_box_clipping_keeps_the_callers_clip(
+        self, qapp: QApplication, kind: str
+    ) -> None:
+        """Clipping text to its box never paints outside the canvas's crop clip."""
+        assert qapp is not None
+        image = QImage(200, 100, QImage.Format.Format_ARGB32)
+        image.fill(QColor("white"))
+        rect = Rect(0, 0, 200, 100)
+        style = Style(font_size=40, h_align=HAlign.RIGHT)
+        annotation: Annotation = (
+            TextNote(rect=rect, text="WWW", style=style, auto_fit=False)
+            if kind == "text"
+            else RectangleShape(rect=rect, text="WWWWWW", style=style)
+        )
+        painter = QPainter(image)
+        painter.setClipRect(0, 0, 100, 100)
+        Renderer().paint(painter, image, annotation)
+        painter.end()
+
+        assert not self._dark_columns(
+            image, Rect(110, 0, 80, 100), QtConvert.color(RED)
+        )

@@ -359,7 +359,7 @@ class Renderer:
             return
         area = QtConvert.rect(self.label_area(box, inset=inset))
         painter.save()
-        painter.setClipRect(QtConvert.rect(box.rect))
+        painter.setClipRect(QtConvert.rect(box.rect), Qt.ClipOperation.IntersectClip)
         painter.setFont(QtConvert.font(box.style))
         painter.setPen(QtConvert.color(box.style.stroke))
         flags = Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap
@@ -398,7 +398,9 @@ class Renderer:
         area = note.rect.adjusted(-inset).translated(Point(offset, offset))
         painter.save()
         if not note.auto_fit:
-            painter.setClipRect(QtConvert.rect(note.rect))
+            painter.setClipRect(
+                QtConvert.rect(note.rect), Qt.ClipOperation.IntersectClip
+            )
         font = QtConvert.font(note.style)
         painter.setFont(font)
         painter.setPen(color)
