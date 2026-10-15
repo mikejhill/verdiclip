@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 from operator import methodcaller
+from pathlib import Path
 
 import pytest
 
@@ -16,6 +17,7 @@ from verdiclip.platform.associations import (
     RegistryValue,
     WinRegAssociations,
 )
+from verdiclip.platform.launcher import RELAY_CODE
 
 COMMAND = '"C:\\VerdiClip\\pythonw.exe" -m verdiclip open "%1"'
 ICON = "C:\\VerdiClip\\verdiclip.ico"
@@ -82,6 +84,62 @@ class TestFileAssociations:
         registered = backend.keys[r"Software\RegisteredApplications"]
         assert registered["VerdiClip"] == r"Software\VerdiClip\Capabilities"
         assert backend.notified == 1
+
+    @pytest.mark.parametrize(
+        ("previous", "written"),
+        [
+            (None, True),
+            (("own", "python.exe"), True),
+            (("gone", "pythonw.exe"), True),
+            (("other", "pythonw.exe"), False),
+        ],
+        ids=["missing", "same_folder", "gone", "other_install"],
+    )
+    def test_refresh_keeps_only_another_existing_install(
+        self, tmp_path: Path, previous: tuple[str, str] | None, *, written: bool
+    ) -> None:
+        """A dev copy doesn't take over Open with; missing or stale ones are redone."""
+        for folder in ("own", "other"):
+            (tmp_path / folder).mkdir()
+            (tmp_path / folder / "pythonw.exe").touch()
+
+        def command(folder: str, program: str) -> str:
+            return f'"{tmp_path / folder / program}" -m verdiclip open "%1"'
+
+        registrations = FileAssociations(FakeAssociationBackend())
+        old = None if previous is None else command(*previous)
+        if old is not None:
+            registrations.register(old, ICON)
+        new = command("own", "pythonw.exe")
+
+        assert registrations.refresh(new, ICON) is written
+
+        assert registrations.registered_command() == (new if written else old)
+
+    @pytest.mark.parametrize(
+        ("installed_environment", "written"),
+        [("main", False), ("gone", True), ("worktree", True)],
+    )
+    def test_refresh_tells_relay_commands_apart_by_environment(
+        self, tmp_path: Path, installed_environment: str, *, written: bool
+    ) -> None:
+        """Relays share the base pythonw.exe; the environment decides ownership."""
+        for environment in ("main", "worktree"):
+            (tmp_path / environment).mkdir()
+            (tmp_path / environment / "python.exe").touch()
+
+        def relay(environment: str) -> str:
+            base = tmp_path / "base" / "pythonw.exe"
+            interpreter = tmp_path / environment / "python.exe"
+            return f'"{base}" -c "{RELAY_CODE}" "{interpreter}" -m verdiclip open "%1"'
+
+        registrations = FileAssociations(FakeAssociationBackend())
+        registrations.register(relay(installed_environment), ICON)
+
+        assert registrations.refresh(relay("worktree"), ICON) is written
+
+        expected = "worktree" if written else installed_environment
+        assert registrations.registered_command() == relay(expected)
 
     def test_unregister_removes_only_verdiclip_entries(self) -> None:
         """Other apps' Open with entries and registrations survive."""

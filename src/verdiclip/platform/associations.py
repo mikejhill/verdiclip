@@ -19,6 +19,7 @@ if sys.platform == "win32":
 
 from verdiclip import APP_NAME
 from verdiclip.exceptions import PlatformError
+from verdiclip.platform.launcher import LaunchCommand, is_other_install
 
 logger = logging.getLogger(__name__)
 
@@ -203,6 +204,27 @@ class FileAssociations:
             msg = "Could not add VerdiClip to Open with"
             raise PlatformError(msg) from err
         logger.info("Registered %s for %s", PROG_ID, ", ".join(EXTENSIONS))
+
+    def refresh(self, command: str, icon: str) -> bool:
+        """Register unless another install that still exists is registered.
+
+        Same rule as ``ShortcutRegistration.refresh``: a missing registration,
+        one that runs this environment, or one whose environment is gone is
+        (re)written; another copy of the app (a development
+        checkout, say) does not take over the installed one. Returns whether
+        the registration was written.
+
+        Raises:
+            PlatformError: If the registry cannot be read or written.
+        """
+        current = self.registered_command()
+        if current is not None and is_other_install(
+            LaunchCommand.parse(current), LaunchCommand.parse(command)
+        ):
+            logger.info("Leaving Open with: it runs %s", current)
+            return False
+        self.register(command, icon)
+        return True
 
     def unregister(self) -> None:
         """Remove everything ``register`` wrote; absent entries are fine.

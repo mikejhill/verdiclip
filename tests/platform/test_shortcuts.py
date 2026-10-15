@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from dataclasses import replace
 from functools import partial
 from pathlib import Path
 
@@ -10,6 +11,7 @@ import pytest
 
 from verdiclip.exceptions import PlatformError
 from verdiclip.platform import shortcuts
+from verdiclip.platform.launcher import RELAY_CODE
 from verdiclip.platform.shortcuts import (
     KnownFolder,
     ShellLinkBackend,
@@ -75,7 +77,80 @@ class TestShortcutRegistration:
         registration.disable()
         assert not registration.is_enabled()
 
-    @pytest.mark.parametrize("operation", ["read", "enable", "disable"])
+    def test_refresh_writes_a_missing_shortcut(self, tmp_path: Path) -> None:
+        """With no shortcut yet, refresh creates it."""
+        backend = FakeShortcutBackend()
+        registration = ShortcutRegistration(tmp_path, backend)
+
+        assert registration.refresh(sample(tmp_path))
+
+        assert backend.files == {registration.path: sample(tmp_path)}
+
+    def test_refresh_keeps_a_shortcut_for_another_existing_install(
+        self, tmp_path: Path
+    ) -> None:
+        """A dev or worktree run doesn't take over the installed shortcut."""
+        backend = FakeShortcutBackend()
+        registration = ShortcutRegistration(tmp_path, backend)
+        other = tmp_path / "main" / "pythonw.exe"
+        other.parent.mkdir()
+        other.touch()
+        installed = replace(sample(tmp_path), target=other)
+        backend.files[registration.path] = installed
+
+        assert not registration.refresh(sample(tmp_path))
+
+        assert backend.files[registration.path] == installed
+
+    @pytest.mark.parametrize("previous", ["same", "same_folder", "gone"])
+    def test_refresh_updates_own_or_stale_shortcut(
+        self, tmp_path: Path, previous: str
+    ) -> None:
+        """Its own environment's shortcut, or one whose program is gone, is redone."""
+        backend = FakeShortcutBackend()
+        registration = ShortcutRegistration(tmp_path, backend)
+        own = sample(tmp_path).target
+        target = {
+            "same": own,
+            "same_folder": own.with_name("pythonw.exe"),
+            "gone": tmp_path / "gone.exe",
+        }[previous]
+        backend.files[registration.path] = replace(
+            sample(tmp_path), target=target, description="old"
+        )
+
+        assert registration.refresh(sample(tmp_path))
+
+        assert backend.files[registration.path] == sample(tmp_path)
+
+    @pytest.mark.parametrize(
+        ("installed_environment", "written"),
+        [("main", False), ("gone", True), ("worktree", True)],
+    )
+    def test_refresh_tells_relay_shortcuts_apart_by_environment(
+        self, tmp_path: Path, installed_environment: str, *, written: bool
+    ) -> None:
+        """Relays share the base pythonw.exe; the environment decides ownership."""
+        base = tmp_path / "base" / "pythonw.exe"
+        for environment in ("main", "worktree"):
+            (tmp_path / environment).mkdir()
+            (tmp_path / environment / "python.exe").touch()
+
+        def relay(environment: str) -> Shortcut:
+            interpreter = tmp_path / environment / "python.exe"
+            arguments = f'-c "{RELAY_CODE}" "{interpreter}" -m verdiclip'
+            return replace(sample(tmp_path), target=base, arguments=arguments)
+
+        backend = FakeShortcutBackend()
+        registration = ShortcutRegistration(tmp_path, backend)
+        backend.files[registration.path] = relay(installed_environment)
+
+        assert registration.refresh(relay("worktree")) is written
+
+        expected = "worktree" if written else installed_environment
+        assert backend.files[registration.path] == relay(expected)
+
+    @pytest.mark.parametrize("operation", ["read", "enable", "disable", "refresh"])
     def test_errors(self, tmp_path: Path, operation: str) -> None:
         """OS failures become PlatformErrors that name the shortcut."""
         backend = FakeShortcutBackend()
@@ -85,6 +160,7 @@ class TestShortcutRegistration:
             "read": registration.is_enabled,
             "enable": partial(registration.enable, sample(tmp_path)),
             "disable": registration.disable,
+            "refresh": partial(registration.refresh, sample(tmp_path)),
         }
 
         with pytest.raises(PlatformError, match=r"Custom\.lnk") as caught:
