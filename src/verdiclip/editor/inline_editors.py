@@ -15,6 +15,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QFrame, QLineEdit, QPlainTextEdit, QTextEdit, QWidget
 
 from verdiclip.document.annotations import (
+    Annotation,
     CounterMarker,
     LabeledBox,
     RectangleShape,
@@ -361,10 +362,23 @@ class InlineEditors:
         widget.setFocus()
         self._canvas.refresh()
 
+    def _current[T: Annotation](self, edited: T | None) -> T | None:
+        """Return the document's latest version of ``edited``.
+
+        The style bar can change an annotation while its editor is open (for
+        example Auto-fit), so commits build on that, not the opening snapshot.
+        """
+        if edited is None:
+            return None
+        current = self._session.document.find(edited.id)
+        return current if isinstance(current, type(edited)) else None
+
     def _commit_text(self, text: str) -> None:
         """Add, change, or remove the note."""
         history = self._session.history
-        note = self._note
+        note = self._current(self._note)
+        if note is None and self._note is not None:
+            return  # Deleted (e.g. undone) while being edited
         if note is None:
             if not text:
                 return
@@ -391,7 +405,7 @@ class InlineEditors:
 
     def _commit_box(self, text: str) -> None:
         """Change the box's label if it changed (empty text clears it)."""
-        box = self._box
+        box = self._current(self._box)
         if box is None or text == box.text:
             return
         self._session.history.execute(
@@ -400,7 +414,7 @@ class InlineEditors:
 
     def _commit_label(self, label: str) -> None:
         """Relabel the counter if the label changed and is not empty."""
-        marker = self._marker
+        marker = self._current(self._marker)
         if marker is None or not label or label == marker.label:
             return
         self._session.history.execute(

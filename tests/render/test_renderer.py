@@ -444,3 +444,35 @@ class TestTextBoxesAndShadows:
 
         assert document.visible_annotations == (shape,)
         assert image.pixelColor(0, 10) != QColor("white")
+
+    @pytest.mark.parametrize("kind", ["rectangle", "text"])
+    def test_thick_outline_still_casts_a_shadow(
+        self, qapp: QApplication, document: Document, kind: str
+    ) -> None:
+        """The shadow follows the outer edge of a thick outline, not just the fill."""
+        assert qapp is not None
+        fill = Color(0, 0, 255)
+        rect = Rect(60, 120, 100, 60)
+        annotation: Annotation = (
+            RectangleShape(rect=rect, style=Style(width=20, fill=fill, shadow=True))
+            if kind == "rectangle"
+            else TextNote(
+                rect=rect,
+                text="",
+                style=Style(width=20, fill=fill, outline=RED, shadow=True),
+            )
+        )
+        plain = Document(document.image)
+        plain.insert(
+            [(0, replace(annotation, style=replace(annotation.style, shadow=False)))]
+        )
+        document.insert([(0, annotation)])
+
+        shadowed = Renderer().flatten(document)
+        flat = Renderer().flatten(plain)
+
+        past_outline = (110, 193)
+        assert (
+            shadowed.pixelColor(*past_outline).lightness()
+            < flat.pixelColor(*past_outline).lightness()
+        )

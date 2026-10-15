@@ -222,7 +222,8 @@ class Renderer:
         )
         if shape.style.shadow:
             filled = not shape.style.fill.is_transparent
-            self._paint_shadow(painter, self._box_path(shape.rect, pen, filled=filled))
+            path = self._box_path(shape.rect, pen, filled=filled, outlined=True)
+            self._paint_shadow(painter, path)
         painter.setPen(pen)
         painter.setBrush(QBrush(QtConvert.color(shape.style.fill)))
         painter.drawRect(QtConvert.rect(shape.rect))
@@ -241,14 +242,16 @@ class Renderer:
         self._paint_label(painter, shape, inset=ELLIPSE_LABEL_INSET)
 
     @staticmethod
-    def _box_path(rect: Rect, pen: QPen, *, filled: bool) -> QPainterPath:
-        """Return the area a box covers: all of it, or just its outline."""
-        path = QPainterPath()
-        path.addRect(QtConvert.rect(rect))
-        if filled:
-            return path
-        stroker = QPainterPathStroker(pen)
-        return stroker.createStroke(path)
+    def _box_path(
+        rect: Rect, pen: QPen, *, filled: bool, outlined: bool
+    ) -> QPainterPath:
+        """Return the area a box covers: its fill, its outline, or both."""
+        area = QPainterPath()
+        area.addRect(QtConvert.rect(rect))
+        outline = QPainterPathStroker(pen).createStroke(area)
+        if filled and outlined:
+            return area.united(outline)
+        return area if filled else outline
 
     @staticmethod
     def _paint_shadow(painter: QPainter, path: QPainterPath) -> None:
@@ -370,7 +373,10 @@ class Renderer:
         pen.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
         filled = not style.fill.is_transparent
         if style.shadow and (filled or note.has_outline):
-            self._paint_shadow(painter, self._box_path(note.rect, pen, filled=filled))
+            path = self._box_path(
+                note.rect, pen, filled=filled, outlined=note.has_outline
+            )
+            self._paint_shadow(painter, path)
         elif style.shadow:
             # A bare caption casts the shadow of its letters
             shadow = QColor(0, 0, 0, 3 * _SHADOW_ALPHA)
