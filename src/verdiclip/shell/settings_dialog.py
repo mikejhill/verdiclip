@@ -334,8 +334,10 @@ class SettingsDialog(QDialog):
         for name, edit in self._hotkeys.items():
             status = self._hotkey_status[name]
             if self._hotkey_fields[name].recording:
-                # The field shows what's held so far; judge it once recorded
+                # The field shows what's held so far; judge it once recorded,
+                # and keep OK off so a cancel can't accept an invalid value
                 status.setText("")
+                valid = False
                 continue
             try:
                 canonical = self._canonical_hotkey(edit.text())

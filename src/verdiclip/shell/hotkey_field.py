@@ -68,9 +68,9 @@ def hotkey_from_event(event: QKeyEvent) -> Hotkey | None:
     """Return the combination ``event`` presses, or None if it isn't supported."""
     modifiers = modifiers_of(event)
     # Windows reports the layout-independent virtual key; prefer it
-    native = event.nativeVirtualKey()
-    if native and (hotkey := Hotkey.from_virtual_key(modifiers, native)):
-        return hotkey
+    # Its absence means no fallback: numpad 1 must not become the top-row 1
+    if native := event.nativeVirtualKey():
+        return Hotkey.from_virtual_key(modifiers, native)
     key = event.key()
     if Qt.Key.Key_A <= key <= Qt.Key.Key_Z or Qt.Key.Key_0 <= key <= Qt.Key.Key_9:
         vk = int(key)

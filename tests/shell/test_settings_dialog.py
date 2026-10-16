@@ -98,6 +98,18 @@ class TestSettingsDialog:
         assert dialog.hotkey_status("region") == "✓"
         assert dialog.result_settings().hotkeys.region == "alt+f8"
 
+    def test_ok_is_off_while_recording(self, dialog: SettingsDialog) -> None:
+        """An invalid value can't be accepted by recording, then cancelling."""
+        dialog.hotkey_edit("region").setText("ctrl+banana")
+        dialog.hotkey_field("region").start_recording()
+        recording_ok = dialog.ok_enabled()
+
+        QTest.keyClick(dialog.hotkey_edit("region"), Qt.Key.Key_Escape)
+
+        assert not recording_ok
+        assert dialog.hotkey_edit("region").text() == "ctrl+banana"
+        assert not dialog.ok_enabled()
+
     def test_recorded_duplicate_is_flagged(self, dialog: SettingsDialog) -> None:
         """A recorded combination already in use blocks OK."""
         field = dialog.hotkey_field("region")

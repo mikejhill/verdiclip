@@ -77,11 +77,9 @@ class TestHotkeyFromEvent:
 
         assert hotkey == Hotkey(frozenset({Modifier.SHIFT}), "1")
 
-    def test_unknown_native_key_falls_back_to_qt(self) -> None:
-        """A virtual key VerdiClip doesn't know still maps by Qt key."""
-        hotkey = hotkey_from_event(key_event(Qt.Key.Key_F5, NONE, vk=0xFF))
-
-        assert str(hotkey) == "f5"
+    def test_unsupported_native_key_is_rejected(self) -> None:
+        """Numpad 1 (VK 0x61) isn't recorded as the top-row 1 Qt reports."""
+        assert hotkey_from_event(key_event(Qt.Key.Key_1, NONE, vk=0x61)) is None
 
     @pytest.mark.parametrize("key", [Qt.Key.Key_Exclam, Qt.Key.Key_VolumeUp])
     def test_unsupported_keys(self, key: Qt.Key) -> None:
