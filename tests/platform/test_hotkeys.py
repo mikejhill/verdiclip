@@ -114,6 +114,13 @@ class TestHotkey:
         assert hotkey.virtual_key == vk
         assert hotkey.win32_modifiers == 0x4000
 
+    @pytest.mark.parametrize("key", sorted(Hotkey._KEYS))
+    def test_display_text_parses_back(self, key: str) -> None:
+        """What Settings shows for any key (typed or recorded) can be saved."""
+        hotkey = Hotkey(frozenset({Modifier.CTRL}), key)
+
+        assert Hotkey.parse(hotkey.display_text) == hotkey
+
     def test_all_modifiers(self) -> None:
         """All modifier bits combine with MOD_NOREPEAT in canonical order."""
         hotkey = Hotkey(frozenset(Modifier), "a")

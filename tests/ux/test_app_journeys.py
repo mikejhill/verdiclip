@@ -468,6 +468,41 @@ class TestHotkeysAndSettings:
         assert app.controller.tray.action("fullscreen").text().endswith("Ctrl+Alt+F9")
         assert app.store.load().hotkeys.fullscreen == "ctrl+alt+f9"
 
+    def test_recording_a_hotkey_pauses_global_hotkeys(
+        self, make_app: AppFactory, qtbot: QtBot
+    ) -> None:
+        """UX-TRY-09: while Settings records, PrtSc reaches it, not a capture."""
+        app = make_app()
+        registered = len(app.os_hotkeys.active)
+        seen: list[int] = []
+        recorded: list[str] = []
+
+        def record_then_close() -> None:
+            dialog = next(
+                w
+                for w in QApplication.topLevelWidgets()
+                if isinstance(w, SettingsDialog) and w.isVisible()
+            )
+            field = dialog.hotkey_field("fullscreen")
+            field.start_recording()
+            seen.append(len(app.os_hotkeys.active))
+            QTest.keyRelease(
+                field.edit, Qt.Key.Key_Print, Qt.KeyboardModifier.NoModifier
+            )
+            seen.append(len(app.os_hotkeys.active))
+            recorded.append(field.edit.text())
+            dialog.reject()
+
+        QTimer.singleShot(0, record_then_close)
+        app.controller.tray.action("settings").trigger()
+        qtbot.wait(0)
+
+        assert registered == 4
+        assert seen == [0, 4]
+        assert recorded == ["PrtSc"]
+        assert not app.controller.editors
+        assert not app.controller.capture.is_selecting
+
     def test_run_at_login_writes_and_removes_startup_entry(
         self, make_app: AppFactory, tmp_path: Path
     ) -> None:

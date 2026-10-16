@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
-from typing import Final
+from typing import Final, override
 
 from PySide6.QtCore import Signal
 from PySide6.QtGui import QFont
@@ -43,6 +43,7 @@ from verdiclip.settings import (
     StartupSettings,
     Theme,
 )
+from verdiclip.shell.hotkey_field import HotkeyField
 
 HOTKEY_FIELDS: Final = (
     ("region", "Region or window"),
@@ -62,6 +63,8 @@ class SettingsDialog(QDialog):
     """Edit ``Settings``; ``result_settings`` holds the accepted values."""
 
     make_default_requested = Signal()
+    # True while a hotkey field records, so global hotkeys don't take the keys
+    hotkey_recording_changed = Signal(bool)
 
     def __init__(self, settings: Settings, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -74,6 +77,7 @@ class SettingsDialog(QDialog):
         self._theme = QComboBox()
         self._magnifier = QCheckBox("Show a magnifier")
         self._hotkeys: dict[str, QLineEdit] = {}
+        self._hotkey_fields: dict[str, HotkeyField] = {}
         self._hotkey_status: dict[str, QLabel] = {}
         self._folder = QLineEdit()
         self._pattern = QLineEdit()
@@ -141,6 +145,20 @@ class SettingsDialog(QDialog):
         """Return the editor for hotkey ``name`` (for tests)."""
         return self._hotkeys[name]
 
+    def hotkey_field(self, name: str) -> HotkeyField:
+        """Return the field, with its Record button, for hotkey ``name``."""
+        return self._hotkey_fields[name]
+
+    def hotkey_status(self, name: str) -> str:
+        """Return the status shown beside hotkey ``name`` (for tests)."""
+        return self._hotkey_status[name].text()
+
+    @override
+    def done(self, arg__1: int) -> None:
+        """Stop any recording before closing, so global hotkeys come back."""
+        self._cancel_recordings()
+        super().done(arg__1)
+
     def make_default_button(self) -> QPushButton:
         """Return the "make default" button (for tests)."""
         return self._make_default
@@ -159,6 +177,7 @@ class SettingsDialog(QDialog):
         tabs.addTab(self._output_tab(), "Output")
         tabs.addTab(self._editor_tab(), "Editor")
         tabs.addTab(self._general_tab(), "General")
+        tabs.currentChanged.connect(self._cancel_recordings)
         self._buttons.accepted.connect(self.accept)
         self._buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
@@ -204,17 +223,20 @@ class SettingsDialog(QDialog):
         form = QFormLayout(tab)
         form.addRow(
             QLabel(
-                "Type a combination such as Ctrl+Shift+PrtSc. Leave empty to disable."
+                "Type a combination such as Ctrl+Shift+PrtSc, or click Record "
+                "and press it. Leave empty to disable."
             )
         )
         for name, label in HOTKEY_FIELDS:
-            edit = QLineEdit()
+            field = HotkeyField()
             status = QLabel()
-            edit.textChanged.connect(self._validate)
-            self._hotkeys[name] = edit
+            field.edit.textChanged.connect(self._validate)
+            field.recording_changed.connect(self._on_recording)
+            self._hotkey_fields[name] = field
+            self._hotkeys[name] = field.edit
             self._hotkey_status[name] = status
             row = QHBoxLayout()
-            row.addWidget(edit, 1)
+            row.addWidget(field, 1)
             row.addWidget(status)
             form.addRow(f"{label}:", row)
         return tab
@@ -284,6 +306,22 @@ class SettingsDialog(QDialog):
         self._open_with.setChecked(settings.integration.open_with)
         self._start_menu.setChecked(settings.integration.start_menu)
 
+    def _cancel_recordings(self) -> None:
+        """Stop every hotkey recording, keeping the values from before it."""
+        for field in self._hotkey_fields.values():
+            field.cancel_recording()
+
+    def _on_recording(self, on: bool) -> None:  # noqa: FBT001 - Qt signal
+        """Record one field at a time and tell the app to pause hotkeys."""
+        if on:
+            for field in self._hotkey_fields.values():
+                if field is not self.sender():
+                    field.cancel_recording()
+        else:
+            self._validate()
+        recording = any(f.recording for f in self._hotkey_fields.values())
+        self.hotkey_recording_changed.emit(recording)
+
     def _request_default(self) -> None:
         """Turn on Open with and ask the app to open the default-apps page."""
         self._open_with.setChecked(True)
@@ -295,6 +333,12 @@ class SettingsDialog(QDialog):
         seen: dict[str, str] = {}
         for name, edit in self._hotkeys.items():
             status = self._hotkey_status[name]
+            if self._hotkey_fields[name].recording:
+                # The field shows what's held so far; judge it once recorded,
+                # and keep OK off so a cancel can't accept an invalid value
+                status.setText("")
+                valid = False
+                continue
             try:
                 canonical = self._canonical_hotkey(edit.text())
             except HotkeyError as err:

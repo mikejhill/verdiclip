@@ -83,6 +83,11 @@ class Hotkey:
             "pgup": "page_up",
             "pgdn": "page_down",
             "scrolllock": "scroll_lock",
+            # display_text forms, spaces removed
+            "pageup": "page_up",
+            "pagedown": "page_down",
+            "capslock": "caps_lock",
+            "numlock": "num_lock",
         }
     )
 
@@ -114,6 +119,14 @@ class Hotkey:
             msg = f"Hotkey requires exactly one key; found {len(keys)}"
             raise HotkeyError(msg)
         return cls(frozenset(modifiers), keys[0])
+
+    @classmethod
+    def from_virtual_key(cls, modifiers: frozenset[Modifier], vk: int) -> Self | None:
+        """Return the hotkey for Win32 virtual key ``vk``, or None if unsupported."""
+        for key, code in cls._KEYS.items():
+            if code == vk:
+                return cls(modifiers, key)
+        return None
 
     @override
     def __str__(self) -> str:

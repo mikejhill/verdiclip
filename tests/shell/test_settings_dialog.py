@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from PySide6.QtWidgets import QCheckBox, QComboBox, QLineEdit
+from PySide6.QtCore import Qt
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QCheckBox, QComboBox, QLineEdit, QTabWidget
 from pytestqt.qtbot import QtBot
 
 from verdiclip.document.style import Color
@@ -15,7 +18,7 @@ from verdiclip.shell.settings_dialog import SettingsDialog
 
 
 @pytest.fixture
-def dialog(qtbot: QtBot, tmp_path: Path) -> SettingsDialog:
+def dialog(qtbot: QtBot, tmp_path: Path) -> Iterator[SettingsDialog]:
     """A dialog over settings that save into ``tmp_path``."""
     base = Settings()
     settings = replace(
@@ -26,7 +29,9 @@ def dialog(qtbot: QtBot, tmp_path: Path) -> SettingsDialog:
     )
     created = SettingsDialog(settings)
     qtbot.addWidget(created)
-    return created
+    yield created
+    # A recording left running would take every key from later tests
+    created.reject()
 
 
 class TestSettingsDialog:
@@ -75,6 +80,79 @@ class TestSettingsDialog:
         dialog.hotkey_edit("region").setText(text)
 
         assert not dialog.ok_enabled()
+
+    def test_recorded_hotkey_is_validated_and_stored(
+        self, dialog: SettingsDialog, qtbot: QtBot
+    ) -> None:
+        """Recording fills the field, then it validates like typed text."""
+        field = dialog.hotkey_field("region")
+        with qtbot.waitSignal(dialog.hotkey_recording_changed) as started:
+            field.start_recording()
+        status_while_recording = dialog.hotkey_status("region")
+
+        with qtbot.waitSignal(dialog.hotkey_recording_changed) as stopped:
+            QTest.keyClick(field.edit, Qt.Key.Key_F8, Qt.KeyboardModifier.AltModifier)
+
+        assert (started.args, stopped.args) == ([True], [False])
+        assert status_while_recording == ""
+        assert dialog.hotkey_status("region") == "✓"
+        assert dialog.result_settings().hotkeys.region == "alt+f8"
+
+    def test_ok_is_off_while_recording(self, dialog: SettingsDialog) -> None:
+        """An invalid value can't be accepted by recording, then cancelling."""
+        dialog.hotkey_edit("region").setText("ctrl+banana")
+        dialog.hotkey_field("region").start_recording()
+        recording_ok = dialog.ok_enabled()
+
+        QTest.keyClick(dialog.hotkey_edit("region"), Qt.Key.Key_Escape)
+
+        assert not recording_ok
+        assert dialog.hotkey_edit("region").text() == "ctrl+banana"
+        assert not dialog.ok_enabled()
+
+    def test_recorded_duplicate_is_flagged(self, dialog: SettingsDialog) -> None:
+        """A recorded combination already in use blocks OK."""
+        field = dialog.hotkey_field("region")
+        field.start_recording()
+
+        QTest.keyClick(field.edit, Qt.Key.Key_Print, Qt.KeyboardModifier.AltModifier)
+
+        assert dialog.hotkey_status("window") == "Also used by Region or window"
+        assert not dialog.ok_enabled()
+
+    def test_one_field_records_at_a_time(self, dialog: SettingsDialog) -> None:
+        """Starting another recording cancels the first."""
+        dialog.hotkey_field("region").start_recording()
+
+        dialog.hotkey_field("window").start_recording()
+
+        assert not dialog.hotkey_field("region").recording
+        assert dialog.hotkey_edit("region").text() == "PrtSc"
+        assert dialog.hotkey_field("window").recording
+
+    def test_closing_stops_recording(
+        self, dialog: SettingsDialog, qtbot: QtBot
+    ) -> None:
+        """Cancel during a recording keeps the old value and resumes hotkeys."""
+        dialog.hotkey_field("repeat").start_recording()
+
+        with qtbot.waitSignal(dialog.hotkey_recording_changed) as stopped:
+            dialog.reject()
+
+        assert stopped.args == [False]
+        assert not dialog.hotkey_field("repeat").recording
+        assert dialog.hotkey_edit("repeat").text() == "Shift+PrtSc"
+
+    def test_switching_tabs_stops_recording(self, dialog: SettingsDialog) -> None:
+        """Leaving the Hotkeys tab cancels a recording there."""
+        tabs = dialog.findChild(QTabWidget)
+        assert tabs is not None
+        tabs.setCurrentIndex(1)
+        dialog.hotkey_field("region").start_recording()
+
+        tabs.setCurrentIndex(0)
+
+        assert not dialog.hotkey_field("region").recording
 
     def test_empty_hotkey_disables_binding(self, dialog: SettingsDialog) -> None:
         """An empty hotkey is allowed and turns that binding off."""
