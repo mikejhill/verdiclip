@@ -258,7 +258,8 @@ class SettingsCodec:
                 for since, pattern in _LEGACY_FILENAME_PATTERNS.items()
                 if version <= since
             }
-            if output.get("filename_pattern") in stale:
+            pattern = output.get("filename_pattern")
+            if isinstance(pattern, str) and pattern in stale:
                 output["filename_pattern"] = DEFAULT_FILENAME_PATTERN
         capture = raw.get("capture")
         if not isinstance(capture, dict):
