@@ -281,6 +281,7 @@ class AppController(QObject):
         dialog = SettingsDialog(self._settings, parent)
         dialog.setWindowIcon(self._icon)
         dialog.make_default_requested.connect(self.make_default_image_app)
+        dialog.hotkey_recording_changed.connect(self._pause_hotkeys)
         if dialog.exec() == SettingsDialog.DialogCode.Accepted:
             self.apply_settings(dialog.result_settings())
 
@@ -338,7 +339,14 @@ class AppController(QObject):
 
     # Internals
 
-    def _apply_hotkeys(self) -> None:
+    def _pause_hotkeys(self, paused: bool) -> None:  # noqa: FBT001 - Qt signal
+        """Release hotkeys while Settings records one, so the keys reach it."""
+        if paused:
+            self._hotkeys.unregister_all()
+        else:
+            self._apply_hotkeys(report=False)
+
+    def _apply_hotkeys(self, *, report: bool = True) -> None:
         """Register configured hotkeys and report any that are taken (UX-CAP-10)."""
         self._hotkeys.unregister_all()
         labels: dict[str, str] = {}
@@ -359,7 +367,7 @@ class AppController(QObject):
                     f"{label}: {hotkey.display_text} is in use by another program"
                 )
         self._tray.rebuild_menu(labels)
-        if problems:
+        if problems and report:
             self._notify(
                 "Some hotkeys are unavailable", "\n".join(problems), warning=True
             )

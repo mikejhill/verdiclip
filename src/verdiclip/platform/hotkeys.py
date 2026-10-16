@@ -115,6 +115,14 @@ class Hotkey:
             raise HotkeyError(msg)
         return cls(frozenset(modifiers), keys[0])
 
+    @classmethod
+    def from_virtual_key(cls, modifiers: frozenset[Modifier], vk: int) -> Self | None:
+        """Return the hotkey for Win32 virtual key ``vk``, or None if unsupported."""
+        for key, code in cls._KEYS.items():
+            if code == vk:
+                return cls(modifiers, key)
+        return None
+
     @override
     def __str__(self) -> str:
         """Return the stable configuration representation."""
