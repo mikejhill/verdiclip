@@ -4,16 +4,34 @@ from __future__ import annotations
 
 from typing import Final, cast, override
 
-from PySide6.QtCore import QEvent, QObject, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import QApplication, QHBoxLayout, QLineEdit, QPushButton, QWidget
 
 from verdiclip.platform.hotkeys import Hotkey, Modifier
+from verdiclip.platform.keyboard_hook import KeyCapture
 
 RECORD_TEXT: Final = "Record"
 RECORDING_TEXT: Final = "Press keys…"
 RECORDING_HINT: Final = "Press a combination; Esc cancels"
 UNSUPPORTED_HINT: Final = "That key can't be a hotkey; press another"
+# Recording swallows every key on the PC; give the keyboard back if left
+IDLE_TIMEOUT_MS: Final = 20_000
+_VK_ESCAPE: Final = 0x1B
+_VK_SNAPSHOT: Final = 0x2C
+_MODIFIER_VKS: Final = {
+    0x10: Modifier.SHIFT,
+    0xA0: Modifier.SHIFT,
+    0xA1: Modifier.SHIFT,
+    0x11: Modifier.CTRL,
+    0xA2: Modifier.CTRL,
+    0xA3: Modifier.CTRL,
+    0x12: Modifier.ALT,
+    0xA4: Modifier.ALT,
+    0xA5: Modifier.ALT,
+    0x5B: Modifier.WIN,
+    0x5C: Modifier.WIN,
+}
 _MODIFIER_KEYS: Final = {
     Qt.Key.Key_Control: Modifier.CTRL,
     Qt.Key.Key_Shift: Modifier.SHIFT,
@@ -55,6 +73,26 @@ _QT_TO_VK: Final = {
     Qt.Key.Key_Backspace: 0x08,
     Qt.Key.Key_CapsLock: 0x14,
     Qt.Key.Key_NumLock: 0x90,
+    Qt.Key.Key_Menu: 0x5D,
+    Qt.Key.Key_Semicolon: 0xBA,
+    Qt.Key.Key_Equal: 0xBB,
+    Qt.Key.Key_Comma: 0xBC,
+    Qt.Key.Key_Minus: 0xBD,
+    Qt.Key.Key_Period: 0xBE,
+    Qt.Key.Key_Slash: 0xBF,
+    Qt.Key.Key_QuoteLeft: 0xC0,
+    Qt.Key.Key_BracketLeft: 0xDB,
+    Qt.Key.Key_Backslash: 0xDC,
+    Qt.Key.Key_BracketRight: 0xDD,
+    Qt.Key.Key_Apostrophe: 0xDE,
+}
+_QT_KEYPAD_TO_VK: Final = {
+    **{Qt.Key(int(Qt.Key.Key_0) + n): 0x60 + n for n in range(10)},
+    Qt.Key.Key_Asterisk: 0x6A,
+    Qt.Key.Key_Plus: 0x6B,
+    Qt.Key.Key_Minus: 0x6D,
+    Qt.Key.Key_Period: 0x6E,
+    Qt.Key.Key_Slash: 0x6F,
 }
 
 
@@ -72,7 +110,10 @@ def hotkey_from_event(event: QKeyEvent) -> Hotkey | None:
     if native := event.nativeVirtualKey():
         return Hotkey.from_virtual_key(modifiers, native)
     key = event.key()
-    if Qt.Key.Key_A <= key <= Qt.Key.Key_Z or Qt.Key.Key_0 <= key <= Qt.Key.Key_9:
+    keypad = bool(event.modifiers() & Qt.KeyboardModifier.KeypadModifier)
+    if keypad and (pad := _QT_KEYPAD_TO_VK.get(Qt.Key(key))) is not None:
+        vk = pad
+    elif Qt.Key.Key_A <= key <= Qt.Key.Key_Z or Qt.Key.Key_0 <= key <= Qt.Key.Key_9:
         vk = int(key)
     elif Qt.Key.Key_F1 <= key <= Qt.Key.Key_F24:
         vk = 0x70 + int(key) - int(Qt.Key.Key_F1)
@@ -93,8 +134,17 @@ class HotkeyField(QWidget):
 
     recording_changed = Signal(bool)
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, parent: QWidget | None = None, *, capture: KeyCapture | None = None
+    ) -> None:
         super().__init__(parent)
+        # Without a capture (or if it fails) only keys Qt receives are seen
+        self._capture = capture
+        self._held_vks: set[int] = set()
+        self._pending: tuple[int, Hotkey] | None = None
+        self._idle = QTimer(self)
+        self._idle.setSingleShot(True)
+        self._idle.timeout.connect(self.cancel_recording)
         self.edit = QLineEdit()
         self.record_button = QPushButton(RECORD_TEXT)
         self.record_button.setCheckable(True)
@@ -130,7 +180,15 @@ class HotkeyField(QWidget):
             self.edit.setPlaceholderText(RECORDING_HINT)
             self.record_button.setText(RECORDING_TEXT)
             application.installEventFilter(self)
+            self._held_vks.clear()
+            self._pending = None
+            if self._capture is not None:
+                self._capture.start(self._on_native_key)
+            self._idle.start(IDLE_TIMEOUT_MS)
         else:
+            self._idle.stop()
+            if self._capture is not None:
+                self._capture.stop()
             application.removeEventFilter(self)
             self.edit.setText(self._before)
             self.edit.setPlaceholderText("")
@@ -157,6 +215,39 @@ class HotkeyField(QWidget):
             return True
         self._on_key(event, pressed=kind == QEvent.Type.KeyPress)
         return True
+
+    def _on_native_key(self, vk: int, pressed: bool) -> None:  # noqa: FBT001
+        """Record from a Win32 key seen before Windows acted on it.
+
+        A combination is kept when its key comes back up, so neither half of
+        the press reaches Windows (PrtSc would open the Snipping Tool).
+        """
+        self._idle.start(IDLE_TIMEOUT_MS)
+        if vk in _MODIFIER_VKS:
+            if pressed:
+                self._held_vks.add(vk)
+            else:
+                self._held_vks.discard(vk)
+            held = frozenset(_MODIFIER_VKS[v] for v in self._held_vks)
+            self.edit.setText(_modifier_prefix(held) if held else "")
+            return
+        held = frozenset(_MODIFIER_VKS[v] for v in self._held_vks)
+        if pressed:
+            if vk == _VK_ESCAPE and not held:
+                self.cancel_recording()
+                return
+            hotkey = Hotkey.from_virtual_key(held, vk)
+            if hotkey is None:
+                self.edit.clear()
+                self.edit.setPlaceholderText(UNSUPPORTED_HINT)
+                return
+            self._pending = (vk, hotkey)
+            self.edit.setText(hotkey.display_text)
+        elif self._pending is not None and self._pending[0] == vk:
+            self._finish(self._pending[1])
+        elif vk == _VK_SNAPSHOT:
+            # Some keyboards report PrtSc only as a release
+            self._finish(Hotkey(held, "print_screen"))
 
     def _on_key(self, event: QKeyEvent, *, pressed: bool) -> None:
         """Preview modifiers, cancel on Esc, or keep a full combination."""

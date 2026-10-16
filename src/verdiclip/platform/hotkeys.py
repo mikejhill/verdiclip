@@ -66,6 +66,25 @@ class Hotkey:
             **{chr(code).lower(): code for code in range(ord("A"), ord("Z") + 1)},
             **{str(number): ord(str(number)) for number in range(10)},
             **{f"f{number}": 0x6F + number for number in range(1, 25)},
+            **{f"num_{number}": 0x60 + number for number in range(10)},
+            "num_multiply": 0x6A,
+            "num_add": 0x6B,
+            "num_subtract": 0x6D,
+            "num_decimal": 0x6E,
+            "num_divide": 0x6F,
+            # Named for the US layout; Windows maps them by position
+            "semicolon": 0xBA,
+            "equals": 0xBB,
+            "comma": 0xBC,
+            "minus": 0xBD,
+            "period": 0xBE,
+            "slash": 0xBF,
+            "backquote": 0xC0,
+            "left_bracket": 0xDB,
+            "backslash": 0xDC,
+            "right_bracket": 0xDD,
+            "quote": 0xDE,
+            "menu": 0x5D,
         }
     )
     _ALIASES: ClassVar[Mapping[str, str]] = MappingProxyType(
@@ -83,12 +102,10 @@ class Hotkey:
             "pgup": "page_up",
             "pgdn": "page_down",
             "scrolllock": "scroll_lock",
-            # display_text forms, spaces removed
-            "pageup": "page_up",
-            "pagedown": "page_down",
-            "capslock": "caps_lock",
-            "numlock": "num_lock",
         }
+    )
+    _COMPACT: ClassVar[Mapping[str, str]] = MappingProxyType(
+        {key.replace("_", ""): key for key in _KEYS}
     )
 
     def __post_init__(self) -> None:
@@ -108,6 +125,8 @@ class Hotkey:
         for raw_token in text.lower().split("+"):
             token = "".join(raw_token.split())
             token = cls._ALIASES.get(token, token)
+            # display_text drops underscores ("Page Up" → "pageup")
+            token = cls._COMPACT.get(token, token)
             if token in Modifier:
                 modifiers.add(Modifier(token))
             elif token in cls._KEYS:

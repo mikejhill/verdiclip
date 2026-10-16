@@ -32,6 +32,7 @@ from verdiclip.editor.style_bar import ColorButton
 from verdiclip.exceptions import HotkeyError
 from verdiclip.output.naming import FilenamePattern
 from verdiclip.platform.hotkeys import Hotkey
+from verdiclip.platform.keyboard_hook import KeyCapture
 from verdiclip.settings import (
     AppearanceSettings,
     CaptureSettings,
@@ -66,8 +67,15 @@ class SettingsDialog(QDialog):
     # True while a hotkey field records, so global hotkeys don't take the keys
     hotkey_recording_changed = Signal(bool)
 
-    def __init__(self, settings: Settings, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        parent: QWidget | None = None,
+        *,
+        key_capture: KeyCapture | None = None,
+    ) -> None:
         super().__init__(parent)
+        self._key_capture = key_capture
         self.setWindowTitle("VerdiClip settings")
         self._initial = settings
         self._open_editor = QCheckBox("Open in the editor")
@@ -228,7 +236,7 @@ class SettingsDialog(QDialog):
             )
         )
         for name, label in HOTKEY_FIELDS:
-            field = HotkeyField()
+            field = HotkeyField(capture=self._key_capture)
             status = QLabel()
             field.edit.textChanged.connect(self._validate)
             field.recording_changed.connect(self._on_recording)

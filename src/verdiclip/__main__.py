@@ -22,6 +22,7 @@ from verdiclip.exceptions import AppError, CaptureError
 from verdiclip.output.delivery import ImageDelivery
 from verdiclip.platform.associations import FileAssociations
 from verdiclip.platform.hotkeys import HotkeyService
+from verdiclip.platform.keyboard_hook import LowLevelKeyboardHook
 from verdiclip.platform.shortcuts import (
     KnownFolder,
     ShellLinkBackend,
@@ -97,6 +98,7 @@ class Application:
                 ),
                 FileAssociations(),
                 ShortcutRegistration(links.known_folder(KnownFolder.PROGRAMS), links),
+                LowLevelKeyboardHook(),
             ),
         )
         instance.message_received.connect(controller.handle_forwarded)
