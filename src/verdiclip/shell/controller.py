@@ -31,6 +31,7 @@ from verdiclip.exceptions import AppError, HotkeyError
 from verdiclip.output.delivery import ImageDelivery
 from verdiclip.platform.associations import DEFAULT_APPS_URI, FileAssociations
 from verdiclip.platform.hotkeys import Hotkey, HotkeyService
+from verdiclip.platform.keyboard_hook import KeyCapture
 from verdiclip.platform.launcher import LaunchCommand, tray_launch
 from verdiclip.platform.shortcuts import Shortcut, ShortcutRegistration
 from verdiclip.platform.startup import StartupRegistration
@@ -46,11 +47,13 @@ NOTIFY_MS: Final = 4000
 
 @dataclass(frozen=True, slots=True)
 class ShellIntegration:
-    """Windows registrations kept in sync with the settings."""
+    """Windows registrations kept in sync with the settings, and the shell's keys."""
 
     startup: StartupRegistration
     associations: FileAssociations
     start_menu: ShortcutRegistration
+    # Lets Settings record keys Windows would otherwise take (PrtSc)
+    key_capture: KeyCapture | None = None
 
 
 class AppController(QObject):
@@ -65,6 +68,7 @@ class AppController(QObject):
         integration: ShellIntegration,
     ) -> None:
         super().__init__()
+        self._key_capture = integration.key_capture
         self._store = store
         self._settings = store.load()
         self._styles = StyleMemory(store.path.with_name("styles.json"))
@@ -278,7 +282,7 @@ class AppController(QObject):
 
     def show_settings(self, parent: QWidget | None = None) -> None:
         """Edit and apply settings, from the tray or an editor (UX-TRY-04)."""
-        dialog = SettingsDialog(self._settings, parent)
+        dialog = SettingsDialog(self._settings, parent, key_capture=self._key_capture)
         dialog.setWindowIcon(self._icon)
         dialog.make_default_requested.connect(self.make_default_image_app)
         dialog.hotkey_recording_changed.connect(self._pause_hotkeys)
