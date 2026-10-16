@@ -87,7 +87,7 @@ class TestImageDelivery:
         )
 
         assert delivery.settings == output_settings
-        assert path == output_settings.directory / "2026-01-02 03-04-05 Notepad.png"
+        assert path == output_settings.directory / "2026-01-02_03-04-05_Notepad.png"
 
     def test_copy(
         self, qapp: QApplication, sample_image: QImage, output_settings: OutputSettings
