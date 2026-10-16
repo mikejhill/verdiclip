@@ -206,10 +206,10 @@ class InlineEditors:
         else:
             self._fixed = box
         if self._fixed is not None:
+            # No placeholder: the dashed box already shows where text goes,
+            # and a hint would clip in a small box
             editor = self._wrapping_editor(
-                note.text if note is not None else "",
-                H_ALIGN[self._style.h_align],
-                "Type text (Esc to finish)",
+                note.text if note is not None else "", H_ALIGN[self._style.h_align]
             )
             self._open(editor, transparent=True)
             editor.moveCursor(QTextCursor.MoveOperation.End)
@@ -311,7 +311,7 @@ class InlineEditors:
     # Internals
 
     def _wrapping_editor(
-        self, text: str, align: Qt.AlignmentFlag, placeholder: str
+        self, text: str, align: Qt.AlignmentFlag, placeholder: str = ""
     ) -> _BoxTextEdit:
         """Return a frameless editor that wraps ``text`` inside a box."""
         editor = _BoxTextEdit(self._canvas.viewport())
@@ -385,13 +385,17 @@ class InlineEditors:
         return current if isinstance(current, type(edited)) else None
 
     def _commit_text(self, text: str) -> None:
-        """Add, change, or remove the note."""
+        """Add, change, or remove the note.
+
+        A box drawn by dragging is kept even when empty, so finishing without
+        typing leaves the box; only text that fits itself vanishes when empty.
+        """
         history = self._session.history
         note = self._current(self._note)
         if note is None and self._note is not None:
             return  # Deleted (e.g. undone) while being edited
         if note is None:
-            if not text:
+            if not text and self._fixed is None:
                 return
             if self._fixed is not None:
                 created = TextNote(
@@ -407,7 +411,7 @@ class InlineEditors:
             history.execute(AddAnnotations([created], "Add text"))
             self._session.selection.set([created.id])
             return
-        if not text:
+        if not text and note.auto_fit:
             history.execute(RemoveAnnotations([note.id], "Delete text"))
             return
         if text != note.text:

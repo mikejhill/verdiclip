@@ -30,7 +30,7 @@ from verdiclip.document.annotations import (
 )
 from verdiclip.editor.chrome import ChromeStyle
 from verdiclip.editor.inline_editors import InlineEditors
-from verdiclip.editor.session import EditorSession
+from verdiclip.editor.session import EditorSession, ToolId
 from verdiclip.editor.tools import CursorKind, Pointer, Tool
 from verdiclip.geometry import Point, Rect
 from verdiclip.render.renderer import Renderer
@@ -495,11 +495,16 @@ class CanvasView(QAbstractScrollArea):
         super().keyReleaseEvent(event)
 
     def _handle_escape(self) -> None:
-        """Back out one level: tool work, then selection, then to Select tool."""
+        """Back out one level: tool work, then to Select tool, then selection.
+
+        A drawing tool returns to the Select tool with the selection kept, so
+        what was just drawn stays selected; only the Select tool clears it.
+        """
         if self._tool is not None and self._tool.cancel():
             self.refresh()
             return
-        if len(self._session.selection):
+        selecting = self._tool is None or self._tool.tool_id is ToolId.SELECT
+        if selecting and len(self._session.selection):
             self._session.selection.clear()
             return
         self.escape_unhandled.emit()

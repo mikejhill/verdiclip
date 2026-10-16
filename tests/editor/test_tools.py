@@ -214,7 +214,7 @@ class TestDrawingTool:
     def test_cancel_selection(
         self, session: EditorSession, tool_type: type[DrawingTool]
     ) -> None:
-        """Cancelling an idle drawing tool clears selection without deleting work."""
+        """Cancelling an idle drawing tool leaves the selection for the Select tool."""
         shape = RectangleShape(rect=Rect(20, 100, 50, 50))
         session.history.execute(AddAnnotations([shape], "Draw"))
         session.select_all()
@@ -222,8 +222,8 @@ class TestDrawingTool:
 
         cancelled = tool.cancel()
 
-        assert cancelled
-        assert not session.selection.ids
+        assert not cancelled
+        assert session.selection.ids == (shape.id,)
         assert session.document.annotations == (shape,)
 
     @pytest.mark.parametrize("tool_type", [LineTool, ArrowTool], ids=["line", "arrow"])
@@ -411,6 +411,7 @@ class TestDrawingToolCancel:
         tool.move(Pointer(Point(200, 250)))
 
         assert session.document.annotations == (resized,)
+        assert not tool.cancel()
 
 
 class TestTextTool:
