@@ -83,6 +83,11 @@ class Hotkey:
             "pgup": "page_up",
             "pgdn": "page_down",
             "scrolllock": "scroll_lock",
+            # display_text forms, spaces removed
+            "pageup": "page_up",
+            "pagedown": "page_down",
+            "capslock": "caps_lock",
+            "numlock": "num_lock",
         }
     )
 
