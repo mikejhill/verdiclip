@@ -243,7 +243,11 @@ class Tool(ABC):
         return CursorKind.CROSS
 
     def cancel(self) -> bool:
-        """Abort in-progress work for ``Esc``; return True if anything was aborted."""
+        """Back out one level for ``Esc``; return True if anything was undone.
+
+        Tools abandon an unfinished gesture here. Leaving the tool itself is
+        the canvas's job (see ``CanvasView._handle_escape``).
+        """
         return False
 
     def confirm(self) -> bool:
@@ -251,7 +255,11 @@ class Tool(ABC):
         return False
 
     def deactivate(self) -> None:
-        """Drop transient state when another tool is chosen."""
+        """Drop transient state when another tool is chosen.
+
+        Choosing a tool never changes the selection; tools whose ``cancel``
+        touches the selection override this.
+        """
         self.cancel()
 
     def _clamp(self, point: Point) -> Point:
@@ -349,11 +357,36 @@ class SelectTool(Tool):
 
     @override
     def cancel(self) -> bool:
-        """Clear the selection."""
+        """Stop the drag in progress, else clear the selection."""
+        if self._end_gesture():
+            return True
         if len(self._session.selection) == 0:
             return False
         self._session.selection.clear()
         return True
+
+    @override
+    def deactivate(self) -> None:
+        """Stop any drag but keep the selection for the next tool."""
+        self._end_gesture()
+
+    def _end_gesture(self) -> bool:
+        """Stop a handle drag, move, or rubber band; return True if one was active.
+
+        A move or resize already applied stays (Ctrl+Z reverts it); a rubber
+        band selects nothing.
+        """
+        active = (
+            self._handles.active
+            or self._move_origin is not None
+            or self._band_origin is not None
+        )
+        self._handles.end()
+        self._move_origin = None
+        self._move_start = []
+        self._band_origin = None
+        self._band = None
+        return active
 
     def _drag_selection(self, delta: Point) -> None:
         """Move the selection to its start position plus ``delta``."""
@@ -437,11 +470,7 @@ class DrawingTool(Tool):
 
     @override
     def cancel(self) -> bool:
-        """Abandon the annotation being drawn; the selection is left alone.
-
-        Esc then returns to the Select tool with what was just drawn still
-        selected, instead of spending a keypress on deselecting it.
-        """
+        """Abandon the annotation being drawn or stop a handle drag."""
         if self._handles.active:
             self._handles.end()
             return True

@@ -361,6 +361,55 @@ class TestSelectTool:
         session.select_all()
         assert tool.cancel()
 
+    @pytest.mark.parametrize(
+        ("start", "end", "shift"),
+        [
+            ((45, 125), (90, 140), False),
+            ((300, 250), (350, 280), True),
+            ((70, 150), (90, 170), False),
+        ],
+        ids=["move", "band", "handle"],
+    )
+    def test_cancel_stops_the_drag_before_clearing_selection(
+        self,
+        session: EditorSession,
+        start: tuple[float, float],
+        end: tuple[float, float],
+        shift: bool,  # noqa: FBT001 — pytest parameter
+    ) -> None:
+        """Esc mid-drag ends the gesture; the next Esc clears the selection."""
+        shape = RectangleShape(rect=Rect(20, 100, 50, 50), style=Style(fill=RED))
+        session.history.execute(AddAnnotations([shape], "Draw"))
+        session.selection.set([shape.id])
+        tool = SelectTool(session, FakeToolHost())
+        tool.press(Pointer(Point(*start), shift=shift))
+        tool.move(Pointer(Point(*end)))
+        after_drag = session.document.annotations
+
+        assert tool.cancel()
+        tool.move(Pointer(Point(390, 290)))
+        tool.release(Pointer(Point(390, 290)))
+
+        assert session.document.annotations == after_drag
+        assert tool.frame is None
+        assert session.selection.ids == (shape.id,)
+        assert tool.cancel()
+        assert not session.selection.ids
+
+    def test_deactivate_keeps_the_selection(self, session: EditorSession) -> None:
+        """Choosing another tool drops a rubber band but not the selection."""
+        shape = RectangleShape(rect=Rect(20, 100, 50, 50))
+        session.history.execute(AddAnnotations([shape], "Draw"))
+        session.selection.set([shape.id])
+        tool = SelectTool(session, FakeToolHost())
+        tool.press(Pointer(Point(300, 250), shift=True))
+        tool.move(Pointer(Point(350, 280)))
+
+        tool.deactivate()
+
+        assert tool.frame is None
+        assert session.selection.ids == (shape.id,)
+
 
 class TestHandleDrag:
     """Handle gesture lifecycle edge cases."""

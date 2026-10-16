@@ -74,8 +74,7 @@ class TestQuickPath:
         user.key(Qt.Key.Key_R)
         user.drag((10, 10), (100, 100))
         user.key(Qt.Key.Key_Escape)  # Skip the label
-        user.key(Qt.Key.Key_Escape)  # Back to Select
-        user.key(Qt.Key.Key_Escape)  # Deselect
+        user.key(Qt.Key.Key_Escape)  # Back to Select with nothing selected
 
         user.shortcut("Ctrl+C")
 
@@ -87,7 +86,7 @@ class TestEscape:
     """Escape backs out exactly one level."""
 
     def test_escape_steps_back_one_level(self, user: User) -> None:
-        """Esc closes the label editor, returns to Select, then deselects.
+        """Esc closes the label editor, then returns to Select with nothing selected.
 
         UX-SEL-09, UX-G-01, UX-TL-13.
         """
@@ -104,16 +103,18 @@ class TestEscape:
             len(session.selection),
             user.window.action("tool_select").isChecked(),
         )
-        user.key(Qt.Key.Key_Escape)
+        user.key(Qt.Key.Key_Escape)  # At rest: changes nothing
 
         assert after_first == (False, 1)
-        assert after_second == (1, True)
+        assert after_second == (0, True)
         assert len(session.selection) == 0
+        assert len(session.document.annotations) == 1
+        assert user.window.isVisible()
         assert user.window.action("tool_select").isChecked()
         assert Pixels.is_reddish(Pixels.at(user.window.flattened(), 20, 70))
 
     def test_two_escapes_after_typing_text_reach_select(self, user: User) -> None:
-        """Esc finishes typing, a second Esc returns to Select with the text selected.
+        """Esc finishes typing; a second Esc returns to Select and deselects.
 
         UX-SEL-09.
         """
@@ -125,7 +126,40 @@ class TestEscape:
         user.key(Qt.Key.Key_Escape)
 
         assert user.window.action("tool_select").isChecked()
-        assert len(user.window.session.selection) == 1
+        assert len(user.window.session.selection) == 0
+        assert len(user.window.session.document.annotations) == 1
+
+    def test_escape_mid_drag_abandons_the_gesture(self, user: User) -> None:
+        """UX-SEL-09: Esc during a rubber band selects nothing and keeps Select."""
+        user.key(Qt.Key.Key_R)
+        user.drag((20, 20), (120, 120))
+        user.key(Qt.Key.Key_Escape)  # Skip the label
+        user.key(Qt.Key.Key_Escape)  # Rest
+        viewport = user.window.canvas.viewport()
+        QTest.mousePress(
+            viewport, Qt.MouseButton.LeftButton, NO_MODS, user.view_point(5, 5)
+        )
+        QTest.mouseMove(viewport, user.view_point(200, 200))
+
+        user.key(Qt.Key.Key_Escape)
+        QTest.mouseRelease(
+            viewport, Qt.MouseButton.LeftButton, NO_MODS, user.view_point(200, 200)
+        )
+
+        assert len(user.window.session.selection) == 0
+        assert user.window.action("tool_select").isChecked()
+
+    def test_choosing_a_tool_keeps_the_selection(self, user: User) -> None:
+        """Keyboard model: picking a tool never changes the selection."""
+        user.key(Qt.Key.Key_R)
+        user.drag((20, 20), (120, 120))
+        user.key(Qt.Key.Key_Escape)  # Skip the label; the box stays selected
+
+        user.key(Qt.Key.Key_V)
+        in_select = len(user.window.session.selection)
+        user.key(Qt.Key.Key_E)
+
+        assert (in_select, len(user.window.session.selection)) == (1, 1)
 
     def test_escape_finishes_text_without_losing_it(self, user: User) -> None:
         """UX-TL-05: Esc while typing commits the text."""
@@ -1047,8 +1081,8 @@ class TestTextBoxes:
         assert isinstance(after, TextNote)
         assert after.style.shadow
         assert after.rect.width == pytest.approx(before.rect.width + 10)
+        user.key(Qt.Key.Key_Escape)  # Rest: Select, nothing selected
         user.key(Qt.Key.Key_R)
-        user.key(Qt.Key.Key_Escape)
         assert self._style_action(user, "Drop shadow").isVisible()
         user.key(Qt.Key.Key_E)
         assert not self._style_action(user, "Drop shadow").isVisible()

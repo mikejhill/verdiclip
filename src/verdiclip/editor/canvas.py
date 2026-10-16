@@ -495,18 +495,20 @@ class CanvasView(QAbstractScrollArea):
         super().keyReleaseEvent(event)
 
     def _handle_escape(self) -> None:
-        """Back out one level: tool work, then to Select tool, then selection.
+        """Step one level toward rest: the Select tool with nothing selected.
 
-        A drawing tool returns to the Select tool with the selection kept, so
-        what was just drawn stays selected; only the Select tool clears it.
+        The tool abandons an unfinished gesture first (or, in Select, clears
+        the selection). Otherwise a drawing tool is left for Select and the
+        selection is cleared with it, so Esc never needs an extra press to
+        deselect what was just drawn. See "Keyboard model" in the UX contract.
         """
-        if self._tool is not None and self._tool.cancel():
+        tool = self._tool
+        if tool is not None and tool.cancel():
             self.refresh()
             return
-        selecting = self._tool is None or self._tool.tool_id is ToolId.SELECT
-        if selecting and len(self._session.selection):
-            self._session.selection.clear()
+        if tool is None or tool.tool_id is ToolId.SELECT:
             return
+        self._session.selection.clear()
         self.escape_unhandled.emit()
 
     def _nudge(self, event: QKeyEvent) -> bool:

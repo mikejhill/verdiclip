@@ -49,7 +49,11 @@ that does not make one of them faster or more correct is out of scope.
   most common path the shortest.
 - **Keyboard and mouse parity:** every action reachable by mouse has a
   shortcut; every shortcut is discoverable (menus, tooltips, status bar hints).
-- **Escape always backs out exactly one level** and never destroys work.
+- **Escape always backs out exactly one level** and never destroys work;
+  **Enter moves one step forward.** Every tool shares one ladder of levels
+  (typing → gesture → drawing tool → selection → rest), defined in the
+  [keyboard model](ux-contract.md#keyboard-model). A new tool fits that
+  ladder rather than inventing its own key behavior.
 - **Nothing is lost silently:** closing an editor with undelivered changes asks;
   a hotkey that can't be registered is reported, not logged and forgotten.
 - **What you see is what you get:** the canvas and the exported image are drawn
