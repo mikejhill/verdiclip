@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.2](https://github.com/mikejhill/verdiclip/compare/v0.8.1...v0.8.2) (2026-10-16)
+
+
+### Bug Fixes
+
+* Esc steps one shared ladder to rest in every tool ([#41](https://github.com/mikejhill/verdiclip/issues/41)) ([1e08841](https://github.com/mikejhill/verdiclip/commit/1e088414c151fea90aa99f51a2891d909477df7a))
+
 ## [0.8.1](https://github.com/mikejhill/verdiclip/compare/v0.8.0...v0.8.1) (2026-10-16)
 
 
