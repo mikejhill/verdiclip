@@ -31,7 +31,7 @@ from verdiclip.document.annotations import TextNote
 from verdiclip.document.style import BLACK, WHITE, Color, HAlign, VAlign
 from verdiclip.editor.close_prompt import CloseChoice, ClosePrompt
 from verdiclip.editor.session import ToolId
-from verdiclip.geometry import Rect
+from verdiclip.geometry import Point, Rect
 from verdiclip.render.renderer import QtConvert, Renderer
 from verdiclip.settings import OutputSettings
 
@@ -72,6 +72,7 @@ class TestQuickPath:
         user.key(Qt.Key.Key_R)
         user.drag((10, 10), (100, 100))
         user.key(Qt.Key.Key_Escape)  # Skip the label
+        user.key(Qt.Key.Key_Escape)  # Back to Select
         user.key(Qt.Key.Key_Escape)  # Deselect
 
         user.shortcut("Ctrl+C")
@@ -84,7 +85,7 @@ class TestEscape:
     """Escape backs out exactly one level."""
 
     def test_escape_steps_back_one_level(self, user: User) -> None:
-        """Esc closes the label editor, then deselects, then returns to Select.
+        """Esc closes the label editor, returns to Select, then deselects.
 
         UX-SEL-09, UX-G-01, UX-TL-13.
         """
@@ -97,15 +98,32 @@ class TestEscape:
         user.key(Qt.Key.Key_Escape)
         after_first = (editors.is_open, len(session.selection))
         user.key(Qt.Key.Key_Escape)
-        after_second = (len(session.selection), user.window.canvas.tool)
+        after_second = (
+            len(session.selection),
+            user.window.action("tool_select").isChecked(),
+        )
         user.key(Qt.Key.Key_Escape)
 
         assert after_first == (False, 1)
-        assert after_second[0] == 0
-        assert after_second[1] is not None
-        assert after_second[1].label == "Rectangle"
+        assert after_second == (1, True)
+        assert len(session.selection) == 0
         assert user.window.action("tool_select").isChecked()
         assert Pixels.is_reddish(Pixels.at(user.window.flattened(), 20, 70))
+
+    def test_two_escapes_after_typing_text_reach_select(self, user: User) -> None:
+        """Esc finishes typing, a second Esc returns to Select with the text selected.
+
+        UX-SEL-09.
+        """
+        user.key(Qt.Key.Key_T)
+        user.click((60, 150))
+        user.type_text("Hi")
+
+        user.key(Qt.Key.Key_Escape)
+        user.key(Qt.Key.Key_Escape)
+
+        assert user.window.action("tool_select").isChecked()
+        assert len(user.window.session.selection) == 1
 
     def test_escape_finishes_text_without_losing_it(self, user: User) -> None:
         """UX-TL-05: Esc while typing commits the text."""
@@ -137,6 +155,7 @@ class TestUndo:
         user.drag((50, 100), (150, 180))
         user.key(Qt.Key.Key_Escape)  # Skip the label
         user.key(Qt.Key.Key_V)
+        user.key(Qt.Key.Key_Escape)  # Deselect, so the drag moves rather than resizes
         user.drag((100, 100), (130, 120))
         user.drag((180, 200), (220, 240))
         for _ in range(3):
@@ -875,6 +894,59 @@ class TestTextBoxes:
         assert fixed.text == "Fixed"
         assert fitted.style.fill == WHITE
         assert Pixels.is_white(Pixels.at(user.window.flattened(), 320, 210))
+
+    def test_drawn_box_has_no_hint_and_survives_esc_when_empty(
+        self, user: User
+    ) -> None:
+        """UX-TL-14: Esc without typing keeps a dragged box; a clicked one vanishes."""
+        user.key(Qt.Key.Key_T)
+        user.click((40, 40))
+        user.key(Qt.Key.Key_Escape)
+        user.drag((150, 100), (330, 220))
+        editor = QApplication.focusWidget()
+        assert isinstance(editor, QTextEdit)
+        assert editor.placeholderText() == ""
+
+        user.key(Qt.Key.Key_Escape)
+
+        (box,) = user.window.session.document.annotations
+        assert isinstance(box, TextNote)
+        assert box.text == ""
+        assert (box.rect.width, box.rect.height) == pytest.approx((180, 120), abs=1)
+        assert user.window.session.selection.ids == (box.id,)
+
+    def test_clearing_a_fixed_box_keeps_it(self, user: User) -> None:
+        """UX-TL-14: deleting all text in a dragged box leaves the empty box."""
+        user.key(Qt.Key.Key_T)
+        user.drag((150, 100), (330, 220))
+        user.type_text("Gone")
+        user.key(Qt.Key.Key_Escape)
+        user.click((200, 150))  # The Text tool edits text it is clicked on
+        editor = QApplication.focusWidget()
+        assert isinstance(editor, QTextEdit)
+        editor.selectAll()
+        user.key(Qt.Key.Key_Delete)
+        user.key(Qt.Key.Key_Escape)
+
+        (box,) = user.window.session.document.annotations
+        assert isinstance(box, TextNote)
+        assert box.text == ""
+
+    def test_text_starts_on_the_image(self, user: User) -> None:
+        """UX-TL-05, UX-TL-14: text placed in the margin is clamped to the image."""
+        user.key(Qt.Key.Key_T)
+        user.drag((300, 200), (480, 360))
+        user.type_text("Edge")
+        user.key(Qt.Key.Key_Escape)
+        user.click((-40, -30))
+        user.type_text("Corner")
+        user.key(Qt.Key.Key_Escape)
+
+        dragged, clicked = user.window.session.document.annotations
+        assert isinstance(dragged, TextNote)
+        assert isinstance(clicked, TextNote)
+        assert dragged.rect == Rect(300, 200, 100, 100)
+        assert clicked.rect.top_left == Point(0, 0)
 
     def test_alignment_shows_only_for_fixed_boxes_and_auto_fit_restores(
         self, user: User

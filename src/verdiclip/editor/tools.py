@@ -254,6 +254,14 @@ class Tool(ABC):
         """Drop transient state when another tool is chosen."""
         self.cancel()
 
+    def _clamp(self, point: Point) -> Point:
+        """Clamp ``point`` to the current visible area."""
+        crop = self._session.document.crop
+        return Point(
+            min(max(point.x, crop.left), crop.right),
+            min(max(point.y, crop.top), crop.bottom),
+        )
+
 
 class SelectTool(Tool):
     """Select, move, and resize annotations."""
@@ -429,14 +437,17 @@ class DrawingTool(Tool):
 
     @override
     def cancel(self) -> bool:
-        """Abandon the annotation being drawn, or clear the selection."""
-        self._handles.end()
+        """Abandon the annotation being drawn; the selection is left alone.
+
+        Esc then returns to the Select tool with what was just drawn still
+        selected, instead of spending a keypress on deselecting it.
+        """
+        if self._handles.active:
+            self._handles.end()
+            return True
         if self._preview is not None or self._origin is not None:
             self._origin = None
             self._preview = None
-            return True
-        if len(self._session.selection):
-            self._session.selection.clear()
             return True
         return False
 
@@ -618,7 +629,8 @@ class TextTool(Tool):
         if isinstance(hit, TextNote):
             self._host.edit_text(hit, hit.rect.top_left)
             return
-        self._origin = pointer.pos
+        # New text starts on the image, never in the margin around it
+        self._origin = self._clamp(pointer.pos)
 
     @override
     def move(self, pointer: Pointer) -> None:
@@ -626,7 +638,7 @@ class TextTool(Tool):
         if self._handles.active:
             self._handles.update(pointer)
         elif self._origin is not None:
-            self._frame = Rect.from_points(self._origin, pointer.pos)
+            self._frame = Rect.from_points(self._origin, self._clamp(pointer.pos))
 
     @override
     def release(self, pointer: Pointer) -> None:
@@ -639,7 +651,7 @@ class TextTool(Tool):
         self._frame = None
         if origin is None:
             return
-        box = Rect.from_points(origin, pointer.pos)
+        box = Rect.from_points(origin, self._clamp(pointer.pos))
         if box.width >= MIN_TEXT_BOX and box.height >= MIN_TEXT_BOX:
             self._host.edit_text(None, box.top_left, box)
         else:
@@ -779,14 +791,6 @@ class CropTool(Tool):
         self._frame = None
         self._origin = None
         return had_frame
-
-    def _clamp(self, point: Point) -> Point:
-        """Clamp ``point`` to the current visible area."""
-        crop = self._session.document.crop
-        return Point(
-            min(max(point.x, crop.left), crop.right),
-            min(max(point.y, crop.top), crop.bottom),
-        )
 
 
 TOOL_TYPES: Final[tuple[type[Tool], ...]] = (
