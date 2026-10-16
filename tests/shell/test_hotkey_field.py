@@ -454,6 +454,18 @@ class TestNativeCapture:
         assert capture.starts == 1
         assert hooked.edit.text() == "Ctrl+F7"
 
+    def test_pause_records_on_press(
+        self, hooked: HotkeyField, capture: FakeCapture
+    ) -> None:
+        """Pause may never send a release, so its press records."""
+        hooked.start_recording()
+
+        capture.press(VK_CTRL)
+        capture.press(0x13)
+
+        assert not hooked.recording
+        assert hooked.edit.text() == "Ctrl+Pause"
+
     def test_modifiers_held_before_recording_count(
         self, hooked: HotkeyField, capture: FakeCapture
     ) -> None:

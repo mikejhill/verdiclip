@@ -81,6 +81,31 @@ class TestLowLevelKeyboardHook:
         assert seen == [(VK_SNAPSHOT, True)]
         assert not hook.active
 
+    def test_release_of_a_key_held_before_start_passes_through(self) -> None:
+        """Windows saw Ctrl go down before the hook, so it must see it come up."""
+        hook = LowLevelKeyboardHook()
+        seen: list[tuple[int, bool]] = []
+        ctrl, a, prtsc = key_info(0xA2), key_info(0x41), key_info(VK_SNAPSHOT)
+
+        started = hook.start(lambda vk, down: seen.append((vk, down)))
+        assert started
+        try:
+            ctrl_up = hook._proc(0, WM_KEYUP, ctypes.addressof(ctrl))
+            a_down = hook._proc(0, WM_KEYDOWN, ctypes.addressof(a))
+            a_up = hook._proc(0, WM_KEYUP, ctypes.addressof(a))
+            prtsc_up = hook._proc(0, WM_KEYUP, ctypes.addressof(prtsc))
+        finally:
+            hook.stop()
+
+        assert ctrl_up != 1
+        assert (a_down, a_up, prtsc_up) == (1, 1, 1)
+        assert seen == [
+            (0xA2, False),
+            (0x41, True),
+            (0x41, False),
+            (VK_SNAPSHOT, False),
+        ]
+
     def test_held_modifiers_are_modifier_keys(self) -> None:
         """Only modifier keys are reported as held."""
         held = LowLevelKeyboardHook().held_modifiers()

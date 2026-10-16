@@ -26,6 +26,7 @@ _WH_KEYBOARD_LL: Final = 13
 _HC_ACTION: Final = 0
 _KEY_DOWN: Final = frozenset({0x0100, 0x0104})  # WM_KEYDOWN, WM_SYSKEYDOWN
 _KEY_UP: Final = frozenset({0x0101, 0x0105})  # WM_KEYUP, WM_SYSKEYUP
+_VK_SNAPSHOT: Final = 0x2C
 # Left and right Shift, Ctrl, Alt, then Win
 MODIFIER_VKS: Final = (0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C)
 
@@ -106,6 +107,8 @@ class LowLevelKeyboardHook:
         self._module = kernel32.GetModuleHandleW(None)
         self._hook: int | None = None
         self._callback: KeyCallback | None = None
+        # Keys whose press this hook swallowed; only their releases are too
+        self._down: set[int] = set()
         # Windows calls this pointer; keep it alive while hooked
         self._proc = self._proc_type(self._on_hook)
 
@@ -127,6 +130,7 @@ class LowLevelKeyboardHook:
             return False
         self._hook = hook
         self._callback = callback
+        self._down.clear()
         return True
 
     def stop(self) -> None:
@@ -142,18 +146,30 @@ class LowLevelKeyboardHook:
         )
 
     def _on_hook(self, code: int, message: int, address: int) -> int:
-        """Hand a key to the callback and swallow it; pass anything else on."""
+        """Hand a key to the callback and swallow it; pass anything else on.
+
+        A release whose press reached Windows before the hook (a Ctrl held
+        while clicking Record) passes through, or Windows would think the
+        key stays down. PrtSc's release is always swallowed: some keyboards
+        send only that.
+        """
         if code == _HC_ACTION and self._callback is not None:
             key = decode(message, address)
             if key is not None:
+                vk, pressed = key
+                swallow = pressed or vk in self._down or vk == _VK_SNAPSHOT
+                if pressed:
+                    self._down.add(vk)
+                else:
+                    self._down.discard(vk)
                 try:
-                    self._callback(*key)
+                    self._callback(vk, pressed)
                 except Exception:
                     # An escaping error would leave every key swallowed
                     logger.exception("Key callback failed; releasing the keyboard")
                     self.stop()
                     return self._pass_on(code, message, address)
-                return 1
+                return 1 if swallow else self._pass_on(code, message, address)
         return self._pass_on(code, message, address)
 
     def _pass_on(self, code: int, message: int, address: int) -> int:

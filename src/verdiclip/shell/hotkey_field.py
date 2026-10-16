@@ -19,6 +19,8 @@ UNSUPPORTED_HINT: Final = "That key can't be a hotkey; press another"
 IDLE_TIMEOUT_MS: Final = 20_000
 _VK_ESCAPE: Final = 0x1B
 _VK_SNAPSHOT: Final = 0x2C
+# Some keyboards send Pause only as a press
+_VK_PAUSE: Final = 0x13
 _MODIFIER_VKS: Final = {
     0x10: Modifier.SHIFT,
     0xA0: Modifier.SHIFT,
@@ -253,6 +255,9 @@ class HotkeyField(QWidget):
             if hotkey is None:
                 self.edit.clear()
                 self.edit.setPlaceholderText(UNSUPPORTED_HINT)
+                return
+            if vk == _VK_PAUSE:
+                self._finish(hotkey)
                 return
             self._pending = (vk, hotkey)
             self.edit.setText(hotkey.display_text)
