@@ -68,7 +68,8 @@ class TestLowLevelKeyboardHook:
         seen: list[tuple[int, bool]] = []
         info = key_info(VK_SNAPSHOT)
 
-        assert hook.start(lambda vk, down: seen.append((vk, down)))
+        started = hook.start(lambda vk, down: seen.append((vk, down)))
+        assert started
         try:
             assert hook.active
             swallowed = hook._proc(0, WM_KEYDOWN, ctypes.addressof(info))
@@ -88,7 +89,8 @@ class TestLowLevelKeyboardHook:
             del vk, down
             raise RuntimeError
 
-        assert hook.start(fail)
+        started = hook.start(fail)
+        assert started
         result = hook._proc(0, WM_KEYDOWN, ctypes.addressof(info))
 
         assert result != 1
@@ -101,7 +103,8 @@ class TestLowLevelKeyboardHook:
         address = ctypes.addressof(info)
         seen: list[int] = []
 
-        assert hook.start(lambda vk, _down: seen.append(vk))
+        started = hook.start(lambda vk, _down: seen.append(vk))
+        assert started
         other_message = hook._proc(0, 0x0200, address)
         other_code = hook._proc(-1, WM_KEYDOWN, address)
         hook.stop()
