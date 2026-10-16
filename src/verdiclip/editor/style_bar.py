@@ -47,6 +47,8 @@ PALETTE: Final = (
 )
 # Room before a field's label, so it doesn't sit on the separator before it
 LABEL_MARGINS: Final = (8, 0, 2, 0)
+# Icon size for color swatches and the bar's toggle buttons
+SWATCH_SIZE: Final = 16
 
 
 class StyleField(StrEnum):
@@ -124,7 +126,7 @@ class ColorButton(QToolButton):
         self._color = TRANSPARENT
         self._allow_none = allow_none
         self.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.setIconSize(QSize(20, 20))
+        self.setIconSize(QSize(SWATCH_SIZE, SWATCH_SIZE))
         self.setMenu(self._build_menu())
 
     @property
@@ -217,6 +219,7 @@ class StyleBar(QToolBar):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__("Style", parent)
         self.setMovable(False)
+        self.setIconSize(QSize(SWATCH_SIZE, SWATCH_SIZE))
         self._updating = False
         self._stroke_label = QLabel()
         self._stroke = ColorButton(allow_none=False)

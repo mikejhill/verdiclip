@@ -463,8 +463,8 @@ class EditorWindow(QMainWindow):
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self._style_bar)
         # One fixed height for the top row so switching tools never moves the canvas
         height = max(self._style_bar.tallest_height(), BUTTON_SIZE + 8)
-        actions.setFixedHeight(height)
-        self._style_bar.setFixedHeight(height)
+        actions.setMinimumHeight(height)
+        self._style_bar.setMinimumHeight(height)
         self._chrome_bars = (palette, actions, self._style_bar)
         self._apply_chrome()
 
