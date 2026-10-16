@@ -281,9 +281,6 @@ class AppController(QObject):
         dialog = SettingsDialog(self._settings, parent)
         dialog.setWindowIcon(self._icon)
         dialog.make_default_requested.connect(self.make_default_image_app)
-        # Block only the editor it came from (nothing, from the tray): an
-        # application-modal dialog would also block the capture overlays
-        dialog.setWindowModality(Qt.WindowModality.WindowModal)
         if dialog.exec() == SettingsDialog.DialogCode.Accepted:
             self.apply_settings(dialog.result_settings())
 
@@ -323,14 +320,13 @@ class AppController(QObject):
         self._apply_hotkeys()
 
     def _show_about(self) -> None:
-        """Show version and attribution."""
+        """Show version and license."""
         QMessageBox.about(
             None,
             f"About {APP_NAME}",
             f"<b>{APP_NAME} {VERSION}</b>"
             "<p>Fast, faithful screenshots with annotation.</p>"
-            "<p>Inspired by <a href='https://getgreenshot.org/'>Greenshot</a>. "
-            "MIT licensed.</p>",
+            "<p>MIT licensed.</p>",
         )
 
     def request_exit(self) -> None:
