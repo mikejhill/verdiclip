@@ -454,6 +454,20 @@ class TestNativeCapture:
         assert capture.starts == 1
         assert hooked.edit.text() == "Ctrl+F7"
 
+    def test_auto_repeat_keeps_the_first_combination(
+        self, hooked: HotkeyField, capture: FakeCapture
+    ) -> None:
+        """Letting go of Ctrl while A repeats still records Ctrl+A."""
+        hooked.start_recording()
+        capture.press(VK_CTRL)
+        capture.press(VK_A)
+        capture.release(VK_CTRL)
+        capture.press(VK_A)
+
+        capture.release(VK_A)
+
+        assert hooked.edit.text() == "Ctrl+A"
+
     def test_pause_records_on_press(
         self, hooked: HotkeyField, capture: FakeCapture
     ) -> None:

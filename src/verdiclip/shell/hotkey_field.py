@@ -247,6 +247,9 @@ class HotkeyField(QWidget):
             self._show_held()
             return
         held = self._held()
+        if pressed and self._pending is not None and self._pending[0] == vk:
+            # Auto-repeat: keep the combination as first pressed
+            return
         if pressed:
             if vk == _VK_ESCAPE and not held:
                 self.cancel_recording()
