@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/mikejhill/verdiclip/compare/v0.8.0...v0.8.1) (2026-10-16)
+
+
+### Bug Fixes
+
+* make toolbar overflow reachable and slim toolbar icons ([#37](https://github.com/mikejhill/verdiclip/issues/37)) ([4129672](https://github.com/mikejhill/verdiclip/commit/41296724d282746f8c854bc09f03d51126ea43c4))
+
 ## [0.8.0](https://github.com/mikejhill/verdiclip/compare/v0.7.0...v0.8.0) (2026-10-16)
 
 
