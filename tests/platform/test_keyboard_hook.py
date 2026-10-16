@@ -9,6 +9,7 @@ import pytest
 
 from verdiclip.exceptions import PlatformError
 from verdiclip.platform.keyboard_hook import (
+    MODIFIER_VKS,
     KbdLlHookStruct,
     LowLevelKeyboardHook,
     decode,
@@ -79,6 +80,12 @@ class TestLowLevelKeyboardHook:
         assert swallowed == 1
         assert seen == [(VK_SNAPSHOT, True)]
         assert not hook.active
+
+    def test_held_modifiers_are_modifier_keys(self) -> None:
+        """Only modifier keys are reported as held."""
+        held = LowLevelKeyboardHook().held_modifiers()
+
+        assert held <= set(MODIFIER_VKS)
 
     def test_failing_callback_releases_the_keyboard(self) -> None:
         """An error in the callback removes the hook and lets the key through."""

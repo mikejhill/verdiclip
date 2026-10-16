@@ -180,21 +180,35 @@ class HotkeyField(QWidget):
             self.edit.setPlaceholderText(RECORDING_HINT)
             self.record_button.setText(RECORDING_TEXT)
             application.installEventFilter(self)
-            self._held_vks.clear()
             self._pending = None
-            if self._capture is not None:
-                self._capture.start(self._on_native_key)
+            # Announce first: the dialog stops another field's recording,
+            # which releases the shared hook, before this one takes it
+            self.recording_changed.emit(checked)
+            self._held_vks.clear()
+            if self._capture is not None and self._capture.start(self._on_native_key):
+                # The hook sees only changes; start from what's held already
+                self._held_vks.update(self._capture.held_modifiers())
+                self._show_held()
             self._idle.start(IDLE_TIMEOUT_MS)
-        else:
-            self._idle.stop()
-            if self._capture is not None:
-                self._capture.stop()
-            application.removeEventFilter(self)
-            self.edit.setText(self._before)
-            self.edit.setPlaceholderText("")
-            self.edit.setReadOnly(False)
-            self.record_button.setText(RECORD_TEXT)
+            return
+        self._idle.stop()
+        if self._capture is not None:
+            self._capture.stop()
+        application.removeEventFilter(self)
+        self.edit.setText(self._before)
+        self.edit.setPlaceholderText("")
+        self.edit.setReadOnly(False)
+        self.record_button.setText(RECORD_TEXT)
         self.recording_changed.emit(checked)
+
+    def _held(self) -> frozenset[Modifier]:
+        """Return the modifiers the hook has seen held."""
+        return frozenset(_MODIFIER_VKS[v] for v in self._held_vks)
+
+    def _show_held(self) -> None:
+        """Preview the modifiers held so far ("Ctrl+…")."""
+        held = self._held()
+        self.edit.setText(_modifier_prefix(held) if held else "")
 
     def _finish(self, hotkey: Hotkey) -> None:
         """Keep ``hotkey`` and stop recording."""
@@ -228,10 +242,9 @@ class HotkeyField(QWidget):
                 self._held_vks.add(vk)
             else:
                 self._held_vks.discard(vk)
-            held = frozenset(_MODIFIER_VKS[v] for v in self._held_vks)
-            self.edit.setText(_modifier_prefix(held) if held else "")
+            self._show_held()
             return
-        held = frozenset(_MODIFIER_VKS[v] for v in self._held_vks)
+        held = self._held()
         if pressed:
             if vk == _VK_ESCAPE and not held:
                 self.cancel_recording()

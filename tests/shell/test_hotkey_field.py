@@ -47,6 +47,7 @@ class FakeCapture:
         self.callback: KeyCallback | None = None
         self.starts = 0
         self.accept = True
+        self.held: frozenset[int] = frozenset()
 
     def start(self, callback: KeyCallback) -> bool:
         """Remember the callback."""
@@ -57,6 +58,10 @@ class FakeCapture:
     def stop(self) -> None:
         """Forget the callback."""
         self.callback = None
+
+    def held_modifiers(self) -> frozenset[int]:
+        """Return the modifiers set as already held."""
+        return self.held
 
     def press(self, vk: int) -> None:
         """Send a key down."""
@@ -448,3 +453,16 @@ class TestNativeCapture:
 
         assert capture.starts == 1
         assert hooked.edit.text() == "Ctrl+F7"
+
+    def test_modifiers_held_before_recording_count(
+        self, hooked: HotkeyField, capture: FakeCapture
+    ) -> None:
+        """Ctrl held while clicking Record is part of the combination."""
+        capture.held = frozenset({VK_CTRL})
+        hooked.start_recording()
+        shown = hooked.edit.text()
+
+        capture.tap(VK_ESCAPE)
+
+        assert shown == "Ctrl+…"
+        assert hooked.edit.text() == "Ctrl+Escape"

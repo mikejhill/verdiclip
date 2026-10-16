@@ -26,6 +26,8 @@ _WH_KEYBOARD_LL: Final = 13
 _HC_ACTION: Final = 0
 _KEY_DOWN: Final = frozenset({0x0100, 0x0104})  # WM_KEYDOWN, WM_SYSKEYDOWN
 _KEY_UP: Final = frozenset({0x0101, 0x0105})  # WM_KEYUP, WM_SYSKEYUP
+# Left and right Shift, Ctrl, Alt, then Win
+MODIFIER_VKS: Final = (0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C)
 
 
 class KbdLlHookStruct(ctypes.Structure):
@@ -56,6 +58,9 @@ class KeyCapture(Protocol):
 
     def stop(self) -> None:
         """Stop capturing and let keys through again."""
+
+    def held_modifiers(self) -> frozenset[int]:
+        """Return the modifier keys (``MODIFIER_VKS``) physically down now."""
 
 
 class LowLevelKeyboardHook:
@@ -94,6 +99,8 @@ class LowLevelKeyboardHook:
             ctypes.wintypes.LPARAM,
         ]
         self._user32.CallNextHookEx.restype = ctypes.c_ssize_t
+        self._user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+        self._user32.GetAsyncKeyState.restype = ctypes.c_short
         kernel32.GetModuleHandleW.argtypes = [ctypes.wintypes.LPCWSTR]
         kernel32.GetModuleHandleW.restype = ctypes.wintypes.HMODULE
         self._module = kernel32.GetModuleHandleW(None)
@@ -127,6 +134,12 @@ class LowLevelKeyboardHook:
         hook, self._hook, self._callback = self._hook, None, None
         if hook is not None and not self._user32.UnhookWindowsHookEx(hook):
             logger.warning("Windows did not remove the keyboard hook")
+
+    def held_modifiers(self) -> frozenset[int]:
+        """Return the modifier keys down now, so a held Ctrl isn't missed."""
+        return frozenset(
+            vk for vk in MODIFIER_VKS if self._user32.GetAsyncKeyState(vk) & 0x8000
+        )
 
     def _on_hook(self, code: int, message: int, address: int) -> int:
         """Hand a key to the callback and swallow it; pass anything else on."""

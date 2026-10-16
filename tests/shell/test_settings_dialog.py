@@ -132,6 +132,9 @@ class TestSettingsDialog:
             def stop(self) -> None:
                 started.append(None)
 
+            def held_modifiers(self) -> frozenset[int]:
+                return frozenset[int]()
+
         hooked = SettingsDialog(Settings(), key_capture=Capture())
         qtbot.addWidget(hooked)
 
@@ -141,6 +144,31 @@ class TestSettingsDialog:
         assert len(started) == 2
         assert callable(started[0])
         assert started[1] is None
+
+    def test_switching_fields_keeps_the_hook(self, qtbot: QtBot) -> None:
+        """Recording a second field leaves the shared hook with that field."""
+        owners: list[object] = []
+
+        class Capture:
+            def start(self, callback: object) -> bool:
+                owners.append(callback)
+                return True
+
+            def stop(self) -> None:
+                owners.append(None)
+
+            def held_modifiers(self) -> frozenset[int]:
+                return frozenset[int]()
+
+        hooked = SettingsDialog(Settings(), key_capture=Capture())
+        qtbot.addWidget(hooked)
+        hooked.hotkey_field("region").start_recording()
+
+        hooked.hotkey_field("window").start_recording()
+
+        assert owners[-1] is not None
+        assert getattr(owners[-1], "__self__", None) is hooked.hotkey_field("window")
+        hooked.reject()
 
     def test_one_field_records_at_a_time(self, dialog: SettingsDialog) -> None:
         """Starting another recording cancels the first."""
