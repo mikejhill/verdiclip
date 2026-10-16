@@ -15,7 +15,7 @@ window state, or text the user can read — never internal state.
 
 | ID | Rule |
 | --- | --- |
-| UX-G-01 | `Esc` backs out exactly one level and never discards committed work. |
+| UX-G-01 | `Esc` backs out exactly one level toward rest and never discards committed work; `Enter` moves one step forward. The levels are defined in [Keyboard model](#keyboard-model). |
 | UX-G-02 | Every menu action shows its shortcut; every toolbar button has a tooltip naming the action and its shortcut. |
 | UX-G-03 | Every document change is undoable with `Ctrl+Z` and redoable with `Ctrl+Y` / `Ctrl+Shift+Z`. While a text editor is open, these undo typing first; with nothing typed they undo the document (e.g. the box just drawn). |
 | UX-G-04 | The canvas and every exported image are pixel-identical for the image area. |
@@ -24,6 +24,29 @@ window state, or text the user can read — never internal state.
 | UX-G-07 | Window chrome never jumps: switching tools or selecting items never changes the toolbar height or moves the canvas. |
 | UX-G-08 | Light, dark, or match-Windows theme applies to every window immediately, including toolbar icons. Controls stay legible after any switch (checked boxes show the accent fill in either mode), including when Windows changes mode under match-Windows. |
 | UX-G-09 | A toolbar too long for the window ends in a `»` button; clicking it shows every hidden control in a panel over the canvas, and clicking it again hides them. |
+
+## Keyboard model
+
+The editor is always in one of these levels, from the most engaged to **rest**
+(the Select tool with nothing selected). Every tool follows the same ladder, so
+the keys mean the same thing everywhere.
+
+| Level | You are… | `Esc` | `Enter` |
+| --- | --- | --- | --- |
+| 1. Typing | In a text, box-label, or counter editor | Finish typing. The item stays, selected, and the tool stays active for the next one. | New line in text and box labels; finishes a counter label. |
+| 2. Gesture | Mid-drag, or holding an unapplied crop frame | Abandon it: an unfinished shape or crop frame is discarded, a rubber band selects nothing, and a move or resize already applied stays where it is (`Ctrl+Z` reverts it). | Apply the crop frame. |
+| 3. Drawing tool | Any tool other than Select, between gestures | Return to rest: switch to Select and clear the selection, in one press. | Edit the selected item's text, if it has any. |
+| 4. Selection | Select tool with something selected | Clear the selection. | Edit the selected item's text, if it has any. |
+| Rest | Select tool, nothing selected | Nothing; `Esc` never closes the editor. | Copy the image and close the editor. |
+
+Consequences:
+
+- From anywhere, at most two presses of `Esc` reach rest: one to finish typing
+  or abandon the gesture, one to leave the tool or selection.
+- Choosing a tool (shortcut or toolbar) never changes the selection. Only
+  clicking, `Esc`, `Ctrl+A`, and creating or deleting items do.
+- Focus in the style bar is returned to the canvas by the first `Esc`, before
+  any level is left.
 
 ## Capture
 
@@ -91,7 +114,7 @@ so it can be adjusted immediately; the tool stays active for the next mark.
 | UX-SEL-06 | `Delete` / `Backspace` with a selection (not editing text) | Selected annotations are removed (undoable). |
 | UX-SEL-07 | Change stroke/fill/width/font with a selection | The selected annotations change (one undo step) and the value becomes the default for new annotations. With no selection, only the default changes. |
 | UX-SEL-08 | `Ctrl+C` then `Ctrl+V` with a selection | Copies of the annotations appear offset by 10 px and become the selection. Works between editor windows. |
-| UX-SEL-09 | `Esc` | Order: finish text or label editing → cancel crop frame → switch to Select tool (keeping the selection) → clear selection. Focus in the style bar is returned to the canvas first. |
+| UX-SEL-09 | `Esc` | Steps down the [Keyboard model](#keyboard-model): finish typing → abandon the gesture or crop frame → leave a drawing tool for Select and clear the selection together → in Select, clear the selection. Focus in the style bar is returned to the canvas first. |
 | UX-SEL-10 | `Ctrl+]` / `Ctrl+[` | Bring selected annotations forward / send backward. |
 | UX-SEL-11 | Change a tool's color, fill, width, or font (directly or via a selected item) | The choice is remembered for that tool and used by every later editor, including after restarting. Changing editor defaults in Settings resets the remembered choices. |
 
