@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/mikejhill/verdiclip/compare/v0.8.3...v0.9.0) (2026-10-16)
+
+
+### Features
+
+* record hotkeys by pressing them in Settings ([#45](https://github.com/mikejhill/verdiclip/issues/45)) ([550c6b6](https://github.com/mikejhill/verdiclip/commit/550c6b65fc6a788f3a9cc91008ad2c1312c0542d))
+
 ## [0.8.3](https://github.com/mikejhill/verdiclip/compare/v0.8.2...v0.8.3) (2026-10-16)
 
 
