@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.1](https://github.com/mikejhill/verdiclip/compare/v0.9.0...v0.9.1) (2026-10-16)
+
+
+### Bug Fixes
+
+* record PrtSc, numpad and punctuation keys in Settings ([#47](https://github.com/mikejhill/verdiclip/issues/47)) ([1d33b4a](https://github.com/mikejhill/verdiclip/commit/1d33b4a3ec98b3c82afda93cdd9a83f115fe9e76))
+
 ## [0.9.0](https://github.com/mikejhill/verdiclip/compare/v0.8.3...v0.9.0) (2026-10-16)
 
 
