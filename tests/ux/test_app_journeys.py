@@ -14,7 +14,13 @@ import pytest
 from PySide6.QtCore import QEvent, QObject, QProcess, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QGuiApplication, QImage
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QSystemTrayIcon, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QMessageBox,
+    QSystemTrayIcon,
+    QWidget,
+)
 from pytestqt.qtbot import QtBot
 from tests.platform.test_associations import FakeAssociationBackend
 from tests.platform.test_launcher import GUI, write_pe
@@ -28,6 +34,7 @@ from tests.ux.test_capture_journeys import (
     Overlay,
 )
 
+from verdiclip import VERSION
 from verdiclip.capture.models import Capture
 from verdiclip.capture.overlay import SelectionOverlay
 from verdiclip.document.commands import SetCrop
@@ -109,19 +116,21 @@ class ShortcutFolders:
 
 
 class BlockedWindows(QObject):
-    """Count capture overlays that a modal dialog blocks from input."""
+    """Record windows that a modal dialog blocks from input."""
 
     def __init__(self) -> None:
         super().__init__()
         self.overlays = 0
+        self.editors: list[EditorWindow] = []
 
     @override
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        """Count WindowBlocked events sent to an overlay."""
-        if event.type() == QEvent.Type.WindowBlocked and isinstance(
-            watched, SelectionOverlay
-        ):
-            self.overlays += 1
+        """Record WindowBlocked events sent to an overlay or an editor."""
+        if event.type() == QEvent.Type.WindowBlocked:
+            if isinstance(watched, SelectionOverlay):
+                self.overlays += 1
+            elif isinstance(watched, EditorWindow):
+                self.editors.append(watched)
         return False
 
 
@@ -666,10 +675,11 @@ class TestSettingsEverywhere:
 
         assert opened == [editor]
 
-    def test_region_capture_works_while_settings_are_open(
-        self, make_app: AppFactory, qtbot: QtBot
+    @pytest.mark.parametrize("dialog", [SettingsDialog, QMessageBox])
+    def test_region_capture_works_while_a_tray_dialog_is_open(
+        self, make_app: AppFactory, qtbot: QtBot, dialog: type[QDialog]
     ) -> None:
-        """UX-TRY-04: open Settings never blocks the capture overlay's input."""
+        """UX-G-10: no dialog from the tray blocks the capture overlay's input."""
         app = make_app()
         captured: list[Capture] = []
         app.controller.capture.captured.connect(captured.append)
@@ -682,18 +692,73 @@ class TestSettingsEverywhere:
             app.press_hotkey("region")
             Overlay(app.controller.capture).drag((90, 90), (160, 140))
             for widget in QApplication.topLevelWidgets():
-                if isinstance(widget, SettingsDialog):
+                if isinstance(widget, dialog) and widget.isVisible():
                     widget.reject()
 
+        name = "settings" if dialog is SettingsDialog else "about"
         QTimer.singleShot(0, capture_then_close)
         try:
-            app.controller.show_settings()
+            app.controller.tray.action(name).trigger()
         finally:
             qt_app.removeEventFilter(blocked)
         qtbot.wait(0)
 
         assert blocked.overlays == 0
         assert [c.area for c in captured] == [Rect(90, 90, 70, 50)]
+
+    def test_editor_dialog_blocks_only_its_editor(
+        self, make_app: AppFactory, qtbot: QtBot
+    ) -> None:
+        """UX-G-10: a dialog from an editor blocks that editor, not the overlay."""
+        app = make_app()
+        app.press_hotkey("fullscreen")
+        qtbot.waitUntil(lambda: len(app.controller.editors) == 1)
+        editor = app.controller.editors[0]
+        captured: list[Capture] = []
+        app.controller.capture.captured.connect(captured.append)
+        blocked = BlockedWindows()
+        qt_app = QApplication.instance()
+        assert qt_app is not None
+        qt_app.installEventFilter(blocked)
+        box = QMessageBox(QMessageBox.Icon.Warning, "VerdiClip", "Oops", parent=editor)
+
+        def capture_then_close() -> None:
+            app.press_hotkey("region")
+            Overlay(app.controller.capture).drag((90, 90), (160, 140))
+            box.reject()
+
+        QTimer.singleShot(0, capture_then_close)
+        try:
+            box.exec()
+        finally:
+            qt_app.removeEventFilter(blocked)
+        qtbot.wait(0)
+
+        assert blocked.overlays == 0
+        assert editor in blocked.editors
+        assert [c.area for c in captured] == [Rect(90, 90, 70, 50)]
+
+    def test_about_names_version_and_license(
+        self, make_app: AppFactory, qtbot: QtBot
+    ) -> None:
+        """UX-TRY-03: About shows the version and license, nothing else."""
+        app = make_app()
+        texts: list[str] = []
+
+        def read_then_close() -> None:
+            for widget in QApplication.topLevelWidgets():
+                if isinstance(widget, QMessageBox) and widget.isVisible():
+                    texts.append(widget.text())
+                    widget.reject()
+
+        QTimer.singleShot(0, read_then_close)
+        app.controller.tray.action("about").trigger()
+        qtbot.wait(0)
+
+        assert len(texts) == 1
+        assert VERSION in texts[0]
+        assert "MIT licensed" in texts[0]
+        assert "Greenshot" not in texts[0]
 
     @pytest.mark.parametrize(
         ("theme", "scheme"),

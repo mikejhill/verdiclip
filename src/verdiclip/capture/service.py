@@ -11,6 +11,7 @@ from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QCursor, QGuiApplication, QImage
 
 from verdiclip.capture.grabber import FrozenScreen, ScreenSource
+from verdiclip.capture.modality import ModalityGuard
 from verdiclip.capture.models import Capture, CaptureMode, ScreenGeometry
 from verdiclip.capture.overlay import (
     SelectionOverlay,
@@ -58,6 +59,8 @@ class CaptureService(QObject):
         self._last_mode: CaptureMode | None = None
         self._last_area: Rect | None = None
         self._last_title = ""
+        # No dialog the app opens may block the overlays' input
+        ModalityGuard.ensure()
 
     @property
     def is_selecting(self) -> bool:
