@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.8.0](https://github.com/mikejhill/verdiclip/compare/v0.7.0...v0.8.0) (2026-10-16)
+
+
+### Features
+
+* default filename pattern has no spaces ([#36](https://github.com/mikejhill/verdiclip/issues/36)) ([6402fd1](https://github.com/mikejhill/verdiclip/commit/6402fd1a9952252ae62450ffe21810315cdec9a0))
+
+
+### Bug Fixes
+
+* text boxes keep on Esc, start on the image, and Esc reaches Select sooner ([#38](https://github.com/mikejhill/verdiclip/issues/38)) ([4a5f7b4](https://github.com/mikejhill/verdiclip/commit/4a5f7b4cb2e043488113ddbe1efde170e78441c1))
+
 ## [0.7.0](https://github.com/mikejhill/verdiclip/compare/v0.6.0...v0.7.0) (2026-10-15)
 
 
