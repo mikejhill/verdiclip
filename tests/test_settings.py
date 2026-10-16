@@ -12,6 +12,7 @@ from verdiclip.document.annotations import JsonValue
 from verdiclip.document.style import Color
 from verdiclip.exceptions import SettingsError
 from verdiclip.settings import (
+    DEFAULT_FILENAME_PATTERN,
     AppearanceSettings,
     CaptureSettings,
     EditorSettings,
@@ -242,16 +243,28 @@ class TestLegacyMigration:
     @pytest.mark.parametrize(
         ("version", "stored", "expected"),
         [
-            (1, "Screenshot {date} {time}", "{date} {time} {title}"),
-            (None, "Screenshot {date} {time}", "{date} {time} {title}"),
+            (1, "Screenshot {date} {time}", "{date}_{time}_{title}"),
+            (None, "Screenshot {date} {time}", "{date}_{time}_{title}"),
+            (2, "Screenshot {date} {time}", "Screenshot {date} {time}"),
+            (1, "{date} {time} {title}", "{date}_{time}_{title}"),
+            (2, "{date} {time} {title}", "{date}_{time}_{title}"),
+            (3, "{date} {time} {title}", "{date} {time} {title}"),
             (1, "Shot {counter}", "Shot {counter}"),
         ],
-        ids=["old-default", "unversioned-old-default", "custom"],
+        ids=[
+            "v1-default",
+            "unversioned-v1-default",
+            "v1-default-chosen-in-v2",
+            "v2-default-in-v1",
+            "v2-default",
+            "v2-default-chosen-in-v3",
+            "custom",
+        ],
     )
-    def test_old_default_filename_pattern_gains_window_title(
+    def test_old_default_filename_pattern_becomes_current(
         self, tmp_path: Path, version: int | None, stored: str, expected: str
     ) -> None:
-        """A version-1 file's default pattern becomes the current one; custom stays."""
+        """An older file's default pattern becomes the current one; custom stays."""
         path = tmp_path / "settings.json"
         raw: dict[str, object] = {"output": {"filename_pattern": stored}}
         if version is not None:
@@ -259,6 +272,21 @@ class TestLegacyMigration:
         path.write_text(json.dumps(raw), encoding="utf-8")
 
         assert SettingsStore(path).load().output.filename_pattern == expected
+
+    @pytest.mark.parametrize("stored", [["a"], {"a": 1}], ids=["array", "object"])
+    def test_non_string_filename_pattern_falls_back_to_default(
+        self, tmp_path: Path, stored: object
+    ) -> None:
+        """A malformed pattern value keeps the default instead of failing to load."""
+        path = tmp_path / "settings.json"
+        path.write_text(
+            json.dumps({"version": 2, "output": {"filename_pattern": stored}}),
+            encoding="utf-8",
+        )
+
+        assert SettingsStore(path).load().output.filename_pattern == (
+            DEFAULT_FILENAME_PATTERN
+        )
 
     def test_old_pattern_chosen_after_upgrade_is_kept(self, tmp_path: Path) -> None:
         """Choosing the old default pattern again survives a save and reload."""

@@ -25,9 +25,15 @@ class TestFilenamePattern:
             ("{title}", 'A/B:*?<>|"', "A_B_______.png"),
             ("...", "", "Screenshot.png"),
             ("{title}", "", "Screenshot.png"),
-            (" ", "Notepad", "2026-01-02 03-04-05 Notepad.png"),
+            (" ", "Notepad", "2026-01-02_03-04-05_Notepad.png"),
             ("{title}", "  Padded  ", "Padded.png"),
             ("{title}", "x" * 79 + " tail", "x" * 79 + ".png"),
+            (
+                "{date}_{time}_{title}",
+                "My  Doc - Notepad",
+                "2026-01-02_03-04-05_My_Doc_-_Notepad.png",
+            ),
+            ("{title} x", "My Doc", "My Doc x.png"),
         ],
         ids=[
             "tokens",
@@ -37,6 +43,8 @@ class TestFilenamePattern:
             "empty-pattern",
             "title-trimmed",
             "long-title-cut",
+            "unspaced-pattern-unspaces-title",
+            "spaced-pattern-keeps-title",
         ],
     )
     def test_expand(
@@ -54,11 +62,12 @@ class TestFilenamePattern:
     @pytest.mark.parametrize(
         ("pattern", "first", "second"),
         [
-            ("shot", "shot.png", "shot (2).png"),
+            ("shot", "shot.png", "shot_2.png"),
+            ("my shot", "my shot.png", "my shot (2).png"),
             ("{counter}", "1.png", "2.png"),
             ("{title} {counter}", "Screenshot 1.png", "Screenshot 2.png"),
         ],
-        ids=["suffix", "counter", "title-counter"],
+        ids=["suffix", "spaced-suffix", "counter", "title-counter"],
     )
     def test_collision(
         self, tmp_path: Path, pattern: str, first: str, second: str

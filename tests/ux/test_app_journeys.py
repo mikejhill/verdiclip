@@ -295,7 +295,7 @@ class TestAfterCapture:
 
         saved = list((tmp_path / "out").glob("*.png"))
         assert len(saved) == 1
-        assert saved[0].stem.endswith(" Notepad")
+        assert saved[0].stem.endswith("_Notepad")
         assert str(saved[0]) in caplog.text
         assert app.controller.editors == ()
 
@@ -314,7 +314,7 @@ class TestAfterCapture:
         editor.action("save").trigger()
 
         saved = list((tmp_path / "out").glob("*.png"))
-        assert [p.stem.split(" ", 2)[2] for p in saved] == ["Notepad"]
+        assert [p.stem.split("_", 2)[2] for p in saved] == ["Notepad"]
 
     def test_all_three_actions_run_together(
         self, make_app: AppFactory, tmp_path: Path, qtbot: QtBot

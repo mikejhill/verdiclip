@@ -66,7 +66,7 @@ Open from the tray menu or with `Ctrl+,` in any editor.
 
 - **After capturing** — any combination of: open in the editor, copy to the clipboard, save to the output folder.
 - **Hotkeys** — validated as you type; conflicts are reported.
-- **Output** — folder, file-name pattern (`{date}`, `{time}`, `{title}`, `{counter}`; default `{date} {time} {title}`, where `{title}` is the captured window's title, or *Screenshot* / *Screen* for region and full-screen captures) with a live preview, format, JPEG quality.
+- **Output** — folder, file-name pattern (`{date}`, `{time}`, `{title}`, `{counter}`; default `{date}_{time}_{title}`, where `{title}` is the captured window's title (spaces become `_` when the pattern has none), or *Screenshot* / *Screen* for region and full-screen captures) with a live preview, format, JPEG quality.
 - **Editor** — default color, width, and font.
 - **General** — light, dark, or match-Windows theme; start at sign-in; show VerdiClip in Explorer's **Open with** menu for images. **Make VerdiClip the default image app…** opens Windows Settings at VerdiClip's Default apps page, where you choose it as the default (Windows requires you to confirm this yourself).
 

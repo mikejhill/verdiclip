@@ -17,11 +17,15 @@ from verdiclip.exceptions import SettingsError
 logger = logging.getLogger(__name__)
 
 # 2: the default filename pattern gained {title}
-SETTINGS_VERSION: Final = 2
+# 3: the default filename pattern lost its spaces
+SETTINGS_VERSION: Final = 3
 
-DEFAULT_FILENAME_PATTERN: Final = "{date} {time} {title}"
-# The version-1 default; version-1 files that still hold it get the current one
-_LEGACY_FILENAME_PATTERN: Final = "Screenshot {date} {time}"
+DEFAULT_FILENAME_PATTERN: Final = "{date}_{time}_{title}"
+# Earlier defaults; files from before each change that still hold it get the current one
+_LEGACY_FILENAME_PATTERNS: Final = {
+    1: "Screenshot {date} {time}",
+    2: "{date} {time} {title}",
+}
 
 
 class Theme(StrEnum):
@@ -248,12 +252,15 @@ class SettingsCodec:
         """Upgrade older settings layouts in place."""
         version = raw.get("version", 1)
         output = raw.get("output")
-        if (
-            version == 1
-            and isinstance(output, dict)
-            and output.get("filename_pattern") == _LEGACY_FILENAME_PATTERN
-        ):
-            output["filename_pattern"] = DEFAULT_FILENAME_PATTERN
+        if isinstance(version, int) and isinstance(output, dict):
+            stale = {
+                pattern
+                for since, pattern in _LEGACY_FILENAME_PATTERNS.items()
+                if version <= since
+            }
+            pattern = output.get("filename_pattern")
+            if isinstance(pattern, str) and pattern in stale:
+                output["filename_pattern"] = DEFAULT_FILENAME_PATTERN
         capture = raw.get("capture")
         if not isinstance(capture, dict):
             return
