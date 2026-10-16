@@ -22,6 +22,8 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QSpinBox,
     QTextEdit,
+    QToolBar,
+    QToolButton,
 )
 from pytestqt.qtbot import QtBot
 from tests.editor.test_close_prompt import REAL_ASK, answer_when_open
@@ -714,6 +716,33 @@ class TestStableChrome:
         positions.add(canvas.mapTo(user.window, QPoint(0, 0)).y())
 
         assert len(positions) == 1, positions
+
+    def test_overflow_button_reveals_hidden_style_options(
+        self, user: User, qtbot: QtBot
+    ) -> None:
+        """UX-G-09: options past the window edge are reachable through the » button."""
+        window = user.window
+        user.key(Qt.Key.Key_T)
+        window.resize(600, 500)
+        bars = window.findChildren(QToolBar)
+        bar = next(b for b in bars if b.windowTitle() == "Style")
+        extension = bar.findChild(QToolButton, "qt_toolbar_ext_button")
+        assert isinstance(extension, QToolButton)
+        bold = next(a for a in bar.actions() if a.toolTip() == "Bold")
+        qtbot.waitUntil(extension.isVisible)
+
+        def bold_shown() -> bool:
+            button = bar.widgetForAction(bold)
+            if not button.isVisible():
+                return False
+            corner = button.mapTo(window, button.rect().bottomRight())
+            return window.rect().contains(corner)
+
+        assert not bold_shown()
+        assert extension.geometry().right() < bar.width()
+
+        QTest.mouseClick(extension, Qt.MouseButton.LeftButton)
+        qtbot.waitUntil(bold_shown)
 
 
 class TestBoxLabels:

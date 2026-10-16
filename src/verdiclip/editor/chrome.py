@@ -6,9 +6,9 @@ from typing import Final
 
 from PySide6.QtGui import QColor, QPalette
 
-BUTTON_SIZE: Final = 34
-COMPACT_BUTTON_SIZE: Final = 26
-ICON_SIZE: Final = 22
+BUTTON_SIZE: Final = 28
+COMPACT_BUTTON_SIZE: Final = 22
+ICON_SIZE: Final = 18
 LIGHTNESS_MIDPOINT: Final = 128
 # VerdiClip's accent, shared with selection outlines on the canvas
 ACCENT: Final = QColor(0, 120, 215)
@@ -38,7 +38,8 @@ class ChromeStyle:
         """Return a style sheet for tool and action buttons.
 
         The selected tool gets a soft accent tint with an accent outline, so
-        its icon stays readable in both themes.
+        its icon stays readable in both themes. The overflow ("»") button is
+        exempt from the button minimum so it fits in the bar's reserved slot.
         """
         hover = self._rgba(self._text, 0.08)
         pressed = self._rgba(self._text, 0.14)
@@ -47,11 +48,13 @@ class ChromeStyle:
         return (
             "QToolBar { spacing: 2px; padding: 2px; }"
             f"QToolButton {{ min-width: {button}px; min-height: {button}px;"
-            " border: 1px solid transparent; border-radius: 5px; padding: 3px; }"
+            " border: 1px solid transparent; border-radius: 4px; padding: 2px; }"
             f"QToolButton:hover {{ background: {hover}; }}"
             f"QToolButton:pressed {{ background: {pressed}; }}"
             f"QToolButton:checked {{ background: {checked}; border-color: {outline}; }}"
             "QToolButton:disabled { background: transparent; }"
+            "QToolButton#qt_toolbar_ext_button { min-width: 0; min-height: 0;"
+            " padding: 0; }"
         )
 
     @staticmethod
