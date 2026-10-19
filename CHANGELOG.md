@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/mikejhill/verdiclip/compare/v0.9.1...v0.10.0) (2026-10-19)
+
+
+### Features
+
+* add Help menu with documentation link and About to the editor ([#49](https://github.com/mikejhill/verdiclip/issues/49)) ([b6aa889](https://github.com/mikejhill/verdiclip/commit/b6aa8891bda42993304a59cade3c7165ae1b6a1d))
+
 ## [0.9.1](https://github.com/mikejhill/verdiclip/compare/v0.9.0...v0.9.1) (2026-10-16)
 
 
