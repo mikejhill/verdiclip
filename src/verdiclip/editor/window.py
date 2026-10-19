@@ -8,11 +8,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, override
 
-from PySide6.QtCore import QEvent, QMimeData, QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QMimeData, QSize, Qt, QUrl, Signal
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
     QCloseEvent,
+    QDesktopServices,
     QDragEnterEvent,
     QDropEvent,
     QGuiApplication,
@@ -32,6 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from verdiclip import APP_NAME, DOCS_URL
 from verdiclip.document.annotations import CounterMarker, LabeledBox, TextNote
 from verdiclip.document.style import Style
 from verdiclip.document.transform import (
@@ -100,6 +102,7 @@ class EditorWindow(QMainWindow):
 
     open_image_requested = Signal(object)  # Path
     settings_requested = Signal()
+    about_requested = Signal()
 
     def __init__(
         self,
@@ -304,6 +307,13 @@ class EditorWindow(QMainWindow):
             "settings", "Se&ttings…", "Ctrl+,", self.settings_requested.emit
         )
         self._add_action("close", "&Close", "Ctrl+W", self.close)
+        self._add_action(
+            "help",
+            "&Documentation",
+            QKeySequence.StandardKey.HelpContents,
+            lambda: QDesktopServices.openUrl(QUrl(DOCS_URL)),
+        )
+        self._add_action("about", f"&About {APP_NAME}", None, self.about_requested.emit)
         self._add_action("undo", "&Undo", QKeySequence.StandardKey.Undo, self._undo)
         redo = self._add_action("redo", "&Redo", "Ctrl+Y", self._redo)
         redo.setShortcuts([QKeySequence("Ctrl+Y"), QKeySequence("Ctrl+Shift+Z")])
@@ -436,6 +446,10 @@ class EditorWindow(QMainWindow):
         tools = bar.addMenu("&Tools")
         for action in self._tool_actions.values():
             tools.addAction(action)
+        help_menu = bar.addMenu("&Help")
+        help_menu.addAction(self._actions["help"])
+        help_menu.addSeparator()
+        help_menu.addAction(self._actions["about"])
 
     def _build_toolbars(self) -> None:
         """Create the grouped tool palette, the icon action bar, and the style bar."""

@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from verdiclip import APP_NAME, VERSION
+from verdiclip import APP_NAME, DOCS_URL, VERSION
 from verdiclip.capture.grabber import ScreenSource
 from verdiclip.capture.models import Capture
 from verdiclip.capture.service import CaptureService, WindowSource
@@ -217,6 +217,7 @@ class AppController(QObject):
         editor.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         editor.open_image_requested.connect(self.open_image)
         editor.settings_requested.connect(lambda e=editor: self.show_settings(e))
+        editor.about_requested.connect(lambda e=editor: self._show_about(e))
         editor.destroyed.connect(lambda _=None, e=editor: self._forget(e))
         self._editors.append(editor)
         editor.show()
@@ -324,14 +325,15 @@ class AppController(QObject):
             self._apply_start_menu()
         self._apply_hotkeys()
 
-    def _show_about(self) -> None:
-        """Show version and license."""
+    def _show_about(self, parent: QWidget | None = None) -> None:
+        """Show version, license, and where the documentation lives."""
         QMessageBox.about(
-            None,
+            parent,
             f"About {APP_NAME}",
             f"<b>{APP_NAME} {VERSION}</b>"
             "<p>Fast, faithful screenshots with annotation.</p>"
-            "<p>MIT licensed.</p>",
+            "<p>MIT licensed.</p>"
+            f'<p><a href="{DOCS_URL}">Documentation</a></p>',
         )
 
     def request_exit(self) -> None:

@@ -7,6 +7,7 @@ from importlib.metadata import Distribution, PackageNotFoundError, distribution
 from typing import Final
 
 APP_NAME: Final = "VerdiClip"
+DOCS_URL: Final = "https://github.com/mikejhill/verdiclip#readme"
 
 
 class _Version:
