@@ -17,6 +17,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
+    QMenu,
     QMessageBox,
     QSystemTrayIcon,
     QWidget,
@@ -34,7 +35,7 @@ from tests.ux.test_capture_journeys import (
     Overlay,
 )
 
-from verdiclip import VERSION
+from verdiclip import APP_NAME, DOCS_URL, VERSION
 from verdiclip.capture.models import Capture
 from verdiclip.capture.overlay import SelectionOverlay
 from verdiclip.document.commands import SetCrop
@@ -825,6 +826,70 @@ class TestSettingsEverywhere:
         )
 
         assert requested[-1] == scheme
+
+
+class TestHelpMenu:
+    """The editor's Help menu: documentation and About."""
+
+    def test_help_is_the_last_menu(self, make_app: AppFactory, qtbot: QtBot) -> None:
+        """UX-TRY-10: Help sits last on the menu bar, after Tools."""
+        app = make_app()
+        app.press_hotkey("fullscreen")
+        qtbot.waitUntil(lambda: len(app.controller.editors) == 1)
+        bar = app.controller.editors[0].menuBar()
+
+        titles = [a.text().replace("&", "") for a in bar.actions()]
+        help_menu = bar.actions()[-1].menu()
+
+        assert titles[-2:] == ["Tools", "Help"]
+        assert isinstance(help_menu, QMenu)
+        labels = [a.text().replace("&", "") for a in help_menu.actions()]
+        assert labels == ["Documentation", "", f"About {APP_NAME}"]
+
+    def test_f1_opens_the_documentation(
+        self, make_app: AppFactory, qtbot: QtBot, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """UX-TRY-10: F1 in an editor opens the documentation in the browser."""
+        opened: list[str] = []
+        monkeypatch.setattr(
+            QDesktopServices, "openUrl", lambda url: opened.append(url.toString())
+        )
+        app = make_app()
+        app.press_hotkey("fullscreen")
+        qtbot.waitUntil(lambda: len(app.controller.editors) == 1)
+        editor = app.controller.editors[0]
+        editor.activateWindow()
+        qtbot.waitUntil(lambda: QApplication.activeWindow() is editor)
+
+        QTest.keyClick(editor.canvas, Qt.Key.Key_F1)
+
+        assert opened == [DOCS_URL]
+
+    def test_about_opens_over_the_editor(
+        self, make_app: AppFactory, qtbot: QtBot
+    ) -> None:
+        """UX-TRY-10: Help → About shows the tray's About box over the editor."""
+        app = make_app()
+        app.press_hotkey("fullscreen")
+        qtbot.waitUntil(lambda: len(app.controller.editors) == 1)
+        editor = app.controller.editors[0]
+        shown: list[tuple[QWidget | None, str]] = []
+
+        def read_then_close() -> None:
+            for widget in QApplication.topLevelWidgets():
+                if isinstance(widget, QMessageBox) and widget.isVisible():
+                    shown.append((widget.parentWidget(), widget.text()))
+                    widget.reject()
+
+        QTimer.singleShot(0, read_then_close)
+        editor.action("about").trigger()
+        qtbot.wait(0)
+
+        assert len(shown) == 1
+        parent, text = shown[0]
+        assert parent is editor
+        assert VERSION in text
+        assert DOCS_URL in text
 
 
 class TestClosePrompt:
