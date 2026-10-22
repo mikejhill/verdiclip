@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/mikejhill/verdiclip/compare/v0.10.0...v0.11.0) (2026-10-22)
+
+
+### Features
+
+* update VerdiClip automatically from PyPI ([#53](https://github.com/mikejhill/verdiclip/issues/53)) ([a689fcb](https://github.com/mikejhill/verdiclip/commit/a689fcbcd07281d42a88efecc592e34524108eb5))
+
 ## [0.10.0](https://github.com/mikejhill/verdiclip/compare/v0.9.1...v0.10.0) (2026-10-19)
 
 
