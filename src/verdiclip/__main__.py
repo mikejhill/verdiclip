@@ -33,6 +33,9 @@ from verdiclip.platform.windows import WindowLocator
 from verdiclip.settings import SettingsStore
 from verdiclip.shell.controller import AppController, ShellIntegration
 from verdiclip.shell.instance import SingleInstance
+from verdiclip.update.feed import ReleaseFeed
+from verdiclip.update.install import Installation
+from verdiclip.update.service import UpdateLauncher, Updater
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +102,11 @@ class Application:
                 FileAssociations(),
                 ShortcutRegistration(links.known_folder(KnownFolder.PROGRAMS), links),
                 LowLevelKeyboardHook(),
+                Updater(
+                    Installation.current(),
+                    ReleaseFeed(),
+                    UpdateLauncher(store.path.parent / "update"),
+                ),
             ),
         )
         instance.message_received.connect(controller.handle_forwarded)

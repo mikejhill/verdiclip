@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import sys
 import uuid
@@ -26,6 +27,7 @@ from pytestqt.qtbot import QtBot
 from tests.platform.test_associations import FakeAssociationBackend
 from tests.platform.test_launcher import GUI, write_pe
 from tests.platform.test_shortcuts import FakeShortcutBackend
+from tests.update.test_service import FakeFeed, Spawns, write_result
 from tests.ux.conftest import Stopwatch
 from tests.ux.test_capture_journeys import (
     CaptureOf,
@@ -57,11 +59,15 @@ from verdiclip.settings import (
     SettingsStore,
     StartupSettings,
     Theme,
+    UpdateSettings,
 )
 from verdiclip.shell import controller as controller_module
 from verdiclip.shell.controller import AppController, ShellIntegration
 from verdiclip.shell.instance import SingleInstance
 from verdiclip.shell.settings_dialog import SettingsDialog
+from verdiclip.shell.tray import TrayIcon
+from verdiclip.update.install import Installation, InstallKind, UpdatePlanner
+from verdiclip.update.service import UpdateLauncher, Updater
 
 pytestmark = pytest.mark.ux
 
@@ -191,6 +197,7 @@ def make_app(
         settings: Settings | None = None,
         taken: set[str] | None = None,
         links: FakeShortcutBackend | None = None,
+        updater: Updater | None = None,
     ) -> App:
         store = SettingsStore(tmp_path / "settings.json")
         base = settings or Settings()
@@ -216,6 +223,7 @@ def make_app(
                 ),
                 FileAssociations(associations),
                 ShortcutRegistration(folders.programs, links),
+                updater=updater,
             ),
         )
         controller.start()
@@ -1148,6 +1156,21 @@ class TestOpeningImages:
 class TestExit:
     """Leaving the app."""
 
+    def test_exit_quits_with_nothing_open(
+        self, make_app: AppFactory, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Exit with no editors quits at once.
+
+        UX-TRY-05.
+        """
+        app = make_app()
+        quits: list[bool] = []
+        monkeypatch.setattr(QApplication, "quit", lambda: quits.append(True))
+
+        app.controller.request_exit()
+
+        assert quits == [True]
+
     def test_exit_stops_when_an_editor_refuses_to_close(
         self, make_app: AppFactory, monkeypatch: pytest.MonkeyPatch, qtbot: QtBot
     ) -> None:
@@ -1182,3 +1205,445 @@ def test_capture_objects_are_complete(make_app: AppFactory, qtbot: QtBot) -> Non
     capture = CaptureOf.signal(signal)
     assert capture.title == "Notepad"
     assert capture.taken_at.tzinfo is not None
+
+
+@dataclass(slots=True)
+class Balloons:
+    """Tray balloons shown, as (title, message, warning)."""
+
+    shown: list[tuple[str, str, bool]] = field(default_factory=list)
+
+    def titles(self) -> list[str]:
+        """Return the titles in order."""
+        return [title for title, _, _ in self.shown]
+
+
+@pytest.fixture
+def balloons(monkeypatch: pytest.MonkeyPatch) -> Balloons:
+    """Show the tray (there's none offscreen) and record its balloons."""
+    recorded = Balloons()
+
+    def show(
+        _tray: TrayIcon,
+        title: str,
+        message: str,
+        icon: QSystemTrayIcon.MessageIcon,
+        _ms: int,
+    ) -> None:
+        warning = icon == QSystemTrayIcon.MessageIcon.Warning
+        recorded.shown.append((title, message, warning))
+
+    monkeypatch.setattr(TrayIcon, "isVisible", lambda _tray: True)
+    monkeypatch.setattr(TrayIcon, "showMessage", show)
+    return recorded
+
+
+@dataclass(slots=True)
+class Updates:
+    """An updater over a fake PyPI and helper launch, for a 0.10.0 uv tool."""
+
+    feed: FakeFeed
+    spawns: Spawns
+    folder: Path
+    updater: Updater
+    quits: list[bool]
+
+
+@pytest.fixture
+def updates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Updates:
+    """Return an updater whose latest release is 0.11.0; quitting is recorded."""
+    feed, spawns = FakeFeed("0.11.0"), Spawns()
+    folder = tmp_path / "update"
+    kind = InstallKind.UV_TOOL
+    updater = Updater(
+        Installation(kind, "0.10.0", Path("C:/tools/verdiclip/python.exe")),
+        feed,
+        UpdateLauncher(folder, spawns),
+        UpdatePlanner({"uv": "C:/uv/uv.exe"}.get, home=tmp_path),
+    )
+    quits: list[bool] = []
+    monkeypatch.setattr(QApplication, "quit", lambda: quits.append(True))
+    return Updates(feed, spawns, folder, updater, quits)
+
+
+@pytest.fixture
+def check_at_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run the automatic check right after start instead of a minute later."""
+    monkeypatch.setattr(controller_module, "FIRST_CHECK_MS", 0)
+
+
+@pytest.fixture
+def check_often(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Check right after start and every millisecond after that."""
+    monkeypatch.setattr(controller_module, "FIRST_CHECK_MS", 0)
+    monkeypatch.setattr(controller_module, "CHECK_INTERVAL_MS", 1)
+
+
+class TestUpdates:
+    """Finding, installing, and reporting newer releases."""
+
+    def test_no_updater_no_menu_entry(self, make_app: AppFactory) -> None:
+        """Without an updater the tray offers no update entry."""
+        app = make_app()
+
+        with pytest.raises(KeyError):
+            app.controller.tray.action("update")
+        app.controller.check_for_updates()  # Nothing to do, nothing breaks
+        app.controller.install_update(manual=True)
+
+    def test_menu_check_says_up_to_date(
+        self, make_app: AppFactory, updates: Updates, balloons: Balloons
+    ) -> None:
+        """Check for updates reports when nothing newer exists.
+
+        UX-TRY-11.
+        """
+        updates.feed.latest = "0.10.0"
+        app = make_app(updater=updates.updater)
+        action = app.controller.tray.action("update")
+        assert action.text() == "Check for updates"
+
+        action.trigger()
+
+        assert balloons.shown == [
+            (
+                "VerdiClip is up to date",
+                "You have 0.10.0; the latest release is 0.10.0.",
+                False,
+            )
+        ]
+        assert app.controller.tray.action("update").text() == "Check for updates"
+
+    def test_menu_check_offers_and_click_installs(
+        self, make_app: AppFactory, updates: Updates, balloons: Balloons
+    ) -> None:
+        """A newer release is offered; clicking the balloon installs it.
+
+        UX-TRY-11, UX-TRY-12.
+        """
+        app = make_app(updater=updates.updater)
+
+        app.controller.tray.action("update").trigger()
+
+        assert balloons.titles() == ["Update available"]
+        assert "0.11.0 is available" in balloons.shown[0][1]
+        assert (
+            app.controller.tray.action("update").text() == "Install VerdiClip 0.11.0…"
+        )
+        assert updates.spawns.calls == []
+        app.controller.tray.messageClicked.emit()
+        assert len(updates.spawns.calls) == 1
+        assert updates.quits == [True]
+        plan = json.loads((updates.folder / "plan.json").read_text(encoding="utf-8"))
+        assert plan["target"] == "0.11.0"
+        assert plan["steps"] == [["C:/uv/uv.exe", "tool", "upgrade", "verdiclip"]]
+        assert plan["relaunch"] == LaunchCommand(PYTHONW, "-m verdiclip").command_line
+
+    def test_install_entry_installs_a_found_release(
+        self, make_app: AppFactory, updates: Updates, balloons: Balloons
+    ) -> None:
+        """Once found, the menu entry installs without checking again.
+
+        UX-TRY-12.
+        """
+        app = make_app(updater=updates.updater)
+        app.controller.tray.action("update").trigger()
+        fetches = updates.feed.fetches
+
+        app.controller.tray.action("update").trigger()
+
+        assert updates.feed.fetches == fetches
+        assert updates.quits == [True]
+        assert balloons.titles() == ["Update available"]
+
+    def test_failed_menu_check_says_why(
+        self, make_app: AppFactory, updates: Updates, balloons: Balloons
+    ) -> None:
+        """A check the user asked for reports why it failed.
+
+        UX-TRY-11.
+        """
+        updates.feed.error = "Host pypi.org not found"
+        app = make_app(updater=updates.updater)
+
+        app.controller.tray.action("update").trigger()
+
+        assert balloons.shown == [
+            ("Could not check for updates", "Host pypi.org not found", True)
+        ]
+
+    @pytest.mark.usefixtures("check_at_once")
+    def test_failed_automatic_check_is_quiet(
+        self, make_app: AppFactory, updates: Updates, balloons: Balloons, qtbot: QtBot
+    ) -> None:
+        """A periodic check that fails only logs.
+
+        UX-TRY-11.
+        """
+        updates.feed.error = "offline"
+        make_app(updater=updates.updater)
+
+        qtbot.waitUntil(lambda: updates.feed.fetches == 1)
+
+        assert balloons.shown == []
+
+    @pytest.mark.usefixtures("check_at_once")
+    def test_automatic_check_finding_nothing_is_quiet(
+        self, make_app: AppFactory, updates: Updates, balloons: Balloons, qtbot: QtBot
+    ) -> None:
+        """A periodic check that finds no newer release says nothing.
+
+        UX-TRY-11.
+        """
+        updates.feed.latest = "0.10.0"
+        app = make_app(updater=updates.updater)
+
+        qtbot.waitUntil(lambda: updates.feed.fetches == 1)
+
+        assert balloons.shown == []
+        assert updates.quits == []
+        assert app.controller.tray.action("update").text() == "Check for updates"
+
+    @pytest.mark.usefixtures("check_at_once")
+    def test_automatic_install_when_idle(
+        self, make_app: AppFactory, updates: Updates, qtbot: QtBot
+    ) -> None:
+        """With nothing open, a found release installs by itself.
+
+        UX-TRY-12.
+        """
+        make_app(updater=updates.updater)
+
+        qtbot.waitUntil(lambda: updates.quits == [True])
+
+        assert len(updates.spawns.calls) == 1
+
+    @pytest.mark.usefixtures("check_at_once")
+    def test_automatic_install_waits_for_the_last_editor(
+        self, make_app: AppFactory, updates: Updates, qtbot: QtBot
+    ) -> None:
+        """An open editor holds the update back until it closes.
+
+        UX-TRY-12.
+        """
+        app = make_app(updater=updates.updater)
+        app.press_hotkey("fullscreen")
+        qtbot.waitUntil(lambda: len(app.controller.editors) == 1)
+        qtbot.waitUntil(lambda: updates.feed.fetches == 1)
+        qtbot.wait(20)
+        assert updates.quits == []
+
+        editor = app.controller.editors[0]
+        editor.session.history.mark_delivered()
+        editor.close()
+
+        qtbot.waitUntil(lambda: updates.quits == [True])
+        assert len(updates.spawns.calls) == 1
+
+    @pytest.mark.usefixtures("check_at_once")
+    def test_automatic_install_waits_for_a_capture(
+        self,
+        make_app: AppFactory,
+        updates: Updates,
+        qtbot: QtBot,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A selection in progress holds the update back too.
+
+        UX-TRY-12.
+        """
+        monkeypatch.setattr(controller_module, "IDLE_RETRY_MS", 10)
+        app = make_app(updater=updates.updater)
+        app.controller.capture.capture_region()
+        assert app.controller.capture.is_selecting
+
+        qtbot.waitUntil(lambda: updates.feed.fetches == 1)
+        qtbot.wait(50)
+        assert updates.quits == []
+
+        app.controller.capture.cancel()
+        qtbot.waitUntil(lambda: updates.quits == [True])
+
+    @pytest.mark.usefixtures("check_often")
+    def test_automatic_check_with_install_off_offers_once(
+        self, make_app: AppFactory, updates: Updates, balloons: Balloons, qtbot: QtBot
+    ) -> None:
+        """Without auto-install, each release is offered once, not every check.
+
+        UX-TRY-11.
+        """
+        settings = replace(Settings(), updates=UpdateSettings(install=False))
+        make_app(settings, updater=updates.updater)
+
+        qtbot.waitUntil(lambda: updates.feed.fetches >= 3)
+
+        assert balloons.titles() == ["Update available"]
+        assert updates.quits == []
+
+    @pytest.mark.usefixtures("check_at_once")
+    def test_checking_off_never_checks(
+        self, make_app: AppFactory, updates: Updates, qtbot: QtBot
+    ) -> None:
+        """With checking off, nothing is fetched; turning it on starts checks.
+
+        UX-TRY-11.
+        """
+        off = replace(Settings(), updates=UpdateSettings(check=False))
+        app = make_app(off, updater=updates.updater)
+        qtbot.wait(50)
+        assert updates.feed.fetches == 0
+
+        app.controller.apply_settings(
+            replace(off, updates=UpdateSettings(install=False))
+        )
+
+        qtbot.waitUntil(lambda: updates.feed.fetches == 1)
+        app.controller.apply_settings(off)
+        fetches = updates.feed.fetches
+        qtbot.wait(50)
+        assert updates.feed.fetches == fetches
+
+    def test_install_that_cannot_run_says_why(
+        self, make_app: AppFactory, updates: Updates, balloons: Balloons, tmp_path: Path
+    ) -> None:
+        """An install VerdiClip can't update explains and keeps running.
+
+        UX-TRY-12.
+        """
+        updater = Updater(
+            Installation(InstallKind.UNKNOWN, "0.10.0", Path("python.exe")),
+            updates.feed,
+            UpdateLauncher(tmp_path / "update", updates.spawns),
+        )
+        app = make_app(updater=updater)
+        app.controller.tray.action("update").trigger()
+
+        app.controller.tray.messageClicked.emit()
+
+        assert balloons.titles() == [
+            "Update available",
+            "VerdiClip 0.11.0 is available",
+        ]
+        _title, message, warning = balloons.shown[1]
+        assert "update it the way you installed it" in message
+        assert warning
+        assert updates.spawns.calls == []
+        assert updates.quits == []
+
+    @pytest.mark.usefixtures("check_often")
+    def test_automatic_refusal_is_reported_once(
+        self, make_app: AppFactory, updates: Updates, balloons: Balloons, qtbot: QtBot
+    ) -> None:
+        """An install that can't update itself says why once per release.
+
+        UX-TRY-12.
+        """
+        updater = Updater(
+            Installation(InstallKind.UNKNOWN, "0.10.0", Path("python.exe")),
+            updates.feed,
+            UpdateLauncher(updates.folder, updates.spawns),
+        )
+        make_app(updater=updater)
+
+        qtbot.waitUntil(lambda: updates.feed.fetches >= 3)
+
+        assert balloons.titles() == ["VerdiClip 0.11.0 is available"]
+        assert updates.quits == []
+
+    def test_manual_install_keeps_unsaved_work(
+        self,
+        make_app: AppFactory,
+        updates: Updates,
+        qtbot: QtBot,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An editor that keeps its unsaved work cancels the update.
+
+        UX-TRY-12, UX-G-06.
+        """
+        app = make_app(updater=updates.updater)
+        app.controller.tray.action("update").trigger()
+        app.press_hotkey("fullscreen")
+        qtbot.waitUntil(lambda: len(app.controller.editors) == 1)
+        editor = app.controller.editors[0]
+        editor.session.history.execute(
+            SetCrop(editor.session.document.crop, Rect(0, 0, 10, 10))
+        )
+        monkeypatch.setattr(ClosePrompt, "ask", lambda *_: CloseChoice.CANCEL)
+
+        app.controller.tray.action("update").trigger()
+
+        assert editor.isVisible()
+        assert updates.spawns.calls == []
+        assert updates.quits == []
+
+    def test_helper_that_cannot_start_keeps_running(
+        self, make_app: AppFactory, updates: Updates, balloons: Balloons
+    ) -> None:
+        """If the helper can't start, VerdiClip says so and doesn't quit.
+
+        UX-TRY-12.
+        """
+        updates.spawns.error = OSError("blocked")
+        app = make_app(updater=updates.updater)
+        app.controller.tray.action("update").trigger()
+
+        app.controller.tray.action("update").trigger()
+
+        assert balloons.shown[-1] == (
+            "Could not update VerdiClip",
+            "Could not start the updater: blocked",
+            True,
+        )
+        assert updates.quits == []
+
+    def test_restart_reports_the_update(
+        self, make_app: AppFactory, updates: Updates, balloons: Balloons
+    ) -> None:
+        """The restarted app says the update worked, once.
+
+        UX-TRY-12.
+        """
+        write_result(
+            updates.folder,
+            ok=True,
+            previous="0.9.0",
+            target="0.10.0",
+            installed="0.10.0",
+        )
+
+        make_app(updater=updates.updater)
+        make_app(updater=updates.updater)
+
+        assert balloons.shown == [
+            ("VerdiClip updated", "Updated from 0.9.0 to 0.10.0.", False)
+        ]
+
+    @pytest.mark.usefixtures("check_at_once")
+    def test_failed_update_is_reported_and_not_retried(
+        self, make_app: AppFactory, updates: Updates, balloons: Balloons, qtbot: QtBot
+    ) -> None:
+        """A failed update says why; the same release is offered, not retried.
+
+        UX-TRY-12.
+        """
+        write_result(
+            updates.folder,
+            ok=False,
+            previous="0.10.0",
+            target="0.11.0",
+            message="uv failed with exit code 2",
+            log="update.log",
+        )
+
+        make_app(updater=updates.updater)
+        qtbot.waitUntil(lambda: updates.feed.fetches == 1)
+
+        assert balloons.shown[0] == (
+            "VerdiClip update failed",
+            "uv failed with exit code 2. VerdiClip is still 0.10.0. "
+            "Details: update.log",
+            True,
+        )
+        assert balloons.titles()[1:] == ["Update available"]
+        assert updates.quits == []

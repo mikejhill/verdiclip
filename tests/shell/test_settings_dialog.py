@@ -13,7 +13,7 @@ from PySide6.QtWidgets import QCheckBox, QComboBox, QLineEdit, QTabWidget
 from pytestqt.qtbot import QtBot
 
 from verdiclip.document.style import Color
-from verdiclip.settings import ImageFormat, Settings, Theme
+from verdiclip.settings import ImageFormat, Settings, Theme, UpdateSettings
 from verdiclip.shell.settings_dialog import SettingsDialog
 
 
@@ -322,3 +322,56 @@ class TestSettingsDialog:
 
         assert default_on
         assert dialog.result_settings().integration.start_menu is False
+
+
+class TestUpdateSettings:
+    """Settings → General: checking for and installing updates."""
+
+    @staticmethod
+    def boxes(dialog: SettingsDialog) -> tuple[QCheckBox, QCheckBox]:
+        """Return the check and install checkboxes."""
+        found = {b.text(): b for b in dialog.findChildren(QCheckBox)}
+        return (
+            found["Check for updates automatically"],
+            found["Install updates automatically when no image is open"],
+        )
+
+    def test_both_on_by_default(self, dialog: SettingsDialog) -> None:
+        """New installs check for and install updates."""
+        check, install = self.boxes(dialog)
+
+        assert check.isChecked()
+        assert install.isChecked()
+        assert install.isEnabled()
+
+    def test_install_needs_checking(self, dialog: SettingsDialog) -> None:
+        """Installing is off the table while checking is off."""
+        check, install = self.boxes(dialog)
+
+        check.setChecked(False)
+
+        assert not install.isEnabled()
+        check.setChecked(True)
+        assert install.isEnabled()
+
+    def test_choices_round_trip(self, qtbot: QtBot) -> None:
+        """Stored choices show, and edits come back in the result."""
+        stored = replace(Settings(), updates=UpdateSettings(check=True, install=False))
+        dialog = SettingsDialog(stored)
+        qtbot.addWidget(dialog)
+        check, install = self.boxes(dialog)
+        assert not install.isChecked()
+
+        check.setChecked(False)
+
+        assert dialog.result_settings().updates == UpdateSettings(
+            check=False, install=False
+        )
+
+    def test_install_starts_disabled_when_checking_is_off(self, qtbot: QtBot) -> None:
+        """A stored "don't check" greys out installing from the start."""
+        stored = replace(Settings(), updates=UpdateSettings(check=False))
+        dialog = SettingsDialog(stored)
+        qtbot.addWidget(dialog)
+
+        assert not self.boxes(dialog)[1].isEnabled()

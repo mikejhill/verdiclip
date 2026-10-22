@@ -43,6 +43,7 @@ from verdiclip.settings import (
     Settings,
     StartupSettings,
     Theme,
+    UpdateSettings,
 )
 from verdiclip.shell.hotkey_field import HotkeyField
 
@@ -103,6 +104,10 @@ class SettingsDialog(QDialog):
         self._start_menu = QCheckBox("Show VerdiClip in the Start menu")
         self._open_with = QCheckBox("Show VerdiClip in “Open with” for image files")
         self._make_default = QPushButton("Make VerdiClip the default image app…")
+        self._check_updates = QCheckBox("Check for updates automatically")
+        self._install_updates = QCheckBox(
+            "Install updates automatically when no image is open"
+        )
         self._buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
@@ -146,6 +151,10 @@ class SettingsDialog(QDialog):
             integration=IntegrationSettings(
                 open_with=self._open_with.isChecked(),
                 start_menu=self._start_menu.isChecked(),
+            ),
+            updates=UpdateSettings(
+                check=self._check_updates.isChecked(),
+                install=self._install_updates.isChecked(),
             ),
         )
 
@@ -223,6 +232,14 @@ class SettingsDialog(QDialog):
         files.addWidget(self._open_with)
         files.addWidget(self._make_default)
         form.addRow(files)
+        self._install_updates.setToolTip(
+            "VerdiClip restarts to install the update, then says how it went."
+        )
+        self._check_updates.toggled.connect(self._install_updates.setEnabled)
+        updates = QVBoxLayout()
+        updates.addWidget(self._check_updates)
+        updates.addWidget(self._install_updates)
+        form.addRow(updates)
         return tab
 
     def _hotkey_tab(self) -> QWidget:
@@ -313,6 +330,9 @@ class SettingsDialog(QDialog):
         self._run_at_login.setChecked(settings.startup.run_at_login)
         self._open_with.setChecked(settings.integration.open_with)
         self._start_menu.setChecked(settings.integration.start_menu)
+        self._check_updates.setChecked(settings.updates.check)
+        self._install_updates.setChecked(settings.updates.install)
+        self._install_updates.setEnabled(settings.updates.check)
 
     def _cancel_recordings(self) -> None:
         """Stop every hotkey recording, keeping the values from before it."""
