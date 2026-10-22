@@ -29,7 +29,7 @@ VerdiClip checks PyPI for a newer release a minute after it starts and every 6 h
 | --- | --- |
 | `uv tool install verdiclip` | `uv tool upgrade verdiclip` |
 | `pip install verdiclip` (or `uv pip`) | Upgrade in that environment |
-| `uvx verdiclip` | Restart with `uvx --from verdiclip@latest verdiclip-gui` |
+| `uvx verdiclip` | Fetch the release with `uvx`, then restart with it (the old version if that fails) |
 | A git checkout (`uv sync`) | `git pull --ff-only` and `uv sync`, only on `main` with no local changes |
 
 Tray → **Check for updates** checks right away. Settings → General turns off automatic checking, or automatic installing (VerdiClip then offers each release in a notification). If an update fails, the old version starts again and the notification names the log, `%APPDATA%\VerdiClip\update\update.log`.

@@ -171,8 +171,11 @@ def main(argv: list[str]) -> int:
         result["log"] = str(log_path)
         result_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
         # A VerdiClip that didn't exit is still running; don't start another
-        if result.get("message") != STILL_RUNNING:
+        if result.get("ok"):
             relaunch(str(plan.get("relaunch", "")), log)
+        elif result.get("message") != STILL_RUNNING:
+            fallback = plan.get("fallback") or plan.get("relaunch", "")
+            relaunch(str(fallback), log)
     return 0 if result.get("ok") else 1
 
 

@@ -1441,6 +1441,36 @@ class TestUpdates:
         assert len(updates.spawns.calls) == 1
 
     @pytest.mark.usefixtures("check_at_once")
+    @pytest.mark.parametrize(
+        "turned_off", [UpdateSettings(install=False), UpdateSettings(check=False)]
+    )
+    def test_deferred_install_is_dropped_when_turned_off(
+        self,
+        make_app: AppFactory,
+        updates: Updates,
+        qtbot: QtBot,
+        turned_off: UpdateSettings,
+    ) -> None:
+        """Turning updates off while one waits for idle cancels it.
+
+        UX-TRY-12.
+        """
+        app = make_app(updater=updates.updater)
+        app.press_hotkey("fullscreen")
+        qtbot.waitUntil(lambda: len(app.controller.editors) == 1)
+        qtbot.waitUntil(lambda: updates.feed.fetches == 1)
+
+        app.controller.apply_settings(replace(Settings(), updates=turned_off))
+        editor = app.controller.editors[0]
+        editor.session.history.mark_delivered()
+        editor.close()
+        qtbot.waitUntil(lambda: not app.controller.editors)
+        qtbot.wait(50)
+
+        assert updates.quits == []
+        assert updates.spawns.calls == []
+
+    @pytest.mark.usefixtures("check_at_once")
     def test_automatic_install_waits_for_a_capture(
         self,
         make_app: AppFactory,

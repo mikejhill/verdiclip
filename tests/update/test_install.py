@@ -295,17 +295,23 @@ class TestPlan:
         with pytest.raises(UpdateError, match="uv is needed"):
             planner({}, home=tmp_path).plan(install, "0.11.0", RELAUNCH)
 
-    def test_uvx_relaunches_latest(self) -> None:
-        """Uvx has nothing to install; it starts verdiclip@latest instead."""
+    def test_uvx_fetches_the_release_then_runs_it(self) -> None:
+        """Uvx caches the release as a step, then starts it; failing falls back."""
         install = Installation(InstallKind.UVX, "0.10.0", PYTHON)
 
         plan = planner().plan(install, "0.11.0", RELAUNCH)
 
-        assert plan.steps == ()
-        assert plan.relaunch == subprocess.list2cmdline(
-            [TOOLS["uv"], "tool", "run", "--from", "verdiclip@latest", "verdiclip-gui"]
-        )
+        run = (TOOLS["uv"], "tool", "run", "--from", "verdiclip==0.11.0")
+        assert plan.steps == ((*run, "verdiclip", "--version"),)
+        assert plan.relaunch == subprocess.list2cmdline([*run, "verdiclip-gui"])
+        assert plan.fallback == RELAUNCH
         assert plan.verify == ""
+
+    def test_other_installs_have_no_fallback(self) -> None:
+        """Elsewhere the same command starts whichever version is installed."""
+        install = Installation(InstallKind.UV_TOOL, "0.10.0", PYTHON)
+
+        assert planner().plan(install, "0.11.0", RELAUNCH).fallback == ""
 
     def test_pip_environment_upgrades_with_pip(self) -> None:
         """Pip installs upgrade through the environment's own pip."""

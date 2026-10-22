@@ -197,6 +197,7 @@ class TestUpdateLauncher:
             "steps": [["uv", "tool", "upgrade", "verdiclip"]],
             "relaunch": "run",
             "verify": "",
+            "fallback": "",
             "pid": os.getpid(),
             "log": str(folder / "update.log"),
             "result": str(folder / "result.json"),
@@ -330,6 +331,7 @@ class TestUpdater:
             (("C:/uv/uv.exe", "tool", "upgrade", "verdiclip"),),
             "run",
             str(PYTHON),
+            "",
         )
         assert len(spawns.calls) == 1
 

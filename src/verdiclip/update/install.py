@@ -116,6 +116,7 @@ class UpdatePlan:
     steps: tuple[tuple[str, ...], ...]
     relaunch: str  # Command line that starts the tray app again
     verify: str = ""  # Interpreter that reports the version afterwards
+    fallback: str = ""  # Starts the old version if a step fails ("" = relaunch)
 
 
 type Which = Callable[[str], str | None]
@@ -136,7 +137,7 @@ class UpdatePlanner:
                 release branch or has local changes, or the install is unknown.
         """
         steps: tuple[tuple[str, ...], ...]
-        verify = str(install.executable)
+        verify, fallback = str(install.executable), ""
         match install.kind:
             case InstallKind.CHECKOUT if install.root is not None:
                 git, uv = self._tool("git"), self._uv()
@@ -149,17 +150,14 @@ class UpdatePlanner:
             case InstallKind.UV_TOOL:
                 steps = ((self._uv(), "tool", "upgrade", PACKAGE),)
             case InstallKind.UVX:
-                steps, verify = (), ""
-                relaunch = subprocess.list2cmdline(
-                    [
-                        self._uv(),
-                        "tool",
-                        "run",
-                        "--from",
-                        f"{PACKAGE}@latest",
-                        "verdiclip-gui",
-                    ]
-                )
+                # Fetch the release into uv's cache as a step, so a failure is
+                # logged and the old version starts instead; the relaunch then
+                # finds it cached
+                spec = ("tool", "run", "--from", f"{PACKAGE}=={target}")
+                uv = self._uv()
+                steps = ((uv, *spec, "verdiclip", "--version"),)
+                verify, fallback = "", relaunch
+                relaunch = subprocess.list2cmdline([uv, *spec, "verdiclip-gui"])
             case InstallKind.ENVIRONMENT:
                 steps = (self._environment_step(install),)
             case _:
@@ -168,7 +166,7 @@ class UpdatePlanner:
                     "so update it the way you installed it"
                 )
                 raise UpdateError(msg)
-        return UpdatePlan(install.version, target, steps, relaunch, verify)
+        return UpdatePlan(install.version, target, steps, relaunch, verify, fallback)
 
     def _environment_step(self, install: Installation) -> tuple[str, ...]:
         """Upgrade with the installer that put VerdiClip in its environment."""

@@ -351,6 +351,8 @@ class AppController(QObject):
             self._apply_start_menu()
         if settings.updates.check != previous.updates.check:
             self._schedule_update_checks()
+        if not (settings.updates.check and settings.updates.install):
+            self._idle_timer.stop()  # Drop an automatic install waiting for idle
         self._apply_hotkeys()
 
     def _show_about(self, parent: QWidget | None = None) -> None:

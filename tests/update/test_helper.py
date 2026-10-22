@@ -123,6 +123,35 @@ class TestHelperRun:
         assert not later.exists()
         assert wait_for_file(started) == "started"
 
+    def test_failed_step_starts_the_fallback(self, tmp_path: Path) -> None:
+        """When a plan names a fallback (uvx), a failure starts that instead."""
+        new, old = tmp_path / "new", tmp_path / "old"
+        plan = write_plan(
+            tmp_path,
+            steps=[[PYTHON, "-c", "raise SystemExit(1)"]],
+            relaunch=command_line(python_writing(new, "new")),
+            fallback=command_line(python_writing(old, "old")),
+        )
+
+        assert helper.main(["helper.py", str(plan)]) == 1
+
+        assert wait_for_file(old) == "old"
+        assert not new.exists()
+
+    def test_success_ignores_the_fallback(self, tmp_path: Path) -> None:
+        """A good run starts the new version, not the fallback."""
+        new, old = tmp_path / "new", tmp_path / "old"
+        plan = write_plan(
+            tmp_path,
+            relaunch=command_line(python_writing(new, "new")),
+            fallback=command_line(python_writing(old, "old")),
+        )
+
+        assert helper.main(["helper.py", str(plan)]) == 0
+
+        assert wait_for_file(new) == "new"
+        assert not old.exists()
+
     def test_missing_program_is_reported(self, tmp_path: Path) -> None:
         """A step whose program is gone fails with the reason."""
         missing = str(tmp_path / "no-such-uv")
