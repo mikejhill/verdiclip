@@ -135,6 +135,14 @@ class IntegrationSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class UpdateSettings:
+    """Whether VerdiClip looks for, and installs, newer releases by itself."""
+
+    check: bool = True
+    install: bool = True
+
+
+@dataclass(frozen=True, slots=True)
 class Settings:
     """All user settings."""
 
@@ -145,6 +153,7 @@ class Settings:
     appearance: AppearanceSettings = field(default_factory=AppearanceSettings)
     startup: StartupSettings = field(default_factory=StartupSettings)
     integration: IntegrationSettings = field(default_factory=IntegrationSettings)
+    updates: UpdateSettings = field(default_factory=UpdateSettings)
 
 
 class SettingsStore:
@@ -204,6 +213,7 @@ type SettingsSection = (
     | AppearanceSettings
     | StartupSettings
     | IntegrationSettings
+    | UpdateSettings
 )
 
 # Pre-0.2.1 files stored one choice; map it onto the independent switches

@@ -29,3 +29,7 @@ class CodecError(AppError):
 
 class PlatformError(AppError):
     """A Windows API call failed."""
+
+
+class UpdateError(AppError):
+    """A newer release could not be found or installed."""

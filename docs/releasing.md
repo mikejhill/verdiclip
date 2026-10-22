@@ -13,6 +13,8 @@ Releases are automatic. Versions follow [SemVer](https://semver.org/) and are co
    - publishes to PyPI with trusted publishing (no API tokens; PEP 740 attestations included),
    - attaches the distributions to the GitHub release.
 
+Running copies pick the release up from PyPI by themselves: VerdiClip checks a minute after it starts and every 6 hours, and installs a newer release when no image is open, whether it runs from `uv tool`, pip, uvx, or a checkout on `main` (UX-TRY-11, UX-TRY-12). A checkout pulls `main`, so it also gets anything merged after the release.
+
 While the version is below 1.0, breaking changes bump the minor version.
 
 | Commit | Example | Next version from 0.4.2 |

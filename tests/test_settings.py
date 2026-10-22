@@ -24,6 +24,7 @@ from verdiclip.settings import (
     SettingsStore,
     StartupSettings,
     Theme,
+    UpdateSettings,
 )
 
 
@@ -132,6 +133,7 @@ class TestSettingsStore:
                 font_size=24,
             ),
             startup=StartupSettings(run_at_login=True),
+            updates=UpdateSettings(check=False, install=False),
         )
         store = SettingsStore(tmp_path / "nested" / "settings.json")
 

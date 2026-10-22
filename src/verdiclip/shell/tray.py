@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from typing import Final
 
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QAction, QIcon
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon, QWidget
 
 from verdiclip import APP_NAME, VERSION
+
+CHECK_UPDATES_LABEL: Final = "Check for updates"
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +28,7 @@ class TrayCommands:
     settings: Callable[[], None]
     about: Callable[[], None]
     exit: Callable[[], None]
+    update: Callable[[], None] | None = None  # None: no update entry
 
 
 class TrayIcon(QSystemTrayIcon):
@@ -41,6 +45,8 @@ class TrayIcon(QSystemTrayIcon):
         self._commands = commands
         self._menu = QMenu()
         self._actions: dict[str, QAction] = {}
+        self._hotkey_labels: Mapping[str, str] = {}
+        self._update_label = CHECK_UPDATES_LABEL
         self._click = QTimer(self)
         self._click.setSingleShot(True)
         self._click.timeout.connect(self._on_click)
@@ -58,11 +64,19 @@ class TrayIcon(QSystemTrayIcon):
         """Return the named menu action."""
         return self._actions[name]
 
+    def set_update_label(self, text: str) -> None:
+        """Name the update entry: check, or install a release found (UX-TRY-11)."""
+        self._update_label = text
+        self.rebuild_menu(self._hotkey_labels)
+
     def rebuild_menu(self, hotkey_labels: Mapping[str, str]) -> None:
         """Rebuild the menu, showing each capture's hotkey (UX-TRY-03)."""
         c = self._commands
+        self._hotkey_labels = dict(hotkey_labels)
         self._menu.clear()
         self._actions.clear()
+        check = c.update
+        update = [("update", self._update_label, check)] if check is not None else []
         entries: list[tuple[str, str, Callable[[], None]] | None] = [
             ("region", "Capture region or window", c.capture_region),
             ("window", "Capture active window", c.capture_window),
@@ -73,6 +87,7 @@ class TrayIcon(QSystemTrayIcon):
             ("folder", "Open screenshots folder", c.open_folder),
             None,
             ("settings", "Settings…", c.settings),
+            *update,
             ("about", f"About {APP_NAME}", c.about),
             ("exit", "Exit", c.exit),
         ]

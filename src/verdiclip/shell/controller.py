@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import logging
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final
 
-from PySide6.QtCore import QObject, Qt, QUrl
+from PySide6.QtCore import QObject, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QImage, QImageReader
 from PySide6.QtWidgets import (
     QApplication,
@@ -38,11 +39,15 @@ from verdiclip.platform.startup import StartupRegistration
 from verdiclip.settings import IntegrationSettings, Settings, SettingsStore
 from verdiclip.shell.settings_dialog import HOTKEY_FIELDS, SettingsDialog
 from verdiclip.shell.theme import ThemeManager
-from verdiclip.shell.tray import TrayCommands, TrayIcon
+from verdiclip.shell.tray import CHECK_UPDATES_LABEL, TrayCommands, TrayIcon
+from verdiclip.update.service import Updater
 
 logger = logging.getLogger(__name__)
 
 NOTIFY_MS: Final = 4000
+FIRST_CHECK_MS: Final = 60_000  # Let sign-in settle before the first check
+CHECK_INTERVAL_MS: Final = 6 * 60 * 60 * 1000
+IDLE_RETRY_MS: Final = 5 * 60 * 1000
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +59,8 @@ class ShellIntegration:
     start_menu: ShortcutRegistration
     # Lets Settings record keys Windows would otherwise take (PrtSc)
     key_capture: KeyCapture | None = None
+    # Finds and installs newer releases; None leaves updates out of the tray
+    updater: Updater | None = None
 
 
 class AppController(QObject):
@@ -69,6 +76,7 @@ class AppController(QObject):
     ) -> None:
         super().__init__()
         self._key_capture = integration.key_capture
+        self._updater = updater = integration.updater
         self._store = store
         self._settings = store.load()
         self._styles = StyleMemory(store.path.with_name("styles.json"))
@@ -84,12 +92,23 @@ class AppController(QObject):
         self._icon = self._icon_factory.brand()
         self._tray = TrayIcon(self._icon, self._tray_commands())
         self._last_saved_folder: Path | None = None
+        self._message_action: Callable[[], None] = self._open_last_folder
+        self._manual_check = False
+        self._announced: str | None = None
+        self._check_timer = QTimer(self)
+        self._idle_timer = QTimer(self)
+        self._idle_timer.setSingleShot(True)
+        self._idle_timer.timeout.connect(self._install_when_idle)
+        self._check_timer.timeout.connect(self._scheduled_check)
+        if updater is not None:
+            updater.checked.connect(self._on_update_checked)
+            updater.check_failed.connect(self._on_update_check_failed)
         self._capture.captured.connect(self._on_captured)
         self._capture.failed.connect(
             lambda message: self._notify("Capture failed", message, warning=True)
         )
         self._hotkeys.triggered.connect(self._on_hotkey)
-        self._tray.messageClicked.connect(self._open_last_folder)
+        self._tray.messageClicked.connect(self._on_message_clicked)
 
     # Accessors
 
@@ -129,10 +148,14 @@ class AppController(QObject):
             self._apply_open_with(keep_others=True)
         if self._settings.integration.start_menu:
             self._apply_start_menu(keep_others=True)
+        self._report_update()
+        self._schedule_update_checks()
         logger.info("%s %s ready", APP_NAME, VERSION)
 
     def shutdown(self) -> None:
         """Release global resources."""
+        self._check_timer.stop()
+        self._idle_timer.stop()
         self._capture.cancel()
         self._hotkeys.close()
         self._tray.hide()
@@ -243,6 +266,8 @@ class AppController(QObject):
         """Drop a closed editor."""
         if editor in self._editors:
             self._editors.remove(editor)
+        if not self._editors and self._idle_timer.isActive():
+            self._idle_timer.start(0)  # A deferred update can go ahead now
 
     # Tray commands
 
@@ -258,6 +283,7 @@ class AppController(QObject):
             settings=self.show_settings,
             about=self._show_about,
             exit=self.request_exit,
+            update=self.check_for_updates if self._updater is not None else None,
         )
 
     def _ask_open_image(self) -> None:
@@ -323,6 +349,10 @@ class AppController(QObject):
             self._apply_open_with()
         if settings.integration.start_menu != previous.integration.start_menu:
             self._apply_start_menu()
+        if settings.updates.check != previous.updates.check:
+            self._schedule_update_checks()
+        if not (settings.updates.check and settings.updates.install):
+            self._idle_timer.stop()  # Drop an automatic install waiting for idle
         self._apply_hotkeys()
 
     def _show_about(self, parent: QWidget | None = None) -> None:
@@ -338,12 +368,128 @@ class AppController(QObject):
 
     def request_exit(self) -> None:
         """Close editors (each may ask about unsaved work), then quit."""
-        for editor in list(self._editors):
-            if not editor.close():
-                return
+        if self._close_editors():
+            QApplication.quit()
+
+    # Updates
+
+    def check_for_updates(self) -> None:
+        """Check now and say what was found, or install a release already found.
+
+        UX-TRY-11.
+        """
+        if self._updater is None:
+            return
+        if self._updater.available is not None:
+            self.install_update(manual=True)
+            return
+        self._manual_check = True
+        self._updater.check()
+
+    def install_update(self, *, manual: bool) -> None:
+        """Hand the available release to the updater and quit (UX-TRY-12).
+
+        The updater installs it once VerdiClip has exited, then starts it
+        again. A manual install first closes editors, each of which may ask
+        about unsaved work; an automatic one only runs with none open.
+        """
+        updater = self._updater
+        if updater is None:
+            return
+        try:
+            plan = updater.prepare(self._launch().command_line)
+        except AppError as err:
+            version = updater.available
+            if manual or version != self._announced:
+                self._announced = version
+                self._notify(
+                    f"{APP_NAME} {version} is available",
+                    f"It can't install itself: {err}.",
+                    warning=True,
+                )
+            return
+        if not self._close_editors():
+            return
+        try:
+            updater.start(plan)
+        except AppError as err:
+            self._notify("Could not update VerdiClip", str(err), warning=True)
+            return
         QApplication.quit()
 
+    def _schedule_update_checks(self) -> None:
+        """Check soon after starting, then periodically, while the setting is on."""
+        if self._updater is None or not self._settings.updates.check:
+            self._check_timer.stop()
+            return
+        self._check_timer.start(FIRST_CHECK_MS)
+
+    def _scheduled_check(self) -> None:
+        """Run a periodic check, unannounced unless it finds something."""
+        self._check_timer.setInterval(CHECK_INTERVAL_MS)
+        if self._updater is not None:  # pragma: no branch - the timer needs one
+            self._updater.check()
+
+    def _on_update_checked(self, latest: str) -> None:
+        """Offer, or install, a newer release; a manual check reports either way."""
+        manual, self._manual_check = self._manual_check, False
+        updater = self._updater
+        if updater is None:  # pragma: no cover - only an updater emits this
+            return
+        available = updater.available
+        self._tray.set_update_label(
+            f"Install {APP_NAME} {available}…"
+            if available is not None
+            else CHECK_UPDATES_LABEL
+        )
+        if available is None:
+            if manual:
+                self._notify(
+                    f"{APP_NAME} is up to date",
+                    f"You have {updater.installation.version}; "
+                    f"the latest release is {latest}.",
+                )
+            return
+        automatic = self._settings.updates.install and not updater.failed_before(
+            available
+        )
+        if not manual and automatic:
+            self._install_when_idle()
+            return
+        if manual or available != self._announced:
+            self._announced = available
+            self._notify(
+                "Update available",
+                f"{APP_NAME} {available} is available. Click to install it.",
+                on_click=lambda: self.install_update(manual=True),
+            )
+
+    def _on_update_check_failed(self, reason: str) -> None:
+        """Report a failed check the user asked for; periodic ones only log."""
+        manual, self._manual_check = self._manual_check, False
+        if manual:
+            self._notify("Could not check for updates", reason, warning=True)
+
+    def _install_when_idle(self) -> None:
+        """Install now if nothing is open; otherwise try again later."""
+        if self._editors or self._capture.is_selecting:
+            self._idle_timer.start(IDLE_RETRY_MS)
+            return
+        self.install_update(manual=False)
+
+    def _report_update(self) -> None:
+        """Say how the update that restarted VerdiClip went."""
+        report = self._updater.take_report() if self._updater is not None else None
+        if report is None:
+            return
+        title, message = report.describe()
+        self._notify(title, message, warning=not report.reached_target)
+
     # Internals
+
+    def _close_editors(self) -> bool:
+        """Close every editor; False if one stayed open to keep unsaved work."""
+        return all(editor.close() for editor in list(self._editors))
 
     def _pause_hotkeys(self, paused: bool) -> None:  # noqa: FBT001 - Qt signal
         """Release hotkeys while Settings records one, so the keys reach it."""
@@ -449,8 +595,19 @@ class AppController(QObject):
         """Return the console-less command that starts VerdiClip in the tray."""
         return tray_launch(Path(sys.executable), Path(sys.base_prefix))
 
-    def _notify(self, title: str, message: str, *, warning: bool = False) -> None:
-        """Show a tray balloon."""
+    def _notify(
+        self,
+        title: str,
+        message: str,
+        *,
+        warning: bool = False,
+        on_click: Callable[[], None] | None = None,
+    ) -> None:
+        """Show a tray balloon; clicking it runs ``on_click``.
+
+        Without ``on_click``, a click opens the last auto-save folder.
+        """
+        self._message_action = on_click or self._open_last_folder
         icon = (
             QSystemTrayIcon.MessageIcon.Warning
             if warning
@@ -461,6 +618,10 @@ class AppController(QObject):
         )
         if self._tray.isVisible():
             self._tray.showMessage(title, message, icon, NOTIFY_MS)
+
+    def _on_message_clicked(self) -> None:
+        """Run the action of the balloon that was clicked."""
+        self._message_action()
 
     def _open_last_folder(self) -> None:
         """Open the folder of the last auto-saved capture."""

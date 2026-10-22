@@ -21,6 +21,19 @@ uv tool install verdiclip
 
 Or with pip: `pip install verdiclip`. Then run `verdiclip` (or `verdiclip-gui` for no console window) and VerdiClip sits in the system tray.
 
+### Updates
+
+VerdiClip checks PyPI for a newer release a minute after it starts and every 6 hours after that. When it finds one and no image is open, it quits, installs the release, and starts again. A tray notification then says what changed. It updates the way you installed it:
+
+| Installed with | Update |
+| --- | --- |
+| `uv tool install verdiclip` | `uv tool upgrade verdiclip` |
+| `pip install verdiclip` (or `uv pip`) | Upgrade in that environment |
+| `uvx verdiclip` | Fetch the release with `uvx`, then restart with it (the old version if that fails) |
+| A git checkout (`uv sync`) | `git pull --ff-only` and `uv sync`, only on `main` with no local changes |
+
+Tray → **Check for updates** checks right away. Settings → General turns off automatic checking, or automatic installing (VerdiClip then offers each release in a notification). If an update fails, the old version starts again and the notification names the log, `%APPDATA%\VerdiClip\update\update.log`.
+
 ## Capture
 
 | Do this | Press |
@@ -68,7 +81,7 @@ Open from the tray menu or with `Ctrl+,` in any editor.
 - **Hotkeys** — validated as you type; conflicts are reported.
 - **Output** — folder, file-name pattern (`{date}`, `{time}`, `{title}`, `{counter}`; default `{date}_{time}_{title}`, where `{title}` is the captured window's title (spaces become `_` when the pattern has none), or *Screenshot* / *Screen* for region and full-screen captures) with a live preview, format, JPEG quality.
 - **Editor** — default color, width, and font.
-- **General** — light, dark, or match-Windows theme; start at sign-in; show VerdiClip in Explorer's **Open with** menu for images. **Make VerdiClip the default image app…** opens Windows Settings at VerdiClip's Default apps page, where you choose it as the default (Windows requires you to confirm this yourself).
+- **General** — light, dark, or match-Windows theme; start at sign-in; check for and install updates automatically; show VerdiClip in Explorer's **Open with** menu for images. **Make VerdiClip the default image app…** opens Windows Settings at VerdiClip's Default apps page, where you choose it as the default (Windows requires you to confirm this yourself).
 
 ![Settings → General: theme, start at sign-in, and the Open with integration](docs/images/settings-general.png)
 
