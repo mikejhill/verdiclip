@@ -45,6 +45,8 @@ _REGISTERED_APPS_KEY: Final = r"Software\RegisteredApplications"
 _SHCNE_ASSOCCHANGED: Final = 0x08000000
 _SHCNF_IDLIST: Final = 0x0000
 _ASSOCSTR_PROGID: Final = 20
+# Report no ProgId for an unknown type instead of the shell's "Unknown"
+_ASSOCF_INIT_IGNOREUNKNOWN: Final = 0x400
 _S_FALSE: Final = 1
 
 
@@ -143,12 +145,13 @@ class WinRegAssociations:
         (UserChoice, or UserChoiceLatest on newer builds).
         """
         query = ctypes.windll.shlwapi.AssocQueryStringW
+        flags, kind = _ASSOCF_INIT_IGNOREUNKNOWN, _ASSOCSTR_PROGID
         size = ctypes.c_uint(0)
-        result = query(0, _ASSOCSTR_PROGID, extension, None, None, ctypes.byref(size))
+        result = query(flags, kind, extension, None, None, ctypes.byref(size))
         if result not in (0, _S_FALSE) or size.value == 0:
             return None
         buffer = ctypes.create_unicode_buffer(size.value)
-        result = query(0, _ASSOCSTR_PROGID, extension, None, buffer, ctypes.byref(size))
+        result = query(flags, kind, extension, None, buffer, ctypes.byref(size))
         return str(buffer.value) if result == 0 else None
 
     def _delete_children(self, key: str) -> None:
