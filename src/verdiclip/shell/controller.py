@@ -35,7 +35,11 @@ from verdiclip.editor.window import IMAGE_FILTER, EditorOptions, EditorWindow
 from verdiclip.editor.workspace import Workspace
 from verdiclip.exceptions import AppError, HotkeyError
 from verdiclip.output.delivery import ImageDelivery
-from verdiclip.platform.associations import DEFAULT_APPS_URI, FileAssociations
+from verdiclip.platform.associations import (
+    DEFAULT_APPS_URI,
+    EXTENSIONS,
+    FileAssociations,
+)
 from verdiclip.platform.hotkeys import Hotkey, HotkeyService
 from verdiclip.platform.keyboard_hook import KeyCapture
 from verdiclip.platform.launcher import LaunchCommand, tray_launch
@@ -47,6 +51,7 @@ from verdiclip.settings import (
     Settings,
     SettingsStore,
 )
+from verdiclip.shell.default_app_dialog import DefaultAppDialog
 from verdiclip.shell.settings_dialog import HOTKEY_FIELDS, SettingsDialog
 from verdiclip.shell.theme import ThemeManager
 from verdiclip.shell.tray import CHECK_UPDATES_LABEL, TrayCommands, TrayIcon
@@ -124,6 +129,7 @@ class AppController(QObject):
         self._scrolling.state_changed.connect(self._tray.set_scrolling_state)
         self._last_saved_folder: Path | None = None
         self._message_action: Callable[[], None] = self._open_last_folder
+        self._default_app_dialog: DefaultAppDialog | None = None
         self._manual_check = False
         self._install_button: QAbstractButton | None = None
         self._update_status: QMessageBox | None = None
@@ -166,6 +172,11 @@ class AppController(QObject):
     def tray(self) -> TrayIcon:
         """Return the tray icon."""
         return self._tray
+
+    @property
+    def default_app_dialog(self) -> DefaultAppDialog | None:
+        """Return the open default-app guide, if any (for tests)."""
+        return self._default_app_dialog
 
     @property
     def editors(self) -> tuple[EditorWindow, ...]:
@@ -573,23 +584,45 @@ class AppController(QObject):
             return
         dialog = SettingsDialog(self._settings, parent, key_capture=self._key_capture)
         dialog.setWindowIcon(self._icon)
-        dialog.make_default_requested.connect(self.make_default_image_app)
+        dialog.make_default_requested.connect(
+            lambda: self.make_default_image_app(dialog)
+        )
         dialog.hotkey_recording_changed.connect(self._pause_hotkeys)
         if dialog.exec() == SettingsDialog.DialogCode.Accepted:
             self.apply_settings(dialog.result_settings())
 
-    def make_default_image_app(self) -> None:
-        """Register for Open with, then open Windows' default-apps page.
+    def make_default_image_app(self, parent: QWidget | None = None) -> None:
+        """Register for Open with, open Settings on VerdiClip, and guide the user.
 
-        Windows only lets the user choose the default handler, so the page
-        is where they confirm it (UX-TRY-07).
+        Windows only lets the user choose the default handler, so Settings
+        is where they pick it, one file type at a time; the guide says how
+        and ticks off each type as they go (UX-TRY-07).
         """
-        enabled = IntegrationSettings(open_with=True)
-        if self._settings.integration != enabled:
-            self.apply_settings(replace(self._settings, integration=enabled))
+        integration = replace(self._settings.integration, open_with=True)
+        if self._settings.integration != integration:
+            self.apply_settings(replace(self._settings, integration=integration))
         else:
             self._apply_open_with()
+        self._open_default_apps()
+        if self._default_app_dialog is not None:
+            self._default_app_dialog.raise_()
+            self._default_app_dialog.activateWindow()
+            return
+        guide = DefaultAppDialog(EXTENSIONS, self._associations.defaults, parent)
+        guide.setWindowIcon(self._icon)
+        guide.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        guide.open_settings_requested.connect(self._open_default_apps)
+        guide.destroyed.connect(self._forget_default_app_dialog)
+        self._default_app_dialog = guide
+        guide.open()
+
+    def _open_default_apps(self) -> None:
+        """Open VerdiClip's page under Settings > Default apps."""
         QDesktopServices.openUrl(QUrl(DEFAULT_APPS_URI))
+
+    def _forget_default_app_dialog(self) -> None:
+        """Drop the guide once it is closed and deleted."""
+        self._default_app_dialog = None
 
     def apply_settings(self, settings: Settings) -> None:
         """Persist ``settings`` and apply them immediately."""
