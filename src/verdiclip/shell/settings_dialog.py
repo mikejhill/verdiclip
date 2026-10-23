@@ -224,8 +224,8 @@ class SettingsDialog(QDialog):
         form.addRow(self._run_at_login)
         form.addRow(self._start_menu)
         self._make_default.setToolTip(
-            "Adds VerdiClip to Open with, then opens Windows Settings, "
-            "where you confirm it as the default."
+            "Adds VerdiClip to Open with, opens Windows Settings, and shows "
+            "which image types still need you to pick VerdiClip there."
         )
         self._make_default.clicked.connect(self._request_default)
         files = QVBoxLayout()

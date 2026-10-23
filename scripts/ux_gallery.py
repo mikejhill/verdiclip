@@ -46,7 +46,9 @@ from verdiclip.editor.session import EditorSession, ToolId
 from verdiclip.editor.window import EditorWindow
 from verdiclip.geometry import Point, Rect
 from verdiclip.output.delivery import ImageDelivery
+from verdiclip.platform.associations import EXTENSIONS
 from verdiclip.settings import Settings, Theme
+from verdiclip.shell.default_app_dialog import DefaultAppDialog
 from verdiclip.shell.settings_dialog import SettingsDialog
 from verdiclip.shell.theme import ThemeManager
 
@@ -121,6 +123,9 @@ class Gallery:
             "settings-capture": lambda: self._settings_tab(0),
             "settings-hotkeys": lambda: self._settings_tab(1),
             "settings-general": lambda: self._settings_tab(4),
+            "default-app-guide": lambda: DefaultAppDialog(
+                EXTENSIONS, lambda: {e: e == ".png" for e in EXTENSIONS}
+            ),
             "capture-overlay": self._overlay,
         }
 
