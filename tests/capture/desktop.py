@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import ctypes
-from ctypes import wintypes
+import ctypes.wintypes
 from dataclasses import dataclass
 
 
@@ -11,14 +11,14 @@ class SessionDetails(ctypes.Structure):
     """The documented WTSINFOEX_LEVEL1_W layout on supported Windows versions."""
 
     _fields_ = (
-        ("session_id", wintypes.ULONG),
+        ("session_id", ctypes.wintypes.ULONG),
         ("state", ctypes.c_int),
-        ("flags", wintypes.LONG),
-        ("station", wintypes.WCHAR * 33),
-        ("user", wintypes.WCHAR * 21),
-        ("domain", wintypes.WCHAR * 18),
+        ("flags", ctypes.wintypes.LONG),
+        ("station", ctypes.wintypes.WCHAR * 33),
+        ("user", ctypes.wintypes.WCHAR * 21),
+        ("domain", ctypes.wintypes.WCHAR * 18),
         ("times", ctypes.c_longlong * 5),
-        ("counts", wintypes.DWORD * 6),
+        ("counts", ctypes.wintypes.DWORD * 6),
     )
 
 
@@ -31,7 +31,7 @@ class SessionData(ctypes.Union):
 class SessionInfo(ctypes.Structure):
     """The WTSINFOEXW header and aligned union."""
 
-    _fields_ = (("level", wintypes.DWORD), ("data", SessionData))
+    _fields_ = (("level", ctypes.wintypes.DWORD), ("data", SessionData))
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,17 +55,17 @@ class DesktopSession:
         api = ctypes.WinDLL("wtsapi32", use_last_error=True)
         query = api.WTSQuerySessionInformationW
         query.argtypes = (
-            wintypes.HANDLE,
-            wintypes.DWORD,
+            ctypes.wintypes.HANDLE,
+            ctypes.wintypes.DWORD,
             ctypes.c_int,
             ctypes.POINTER(ctypes.c_void_p),
-            ctypes.POINTER(wintypes.DWORD),
+            ctypes.POINTER(ctypes.wintypes.DWORD),
         )
-        query.restype = wintypes.BOOL
+        query.restype = ctypes.wintypes.BOOL
         api.WTSFreeMemory.argtypes = (ctypes.c_void_p,)
         api.WTSFreeMemory.restype = None
         buffer = ctypes.c_void_p()
-        size = wintypes.DWORD()
+        size = ctypes.wintypes.DWORD()
         # WTS_CURRENT_SESSION, WTSSessionInfoEx; no desktop/session changes.
         if not query(None, 0xFFFFFFFF, 25, ctypes.byref(buffer), ctypes.byref(size)):
             return None
