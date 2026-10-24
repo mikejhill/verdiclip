@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 from typing import Final
 
 from PySide6.QtCore import QPointF, QRectF, Qt
@@ -55,29 +56,12 @@ class IconFactory:
         return QIcon(pixmap)
 
     def brand(self, size: int = 64) -> QIcon:
-        """Return the app icon: a white "V" on a green rounded square."""
-        pixmap = QPixmap(size, size)
-        pixmap.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.scale(size / 64, size / 64)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(46, 160, 67))
-        painter.drawRoundedRect(QRectF(2, 2, 60, 60), 14, 14)
-        painter.setPen(
-            QPen(
-                Qt.GlobalColor.white,
-                8,
-                Qt.PenStyle.SolidLine,
-                Qt.PenCapStyle.RoundCap,
-                Qt.PenJoinStyle.RoundJoin,
-            )
-        )
-        painter.drawPolyline(
-            QPolygonF([QPointF(17, 18), QPointF(32, 47), QPointF(47, 18)])
-        )
-        painter.end()
-        return QIcon(pixmap)
+        """Return the capture-corner V, keeping its SVG for every display scale."""
+        source = Path(__file__).parents[1] / "assets" / "brand.svg"
+        icon = QIcon(str(source))
+        # Prime the requested raster size; Qt retains the vector for other sizes.
+        icon.addPixmap(icon.pixmap(size, size))
+        return icon
 
     def style(self, name: str) -> QIcon:
         """Return the icon for a style-bar toggle (align_left, shadow, ...)."""

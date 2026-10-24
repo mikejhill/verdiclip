@@ -20,11 +20,16 @@ window state, or text the user can read — never internal state.
 | UX-G-03 | Every document change is undoable with `Ctrl+Z` and redoable with `Ctrl+Y` / `Ctrl+Shift+Z`. While a text editor is open, these undo typing first; with nothing typed they undo the document (e.g. the box just drawn). |
 | UX-G-04 | The canvas and every exported image are pixel-identical for the image area. |
 | UX-G-05 | Failures the user can act on (hotkey conflict, save failure) are shown to the user, not only logged. |
-| UX-G-06 | Closing an editor whose current image hasn't been saved to a file or copied to the clipboard asks: **Save** (`S`, `Enter`) / **Don't save** (`N`) / **Cancel** (`Esc`). The question matches what would be lost: "Save changes to “<file>”" for an image opened from or saved to a file, "has changed since you copied it" for a copied screenshot with newer edits, and "hasn't been saved or copied" otherwise. This includes a fresh capture with no edits (unless an after-capture action already saved or copied it); an image opened from a file starts as saved. The prompt can be turned off in Settings → Editor (on by default) and the change applies to open editors immediately. |
+| UX-G-06 | Closing an editor whose current image hasn't been saved to a file or copied to the clipboard asks: **Save** (`S`, `Enter`) / **Don't save** (`N`) / **Cancel** (`Esc`). The question matches what would be lost: "Save changes to “&lt;file&gt;”" for an image opened from or saved to a file, "has changed since you copied it" for a copied screenshot with newer edits, and "hasn't been saved or copied" otherwise. This includes a fresh capture with no edits (unless an after-capture action already saved or copied it); an image opened from a file starts as saved. The prompt can be turned off in Settings → Editor (on by default) and the change applies to open editors immediately. |
 | UX-G-07 | Window chrome never jumps: switching tools or selecting items never changes the toolbar height or moves the canvas. |
 | UX-G-08 | Light, dark, or match-Windows theme applies to every window immediately, including toolbar icons. Controls stay legible after any switch (checked boxes show the accent fill in either mode), including when Windows changes mode under match-Windows. |
 | UX-G-09 | A toolbar too long for the window ends in a `»` button; clicking it shows every hidden control in a panel over the canvas, and clicking it again hides them. |
 | UX-G-10 | No dialog blocks a capture: while any VerdiClip dialog is open (Settings, About, a message, a file picker), capture hotkeys still work and the overlay takes the mouse and keyboard normally. A dialog opened from an editor blocks only that editor; one opened from the tray blocks nothing. |
+
+Brand requirement **UX-G-11**: editor and tray use the same emerald tile,
+white V, and mint capture corners. The icon retains transparent padding and
+legible details at 16, 20, 24, 32, 48, 64, 128, and 256 pixels in either theme.
+See [brand assets](../brand/README.md).
 
 ## Keyboard model
 

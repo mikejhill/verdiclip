@@ -8,6 +8,7 @@ import mss
 import pytest
 from mss.screenshot import ScreenShot
 from PySide6.QtGui import QImage
+from tests.capture.desktop import DesktopSession
 
 from verdiclip.capture.grabber import FrozenScreen, MssScreenSource
 from verdiclip.exceptions import CaptureError
@@ -85,8 +86,14 @@ class TestMssScreenSource:
     @pytest.mark.skipif(
         sys.platform != "win32", reason="Real screen capture requires Windows"
     )
-    def test_freeze(self) -> None:
+    def test_freeze(self, request: pytest.FixtureRequest) -> None:
         """Real desktop captures produce detached images matching physical bounds."""
+        session = DesktopSession.current()
+        reason = session.unavailable_reason() if session is not None else None
+        if reason is not None:
+            if request.config.getoption("--require-interactive-capture"):
+                pytest.fail(reason)
+            pytest.skip(reason)
         source = MssScreenSource()
 
         try:
@@ -137,3 +144,43 @@ class TestMssScreenSource:
             source.freeze()
 
         assert native.closes == 1
+
+
+class TestDesktopGuard:
+    """A known prerequisite can skip; capture errors and strict checks cannot."""
+
+    @pytest.mark.parametrize("strict", [False, True])
+    def test_locked_desktop_is_explicit(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        request: pytest.FixtureRequest,
+        *,
+        strict: bool,
+    ) -> None:
+        """Normal runs name the prerequisite; strict runs fail instead of skipping."""
+        monkeypatch.setattr(
+            DesktopSession, "current", classmethod(lambda _cls: DesktopSession(0, 0))
+        )
+        monkeypatch.setattr(
+            request.config.option, "require_interactive_capture", strict
+        )
+        expected = pytest.fail.Exception if strict else pytest.skip.Exception
+
+        with pytest.raises(expected, match="Windows session is locked"):
+            TestMssScreenSource().test_freeze(request)
+
+    @pytest.mark.parametrize("session", [None, DesktopSession(0, 1)])
+    def test_unknown_or_available_desktop_keeps_capture_errors(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        request: pytest.FixtureRequest,
+        session: DesktopSession | None,
+    ) -> None:
+        """Neither unknown nor unlocked state turns a native capture error into skip."""
+        monkeypatch.setattr(
+            DesktopSession, "current", classmethod(lambda _cls: session)
+        )
+        monkeypatch.setattr(mss, "MSS", lambda: FakeMss(fail=True))
+
+        with pytest.raises(CaptureError, match=r"Could not capture.*unavailable"):
+            TestMssScreenSource().test_freeze(request)
