@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0](https://github.com/mikejhill/verdiclip/compare/v0.11.0...v0.12.0) (2026-10-24)
+
+
+### Features
+
+* **brand:** refine VerdiClip capture identity ([#56](https://github.com/mikejhill/verdiclip/issues/56)) ([a5190a4](https://github.com/mikejhill/verdiclip/commit/a5190a45bff19375add35a409cf8c621cf2b20d8))
+
 ## [Unreleased]
 
 ### Changed
