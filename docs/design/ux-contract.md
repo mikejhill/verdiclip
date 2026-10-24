@@ -26,6 +26,11 @@ window state, or text the user can read — never internal state.
 | UX-G-09 | A toolbar too long for the window ends in a `»` button; clicking it shows every hidden control in a panel over the canvas, and clicking it again hides them. |
 | UX-G-10 | No dialog blocks a capture: while any VerdiClip dialog is open (Settings, About, a message, a file picker), capture hotkeys still work and the overlay takes the mouse and keyboard normally. A dialog opened from an editor blocks only that editor; one opened from the tray blocks nothing. |
 
+Brand requirement **UX-G-11**: editor and tray use the same emerald tile,
+white V, and mint capture corners. The icon retains transparent padding and
+legible details at 16, 20, 24, 32, 48, 64, 128, and 256 pixels in either theme.
+See [brand assets](../brand/README.md).
+
 ## Keyboard model
 
 The editor is always in one of these levels, from the most engaged to **rest**

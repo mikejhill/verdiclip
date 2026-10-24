@@ -24,6 +24,11 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default="",
         help="Directory to write UX journey step screenshots into.",
     )
+    parser.addoption(
+        "--require-interactive-capture",
+        action="store_true",
+        help="Fail rather than skip real capture when Windows is locked/disconnected.",
+    )
 
 
 def pytest_configure(config: pytest.Config) -> None:

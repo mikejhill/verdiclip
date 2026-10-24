@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- Refined the app identity with an emerald capture-corner V, scalable runtime
+  SVG, light/dark wordmarks, pixel exports, and a brand guide.
+
 ## [0.11.0](https://github.com/mikejhill/verdiclip/compare/v0.10.0...v0.11.0) (2026-10-22)
 
 

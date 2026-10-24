@@ -18,6 +18,23 @@ uv run poe check   # Must pass before you open a pull request
 
 ## Test quality
 
+The real desktop smoke test runs automatically on Windows with an unlocked
+session. A positively identified locked or disconnected session skips only
+that test with the prerequisite reason; unknown session state and capture
+errors still fail. Native pixel conversion, buffer detachment, handle reuse,
+and native error cleanup remain covered by deterministic tests on every run.
+
+Before merging capture changes or releasing, unlock/reconnect the Windows
+desktop and require the real smoke test to pass:
+
+```bash
+uv run pytest tests/capture/test_grabber.py::TestMssScreenSource::test_freeze --require-interactive-capture -v
+```
+
+This mode fails if the desktop prerequisite is absent. A normal green suite
+with the locked-desktop skip is not evidence that real capture passed. Never
+turn a `CaptureError` or `BitBlt` failure on an available desktop into a skip.
+
 Coverage shows code ran, not that a test checked it. These keep the tests honest:
 
 | Check | Where | What it catches |
