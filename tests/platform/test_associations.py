@@ -32,6 +32,8 @@ class FakeAssociationBackend:
         self.keys: dict[str, dict[str, str]] = {}
         self.notified = 0
         self.error: OSError | None = None
+        # ProgId each extension opens with, as the shell would report it
+        self.defaults: dict[str, str] = {}
 
     def read_value(self, key: str, name: str) -> str | None:
         """Return a value or None."""
@@ -58,6 +60,11 @@ class FakeAssociationBackend:
     def notify_changed(self) -> None:
         """Count change broadcasts."""
         self.notified += 1
+
+    def default_prog_id(self, extension: str) -> str | None:
+        """Return the extension's current ProgId, if any."""
+        self._fail()
+        return self.defaults.get(extension)
 
     def _fail(self) -> None:
         """Raise the injected failure, if any."""
@@ -207,6 +214,26 @@ class TestFileAssociations:
         with pytest.raises(PlatformError, match="Open with"):
             action(registration)
 
+    def test_defaults_report_which_types_open_in_verdiclip(self) -> None:
+        """Only extensions whose current ProgId is VerdiClip's count as done."""
+        backend = FakeAssociationBackend()
+        backend.defaults = {".png": PROG_ID, ".jpg": "AppXPhotos"}
+
+        defaults = FileAssociations(backend).defaults()
+
+        assert list(defaults) == list(EXTENSIONS)
+        assert defaults[".png"] is True
+        assert defaults[".jpg"] is False
+        assert defaults[".gif"] is False
+
+    def test_defaults_failure_becomes_platform_error(self) -> None:
+        """A failed lookup is reported with context."""
+        backend = FakeAssociationBackend()
+        backend.error = PermissionError("denied")
+
+        with pytest.raises(PlatformError, match="default image apps"):
+            FileAssociations(backend).defaults()
+
     def test_default_backend_is_the_real_registry(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -242,3 +269,10 @@ class TestWinRegAssociations:
     def test_notify_changed_does_not_raise(self) -> None:
         """The Explorer broadcast is fire-and-forget."""
         WinRegAssociations().notify_changed()
+
+    def test_default_prog_id_asks_the_shell(self) -> None:
+        """Known types report a ProgId; unknown ones report none."""
+        backend = WinRegAssociations()
+
+        assert backend.default_prog_id(".txt") not in {None, ""}
+        assert backend.default_prog_id(".verdiclip-no-such-type") is None

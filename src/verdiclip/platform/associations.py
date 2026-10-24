@@ -44,6 +44,10 @@ _CAPABILITIES_KEY: Final = rf"{_APP_KEY}\Capabilities"
 _REGISTERED_APPS_KEY: Final = r"Software\RegisteredApplications"
 _SHCNE_ASSOCCHANGED: Final = 0x08000000
 _SHCNF_IDLIST: Final = 0x0000
+_ASSOCSTR_PROGID: Final = 20
+# Report no ProgId for an unknown type instead of the shell's "Unknown"
+_ASSOCF_INIT_IGNOREUNKNOWN: Final = 0x400
+_S_FALSE: Final = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +76,9 @@ class AssociationBackend(Protocol):
 
     def notify_changed(self) -> None:
         """Tell Explorer that file associations changed."""
+
+    def default_prog_id(self, extension: str) -> str | None:
+        """Return the ProgId that opens ``extension`` now, or None if none does."""
 
 
 class WinRegAssociations:
@@ -131,6 +138,22 @@ class WinRegAssociations:
             _SHCNE_ASSOCCHANGED, _SHCNF_IDLIST, None, None
         )
 
+    def default_prog_id(self, extension: str) -> str | None:
+        """Ask the shell which ProgId opens ``extension``, the user's choice first.
+
+        The shell knows where each Windows version records that choice
+        (UserChoice, or UserChoiceLatest on newer builds).
+        """
+        query = ctypes.windll.shlwapi.AssocQueryStringW
+        flags, kind = _ASSOCF_INIT_IGNOREUNKNOWN, _ASSOCSTR_PROGID
+        size = ctypes.c_uint(0)
+        result = query(flags, kind, extension, None, None, ctypes.byref(size))
+        if result not in (0, _S_FALSE) or size.value == 0:
+            return None
+        buffer = ctypes.create_unicode_buffer(size.value)
+        result = query(flags, kind, extension, None, buffer, ctypes.byref(size))
+        return str(buffer.value) if result == 0 else None
+
     def _delete_children(self, key: str) -> None:
         """Delete every subkey of ``key``."""
         with self._registry.OpenKey(
@@ -188,6 +211,23 @@ class FileAssociations:
             return self._backend.read_value(rf"{_PROG_ID_KEY}\shell\open\command", "")
         except OSError as err:
             msg = "Could not read the Open with registration"
+            raise PlatformError(msg) from err
+
+    def defaults(self) -> dict[str, bool]:
+        """Return, for each extension, whether VerdiClip is now its default.
+
+        Only reads the choice the user made in Windows; it never changes it.
+
+        Raises:
+            PlatformError: If Windows cannot be asked.
+        """
+        try:
+            return {
+                extension: self._backend.default_prog_id(extension) == PROG_ID
+                for extension in EXTENSIONS
+            }
+        except OSError as err:
+            msg = "Could not read the default image apps"
             raise PlatformError(msg) from err
 
     def register(self, command: str, icon: str) -> None:
