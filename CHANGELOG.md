@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.12.1](https://github.com/mikejhill/verdiclip/compare/v0.12.0...v0.12.1) (2026-10-25)
+
+
+### Bug Fixes
+
+* transfer input ownership before capture ([cd26c2d](https://github.com/mikejhill/verdiclip/commit/cd26c2d40cfb80489d7ac89a50f2b0d629cea8f1))
+* transfer input ownership before capture ([cd26c2d](https://github.com/mikejhill/verdiclip/commit/cd26c2d40cfb80489d7ac89a50f2b0d629cea8f1))
+
 ## [0.12.0](https://github.com/mikejhill/verdiclip/compare/v0.11.0...v0.12.0) (2026-10-25)
 
 
