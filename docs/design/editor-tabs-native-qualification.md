@@ -42,6 +42,14 @@ contain Qt-only diagnostic reproductions. Keep original failures below as histor
 Live scrolling/backend and capture closes-nothing gates remain blocking. Private
 preview native readiness stays false until those combined acceptance gates pass.
 
+Independent read-only review of tests-only delta through
+`6759a6faa583bfb15edf804cfff677870f5a827d` found no material findings. Reviewer
+confirmed activation checks/tracing do not disable or suppress production
+cancellation, inspected failing/corrected native traces and passing saved reports,
+and independently reran all 27 offscreen regression/topology tests successfully.
+Reviewer performed no native desktop/input/probe action. This review does not
+extend the qualification scope to physical input or unfinished capture behavior.
+
 ## Initial failing native checkpoint (superseded above)
 
 Parent released exclusive desktop input; elevated read-only WTS verified active,
