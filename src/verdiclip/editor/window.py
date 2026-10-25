@@ -378,6 +378,7 @@ class EditorWindow(QMainWindow):
         page.canvas.enter_unhandled.disconnect(self._on_enter)
         self._tabs.removeTab(index)
         page.setParent(self._workspace.parking)
+        self._page_changed()
         return index
 
     def activate_page(self, page: DocumentPage) -> None:
