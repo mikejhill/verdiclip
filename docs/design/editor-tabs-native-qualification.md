@@ -1,5 +1,30 @@
 # Tab qualification after exclusive desktop handoff
 
+## Actual native checkpoint after parent handoff
+
+Parent released exclusive desktop input; elevated read-only WTS verified active,
+unlocked state (0/1). Ran the prepared four-case native matrix on Qt 6.11.2 at
+head `1d910e3473d57aba02ba37e60ab362395875b527` (production source unchanged from
+501ec10). **2 passed / 2 failed**: Escape and hotkey cancellation passed; detach
+and merge failed. The native capture lease ended, but no drag-release receipt
+arrived (`releases=[]`); the move did not commit. The log also contains COM
+diagnostic 0x8001010D. This does not yet establish its cause or distinguish a
+native adapter defect from a synthetic event/Qt implicit-grab interaction.
+
+All four tests completed and fixture cleanup ran. The Python process exited;
+read-only process verification found no task-owned test interpreter remaining.
+**Desktop input released.** No further native input was sent; Qt 6.12.0 native
+matrix, native rollback/keyboard extension and physical mouse/Narrator/DPI cases
+remain unrun pending diagnosis. Native drag/drop is NOT qualified. Normal app,
+settings, monitors and security state were untouched. No tool action was denied;
+this is a test failure, not an approval bypass.
+
+Evidence: `.test-tmp/native-tabs-20261025T233500493Z/run.log` and `results.xml`.
+Keep the private preview readiness false. Resolve the missing native release
+receipt and rerun the same bounded matrix before broadening native inputs.
+
+## Offscreen checkpoint and prepared matrix
+
 Checkpoint source: `501ec10e0fe86f5870c45e66dd587b4213e8ad57`. Both Qt 6.11.2 and
 6.12.0 full offscreen suites pass **1,487 tests**, 1 skip, 14 deselected; coverage
 **94.99% / 94.97%**, randomized seeds 2514902634 / 700042738. Formatting, Ruff and
