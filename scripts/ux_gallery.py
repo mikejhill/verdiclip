@@ -23,6 +23,7 @@ from PySide6.QtGui import (
     QPainter,
     QPalette,
 )
+from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QTabWidget, QWidget
 
@@ -33,7 +34,6 @@ from verdiclip.document.annotations import (
     ArrowShape,
     CounterMarker,
     HighlightShape,
-    ObfuscateShape,
     RectangleShape,
 )
 from verdiclip.document.commands import AddAnnotations
@@ -55,6 +55,7 @@ type Scene = Callable[[], QWidget]
 STEP: Final = Style(stroke=WHITE, fill=RED, font_size=14)
 README_IMAGES: Final = {
     "dark-editor-rectangle-selected": "editor.png",
+    "light-editor-select": "editor-light.png",
     "dark-capture-overlay": "capture.png",
     "dark-editor-rotated": "editor-rotated.png",
     "dark-settings-capture": "settings-capture.png",
@@ -129,20 +130,17 @@ class Gallery:
         session = EditorSession(Document(self._sample()), self._settings.editor)
         callout = Style(fill=Color(255, 255, 255), width=3, font_size=15)
         box = RectangleShape(
-            rect=Rect(520, 92, 186, 64), text="Use your work account", style=callout
+            rect=Rect(454, 84, 234, 64), text="Leave room to explore", style=callout
         )
-        arrow = ArrowShape(start=Point(600, 330), end=Point(362, 240))
+        arrow = ArrowShape(start=Point(567, 157), end=Point(572, 230))
         steps = [
-            CounterMarker(center=Point(118, 115), radius=13, label="1", style=STEP),
-            CounterMarker(center=Point(118, 165), radius=13, label="2", style=STEP),
+            CounterMarker(center=Point(437, 237), radius=13, label="1", style=STEP),
+            CounterMarker(center=Point(437, 303), radius=13, label="2", style=STEP),
         ]
-        hidden = ObfuscateShape(rect=Rect(242, 156, 256, 22))
         mark = HighlightShape(
-            rect=Rect(244, 107, 140, 22), style=Style(fill=HIGHLIGHT_YELLOW)
+            rect=Rect(484, 292, 183, 22), style=Style(fill=HIGHLIGHT_YELLOW)
         )
-        session.history.execute(
-            AddAnnotations([mark, hidden, box, arrow, *steps], "Sample")
-        )
+        session.history.execute(AddAnnotations([mark, box, arrow, *steps], "Sample"))
         window = EditorWindow(session, ImageDelivery(self._settings.output))
         window.resize(1000, 640)
         window.activate_tool(tool)
@@ -176,7 +174,7 @@ class Gallery:
             geometry,
             QGuiApplication.primaryScreen(),
             FrozenScreen(desktop, bounds),
-            [_Window("Contoso Portal - Sign in", Rect(90, 70, 720, 420))],
+            [_Window("Fieldnotes - Weekend collection", Rect(90, 70, 720, 420))],
             show_magnifier=True,
         )
         overlay.setFixedSize(900, 560)
@@ -206,8 +204,8 @@ class Gallery:
             QTest.mouseMove(widget.canvas.viewport(), QPoint(500, 300))
         if isinstance(widget, SelectionOverlay):
             # Off-screen widgets don't get synthetic cursor moves; send one directly.
-            # Rest on the "Sign in" text so the magnifier shows real pixel detail.
-            pos = QPointF(374, 305)
+            # Rest on the itinerary so the magnifier shows real pixel detail.
+            pos = QPointF(625, 315)
             move = QMouseEvent(
                 QEvent.Type.MouseMove,
                 pos,
@@ -229,22 +227,14 @@ class Gallery:
 
     @staticmethod
     def _sample() -> QImage:
-        """Return a plausible light-UI screenshot to annotate."""
+        """Render original fictional content; screenshots still use real app widgets."""
         image = QImage(720, 420, QImage.Format.Format_RGB32)
-        image.fill(QColor(250, 250, 252))
+        image.fill(QColor("white"))
         painter = QPainter(image)
-        painter.fillRect(0, 0, 720, 44, QColor(32, 96, 168))
-        painter.setPen(QColor("white"))
-        painter.drawText(16, 28, "Contoso Portal")
-        painter.setPen(QColor(60, 60, 60))
-        for row, label in enumerate(("Username", "Password")):
-            painter.drawText(140, 120 + row * 50, label)
-            painter.drawRect(240, 104 + row * 50, 260, 26)
-        painter.drawText(248, 122, "j.doe@contoso.com")
-        painter.drawText(248, 172, "Hunter2!Secret")
-        painter.fillRect(240, 220, 110, 32, QColor(32, 96, 168))
-        painter.setPen(QColor("white"))
-        painter.drawText(270, 241, "Sign in")
+        renderer = QSvgRenderer(
+            str(Path(__file__).parent.parent / "docs/images/source/fieldnotes.svg")
+        )
+        renderer.render(painter)
         painter.end()
         return image
 
