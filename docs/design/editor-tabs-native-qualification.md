@@ -1,6 +1,48 @@
 # Tab qualification after exclusive desktop handoff
 
-## Actual native checkpoint after parent handoff
+## Resolved native fixture activation race
+
+Follow-up bounded tracing showed the missing receipt was a queued Qt
+`WindowDeactivate`, not a missing WM_LBUTTONUP decoder: WindowDeactivate called
+the production cancel guard before the posted release was processed. The native
+fixture armed the drag before its two newly shown windows finished asynchronous
+exposure/IME/activation processing. No production drag or cancellation code was
+changed. The fixture now waits for exposure, drains activation events, and checks
+actual GetForegroundWindow plus Qt active-window state before arming. There is no
+arbitrary settling sleep, fixed seed, alternate input route or disabled guard.
+
+The same native queue path then passed **4/4 on Qt 6.11.2** and **4/4 on Qt
+6.12.0** (detach, merge, Escape, hotkey). Native keyboard/accessibility and injected
+rollback/close extension passed **10/10 on each runtime**. Test-owned windows and
+input leases were cleaned up; no task-owned test interpreter remained. **Desktop
+input released after completion.** These use synthetic Qt/Win32 events, not
+physical mouse/Narrator/mixed-display certification.
+
+The new offscreen regression queues WindowDeactivate before a late native
+release and checks exactly one cancellation, released lease, unchanged dirty
+history, retained document/view and no late detach. Regression + topology tests:
+27 passed. The prior full offscreen 1,487-pass runs remain valid for unchanged
+production source; this adds one tested contract without a new aggregate claim.
+
+COM diagnostic 0x8001010D also reproduced on both runtimes in a minimal Qt-only
+fixture using two QPlainTextEdit windows, no VerdiClip imports, no drag adapter,
+no capture/input APIs. Both processes completed normally, active window true,
+and cleaned up. The diagnostic was not suppressed. A reusable guarded probe is
+`tests/platform/native_qt_activation_probe.py` (plan-only by default). The minimal
+reproduction isolates it from the tab release failure; it does not identify the
+underlying Qt/Windows COM implementation cause.
+
+Evidence: `.test-tmp/native-trace-1` shows cancellation stack from window.event;
+`native-trace-2` shows actual foreground ownership and WM_LBUTTONUP receipt;
+`native-tabs-20261025T234034137Z` and `native-tabs-20261025T234050917Z` contain
+passing native matrix logs/XML and per-case traces; `native-extended-min/current`
+logs/XML contain 10-case results; `native-activation-minimal-min/current.log`
+contain Qt-only diagnostic reproductions. Keep original failures below as history.
+
+Live scrolling/backend and capture closes-nothing gates remain blocking. Private
+preview native readiness stays false until those combined acceptance gates pass.
+
+## Initial failing native checkpoint (superseded above)
 
 Parent released exclusive desktop input; elevated read-only WTS verified active,
 unlocked state (0/1). Ran the prepared four-case native matrix on Qt 6.11.2 at

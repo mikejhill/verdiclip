@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes
+import json
 import sys
+import traceback
 from pathlib import Path
 
 import pytest
@@ -23,18 +25,19 @@ from verdiclip.editor.window import EditorOptions
 from verdiclip.editor.workspace import Workspace
 from verdiclip.geometry import Rect
 from verdiclip.output.delivery import ImageDelivery
-from verdiclip.platform.tab_drag import Win32CaptureApi
+from verdiclip.platform.tab_drag import NativeTabDrag, Win32CaptureApi
 from verdiclip.settings import EditorSettings, OutputSettings
 
 
 @pytest.mark.parametrize("outcome", ["merge", "detach", "escape", "hotkey"])
-def test_native_tab_gesture_keeps_document_and_releases_input(  # noqa: PLR0913, PLR0917, PLR0915 - native acceptance matrix
+def test_native_tab_gesture_keeps_document_and_releases_input(  # noqa: C901, PLR0913, PLR0917, PLR0915 - native acceptance matrix
     qtbot: QtBot,
     qapp: QApplication,
     request: pytest.FixtureRequest,
     sample_image: QImage,
     tmp_path: Path,
     outcome: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A real Win32 input lease and native queue preserve every edited session."""
     if sys.platform != "win32" or QGuiApplication.platformName() != "windows":
@@ -68,13 +71,58 @@ def test_native_tab_gesture_keeps_document_and_releases_input(  # noqa: PLR0913,
     second.resize(760, 500)
     first.move(30, 30)
     second.move(850, 30)
+    qtbot.waitExposed(first)
+    qtbot.waitExposed(second)
+    # Exposure and native activation are asynchronous. Drain show/IME activation
+    # events before arming, or a legitimate queued WindowDeactivate cancels drag.
+    qapp.processEvents()
     first.raise_()
     first.activateWindow()
     qtbot.waitUntil(first.isActiveWindow, timeout=3000)
     bar = first.tab_bar
     point = bar.tabRect(0).center()
     releases: list[tuple[int, int]] = []
+    trace: list[dict[str, object]] = []
+    original_dispatch = NativeTabDrag.dispatch
+    original_cancel = NativeTabDrag.cancel
+
+    def traced_dispatch(
+        driver: NativeTabDrag,
+        handle: int,
+        message: int,
+        parameter: int = 0,
+        position: QPoint | None = None,
+    ) -> bool:
+        if len(trace) < 200:
+            trace.append(
+                {
+                    "event": "native",
+                    "handle": handle,
+                    "message": hex(message),
+                    "parameter": parameter,
+                    "active": driver.active,
+                }
+            )
+        return original_dispatch(driver, handle, message, parameter, position)
+
+    def traced_cancel(driver: NativeTabDrag) -> None:
+        if driver.active:
+            trace.append(
+                {
+                    "event": "cancel",
+                    "stack": traceback.format_stack(limit=6),
+                    "foreground": int(api.GetForegroundWindow() or 0),
+                    "first_active": first.isActiveWindow(),
+                    "second_active": second.isActiveWindow(),
+                }
+            )
+        original_cancel(driver)
+
+    monkeypatch.setattr(NativeTabDrag, "dispatch", traced_dispatch)
+    monkeypatch.setattr(NativeTabDrag, "cancel", traced_cancel)
     bar.drag_released.connect(lambda point: releases.append((point.x(), point.y())))
+    bar.drag_started.connect(lambda _id: trace.append({"event": "started"}))
+    bar.drag_cancelled.connect(lambda: trace.append({"event": "cancelled"}))
     api = ctypes.WinDLL("user32", use_last_error=True)
     api.PostMessageW.argtypes = (
         ctypes.wintypes.HWND,
@@ -84,7 +132,24 @@ def test_native_tab_gesture_keeps_document_and_releases_input(  # noqa: PLR0913,
     )
     api.PostMessageW.restype = ctypes.wintypes.BOOL
     api.GetCapture.restype = ctypes.wintypes.HWND
+    api.GetForegroundWindow.restype = ctypes.wintypes.HWND
     try:
+        qapp.processEvents()
+        qtbot.waitUntil(
+            lambda: (
+                first.isActiveWindow()
+                and int(api.GetForegroundWindow() or 0) == int(first.winId())
+            ),
+            timeout=3000,
+        )
+        trace.append(
+            {
+                "event": "before_press",
+                "foreground": int(api.GetForegroundWindow() or 0),
+                "expected": int(first.winId()),
+                "first_active": first.isActiveWindow(),
+            }
+        )
         QTest.mousePress(bar, Qt.MouseButton.LeftButton, pos=point)
         move = QMouseEvent(
             QEvent.Type.MouseMove,
@@ -152,3 +217,6 @@ def test_native_tab_gesture_keeps_document_and_releases_input(  # noqa: PLR0913,
         owner.close_all()
         owner.parking.deleteLater()
         qapp.processEvents()
+        (tmp_path / "native-trace.json").write_text(
+            json.dumps(trace, indent=2), encoding="utf-8"
+        )
