@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import shutil
 import tempfile
 from pathlib import Path
@@ -118,7 +119,7 @@ def test_invalid_page_cannot_read_outside_committed_extent(
 
 def test_materialization_accounts_for_full_image_copies(tmp_path: Path) -> None:
     """Raw bitmap bytes alone cannot authorize an unsafe editor allocation."""
-    store = StripStore(tmp_path, ScrollLimits(max_materialize_bytes=96 * 120 * 4))
+    store = StripStore(tmp_path, ScrollLimits(max_materialize_bytes=200_000))
     try:
         store.append(Documents.image(height=120))
         with pytest.raises(CaptureError, match="page slices"):
@@ -203,3 +204,24 @@ def test_cleanup_failure_can_be_retried(
             store.close()
     store.close()
     assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("alpha", [0, 1, 127, 255])
+def test_alpha_pixels_are_copied_without_compositing(
+    tmp_path: Path, alpha: int
+) -> None:
+    """Lossless review preserves every RGBA byte, including transparent pixels."""
+    width, height = 96, 700
+    data = bytearray(
+        hashlib.shake_256(b"alpha-scroll-golden").digest(width * height * 4)
+    )
+    data[3::4] = bytes([alpha]) * (width * height)
+    source = QImage(data, width, height, QImage.Format.Format_ARGB32).copy()
+    store = StripStore(tmp_path, ScrollLimits())
+    try:
+        store.append(source)
+        actual = store.materialize(430, 200)
+        expected = source.copy(0, 430, width, 200)
+        assert bytes(actual.constBits()) == bytes(expected.constBits())
+    finally:
+        store.close()

@@ -11,8 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from PySide6.QtCore import QPoint
-from PySide6.QtGui import QImage, QImageWriter, QPainter
+from PySide6.QtGui import QImage, QImageWriter
 
 from verdiclip.capture.scroll.models import ScrollLimitError, ScrollLimits
 from verdiclip.exceptions import CaptureError
@@ -186,32 +185,40 @@ class StripStore:
         result = QImage(self._width, height, QImage.Format.Format_ARGB32)
         if result.isNull():
             raise CaptureError("Could not allocate this capture page")
-        painter = QPainter(result)
-        try:
-            for strip in self._strips:
-                if strip.top < top + height and strip.top + strip.height > top:
-                    image = self._read(strip)
-                    first, last = (
-                        max(top, strip.top),
-                        min(top + height, strip.top + strip.height),
-                    )
-                    painter.drawImage(
-                        QPoint(0, first - top),
-                        image.copy(0, first - strip.top, self._width, last - first),
-                    )
-        finally:
-            painter.end()
+        for strip in self._strips:
+            if strip.top < top + height and strip.top + strip.height > top:
+                self._copy_strip(result, strip, top, height)
         return result
+
+    def _copy_strip(
+        self, result: QImage, strip: StoredStrip, top: int, height: int
+    ) -> None:
+        """Copy canonical rows exactly; alpha must never blend with old memory."""
+        image = self._read(strip).convertToFormat(QImage.Format.Format_ARGB32)
+        if image.isNull():
+            raise CaptureError("Could not decode this capture page")
+        first, last = max(top, strip.top), min(top + height, strip.top + strip.height)
+        source = (first - strip.top) * image.bytesPerLine()
+        destination = (first - top) * result.bytesPerLine()
+        count = (last - first) * result.bytesPerLine()
+        pixels = memoryview(result.bits())
+        if pixels.readonly:
+            raise CaptureError("Could not access writable capture pixels")
+        pixels[destination : destination + count] = image.constBits()[
+            source : source + count
+        ]
 
     def _validate_range(self, top: int, height: int) -> None:
         """Check coordinate, pixel, dimension and conservative copy budgets."""
         if self._closed or top < 0 or height < 1 or top + height > self._height:
             raise CaptureError("Capture page is outside the stored range")
         pixels = self._width * height
+        tile_pixels = max((s.width * s.height for s in self._strips), default=0)
+        allocation_estimate = pixels * 4 * 6 + tile_pixels * 4 * 2
         if (
             pixels > self._limits.max_flatten_pixels
             or max(self._width, height) > self._limits.max_dimension
-            or pixels * 4 * 6 > self._limits.max_materialize_bytes
+            or allocation_estimate > self._limits.max_materialize_bytes
         ):
             raise CaptureError(
                 "This capture is too large to flatten; choose smaller page slices"
