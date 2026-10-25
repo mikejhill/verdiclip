@@ -9,6 +9,7 @@ import pytest
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QColor, QCursor, QGuiApplication, QImage, QPainter
 from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication
 from pytestqt.qtbot import QtBot
 from pytestqt.wait_signal import SignalBlocker
 from tests.ux.conftest import Stopwatch
@@ -132,6 +133,7 @@ class Overlay:
     """Drive the overlay like a mouse and keyboard would."""
 
     def __init__(self, service: CaptureService) -> None:
+        QApplication.processEvents()  # Deliver the queued capture request.
         self._overlay: SelectionOverlay = service.overlays[0]
 
     @property
@@ -185,6 +187,7 @@ class TestRegionCapture:
         clock = Stopwatch()
 
         service.capture_region()
+        qtbot.waitUntil(lambda: bool(service.overlays))
 
         overlays = service.overlays
         assert len(overlays) == len(QGuiApplication.screens())
@@ -195,7 +198,7 @@ class TestRegionCapture:
         assert desktop.frames == 1
 
     def test_guides_and_highlight_appear_without_moving_the_mouse(
-        self, service: CaptureService
+        self, service: CaptureService, qtbot: QtBot
     ) -> None:
         """Pressing the hotkey with the mouse resting shows guides and highlight.
 
@@ -204,6 +207,7 @@ class TestRegionCapture:
         QCursor.setPos(QPoint(200, 200))
 
         service.capture_region()
+        qtbot.waitUntil(lambda: bool(service.overlays))
 
         overlay = service.overlays[0]
         hovered = overlay.hovered_window()

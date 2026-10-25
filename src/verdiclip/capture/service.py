@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import datetime
-from typing import Protocol
+from typing import Protocol, override
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QEvent, QObject, QTimer, Signal
 from PySide6.QtGui import QCursor, QGuiApplication, QImage
+from PySide6.QtWidgets import QApplication, QWidget
 
 from verdiclip.capture.grabber import FrozenScreen, ScreenSource
 from verdiclip.capture.modality import ModalityGuard
@@ -59,13 +60,24 @@ class CaptureService(QObject):
         self._last_mode: CaptureMode | None = None
         self._last_area: Rect | None = None
         self._last_title = ""
+        self._pending: Callable[[], None] | None = None
+        self._starting = False
+        self._cancelled_start = False
+        self._handoff = QTimer(self)
+        self._handoff.setSingleShot(True)
+        self._handoff.timeout.connect(self._start_pending)
+        self._input_check = QTimer(self)
+        self._input_check.setSingleShot(True)
+        self._input_check.timeout.connect(self._check_input_owner)
+        self._watching: QApplication | None = None
+        self._deactivated = False
         # No dialog the app opens may block the overlays' input
         ModalityGuard.ensure()
 
     @property
     def is_selecting(self) -> bool:
-        """True while the selection overlay is showing."""
-        return bool(self._overlays)
+        """True while capture is handing off input or showing selection overlays."""
+        return self._starting or self._pending is not None or bool(self._overlays)
 
     @property
     def overlays(self) -> tuple[SelectionOverlay, ...]:
@@ -80,16 +92,24 @@ class CaptureService(QObject):
 
     def capture_region(self) -> None:
         """Freeze every monitor and let the user drag a region or click a window."""
-        if self.is_selecting:
-            self._activate_under_cursor()
-            return
+        self._request(self._select_region)
+
+    def _select_region(self) -> None:
+        """Freeze and show selection only after the previous input owner exits."""
         try:
             frozen = self._screens.freeze()
             windows = list(self._windows.visible_windows(exclude=frozenset()))
         except AppError as err:
             self._fail(err)
             return
+        if self._cancelled_start:
+            return
         self._frozen = frozen
+        self._deactivated = False
+        app = QApplication.instance()
+        if isinstance(app, QApplication):
+            self._watching = app
+            app.installEventFilter(self)
         screens = QGuiApplication.screens()
         # One selection across every monitor, so a drag can span them
         shared = SharedSelection([ScreenGeometry.from_screen(s) for s in screens])
@@ -110,7 +130,11 @@ class CaptureService(QObject):
         self._activate_under_cursor()
 
     def capture_fullscreen(self) -> None:
-        """Capture the monitor under the cursor immediately."""
+        """Capture the monitor under the cursor after handing off input."""
+        self._request(self._capture_fullscreen)
+
+    def _capture_fullscreen(self) -> None:
+        """Capture the cursor monitor once no transient UI owns input."""
         screen = (
             QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
         )
@@ -122,11 +146,15 @@ class CaptureService(QObject):
             self._fail(err)
             return
         area = area.rounded().intersected(frozen.bounds)
-        self._emit(image, CaptureMode.FULLSCREEN, area, "Screen")
-        self._last_area = None  # Repeat captures whichever monitor has the cursor
+        if self._emit(image, CaptureMode.FULLSCREEN, area, "Screen"):
+            self._last_area = None  # Repeat resolves the cursor's monitor again
 
     def capture_active_window(self) -> None:
-        """Capture the foreground window immediately."""
+        """Capture the foreground window after handing off input."""
+        self._request(self._capture_active_window)
+
+    def _capture_active_window(self) -> None:
+        """Capture the foreground window once the request owns input."""
         try:
             frozen = self._screens.freeze()
             window = self._windows.foreground()
@@ -138,18 +166,22 @@ class CaptureService(QObject):
             self._fail(err)
             return
         area = window.bounds.rounded().intersected(frozen.bounds)
-        self._emit(image, CaptureMode.WINDOW, area, window.title)
-        self._last_area = None  # Repeat re-captures whichever window is active
+        if self._emit(image, CaptureMode.WINDOW, area, window.title):
+            self._last_area = None  # Repeat resolves the foreground window again
 
     def repeat_last(self) -> None:
         """Repeat the last capture without asking (UX-CAP-09)."""
+        self._request(self._repeat_last)
+
+    def _repeat_last(self) -> None:
+        """Resolve repeat after completing the same input handoff as new captures."""
         mode, area = self._last_mode, self._last_area
         if mode is None:
-            self.capture_region()
+            self._select_region()
         elif mode is CaptureMode.FULLSCREEN:
-            self.capture_fullscreen()
+            self._capture_fullscreen()
         elif area is None:
-            self.capture_active_window()
+            self._capture_active_window()
         else:
             try:
                 frozen = self._screens.freeze()
@@ -194,8 +226,107 @@ class CaptureService(QObject):
 
     # Internals
 
-    def _emit(self, image: QImage, mode: CaptureMode, area: Rect, title: str) -> None:
-        """Record for repeat and emit the capture."""
+    def _request(self, start: Callable[[], None]) -> None:
+        """Acquire capture input before freezing or showing any overlay.
+
+        Qt routes native input to active popups regardless of which window
+        is raised. A popup must close and its dispatch unwind before capture
+        begins; changing activation alone cannot transfer that ownership.
+        """
+        if self.is_selecting:
+            self._activate_under_cursor()
+            return
+        self._pending = start
+        popup = QApplication.activePopupWidget()
+        mouse, keyboard = QWidget.mouseGrabber(), QWidget.keyboardGrabber()
+        # Close this application's popup stack through Qt, which releases its
+        # implicit/native grabs and unwinds QMenu.exec without affecting dialogs.
+        dismissed: list[QWidget] = []
+        while popup is not None:
+            if popup in dismissed or not popup.close():
+                self._fail(CaptureError("Close the open popup before capturing"))
+                return
+            dismissed.append(popup)
+            popup = QApplication.activePopupWidget()
+        if mouse is not None:
+            mouse.releaseMouse()
+        if keyboard is not None:
+            keyboard.releaseKeyboard()
+        # A zero-delay queued turn is an event-loop boundary, not a timing guess.
+        # Qt close handlers may have cancelled the request reentrantly.
+        if self.is_selecting:
+            self._handoff.start(0)
+
+    def _start_pending(self) -> None:
+        """Start one request only when Qt's previous input owner has released it."""
+        start, self._pending = self._pending, None
+        if start is None:
+            return
+        if (
+            QApplication.activePopupWidget() is not None
+            or QWidget.mouseGrabber() is not None
+            or QWidget.keyboardGrabber() is not None
+        ):
+            self._fail(
+                CaptureError("Another window is holding input; try capturing again")
+            )
+            return
+        self._starting = True
+        self._cancelled_start = False
+        try:
+            start()
+        finally:
+            self._starting = False
+            if self._cancelled_start:
+                self._close_overlays()
+
+    @override
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        """Recheck the selection's input lease after Qt settles an owner change."""
+        del watched
+        if event.type() == QEvent.Type.ApplicationDeactivate:
+            self._deactivated = True
+        elif event.type() == QEvent.Type.ApplicationActivate:
+            self._deactivated = False
+        if self._overlays and event.type() in {
+            QEvent.Type.WindowActivate,
+            QEvent.Type.ApplicationActivate,
+            QEvent.Type.ApplicationDeactivate,
+            QEvent.Type.GrabMouse,
+            QEvent.Type.GrabKeyboard,
+            QEvent.Type.Show,
+        }:
+            self._input_check.start(0)
+        return False
+
+    def _check_input_owner(self) -> None:
+        """Cancel instead of stranding a selection that no longer owns input."""
+        if not self._overlays:
+            return
+        focus, active = QGuiApplication.focusWindow(), QApplication.activeWindow()
+        owns_focus = any(
+            focus is overlay.windowHandle() or active is overlay
+            for overlay in self._overlays
+        )
+        lost_focus = self._deactivated or (
+            not owns_focus and (focus is not None or active is not None)
+        )
+        owners = (QWidget.mouseGrabber(), QWidget.keyboardGrabber())
+        owns_grabs = all(
+            owner is None
+            or any(
+                owner is overlay or overlay.isAncestorOf(owner)
+                for overlay in self._overlays
+            )
+            for owner in owners
+        )
+        if lost_focus or not owns_grabs or QApplication.activePopupWidget() is not None:
+            self._on_cancel()
+
+    def _emit(self, image: QImage, mode: CaptureMode, area: Rect, title: str) -> bool:
+        """Commit repeat history and emit only a still-valid capture result."""
+        if self._cancelled_start:
+            return False
         self._last_mode = mode
         self._last_area = area
         self._last_title = title
@@ -209,6 +340,7 @@ class CaptureService(QObject):
                 taken_at=datetime.now().astimezone(),
             )
         )
+        return True
 
     def _fail(self, err: AppError) -> None:
         """Report a capture failure."""
@@ -217,10 +349,18 @@ class CaptureService(QObject):
         self.failed.emit(str(err))
 
     def _close_overlays(self) -> None:
-        """Hide and delete every overlay."""
+        """End the input lease, including pending work and every sibling overlay."""
+        if self._starting:
+            self._cancelled_start = True
+        self._handoff.stop()
+        self._input_check.stop()
+        self._pending = None
+        if self._watching is not None:
+            self._watching.removeEventFilter(self)
+            self._watching = None
         overlays, self._overlays = self._overlays, []
         for overlay in overlays:
-            overlay.close()
+            overlay.dismiss()
         self._frozen = None
 
     def _activate_under_cursor(self) -> None:
