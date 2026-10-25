@@ -182,7 +182,9 @@ def test_two_stationary_end_observations_are_required(tmp_path: Path) -> None:
         assert session.state is ScrollState.PAUSED
         session.submit(Documents.frame(session, viewport, 2, at_end=True))
         assert session.state is ScrollState.REVIEW
-        assert session.accept().completeness is CaptureCompleteness.REPORTED_END
+        accepted = session.accept()
+        assert accepted.completeness is CaptureCompleteness.COMPLETE
+        assert accepted.stop_reason == StopReason.REPORTED_END.value
     finally:
         session.close()
 

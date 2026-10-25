@@ -228,7 +228,7 @@ class ScrollSession:
             raise CaptureError("A capture must be in review before delivery")
         image = self._store.materialize()
         completeness = (
-            CaptureCompleteness.REPORTED_END
+            CaptureCompleteness.COMPLETE
             if result.stop_reason is StopReason.REPORTED_END
             else CaptureCompleteness.PARTIAL
         )
