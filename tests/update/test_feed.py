@@ -10,7 +10,6 @@ from PySide6.QtCore import QUrl
 from PySide6.QtNetwork import QHostAddress, QTcpServer
 from pytestqt.qtbot import QtBot
 
-import verdiclip.update.feed as feed_module
 from verdiclip.update.feed import ReleaseFeed, ReleaseVersion
 
 
@@ -93,7 +92,7 @@ class TestReleaseFeed:
         """A silent HTTP server must not strand checking state or block retry."""
         server = QTcpServer()
         assert server.listen(QHostAddress.SpecialAddress.LocalHost)
-        monkeypatch.setattr(feed_module, "FETCH_TIMEOUT_MS", 30)
+        monkeypatch.setattr("verdiclip.update.feed.FETCH_TIMEOUT_MS", 30)
         feed = ReleaseFeed(f"http://127.0.0.1:{server.serverPort()}/release")
         with qtbot.waitSignal(feed.failed) as failed:
             feed.fetch()
@@ -102,7 +101,7 @@ class TestReleaseFeed:
         )
         assert not feed.busy, "Timeout must release the request for retry"
         # Use a generous deadline on the retry and serve a complete HTTP reply.
-        monkeypatch.setattr(feed_module, "FETCH_TIMEOUT_MS", 2000)
+        monkeypatch.setattr("verdiclip.update.feed.FETCH_TIMEOUT_MS", 2000)
         while server.hasPendingConnections():
             server.nextPendingConnection().close()
 
