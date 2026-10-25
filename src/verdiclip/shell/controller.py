@@ -256,7 +256,10 @@ class AppController(QObject):
 
     def _deliver_scroll_review(self, result: ReviewedCapture) -> None:
         try:
-            self.deliver_reviewed_capture(result)
+            if result.capture_id in self._pending_deliveries:
+                self.retry_delivery(result.capture_id)
+            else:
+                self.deliver_reviewed_capture(result)
         except (AppError, RuntimeError, ValueError, MemoryError) as error:
             self._scroll_reviews.delivery_failed(result.capture_id, str(error))
             self._notify("Capture retained for retry", str(error), warning=True)

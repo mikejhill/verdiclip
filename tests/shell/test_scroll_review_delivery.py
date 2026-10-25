@@ -372,3 +372,47 @@ def test_new_unaccepted_review_during_close_restores_previously_approved_tabs(
         for panel in panels:
             panel.close()
     assert app.controller._close_editors()
+
+
+def test_panel_retry_uses_repaired_output_folder_without_changing_capture(
+    factory: AppFactory,
+    qtbot: QtBot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Panel and tray retry honor the same current output configuration."""
+    app = factory(
+        replace(
+            Settings(), capture=CaptureSettings(save_to_file=True, open_editor=False)
+        )
+    )
+    run = stopped(tmp_path / "spool")
+    panel = app.controller.review_scrolling_capture(run.session)
+    qtbot.addWidget(panel)
+    original = ImageDelivery.save
+
+    def fail(*_args: object) -> Path:
+        raise DeliveryError("Original folder unavailable")
+
+    monkeypatch.setattr(ImageDelivery, "save", fail)
+    Controls.button(panel, "whole").click()
+    capture = app.controller.pending_deliveries[0]
+    repaired = tmp_path / "repaired-output"
+    app.controller.apply_settings(
+        replace(
+            app.controller.settings,
+            output=replace(app.controller.settings.output, directory=repaired),
+        )
+    )
+    monkeypatch.setattr(ImageDelivery, "save", original)
+    Controls.button(panel, "Retry").click()
+    assert run.session.state is ScrollState.CLOSED
+    assert not app.controller.pending_deliveries
+    paths = list(repaired.glob("*.png"))
+    assert len(paths) == 1
+    assert (
+        QImage(str(paths[0])).convertToFormat(capture.image.format()) == capture.image
+    )
+    assert not list((tmp_path / "out").glob("*.png"))
+    assert not app.controller.editors
+    assert app.controller._close_editors()
