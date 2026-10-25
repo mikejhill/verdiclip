@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Iterator
 from pathlib import Path
+from textwrap import indent
 
 import pytest
 from pytestqt.qtbot import QtBot
@@ -22,11 +24,12 @@ from verdiclip.geometry import Point
 
 
 @pytest.fixture
-def adapter(tmp_path: Path) -> UiaAdapter:
+def adapter(tmp_path: Path, qtbot: QtBot) -> Iterator[UiaAdapter]:
     """Use a fake provider with real asynchronous transport and typed decoding."""
     helper = tmp_path / "typed_peer.py"
-    helper.write_text(
+    code = (
         "import json,sys\n"
+        "print(json.dumps({'ready':True,'protocol':1}),flush=True)\n"
         "request=json.load(sys.stdin)\n"
         f"discovery=json.loads({json.dumps(Payload.discovery(Payload.nodes()))!r})\n"
         "action=request['action']; payload=request['payload']\n"
@@ -39,13 +42,24 @@ def adapter(tmp_path: Path) -> UiaAdapter:
         "  reference['vertical_percent']=payload['restore_percent']\n"
         " if reference['runtime_id']=='bad': reference['runtime_id']='replaced'\n"
         " result={'reference':reference,'at_end':reference['vertical_percent']>=100}\n"
-        "print(json.dumps({'request_id':request['request_id'],'ok':True,'result':result}))\n",
+        "print(json.dumps({'request_id':request['request_id'],'ok':True,'result':result}))\n"
+    )
+    header, _, body = code.partition("request=json.load(sys.stdin)\n")
+    helper.write_text(
+        header
+        + "for line in sys.stdin:\n request=json.loads(line)\n"
+        + indent(body, " ")
+        + " sys.stdout.flush()\n",
         encoding="utf-8",
     )
     process = UiaProcess(helper_command=(sys.executable, str(helper)), qualified=True)
     client = UiaAdapter(process=process)
     client.failed.connect(lambda _request, message: sys.stderr.write(message + "\n"))
-    return client
+    yield client
+    client.cancel()
+    qtbot.waitUntil(lambda: not client.busy)
+    client.deleteLater()
+    process.deleteLater()
 
 
 def test_discovery_is_read_only_and_returns_typed_candidates(

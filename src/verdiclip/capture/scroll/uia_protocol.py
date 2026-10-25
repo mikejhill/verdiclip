@@ -234,3 +234,25 @@ class UiaObservation:
         if end != (reference.vertical_percent >= PERCENT_MAX):
             raise ValueError("UI Automation end evidence is inconsistent")
         return cls(reference, end)
+
+
+@dataclass(frozen=True, slots=True)
+class UiaSample:
+    """A validated file receipt; callers open only their own expected path."""
+
+    observation: UiaObservation
+    viewport: Rect
+    image_path: str
+
+    @classmethod
+    def decode(
+        cls, reply: object, expected: UiaReference, *, viewport: Rect, image_path: str
+    ) -> UiaSample:
+        """Match actual target, physical ROI and exact private-file destination."""
+        observation = UiaObservation.decode(reply, expected)
+        result = Fields.get(reply, "result")
+        actual_area = Fields.bounds(Fields.get(result, "viewport"))
+        actual_path = Fields.text(Fields.get(result, "image_path"))
+        if actual_area != viewport or actual_path != image_path:
+            raise ValueError("Capture helper returned an unrelated viewport or file")
+        return cls(observation, actual_area, actual_path)

@@ -1,53 +1,37 @@
-"""Deadline-isolated UIA helper transport with no GUI-thread provider calls."""
+"""GUI facade for a deadline-bounded, reusable MTA process lease."""
 
 from __future__ import annotations
 
 import json
 import os
 import sys
-from collections.abc import Sequence
-from dataclasses import dataclass
-from enum import StrEnum
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from uuid import uuid4
 
-from PySide6.QtCore import QCoreApplication, QObject, QProcess, QTimer, Signal
+from PySide6.QtCore import QCoreApplication, QObject, Signal
 
+from verdiclip.capture.scroll.uia_messages import UiaAction, UiaRequest
+from verdiclip.capture.scroll.uia_worker import UiaWorkerLease
 from verdiclip.exceptions import CaptureError
 
 
-class UiaAction(StrEnum):
-    """The helper has no invoke, click, activation or arbitrary script command."""
-
-    INSPECT = "inspect"
-    OBSERVE = "observe"
-    STEP = "step"
-    RESTORE = "restore"
-
-
-@dataclass(frozen=True, slots=True)
-class UiaRequest:
-    """Correlate one immutable bounded JSON operation with its completion."""
-
-    identity: str
-    action: UiaAction
-    encoded: bytes
-
-
 class UiaProcess(QObject):
-    """Own one short-lived MTA helper, killing only that child on deadline.
+    """Reuse one helper during explicit capture without coupling it to a widget.
 
-    A provider may finish an already-dispatched action after a timeout. Failure
-    therefore has an unknown native outcome and must stop acquisition; callers
-    must not automatically retry movement. Native qualification is opt-in and
-    remains disabled by default until preservation tests pass.
+    Destroying this facade releases its application-owned lease. Native actions
+    already dispatched may finish after cancellation, so no failed movement is
+    automatically retried. Native launch stays unqualified by default.
     """
 
-    completed = Signal(object, object)  # UiaRequest, bounded decoded JSON object
-    failed = Signal(object, str)  # UiaRequest, reason
+    completed = Signal(object, object)
+    failed = Signal(object, str)
     busy_changed = Signal(bool)
+    scope_closed = Signal()
+    cleanup_failed = Signal(str)
     MAX_BYTES = 65_536
     DEADLINE_MS = 3000
+    STARTUP_MS = 8000
 
     def __init__(
         self,
@@ -56,24 +40,24 @@ class UiaProcess(QObject):
         helper_command: Sequence[str] | None = None,
         qualified: bool = False,
     ) -> None:
-        """Permit a fixed helper command override for protocol-only fixture tests."""
+        """Allow a fixed protocol fixture command without native desktop execution."""
         super().__init__(parent)
         self._qualified = qualified
         self._command = tuple(helper_command) if helper_command is not None else ()
-        self._process: QProcess | None = None
-        self._pending: UiaRequest | None = None
-        self._output = bytearray()
-        self._timer = QTimer(self)
-        self._timer.setSingleShot(True)
-        self._timer.timeout.connect(self._timeout)
+        self._lease: UiaWorkerLease | None = None
 
     @property
     def busy(self) -> bool:
-        """A terminating child still owns its slot until Qt reports completion."""
-        return self._process is not None
+        """A warm idle helper is reusable; a terminating slot remains reserved."""
+        return self._lease is not None and self._lease.busy
+
+    @property
+    def worker_pid(self) -> int | None:
+        """Expose only the owned helper PID for lifetime/provenance checks."""
+        return self._lease.worker_pid if self._lease is not None else None
 
     def start(self, action: UiaAction, payload: dict[str, object]) -> UiaRequest:
-        """Start one bounded operation; requests never become shell expressions."""
+        """Reserve one request before asynchronous startup/provider callbacks."""
         if self.busy:
             raise CaptureError("The UI Automation helper is still busy")
         if not self._qualified:
@@ -92,32 +76,33 @@ class UiaProcess(QObject):
             raise CaptureError("UI Automation request exceeds its size limit")
         request = UiaRequest(identity, action, encoded)
         command = self._command or self._default_command()
-        process = QProcess(self)
-        self._process, self._pending = process, request
-        self._output.clear()
-        process.started.connect(lambda: self._send(process, request))
-        process.readyReadStandardOutput.connect(lambda: self._read(process))
-        process.readyReadStandardError.connect(lambda: self._drain_error(process))
-        process.errorOccurred.connect(lambda error: self._error(process, error))
-        process.finished.connect(
-            lambda code, status: self._finished(process, code, status)
+        lease = self._get_lease()
+        lease.submit(
+            request, command, deadline_ms=self.DEADLINE_MS, startup_ms=self.STARTUP_MS
         )
-        self._timer.start(self.DEADLINE_MS)
-        QTimer.singleShot(0, lambda: self._launch(process, request, command))
         return request
 
-    def _launch(
-        self, process: QProcess, request: UiaRequest, command: tuple[str, ...]
-    ) -> None:
-        """Defer startup so callers can reserve request identity before callbacks."""
-        if process is self._process and request is self._pending:
-            self.busy_changed.emit(self.busy)
-            if process is self._process and request is self._pending:
-                process.start(command[0], list(command[1:]))
+    def _get_lease(self) -> UiaWorkerLease:
+        """Only an application event loop may own asynchronous process resources."""
+        if QCoreApplication.instance() is None:
+            raise CaptureError("UI Automation requires an application event loop")
+        if self._lease is None:
+            self._lease = UiaWorkerLease()
+            self._lease.completed.connect(self.completed)
+            self._lease.failed.connect(self.failed)
+            self._lease.busy_changed.connect(self.busy_changed)
+            self._lease.scope_closed.connect(self.scope_closed)
+            self._lease.cleanup_failed.connect(self.cleanup_failed)
+            self.destroyed.connect(self._lease.release)
+        return self._lease
+
+    def register_scope_cleanup(self, cleanup: Callable[[], None]) -> None:
+        """Bind private file cleanup to actual worker termination, not GUI lifetime."""
+        self._get_lease().register_cleanup(cleanup)
 
     @staticmethod
     def _default_command() -> tuple[str, ...]:
-        """Use Windows' installed host without profile or policy bypass options."""
+        """Use the installed Windows host without profile or policy bypass flags."""
         if sys.platform != "win32":
             raise CaptureError("Automatic scrolling requires Windows UI Automation")
         system = Path(os.environ.get("SYSTEMROOT", r"C:\Windows"))
@@ -134,102 +119,7 @@ class UiaProcess(QObject):
             str(helper),
         )
 
-    def _send(self, process: QProcess, request: UiaRequest) -> None:
-        """Send data through stdin only to the original owned child."""
-        if process is self._process and request is self._pending:
-            process.write(request.encoded)
-            process.closeWriteChannel()
-
-    def _read(self, process: QProcess) -> None:
-        """Bound accumulated stdout even if an unexpected host floods output."""
-        if process is not self._process or self._pending is None:
-            return
-        data = process.readAllStandardOutput().data()
-        if len(self._output) + len(data) > self.MAX_BYTES:
-            self._fail("UI Automation returned too much data; capture stopped")
-        else:
-            self._output.extend(data)
-
-    def _drain_error(self, process: QProcess) -> None:
-        """Do not expose provider exception text or accumulate unbounded stderr."""
-        if process is not self._process:
-            return
-        if process.readAllStandardError().size() > self.MAX_BYTES:
-            self._fail("UI Automation helper exceeded its diagnostic limit")
-
-    def _error(self, process: QProcess, error: QProcess.ProcessError) -> None:
-        """Failed startup has no finished signal, so release its ownership here."""
-        if process is not self._process:
-            return
-        if error is QProcess.ProcessError.FailedToStart:
-            self._fail("UI Automation helper could not start")
-            self._dispose(process)
-
-    def _finished(
-        self, process: QProcess, code: int, status: QProcess.ExitStatus
-    ) -> None:
-        """Reject malformed, foreign, failed or duplicate provider completions."""
-        self._read(process)
-        request = self._pending
-        if process is self._process and request is not None:
-            if code != 0 or status is not QProcess.ExitStatus.NormalExit:
-                self._fail("UI Automation did not complete; the target may have moved")
-            else:
-                reply = self._decode(request)
-                if reply is not None:
-                    self._dispose(process)
-                    self.completed.emit(request, reply)
-                    return
-        self._dispose(process)
-
-    def _decode(self, request: UiaRequest) -> object | None:
-        """Admit one correctly correlated JSON object, without trusting its schema."""
-        try:
-            reply: object = json.loads(self._output.decode("utf-8-sig"))
-        except (ValueError, RecursionError):
-            self._fail("UI Automation returned an unreadable response")
-            return None
-        if not isinstance(reply, dict) or reply.get("request_id") != request.identity:
-            self._fail("UI Automation returned an unrelated response")
-            return None
-        if reply.get("ok") is not True:
-            self._fail("This scroll area is unavailable or changed; capture stopped")
-            return None
-        self._pending = None
-        self._timer.stop()
-        return reply
-
-    def _timeout(self) -> None:
-        """A silent/hung provider cannot leave progress permanently active."""
-        self._fail(
-            "UI Automation timed out; capture stopped and the target may have moved"
-        )
-
-    def _fail(self, message: str) -> None:
-        """Invalidate before callbacks and kill only this transport's child."""
-        request, self._pending = self._pending, None
-        self._timer.stop()
-        if self._process is not None:
-            if self._process.state() is QProcess.ProcessState.NotRunning:
-                self._dispose(self._process)
-            else:
-                self._process.kill()
-        if request is not None:
-            self.failed.emit(request, message)
-
-    def _dispose(self, process: QProcess) -> None:
-        """Keep QProcess alive through its terminal signal before deferred delete."""
-        if process is not self._process:
-            return
-        # Releasing a child's signal lambdas can drop the last Python owner
-        # reference. It must not recursively delete this child before its
-        # scheduled DeferredDelete and queued startup callback have unwound.
-        process.setParent(QCoreApplication.instance())
-        self._process = None
-        self._timer.stop()
-        process.deleteLater()
-        self.busy_changed.emit(self.busy)
-
     def cancel(self) -> None:
-        """Stop future delivery; already-dispatched native movement is uncertain."""
-        self._fail("Scrolling capture was cancelled; no further work will be issued")
+        """End only this helper scope, preserving the facade for safe retry."""
+        if self._lease is not None:
+            self._lease.cancel()

@@ -1,19 +1,22 @@
-# One bounded UI Automation operation in a short-lived MTA process.
+# Bounded JSON-line operations in one warm MTA with a finite parent-owned lease.
 # No clicks, InvokePattern, activation, policy changes, or input injection.
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-$requestId = ''
-try {
-    $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
-    $requestId = [string]$request.request_id
-    if ($requestId -notmatch '^[a-f0-9]{32}$') { throw 'invalid_request' }
-    if ($request.action -notin @('inspect', 'observe', 'step', 'restore')) {
-        throw 'unsupported_action'
+function Test-OwnedScrollMetrics {
+    param([double]$Position, [double]$ViewSize, $Reference)
+    $expectedPosition = [double]$Reference.vertical_percent
+    $expectedViewSize = [double]$Reference.view_size
+    foreach ($value in @($Position, $ViewSize, $expectedPosition, $expectedViewSize)) {
+        if ([double]::IsNaN($value) -or [double]::IsInfinity($value)) { return $false }
     }
+    return $Position -ge 0 -and $Position -le 100 -and $ViewSize -gt 0 -and $ViewSize -lt 100 -and $expectedViewSize -gt 0 -and $expectedViewSize -lt 100 -and [Math]::Abs($Position - $expectedPosition) -le 0.001 -and [Math]::Abs($ViewSize - $expectedViewSize) -le 0.001
+}
+try {
     Add-Type -AssemblyName UIAutomationClient
     Add-Type -AssemblyName UIAutomationTypes
     Add-Type -AssemblyName WindowsBase
+    Add-Type -AssemblyName System.Drawing
     Add-Type -TypeDefinition @'
 using System;
 using System.Text;
@@ -25,6 +28,7 @@ public static class CaptureDesktop {
     [DllImport("user32.dll")] static extern IntPtr GetTopWindow(IntPtr window);
     [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr window, uint command);
     [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr window, out Rectangle rectangle);
+    [DllImport("user32.dll", SetLastError=true)] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
     [DllImport("user32.dll", SetLastError=true)] static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
     [DllImport("user32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool GetUserObjectInformation(IntPtr handle, int index, StringBuilder value, uint size, out uint needed);
     [DllImport("user32.dll")] static extern bool CloseDesktop(IntPtr handle);
@@ -54,6 +58,25 @@ public static class CaptureDesktop {
     }
 }
 '@
+} catch {
+    @{ request_id=''; ok=$false; error='worker_startup_unavailable' } | ConvertTo-Json -Compress
+    exit 1
+}
+# Reuse this MTA only while the parent's finite active/idle lease remains alive.
+@{ ready=$true; protocol=1 } | ConvertTo-Json -Compress
+while ($null -ne ($requestLine = [Console]::ReadLine())) {
+    $requestId = ''
+    $process = $null
+    $dpiContext = [IntPtr]::Zero
+try {
+    $request = $requestLine | ConvertFrom-Json
+    $requestId = [string]$request.request_id
+    if ($requestId -notmatch '^[a-f0-9]{32}$') { throw 'invalid_request' }
+    if ($request.action -notin @('inspect', 'observe', 'sample', 'step', 'restore')) {
+        throw 'unsupported_action'
+    }
+    $dpiContext = [CaptureDesktop]::SetThreadDpiAwarenessContext([IntPtr]::new(-4))
+    if ($dpiContext -eq [IntPtr]::Zero) { throw 'physical_pixel_context_unavailable' }
     if (-not [CaptureDesktop]::Interactive()) { throw 'interactive_desktop_unavailable' }
     $payload = $request.payload
     $handle = [IntPtr]([long]$payload.window_handle)
@@ -133,15 +156,25 @@ public static class CaptureDesktop {
         if ($null -eq $element -or ((Get-Bounds $element) -join ',') -ne ($bounds -join ',')) { throw 'target_geometry_changed' }
         $pattern = Get-Scroll $element
         if ($null -eq $pattern -or $element.Current.IsOffscreen -or -not $element.Current.IsEnabled) { throw 'unsupported_scroll_area' }
+        $area = $bounds
+        if ($null -ne $payload.viewport) {
+            $area = @($payload.viewport)
+            if ($area.Count -ne 4) { throw 'invalid_viewport' }
+            foreach ($coordinate in $area) {
+                $number = [double]$coordinate
+                if ([double]::IsNaN($number) -or [double]::IsInfinity($number) -or $number -ne [Math]::Round($number)) { throw 'invalid_viewport' }
+            }
+            if ($area[2] -le 0 -or $area[3] -le 0 -or [double]$area[2] * $area[3] -gt 16000000 -or $area[0] -lt $bounds[0] -or $area[1] -lt $bounds[1] -or $area[0] + $area[2] -gt $bounds[0] + $bounds[2] -or $area[1] + $area[3] -gt $bounds[1] + $bounds[3]) { throw 'viewport_outside_target' }
+        }
         # Full-area top-level occlusion refusal, not sampled-point inference.
         # In-process/custom composited overlays still require native qualification;
         # this is not a claim of universal semantic visibility.
-        if (-not [CaptureDesktop]::Unoccluded($handle, [int]$bounds[0], [int]$bounds[1], [int]$bounds[2], [int]$bounds[3])) { throw 'target_occluded_or_uncertain' }
+        if (-not [CaptureDesktop]::Unoccluded($handle, [int]$area[0], [int]$area[1], [int]$area[2], [int]$area[3])) { throw 'target_occluded_or_uncertain' }
         $position = [double]$pattern.Current.VerticalScrollPercent
         $view = [double]$pattern.Current.VerticalViewSize
         if ([double]::IsNaN($position) -or [double]::IsNaN($view) -or $position -lt 0 -or $position -gt 100 -or $view -le 0 -or $view -ge 100) { throw 'unsupported_scroll_metrics' }
         if ($request.action -in @('step', 'restore')) {
-            if ($payload.confirmed -isnot [bool] -or -not $payload.confirmed -or [Math]::Abs($position - [double]$reference.vertical_percent) -gt 0.001) { throw 'scroll_interference_or_unconfirmed' }
+            if ($payload.confirmed -isnot [bool] -or -not $payload.confirmed -or -not (Test-OwnedScrollMetrics $position $view $reference)) { throw 'scroll_interference_or_unconfirmed' }
             if ($request.action -eq 'restore') {
                 $destination = [double]$payload.restore_percent
                 if ($destination -lt 0 -or $destination -gt 100 -or [double]::IsNaN($destination)) { throw 'invalid_restore_position' }
@@ -153,10 +186,37 @@ public static class CaptureDesktop {
         }
         $updated = Get-Reference $element $pattern
         $result = @{ reference=$updated; at_end=($updated.vertical_percent -ge 100) }
+        if ($request.action -eq 'sample') {
+            if ($payload.confirmed -isnot [bool] -or -not $payload.confirmed -or $null -eq $payload.viewport) { throw 'capture_unconfirmed' }
+            $output = [IO.Path]::GetFullPath([string]$payload.image_path)
+            $directory = [IO.Path]::GetDirectoryName($output)
+            $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+            if (-not $output.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase) -or [IO.Path]::GetFileName($output) -ne 'frame.png' -or [IO.Path]::GetFileName($directory) -notmatch '^verdiclip-frame-[a-zA-Z0-9_-]+$' -or [IO.File]::Exists($output)) { throw 'invalid_frame_destination' }
+            $folder = Get-Item -LiteralPath $directory
+            if (-not $folder.PSIsContainer -or ($folder.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'invalid_frame_directory' }
+            $bitmap = $null
+            $graphics = $null
+            try {
+                $bitmap = [Drawing.Bitmap]::new([int]$area[2], [int]$area[3], [Drawing.Imaging.PixelFormat]::Format32bppRgb)
+                $graphics = [Drawing.Graphics]::FromImage($bitmap)
+                $graphics.CopyFromScreen([int]$area[0], [int]$area[1], 0, 0, [Drawing.Size]::new([int]$area[2], [int]$area[3]), [Drawing.CopyPixelOperation]::SourceCopy)
+                $bitmap.Save($output, [Drawing.Imaging.ImageFormat]::Png)
+            } finally {
+                if ($null -ne $graphics) { $graphics.Dispose() }
+                if ($null -ne $bitmap) { $bitmap.Dispose() }
+            }
+            if ([IO.FileInfo]::new($output).Length -gt ([double]$area[2] * $area[3] * 4 + 1048576)) { throw 'encoded_frame_exceeds_budget' }
+            $result.viewport = $area
+            $result.image_path = $output
+        }
     }
     @{ request_id=$requestId; ok=$true; result=$result } | ConvertTo-Json -Depth 12 -Compress
 } catch {
     # Provider text may contain document content. Return only a bounded generic code.
     @{ request_id=$requestId; ok=$false; error='unsupported_or_changed' } | ConvertTo-Json -Compress
-    exit 1
+}
+finally {
+    if ($null -ne $process) { $process.Dispose(); $process = $null }
+    if ($dpiContext -ne [IntPtr]::Zero) { [CaptureDesktop]::SetThreadDpiAwarenessContext($dpiContext) | Out-Null }
+}
 }

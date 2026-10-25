@@ -12,7 +12,12 @@ from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer
 from verdiclip.capture.scroll.uia_process import UiaAction, UiaProcess
 
 app = QCoreApplication([])
-peer = (sys.executable, "-c", "import json,sys; json.load(sys.stdin); sys.exit(3)")
+peer = (
+    sys.executable, "-c",
+    "import json,sys; "
+    "print(json.dumps({'ready':True,'protocol':1}),flush=True); "
+    "json.loads(sys.stdin.readline()); sys.exit(3)",
+)
 
 def discard_before_start():
     owner = UiaProcess(helper_command=peer, qualified=True)
