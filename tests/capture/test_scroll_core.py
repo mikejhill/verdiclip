@@ -259,6 +259,19 @@ def test_acceptance_requires_explicit_review(tmp_path: Path) -> None:
         session.close()
 
 
+def test_repeated_acceptance_reuses_the_same_canonical_result(tmp_path: Path) -> None:
+    """A duplicate producer callback cannot mint another output or document ID."""
+    session, _ = Documents.start(tmp_path)
+    try:
+        session.stop()
+        first = session.accept()
+        second = session.accept()
+        assert second is first
+        assert second.capture_id == first.capture_id
+    finally:
+        session.close()
+
+
 def test_renumbered_old_sequence_with_new_time_is_ignored(tmp_path: Path) -> None:
     """A retry cannot replace sequence identity merely by updating its timestamp."""
     session, source = Documents.start(tmp_path)

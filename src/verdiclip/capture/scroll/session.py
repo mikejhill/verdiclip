@@ -63,6 +63,7 @@ class ScrollSession:
         self._taken_at: datetime | None = None
         self._result: ScrollResult | None = None
         self._pause_reason: StopReason | None = None
+        self._accepted: ReviewedCapture | None = None
 
     @property
     def token(self) -> int:
@@ -218,6 +219,8 @@ class ScrollSession:
 
     def accept(self) -> ReviewedCapture:
         """Materialize an accepted image; large captures stay in review on error."""
+        if self._state is ScrollState.DELIVERED and self._accepted is not None:
+            return self._accepted
         result, target, taken_at = self._result, self._target, self._taken_at
         if (
             self._state is not ScrollState.REVIEW
@@ -241,6 +244,7 @@ class ScrollSession:
             result.stop_reason.value,
         )
         self._state = ScrollState.DELIVERED
+        self._accepted = accepted
         return accepted
 
     def cancel(self) -> None:
@@ -248,6 +252,7 @@ class ScrollSession:
         self._token += 1
         self._previous = QImage()
         self._result = None
+        self._accepted = None
         try:
             self._store.close()
         finally:

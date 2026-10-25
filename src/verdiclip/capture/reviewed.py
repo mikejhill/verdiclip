@@ -25,18 +25,6 @@ class CaptureCompleteness(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
-class CaptureProvenance:
-    """Small document metadata that retains no image or acquisition resources."""
-
-    capture_id: str
-    title: str
-    created_at: datetime
-    source_kind: str
-    completeness: CaptureCompleteness
-    stop_reason: str | None
-
-
-@dataclass(frozen=True, slots=True)
 class ReviewedCapture:
     """Canonical reviewed-image delivery payload with stable retry identity.
 
@@ -48,10 +36,10 @@ class ReviewedCapture:
     image: QImage
     title: str
     created_at: datetime
-    source_kind: str
-    completeness: CaptureCompleteness = CaptureCompleteness.COMPLETE
+    source_kind: CaptureKind
+    completeness: CaptureCompleteness
     stop_reason: str | None = None
-    capture_id: str = field(default_factory=lambda: uuid4().hex)
+    capture_id: str = field(default_factory=lambda: uuid4().hex, kw_only=True)
 
     def __post_init__(self) -> None:
         """Detach producer ownership cheaply using Qt's copy-on-write image."""
@@ -59,21 +47,12 @@ class ReviewedCapture:
             raise ValueError("A reviewed capture must contain pixels")
         if self.created_at.utcoffset() is None:
             raise ValueError("Capture timestamps must include a timezone")
-        if not self.capture_id.strip() or not self.source_kind.strip():
-            raise ValueError("A reviewed capture needs identity and source kind")
-        if self.completeness not in set(CaptureCompleteness):
-            raise ValueError("Unknown capture completeness")
-        object.__setattr__(self, "completeness", CaptureCompleteness(self.completeness))
+        if not self.capture_id.strip():
+            raise ValueError("A reviewed capture needs a nonempty capture identity")
+        if not isinstance(self.source_kind, CaptureKind):
+            raise TypeError("Capture source kind must be an actual CaptureKind member")
+        if not isinstance(self.completeness, CaptureCompleteness):
+            raise TypeError("Capture completeness must be an actual enum member")
+        if self.stop_reason is not None and not self.stop_reason.strip():
+            raise ValueError("A supplied stop reason must be nonempty")
         object.__setattr__(self, "image", QImage(self.image))
-
-    @property
-    def provenance(self) -> CaptureProvenance:
-        """Project accepted metadata without copying or retaining image pixels."""
-        return CaptureProvenance(
-            self.capture_id,
-            self.title,
-            self.created_at,
-            self.source_kind,
-            self.completeness,
-            self.stop_reason,
-        )
