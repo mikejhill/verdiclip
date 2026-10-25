@@ -66,6 +66,11 @@ class ScrollSession:
         self._accepted: ReviewedCapture | None = None
 
     @property
+    def limits(self) -> ScrollLimits:
+        """Expose immutable budgets so acquisition can refuse work before copying."""
+        return self._limits
+
+    @property
     def token(self) -> int:
         """Identify the only generation allowed to supply more observations."""
         return self._token
@@ -201,6 +206,41 @@ class ScrollSession:
         if self._state not in {ScrollState.CAPTURING, ScrollState.PAUSED}:
             raise CaptureError("Scrolling acquisition is not active")
         self._finish(self._pause_reason or StopReason.USER_STOP)
+
+    def interrupt(self, reason: StopReason) -> None:
+        """Keep verified pixels with explicit backend or safety failure evidence."""
+        if reason not in {
+            StopReason.ERROR,
+            StopReason.LIMIT,
+            StopReason.TARGET_CHANGED,
+            StopReason.UNCERTAIN,
+        }:
+            raise ValueError("Interruption cannot assert user intent or document end")
+        if self._state not in {ScrollState.CAPTURING, ScrollState.PAUSED}:
+            raise CaptureError("Scrolling acquisition is not active")
+        self._finish(reason)
+
+    def check_acquisition_budget(self, now: float, *, for_step: bool = False) -> bool:
+        """Stop before more target input when known time/output capacity is gone.
+
+        Observations do not count as committed frames: a provider end claim may
+        still be verified without scrolling. A step requires room for at least
+        one novel row. Actual displacement and disk writes retain independent
+        transactional guards because a provider cannot promise its pixel delta.
+        """
+        if not math.isfinite(now) or now < self._observed:
+            raise ValueError("Acquisition budget needs ordered finite time")
+        if self._state not in {ScrollState.CAPTURING, ScrollState.PAUSED}:
+            return False
+        elapsed = now - self._started >= self._limits.max_seconds
+        full = (
+            self._frames >= self._limits.max_frames
+            or self._store.width * (self._store.height + 1) > self._limits.max_pixels
+        )
+        if elapsed or (for_step and full):
+            self._finish(StopReason.LIMIT)
+            return False
+        return True
 
     def _finish(self, reason: StopReason) -> None:
         """End acquisition without deleting the reviewable committed prefix."""
