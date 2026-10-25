@@ -11,7 +11,7 @@ from enum import StrEnum
 from pathlib import Path
 from uuid import uuid4
 
-from PySide6.QtCore import QObject, QProcess, QTimer, Signal
+from PySide6.QtCore import QCoreApplication, QObject, QProcess, QTimer, Signal
 
 from verdiclip.exceptions import CaptureError
 
@@ -142,9 +142,9 @@ class UiaProcess(QObject):
 
     def _read(self, process: QProcess) -> None:
         """Bound accumulated stdout even if an unexpected host floods output."""
-        data = process.readAllStandardOutput().data()
         if process is not self._process or self._pending is None:
             return
+        data = process.readAllStandardOutput().data()
         if len(self._output) + len(data) > self.MAX_BYTES:
             self._fail("UI Automation returned too much data; capture stopped")
         else:
@@ -152,6 +152,8 @@ class UiaProcess(QObject):
 
     def _drain_error(self, process: QProcess) -> None:
         """Do not expose provider exception text or accumulate unbounded stderr."""
+        if process is not self._process:
+            return
         if process.readAllStandardError().size() > self.MAX_BYTES:
             self._fail("UI Automation helper exceeded its diagnostic limit")
 
@@ -217,11 +219,16 @@ class UiaProcess(QObject):
 
     def _dispose(self, process: QProcess) -> None:
         """Keep QProcess alive through its terminal signal before deferred delete."""
-        if process is self._process:
-            self._process = None
-            self._timer.stop()
-            self.busy_changed.emit(self.busy)
+        if process is not self._process:
+            return
+        # Releasing a child's signal lambdas can drop the last Python owner
+        # reference. It must not recursively delete this child before its
+        # scheduled DeferredDelete and queued startup callback have unwound.
+        process.setParent(QCoreApplication.instance())
+        self._process = None
+        self._timer.stop()
         process.deleteLater()
+        self.busy_changed.emit(self.busy)
 
     def cancel(self) -> None:
         """Stop future delivery; already-dispatched native movement is uncertain."""
