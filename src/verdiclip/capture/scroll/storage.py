@@ -212,17 +212,27 @@ class StripStore:
         """Check coordinate, pixel, dimension and conservative copy budgets."""
         if self._closed or top < 0 or height < 1 or top + height > self._height:
             raise CaptureError("Capture page is outside the stored range")
-        pixels = self._width * height
-        tile_pixels = max((s.width * s.height for s in self._strips), default=0)
-        allocation_estimate = pixels * 4 * 6 + tile_pixels * 4 * 2
-        if (
-            pixels > self._limits.max_flatten_pixels
-            or max(self._width, height) > self._limits.max_dimension
-            or allocation_estimate > self._limits.max_materialize_bytes
-        ):
+        if height > self.page_capacity:
             raise CaptureError(
                 "This capture is too large to flatten; choose smaller page slices"
             )
+
+    @property
+    def page_capacity(self) -> int:
+        """Return safe page rows using the actual committed decoded-tile budget."""
+        if self._closed or self._width < 1 or self._width > self._limits.max_dimension:
+            return 0
+        tile_pixels = max((s.width * s.height for s in self._strips), default=0)
+        available = self._limits.max_materialize_bytes - tile_pixels * 4 * 2
+        return max(
+            0,
+            min(
+                self._height,
+                self._limits.max_dimension,
+                self._limits.max_flatten_pixels // self._width,
+                available // (self._width * 4 * 6),
+            ),
+        )
 
     def _read(self, strip: StoredStrip) -> QImage:
         """Refuse missing, changed or incorrectly sized stored pixels."""

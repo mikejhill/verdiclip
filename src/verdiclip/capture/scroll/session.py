@@ -64,6 +64,7 @@ class ScrollSession:
         self._result: ScrollResult | None = None
         self._pause_reason: StopReason | None = None
         self._accepted: ReviewedCapture | None = None
+        self._accepted_range: tuple[int, int] | None = None
 
     @property
     def limits(self) -> ScrollLimits:
@@ -257,11 +258,22 @@ class ScrollSession:
             raise CaptureError("Capture pages are available during review")
         return self._store.materialize(top, height)
 
-    def accept(self) -> ReviewedCapture:
-        """Materialize an accepted image; large captures stay in review on error."""
-        if self._state is ScrollState.DELIVERED and self._accepted is not None:
-            return self._accepted
+    def page_rows(self, maximum: int) -> int:
+        """Expose a safe preview extent without duplicating manifest arithmetic."""
+        if self._state is not ScrollState.REVIEW:
+            raise CaptureError("Capture pages are available during review")
+        if maximum < 1:
+            raise ValueError("A page needs a positive row limit")
+        return min(maximum, self._store.page_capacity)
+
+    def accept(self, *, top: int = 0, height: int | None = None) -> ReviewedCapture:
+        """Accept the whole result or an explicit bounded partial row range."""
         result, target, taken_at = self._result, self._target, self._taken_at
+        rows = height if height is not None else (result.height - top if result else 0)
+        if self._state is ScrollState.DELIVERED and self._accepted is not None:
+            if self._accepted_range != (top, rows):
+                raise CaptureError("This capture has already delivered another range")
+            return self._accepted
         if (
             self._state is not ScrollState.REVIEW
             or result is None
@@ -269,10 +281,11 @@ class ScrollSession:
             or taken_at is None
         ):
             raise CaptureError("A capture must be in review before delivery")
-        image = self._store.materialize()
+        image = self._store.materialize(top, height)
+        selected_range = top != 0 or (height is not None and height != result.height)
         completeness = (
             CaptureCompleteness.COMPLETE
-            if result.stop_reason is StopReason.REPORTED_END
+            if result.stop_reason is StopReason.REPORTED_END and not selected_range
             else CaptureCompleteness.PARTIAL
         )
         accepted = ReviewedCapture(
@@ -281,10 +294,11 @@ class ScrollSession:
             taken_at,
             CaptureKind.SCROLLING,
             completeness,
-            result.stop_reason.value,
+            "selected_range" if selected_range else result.stop_reason.value,
         )
         self._state = ScrollState.DELIVERED
         self._accepted = accepted
+        self._accepted_range = (top, rows)
         return accepted
 
     def cancel(self) -> None:
@@ -293,6 +307,7 @@ class ScrollSession:
         self._previous = QImage()
         self._result = None
         self._accepted = None
+        self._accepted_range = None
         try:
             self._store.close()
         finally:
