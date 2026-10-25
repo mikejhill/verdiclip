@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.12.0](https://github.com/mikejhill/verdiclip/compare/v0.11.0...v0.12.0) (2026-10-25)
+
+
+### Features
+
+* **brand:** refine VerdiClip capture identity ([#56](https://github.com/mikejhill/verdiclip/issues/56)) ([a5190a4](https://github.com/mikejhill/verdiclip/commit/a5190a45bff19375add35a409cf8c621cf2b20d8))
+
+
+### Bug Fixes
+
+* make update checks visible and refresh docs ([bfaf618](https://github.com/mikejhill/verdiclip/commit/bfaf618edf74aee3465e8e197d26f1857480f4a7))
+
 ## [Unreleased]
 
 ### Changed
