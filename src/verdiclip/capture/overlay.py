@@ -8,6 +8,7 @@ from typing import Final, Protocol, override
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
+    QCloseEvent,
     QColor,
     QCursor,
     QFont,
@@ -187,6 +188,7 @@ class SelectionOverlay(QWidget):
         self._shared.add_screen(geometry)
         self._shared.changed.connect(self._on_shared_changed)
         self._shown: tuple[object, ...] | None = None
+        self._finishing = False
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
@@ -200,6 +202,18 @@ class SelectionOverlay(QWidget):
         self.setGeometry(
             int(logical.x), int(logical.y), int(logical.width), int(logical.height)
         )
+
+    def dismiss(self) -> None:
+        """Close as part of an owner-controlled completion, without cancelling."""
+        self._finishing = True
+        self.close()
+
+    @override
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """Let the capture owner terminate the whole session on window close."""
+        super().closeEvent(event)
+        if not self._finishing:
+            self.cancelled.emit()
 
     @property
     def screen_geometry(self) -> ScreenGeometry:

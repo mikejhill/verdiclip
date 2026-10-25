@@ -35,6 +35,18 @@ This mode fails if the desktop prerequisite is absent. A normal green suite
 with the locked-desktop skip is not evidence that real capture passed. Never
 turn a `CaptureError` or `BitBlt` failure on an available desktop into a skip.
 
+Before releasing capture lifecycle changes, also run the native popup/modal
+matrix. It uses real desktop pixels and the actual tray/controller widgets,
+with test-only hotkey messages and temporary preferences:
+
+```powershell
+$env:QT_QPA_PLATFORM = 'windows'
+uv run pytest tests/capture/test_capture_native.py --require-interactive-capture
+```
+
+See [capture input ownership](docs/design/capture-input.md) for the failure
+mechanism, lifecycle invariant, and limits of automated validation.
+
 Coverage shows code ran, not that a test checked it. These keep the tests honest:
 
 | Check | Where | What it catches |

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import override
 
 import pytest
-from PySide6.QtCore import QEvent, QObject, QProcess, Qt, QTimer, QUrl
+from PySide6.QtCore import QEvent, QObject, QPoint, QProcess, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QGuiApplication, QImage
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
@@ -38,6 +38,7 @@ from tests.ux.test_capture_journeys import (
 )
 
 from verdiclip import APP_NAME, DOCS_URL, VERSION
+from verdiclip.capture.grabber import ScreenSource
 from verdiclip.capture.models import Capture
 from verdiclip.capture.overlay import SelectionOverlay
 from verdiclip.document.commands import SetCrop
@@ -171,6 +172,7 @@ class App:
         for hotkey_id, combo in self.os_hotkeys.active.items():
             if combo == (hotkey.win32_modifiers, hotkey.virtual_key):
                 self.hotkeys.handle_hotkey_message(hotkey_id)
+                QApplication.processEvents()  # Return from native dispatch first.
                 return
         msg = f"{action} is not registered"
         raise AssertionError(msg)
@@ -199,6 +201,7 @@ def make_app(
         taken: set[str] | None = None,
         links: FakeShortcutBackend | None = None,
         updater: Updater | None = None,
+        screens: ScreenSource | None = None,
     ) -> App:
         store = SettingsStore(tmp_path / "settings.json")
         base = settings or Settings()
@@ -215,7 +218,7 @@ def make_app(
         folders = ShortcutFolders(tmp_path / "Startup", tmp_path / "Programs")
         controller = AppController(
             store,
-            FakeDesktop(),
+            screens if screens is not None else FakeDesktop(),
             windows,
             hotkeys,
             ShellIntegration(
@@ -697,6 +700,33 @@ class TestHotkeysAndSettings:
 class TestSettingsEverywhere:
     """Settings reachable and effective from anywhere."""
 
+    @pytest.mark.parametrize("entry", ["hotkey", "menu"])
+    def test_tray_popup_releases_capture_input(
+        self,
+        make_app: AppFactory,
+        qtbot: QtBot,
+        entry: str,
+    ) -> None:
+        """UX-G-10, UX-CAP-05: tray popup input transfers before native Escape."""
+        app = make_app()
+        menu = app.controller.tray.menu
+        try:
+            menu.popup(QPoint(80, 80))
+            assert QApplication.activePopupWidget() is menu
+            if entry == "hotkey":
+                app.press_hotkey("region")
+            else:
+                menu.setActiveAction(app.controller.tray.action("region"))
+                QTest.keyClick(menu.windowHandle(), Qt.Key.Key_Return)
+            qtbot.waitUntil(lambda: bool(app.controller.capture.overlays))
+            assert not menu.isVisible(), "Selection must not compete with tray input"
+            overlay = app.controller.capture.overlays[0]
+            QTest.keyClick(overlay.windowHandle(), Qt.Key.Key_Escape)
+            assert not app.controller.capture.is_selecting
+            assert app.controller.editors == (), "Escape must not deliver an image"
+        finally:
+            menu.close()
+
     def test_editor_shortcut_opens_settings(
         self, make_app: AppFactory, qtbot: QtBot, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1043,9 +1073,14 @@ class TestRememberedStyles:
 
     def _open(self, app: App, qtbot: QtBot) -> EditorWindow:
         """Capture and return the new editor."""
-        before = len(app.controller.editors)
+        before = sum(editor.isVisible() for editor in app.controller.editors)
         app.press_hotkey("fullscreen")
-        qtbot.waitUntil(lambda: len(app.controller.editors) == before + 1)
+        qtbot.waitUntil(
+            lambda: (
+                sum(editor.isVisible() for editor in app.controller.editors)
+                == before + 1
+            )
+        )
         return app.controller.editors[-1]
 
     @staticmethod
