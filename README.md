@@ -55,16 +55,31 @@ If Windows or another screenshot tool already owns `PrtSc`, VerdiClip tells you 
 
 ## Annotate
 
-| Tools | | Actions | |
+| Tool | Key | Tool | Key |
 | --- | --- | --- | --- |
-| `V` Select | `T` Text | `Ctrl+Shift+C` Copy image | `Ctrl+Z` / `Ctrl+Y` Undo / redo |
-| `C` Crop | `N` Counter | `Ctrl+S` Save (auto-named) | `Ctrl+C` / `Ctrl+V` Copy / paste marks |
-| `R` Rectangle | `H` Highlight | `Ctrl+Shift+S` Save as | `Delete` Remove selection |
-| `E` Ellipse | `O` Obfuscate | `Ctrl+P` Print | Arrows Nudge (`Ctrl` = 10 px) |
-| `L` Line | `F` Freehand | `Ctrl+wheel` Zoom | `Space`+drag Pan |
-| `A` Arrow | | `Ctrl+0` / `Ctrl+Shift+F` 100% / fit | `Esc` Back out one step |
-| | | `Ctrl+R` / `Ctrl+Shift+R` Rotate right / left | `Ctrl+Shift+H` / `Ctrl+Shift+V` Flip |
-| | | `Ctrl+Alt+I` Resize | |
+| Select | `V` | Text | `T` |
+| Crop | `C` | Counter | `N` |
+| Rectangle | `R` | Highlight | `H` |
+| Ellipse | `E` | Obfuscate | `O` |
+| Line | `L` | Freehand | `F` |
+| Arrow | `A` | | |
+
+| Action | Shortcut |
+| --- | --- |
+| Copy image and close | `Ctrl+Shift+C` |
+| Save / Save as | `Ctrl+S` / `Ctrl+Shift+S` |
+| Undo / Redo | `Ctrl+Z` / `Ctrl+Y` |
+| Copy / Paste marks | `Ctrl+C` / `Ctrl+V` |
+| Delete selection | `Delete` |
+| Print | `Ctrl+P` |
+| Zoom | `Ctrl+wheel` |
+| Actual size / Fit | `Ctrl+0` / `Ctrl+Shift+F` |
+| Pan | `Space`+drag |
+| Nudge / Nudge faster | Arrows / `Ctrl`+Arrows |
+| Rotate right / left | `Ctrl+R` / `Ctrl+Shift+R` |
+| Flip horizontally / vertically | `Ctrl+Shift+H` / `Ctrl+Shift+V` |
+| Resize | `Ctrl+Alt+I` |
+| Back out one step | `Esc` |
 
 - **Labels in boxes.** After drawing a rectangle or ellipse, just type — the text is centered and wraps inside it. Double-click (or `Enter`/`F2`) to edit later; `Esc` skips.
 - **Shift** draws squares, circles, and 45° lines.
