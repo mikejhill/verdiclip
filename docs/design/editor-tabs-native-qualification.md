@@ -1,5 +1,20 @@
 # Tab qualification after exclusive desktop handoff
 
+Checkpoint source: `501ec10e0fe86f5870c45e66dd587b4213e8ad57`. Both Qt 6.11.2 and
+6.12.0 full offscreen suites pass **1,487 tests**, 1 skip, 14 deselected; coverage
+**94.99% / 94.97%**, randomized seeds 2514902634 / 700042738. Formatting, Ruff and
+strict ty pass. The independent read-only reviewer found no confirmed material
+finding and independently ran **78 offscreen cases** covering all four new test
+files and workspace close/transfer regressions. No native/input action was run.
+
+The new spoken-identity test found stale remaining-tab count after inactive-tab
+detachment. The only production delta is a metadata refresh after parking the
+removed page. The regression rejects that exact fault replayed in an isolated
+source copy; close/transfer staging remains revalidated after callbacks. Durable
+evidence is in `.test-tmp/hardware-*.log`, coverage-hardware XML, and
+`.test-tmp/accessibility-fault/result.json`. Earlier private ad1fc203 wheel is
+superseded by this source fix and remains native-readiness blocked.
+
 Capture worker owns desktop input first. **Do not run native tests until the
 parent explicitly hands over the slot.** Default script mode prints a plan only;
 no window/input/environment change occurs. Do not use scripts or alternate input
