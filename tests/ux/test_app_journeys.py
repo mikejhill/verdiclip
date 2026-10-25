@@ -46,6 +46,7 @@ from verdiclip.editor.close_prompt import CloseChoice, ClosePrompt
 from verdiclip.editor.session import ToolId
 from verdiclip.editor.style_bar import ColorButton
 from verdiclip.editor.window import EditorWindow
+from verdiclip.exceptions import UpdateError
 from verdiclip.geometry import Rect
 from verdiclip.platform.associations import DEFAULT_APPS_URI, FileAssociations
 from verdiclip.platform.hotkeys import Hotkey, HotkeyService
@@ -1281,6 +1282,147 @@ def check_often(monkeypatch: pytest.MonkeyPatch) -> None:
 
 class TestUpdates:
     """Finding, installing, and reporting newer releases."""
+
+    @staticmethod
+    def status() -> QMessageBox:
+        """Return the manual-check window a user can see."""
+        return next(
+            widget
+            for widget in QApplication.topLevelWidgets()
+            if isinstance(widget, QMessageBox)
+            and widget.objectName() == "manual-update-status"
+            and widget.isVisible()
+        )
+
+    @pytest.mark.parametrize("latest", ["0.10.0", "0.11.0"])
+    @pytest.mark.parametrize("theme", [Theme.LIGHT, Theme.DARK])
+    def test_manual_progress_then_persistent_result(
+        self,
+        make_app: AppFactory,
+        updates: Updates,
+        latest: str,
+        theme: Theme,
+        snapshot_dir: Path | None,
+    ) -> None:
+        """UX-TRY-11: a slow check stays visible, coalesces clicks, and finishes."""
+        updates.feed.deferred = True
+        settings = Settings()
+        settings = replace(
+            settings, appearance=replace(settings.appearance, theme=theme)
+        )
+        app = make_app(settings, updater=updates.updater)
+        app.controller.tray.action("update").trigger()
+        box = self.status()
+        assert box.windowTitle() == "Checking for updates", "Progress must appear now"
+        assert "PyPI" in box.text(), "Progress must explain what is being checked"
+        action = app.controller.tray.action("update")
+        assert action.text() == "Checking for updates..."
+        assert not action.isEnabled(), "Repeated clicks must not start parallel checks"
+        app.controller.check_for_updates()
+        assert updates.feed.fetches == 1, "Direct duplicate requests must also coalesce"
+        app.controller.tray.rebuild_menu({})
+        assert not app.controller.tray.action("update").isEnabled()
+        if snapshot_dir is not None:
+            box.grab().save(str(snapshot_dir / f"{theme}-update-{latest}-checking.png"))
+        box.close()
+        updates.feed.fetched.emit(latest)
+        assert self.status() is box, (
+            "Completion must remain visible even if progress closed"
+        )
+        expected = (
+            "VerdiClip is up to date" if latest == "0.10.0" else "Update available"
+        )
+        assert box.windowTitle() == expected
+        assert latest in box.text(), "The result must identify the release"
+        assert app.controller.tray.action("update").isEnabled()
+        assert updates.spawns.calls == [], "Checking must not install anything"
+        assert updates.quits == [], "Checking must keep the app running"
+        if snapshot_dir is not None:
+            box.grab().save(str(snapshot_dir / f"{theme}-update-{latest}-result.png"))
+
+    def test_manual_failure_releases_progress_and_allows_retry(
+        self,
+        make_app: AppFactory,
+        updates: Updates,
+    ) -> None:
+        """UX-TRY-11: failure stays visible and the next click can succeed."""
+        updates.feed.deferred = True
+        app = make_app(updater=updates.updater)
+        app.controller.tray.action("update").trigger()
+        updates.feed.failed.emit("Network unavailable")
+        box = self.status()
+        assert box.windowTitle() == "Could not check for updates"
+        assert "Network unavailable" in box.text()
+        assert "try again" in box.text()
+        assert app.controller.tray.action("update").isEnabled()
+        updates.feed.deferred = False
+        updates.feed.latest = "0.10.0"
+        app.controller.tray.action("update").trigger()
+        assert updates.feed.fetches == 2
+        assert box.windowTitle() == "VerdiClip is up to date"
+
+    def test_synchronous_check_error_restores_retry(
+        self,
+        make_app: AppFactory,
+        updates: Updates,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """UX-TRY-11: a request that cannot start cannot leave progress stuck."""
+
+        def fail() -> None:
+            """Simulate failure before a network reply exists."""
+            raise UpdateError("Cannot start update check")
+
+        monkeypatch.setattr(updates.updater, "check", fail)
+        app = make_app(updater=updates.updater)
+        app.controller.tray.action("update").trigger()
+        assert self.status().windowTitle() == "Could not check for updates"
+        assert "Cannot start" in self.status().text()
+        assert app.controller.tray.action("update").isEnabled()
+
+    @pytest.mark.parametrize(
+        ("kind", "version"),
+        [(InstallKind.UNKNOWN, "0.0.0"), (InstallKind.CHECKOUT, "0.12.0b1")],
+    )
+    def test_development_build_is_explicitly_unsupported(
+        self,
+        make_app: AppFactory,
+        tmp_path: Path,
+        kind: InstallKind,
+        version: str,
+    ) -> None:
+        """UX-TRY-11: unidentifiable/beta builds must never claim to be current."""
+        feed, spawns = FakeFeed(), Spawns()
+        updater = Updater(
+            Installation(kind, version, PYTHONW),
+            feed,
+            UpdateLauncher(tmp_path / "update", spawns),
+        )
+        app = make_app(updater=updater)
+        app.controller.tray.action("update").trigger()
+        assert self.status().windowTitle() == "Update check unavailable"
+        assert "development" in self.status().text()
+        assert feed.fetches == 0, "An incomparable build must not check the stable feed"
+        assert app.controller.tray.action("update").isEnabled()
+        assert spawns.calls == [], "An unsupported build must not launch an updater"
+
+    def test_numeric_checkout_checks_the_stable_release(
+        self,
+        make_app: AppFactory,
+        tmp_path: Path,
+    ) -> None:
+        """UX-TRY-11: a supported repository build still checks PyPI normally."""
+        feed = FakeFeed("0.11.0")
+        updater = Updater(
+            Installation(InstallKind.CHECKOUT, "0.11.0", PYTHONW, tmp_path),
+            feed,
+            UpdateLauncher(tmp_path / "update", Spawns()),
+        )
+        app = make_app(updater=updater)
+        app.controller.tray.action("update").trigger()
+        assert self.status().windowTitle() == "VerdiClip is up to date"
+        assert "latest stable release is 0.11.0" in self.status().text()
+        assert feed.fetches == 1
 
     def test_no_updater_no_menu_entry(self, make_app: AppFactory) -> None:
         """Without an updater the tray offers no update entry."""

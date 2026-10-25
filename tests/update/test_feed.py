@@ -7,8 +7,10 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QUrl
+from PySide6.QtNetwork import QHostAddress, QTcpServer
 from pytestqt.qtbot import QtBot
 
+import verdiclip.update.feed as feed_module
 from verdiclip.update.feed import ReleaseFeed, ReleaseVersion
 
 
@@ -72,6 +74,7 @@ class TestVersionOf:
             b'{"info": {}}',
             b'{"info": {"version": 11}}',
             b'{"info": {"version": ""}}',
+            b'{"info": {"version": "not-a-release"}}',
         ],
     )
     def test_malformed_replies_have_no_version(self, payload: bytes) -> None:
@@ -81,6 +84,50 @@ class TestVersionOf:
 
 class TestReleaseFeed:
     """Fetching over Qt's network stack (file URLs stand in for PyPI)."""
+
+    def test_stalled_check_times_out_then_can_retry(
+        self,
+        qtbot: QtBot,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A silent HTTP server must not strand checking state or block retry."""
+        server = QTcpServer()
+        assert server.listen(QHostAddress.SpecialAddress.LocalHost)
+        monkeypatch.setattr(feed_module, "FETCH_TIMEOUT_MS", 30)
+        feed = ReleaseFeed(f"http://127.0.0.1:{server.serverPort()}/release")
+        with qtbot.waitSignal(feed.failed) as failed:
+            feed.fetch()
+        assert "timed out" in failed.args[0], (
+            "A stalled check needs an actionable error"
+        )
+        assert not feed.busy, "Timeout must release the request for retry"
+        # Use a generous deadline on the retry and serve a complete HTTP reply.
+        monkeypatch.setattr(feed_module, "FETCH_TIMEOUT_MS", 2000)
+        while server.hasPendingConnections():
+            server.nextPendingConnection().close()
+
+        def answer() -> None:
+            """Serve the next request from the same release endpoint."""
+            socket = server.nextPendingConnection()
+
+            def respond() -> None:
+                """Answer after the HTTP request arrives."""
+                socket.readAll()
+                body = b'{"info":{"version":"0.11.0"}}'
+                header = f"HTTP/1.1 200 OK\r\nContent-Length: {len(body)}\r\n\r\n"
+                socket.write(header.encode() + body)
+                socket.disconnectFromHost()
+
+            socket.readyRead.connect(respond)
+
+        server.newConnection.connect(answer)
+        with qtbot.waitSignal(feed.fetched) as fetched:
+            feed.fetch()
+        assert fetched.args == ["0.11.0"], (
+            "Retry after timeout must deliver the release"
+        )
+        assert not feed.busy
+        server.close()
 
     def test_fetch_emits_latest(self, qtbot: QtBot, tmp_path: Path) -> None:
         """A good reply emits the latest version, and the feed is idle again."""

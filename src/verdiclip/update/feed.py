@@ -6,7 +6,7 @@ import json
 import logging
 from typing import Final
 
-from PySide6.QtCore import QObject, QUrl, Signal
+from PySide6.QtCore import QObject, QTimer, QUrl, Signal
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 
 from verdiclip import APP_NAME, VERSION
@@ -53,6 +53,10 @@ class ReleaseFeed(QObject):
         self._url = QUrl(url)
         self._network: QNetworkAccessManager | None = None  # Made on first fetch
         self._reply: QNetworkReply | None = None
+        self._timed_out = False
+        self._deadline = QTimer(self)
+        self._deadline.setSingleShot(True)
+        self._deadline.timeout.connect(self._on_timeout)
 
     @property
     def busy(self) -> bool:
@@ -63,6 +67,7 @@ class ReleaseFeed(QObject):
         """Start a request; ``fetched`` or ``failed`` follows. Ignored while busy."""
         if self._reply is not None:
             return
+        self._timed_out = False
         request = QNetworkRequest(self._url)
         request.setTransferTimeout(FETCH_TIMEOUT_MS)
         request.setHeader(
@@ -73,13 +78,24 @@ class ReleaseFeed(QObject):
         reply = self._network.get(request)
         reply.finished.connect(self._on_finished)
         self._reply = reply
+        self._deadline.start(FETCH_TIMEOUT_MS)
+
+    def _on_timeout(self) -> None:
+        """Abort even a slowly streaming response so checks always finish."""
+        if self._reply is not None:
+            self._timed_out = True
+            self._reply.abort()
 
     def _on_finished(self) -> None:
         """Emit the version from the finished reply."""
+        self._deadline.stop()
         reply, self._reply = self._reply, None
         if reply is None:  # pragma: no cover - finished only follows a fetch
             return
         reply.deleteLater()
+        if self._timed_out:
+            self.failed.emit("The update check timed out. Please try again.")
+            return
         if reply.error() != QNetworkReply.NetworkError.NoError:
             self.failed.emit(reply.errorString())
             return
@@ -99,4 +115,8 @@ class ReleaseFeed(QObject):
             return None
         info = data.get("info") if isinstance(data, dict) else None
         version = info.get("version") if isinstance(info, dict) else None
-        return version if isinstance(version, str) and version else None
+        return (
+            version
+            if isinstance(version, str) and ReleaseVersion.parse(version) is not None
+            else None
+        )
