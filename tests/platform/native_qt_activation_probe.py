@@ -19,7 +19,7 @@ def main() -> None:
     args = parser.parse_args()
     if not args.execute_after_handoff:
         sys.stdout.write(
-            "PLAN ONLY: two synthetic Qt text windows; native desktop handoff required\n"
+            "PLAN ONLY: synthetic Qt windows; exclusive desktop handoff required\n"
         )
         return
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
