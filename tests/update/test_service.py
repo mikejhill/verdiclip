@@ -41,11 +41,14 @@ class FakeFeed(ReleaseFeed):
         self.latest = latest
         self.error = error
         self.fetches = 0
+        self.deferred = False
 
     @override
     def fetch(self) -> None:
         """Answer at once."""
         self.fetches += 1
+        if self.deferred:
+            return
         if self.error:
             self.failed.emit(self.error)
         else:
@@ -274,6 +277,30 @@ def make_updater(
 
 class TestUpdater:
     """Tracking the latest release and handing it to the helper."""
+
+    @pytest.mark.parametrize(
+        ("kind", "version"),
+        [(InstallKind.UNKNOWN, "0.0.0"), (InstallKind.CHECKOUT, "0.12.0b1")],
+    )
+    def test_unsupported_check_fails_without_contacting_feed(
+        self,
+        qtbot: QtBot,
+        tmp_path: Path,
+        kind: InstallKind,
+        version: str,
+    ) -> None:
+        """Callers bypassing the tray still cannot compare development builds."""
+        feed = FakeFeed()
+        updater = Updater(
+            Installation(kind, version, PYTHON),
+            feed,
+            UpdateLauncher(tmp_path / "update"),
+        )
+        with qtbot.waitSignal(updater.check_failed) as failure:
+            updater.check()
+        assert "development" in failure.args[0]
+        assert updater.available is None, "Unsupported checks must not offer an update"
+        assert feed.fetches == 0, "Do not contact PyPI for an incomparable build"
 
     def test_check_finds_a_newer_release(self, qtbot: QtBot, tmp_path: Path) -> None:
         """A newer release becomes available."""

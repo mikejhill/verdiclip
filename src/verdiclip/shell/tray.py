@@ -47,6 +47,7 @@ class TrayIcon(QSystemTrayIcon):
         self._actions: dict[str, QAction] = {}
         self._hotkey_labels: Mapping[str, str] = {}
         self._update_label = CHECK_UPDATES_LABEL
+        self._update_checking = False
         self._click = QTimer(self)
         self._click.setSingleShot(True)
         self._click.timeout.connect(self._on_click)
@@ -69,6 +70,11 @@ class TrayIcon(QSystemTrayIcon):
         self._update_label = text
         self.rebuild_menu(self._hotkey_labels)
 
+    def set_update_checking(self, *, checking: bool) -> None:
+        """Disable duplicate manual checks and expose progress in the menu."""
+        self._update_checking = checking
+        self.rebuild_menu(self._hotkey_labels)
+
     def rebuild_menu(self, hotkey_labels: Mapping[str, str]) -> None:
         """Rebuild the menu, showing each capture's hotkey (UX-TRY-03)."""
         c = self._commands
@@ -76,7 +82,10 @@ class TrayIcon(QSystemTrayIcon):
         self._menu.clear()
         self._actions.clear()
         check = c.update
-        update = [("update", self._update_label, check)] if check is not None else []
+        label = (
+            "Checking for updates..." if self._update_checking else self._update_label
+        )
+        update = [("update", label, check)] if check is not None else []
         entries: list[tuple[str, str, Callable[[], None]] | None] = [
             ("region", "Capture region or window", c.capture_region),
             ("window", "Capture active window", c.capture_window),
@@ -100,6 +109,8 @@ class TrayIcon(QSystemTrayIcon):
             action = self._menu.addAction(f"{text}\t{label}" if label else text)
             action.triggered.connect(lambda _=False, cb=callback: cb())
             self._actions[name] = action
+            if name == "update":
+                action.setEnabled(not self._update_checking)
 
     def _on_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         """Capture a region on click, or open the folder on double-click (UX-TRY-02)."""

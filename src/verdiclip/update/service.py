@@ -18,7 +18,13 @@ from PySide6.QtCore import QObject, Signal
 from verdiclip import APP_NAME
 from verdiclip.exceptions import UpdateError
 from verdiclip.update.feed import ReleaseFeed, ReleaseVersion
-from verdiclip.update.install import NO_WINDOW, Installation, UpdatePlan, UpdatePlanner
+from verdiclip.update.install import (
+    NO_WINDOW,
+    Installation,
+    InstallKind,
+    UpdatePlan,
+    UpdatePlanner,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -210,6 +216,25 @@ class Updater(QObject):
         return self._installation
 
     @property
+    def unsupported_reason(self) -> str:
+        """Explain builds that cannot be compared with stable PyPI releases."""
+        if (
+            self._installation.kind == InstallKind.UNKNOWN
+            and self._installation.version == "0.0.0"
+        ):
+            return (
+                "VerdiClip cannot identify this installation. Update checks are "
+                "unavailable for this development build. Update the source checkout "
+                "manually or use a supported installation."
+            )
+        if ReleaseVersion.parse(self._installation.version) is None:
+            return (
+                "This development or prerelease build cannot be compared with "
+                "stable PyPI releases. Update the source checkout manually."
+            )
+        return ""
+
+    @property
     def available(self) -> str | None:
         """Return the newer release found by the last check, if any."""
         latest = self._latest
@@ -221,6 +246,9 @@ class Updater(QObject):
 
     def check(self) -> None:
         """Ask for the latest release; ``checked`` or ``check_failed`` follows."""
+        if reason := self.unsupported_reason:
+            self.check_failed.emit(reason)
+            return
         self._feed.fetch()
 
     def prepare(self, relaunch: str) -> UpdatePlan:

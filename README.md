@@ -1,22 +1,19 @@
 # VerdiClip
 
-<!-- markdownlint-disable MD033 -->
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/brand/wordmark-dark.svg">
-  <img src="docs/brand/wordmark-light.svg" alt="VerdiClip" width="320">
-</picture>
-<!-- markdownlint-enable MD033 -->
+![VerdiClip — capture, annotate, deliver](https://raw.githubusercontent.com/mikejhill/verdiclip/main/docs/images/wordmark.png)
 
 [![CI](https://github.com/mikejhill/verdiclip/actions/workflows/ci.yml/badge.svg)](https://github.com/mikejhill/verdiclip/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/verdiclip.svg)](https://pypi.org/project/verdiclip/)
 [![Python](https://img.shields.io/pypi/pyversions/verdiclip.svg)](https://pypi.org/project/verdiclip/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/mikejhill/verdiclip/blob/main/LICENSE)
 
 Fast, faithful screenshots for Windows: grab a precise piece of the screen, mark it up, and put it where it needs to go — in seconds.
 
-![The VerdiClip editor in the dark theme, showing numbered steps, a labeled callout, an arrow, a highlight, and an obfuscated password](docs/images/editor.png)
+![The VerdiClip editor in the dark theme, annotating a fictional weekend itinerary with numbered steps, a labeled callout, an arrow, and a highlight](https://raw.githubusercontent.com/mikejhill/verdiclip/main/docs/images/editor.png)
 
-VerdiClip is an independent project. See [ATTRIBUTION.md](ATTRIBUTION.md) for credits.
+VerdiClip is an independent project. See [ATTRIBUTION.md](https://github.com/mikejhill/verdiclip/blob/main/ATTRIBUTION.md) for credits.
+
+![Capture a region, window, or screen; annotate with arrows, labels, and highlights; deliver to clipboard, file, or print.](https://raw.githubusercontent.com/mikejhill/verdiclip/main/docs/images/workflow.png)
 
 ## Install
 
@@ -39,7 +36,7 @@ VerdiClip checks PyPI for a newer release a minute after it starts and every 6 h
 | `uvx verdiclip` | Fetch the release with `uvx`, then restart with it (the old version if that fails) |
 | A git checkout (`uv sync`) | `git pull --ff-only` and `uv sync`, only on `main` with no local changes |
 
-Tray → **Check for updates** checks right away. Settings → General turns off automatic checking, or automatic installing (VerdiClip then offers each release in a notification). If an update fails, the old version starts again and the notification names the log, `%APPDATA%\VerdiClip\update\update.log`.
+Tray → **Check for updates** opens a status window immediately. It stays visible with the result or an error; a failed check can be retried. Development versions that cannot be compared with stable releases say so explicitly. Settings → General turns off automatic checking, or automatic installing (VerdiClip then offers each release in a notification). If an update fails, the old version starts again and the notification names the log, `%APPDATA%\VerdiClip\update\update.log`.
 
 ## Capture
 
@@ -50,7 +47,7 @@ Tray → **Check for updates** checks right away. Settings → General turns off
 | Capture every monitor | `Ctrl+PrtSc` |
 | Repeat the last capture | `Shift+PrtSc` |
 
-![The capture overlay: the frozen screen is dimmed, the window under the cursor is outlined with its title, and a magnifier shows the exact pixels](docs/images/capture.png)
+![The capture overlay: the frozen screen is dimmed, the window under the cursor is outlined with its title, and a magnifier shows the exact pixels](https://raw.githubusercontent.com/mikejhill/verdiclip/main/docs/images/capture.png)
 
 While selecting, the screen is frozen so you get exactly what you saw. A magnifier follows the cursor, arrow keys nudge it by a pixel (`Ctrl` for 10), `Enter` starts and finishes a selection from the keyboard, clicking without dragging captures the window under the cursor, and `Esc` cancels.
 
@@ -58,16 +55,31 @@ If Windows or another screenshot tool already owns `PrtSc`, VerdiClip tells you 
 
 ## Annotate
 
-| Tools | | Actions | |
+| Tool | Key | Tool | Key |
 | --- | --- | --- | --- |
-| `V` Select | `T` Text | `Ctrl+Shift+C` Copy image | `Ctrl+Z` / `Ctrl+Y` Undo / redo |
-| `C` Crop | `N` Counter | `Ctrl+S` Save (auto-named) | `Ctrl+C` / `Ctrl+V` Copy / paste marks |
-| `R` Rectangle | `H` Highlight | `Ctrl+Shift+S` Save as | `Delete` Remove selection |
-| `E` Ellipse | `O` Obfuscate | `Ctrl+P` Print | Arrows Nudge (`Ctrl` = 10 px) |
-| `L` Line | `F` Freehand | `Ctrl+wheel` Zoom | `Space`+drag Pan |
-| `A` Arrow | | `Ctrl+0` / `Ctrl+Shift+F` 100% / fit | `Esc` Back out one step |
-| | | `Ctrl+R` / `Ctrl+Shift+R` Rotate right / left | `Ctrl+Shift+H` / `Ctrl+Shift+V` Flip |
-| | | `Ctrl+Alt+I` Resize | |
+| Select | `V` | Text | `T` |
+| Crop | `C` | Counter | `N` |
+| Rectangle | `R` | Highlight | `H` |
+| Ellipse | `E` | Obfuscate | `O` |
+| Line | `L` | Freehand | `F` |
+| Arrow | `A` | | |
+
+| Action | Shortcut |
+| --- | --- |
+| Copy image and close | `Ctrl+Shift+C` |
+| Save / Save as | `Ctrl+S` / `Ctrl+Shift+S` |
+| Undo / Redo | `Ctrl+Z` / `Ctrl+Y` |
+| Copy / Paste marks | `Ctrl+C` / `Ctrl+V` |
+| Delete selection | `Delete` |
+| Print | `Ctrl+P` |
+| Zoom | `Ctrl+wheel` |
+| Actual size / Fit | `Ctrl+0` / `Ctrl+Shift+F` |
+| Pan | `Space`+drag |
+| Nudge / Nudge faster | Arrows / `Ctrl`+Arrows |
+| Rotate right / left | `Ctrl+R` / `Ctrl+Shift+R` |
+| Flip horizontally / vertically | `Ctrl+Shift+H` / `Ctrl+Shift+V` |
+| Resize | `Ctrl+Alt+I` |
+| Back out one step | `Esc` |
 
 - **Labels in boxes.** After drawing a rectangle or ellipse, just type — the text is centered and wraps inside it. Double-click (or `Enter`/`F2`) to edit later; `Esc` skips.
 - **Shift** draws squares, circles, and 45° lines.
@@ -76,13 +88,13 @@ If Windows or another screenshot tool already owns `PrtSc`, VerdiClip tells you 
 - **Everything is undoable**, including crop, which never throws pixels away.
 - **The quickest path**: draw, `Esc` until nothing is selected, `Enter` — the image is on the clipboard and the editor closes. Closing an image you haven't copied or saved asks first (you can turn this off in Settings → Editor).
 
-![The same screenshot rotated left: the marks turn with the picture and the callout's label stays upright](docs/images/editor-rotated.png)
+![The same screenshot rotated left: the marks turn with the picture and the callout's label stays upright](https://raw.githubusercontent.com/mikejhill/verdiclip/main/docs/images/editor-rotated.png)
 
 ## Settings
 
 Open from the tray menu or with `Ctrl+,` in any editor.
 
-![Settings → Capture: after-capture actions can be combined](docs/images/settings-capture.png)
+![Settings → Capture: after-capture actions can be combined](https://raw.githubusercontent.com/mikejhill/verdiclip/main/docs/images/settings-capture.png)
 
 - **After capturing** — any combination of: open in the editor, copy to the clipboard, save to the output folder.
 - **Hotkeys** — validated as you type; conflicts are reported.
@@ -90,7 +102,7 @@ Open from the tray menu or with `Ctrl+,` in any editor.
 - **Editor** — default color, width, and font.
 - **General** — light, dark, or match-Windows theme; start at sign-in; check for and install updates automatically; show VerdiClip in Explorer's **Open with** menu for images. **Make VerdiClip the default image app…** opens Windows Settings at VerdiClip's Default apps page, where you choose it as the default (Windows requires you to confirm this yourself).
 
-![Settings → General: theme, start at sign-in, and the Open with integration](docs/images/settings-general.png)
+![Settings → General: theme, start at sign-in, and the Open with integration](https://raw.githubusercontent.com/mikejhill/verdiclip/main/docs/images/settings-general.png)
 
 ## Command line
 
@@ -103,7 +115,7 @@ verdiclip open picture.png          # Opens in the running instance if there is 
 
 ## How it is built
 
-Start with [docs/design/philosophy.md](docs/design/philosophy.md): the core purpose, the principles, and the architecture. [docs/design/ux-contract.md](docs/design/ux-contract.md) specifies every interaction; each item has an automated journey test.
+Start with [docs/design/philosophy.md](https://github.com/mikejhill/verdiclip/blob/main/docs/design/philosophy.md): the core purpose, the principles, and the architecture. [docs/design/ux-contract.md](https://github.com/mikejhill/verdiclip/blob/main/docs/design/ux-contract.md) specifies every interaction; each item has an automated journey test.
 
 In short: an edit session is an immutable base image, a non-destructive crop, and a list of immutable annotation values. The only way to change it is a command through the undo history, and one renderer draws both the canvas and the exported image.
 
@@ -115,8 +127,8 @@ Requires Windows 10+ and [uv](https://docs.astral.sh/uv/).
 
 Run `uv sync` once in the repository root to create `.venv` and install dependencies. Then use either root launcher:
 
-- Double-click [Run-VerdiClip.bat](Run-VerdiClip.bat) in Explorer.
-- From PowerShell, run `.\Run-VerdiClip.ps1` (see [Run-VerdiClip.ps1](Run-VerdiClip.ps1)).
+- Double-click [Run-VerdiClip.bat](https://github.com/mikejhill/verdiclip/blob/main/Run-VerdiClip.bat) in Explorer.
+- From PowerShell, run `.\Run-VerdiClip.ps1` (see [Run-VerdiClip.ps1](https://github.com/mikejhill/verdiclip/blob/main/Run-VerdiClip.ps1)).
 
 Both run `.venv\Scripts\pythonw.exe -m verdiclip` directly and return immediately, starting the tray app without a console window. A terminal opened by double-clicking the batch file closes after launch; an existing terminal stays available. The scripts work from any current directory and require Windows. If `.venv` is missing, run `uv sync` before trying again.
 
@@ -133,8 +145,8 @@ uv run poe ux-snapshots  # Journeys plus a PNG per step in docs/ux/snapshots
 uv run poe ux-gallery    # Key screens in light and dark themes (docs/ux/gallery)
 ```
 
-`uv run poe check` is the quality gate: ruff (broad rule set), ty with every rule at error, and pytest with ≥ 90% branch coverage. Regenerate the README screenshots with `uv run python scripts/ux_gallery.py --readme-dir docs/images`. Before a release, also run the manual checklist at the end of the UX contract. See [CONTRIBUTING.md](CONTRIBUTING.md) for commit conventions and releases.
+`uv run poe check` is the quality gate: ruff (broad rule set), ty with every rule at error, and pytest with ≥ 90% branch coverage. Regenerate the README screenshots with `uv run python scripts/ux_gallery.py --readme-dir docs/images`. Before a release, also run the manual checklist at the end of the UX contract. See [CONTRIBUTING.md](https://github.com/mikejhill/verdiclip/blob/main/CONTRIBUTING.md) for commit conventions and releases.
 
 ## License
 
-[MIT](LICENSE)
+[MIT](https://github.com/mikejhill/verdiclip/blob/main/LICENSE)

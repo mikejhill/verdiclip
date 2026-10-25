@@ -94,6 +94,7 @@ class AppController(QObject):
         self._last_saved_folder: Path | None = None
         self._message_action: Callable[[], None] = self._open_last_folder
         self._manual_check = False
+        self._update_status: QMessageBox | None = None
         self._announced: str | None = None
         self._check_timer = QTimer(self)
         self._idle_timer = QTimer(self)
@@ -156,6 +157,10 @@ class AppController(QObject):
         """Release global resources."""
         self._check_timer.stop()
         self._idle_timer.stop()
+        if self._update_status is not None:
+            self._update_status.hide()
+            self._update_status.deleteLater()
+            self._update_status = None
         self._capture.cancel()
         self._hotkeys.close()
         self._tray.hide()
@@ -380,11 +385,57 @@ class AppController(QObject):
         """
         if self._updater is None:
             return
+        if self._manual_check:
+            if self._update_status is not None:
+                self._update_status.show()
+                self._update_status.raise_()
+            return
+        if reason := self._updater.unsupported_reason:
+            self._show_update_status("Update check unavailable", reason)
+            return
         if self._updater.available is not None:
             self.install_update(manual=True)
             return
         self._manual_check = True
-        self._updater.check()
+        self._tray.set_update_checking(checking=True)
+        self._show_update_status(
+            "Checking for updates",
+            "Checking PyPI for the latest stable release...",
+            checking=True,
+        )
+        try:
+            self._updater.check()
+        except AppError as err:
+            self._on_update_check_failed(str(err))
+
+    def _show_update_status(
+        self,
+        title: str,
+        message: str,
+        *,
+        checking: bool = False,
+        warning: bool = False,
+    ) -> None:
+        """Keep manual-check progress and its result visible until dismissed."""
+        if self._update_status is None:
+            self._update_status = QMessageBox()
+            self._update_status.setObjectName("manual-update-status")
+            self._update_status.setWindowIcon(self._icon)
+            self._update_status.setTextFormat(Qt.TextFormat.PlainText)
+        box = self._update_status
+        box.setWindowTitle(title)
+        box.setText(message)
+        box.setIcon(
+            QMessageBox.Icon.Warning if warning else QMessageBox.Icon.Information
+        )
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Close
+            if checking
+            else QMessageBox.StandardButton.Ok
+        )
+        box.show()
+        box.raise_()
+        box.activateWindow()
 
     def install_update(self, *, manual: bool) -> None:
         """Hand the available release to the updater and quit (UX-TRY-12).
@@ -427,12 +478,17 @@ class AppController(QObject):
     def _scheduled_check(self) -> None:
         """Run a periodic check, unannounced unless it finds something."""
         self._check_timer.setInterval(CHECK_INTERVAL_MS)
-        if self._updater is not None:  # pragma: no branch - the timer needs one
+        if (
+            self._updater is not None
+            and not self._manual_check
+            and not self._updater.unsupported_reason
+        ):
             self._updater.check()
 
     def _on_update_checked(self, latest: str) -> None:
         """Offer, or install, a newer release; a manual check reports either way."""
         manual, self._manual_check = self._manual_check, False
+        self._tray.set_update_checking(checking=False)
         updater = self._updater
         if updater is None:  # pragma: no cover - only an updater emits this
             return
@@ -444,12 +500,23 @@ class AppController(QObject):
         )
         if available is None:
             if manual:
+                self._show_update_status(
+                    f"{APP_NAME} is up to date",
+                    f"You have {updater.installation.version}; "
+                    f"the latest stable release is {latest}.",
+                )
                 self._notify(
                     f"{APP_NAME} is up to date",
                     f"You have {updater.installation.version}; "
                     f"the latest release is {latest}.",
                 )
             return
+        if manual:
+            self._show_update_status(
+                "Update available",
+                f"{APP_NAME} {available} is available. "
+                "Use the tray's Install entry to install it.",
+            )
         automatic = self._settings.updates.install and not updater.failed_before(
             available
         )
@@ -467,7 +534,13 @@ class AppController(QObject):
     def _on_update_check_failed(self, reason: str) -> None:
         """Report a failed check the user asked for; periodic ones only log."""
         manual, self._manual_check = self._manual_check, False
+        self._tray.set_update_checking(checking=False)
         if manual:
+            self._show_update_status(
+                "Could not check for updates",
+                f"{reason}\nPlease try again.",
+                warning=True,
+            )
             self._notify("Could not check for updates", reason, warning=True)
 
     def _install_when_idle(self) -> None:

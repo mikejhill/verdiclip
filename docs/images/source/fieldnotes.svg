@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="420" viewBox="0 0 720 420" role="img" aria-labelledby="title desc">
+<title id="title">Fieldnotes: a fictional weekend itinerary</title><desc id="desc">An original illustration and planning board used as non-sensitive content in VerdiClip's real editor screenshots.</desc>
+<rect width="720" height="420" rx="12" fill="#f4f3ec"/>
+<path d="M0 12Q0 0 12 0H708Q720 0 720 12V58H0Z" fill="#123f35"/>
+<circle cx="30" cy="29" r="10" fill="#a5e6bd"/><path d="M25 33L30 23L35 33" fill="none" stroke="#123f35" stroke-width="2"/>
+<g font-family="Segoe UI,Arial,sans-serif"><text x="49" y="36" font-size="22" font-weight="700" fill="#fff">Fieldnotes</text><text x="501" y="34" font-size="11" letter-spacing="2" fill="#c3dfce">A LITTLE FURTHER OUT</text>
+<text x="28" y="98" font-size="11" letter-spacing="2" fill="#527567">WEEKEND COLLECTION / 03</text><text x="28" y="134" font-size="29" font-weight="700" fill="#173e34">Take the scenic route.</text><text x="29" y="158" font-size="13" fill="#5d7469">A slower Saturday, from the first trail to the last light.</text>
+<rect x="28" y="180" width="392" height="203" rx="12" fill="#dde9dc"/>
+<circle cx="344" cy="218" r="25" fill="#e7b85b"/><path d="M28 311L131 218L241 321L314 253L420 320V383H28Z" fill="#8dac90"/><path d="M28 345L139 280L253 342L339 288L420 345V383H28Z" fill="#437a63"/><path d="M28 375L151 328L251 370L350 330L420 361V383H28Z" fill="#215644"/><path d="M265 383Q185 354 239 338Q281 325 231 308" fill="none" stroke="#f2dfad" stroke-width="10"/>
+<rect x="46" y="198" width="123" height="25" rx="12" fill="#fff"/><text x="60" y="215" font-size="11" font-weight="600" fill="#245d45">RIDGE LOOP · 4.2 KM</text>
+<rect x="444" y="180" width="248" height="203" rx="12" fill="#fff"/><text x="464" y="209" font-size="11" letter-spacing="1" fill="#5d7769">YOUR SATURDAY</text>
+<circle cx="471" cy="237" r="5" fill="#5c9975"/><text x="486" y="241" font-size="14" font-weight="600" fill="#173e34">09:00 · Ridge trail</text><text x="486" y="261" font-size="12" fill="#5d7469">Pack water. Leave time to pause.</text>
+<path d="M464 279H672" stroke="#e8ece6"/><circle cx="471" cy="303" r="5" fill="#d4a04a"/><text x="486" y="307" font-size="14" font-weight="600" fill="#173e34">12:30 · Garden café</text><text x="486" y="327" font-size="12" fill="#5d7469">A table under the olive trees.</text>
+<rect x="463" y="345" width="210" height="23" rx="6" fill="#edf4ed"/><text x="476" y="361" font-size="11" fill="#326449">Saved for later · Demo itinerary</text>
+<text x="29" y="405" font-size="10" fill="#667d6e">FICTIONAL DEMO CONTENT · ORIGINAL VECTOR ART · NO PERSONAL DATA</text></g></svg>
