@@ -268,3 +268,34 @@ def test_preview_uses_actual_tile_capacity_for_a_longer_composed_result(
     assert not preview.pixmap().isNull()
     assert Controls.field(panel, "Number of selected").value() == 5
     run.session.close()
+
+
+def test_delivery_needs_matching_ack_and_retry_keeps_capture_identity(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """Controller success can acknowledge tray-only output without an editor window."""
+    run = Run(tmp_path)
+    run.start()
+    run.settle()
+    run.driver.stop()
+    panel = ScrollReviewPanel(run.session)
+    qtbot.addWidget(panel)
+    captures: list[object] = []
+    panel.reviewed_capture.connect(captures.append)
+    qtbot.mouseClick(Controls.button(panel, "whole"), Qt.MouseButton.LeftButton)
+    capture = captures[0]
+    assert isinstance(capture, ReviewedCapture)
+    assert not panel.acknowledge_delivery("other-capture")
+    assert not panel.delivery_failed("other-capture", "not relevant")
+    assert panel.delivery_failed(capture.capture_id, "Destination unavailable")
+    qtbot.mouseClick(Controls.button(panel, "Retry"), Qt.MouseButton.LeftButton)
+    assert len(captures) == 2
+    assert captures[1] is capture
+    assert panel.acknowledge_delivery(capture.capture_id)
+    assert panel.acknowledge_delivery(capture.capture_id)
+    assert not panel.delivery_failed(capture.capture_id, "stale failure")
+    assert any(
+        label.text() == "Capture delivered." for label in panel.findChildren(QLabel)
+    )
+    assert run.session.state is ScrollState.DELIVERED
+    run.session.close()

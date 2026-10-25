@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from verdiclip.capture.reviewed import ReviewedCapture
 from verdiclip.capture.scroll.models import ScrollTarget, StopReason
 from verdiclip.capture.scroll.session import ScrollSession, ScrollState
 from verdiclip.capture.scroll.targets import TargetCandidate
@@ -164,6 +165,9 @@ class ScrollReviewPanel(QWidget):
         escape.activated.connect(self.close)
         self._session = session
         self._delivered = False
+        self._capture: ReviewedCapture | None = None
+        self._awaiting_delivery = False
+        self._acknowledged = False
         result = session.result
         self._status = QLabel(
             f"{result.width} x {result.height} pixels. "
@@ -253,6 +257,11 @@ class ScrollReviewPanel(QWidget):
     def _deliver(self, *, selected: bool) -> None:
         """Emit once through the canonical bridge; no output policy runs here."""
         if self._delivered:
+            if not self._awaiting_delivery and not self._acknowledged:
+                self._awaiting_delivery = True
+                self._whole.setEnabled(False)
+                self._status.setText("Retrying capture delivery.")
+                self.reviewed_capture.emit(self._capture)
             return
         try:
             capture = (
@@ -266,10 +275,43 @@ class ScrollReviewPanel(QWidget):
             )
             return
         self._delivered = True
+        self._capture = capture
+        self._awaiting_delivery = True
         for control in (self._whole, self._range, self._top, self._height):
             control.setEnabled(False)
         self._status.setText("Capture accepted. Waiting for delivery.")
         self.reviewed_capture.emit(capture)
+
+    def acknowledge_delivery(self, capture_id: str) -> bool:
+        """Acknowledge actual output success, including successful tray-only output.
+
+        The controller calls this only after its existing output policy succeeds,
+        then releases the session. Returning an editor window is not required.
+        Unknown IDs cannot release another capture's resources.
+        """
+        if self._capture is None or self._capture.capture_id != capture_id:
+            return False
+        self._acknowledged = True
+        self._awaiting_delivery = False
+        self._whole.setEnabled(False)
+        self._status.setText("Capture delivered.")
+        return True
+
+    def delivery_failed(self, capture_id: str, message: str) -> bool:
+        """Retain accepted pixels and retry the same identity after output failure."""
+        if (
+            self._capture is None
+            or self._capture.capture_id != capture_id
+            or self._acknowledged
+        ):
+            return False
+        self._awaiting_delivery = False
+        self._whole.setText("&Retry delivery")
+        self._whole.setEnabled(True)
+        self._status.setText(
+            f"Capture delivery failed: {message}. Retry keeps the same image."
+        )
+        return True
 
     @override
     def closeEvent(self, event: QCloseEvent) -> None:
