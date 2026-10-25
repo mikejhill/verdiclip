@@ -24,7 +24,7 @@ from tests.capture.desktop import DesktopSession
 from tests.capture.test_popup_capture import InputTrace
 from tests.ux.test_app_journeys import (
     App,
-    make_app,  # noqa: F401 -- pytest fixture registration
+    make_app,
 )
 
 from verdiclip.capture.grabber import FrozenScreen, MssScreenSource
@@ -91,7 +91,7 @@ class NativeRun:
     @staticmethod
     def make(request: pytest.FixtureRequest, source: RealDesktop) -> App:
         """Obtain the registered app fixture without changing any user services."""
-        factory = request.getfixturevalue("make_app")
+        factory = request.getfixturevalue(make_app.__name__)
         assert callable(factory)
         app = factory(screens=source)
         assert isinstance(app, App)
