@@ -12,6 +12,8 @@ wheels/
 
 # Virtual environments
 .venv/
+.venv-*/
+.test-tmp/
 venv/
 ENV/
 
@@ -57,4 +59,5 @@ htmlcov/
 # UX journey snapshots (regenerate with: uv run poe ux-snapshots)
 docs/ux/snapshots/
 docs/ux/gallery/
+docs/ux/gallery-native/
 mutants/

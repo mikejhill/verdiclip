@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Self, override
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication,
     QMessageBox,
@@ -80,6 +81,7 @@ class ClosePrompt:
         box = QMessageBox(parent)
         box.setIcon(QMessageBox.Icon.Question)
         box.setWindowTitle("Unsaved changes")
+        box.setTextFormat(Qt.TextFormat.PlainText)
         box.setText(self.message)
         save = box.addButton("&Save", QMessageBox.ButtonRole.AcceptRole)
         discard = box.addButton("Do&n't save", QMessageBox.ButtonRole.DestructiveRole)

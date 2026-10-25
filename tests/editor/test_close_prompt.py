@@ -298,3 +298,12 @@ class TestDesign:
 
         lighter, darker = sorted((luminance(fg), luminance(bg)), reverse=True)
         return (lighter + 0.05) / (darker + 0.05)
+
+
+def test_close_prompt_treats_original_titles_as_plain_text(qtbot: QtBot) -> None:
+    """Capture/file titles cannot turn the close question into rich content."""
+    title = '<img src="file:///untrusted-title.png">'
+    box = ClosePrompt(title).build(None)
+    qtbot.addWidget(box)
+    assert box.textFormat() is Qt.TextFormat.PlainText
+    assert box.text() == title

@@ -23,6 +23,14 @@ class History:
         # A fresh capture starts undelivered; an opened file starts delivered
         self._delivered_depth: int | None = 0 if delivered else None
         self._listeners: list[HistoryListener] = []
+        self._states = [0]
+        self._redo_states: list[int] = []
+        self._next_state = 0
+
+    @property
+    def state_id(self) -> int:
+        """Identify content state across merges, undo/redo and branch replacement."""
+        return self._states[-1]
 
     @property
     def document(self) -> Document:
@@ -58,6 +66,11 @@ class History:
         """Call ``listener`` after every execute, undo, redo, or delivery mark."""
         self._listeners.append(listener)
 
+    def unsubscribe(self, listener: HistoryListener) -> None:
+        """Release a view listener when its document page is disposed."""
+        if listener in self._listeners:
+            self._listeners.remove(listener)
+
     def execute(self, command: Command) -> None:
         """Apply ``command`` and make it undoable, merging where allowed."""
         command.apply(self._document)
@@ -71,11 +84,15 @@ class History:
         ):
             self._delivered_depth = None
         self._undone.clear()
+        self._redo_states.clear()
+        self._next_state += 1
         mergeable = depth > 0 and not branched and self._delivered_depth != depth
         if mergeable and self._done[-1].merge(command):
+            self._states[-1] = self._next_state
             logger.debug("Merged %s into previous command", command.description)
         else:
             self._done.append(command)
+            self._states.append(self._next_state)
         self._notify()
 
     def undo(self) -> None:
@@ -85,6 +102,7 @@ class History:
         command = self._done.pop()
         command.revert(self._document)
         self._undone.append(command)
+        self._redo_states.append(self._states.pop())
         self._notify()
 
     def redo(self) -> None:
@@ -94,12 +112,16 @@ class History:
         command = self._undone.pop()
         command.apply(self._document)
         self._done.append(command)
+        self._states.append(self._redo_states.pop())
         self._notify()
 
-    def mark_delivered(self) -> None:
+    def mark_delivered(self, *, expected_state_id: int | None = None) -> bool:
         """Record that the current state has been delivered somewhere."""
+        if expected_state_id is not None and expected_state_id != self.state_id:
+            return False
         self._delivered_depth = len(self._done)
         self._notify()
+        return True
 
     def _notify(self) -> None:
         """Inform listeners of a change."""

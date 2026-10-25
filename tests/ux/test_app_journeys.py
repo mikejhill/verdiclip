@@ -246,6 +246,8 @@ def make_app(
 
     yield factory
     for app in created:
+        for record in app.controller.workspace.documents:
+            record.session.history.mark_delivered()
         for editor in app.controller.editors:
             editor.session.history.mark_delivered()
             editor.close()
@@ -1072,16 +1074,15 @@ class TestRememberedStyles:
     """Style choices carry over to the next screenshot."""
 
     def _open(self, app: App, qtbot: QtBot) -> EditorWindow:
-        """Capture and return the new editor."""
-        before = sum(editor.isVisible() for editor in app.controller.editors)
+        """Capture and select its tab without assuming a new top-level window."""
+        before = len(app.controller.workspace.documents)
         app.press_hotkey("fullscreen")
-        qtbot.waitUntil(
-            lambda: (
-                sum(editor.isVisible() for editor in app.controller.editors)
-                == before + 1
-            )
-        )
-        return app.controller.editors[-1]
+        qtbot.waitUntil(lambda: len(app.controller.workspace.documents) == before + 1)
+        record = app.controller.workspace.documents[-1]
+        host = app.controller.workspace.host_of(record.identifier)
+        assert host is not None
+        host.activate_page(next(page for page in host.pages if page.record is record))
+        return host
 
     @staticmethod
     def _pick_fill(editor: EditorWindow, hex_color: str) -> None:
