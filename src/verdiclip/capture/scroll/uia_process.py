@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from PySide6.QtCore import QCoreApplication, QObject, Signal
 
+from verdiclip.capture.scroll.uia_diagnostics import WorkerDiagnostics
 from verdiclip.capture.scroll.uia_messages import UiaAction, UiaRequest
 from verdiclip.capture.scroll.uia_worker import UiaWorkerLease
 from verdiclip.exceptions import CaptureError
@@ -59,6 +60,11 @@ class UiaProcess(QObject):
     def worker_pid(self) -> int | None:
         """Expose only the owned helper PID for lifetime/provenance checks."""
         return self._lease.worker_pid if self._lease is not None else None
+
+    @property
+    def diagnostics(self) -> WorkerDiagnostics | None:
+        """Expose bounded phase evidence, including after confirmed retirement."""
+        return self._lease.diagnostics if self._lease is not None else None
 
     def start(self, action: UiaAction, payload: dict[str, object]) -> UiaRequest:
         """Reserve one request before asynchronous startup/provider callbacks."""

@@ -189,3 +189,53 @@ be established; fractional-resampling and dynamic-content compatibility need
 further qualification and must never be labeled complete. Native scrolling stays
 unavailable by default. Mike must verify the completed isolated build before
 merge or release. The installed daily 0.12.1 is unchanged.
+
+## Helper readiness reliability correction
+
+Combined head `cdb948c3` retained the original CI failure and unchanged passing
+rerun. Capture-contract seed `3660914482` failed the PowerShell pipe fixture in
+9.368 seconds, before accepting READY for the first 120-character fixture
+payload. The unchanged retry passed in 3.545 seconds. These elapsed test times
+include cleanup; they do not identify launch, pipe or handshake latency.
+The original failure's precise cause remains unproven.
+
+The lease previously failed immediately on a Qt timeout callback, without
+checking its monotonic due time or transport bytes already buffered for a
+separately queued readyRead callback. Three controlled regressions fail before
+the correction and pass afterward: buffered READY, buffered operation result,
+and early timeout delivery. Real private-pipe fixtures also withhold readyRead
+or newConnection delivery while making bytes available, exercising both stages
+of the corrected drain path.
+Delayed connection notifications tolerate an already drained queue without
+raising or accepting the peer twice.
+
+The correction keeps the existing absolute 8-second cold-start cap and 3-second
+operation allowance. It adds no launch allowance and does not enlarge the
+binding's 12-second preparation cap. The timer is precise and checks monotonic
+time. A due timeout performs one nonblocking buffered read, then rechecks the
+process, request, phase and deadline generation before failing anything. Direct
+completion callbacks may submit another request without the old timeout
+terminating it. No wait, nested event loop or automatic action retry is added.
+[Qt documents timer scheduling and precision limits][qt-timer-accuracy]; these
+remain event-loop deadlines, not hard real-time scheduling guarantees.
+
+Diagnostics retain at most 32 relative-time lifecycle stamps, byte counts and
+cleanup state. Fixed stderr markers distinguish script entry, pipe connection
+and runtime preparation; arbitrary stderr text, paths, endpoint names, payloads
+and provider content are discarded. The protocol-only PowerShell fixture saves
+the immutable snapshot in JUnit, including on failure. A local fixture trace
+observed OS process start at 7ms, script entry at 267ms, READY at 355ms and
+confirmed retirement at 407ms. These are parent-observed callback/marker times;
+child progress can precede delivery. They are one protocol observation, not a
+latency guarantee or native scrolling qualification.
+
+A separate 2-second cleanup watchdog reports unconfirmed retirement while
+retaining the busy slot, process, pipe and resource callbacks. Only a finished
+signal or observed NotRunning state can confirm retirement. Early or stale
+watchdog callbacks cannot shorten this interval. Cancellation, invalid protocol,
+partial readiness and failed cleanup remain failures; preservation assertions
+are unchanged. A future genuine cold-start overrun still fails safely. New
+phase evidence is required to attribute such a recurrence; a green rerun alone
+does not establish that the historical hosted failure is resolved.
+
+[qt-timer-accuracy]: https://doc.qt.io/qt-6/qtimer.html#accuracy-and-timer-resolution

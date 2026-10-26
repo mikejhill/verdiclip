@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
+from dataclasses import asdict
 from pathlib import Path
 from textwrap import indent
 
@@ -18,18 +20,21 @@ from verdiclip.exceptions import CaptureError
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows PowerShell pipe protocol")
 def test_powershell_warm_pipe_accepts_repeated_variable_length_requests(
-    qtbot: QtBot, tmp_path: Path
+    qtbot: QtBot, tmp_path: Path, request: pytest.FixtureRequest
 ) -> None:
     """The real host's private pipe works without UIA, a window or input hardware."""
     peer = tmp_path / "pipe-peer.ps1"
     peer.write_text(
         "param([string]$PipeName)\n"
+        "[Console]::Error.WriteLine('VERDICLIP_UIA_PHASE=script_entered')\n"
         "$channel=[IO.Pipes.NamedPipeClientStream]::new('.', $PipeName,"
         "[IO.Pipes.PipeDirection]::InOut)\n"
         "$channel.Connect(4000)\n"
+        "[Console]::Error.WriteLine('VERDICLIP_UIA_PHASE=pipe_connected')\n"
         "$reader=[IO.StreamReader]::new($channel,[Text.UTF8Encoding]::new($false))\n"
         "$writer=[IO.StreamWriter]::new($channel,[Text.UTF8Encoding]::new($false))\n"
         "$writer.AutoFlush=$true\n"
+        "[Console]::Error.WriteLine('VERDICLIP_UIA_PHASE=runtime_ready')\n"
         "$writer.WriteLine((@{ready=$true;protocol=1}|ConvertTo-Json -Compress))\n"
         "while($null -ne ($line=$reader.ReadLine())) {\n"
         " $request=$line|ConvertFrom-Json\n"
@@ -72,11 +77,18 @@ def test_powershell_warm_pipe_accepts_repeated_variable_length_requests(
                 lambda previous=before: len(replies) > previous or bool(failures),
                 timeout=UiaProcess.STARTUP_MS + UiaProcess.DEADLINE_MS + 1000,
             )
-            assert not failures, (length, failures)
+            assert not failures, (length, failures, client.diagnostics)
     finally:
         client.cancel()
-        qtbot.waitUntil(idle)
-        client.deleteLater()
+        try:
+            qtbot.waitUntil(idle)
+        finally:
+            diagnostics = client.diagnostics
+            if diagnostics is not None:
+                request.node.user_properties.append(
+                    ("uia_diagnostics", json.dumps(asdict(diagnostics)))
+                )
+            client.deleteLater()
 
 
 @pytest.fixture

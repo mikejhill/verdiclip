@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import cast
 from uuid import uuid4
 
 from PySide6.QtCore import QObject, QSignalBlocker, Signal
@@ -15,6 +16,7 @@ class UiaPipe(QObject):
 
     received = Signal(bytes)
     failed = Signal(str)
+    connected = Signal()
 
     def __init__(self, parent: QObject) -> None:
         """Own only this worker's ephemeral server and accepted stream."""
@@ -32,7 +34,10 @@ class UiaPipe(QObject):
             raise CaptureError("Could not prepare private UI Automation transport")
 
     def _connected(self) -> None:
-        socket = self._server.nextPendingConnection()
+        # Qt returns nullptr for an empty queue; PySide 6.11 omits it in its stub.
+        socket = cast("QLocalSocket | None", self._server.nextPendingConnection())
+        if socket is None:
+            return
         if self._closed or self._socket is not None:
             socket.abort()
             socket.deleteLater()
@@ -42,12 +47,23 @@ class UiaPipe(QObject):
         self._server.close()
         socket.readyRead.connect(self._read)
         socket.disconnected.connect(self._disconnected)
+        self.connected.emit()
         self._read()
 
     def _read(self) -> None:
         socket = self._socket
         if not self._closed and socket is not None and socket.bytesAvailable():
             self.received.emit(socket.readAll().data())
+
+    def drain(self) -> None:
+        """Read only bytes already available, without waiting or pumping events."""
+        if (
+            not self._closed
+            and self._socket is None
+            and self._server.hasPendingConnections()
+        ):
+            self._connected()
+        self._read()
 
     def _disconnected(self) -> None:
         if not self._closed:

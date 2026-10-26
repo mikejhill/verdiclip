@@ -3,10 +3,12 @@
 param([Parameter(Mandatory=$true)][string]$PipeName)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+[Console]::Error.WriteLine('VERDICLIP_UIA_PHASE=script_entered')
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 if ($PipeName -notmatch '^verdiclip-uia-[a-f0-9]{32}$') { exit 1 }
 $channel = [IO.Pipes.NamedPipeClientStream]::new('.', $PipeName, [IO.Pipes.PipeDirection]::InOut)
 $channel.Connect(5000)
+[Console]::Error.WriteLine('VERDICLIP_UIA_PHASE=pipe_connected')
 $reader = [IO.StreamReader]::new($channel, [Text.UTF8Encoding]::new($false), $false, 1024, $true)
 $writer = [IO.StreamWriter]::new($channel, [Text.UTF8Encoding]::new($false), 1024, $true)
 $writer.AutoFlush = $true
@@ -80,6 +82,7 @@ public static class CaptureDesktop {
     exit 1
 }
 # Reuse this MTA only while the parent's finite active/idle lease remains alive.
+[Console]::Error.WriteLine('VERDICLIP_UIA_PHASE=runtime_ready')
 $writer.WriteLine((@{ ready=$true; protocol=1 } | ConvertTo-Json -Compress))
 while ($null -ne ($requestLine = $reader.ReadLine())) {
     $requestId = ''

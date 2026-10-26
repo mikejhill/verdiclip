@@ -1,7 +1,7 @@
 """Ephemeral user-scoped IPC without UIA, a display or input devices."""
 
 import pytest
-from PySide6.QtCore import QObject
+from PySide6.QtCore import QObject, QSignalBlocker
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from pytestqt.qtbot import QtBot
 
@@ -62,3 +62,34 @@ def test_lost_worker_connection_reports_failure(qtbot: QtBot) -> None:
     pipe.close()
     client.deleteLater()
     owner.deleteLater()
+
+
+def test_buffered_pipe_receipt_does_not_require_ready_read_delivery(
+    qtbot: QtBot,
+) -> None:
+    """A due deadline can inspect buffered bytes even if readyRead was overtaken."""
+    owner = QObject()
+    pipe = UiaPipe(owner)
+    pipe.listen()
+    client = QLocalSocket()
+    incoming: list[bytes] = []
+    pipe.received.connect(incoming.append)
+    client.connectToServer(pipe.name)
+    try:
+        qtbot.waitUntil(lambda: pipe.findChild(QLocalSocket) is not None)
+        accepted = pipe.findChild(QLocalSocket)
+        assert accepted is not None
+        with QSignalBlocker(accepted):
+            client.write(b'{"ready":true,"protocol":1}\n')
+            client.flush()
+            qtbot.waitUntil(lambda: accepted.bytesAvailable() > 0)
+            assert not incoming
+            pipe.drain()
+            assert incoming == [b'{"ready":true,"protocol":1}\n']
+            pipe.drain()
+            assert len(incoming) == 1
+    finally:
+        pipe.close()
+        client.abort()
+        client.deleteLater()
+        owner.deleteLater()
