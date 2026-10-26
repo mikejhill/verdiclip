@@ -34,6 +34,16 @@ def capture_input_boundary(
 def pytest_addoption(parser: pytest.Parser) -> None:
     """Add ``--ux-snapshots DIR`` to save a PNG for each journey step."""
     parser.addoption(
+        "--native-broker-handoff",
+        action="store_true",
+        help="Explicit exclusive-window execution of the production broker matrix.",
+    )
+    parser.addoption(
+        "--native-broker-physical",
+        action="store_true",
+        help="Include physical raw-pointer cases requiring the human operator.",
+    )
+    parser.addoption(
         "--ux-snapshots",
         default="",
         help="Directory to write UX journey step screenshots into.",

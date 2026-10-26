@@ -1,3 +1,89 @@
+# Prepared production-input qualification (current local checkpoint)
+
+The production broker matrix and isolated-preview scrolling composition are now
+implemented in source. This is preparation, not native evidence or permission to
+launch. Both manifest readiness flags remain false; the normal installation is
+untouched. Mike's local verification still precedes merge or release.
+
+## Concrete exclusive handoff
+
+Reserve **eight minutes** for six production-input cases on each of Qt 6.11.2 and
+6.12.0, then **two additional minutes with Mike** for physical raw-pointer cases.
+`./scripts/test_capture_broker_native.ps1` prints its plan without launching
+anything. Its execution switch is used only after an explicit exclusive handoff.
+The case runner creates at most three fixture hosts, or one separate test-owned
+Win32 owner/popup, plus one passive selection overlay per attached display.
+Each case has a separate process and a 40-second outer failure bound. Stop at
+the first failure, a locked/unknown session, unexpected foreground, or a guarded
+input-driver refusal. No bypass, virtual driver, global hotkey registration or
+persistent setting change is part of this plan.
+
+Receipts record Git head/dirty state, Python, Qt and QPA. Entry posts WM_HOTKEY
+to the fixture with fake registration; real global shortcut chords and held
+activation modifiers remain separate native gates.
+
+The script and test harness generate no OS input. A separately authorized guarded
+driver follows `driver-request.json`, restricted to its declared owned handles:
+Escape down/up or a left-button drag through the small physical fixture rectangle.
+Fixture-injected pointer interpretation is explicitly separate from the default
+production route. Only the additional human lane can qualify physical raw input;
+real callback counters and actual capture completion are required. Installation
+or an instruction file alone never establishes success.
+
+Capture observations use a RAM-only canonical sink: **no captured image is
+written to disk, the clipboard, or an editor**, including unexpected full-frame
+or Escape images. This lane qualifies input, selection and preservation only;
+it does not qualify production delivery. Receipts contain ownership, geometry,
+counts and errors, with no screenshots. Exact region geometry and cardinality
+remain assertions. Preservation checks include existing handles, visibility,
+modality, popup/grabs, focus/action identities, and for the external peer a reply
+correlated to a post-terminal request. The foreign popup observer uses documented
+[GUITHREADINFO](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-guithreadinfo)
+and [TrackPopupMenuEx](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-trackpopupmenuex).
+Transient focus events remain diagnostic traces; identity observations do not
+prove every intermediate focus state.
+
+Cleanup first cancels only the owned capture and independently confirms every
+native worker stopped and cleaned. Only then may fixture dialogs/menus close.
+Failure to confirm cleanup fails the case and uses only its owned process-tree
+abort; it is never a successful preservation result. The external peer has its
+own 45-second watchdog. No normal application window is a teardown target.
+
+## Composition and remaining gates
+
+An explicitly qualified private profile composes a single idle local-pipe UIA
+adapter, controller-owned workflow, live input-ownership predicate and backend
+with frame storage under the private bundle spool. Construction starts no helper
+or native input. Unqualified/default profiles return before resource creation;
+scrolling readiness requires native-UI readiness. The binding is now present;
+there is no missing composition dependency behind the input handoff.
+
+The above matrix still requires the exclusive handoff and actual guarded input.
+Physical pointer behavior requires Mike's two-minute observation. Real UIA
+provider scrolling, progress/review delivery, desktop accessibility presentation,
+and native tab interaction remain separate native qualification gates; this
+broker matrix does not certify them. Portable tests and replay transports cannot
+substitute for those observations. No current readiness flag is enabled.
+
+## Mutation cache correction
+
+The prior ordinal-cache risk is reproduced. The new locked-3.8.0 guard hashes
+actual candidate AST bodies and original functions, requires verified provenance
+binding metadata bytes, and treats legacy/unbound caches as cold. Preparation
+quarantines existing staging, then leaves only matched metadata before the
+unmodified CLI independently collects coverage. Postflight rejects vector/source
+drift before report or cache publication. Historical artifacts are preserved,
+not retroactively reclassified. Cached verdicts remain informational and do not
+prove fresh coverage of changed assertions.
+
+A repository-defined tiny actual-CLI probe runs cold, trusted unchanged, then
+covered-line-shift cases. The expected worker counts are respectively 2, 0, 1;
+the shifted body cannot inherit the old ordinal verdict. It changes no dependency
+code or test assertions. The first provenance-bound project run is intentionally
+cold and may be slower; timeout remains failure evidence, never a passing score.
+
+---
+
 # Combined preview: remaining qualification
 
 This is an integration handoff, not permission to enable a native capability.
@@ -90,7 +176,7 @@ change a same-ordinal mutant body while its original-function hash remains the
 same, allowing reuse of the old verdict. A source-derived model of this change's
 35-to-49 command inventory preserves the prior 35 bodies and appends 14; it is
 not a downloaded old inventory and does not establish corruption of this run.
-Keep the cached score informational. General coverage-safe reuse requires
+Keep the cached score informational. Before this correction, general coverage-safe reuse required
 candidate-identity comparison or affected-verdict invalidation. This tooling
 follow-up does not invalidate the fresh direct semantic replays or portable
 functional suites.
@@ -101,9 +187,9 @@ functional suites.
 | --- | --- | --- |
 | Exact-head portable qualification | Required after this test/document change | Both Qt suites, hosted CI, independent review, CodeQL findings and PR threads, and the existing mutation workflow must reach terminal results. Preserve failures and cached/fresh scope labels. |
 | Permission and exclusive desktop slot | Native input is currently held | Parent must explicitly hand over a bounded qualification window. A read-only WTS query on 2026-10-26 returned active/unlocked (state 0, flags 1); the desktop is **not** the sole blocker. No UI/input was sent for that check. Recheck at execution time. |
-| Combined native presentation | Existing capture harness is available but unrun for this combined head | After handoff, run `tests/capture/test_capture_native.py --require-interactive-capture` with Windows QPA on both supported Qt runtimes. It uses actual Qt/MSS presentation with replay input transport; retain that label. Assert existing menu/dialog identity, visibility, focus, handles and zero Hide/Close, including delivery and failure. |
-| Production capture input | The replay suite cannot qualify actual OS hooks/raw input/external menus | Capture owner must provide and run a bounded production-broker matrix for real Qt and external native menus, owned modal dialogs, cancellation, repeated requests and confirmed cleanup. Input-target guards remain active. Do not substitute replay for this gate. |
-| Scrolling runtime composition | The preview calls no `configure_scrolling`; default UIA and backend capability gates are false | Following capture qualification, add a reviewed composition that owns `UiaAdapter`/`UiaProcess` and a per-session `UiaFrameBackend`, binds the service's latched `input_active` predicate, uses private spool paths and acknowledges delivery only after cleanup. Portable integration tests must verify ownership, disabled defaults, error nonactivation, partial/retry identity and shutdown. Then qualify actual UIA discovery/consent/step/stop/partial review against test-owned content. A manifest flag alone cannot supply this missing composition. |
+| Combined native presentation | Existing capture harness is available but unrun for this combined head | After handoff, run `tests/capture/test_capture_native.py --require-interactive-capture` with Windows QPA on both supported Qt runtimes. It uses actual Qt/MSS presentation with replay input transport; retain that label. Assert existing menu/dialog identity, visibility, handles and zero Hide/Close. Its RAM-only observer does not qualify production delivery; production nonactivating delivery/error presentation needs its own reviewed native lane. |
+| Production capture input | Repo-defined real-broker matrix prepared; not executed | Run the bounded exclusive matrix described above. Positive foreground ownership, actual scoped input pairs and independent cleanup are required. RAM-only observation does not qualify delivery. |
+| Scrolling runtime composition | Composition implemented and portably exercised; default native gates remain false | After required preservation qualification, exercise real UIA discovery/consent/step/stop/partial review against test-owned content. Ownership, live input predicate and private spool binding are present; a manifest flag alone is still no qualification evidence. |
 | Isolated preview launch | `native_ui_ready` remains false; launcher refuses before QApplication | Keep it false until the preceding capabilities are verified. Build a new isolated runtime from the qualified exact head, self-check its private namespace/output/settings/integration restrictions, then enable only the verified profile. No normal installation replacement. |
 | Mike's local acceptance | Explicitly required | Provide that isolated build and known limits for Mike's test. No merge/release until acceptance. |
 

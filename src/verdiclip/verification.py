@@ -27,6 +27,7 @@ from verdiclip.platform.hotkeys import HotkeyService
 from verdiclip.platform.shortcuts import Shortcut, ShortcutRegistration
 from verdiclip.platform.startup import StartupRegistration
 from verdiclip.platform.windows import WindowLocator
+from verdiclip.preview_scrolling import compose_preview_scrolling
 from verdiclip.settings import (
     HotkeySettings,
     IntegrationSettings,
@@ -46,12 +47,15 @@ class PreviewProfile:
     root: Path
     commit: str
     native_ui_ready: bool = False
+    native_scrolling_ready: bool = False
 
     def __post_init__(self) -> None:
         """Reject ambiguous build identity and resolve one private bundle root."""
         if re.fullmatch(r"[0-9a-f]{40}", self.commit) is None:
             raise ValueError("Preview manifest requires a full lowercase commit SHA")
         object.__setattr__(self, "root", self.root.resolve())
+        if self.native_scrolling_ready and not self.native_ui_ready:
+            raise ValueError("Scrolling qualification requires native UI qualification")
 
     @classmethod
     def load(cls, manifest: Path) -> PreviewProfile:
@@ -63,6 +67,7 @@ class PreviewProfile:
             manifest.resolve().parent,
             payload["commit"],
             payload.get("native_ui_ready") is True,
+            payload.get("native_scrolling_ready") is True,
         )
 
     @property
@@ -97,6 +102,7 @@ class PreviewProfile:
         return {
             "commit": self.commit,
             "native_ui_ready": self.native_ui_ready,
+            "native_scrolling_ready": self.native_scrolling_ready,
             "label": self.label,
             "instance_name": self.instance_name,
             "settings": str(self.settings_path),
@@ -212,6 +218,11 @@ class PreviewController(AppController):
             ),
         )
         self.tray.setToolTip(profile.label)
+        compose_preview_scrolling(
+            self,
+            qualified=profile.native_scrolling_ready,
+            bundle_root=profile.root,
+        )
 
     @override
     def _wire_editor(self, editor: EditorWindow) -> None:

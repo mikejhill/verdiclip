@@ -63,3 +63,6 @@ docs/ux/gallery-native/
 mutants/
 /artifacts/tabs-ci/
 .tmp/
+
+# Mutation identity qualification receipts (CI artifacts, not source)
+/mutation-identity-*.json

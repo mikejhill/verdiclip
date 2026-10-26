@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QApplication, QWidget
 from shiboken6 import isValid
 
 from verdiclip.capture.models import Capture
+from verdiclip.capture.overlay import SelectionOverlay
 from verdiclip.capture.service import CaptureService
 from verdiclip.exceptions import CaptureError
 from verdiclip.geometry import Rect
@@ -102,6 +103,8 @@ class HarnessBudgets:
 
     deadline_ms: int = 5000
     cleanup_ms: int = 2000
+    selection_area: Rect | None = None
+    close_snapshot_on_finish: bool = True
 
     def __post_init__(self) -> None:
         """No fixture setting can disable either failure deadline."""
@@ -131,6 +134,8 @@ class CaptureHarness(QObject):
             raise ValueError("Choose a bounded drag or Escape harness")
         self.service, self.snapshot, self.send = service, snapshot, send
         self.outcome = outcome
+        self._selection_area = budgets.selection_area
+        self._close_snapshot_on_finish = budgets.close_snapshot_on_finish
         self.errors: list[str] = []
         self.captures: list[Capture] = []
         self.done = self.issued = self.expired = False
@@ -171,6 +176,26 @@ class CaptureHarness(QObject):
             return
         if not all(overlay.isVisible() for overlay in overlays):
             return
+        self.errors.extend(self._surface_errors(overlays))
+        self.errors.extend(self.snapshot.errors())
+        try:
+            self.expected = self._expected_area(overlays)
+        except (CaptureError, ValueError) as error:
+            self.errors.append(str(error))
+        if self.errors:
+            self.expire()
+            return
+        self.issued = True
+        assert self.expected is not None
+        try:
+            self.send(self.outcome, self.expected)
+        except (CaptureError, OSError, RuntimeError, ValueError) as error:
+            self.errors.append(str(error))
+            self.expire()
+
+    @staticmethod
+    def _surface_errors(overlays: tuple[SelectionOverlay, ...]) -> list[str]:
+        errors: list[str] = []
         for overlay in overlays:
             flags = overlay.windowFlags()
             if not (
@@ -178,22 +203,22 @@ class CaptureHarness(QObject):
                 and flags & Qt.WindowType.WindowTransparentForInput
                 and overlay.testAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
             ):
-                self.errors.append("Selection is not nonactivating/input-transparent")
-        self.errors.extend(self.snapshot.errors())
-        if self.errors:
-            self.expire()
-            return
+                errors.append("Selection is not nonactivating/input-transparent")
+        return errors
+
+    def _expected_area(self, overlays: tuple[SelectionOverlay, ...]) -> Rect:
+        if self._selection_area is not None:
+            area = self._selection_area.rounded()
+            if area.is_empty or not any(
+                area.intersected(o.screen_geometry.physical) == area for o in overlays
+            ):
+                raise CaptureError(
+                    "Declared fixture rectangle is outside the capture screen"
+                )
+            return area
         bounds = overlays[0].screen_geometry.physical
         width, height = min(70, bounds.width / 3), min(50, bounds.height / 3)
-        self.expected = Rect(
-            bounds.x + width, bounds.y + height, width, height
-        ).rounded()
-        self.issued = True
-        try:
-            self.send(self.outcome, self.expected)
-        except (CaptureError, OSError, RuntimeError, ValueError) as error:
-            self.errors.append(str(error))
-            self.expire()
+        return Rect(bounds.x + width, bounds.y + height, width, height).rounded()
 
     def _captured(self, capture: Capture) -> None:
         """Keep the real terminal result for exact rectangle/cardinality checks."""
@@ -237,6 +262,10 @@ class CaptureHarness(QObject):
         self.cleanup_confirmed = not self.service.is_selecting
         self.errors.extend(self.snapshot.errors())
         if not self.expired:
+            if not self.issued:
+                self.errors.append(
+                    "Capture terminated before declared driver instruction"
+                )
             if self.outcome == "escape" and self.captures:
                 self.errors.append("Escape delivered an image")
             elif self.outcome == "drag" and (
@@ -249,7 +278,8 @@ class CaptureHarness(QObject):
         self._poll.stop()
         self._deadline.stop()
         self._cleanup_deadline.stop()
-        self.snapshot.close()
+        if self._close_snapshot_on_finish:
+            self.snapshot.close()
         self.completed.emit()
 
     def close(self) -> None:

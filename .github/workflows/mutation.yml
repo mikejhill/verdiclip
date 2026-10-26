@@ -6,8 +6,8 @@ name: Mutation testing
 # Runs on Linux (mutmut forks per mutant) with Qt's offscreen platform.
 #
 # Speed: mutmut keeps each mutant's verdict in mutants/ and retests only the
-# functions whose code changed. Pull requests and pushes to main restore that
-# folder from the cache, so they retest just the changed functions; the weekly
+# functions/candidate bodies whose identities changed. Legacy ordinal-only
+# caches are cold; trusted provenance binds every reused body and verdict. The weekly
 # run starts fresh and is the source of truth for the score.
 
 on:
@@ -19,6 +19,8 @@ on:
       - "uv.lock"
       - "scripts/mutation_report.py"
       - "scripts/mutation_ci.py"
+      - "scripts/mutation_identity.py"
+      - "scripts/mutation_identity_probe.py"
       - "scripts/mutation-cache-compatibility.json"
       - ".github/workflows/mutation.yml"
   # Keeps the cached verdicts current, so pull requests start from main's
@@ -31,6 +33,8 @@ on:
       - "uv.lock"
       - "scripts/mutation_report.py"
       - "scripts/mutation_ci.py"
+      - "scripts/mutation_identity.py"
+      - "scripts/mutation_identity_probe.py"
       - "scripts/mutation-cache-compatibility.json"
       - ".github/workflows/mutation.yml"
   schedule:
@@ -99,7 +103,7 @@ jobs:
           done
           tooling=$(git diff --name-only "origin/$BASE...HEAD" -- \
             .github/workflows/mutation.yml scripts/mutation_report.py \
-            scripts/mutation_ci.py scripts/mutation-cache-compatibility.json \
+            scripts/mutation_ci.py scripts/mutation_identity.py scripts/mutation_identity_probe.py scripts/mutation-cache-compatibility.json \
             tests/mutation_support.py pyproject.toml uv.lock)
           if [ -z "$patterns" ] && [ -n "$tooling" ]; then
             # Mutation setup changed: prove it still works on one small module
@@ -112,14 +116,16 @@ jobs:
             echo "No source modules changed; the weekly run covers test-only changes." >> "$GITHUB_STEP_SUMMARY"
             echo "run=false" >> "$GITHUB_OUTPUT"
           fi
+      - name: Qualify candidate identity with the actual locked CLI
+        if: steps.scope.outputs.run == 'true'
+        run: uv run --no-sync --group mutation python scripts/mutation_identity_probe.py
       - name: Choose compatible verdict cache
         id: cache_plan
         if: steps.scope.outputs.run == 'true'
         env:
-          CACHE_PREFIX: mutmut-v2-${{ hashFiles('uv.lock', 'pyproject.toml', 'tests/mutation_support.py', '.github/workflows/mutation.yml', 'scripts/mutation_ci.py', 'scripts/mutation-cache-compatibility.json') }}-
+          CACHE_PREFIX: mutmut-v3-${{ hashFiles('uv.lock', 'pyproject.toml', 'tests/mutation_support.py', '.github/workflows/mutation.yml', 'scripts/mutation_ci.py', 'scripts/mutation_identity.py', 'scripts/mutation_identity_probe.py', 'scripts/mutation-cache-compatibility.json') }}-
         run: |
           echo "prefix=$CACHE_PREFIX" >> "$GITHUB_OUTPUT"
-          echo "legacy=$(uv run --no-sync python scripts/mutation_ci.py legacy-key)" >> "$GITHUB_OUTPUT"
       - name: Restore earlier verdicts
         # The weekly run starts fresh, so its score never rests on a stale verdict
         if: steps.scope.outputs.run == 'true' && github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
@@ -130,7 +136,6 @@ jobs:
           key: ${{ steps.cache_plan.outputs.prefix }}${{ github.run_id }}
           restore-keys: |
             ${{ steps.cache_plan.outputs.prefix }}
-            ${{ steps.cache_plan.outputs.legacy }}
       - name: Verify portable baseline before mutation
         if: steps.scope.outputs.run == 'true'
         run: |
@@ -146,6 +151,9 @@ jobs:
           # its explicit-name mode deliberately retests already-known verdicts.
           # shellcheck disable=SC2086
           uv run --no-sync python scripts/mutation_ci.py configure $PATTERNS > mutation-scope.json
+      - name: Prepare candidate identity guard
+        if: steps.scope.outputs.run == 'true'
+        run: uv run --group mutation python scripts/mutation_identity.py prepare --max-children "$(nproc)"
       - name: Run mutmut
         id: mutate
         if: steps.scope.outputs.run == 'true'
@@ -153,47 +161,44 @@ jobs:
           # only_mutate selects the same PR files through public configuration.
           # No explicit names: retain valid verdicts, test changed/new functions.
           # Weekly/dispatch runs remain fresh, unscoped whole-package runs.
-          # Keep only the verdicts (*.meta). mutmut never overwrites a copied
-          # file, so stale copies would leave it measuring coverage on old
-          # code; from fresh copies it re-mutates every file and keeps the
-          # verdicts of each function whose code is unchanged. Fresh stats map
-          # tests to the current code.
-          rm -rf mutants/mutmut-stats.json mutants/tests
-          if [ -d mutants/src ]; then
-            find mutants/src -name '*.py' -delete
-            find mutants/src -name '*.py.meta' | while read -r meta; do
-              source="${meta#mutants/}"
-              [ -f "${source%.meta}" ] || rm -f "$meta"
-            done
-          fi
+          # Preparation leaves only body-matched metadata. This unmodified CLI
+          # collects coverage from fresh originals; postflight rejects any
+          # candidate-vector drift before reporting or saving verdicts.
           uv run --group mutation mutmut run --max-children "$(nproc)" > mutmut.log 2>&1 || {
             tail -n 200 mutmut.log
             exit 1
           }
           tail -n 3 mutmut.log
+      - name: Verify candidate identities
+        id: identity
+        if: always() && steps.scope.outputs.run == 'true'
+        run: uv run --no-sync --group mutation python scripts/mutation_identity.py verify
       - name: Preserve available verdicts and completion status
         id: verdicts
         if: always() && steps.scope.outputs.run == 'true'
         env:
-          MUTATION_OUTCOME: ${{ steps.mutate.outcome }}
+          MUTATION_OUTCOME: ${{ steps.mutate.outcome == 'success' && steps.identity.outcome == 'success' && 'success' || 'failure' }}
           SOURCE_SHA: ${{ github.sha }}
           PATTERNS: ${{ steps.scope.outputs.patterns }}
+          IDENTITY_OUTCOME: ${{ steps.identity.outcome }}
         run: |
           uv run --no-sync python scripts/mutation_ci.py record > mutation-run-state.json
-          uv run --no-sync --group mutation mutmut results --all true > mutation-results.txt
+          if [ "$IDENTITY_OUTCOME" = 'success' ]; then
+            uv run --no-sync --group mutation mutmut results --all true > mutation-results.txt
+          fi
       - name: Restore original project configuration
         if: always() && steps.scope.outputs.run == 'true'
         run: uv run --no-sync python scripts/mutation_ci.py restore
       - name: Save verdicts for later runs
         # Also after a failure or cancellation: mutmut records each verdict as
         # it goes, so the next run resumes instead of starting over
-        if: always() && steps.scope.outputs.run == 'true'
+        if: always() && steps.scope.outputs.run == 'true' && steps.identity.outcome == 'success'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: mutants
           key: ${{ steps.cache_plan.outputs.prefix }}${{ github.run_id }}
       - name: Report the score (enforce the floor on whole-package runs)
-        if: always() && steps.mutate.outcome == 'success' && steps.verdicts.outcome == 'success'
+        if: always() && steps.mutate.outcome == 'success' && steps.identity.outcome == 'success' && steps.verdicts.outcome == 'success'
         env:
           EVENT: ${{ github.event_name }}
           PATTERNS: ${{ steps.scope.outputs.patterns }}
@@ -205,6 +210,14 @@ jobs:
           # shellcheck disable=SC2086
           uv run --group mutation python scripts/mutation_report.py mutation-results.txt \
             --fail-under "$floor" --show-diffs 25 ${PATTERNS:+--only $PATTERNS} | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Retain identity diagnostics
+        if: always() && steps.scope.outputs.run == 'true'
+        run: |
+          for name in receipt expected; do
+            if [ -f ".test-tmp/mutation-identity/$name.json" ]; then
+              cp -- ".test-tmp/mutation-identity/$name.json" "mutation-identity-$name.json"
+            fi
+          done
       - name: Upload results
         if: always() && steps.scope.outputs.run == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -216,4 +229,8 @@ jobs:
             mutation-baseline.txt
             mutation-run-state.json
             mutation-scope.json
+            mutation-identity-probe.json
+            mutation-identity-probe-*.log
+            mutation-identity-receipt.json
+            mutation-identity-expected.json
           if-no-files-found: ignore

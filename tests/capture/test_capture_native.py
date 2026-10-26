@@ -10,10 +10,11 @@ import ctypes
 import ctypes.wintypes
 import json
 import sys
+from abc import abstractmethod
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
-from typing import override
+from typing import Protocol, override
 
 import pytest
 from PySide6.QtCore import QElapsedTimer, QPoint, Qt, QThread, QTimer
@@ -23,15 +24,33 @@ from pytestqt.qtbot import QtBot
 from shiboken6 import isValid
 from tests.capture.desktop import DesktopSession
 from tests.capture.harness_transport import ReplayWorkerTransport
-from tests.capture.preservation_harness import CaptureHarness, PreservationSnapshot
+from tests.capture.preservation_harness import (
+    CaptureHarness,
+    HarnessBudgets,
+    PreservationSnapshot,
+)
+from tests.capture.production_matrix import MemoryCaptureSink
 from tests.capture.test_popup_capture import InputTrace
 from tests.ux.test_app_journeys import App, make_app
 
 from verdiclip.capture.grabber import FrozenScreen, MssScreenSource
+from verdiclip.geometry import Rect
 from verdiclip.settings import CaptureSettings, Settings
 from verdiclip.shell.settings_dialog import SettingsDialog
 
 pytestmark = pytest.mark.native_desktop
+
+
+class HarnessInput(Protocol):
+    """The coordinator does not infer real input from a driver's receipt."""
+
+    @abstractmethod
+    def send(self, outcome: str, area: Rect) -> None:
+        """Issue a replay event or an external-driver instruction explicitly."""
+
+    @abstractmethod
+    def cleanup_errors(self) -> list[str]:
+        """Report actual worker cleanup, never merely hidden capture surfaces."""
 
 
 class RealDesktop(MssScreenSource):
@@ -62,7 +81,7 @@ class NativeRun:
         self,
         app: App,
         qapp: QApplication,
-        transport: ReplayWorkerTransport,
+        transport: HarnessInput,
         *,
         outcome: str,
     ) -> None:
@@ -107,6 +126,10 @@ class NativeRun:
         )
         app = factory(settings=settings, screens=source)
         assert isinstance(app, App)
+        patch = request.getfixturevalue("monkeypatch")
+        assert isinstance(patch, pytest.MonkeyPatch)
+        sink = MemoryCaptureSink()
+        patch.setattr(app.controller, "deliver_reviewed_capture", sink.accept)
         return app
 
     def schedule(self, action: Callable[[], None]) -> None:
@@ -138,11 +161,18 @@ class NativeRun:
             return
         self._exposure.stop()
         self.expected_popup = InputTrace.name(QApplication.activePopupWidget())
+        try:
+            budgets = self.budgets()
+        except (OSError, ValueError) as error:
+            self.errors.append(str(error))
+            self._finish_hosts()
+            return
         self.harness = CaptureHarness(
             self.app.controller.capture,
-            PreservationSnapshot(self.qapp, windows),
+            self.snapshot(windows),
             self.transport.send,
             outcome=self.outcome,
+            budgets=budgets,
         )
         self.harness.completed.connect(self._complete)
         self.harness.start()
@@ -175,6 +205,18 @@ class NativeRun:
             self.errors.append(f"PostThreadMessage failed: {ctypes.get_last_error()}")
             self._finish_hosts()
 
+    def selection_area(self) -> Rect | None:
+        """Replay defaults retain their original geometry policy."""
+        return None
+
+    def budgets(self) -> HarnessBudgets:
+        """Keep replay defaults; production subclasses may choose bounded geometry."""
+        return HarnessBudgets(selection_area=self.selection_area())
+
+    def snapshot(self, windows: tuple[QWidget, ...]) -> PreservationSnapshot:
+        """Permit an external-owner observer without replacing capture input."""
+        return PreservationSnapshot(self.qapp, windows)
+
     def _complete(self) -> None:
         """Record cleanup/preservation before unwinding any owned modal loop."""
         if self.harness is not None:
@@ -203,6 +245,7 @@ class NativeRun:
                     "outcome": self.outcome,
                     "native_gui": True,
                     "input_transport": "replay",
+                    "output_lane": "RAM-only observer; production delivery unqualified",
                     "native_hooks": False,
                     "errors": self.errors,
                     "expected_popup": self.expected_popup,

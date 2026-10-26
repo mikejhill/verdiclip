@@ -1,11 +1,5 @@
 {
-  "restore_key": "mutmut-v1-6022449dd86a4546b03bb4b514470f4d2ea82029566416cab33a98e669533c4d-",
-  "reason": "One-time migration: test execution/forkserver/timeouts/dependencies unchanged; public only_mutate replaces explicit-name reruns. Every approved input, including new runner/workflow, must match exactly.",
-  "files": {
-    "uv.lock": "14e1d58cd3d516b6eff172dba8b92beccb93ecd7741add578af7a99adb39da78",
-    "pyproject.toml": "bd9c51ae790c6075418405eaf811b0516af27cf055183c070d71f67c4b94eade",
-    "tests/mutation_support.py": "fb30daeb912647c85770076636456520a181c59a4cc8e940152b04ba924ad032",
-    ".github/workflows/mutation.yml": "cdbd65066b035d2ec63f2c1fadae8bb6c9dc48f60d25f638f730d6b16c426be4",
-    "scripts/mutation_ci.py": "e891ddcd9cb9211350fe1a3e7752764938314901718876e96593af1793d65be4"
-  }
+  "restore_key": "",
+  "files": {},
+  "reason": "Disabled: legacy caches have no verified candidate-identity provenance. Preserve their artifacts, but compute fresh verdicts once. Subsequent v3 identity-verified caches can resume; historical informational scores are not retroactively requalified."
 }
