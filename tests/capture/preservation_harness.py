@@ -67,7 +67,7 @@ class PreservationSnapshot(QObject):
             QEvent.Type.Hide,
             QEvent.Type.Close,
         }:
-            self.changes.append(event.type().name)
+            self.changes.append(f"{event.type().name}:{self.phase}")
         return False
 
     def errors(self) -> list[str]:

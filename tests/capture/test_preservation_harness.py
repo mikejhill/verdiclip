@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -62,6 +63,7 @@ def test_shared_driver_waits_for_broker_not_focus_and_preserves_every_owner(
     qapp: QApplication,
     kind: str,
     outcome: str,
+    request: pytest.FixtureRequest,
 ) -> None:
     """The native harness's actual driver works with existing popup/modal grabs."""
     scene, context = ExistingScene(kind, qapp), CaptureContext(qapp)
@@ -82,6 +84,9 @@ def test_shared_driver_waits_for_broker_not_focus_and_preserves_every_owner(
         context.broker.ready.emit()
         snapshot.phase = "broker_ready_overlays_present"
         qtbot.waitUntil(lambda: harness.done)
+        request.node.user_properties.append(
+            ("preservation_trace", json.dumps(snapshot.transitions))
+        )
         assert not harness.errors, (
             harness.errors,
             snapshot.transitions,
