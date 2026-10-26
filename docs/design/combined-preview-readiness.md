@@ -41,7 +41,12 @@ cleanup-callback integration test: pytest-qt stopped at its default five seconds
 before the unchanged eight-second startup policy expired. The observer now uses
 the existing protocol-test budget of startup + operation + one-second reporting
 margin; production deadlines and completion/cleanup assertions are unchanged.
-The delayed child startup's exact cause is unproven. This repairs the test's
+Another randomized run exposed the same five-second mismatch in the bad-startup
+handshake case. Protocol reply observers now consistently derive their bound
+from the configured startup + operation budgets + one-second reporting margin;
+the chained two-reply case accounts for both operations. Cleanup, idle and owner
+destruction observers and all protocol/phase assertions retain their contracts.
+The delayed child startup's exact cause is unproven. This repairs the tests'
 budget mismatch, not evidence of a diagnosed native helper stall.
 
 ## What the 72 unqualified mappings mean

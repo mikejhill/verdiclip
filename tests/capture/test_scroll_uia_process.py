@@ -20,6 +20,11 @@ from verdiclip.capture.scroll.uia_worker import UiaWorkerLease
 from verdiclip.exceptions import CaptureError
 
 
+def reply_observer_ms(*, operations: int = 1) -> int:
+    """Observe the unchanged worker budgets; never define its phase deadlines."""
+    return UiaProcess.STARTUP_MS + operations * UiaProcess.DEADLINE_MS + 1000
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows PowerShell pipe protocol")
 def test_powershell_warm_pipe_accepts_repeated_variable_length_requests(
     qtbot: QtBot, tmp_path: Path, request: pytest.FixtureRequest
@@ -77,7 +82,7 @@ def test_powershell_warm_pipe_accepts_repeated_variable_length_requests(
             # Wait for the production receipt/error rather than an earlier test cap.
             qtbot.waitUntil(
                 lambda previous=before: len(replies) > previous or bool(failures),
-                timeout=UiaProcess.STARTUP_MS + UiaProcess.DEADLINE_MS + 1000,
+                timeout=reply_observer_ms(),
             )
             assert not failures, (length, failures, client.diagnostics)
     finally:
@@ -152,7 +157,7 @@ def test_success_releases_slot_before_callback_retry(
 
     client.completed.connect(receive)
     client.start(UiaAction.INSPECT, {})
-    qtbot.waitUntil(lambda: len(results) == 2)
+    qtbot.waitUntil(lambda: len(results) == 2, timeout=reply_observer_ms(operations=2))
     assert not client.busy
     client.deleteLater()
 
@@ -171,7 +176,7 @@ def test_invalid_response_fails_once_and_allows_retry(
     failures: list[str] = []
     client.completed.connect(lambda _request, reply: successes.append(reply))
     client.failed.connect(lambda _request, message: failures.append(message))
-    with qtbot.waitSignal(client.failed):
+    with qtbot.waitSignal(client.failed, timeout=reply_observer_ms()):
         client.start(UiaAction.INSPECT, {})
     qtbot.waitUntil(lambda: not client.busy)
     assert len(failures) == 1
@@ -188,7 +193,7 @@ def test_silent_provider_deadline_kills_only_owned_child(
     client = UiaProcess(
         helper_command=(sys.executable, str(helper), "hang"), qualified=True
     )
-    with qtbot.waitSignal(client.failed) as failed:
+    with qtbot.waitSignal(client.failed, timeout=reply_observer_ms()) as failed:
         client.start(UiaAction.OBSERVE, {})
     assert "timed out" in failed.args[1]
     qtbot.waitUntil(lambda: not client.busy)
@@ -220,7 +225,7 @@ def test_missing_executable_does_not_leak_busy_state(
 ) -> None:
     """Failed startup also has a terminal cleanup path even without finished."""
     client = UiaProcess(helper_command=(str(tmp_path / "missing.exe"),), qualified=True)
-    with qtbot.waitSignal(client.failed):
+    with qtbot.waitSignal(client.failed, timeout=reply_observer_ms()):
         client.start(UiaAction.INSPECT, {})
     qtbot.waitUntil(lambda: not client.busy)
     client.deleteLater()
@@ -303,7 +308,7 @@ def test_busy_notification_can_cancel_before_actual_dispatch(
         helper_command=(sys.executable, str(helper), "success"), qualified=True
     )
     client.busy_changed.connect(lambda busy: client.cancel() if busy else None)
-    with qtbot.waitSignal(client.failed) as failed:
+    with qtbot.waitSignal(client.failed, timeout=reply_observer_ms()) as failed:
         request = client.start(UiaAction.STEP, {})
     assert failed.args[0] is request
     assert not client.busy
@@ -317,12 +322,12 @@ def test_warm_worker_reuses_pid_and_cancellation_ends_scope(
     client = UiaProcess(
         helper_command=(sys.executable, str(helper), "success"), qualified=True
     )
-    with qtbot.waitSignal(client.completed):
+    with qtbot.waitSignal(client.completed, timeout=reply_observer_ms()):
         client.start(UiaAction.INSPECT, {})
     first_pid = client.worker_pid
     assert first_pid is not None
     assert first_pid > 0
-    with qtbot.waitSignal(client.completed):
+    with qtbot.waitSignal(client.completed, timeout=reply_observer_ms()):
         client.start(UiaAction.OBSERVE, {})
     assert client.worker_pid == first_pid
     client.cancel()
@@ -339,11 +344,11 @@ def test_warm_worker_idle_expiry_releases_child_and_allows_fresh_start(
     client = UiaProcess(
         helper_command=(sys.executable, str(helper), "success"), qualified=True
     )
-    with qtbot.waitSignal(client.completed):
+    with qtbot.waitSignal(client.completed, timeout=reply_observer_ms()):
         client.start(UiaAction.INSPECT, {})
     qtbot.waitUntil(lambda: client.worker_pid is None)
     assert not client.busy
-    with qtbot.waitSignal(client.completed):
+    with qtbot.waitSignal(client.completed, timeout=reply_observer_ms()):
         client.start(UiaAction.OBSERVE, {})
     client.cancel()
     qtbot.waitUntil(lambda: not client.busy)
@@ -361,7 +366,7 @@ def test_destroyed_ui_owner_releases_application_lease_after_child(
     client = UiaProcess(
         owner, helper_command=(sys.executable, str(helper), "success"), qualified=True
     )
-    with qtbot.waitSignal(client.completed):
+    with qtbot.waitSignal(client.completed, timeout=reply_observer_ms()):
         client.start(UiaAction.INSPECT, {})
     new_leases = [
         lease for lease in app.findChildren(UiaWorkerLease) if id(lease) not in before
@@ -379,7 +384,7 @@ def test_worker_absolute_lifetime_interrupts_a_silent_request(
     client = UiaProcess(
         helper_command=(sys.executable, str(helper), "hang"), qualified=True
     )
-    with qtbot.waitSignal(client.failed) as failed:
+    with qtbot.waitSignal(client.failed, timeout=reply_observer_ms()) as failed:
         client.start(UiaAction.OBSERVE, {})
     assert "lifetime limit" in failed.args[1]
     qtbot.waitUntil(lambda: not client.busy)
@@ -396,7 +401,7 @@ def test_first_operation_has_its_own_deadline_after_ready(
     client = UiaProcess(
         helper_command=(sys.executable, str(helper), "hang"), qualified=True
     )
-    with qtbot.waitSignal(client.failed, timeout=4000) as failed:
+    with qtbot.waitSignal(client.failed, timeout=reply_observer_ms()) as failed:
         client.start(UiaAction.STEP, {})
     assert "operation timed out" in failed.args[1]
     qtbot.waitUntil(lambda: not client.busy)
@@ -425,7 +430,7 @@ def test_cleanup_callback_failure_cannot_strand_other_resources(
     # timing out at pytest-qt's default 5s before startup has expired.
     with qtbot.waitSignal(
         client.completed,
-        timeout=UiaProcess.STARTUP_MS + UiaProcess.DEADLINE_MS + 1000,
+        timeout=reply_observer_ms(),
     ):
         client.start(UiaAction.INSPECT, {})
     with qtbot.waitSignal(client.scope_closed):
@@ -446,7 +451,7 @@ def test_bad_startup_handshake_cannot_dispatch_an_operation(
     client = UiaProcess(
         helper_command=(sys.executable, str(helper), mode), qualified=True
     )
-    with qtbot.waitSignal(client.failed) as failed:
+    with qtbot.waitSignal(client.failed, timeout=reply_observer_ms()) as failed:
         client.start(UiaAction.INSPECT, {})
     assert "startup" in failed.args[1] or "protocol" in failed.args[1]
     qtbot.waitUntil(lambda: not client.busy)
