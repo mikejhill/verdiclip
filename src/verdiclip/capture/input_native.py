@@ -66,6 +66,9 @@ class InputPlatform(Protocol):
     def control_held(self) -> bool:
         """Read a modifier for virtual arrow-key movement."""
 
+    def shift_held(self) -> bool:
+        """Read Shift for backwards navigation inside owned capture controls."""
+
     def keys_held(self) -> frozenset[int]:
         """Snapshot pre-existing key ownership; never decode or record text."""
 
@@ -192,6 +195,10 @@ class Win32InputPlatform:
     def control_held(self) -> bool:
         """Support keyboard selection without moving the real cursor."""
         return bool(self._api.GetAsyncKeyState(0x11) & 0x8000)
+
+    def shift_held(self) -> bool:
+        """Read a modifier without altering focus or keyboard ownership."""
+        return bool(self._api.GetAsyncKeyState(0x10) & 0x8000)
 
     def keys_held(self) -> frozenset[int]:
         """Bounded ephemeral key-state snapshot for matched release ownership."""

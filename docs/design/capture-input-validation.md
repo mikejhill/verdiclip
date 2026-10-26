@@ -31,7 +31,7 @@ click into a target application.
   separate from the canonical `ReviewedCapture` contract. Combined shell behavior
   remains an integration gate.
 
-## Portable primary evidence
+## Ordinary capture baseline evidence
 
 The exact staged candidate passed **1,533 tests**, one expected platform skip and
 15 supplemental desktop tests deselected. Total coverage was **95.35%**; changed
@@ -59,6 +59,43 @@ This is an offscreen regression, not a native-input result. Modal journeys asser
 preserved visibility and modality while using the new semantic input route; Qt
 may still label an overlay blocked in its ordinary input route.
 
+## Composed scrolling entry checkpoint
+
+`ScrollWorkflow` now composes semantic discovery, explicit confirmation,
+nonactivating progress, bounded acquisition, restoration, review and canonical
+delivery. Ordinary clicks propose scrolling only for a verified semantic
+scrollbar. Content clicks retain ordinary window capture; explicit scrolling
+also supports a dragged content rectangle inside one verified container.
+Neither discovery nor selection forwards a click or grants consent to scroll.
+The window handle, process ID and process creation time must match the frozen
+selection's generation before a proposal can be offered.
+
+The portable aggregate passed **1,599 tests**, one expected platform skip and
+16 supplemental native tests deselected, with randomized seed **24681**.
+Total coverage was **95.00%** and changed-line coverage **95.15%** against
+`origin/main`. Ruff, formatting, strict ty and independent Codex review passed.
+Replay providers exercise the entire service/broker/confirmation/acquisition/
+review path; synthetic displays and deterministic pixels require no hardware.
+
+Target, progress and review controls consume semantic pointer/Tab/arrow commands
+without taking Qt focus or opening a native combo popup. Progress must fit
+outside the captured viewport. Input expiry retains review pixels; a new explicit
+capture request resumes a fresh bounded lease. Publication waits for a successful
+input cleanup receipt. Failed delivery retries the same canonical object and ID.
+After publication the shell owns accepted sessions even if review closes; the UI
+labels that action as retaining the capture. Old transferred review callbacks
+cannot cancel a later capture. Failed discovery cleanup cannot leave a retry in
+an unfinishable discovery state.
+
+Shell integration remains explicit: create `ScrollWorkflow` with a backend
+factory, the controller's `review_scrolling_capture` owner factory, private spool
+parent and `input_active=lambda: capture.input_active`. Attach it once through
+`capture.set_scroll_workflow(workflow)`, expose `capture_scrolling`, and include
+`work_changed` in idle/update readiness. The owner must retain accepted pending
+captures, acknowledge successful delivery by ID, and present output without
+activating pre-existing foreground content. Native backend capability is still
+disabled by default; this checkpoint does not grant qualification.
+
 ## Pending compatibility and acceptance gates
 
 The desktop is locked. No production native broker test has been attempted in
@@ -69,8 +106,9 @@ cleanup. Physical pointer acceleration/precision and actual hardware remain
 honestly distinct from deterministic replay. A transparent hit can safely refuse
 capture rather than guess its underlying recipient.
 
-This component is not completed scrolling capture. Semantic scrollbar selection,
-explicit hidden-bar entry, confirmation/progress/review input routing, broader
-registration compatibility and combined shell integration remain separate work.
-Native scrolling stays unavailable by default. Mike must verify the completed
-isolated build before merge or release. The installed daily 0.12.1 is unchanged.
+Combined shell integration and native qualification remain pending. Exact pixel
+registration deliberately returns a useful partial prefix when overlap cannot
+be established; fractional-resampling and dynamic-content compatibility need
+further qualification and must never be labeled complete. Native scrolling stays
+unavailable by default. Mike must verify the completed isolated build before
+merge or release. The installed daily 0.12.1 is unchanged.

@@ -7,6 +7,21 @@ from verdiclip.capture.input_routing import MoveMode
 from verdiclip.geometry import Point, Rect
 
 
+def test_controls_navigation_does_not_rebase_the_virtual_pointer() -> None:
+    """Field adjustments cannot silently move the following mouse click target."""
+    initial = Point(100, 100)
+    policy = CaptureInputPolicy(initial, Rect(0, 0, 800, 600))
+    result = policy.key(0x27, pressed=True, control=True, controls=True)
+    assert policy.pointer.point == initial
+    assert result.events[0].reason == "arrow:right"
+    assert result.events[0].amount == 10
+    policy.key(0x27, pressed=False, controls=True)
+    policy.key(policy.TAB, pressed=True, shift=True, controls=True)
+    backwards = policy.key(policy.TAB, pressed=False, shift=True, controls=True)
+    assert backwards.events[0].kind is InputKind.NEXT
+    assert backwards.events[0].reason == "previous"
+
+
 def test_owned_menu_trace_replays_without_forwarding_a_click() -> None:
     """Frozen button coordinates never overwrite tracked move endpoints."""
     policy = CaptureInputPolicy(Point(262, 168), Rect(0, 0, 1920, 1080))

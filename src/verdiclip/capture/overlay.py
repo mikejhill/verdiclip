@@ -166,6 +166,9 @@ class SelectionOverlay(QWidget):
 
     region_chosen = Signal(object)  # Rect (physical)
     window_chosen = Signal(object, str)  # Rect (physical), title
+    window_selected = Signal(
+        object, object
+    )  # immutable window snapshot, physical point
     cancelled = Signal()
 
     def __init__(  # noqa: PLR0913
@@ -460,9 +463,12 @@ class SelectionOverlay(QWidget):
             return
         window = self._window_at(at)
         if window is not None:
-            self.window_chosen.emit(
-                window.bounds.intersected(self._frozen.bounds), window.title
-            )
+            if self._external_input:
+                self.window_selected.emit(window, at)
+            else:
+                self.window_chosen.emit(
+                    window.bounds.intersected(self._frozen.bounds), window.title
+                )
             return
         screen = self._shared.screen_at(at) or self._geometry
         self.region_chosen.emit(screen.physical)
