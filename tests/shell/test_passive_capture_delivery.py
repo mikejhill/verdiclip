@@ -532,11 +532,15 @@ def test_explicit_activation_rechecks_popup_created_by_admission_callback(
     anchor.show()
     menu = QMenu(anchor)
     menu.addAction("Late admission popup")
+    connected: list[EditorWindow] = []
+
+    def popup_on_change(index: int) -> None:
+        if index >= 0:
+            menu.popup(anchor.mapToGlobal(anchor.rect().center()))
 
     def added(window: EditorWindow) -> None:
-        window.tab_bar.currentChanged.connect(
-            lambda _index: menu.popup(anchor.mapToGlobal(anchor.rect().center()))
-        )
+        connected.append(window)
+        window.tab_bar.currentChanged.connect(popup_on_change)
 
     app.controller.workspace.window_added.connect(added)
     host = app.controller.deliver_reviewed_capture(
@@ -549,6 +553,8 @@ def test_explicit_activation_rechecks_popup_created_by_admission_callback(
         assert presentation_calls == []
     finally:
         app.controller.workspace.window_added.disconnect(added)
+        for window in connected:
+            window.tab_bar.currentChanged.disconnect(popup_on_change)
         menu.close()
     app.controller.workspace.present_retained()
     assert host.isVisible()

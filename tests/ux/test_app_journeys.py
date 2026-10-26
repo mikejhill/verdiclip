@@ -1771,6 +1771,7 @@ class TestUpdates:
         """
         app = make_app(updater=updates.updater)
         app.controller.tray.action("update").trigger()
+        status = self.status()
         app.press_hotkey("fullscreen")
         qtbot.waitUntil(lambda: len(app.controller.editors) == 1)
         editor = app.controller.editors[0]
@@ -1781,9 +1782,16 @@ class TestUpdates:
 
         app.controller.tray.action("update").trigger()
 
-        assert editor.isVisible()
+        assert editor in app.controller.editors
+        assert not editor.session.history.is_delivered
+        assert status.isVisible(), (
+            "Capture/update cancellation must preserve the dialog"
+        )
         assert updates.spawns.calls == []
         assert updates.quits == []
+        status.close()  # Explicit user dismissal permits passive editor presentation.
+        qtbot.waitUntil(editor.isVisible)
+        assert not editor.session.history.is_delivered
 
     def test_helper_that_cannot_start_keeps_running(
         self, make_app: AppFactory, updates: Updates, balloons: Balloons
