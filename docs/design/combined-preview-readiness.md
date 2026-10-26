@@ -28,7 +28,11 @@ Escape down/up or a left-button drag through the small physical fixture rectangl
 Fixture-injected pointer interpretation is explicitly separate from the default
 production route. Only the additional human lane can qualify physical raw input;
 real callback counters and actual capture completion are required. Installation
-or an instruction file alone never establishes success.
+or an instruction file alone never establishes success. The portable QPA guard
+contracts use a forbidden worker factory under both simulated platform names,
+so selecting Windows QPA for a broad test run cannot turn those unit controls
+into real input acquisition. A dropped-guard source fault is rejected before
+any native worker can be constructed.
 
 Capture observations use a RAM-only canonical sink: **no captured image is
 written to disk, the clipboard, or an editor**, including unexpected full-frame

@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Never, cast
 
 import pytest
 from PySide6.QtCore import QObject
@@ -87,17 +87,33 @@ def test_plan_and_unstarted_driver_are_not_native_evidence(tmp_path: Path) -> No
     assert not list(tmp_path.iterdir())
 
 
-def test_offscreen_native_broker_refuses_before_worker_construction(
+@pytest.mark.parametrize("platform", ["offscreen", "windows"])
+def test_portable_native_guard_never_constructs_a_real_worker(
     qapp: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+    platform: str,
 ) -> None:
-    """A missing native-QPA boundary cannot be replaced implicitly."""
+    """Observe the QPA guard through a forbidden factory on every actual QPA."""
     del qapp
     driver = ProductionBrokerDriver(InputProfile.DEFAULT)
+    calls: list[bool] = []
+
+    def forbidden(_initial: Point, _bounds: Rect) -> Never:
+        calls.append(True)
+        raise CaptureError("Fixture factory forbids a real native worker")
+
+    monkeypatch.setattr(driver, "worker", forbidden)
+    monkeypatch.setattr(
+        "verdiclip.capture.input_broker.QGuiApplication.platformName",
+        staticmethod(lambda: platform),
+    )
     owner = QObject()
     broker = driver.broker(owner)
     try:
-        with pytest.raises(CaptureError, match="native Windows"):
+        expected = "native Windows" if platform == "offscreen" else "Fixture factory"
+        with pytest.raises(CaptureError, match=expected):
             broker.start(Point(0, 0), Rect(0, 0, 100, 100))
+        assert calls == ([] if platform == "offscreen" else [True])
         assert not driver.workers
     finally:
         owner.deleteLater()
