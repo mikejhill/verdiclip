@@ -8,6 +8,7 @@ import sys
 import uuid
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
+from datetime import datetime
 from pathlib import Path
 from typing import override
 
@@ -24,6 +25,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from pytestqt.qtbot import QtBot
+from tests.capture.test_scroll_acquisition import Run
+from tests.capture.test_scroll_panels import Controls
 from tests.platform.test_associations import FakeAssociationBackend
 from tests.platform.test_launcher import GUI, write_pe
 from tests.platform.test_shortcuts import FakeShortcutBackend
@@ -40,7 +43,7 @@ from tests.ux.test_capture_journeys import (
 from verdiclip import APP_NAME, DOCS_URL, VERSION
 from verdiclip.capture.grabber import ScreenSource
 from verdiclip.capture.input_policy import InputKind, SelectionInput
-from verdiclip.capture.models import Capture
+from verdiclip.capture.models import Capture, CaptureMode
 from verdiclip.capture.overlay import SelectionOverlay
 from verdiclip.document.commands import SetCrop
 from verdiclip.document.style import Color
@@ -48,8 +51,9 @@ from verdiclip.editor.close_prompt import CloseChoice, ClosePrompt
 from verdiclip.editor.session import ToolId
 from verdiclip.editor.style_bar import ColorButton
 from verdiclip.editor.window import EditorWindow
-from verdiclip.exceptions import UpdateError
+from verdiclip.exceptions import DeliveryError, UpdateError
 from verdiclip.geometry import Point, Rect
+from verdiclip.output.delivery import ImageDelivery
 from verdiclip.platform.associations import DEFAULT_APPS_URI, FileAssociations
 from verdiclip.platform.hotkeys import Hotkey, HotkeyService
 from verdiclip.platform.launcher import LaunchCommand
@@ -69,7 +73,12 @@ from verdiclip.shell.controller import AppController, ShellIntegration
 from verdiclip.shell.instance import SingleInstance
 from verdiclip.shell.settings_dialog import SettingsDialog
 from verdiclip.shell.tray import TrayIcon
-from verdiclip.update.install import Installation, InstallKind, UpdatePlanner
+from verdiclip.update.install import (
+    Installation,
+    InstallKind,
+    UpdatePlan,
+    UpdatePlanner,
+)
 from verdiclip.update.service import UpdateLauncher, Updater
 
 pytestmark = pytest.mark.ux
@@ -1609,6 +1618,264 @@ class TestUpdates:
         assert balloons.shown == []
         assert updates.quits == []
         assert app.controller.tray.action("update").text() == "Check for updates"
+
+    @staticmethod
+    def protected_context(kind: str) -> QWidget:
+        """Show existing app UI without running a nested modal loop."""
+        if kind == "popup":
+            menu = QMenu()
+            menu.addAction("Keep this menu open")
+            menu.popup(QPoint(40, 40))
+            return menu
+        dialog = QDialog()
+        if kind == "modal":
+            dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
+        dialog.show()
+        return dialog
+
+    @pytest.mark.parametrize("context", ["popup", "modal", "modeless"])
+    def test_tray_capture_keeps_pending_update_behind_existing_ui(
+        self,
+        make_app: AppFactory,
+        updates: Updates,
+        qtbot: QtBot,
+        context: str,
+    ) -> None:
+        """Completing capture cannot accelerate an update across preserved UI."""
+        app = make_app(
+            Settings(
+                capture=CaptureSettings(open_editor=False, copy_to_clipboard=True)
+            ),
+            updater=updates.updater,
+        )
+        app.press_hotkey("region")
+        overlay = Overlay(app.controller.capture).widget
+        updates.updater.check()
+        assert app.controller._idle_timer.isActive()
+        existing = self.protected_context(context)
+        qtbot.addWidget(existing)
+        try:
+            qtbot.waitExposed(existing)
+            for kind, point in (
+                (InputKind.PRESS, Point(90, 90)),
+                (InputKind.MOVE, Point(160, 140)),
+                (InputKind.RELEASE, Point(160, 140)),
+            ):
+                overlay.receive_input(SelectionInput(kind, point))
+            qtbot.wait(10)
+            assert not app.controller.capture.is_selecting
+            assert app.controller.editors == ()
+            assert existing.isVisible()
+            assert updates.spawns.calls == []
+            assert updates.quits == []
+            assert app.controller._idle_timer.isActive()
+        finally:
+            existing.close()
+        app.controller._install_when_idle()
+        assert len(updates.spawns.calls) == 1
+        assert updates.quits == [True]
+
+    @pytest.mark.parametrize("context", ["popup", "modal", "modeless"])
+    def test_direct_automatic_install_preserves_existing_ui(
+        self,
+        make_app: AppFactory,
+        updates: Updates,
+        qtbot: QtBot,
+        context: str,
+    ) -> None:
+        """The automatic-install API itself protects UI, independently of timers."""
+        updates.updater.check()
+        app = make_app(updater=updates.updater)
+        existing = self.protected_context(context)
+        qtbot.addWidget(existing)
+        try:
+            qtbot.waitExposed(existing)
+            app.controller.install_update(manual=False)
+            assert existing.isVisible()
+            assert updates.spawns.calls == []
+            assert updates.quits == []
+            assert app.controller._idle_timer.isActive()
+        finally:
+            existing.close()
+        app.controller.install_update(manual=False)
+        assert len(updates.spawns.calls) == 1
+        assert updates.quits == [True]
+
+    @pytest.mark.parametrize(
+        "late", ["popup", "modal", "modeless", "capture", "document"]
+    )
+    def test_automatic_install_rechecks_work_created_during_prepare(
+        self,
+        make_app: AppFactory,
+        updates: Updates,
+        qtbot: QtBot,
+        monkeypatch: pytest.MonkeyPatch,
+        late: str,
+    ) -> None:
+        """Late capture, document or dialog must veto launch without close prompts."""
+        updates.updater.check()
+        app = make_app(updater=updates.updater)
+        prepare = updates.updater.prepare
+        shown: list[QWidget] = []
+
+        def prepare_with_arrival(relaunch: str) -> UpdatePlan:
+            plan = prepare(relaunch)
+            if late == "capture":
+                app.press_hotkey("region")
+            elif late == "document":
+                image = QImage(10, 10, QImage.Format.Format_RGB32)
+                image.fill(Qt.GlobalColor.white)
+                app.controller._on_captured(
+                    Capture(
+                        image,
+                        CaptureMode.FULLSCREEN,
+                        Rect(0, 0, 10, 10),
+                        "Arrived during update preparation",
+                        datetime.now().astimezone(),
+                    )
+                )
+            else:
+                widget = self.protected_context(late)
+                qtbot.addWidget(widget)
+                shown.append(widget)
+            return plan
+
+        def must_not_close() -> bool:
+            pytest.fail(
+                "Automatic update must not close content admitted during prepare"
+            )
+
+        monkeypatch.setattr(updates.updater, "prepare", prepare_with_arrival)
+        monkeypatch.setattr(app.controller, "_close_editors", must_not_close)
+        try:
+            app.controller.install_update(manual=False)
+            assert updates.spawns.calls == []
+            assert updates.quits == []
+            assert app.controller._idle_timer.isActive()
+            if late == "document":
+                assert len(app.controller.workspace.documents) == 1
+            elif late == "capture":
+                assert app.controller.capture.is_selecting
+            else:
+                assert shown[0].isVisible()
+        finally:
+            app.controller.capture.cancel()
+            for widget in shown:
+                widget.close()
+
+    @pytest.mark.parametrize("arrival", ["before", "during_prepare"])
+    def test_automatic_install_retains_failed_tray_output(
+        self,
+        make_app: AppFactory,
+        updates: Updates,
+        monkeypatch: pytest.MonkeyPatch,
+        sample_image: QImage,
+        arrival: str,
+    ) -> None:
+        """An image awaiting retry must survive even when it has no editor or UI."""
+        updates.updater.check()
+        app = make_app(
+            Settings(
+                capture=CaptureSettings(open_editor=False, copy_to_clipboard=True)
+            ),
+            updater=updates.updater,
+        )
+        prepare = updates.updater.prepare
+
+        def unavailable(_delivery: ImageDelivery, _image: QImage) -> None:
+            raise DeliveryError("Clipboard temporarily unavailable")
+
+        monkeypatch.setattr(ImageDelivery, "copy", unavailable)
+        monkeypatch.setattr(
+            ClosePrompt,
+            "ask",
+            lambda *_args: pytest.fail(
+                "Automatic installation cannot discard captures"
+            ),
+        )
+
+        def retain() -> None:
+            app.controller._on_captured(
+                Capture(
+                    sample_image,
+                    CaptureMode.FULLSCREEN,
+                    Rect(0, 0, sample_image.width(), sample_image.height()),
+                    "Retained without an editor",
+                    datetime.now().astimezone(),
+                )
+            )
+
+        def prepare_with_arrival(relaunch: str) -> UpdatePlan:
+            plan = prepare(relaunch)
+            retain()
+            return plan
+
+        if arrival == "before":
+            retain()
+        else:
+            monkeypatch.setattr(updates.updater, "prepare", prepare_with_arrival)
+        app.controller.install_update(manual=False)
+        assert updates.spawns.calls == []
+        assert updates.quits == []
+        assert app.controller.editors == ()
+        retained = app.controller.pending_deliveries
+        assert len(retained) == 1
+        assert retained[0].image == sample_image
+        assert app.controller._idle_timer.isActive()
+        monkeypatch.setattr(updates.updater, "prepare", prepare)
+        monkeypatch.setattr(ImageDelivery, "copy", lambda _self, _image: None)
+        app.controller.retry_delivery(retained[0].capture_id)
+        assert app.controller.pending_deliveries == ()
+        app.controller._install_when_idle()
+        assert len(updates.spawns.calls) == 1
+        assert updates.quits == [True]
+
+    @pytest.mark.parametrize("arrival", ["before", "during_prepare"])
+    def test_automatic_install_retains_hidden_unaccepted_review(
+        self,
+        make_app: AppFactory,
+        updates: Updates,
+        qtbot: QtBot,
+        monkeypatch: pytest.MonkeyPatch,
+        arrival: str,
+    ) -> None:
+        """Hiding review presentation cannot turn producer-owned pixels into idle."""
+        updates.updater.check()
+        app = make_app(updater=updates.updater)
+        prepare = updates.updater.prepare
+        panels = []
+
+        def retain() -> None:
+            run = Run(updates.folder.parent / "review-spool")
+            run.start()
+            run.settle()
+            run.driver.stop()
+            panel = app.controller.review_scrolling_capture(run.session)
+            qtbot.addWidget(panel)
+            panels.append(panel)
+
+        def prepare_with_arrival(relaunch: str) -> UpdatePlan:
+            plan = prepare(relaunch)
+            retain()
+            return plan
+
+        if arrival == "before":
+            retain()
+        else:
+            monkeypatch.setattr(updates.updater, "prepare", prepare_with_arrival)
+        app.controller.install_update(manual=False)
+        assert updates.spawns.calls == []
+        assert updates.quits == []
+        assert app.controller.workspace.documents == ()
+        assert app.controller._scroll_reviews.has_unaccepted
+        assert not panels[0].isVisible()
+        assert app.controller._idle_timer.isActive()
+        monkeypatch.setattr(updates.updater, "prepare", prepare)
+        Controls.button(panels[0], "Discard").click()
+        assert not app.controller._scroll_reviews.has_work
+        app.controller._install_when_idle()
+        assert len(updates.spawns.calls) == 1
+        assert updates.quits == [True]
 
     @pytest.mark.usefixtures("check_at_once")
     def test_automatic_install_when_idle(

@@ -703,6 +703,8 @@ class AppController(QObject):
         updater = self._updater
         if updater is None:
             return
+        if not manual and self._defer_automatic_install():
+            return
         try:
             plan = updater.prepare(self._launch().command_line)
         except AppError as err:
@@ -715,7 +717,12 @@ class AppController(QObject):
                     warning=True,
                 )
             return
-        if not self._close_editors():
+        if manual:
+            if not self._close_editors():
+                return
+        elif self._defer_automatic_install():
+            # Preparation can synchronously admit new work or show application UI.
+            # Automatic installation never asks to close newly arrived content.
             return
         try:
             updater.start(plan)
@@ -799,16 +806,21 @@ class AppController(QObject):
             )
             self._notify("Could not check for updates", reason, warning=True)
 
-    def _install_when_idle(self) -> None:
-        """Install now if nothing is open; otherwise try again later."""
-        if (
+    def _defer_automatic_install(self) -> bool:
+        """Keep background updates away from retained work and visible app UI."""
+        busy = (
             self._workspace.has_work
-            or self._pending_deliveries
+            or bool(self._pending_deliveries)
             or self._scroll_reviews.has_work
             or self._capture.is_selecting
-        ):
+            or any(widget.isVisible() for widget in QApplication.topLevelWidgets())
+        )
+        if busy:
             self._idle_timer.start(IDLE_RETRY_MS)
-            return
+        return busy
+
+    def _install_when_idle(self) -> None:
+        """Install only after work and existing application UI have settled."""
         self.install_update(manual=False)
 
     def _report_update(self) -> None:
