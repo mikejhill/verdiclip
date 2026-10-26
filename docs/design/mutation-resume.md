@@ -58,3 +58,29 @@ These are runner contracts, not product, physical desktop or native-input proof.
 Eleven repository unit tests additionally cover scope validation, exact restoration,
 concurrent-edit refusal and migration fingerprint invalidation. Hosted exact-head
 CI and mutation completion remain the final workflow checks.
+
+## Completed combined run and survivor follow-up
+
+Combined run 40317329447 at `bf5570a1` completed successfully in 52m45s. It
+restored the preserved v1 cache from run 40293180198, completed public file
+selection and saved the v2 cache. Configuration restoration and result collection
+passed. The report covers 59 selected source files: 8,929 of 12,106 checked
+mutants detected (73.8%: 8,904 killed, 18 segfaults, seven timeouts), with 3,177
+survivors. This is completed incremental evidence, not a fresh whole-package
+score or a claim that the survivors are equivalent.
+
+The separate capture-head run 40305362810 reported 73.4% (5,129/6,992 detected,
+1,863 survivors). Its selected assessment exposed an IPC payload-preservation
+gap: replacing decoded launch arguments with `str(None)` survived. The new
+`tests/shell/test_instance_payload.py` exercises production decoding and its
+public signal in-process without connecting a socket or opening a pipe. It
+checks Unicode, content, order, duplicates, quoted and empty arguments, plus a
+fileless launch. The existing subprocess lifetime regression remains separate.
+
+Both supported Qt versions pass these two tests. An isolated fresh mutmut 3.8
+run with unchanged copied source, covered-line selection and forkserver
+isolation killed the actual generated `str(None)` mutant; the run completed
+without timeout in 78.73s. This qualifies the specific regression. Adding the
+tests does not retroactively refresh the completed run's cached verdicts or
+classify its remaining survivors. Capture's four semantically unmapped service
+mutations and presentation-path coverage gaps remain explicit limits.
