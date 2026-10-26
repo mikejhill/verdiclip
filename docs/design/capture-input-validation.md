@@ -136,9 +136,10 @@ successfully: **72.9%**, with **5,101 of 7,002** scoped mutants detected and
 is tested. Report inspection found uncovered inclusive Raw Input endpoints;
 eight primary/virtual-display corner cases now exercise zero and maximum on
 both axes. Three reported boundary mutations were recreated in isolated source
-copies and killed by these tests. The broader survivor set remains a test-quality
-limitation rather than being dismissed as equivalent. The four earlier targeted consent,
-cleanup-publication, stale-review and input-ownership mutations were killed.
+copies and killed by these tests. The broader survivor set remains a
+test-quality limitation rather than being dismissed as equivalent. The four
+earlier targeted consent, cleanup-publication, stale-review and input-ownership
+mutations were killed.
 Repository mutation thresholds and workflow permissions remain unchanged.
 
 The desktop is locked. No production native broker test has been attempted in
