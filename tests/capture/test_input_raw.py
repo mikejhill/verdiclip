@@ -27,18 +27,17 @@ def test_raw_mouse_layout_matches_64_bit_win32() -> None:
 
 def test_wire_layout_does_not_inherit_lp64_host_long_width() -> None:
     """Linux mutation/replay must decode the same Win32 packet as Windows."""
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "import ctypes,ctypes.wintypes as w; "
-            "w.DWORD=w.ULONG=ctypes.c_uint64; w.LONG=ctypes.c_int64; "
-            "from verdiclip.capture.input_raw import "
-            "RawHeader,RawMouse,RawMouseMessage,RawInputDevice; "
-            "types=(RawHeader,RawMouse,RawMouseMessage,RawInputDevice); "
-            "assert [ctypes.sizeof(t) for t in types]==[24,24,48,16]; "
-            "m=RawMouse();m.x=-3;assert m.x==-3;print('Win32 layout retained')",
-        ],
+    script = (
+        "import ctypes,ctypes.wintypes as w; "
+        "w.DWORD=w.ULONG=ctypes.c_uint64; w.LONG=ctypes.c_int64; "
+        "from verdiclip.capture.input_raw import "
+        "RawHeader,RawMouse,RawMouseMessage,RawInputDevice; "
+        "types=(RawHeader,RawMouse,RawMouseMessage,RawInputDevice); "
+        "assert [ctypes.sizeof(t) for t in types]==[24,24,48,16]; "
+        "m=RawMouse();m.x=-3;assert m.x==-3;print('Win32 layout retained')"
+    )
+    result = subprocess.run(  # noqa: S603 - fixed local ABI test, no native calls
+        [sys.executable, "-c", script],
         capture_output=True,
         text=True,
         check=True,
