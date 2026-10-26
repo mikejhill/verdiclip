@@ -5,6 +5,23 @@ This record supersedes the source/readiness claims in
 release and replacing the daily installation require Mike's local verification
 of a completed, qualified candidate.
 
+## Current capture and mutation integration
+
+The combined source now includes capture checkpoint `024380ec` and its committed
+native-harness/passive-surface migration. Capture-owned panels use the passive
+presentation policy without changing canonical capture delivery, acknowledgement
+or retry ownership. This integration requires no controller API adaptation.
+Native presentation, input, UIA and actual assistive-technology qualification
+remain separate gates; no native scrolling factory is enabled by default.
+
+The two earlier combined mutation jobs reached their 150-minute limit and saved
+partial verdicts. Neither is a completed score. Explicit module arguments caused
+mutmut 3.8 to rerun cached verdicts. The reviewed recovery uses public file scope
+with no CLI names; see [incremental mutation qualification](mutation-resume.md)
+for the independently executed cache, source-invalidation and bad-baseline checks.
+Final hosted checks must cover the resulting published head. The older numerical
+checkpoints below describe their historical sources, not this new head.
+
 ## Deferred-drop correction after the first published composition
 
 Further independent review reproduced a queued release racing with an approved
@@ -19,13 +36,14 @@ failure before host assignment, presentation timer teardown, actual close-button
 child hits and exact interior/same-slot/cross-window insertion. Private focused
 replays distinguish 13 additional survivor candidates; five other selected
 recovery candidates were already rejected by existing tests. These are selected
-fault experiments, not a revised aggregate mutation score. Publication waits for
-the active mutation run to finish, followed by fresh exact-head validation.
+fault experiments, not a revised aggregate mutation score. Both earlier mutation
+runs are now terminal with preserved partial evidence; the correction was
+published and passed CI/CodeQL. The newly integrated head needs fresh validation.
 
 ## Ownership and composition
 
-The combined branch includes capture checkpoint `e1a4fa3` (and its ancestors
-`107d911` and `b89ba2d`), without importing capture-worker experiments. There is
+The combined branch includes capture checkpoint `024380ec` (and its ancestors
+`e1a4fa3`, `107d911` and `b89ba2d`), without importing capture-worker experiments. There is
 one canonical `capture.reviewed.ReviewedCapture`; document provenance retains
 metadata independently of capture sessions. Delivery stays nonactivating and
 acknowledges the capture ID only after admission/output policy succeeds. Failed

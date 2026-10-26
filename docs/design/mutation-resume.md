@@ -1,0 +1,60 @@
+# Incremental mutation qualification
+
+PR mutation reports reuse compatible verdicts; they are not a fresh safety score.
+The scheduled and manually dispatched runs still start without a verdict cache,
+cover the whole package, and enforce the existing 72% floor. Test execution,
+assertions, forkserver isolation, timeout policy and the 150-minute job limit are
+unchanged.
+
+## Why the previous runs timed out
+
+Runs 40277302711 and 40293180198 reached GitHub's 150-minute limit. Both retained
+partial caches; neither produced a completed score. The second restored the
+first's cache but passed explicit module patterns to `mutmut run`. In
+[mutmut 3.8's runner](https://github.com/boxed/mutmut/blob/3.8.0/src/mutmut/__main__.py),
+explicit mutant names deliberately rerun known verdicts. The displayed counter
+counts stored verdicts, so a nearly stationary counter did not measure actual
+worker executions.
+
+## Supported resume behavior
+
+`scripts/mutation_ci.py` translates the existing PR module selection to the public
+`tool.mutmut.only_mutate` file filter. The workflow calls `mutmut run` without
+explicit names. This preserves valid function verdicts and retests changed or new
+functions. The translated selection was checked against all 59 changed source
+files in the combined preview: both selections name the same files.
+
+Before mutation, CI runs the full portable baseline. It also removes stale copied
+Python sources, tests and stats while retaining verdict metadata. Mutmut therefore
+collects current test statistics and runs its original-test and forced-failure
+checks before using cached verdicts. The temporary configuration changes only
+`only_mutate`; restoration is byte-identical and refuses to overwrite subsequent
+edits. Available verdicts and explicit completion status are uploaded even on
+failure. A partial or timed-out run never becomes a successful score.
+
+The v2 cache key includes the runner and migration descriptor. A one-time v1
+fallback is allowed only when all five approved dependency, configuration,
+support, workflow and runner inputs match their reviewed normalized SHA-256
+values. A changed input disables that fallback. Cached verdicts can predate new
+test assertions; fresh whole-package runs and targeted fault replays remain
+necessary evidence.
+
+## Independent executable qualification
+
+An isolated Linux Python 3.13.16 / locked mutmut 3.8.0 fixture used two assertion
+tests, one selected source file and an unselected file. Four consecutive runs
+observed these actual mutant-worker exit receipts:
+
+| Phase | Tool exit | Mutant workers | Result |
+| --- | ---: | ---: | --- |
+| Initial run | 0 | 2 | Only selected-file metadata generated |
+| Unchanged cached run | 0 | 0 | Known verdicts reused |
+| Changed source, same assertions | 0 | 2 | Changed function retested |
+| Failing original assertion | 1 | 0 | Fresh stats collection rejected baseline before mutation |
+
+The last phase retained two cached verdicts and still failed closed. Earlier
+fixture timeouts were retained separately and were not counted as qualification.
+These are runner contracts, not product, physical desktop or native-input proof.
+Eleven repository unit tests additionally cover scope validation, exact restoration,
+concurrent-edit refusal and migration fingerprint invalidation. Hosted exact-head
+CI and mutation completion remain the final workflow checks.
