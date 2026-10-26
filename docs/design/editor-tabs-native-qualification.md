@@ -1,5 +1,11 @@
 # Tab qualification after exclusive desktop handoff
 
+**Current policy:** the [repository tab CI contract](editor-tabs-ci-contract.md)
+is primary proof. The laptop/native results below are supplemental; they do not
+require a dedicated VM or an always-unlocked laptop as infrastructure. This note
+supersedes earlier native-first qualification wording. Simulation/native limits
+and Mike's local verification before merge remain explicit.
+
 ## Resolved native fixture activation race
 
 Follow-up bounded tracing showed the missing receipt was a queued Qt

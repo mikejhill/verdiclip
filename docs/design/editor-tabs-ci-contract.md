@@ -77,6 +77,28 @@ Full application coverage and prior native queue results are separately recorded
 The CI workflow definition is linted locally; no hosted CI run is claimed until
 the branch is authorized for publication and its actual checks finish.
 
+Final clean-source execution at `8b6396f38dbffe589934e0209b70b4384d5483fa`:
+
+| Runtime | Contracts | Scoped lines | Scoped branches | Replay seed |
+| --- | ---: | ---: | ---: | ---: |
+| Qt 6.11.2 / Python 3.13.5 | 225 | 97.77% | 91.88% | 1995754407 |
+| Qt 6.12.0 / Python 3.13.5 | 225 | 97.77% | 91.88% | 255689391 |
+
+Both manifests report source_dirty=false and 96.46% combined coverage. Evidence:
+`.test-tmp/tabs-ci-qualified-min/current` (the two corresponding directories).
+The whole-app Qt-current offscreen regression also passes 1,498 tests, 1 skip,
+14 native deselections, 95.21% combined coverage; it does not replace the focused
+line/branch measurements above. Ruff/format/strict ty, offline lock check,
+actionlint and offline zizmor pass (no new workflow findings).
+
+Independent review found stale reused-directory evidence on runtime mismatch;
+the fix was independently verified against an actual previous passing run:
+exit 2, failed/preflight receipt and summary, with old XML/JUnit/logs removed.
+All five harness checks passed independently; no further material findings.
+Own before/after receipts are in `.test-tmp/preflight-transition`. No native
+input, hosted workflow execution, publication or source changes occurred in
+that independent review.
+
 Physical mouse/Narrator/mixed-monitor checks can add evidence when available;
 their absence does not require a new VM or prevent these CI contracts running.
 A green tab target still does not complete the unfinished live scrolling backend
