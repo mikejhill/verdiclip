@@ -1,6 +1,8 @@
 """Decode authoritative movement and button flags with synthetic display topology."""
 
 import ctypes
+import subprocess
+import sys
 
 import pytest
 
@@ -21,6 +23,28 @@ def test_raw_mouse_layout_matches_64_bit_win32() -> None:
     assert ctypes.sizeof(RawMouse) == 24
     assert ctypes.sizeof(RawMouseMessage) == 48
     assert RawMouse.buttons.offset == 4
+
+
+def test_wire_layout_does_not_inherit_lp64_host_long_width() -> None:
+    """Linux mutation/replay must decode the same Win32 packet as Windows."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import ctypes,ctypes.wintypes as w; "
+            "w.DWORD=w.ULONG=ctypes.c_uint64; w.LONG=ctypes.c_int64; "
+            "from verdiclip.capture.input_raw import "
+            "RawHeader,RawMouse,RawMouseMessage,RawInputDevice; "
+            "types=(RawHeader,RawMouse,RawMouseMessage,RawInputDevice); "
+            "assert [ctypes.sizeof(t) for t in types]==[24,24,48,16]; "
+            "m=RawMouse();m.x=-3;assert m.x==-3;print('Win32 layout retained')",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=10,
+    )
+    assert result.stdout.strip() == "Win32 layout retained"
 
 
 def test_relative_delta_does_not_infer_accelerated_or_absolute_motion() -> None:

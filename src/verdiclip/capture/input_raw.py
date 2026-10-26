@@ -19,10 +19,10 @@ class RawInputDevice(ctypes.Structure):
     """One process-local RAWINPUTDEVICE registration."""
 
     _fields_ = (
-        ("page", w.USHORT),
-        ("usage", w.USHORT),
-        ("flags", w.DWORD),
-        ("target", w.HWND),
+        ("page", ctypes.c_uint16),
+        ("usage", ctypes.c_uint16),
+        ("flags", ctypes.c_uint32),
+        ("target", ctypes.c_void_p),
     )
 
 
@@ -30,35 +30,35 @@ class RawHeader(ctypes.Structure):
     """RAWINPUTHEADER; device identity is never persisted or logged."""
 
     _fields_ = (
-        ("kind", w.DWORD),
-        ("size", w.DWORD),
-        ("device", w.HANDLE),
-        ("parameter", w.WPARAM),
+        ("kind", ctypes.c_uint32),
+        ("size", ctypes.c_uint32),
+        ("device", ctypes.c_void_p),
+        ("parameter", ctypes.c_size_t),
     )
 
 
 class RawButtons(ctypes.Structure):
     """The named USHORT pair in RAWMOUSE's aligned union."""
 
-    _fields_ = (("flags", w.USHORT), ("data", w.USHORT))
+    _fields_ = (("flags", ctypes.c_uint16), ("data", ctypes.c_uint16))
 
 
 class RawButtonUnion(ctypes.Union):
     """Preserve Win32's DWORD alignment around the button flags."""
 
-    _fields_ = (("combined", w.ULONG), ("parts", RawButtons))
+    _fields_ = (("combined", ctypes.c_uint32), ("parts", RawButtons))
 
 
 class RawMouse(ctypes.Structure):
     """Raw relative/absolute flags and delta, with independent X-button bits."""
 
     _fields_ = (
-        ("flags", w.USHORT),
+        ("flags", ctypes.c_uint16),
         ("buttons", RawButtonUnion),
-        ("raw_buttons", w.ULONG),
-        ("x", w.LONG),
-        ("y", w.LONG),
-        ("extra", w.ULONG),
+        ("raw_buttons", ctypes.c_uint32),
+        ("x", ctypes.c_int32),
+        ("y", ctypes.c_int32),
+        ("extra", ctypes.c_uint32),
     )
 
 

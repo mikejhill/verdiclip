@@ -51,7 +51,8 @@ def test_native_adapter_registers_only_own_raw_receiver_and_retires_every_resour
     assert api.buttons_held()
     assert api.keys_held() == frozenset({0x11, 0x0D})
     assert api.foreground() == 1
-    assert api.close()
+    cleaned = api.close()
+    assert cleaned
     assert dll.registrations == []
     assert dll.window == 0
     assert dll.calls.count("UnhookWindowsHookEx") == 2
@@ -66,7 +67,8 @@ def test_existing_registration_is_never_overwritten(
     dll.registrations = original.copy()
     with pytest.raises(PlatformError, match="already owns"):
         api.install(lambda *_args: 0, lambda *_args: 0, lambda _event: None)
-    assert api.close()
+    cleaned = api.close()
+    assert cleaned
     assert dll.registrations == original
     assert dll.window == 0
     assert dll.hook_calls == 0
@@ -85,7 +87,8 @@ def test_partial_native_setup_always_has_owned_cleanup(
     with pytest.raises(OSError, match=r"\[WinError 5\]"):
         api.install(lambda *_args: 0, lambda *_args: 0, lambda _event: None)
     dll.fail = ""
-    assert api.close()
+    cleaned = api.close()
+    assert cleaned
     assert not dll.registrations
     assert dll.window == 0
 
@@ -106,7 +109,8 @@ def test_packet_processing_uses_raw_flags_and_always_calls_default_cleanup(
     assert events[0].mode is MoveMode.RELATIVE_DELTA
     assert dll.calls.count("DefWindowProcW") == 1
     assert not api.pump()
-    assert api.close()
+    cleaned = api.close()
+    assert cleaned
 
 
 def test_changed_registration_preserves_its_new_owner(
@@ -116,7 +120,8 @@ def test_changed_registration_preserves_its_new_owner(
     api, dll = native
     api.install(lambda *_args: 0, lambda *_args: 0, lambda _event: None)
     dll.registrations = [(1, 2, 0x100, 5678)]
-    assert api.close()
+    cleaned = api.close()
+    assert cleaned
     assert dll.registrations == [(1, 2, 0x100, 5678)]
     assert dll.window == 0
 
@@ -130,9 +135,11 @@ def test_unhook_failure_retains_retry_barrier_unless_handle_already_removed(
     api.install(lambda *_args: 0, lambda *_args: 0, lambda _event: None)
     dll.fail = "UnhookWindowsHookEx"
     ctypes.set_last_error(1404 if invalid else 5)
-    assert api.close() is invalid
+    cleaned = api.close()
+    assert cleaned is invalid
     dll.fail = ""
-    assert api.close()
+    cleaned = api.close()
+    assert cleaned
 
 
 @pytest.mark.parametrize("failure", ["GetPhysicalCursorPos", "GetMessageW"])
@@ -241,6 +248,8 @@ def test_raw_cleanup_failure_requires_safe_retry(
     api, dll = native
     api.install(lambda *_args: 0, lambda *_args: 0, lambda _event: None)
     dll.fail = failure
-    assert not api.close()
+    cleaned = api.close()
+    assert not cleaned
     dll.fail = ""
-    assert api.close()
+    cleaned = api.close()
+    assert cleaned
