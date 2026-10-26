@@ -30,8 +30,11 @@ from verdiclip.capture.scroll.binding import (
 )
 from verdiclip.capture.scroll.panels import ScrollReviewPanel
 from verdiclip.capture.scroll.session import ScrollSession, ScrollState
+from verdiclip.document.annotations import RectangleShape
+from verdiclip.document.commands import AddAnnotations
 from verdiclip.editor.canvas import CanvasView
 from verdiclip.editor.window import EditorWindow
+from verdiclip.geometry import Rect
 from verdiclip.output.delivery import ImageDelivery
 from verdiclip.settings import CaptureSettings, Settings
 
@@ -383,6 +386,78 @@ def test_late_deferred_presentation_cannot_undo_a_user_window_state_change(
     assert calls == []
     assert host.windowState() == state
     assert presentation_calls == []
+
+
+def test_initial_show_failure_retry_presents_same_document_without_activating(
+    factory: AppFactory,
+    sample_image: QImage,
+    monkeypatch: pytest.MonkeyPatch,
+    presentation_calls: list[str],
+) -> None:
+    """A deduplicated retry retries presentation instead of silently stranding it."""
+    app = factory()
+    original = EditorWindow.show
+
+    def fail(_window: EditorWindow) -> None:
+        raise MemoryError("Injected initial show failure")
+
+    monkeypatch.setattr(EditorWindow, "show", fail)
+    result = capture(sample_image)
+    host = app.controller.deliver_reviewed_capture(result)
+    assert host is not None
+    assert not host.isVisible()
+    assert app.controller.pending_deliveries == (result,)
+    records = app.controller.workspace.documents
+    monkeypatch.setattr(EditorWindow, "show", original)
+    app.controller.retry_delivery(result.capture_id)
+    assert app.controller.pending_deliveries == ()
+    assert app.controller.workspace.documents == records
+    assert host.isVisible()
+    assert presentation_calls == []
+
+
+def test_close_rollback_keeps_deferred_presentation_for_late_edited_document(
+    factory: AppFactory,
+    qtbot: QtBot,
+    sample_image: QImage,
+    presentation_calls: list[str],
+) -> None:
+    """A presenter tick during transient zero tabs cannot consume the show lease."""
+    app = factory()
+    anchor = QWidget()
+    qtbot.addWidget(anchor)
+    anchor.show()
+    menu = QMenu(anchor)
+    menu.addAction("Preserved")
+    menu.popup(anchor.mapToGlobal(anchor.rect().center()))
+    qtbot.wait(0)
+    host = app.controller.deliver_reviewed_capture(capture(sample_image))
+    assert host is not None
+    page = host.pages[0]
+    menu.close()
+    edited: list[bool] = []
+
+    def during_detach(_index: int) -> None:
+        if not host.pages and not edited:
+            app.controller.workspace.present_retained()
+            edited.append(True)
+            page.record.session.history.execute(
+                AddAnnotations([RectangleShape(rect=Rect(2, 2, 5, 5))], "Late edit")
+            )
+
+    host.tab_bar.currentChanged.connect(during_detach)
+    try:
+        assert not host.close_tab(0)
+        assert edited == [True]
+        assert host.pages == (page,)
+        assert not host.isVisible()
+        app.controller.workspace.present_retained()
+        assert host.isVisible()
+        assert len(page.record.session.document.annotations) == 1
+        assert not page.record.session.history.is_delivered
+        assert presentation_calls == []
+    finally:
+        host.tab_bar.currentChanged.disconnect(during_detach)
 
 
 @pytest.mark.parametrize("edit", [False, True])

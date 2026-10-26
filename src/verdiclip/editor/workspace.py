@@ -176,10 +176,13 @@ class Workspace(QObject):
         """Admit producer-independent work without replacing any existing tab."""
         from verdiclip.editor.window import EditorWindow  # noqa: PLC0415 - avoid cycle
 
+        should_activate = activate and not self._protected_ui()
         existing = self._existing_capture(options)
         if existing is not None:
             host = self.host_of(existing.record.identifier)
             if host is not None:
+                with host.presentation_policy(activate=should_activate):
+                    self._present_host(host, activate=should_activate)
                 return host
         if target is None or target not in self._windows or not target.eligible:
             target = next((window for window in self._windows if window.eligible), None)
@@ -193,11 +196,6 @@ class Workspace(QObject):
             options.source_path,
             provenance=options.provenance,
         )
-        should_activate = (
-            activate
-            and QApplication.activePopupWidget() is None
-            and QApplication.activeModalWidget() is None
-        )
         with target.presentation_policy(activate=should_activate):
             if existing is None:
                 target.add_document(record, activate=should_activate)
@@ -210,13 +208,15 @@ class Workspace(QObject):
 
     def _present_host(self, target: EditorWindow, *, activate: bool) -> None:
         # Visible/minimized hosts need no presentation change for background work.
-        if activate:
-            self._pending_presentations.discard(target)
+        if not target.isVisible():
+            # Reserve before show: failure must remain retryable/recoverable.
+            self._pending_presentations.add(target)
         if not activate and not target.isVisible() and self._protected_ui():
             target.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
             self._pending_presentations.add(target)
             self._presentation_timer.start()
-        elif activate or not target.isVisible():
+            return
+        if activate or not target.isVisible():
             target.setAttribute(
                 Qt.WidgetAttribute.WA_ShowWithoutActivating, not activate
             )
@@ -225,6 +225,9 @@ class Workspace(QObject):
                     target.windowState() & ~Qt.WindowState.WindowMinimized
                 )
             target.show()
+        self._pending_presentations.discard(target)
+        if not self._pending_presentations:
+            self._presentation_timer.stop()
         if activate:
             target.raise_()
             target.activateWindow()
@@ -243,10 +246,15 @@ class Workspace(QObject):
         even with WA_ShowWithoutActivating. Never trigger that path while the
         popup/modal exists. Ownership remains in the workspace throughout.
         """
-        if self._protected_ui():
+        if self._transferring or self._protected_ui():
             return
         for host in tuple(self._pending_presentations):
-            if host not in self._windows or not host.pages:
+            if host not in self._windows:
+                self._pending_presentations.discard(host)
+                continue
+            if not host.eligible:
+                continue
+            if not host.pages:
                 self._pending_presentations.discard(host)
                 continue
             if host.isVisible():
@@ -264,7 +272,8 @@ class Workspace(QObject):
                 )
                 return
             self._pending_presentations.discard(host)
-        self._presentation_timer.stop()
+        if not self._pending_presentations:
+            self._presentation_timer.stop()
 
     def move(
         self,
