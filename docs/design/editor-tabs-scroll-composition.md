@@ -5,6 +5,23 @@ This record supersedes the source/readiness claims in
 release and replacing the daily installation require Mike's local verification
 of a completed, qualified candidate.
 
+## Deferred-drop correction after the first published composition
+
+Further independent review reproduced a queued release racing with an approved
+close of the dragged tab while a neighboring tab kept its host alive. The old
+callback indexed a page no longer in that host and raised `ValueError`; no data
+loss was demonstrated. Drop commit now checks source eligibility and current
+document/view ownership before hit testing or indexing. The real queued-callback
+regression fails against the prior source and passes with the guard.
+
+Independent verification passed all 59 workspace tests, including constructor
+failure before host assignment, presentation timer teardown, actual close-button
+child hits and exact interior/same-slot/cross-window insertion. Private focused
+replays distinguish 13 additional survivor candidates; five other selected
+recovery candidates were already rejected by existing tests. These are selected
+fault experiments, not a revised aggregate mutation score. Publication waits for
+the active mutation run to finish, followed by fresh exact-head validation.
+
 ## Ownership and composition
 
 The combined branch includes capture checkpoint `e1a4fa3` (and its ancestors

@@ -485,12 +485,23 @@ class Workspace(QObject):
         position: QPoint,
         generation: int,
     ) -> None:
-        if generation != self._drag_generation:
+        if generation != self._drag_generation or self._transferring:
+            return
+        source, page = drag
+        # Release dispatch is deferred: an earlier callback may have closed or
+        # moved the page while a neighboring tab keeps its source host alive.
+        # Validate document/view ownership before indexing any current tab order.
+        if (
+            source not in self._windows
+            or not source.eligible
+            or page not in source.pages
+            or self._pages.get(page.record.identifier) is not page
+        ):
             return
         target = self._target_at(position)
         index = target.tab_bar.insertion_at(position) if target is not None else None
-        if target is drag[0] and index is not None:
-            old = drag[0].pages.index(drag[1])
+        if target is source and index is not None:
+            old = source.pages.index(page)
             index -= int(index > old)
         self.move(*drag, target, index, position)
 

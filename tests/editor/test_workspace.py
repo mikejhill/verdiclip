@@ -4,12 +4,20 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
+from typing import cast
 
 import pytest
-from PySide6.QtCore import QPoint, QRect
+from PySide6.QtCore import QCoreApplication, QEvent, QPoint, QRect
 from PySide6.QtGui import QGuiApplication, QImage
 from PySide6.QtTest import QSignalSpy
-from PySide6.QtWidgets import QApplication, QFileDialog, QLabel, QMenu, QPlainTextEdit
+from PySide6.QtWidgets import (
+    QApplication,
+    QFileDialog,
+    QLabel,
+    QMenu,
+    QPlainTextEdit,
+    QWidget,
+)
 from pytestqt.qtbot import QtBot
 
 from verdiclip.document.annotations import RectangleShape
@@ -642,6 +650,131 @@ def test_queued_drop_commits_once_or_cancellation_vetoes_it(  # noqa: PLR0913 - 
     expected = source if cancel else target
     assert workspace.host_of(page.record.identifier) is expected
     assert len(workspace.documents) == 2
+
+
+def test_queued_drop_aborts_when_dragged_tab_closed_before_commit(
+    workspace: Workspace,
+    sample_image: QImage,
+    tmp_path: Path,
+    qtbot: QtBot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A queued release cannot index a tab closed by an earlier callback."""
+    source = open_document(workspace, sample_image, tmp_path)
+    page = source.pages[0]
+    open_document(workspace, sample_image, tmp_path, title="Neighbor")
+    neighbor = source.pages[1]
+    monkeypatch.setattr(QApplication, "widgetAt", lambda _point: source.tab_bar)
+    point = source.tab_bar.mapToGlobal(source.tab_bar.tabRect(0).topLeft())
+    source.tab_bar.drag_started.emit(page.record.identifier)
+    source.tab_bar.drag_released.emit(point)
+    assert source.close_tab(source.pages.index(page))
+    with qtbot.captureExceptions() as errors:
+        qtbot.wait(10)
+    assert errors == []
+    assert source.pages == (neighbor,)
+    assert workspace.documents == (neighbor.record,)
+
+
+@pytest.mark.parametrize("destination", ["same_slot", "interior", "other_host"])
+def test_queued_drop_preserves_exact_interior_order(  # noqa: PLR0913 - event loop and explicit policy
+    workspace: Workspace,
+    sample_image: QImage,
+    tmp_path: Path,
+    qtbot: QtBot,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    destination: str,
+) -> None:
+    """Interior insertion and dropping beside oneself differ from end clamping."""
+    source = open_document(workspace, sample_image, tmp_path)
+    for title in ("B", "C", "D"):
+        open_document(workspace, sample_image, tmp_path, title=title)
+    before = source.pages
+    page = before[1]
+    target = source
+    index = 1 if destination == "same_slot" else 3
+    expected = (
+        before
+        if destination == "same_slot"
+        else (before[0], before[2], before[1], before[3])
+    )
+    if destination == "other_host":
+        target = open_document(workspace, sample_image, tmp_path, new=True, title="X")
+        workspace.activated(target)
+        for title in ("Y", "Z"):
+            assert (
+                open_document(workspace, sample_image, tmp_path, title=title) is target
+            )
+        index = 2
+        expected = (*target.pages[:2], page, *target.pages[2:])
+    monkeypatch.setattr(QApplication, "widgetAt", lambda _point: target.tab_bar)
+    monkeypatch.setattr(target.tab_bar, "insertion_at", lambda _point: index)
+    source.tab_bar.drag_started.emit(page.record.identifier)
+    source.tab_bar.drag_released.emit(QPoint(50, 50))
+    qtbot.wait(10)
+    assert target.pages == expected
+    assert workspace.host_of(page.record.identifier) is target
+    assert len(workspace.documents) == (7 if destination == "other_host" else 4)
+    if target is not source:
+        assert source.pages == (before[0], before[2], before[3])
+
+
+def test_drop_on_actual_tab_close_child_targets_its_host(
+    workspace: Workspace,
+    sample_image: QImage,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A close-button child under the pointer still belongs to the tab strip."""
+    host = open_document(workspace, sample_image, tmp_path)
+    bar = host.tab_bar
+    buttons = (
+        cast(QWidget | None, bar.tabButton(0, side))
+        for side in (bar.ButtonPosition.LeftSide, bar.ButtonPosition.RightSide)
+    )
+    button = next((widget for widget in buttons if widget is not None), None)
+    assert button is not None
+    monkeypatch.setattr(QApplication, "widgetAt", lambda _point: button)
+    assert workspace._target_at(QPoint(50, 50)) is host
+
+
+def test_presentation_timer_stops_with_destroyed_workspace(qtbot: QtBot) -> None:
+    """An active retry cannot outlive its owning workspace during teardown."""
+    owner = Workspace()
+    qtbot.addWidget(owner.parking)
+    destroyed = QSignalSpy(owner._presentation_timer.destroyed)
+    owner._presentation_timer.start(5000)
+    owner.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert destroyed.count() == 1
+
+
+def test_recovery_constructor_failure_retains_original_ownership(
+    workspace: Workspace,
+    sample_image: QImage,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Failure before a new host is returned leaves parked work retryable."""
+    source = open_document(workspace, sample_image, tmp_path)
+    page = source.pages[0]
+    source.take_page(page)
+    windows = workspace.windows
+
+    def allocation_failed(*_args: object, **_kwargs: object) -> None:
+        raise MemoryError("Host constructor allocation failed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(EditorWindow, "__init__", allocation_failed)
+        assert not workspace.recover_retained()
+    assert workspace.documents == (page.record,)
+    assert workspace.windows == windows
+    assert workspace.host_of(page.record.identifier) is None
+    assert workspace.recover_retained()
+    recovered = workspace.host_of(page.record.identifier)
+    assert recovered is not None
+    assert recovered.pages == (page,)
 
 
 def test_detach_drop_clamps_to_screen_and_reorder_drop_keeps_identity(
