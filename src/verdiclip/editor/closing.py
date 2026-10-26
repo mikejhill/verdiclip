@@ -6,9 +6,9 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from verdiclip.editor import window as window_types
+    from verdiclip.editor import workspace as workspace_types
     from verdiclip.editor.page import DocumentPage
-    from verdiclip.editor.window import CloseApproval, EditorWindow
-    from verdiclip.editor.workspace import Workspace
 
 
 class CloseTransaction:
@@ -16,8 +16,11 @@ class CloseTransaction:
 
     def __init__(
         self,
-        owner: Workspace,
-        entries: tuple[tuple[EditorWindow, tuple[CloseApproval, ...]], ...],
+        owner: workspace_types.Workspace,
+        entries: tuple[
+            tuple[window_types.EditorWindow, tuple[window_types.CloseApproval, ...]],
+            ...,
+        ],
         can_commit: Callable[[], bool],
     ) -> None:
         self.owner = owner
@@ -93,7 +96,9 @@ class CloseTransaction:
             # Registry/parking remain strong owners even if allocation still fails.
             self.owner.recover_retained()
 
-    def _restore_page(self, host: EditorWindow, page: DocumentPage, index: int) -> None:
+    def _restore_page(
+        self, host: window_types.EditorWindow, page: DocumentPage, index: int
+    ) -> None:
         current = self.owner.host_of(page.record.identifier)
         if current is not None and current is not host:
             current.take_page(page)

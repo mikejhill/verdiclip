@@ -10,7 +10,7 @@ from PySide6.QtGui import QGuiApplication
 from verdiclip.editor.page import DocumentPage
 
 if TYPE_CHECKING:
-    from verdiclip.editor.window import EditorWindow
+    from verdiclip.editor import window as window_types
 
 
 class TabTransfer:
@@ -18,9 +18,9 @@ class TabTransfer:
 
     def __init__(
         self,
-        source: EditorWindow,
+        source: window_types.EditorWindow,
         page: DocumentPage,
-        target: EditorWindow | None,
+        target: window_types.EditorWindow | None,
         *,
         index: int | None,
         position: QPoint | None,
@@ -40,7 +40,7 @@ class TabTransfer:
             else None
         )
 
-    def run(self) -> EditorWindow | None:
+    def run(self) -> window_types.EditorWindow | None:
         """Publish a complete destination or restore the original attachment."""
         try:
             target = self._prepare()
@@ -72,7 +72,7 @@ class TabTransfer:
         else:
             return target
 
-    def _prepare(self) -> EditorWindow:
+    def _prepare(self) -> window_types.EditorWindow:
         from verdiclip.editor.window import (  # noqa: PLC0415 - factory breaks the UI ownership cycle
             EditorOptions,
             EditorWindow,
@@ -90,7 +90,7 @@ class TabTransfer:
                 self._position(self.target, self.position)
         return self.target
 
-    def _position(self, target: EditorWindow, position: QPoint) -> None:
+    def _position(self, target: window_types.EditorWindow, position: QPoint) -> None:
         """Keep a detached editor inside an actual screen's available area."""
         screen = QGuiApplication.screenAt(position) or QGuiApplication.primaryScreen()
         area = screen.availableGeometry()
@@ -103,7 +103,7 @@ class TabTransfer:
             max(area.top(), min(position.y(), area.bottom() - target.height() + 1)),
         )
 
-    def _verify(self, target: EditorWindow) -> None:
+    def _verify(self, target: window_types.EditorWindow) -> None:
         if self.page not in target.pages:
             raise RuntimeError("Destination did not retain the document")
 

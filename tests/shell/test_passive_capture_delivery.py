@@ -309,7 +309,8 @@ def test_deferred_editor_close_cannot_reopen_when_popup_later_ends(
     assert not host.isVisible()
     app.controller.workspace.present_retained()
     assert menu.isVisible()
-    assert host.close()
+    closed = host.close()
+    assert closed
     assert not app.controller.workspace.documents
     menu.close()
     app.controller.workspace.present_retained()

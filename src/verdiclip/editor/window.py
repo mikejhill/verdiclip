@@ -69,7 +69,7 @@ from verdiclip.render.renderer import Renderer
 from verdiclip.settings import ImageFormat
 
 if TYPE_CHECKING:
-    from verdiclip.editor.workspace import Workspace
+    from verdiclip.editor import workspace as workspace_types
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +140,7 @@ class EditorWindow(QMainWindow):
         options: EditorOptions | None = None,
         parent: QWidget | None = None,
         *,
-        workspace: Workspace | None = None,
+        workspace: workspace_types.Workspace | None = None,
     ) -> None:
         super().__init__(parent)
         self._application_label = "VerdiClip"
@@ -194,7 +194,7 @@ class EditorWindow(QMainWindow):
             self._refresh_chrome()
 
     @property
-    def workspace(self) -> Workspace:
+    def workspace(self) -> workspace_types.Workspace:
         """Return the application owner, also useful to standalone editors."""
         return self._workspace
 

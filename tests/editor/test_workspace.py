@@ -180,7 +180,8 @@ def test_reentrant_close_during_transfer_cannot_dispose_document(
     original = target.attach_page
 
     def during_attach(current: DocumentPage, index: int) -> None:
-        assert not source.close()
+        closed = source.close()
+        assert not closed
         assert not workspace.close_all()
         original(current, index)
 
@@ -203,7 +204,8 @@ def test_window_cancel_retains_every_tab(
     before = window.pages
     answers = iter([CloseChoice.DISCARD, CloseChoice.CANCEL])
     monkeypatch.setattr(ClosePrompt, "ask", lambda *_: next(answers))
-    assert not window.close()
+    closed = window.close()
+    assert not closed
     assert window.isVisible()
     assert window.pages == before
     assert len(workspace.documents) == 2
@@ -341,7 +343,8 @@ def test_output_job_follows_transfer_and_blocks_close_until_acknowledged(
     assert not target.close_tab()
     assert not workspace.close_all()
     assert page.record.jobs.request_cancel(ticket)
-    assert not target.close()
+    closed = target.close()
+    assert not closed
     assert page.record.jobs.acknowledge_cancel(ticket)
     assert target.close_tab()
     assert page.record.jobs.finish(ticket) is JobOutcome.UNKNOWN
@@ -365,7 +368,8 @@ def test_cancel_close_defers_async_edit_and_then_allows_it(
         return CloseChoice.CANCEL
 
     monkeypatch.setattr(ClosePrompt, "ask", cancel)
-    assert not window.close()
+    closed = window.close()
+    assert not closed
     assert record.session.document.annotations == ()
     assert record.jobs.apply(ticket, command) is JobOutcome.CURRENT
     assert len(record.session.document.annotations) == 1
@@ -710,7 +714,8 @@ def test_host_and_tab_close_reject_changed_prompt_states(
 
     monkeypatch.setattr(ClosePrompt, "ask", edit_then_discard)
     assert not window.close_tab()
-    assert not window.close()
+    closed = window.close()
+    assert not closed
     assert window.pages == (page,)
     assert len(page.record.session.document.annotations) == 2
 

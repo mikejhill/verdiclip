@@ -174,7 +174,8 @@ def main() -> int:
     try:
         output = prepare_output(repo, args.output_dir)
     except ValueError as error:
-        parser.error(str(error))
+        sys.stderr.write(f"{parser.prog}: error: {error}\n")
+        return 2
     if args.expected_qt is not None and runtime != args.expected_qt:
         return fail_preflight(
             output,

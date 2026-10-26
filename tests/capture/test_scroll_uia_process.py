@@ -58,6 +58,10 @@ def test_powershell_warm_pipe_accepts_repeated_variable_length_requests(
     replies: list[object] = []
     client.failed.connect(lambda _request, error: failures.append(error))
     client.completed.connect(lambda _request, reply: replies.append(reply))
+
+    def idle() -> bool:
+        return not client.busy
+
     try:
         for length in (120, 344, 450, 4096):
             before = len(replies)
@@ -69,7 +73,7 @@ def test_powershell_warm_pipe_accepts_repeated_variable_length_requests(
             assert not failures, (length, failures)
     finally:
         client.cancel()
-        qtbot.waitUntil(lambda: not client.busy)
+        qtbot.waitUntil(idle)
         client.deleteLater()
 
 

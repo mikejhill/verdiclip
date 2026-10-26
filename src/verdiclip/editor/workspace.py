@@ -15,7 +15,7 @@ from verdiclip.editor.transfer import TabTransfer
 from verdiclip.output.delivery import ImageDelivery
 
 if TYPE_CHECKING:
-    from verdiclip.editor.window import CloseApproval, EditorOptions, EditorWindow
+    from verdiclip.editor import window as window_types
 
 
 class Workspace(QObject):
@@ -32,17 +32,17 @@ class Workspace(QObject):
         self.parking.setObjectName("document-transfer-parking")
         self._documents: dict[str, DocumentRecord] = {}
         self._pages: dict[str, DocumentPage] = {}
-        self._windows: list[EditorWindow] = []
+        self._windows: list[window_types.EditorWindow] = []
         self._transferring = False
-        self._drag: tuple[EditorWindow, DocumentPage] | None = None
+        self._drag: tuple[window_types.EditorWindow, DocumentPage] | None = None
         self._drag_generation = 0
-        self._pending_presentations: set[EditorWindow] = set()
+        self._pending_presentations: set[window_types.EditorWindow] = set()
         self._presentation_timer = QTimer(self)
         self._presentation_timer.setInterval(50)
         self._presentation_timer.timeout.connect(self.present_retained)
 
     @property
-    def windows(self) -> tuple[EditorWindow, ...]:
+    def windows(self) -> tuple[window_types.EditorWindow, ...]:
         """Return live hosts in most-recently-activated order."""
         return tuple(self._windows)
 
@@ -61,7 +61,7 @@ class Workspace(QObject):
         """Document/transfer ownership, rather than window count, controls idle."""
         return bool(self._documents) or self._transferring or self._drag is not None
 
-    def host_of(self, identifier: str) -> EditorWindow | None:
+    def host_of(self, identifier: str) -> window_types.EditorWindow | None:
         """Resolve current presentation from document identity, never a tab index."""
         return next(
             (
@@ -102,7 +102,9 @@ class Workspace(QObject):
                 return False
         return True
 
-    def _existing_capture(self, options: EditorOptions) -> DocumentPage | None:
+    def _existing_capture(
+        self, options: window_types.EditorOptions
+    ) -> DocumentPage | None:
         if options.provenance is None:
             return None
         capture_id = options.provenance.capture_id
@@ -128,7 +130,7 @@ class Workspace(QObject):
         self.register_document(page.record)
         self._pages[page.record.identifier] = page
 
-    def register_window(self, window: EditorWindow) -> None:
+    def register_window(self, window: window_types.EditorWindow) -> None:
         """Wire one host without making a provisional window the active target."""
         self._windows.append(window)
         bar = window.tab_bar
@@ -140,13 +142,13 @@ class Workspace(QObject):
         bar.drag_cancelled.connect(self._clear_drag)
         self.window_added.emit(window)
 
-    def activated(self, window: EditorWindow) -> None:
+    def activated(self, window: window_types.EditorWindow) -> None:
         """Remember only an actual editor host, never an overlay or popup."""
         if window in self._windows and window.eligible and not self._transferring:
             self._windows.remove(window)
             self._windows.insert(0, window)
 
-    def forget_window(self, window: EditorWindow) -> None:
+    def forget_window(self, window: window_types.EditorWindow) -> None:
         """Forget an approved empty host without disposing moved documents."""
         if window in self._windows:
             self._pending_presentations.discard(window)
@@ -168,12 +170,12 @@ class Workspace(QObject):
         self,
         session: EditorSession,
         delivery: ImageDelivery,
-        options: EditorOptions,
-        target: EditorWindow | None = None,
+        options: window_types.EditorOptions,
+        target: window_types.EditorWindow | None = None,
         *,
         new_window: bool = False,
         activate: bool = True,
-    ) -> EditorWindow:
+    ) -> window_types.EditorWindow:
         """Admit producer-independent work without replacing any existing tab."""
         from verdiclip.editor.window import EditorWindow  # noqa: PLC0415 - avoid cycle
 
@@ -207,7 +209,9 @@ class Workspace(QObject):
             self._present_host(target, activate=should_activate)
         return target
 
-    def _present_host(self, target: EditorWindow, *, activate: bool) -> None:
+    def _present_host(
+        self, target: window_types.EditorWindow, *, activate: bool
+    ) -> None:
         # Visible/minimized hosts need no presentation change for background work.
         activate = activate and not self._protected_ui()
         if not target.isVisible():
@@ -288,9 +292,9 @@ class Workspace(QObject):
 
     def move(
         self,
-        source: EditorWindow,
+        source: window_types.EditorWindow,
         page: DocumentPage,
-        target: EditorWindow | None = None,
+        target: window_types.EditorWindow | None = None,
         index: int | None = None,
         position: QPoint | None = None,
     ) -> bool:
@@ -329,7 +333,10 @@ class Workspace(QObject):
 
     def close_documents(
         self,
-        entries: tuple[tuple[EditorWindow, tuple[CloseApproval, ...]], ...],
+        entries: tuple[
+            tuple[window_types.EditorWindow, tuple[window_types.CloseApproval, ...]],
+            ...,
+        ],
         can_commit: Callable[[], bool] | None = None,
     ) -> bool:
         """Stage every selected page before destroying any accepted document."""
@@ -372,7 +379,10 @@ class Workspace(QObject):
 
     def _plans_current(
         self,
-        entries: tuple[tuple[EditorWindow, tuple[CloseApproval, ...]], ...],
+        entries: tuple[
+            tuple[window_types.EditorWindow, tuple[window_types.CloseApproval, ...]],
+            ...,
+        ],
         documents: tuple[DocumentRecord, ...],
         guard: Callable[[], bool],
     ) -> bool:
@@ -387,9 +397,9 @@ class Workspace(QObject):
 
     @staticmethod
     def _collect_approvals(
-        windows: tuple[EditorWindow, ...],
-    ) -> list[tuple[CloseApproval, ...]] | None:
-        plans: list[tuple[CloseApproval, ...]] = []
+        windows: tuple[window_types.EditorWindow, ...],
+    ) -> list[tuple[window_types.CloseApproval, ...]] | None:
+        plans: list[tuple[window_types.CloseApproval, ...]] = []
         for window in windows:
             plan = window.close_approvals()
             if plan is None:
@@ -403,7 +413,7 @@ class Workspace(QObject):
             window.tab_bar.cancel_drag()
         self._clear_drag()
 
-    def _start_drag(self, source: EditorWindow, identifier: str) -> None:
+    def _start_drag(self, source: window_types.EditorWindow, identifier: str) -> None:
         page = next(
             (page for page in source.pages if page.record.identifier == identifier),
             None,
@@ -414,7 +424,7 @@ class Workspace(QObject):
         page.suspend()
         self._drag = source, page
 
-    def _target_at(self, position: QPoint) -> EditorWindow | None:
+    def _target_at(self, position: QPoint) -> window_types.EditorWindow | None:
         widget = QApplication.widgetAt(position)
         for window in self.windows:
             bar = window.tab_bar
@@ -445,7 +455,10 @@ class Workspace(QObject):
             )
 
     def _complete_drop(
-        self, drag: tuple[EditorWindow, DocumentPage], position: QPoint, generation: int
+        self,
+        drag: tuple[window_types.EditorWindow, DocumentPage],
+        position: QPoint,
+        generation: int,
     ) -> None:
         if generation != self._drag_generation:
             return
@@ -463,7 +476,7 @@ class Workspace(QObject):
             window.tab_bar.show_insertion()
 
     def show_tab_menu(
-        self, source: EditorWindow, page: DocumentPage, position: object
+        self, source: window_types.EditorWindow, page: DocumentPage, position: object
     ) -> None:
         """Keyboard-accessible counterparts for every structural drag action."""
         menu = QMenu(source)
@@ -491,7 +504,7 @@ class Workspace(QObject):
             menu.popup(position)
 
     def _add_targets(
-        self, menu: QMenu, source: EditorWindow, page: DocumentPage
+        self, menu: QMenu, source: window_types.EditorWindow, page: DocumentPage
     ) -> None:
         for number, window in enumerate(self.windows, 1):
             if window is not source and window.eligible:
@@ -500,7 +513,9 @@ class Workspace(QObject):
                     lambda target=window: self.move(source, page, target),
                 )
 
-    def populate_window_menu(self, menu: QMenu, source: EditorWindow) -> None:
+    def populate_window_menu(
+        self, menu: QMenu, source: window_types.EditorWindow
+    ) -> None:
         """Refresh stable-ID tab and destination actions when opened."""
         for action in menu.actions()[5:]:
             menu.removeAction(action)

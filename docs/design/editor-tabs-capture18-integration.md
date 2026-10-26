@@ -2,16 +2,49 @@
 
 This is the current integration record. It supersedes the older source/readiness
 checkpoints in editor-tabs-combined-preview.md, editor-tabs-canonical-integration.md
-and editor-tabs-validation.md. No publication, merge, release or normal install
-change is authorized by this record. Mike must verify the eventual qualified
+and editor-tabs-validation.md. Draft publication is now approved; merge, release
+and normal install changes remain held. Mike must verify the eventual qualified
 candidate locally before merge.
+
+## Publication follow-up
+
+[Draft PR #62](https://github.com/mikejhill/verdiclip/pull/62) was published after
+review of all 31 outgoing commits / 181 historical blobs and an independent scan
+of all 106 changed text files. No sensitive information was found; private wheels,
+logs and snapshots remain ignored/local. Independent final source review at
+21381ed also passed 248 tabs contracts, with no new material findings.
+
+The initial hosted capture/tabs matrices, build, gallery, lint/type, dependency
+and workflow checks passed. Full tests on Python 3.13/3.14 exposed a collection
+error: console pytest lacked the checkout root needed to import scripts. Pytest
+now adds that root consistently; mutmut copies the harness script it needs.
+Console-entrypoint and isolated copied-layout tests pass. The first mutation run
+failed during stats collection and produced no valid score; its new run must
+qualify that context rather than treating the previous failure as a score.
+
+All 25 initial CodeQL quality findings were triaged: deferred module aliases avoid
+partially initialized class imports; invalid output handling returns explicitly;
+preview no-op methods retain protocol parameter names; close actions execute
+outside asserts. Two imported capture **test-only** adjustments keep the idle
+callback outside finally and full-image equality after cleanup. Capture production
+modules and canonical contract remain unchanged. Independent review found no
+material issue in this remediation and passed 100 focused tests. Hosted final-head
+CodeQL verification remains required; no finding was dismissed or scanner changed.
+
+CONTRIBUTING now blocks merge for unresolved PR threads or unaddressed CodeQL
+findings at the exact final head, separately from Mike's local acceptance. Read-only
+inspection found the effective main ruleset already requires review-thread
+resolution; its sole required status is CI passed, with no separate CodeQL rule.
+That is an enforcement gap to report, not permission to change security settings.
+PR #62 initially has no inline review threads; its CodeQL review and alerts are
+tracked independently. Live final-head status is authoritative in the PR checks.
 
 ## Exact source and boundary
 
 Local branch `codex/combined-editor-capture-preview` merged capture head
 `18e72dc966fe74203646fc8a0ac303285598becc` in 03b8e3d. Reviewed production source
-ends at a57b810; final test cleanup is
-**7eed1d05ff85bf6b8738b015786297710658508b**. Capture modules/tests and the
+for the portable checkpoint below ends at a57b810; its final test cleanup is
+**7eed1d05ff85bf6b8738b015786297710658508b**. At that checkpoint, capture modules/tests and the
 single-instance source/regression tests are byte-identical to the capture head.
 There is one canonical `capture.reviewed.ReviewedCapture`, with its existing
 timezone-aware timestamp, stable ID and completeness enums. No second contract or
@@ -71,8 +104,8 @@ Both `.github/workflows/ci.yml` jobs, `capture-contracts` and `tabs-contracts`, 
 retained and required by `ci-passed`, alongside the existing checks. The full test
 job excludes `native_desktop`; no virtual display driver, VM or dedicated laptop
 runner was introduced. Workflow actionlint/zizmor, Ruff, format, strict ty and
-offline lock checks passed locally. Hosted combined CI has not run: publication
-of this branch is explicitly held pending Mike's approval.
+offline lock checks passed locally. Hosted follow-up is recorded above; the
+portable numbers below retain their exact tested source identity.
 
 Clean source 7eed1d05, Windows 11, Python 3.13.5, Qt offscreen:
 
@@ -123,7 +156,7 @@ removed only from this private runtime. `native_ui_ready=false`; the UI launcher
 refuses before constructing an application, with no override.
 
 Still pending: capture-owner native preservation capability and a qualified public
-capture composition; approved publication and hosted combined CI; final qualified
+capture composition; successful final-head hosted checks and finding/thread review; final qualified
 local candidate plus Mike's acceptance before merge. Earlier synthetic native tab
 checks on both Qt versions are supplemental and from earlier source. This merge
 performed no desktop input and makes no fresh physical, Narrator, clipboard or

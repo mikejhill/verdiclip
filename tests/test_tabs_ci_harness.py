@@ -118,3 +118,27 @@ def test_branch_coverage_gate_cannot_hide_behind_high_line_coverage(
     assert manifest["status"] == ("passed" if expected == 0 else "failed")
     assert manifest["exit_code"] == expected
     assert "branches >=90%" in (tmp_path / "summary.md").read_text(encoding="utf-8")
+
+
+def test_invalid_report_location_returns_before_touching_checkout_files() -> None:
+    """Argument failure never clears reports or starts pytest in a source directory."""
+    repo = Path(__file__).resolve().parents[1]
+    protected = repo / "tests"
+    before = {entry.name for entry in protected.iterdir()}
+    contents = Path(__file__).read_bytes()
+    result = subprocess.run(  # noqa: S603 - own script and fixed invalid location
+        [
+            sys.executable,
+            str(repo / "scripts/test_tabs_ci.py"),
+            "--output-dir",
+            str(protected),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 2
+    assert "Output must be under .test-tmp/ or artifacts/" in result.stderr
+    assert {entry.name for entry in protected.iterdir()} == before
+    assert Path(__file__).read_bytes() == contents

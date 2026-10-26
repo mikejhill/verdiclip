@@ -16,6 +16,15 @@ uv run poe check   # Must pass before you open a pull request
 3. **Look at it.** Run `uv run poe ux-snapshots` and `uv run poe ux-gallery` and review the images in both themes.
 4. **Keep the gate green.** `uv run poe check` runs formatting, lint, strict type checking (ty, every rule at error), and tests with ≥ 90% branch coverage. Don't weaken the configuration to get a pass.
 
+Before merging, inspect every PR review thread and CodeQL/code-scanning finding
+against the exact final head. Address each with a substantive fix or an
+evidence-based explanation, then resolve addressed review threads where permitted.
+Unresolved threads or unaddressed findings block merging; a green check alone does
+not replace that review. Recheck after the final push. Do not dismiss findings or
+change repository security/access settings merely to satisfy a gate. Any requested
+user acceptance, including local verification of a qualified VerdiClip build,
+remains a separate merge requirement.
+
 ## Test quality
 
 Tab ownership/transfer/topology, fake hotkey routing and accessibility contracts

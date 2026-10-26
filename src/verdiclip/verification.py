@@ -125,7 +125,7 @@ class PreviewShortcuts:
 
     def delete(self, path: Path) -> None:
         """The private virtual namespace contains nothing to remove."""
-        del path
+        _ = path
 
 
 class PreviewRunKey:
@@ -143,7 +143,7 @@ class PreviewRunKey:
 
     def delete_value(self, name: str) -> None:
         """The private virtual namespace contains nothing to remove."""
-        del name
+        _ = name
 
 
 class PreviewAssociations:
@@ -161,11 +161,11 @@ class PreviewAssociations:
 
     def delete_value(self, key: str, name: str) -> None:
         """The private virtual namespace has no values."""
-        del key, name
+        _ = key, name
 
     def delete_tree(self, key: str) -> None:
         """The private virtual namespace has no trees."""
-        del key
+        _ = key
 
     def notify_changed(self) -> None:
         """No Explorer notification is sent."""
