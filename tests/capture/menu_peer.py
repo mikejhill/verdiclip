@@ -135,13 +135,9 @@ class MenuPeer:
         if child is None:
             return
         forced = False
+        close_error: OSError | None = None
         if child.poll() is None:
-            if child.stdin is not None:
-                try:
-                    child.stdin.write("close-owned\n")
-                    child.stdin.flush()
-                except OSError:
-                    pass
+            close_error = _request_owned_close(child)
             try:
                 child.wait(timeout=2)
             except subprocess.TimeoutExpired:
@@ -152,8 +148,22 @@ class MenuPeer:
                 stream.close()
         if self._reader is not None:
             self._reader.join(timeout=1)
+        if close_error is not None:
+            raise OSError("External fixture cleanup request failed") from close_error
         if forced or child.returncode != 0:
             raise OSError("External fixture required termination or exited abnormally")
+
+
+def _request_owned_close(child: subprocess.Popen[str]) -> OSError | None:
+    """Retain control-pipe failures while still awaiting/retiring the owned child."""
+    if child.stdin is None:
+        return OSError("External fixture has no cleanup control pipe")
+    try:
+        child.stdin.write("close-owned\n")
+        child.stdin.flush()
+    except OSError as error:
+        return error
+    return None
 
 
 def _terminate_owned(child: subprocess.Popen[str]) -> None:

@@ -353,3 +353,29 @@ def test_exited_peer_cannot_reuse_cached_open_state() -> None:
     assert peer.poll() is None
     assert not peer.acknowledged(7)
     assert peer.preservation_errors()
+
+
+def test_foreign_cleanup_write_error_is_retained_after_child_exit() -> None:
+    """A broken control pipe cannot silently become a clean fixture result."""
+    closed: list[bool] = []
+
+    def broken_write(_text: str) -> None:
+        raise OSError("fixture pipe closed")
+
+    stream = SimpleNamespace(
+        write=broken_write, flush=lambda: None, close=lambda: closed.append(True)
+    )
+    child = SimpleNamespace(
+        poll=lambda: None,
+        stdin=stream,
+        stdout=None,
+        stderr=None,
+        wait=lambda **_: 0,
+        returncode=0,
+    )
+    peer = MenuPeer()
+    peer.process = cast("subprocess.Popen[str]", child)
+    with pytest.raises(OSError, match="cleanup request failed") as error:
+        peer.close()
+    assert isinstance(error.value.__cause__, OSError)
+    assert closed == [True]
