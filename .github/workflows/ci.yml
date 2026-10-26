@@ -70,6 +70,7 @@ jobs:
       - name: Unit, widget, platform, and UX journey tests
         run: >-
           uv run pytest --cov --cov-report=xml --cov-report=term
+          -m "not native_desktop"
           --junitxml=junit.xml
           --ux-snapshots=docs/ux/snapshots
       - name: Coverage summary
@@ -111,6 +112,50 @@ jobs:
         with:
           name: ux-journey-snapshots
           path: docs/ux/snapshots
+          if-no-files-found: ignore
+
+  capture-contracts:
+    name: Capture contracts (Qt ${{ matrix.qt }}, synthetic hardware)
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        qt: ["6.11.2", "6.12.0"]
+    env:
+      QT_QPA_PLATFORM: offscreen
+      QT_VERSION: ${{ matrix.qt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+          python-version: "3.13"
+      - run: uv sync
+      - name: Select explicit isolated compatibility profile
+        run: >-
+          uv pip install --python .venv
+          "pyside6-essentials==$env:QT_VERSION" "shiboken6==$env:QT_VERSION"
+      - name: Record environment and evidence boundary
+        run: >-
+          uv run --no-sync python -c
+          "import sys, PySide6; from PySide6.QtCore import qVersion;
+          print(sys.version); print('PySide6', PySide6.__version__, 'Qt', qVersion());
+          print('Offscreen synthetic display/input/frame/provider contracts;
+          no physical-device or native menu preservation claim')"
+      - name: Capture, synthetic display topology and hotkey contracts
+        run: >-
+          uv run --no-sync pytest tests/capture tests/platform/test_hotkeys.py
+          tests/shell/test_hotkey_field.py
+          -m "not native_desktop"
+          --junitxml=capture-contracts.xml
+      - name: Upload reproducible contract results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: capture-contracts-qt${{ matrix.qt }}
+          path: capture-contracts.xml
           if-no-files-found: ignore
 
   tabs-contracts:
@@ -285,7 +330,7 @@ jobs:
   ci-passed:
     name: CI passed
     if: always()
-    needs: [lint, typecheck, test, tabs-contracts, ux-gallery, build, audit, workflows]
+    needs: [lint, typecheck, test, capture-contracts, tabs-contracts, ux-gallery, build, audit, workflows]
     runs-on: ubuntu-latest
     steps:
       - name: Require every job to succeed

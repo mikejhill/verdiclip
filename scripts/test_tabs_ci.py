@@ -38,6 +38,7 @@ TESTS = (
     "tests/output/test_atomic_save.py",
     "tests/shell/test_reviewed_delivery.py",
     "tests/shell/test_scroll_review_delivery.py",
+    "tests/shell/test_passive_capture_delivery.py",
     "tests/ux/test_tabs_journeys.py",
 )
 COVERAGE = (

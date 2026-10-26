@@ -28,6 +28,8 @@ from verdiclip.output.delivery import ImageDelivery
 from verdiclip.platform.tab_drag import NativeTabDrag, Win32CaptureApi
 from verdiclip.settings import EditorSettings, OutputSettings
 
+pytestmark = pytest.mark.native_desktop
+
 
 @pytest.mark.parametrize("outcome", ["merge", "detach", "escape", "hotkey"])
 def test_native_tab_gesture_keeps_document_and_releases_input(  # noqa: C901, PLR0913, PLR0917, PLR0915 - native acceptance matrix

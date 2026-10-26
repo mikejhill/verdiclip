@@ -329,3 +329,15 @@ class ScrollAcquisition:
         self._settler.cancel()
         self._session.cancel()
         self._state = AcquisitionState.CANCELLED
+
+    def backend_failed(self, *, target_changed: bool = False) -> None:
+        """Stop asynchronous backend work without attributing it to user intent."""
+        if self._state in {
+            AcquisitionState.SETTLING,
+            AcquisitionState.READY,
+            AcquisitionState.MOVING,
+            AcquisitionState.PAUSED,
+        }:
+            self._interrupt(
+                StopReason.TARGET_CHANGED if target_changed else StopReason.ERROR
+            )

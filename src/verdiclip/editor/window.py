@@ -152,6 +152,7 @@ class EditorWindow(QMainWindow):
         self._default_delivery = delivery
         self._page_ref: DocumentPage | None = None
         self._closing = False
+        self._passive_presentations = 0
         self._close_reserved: tuple[DocumentRecord, ...] = ()
         self._approved_close: tuple[CloseApproval, ...] | None = None
         self._tabs = QTabWidget(self)
@@ -350,6 +351,25 @@ class EditorWindow(QMainWindow):
             self.resize(self._initial_size())
         return page
 
+    @contextmanager
+    def presentation_policy(self, *, activate: bool) -> Generator[None]:
+        """Suppress insertion/show focus for an entire passive admission lease."""
+        if not activate:
+            self._passive_presentations += 1
+        try:
+            yield
+        finally:
+            if not activate:
+                self._passive_presentations -= 1
+
+    @property
+    def _may_focus(self) -> bool:
+        return (
+            self._passive_presentations == 0
+            and QApplication.activePopupWidget() is None
+            and QApplication.activeModalWidget() is None
+        )
+
     def attach_page(self, page: DocumentPage, index: int) -> None:
         """Attach an existing page without cloning its session or pixels."""
         inserted = self._tabs.insertTab(index, page, page.record.label)
@@ -399,10 +419,7 @@ class EditorWindow(QMainWindow):
         self._page_changed()
         if self.isVisible():
             page.present()
-            if (
-                QApplication.activePopupWidget() is None
-                and QApplication.activeModalWidget() is None
-            ):
+            if self._may_focus:
                 page.canvas.setFocus()
 
     def _page_zoom_changed(self, _zoom: float) -> None:
@@ -940,7 +957,8 @@ class EditorWindow(QMainWindow):
             self._shown_once = True
             if self._page_ref is not None:
                 self._page.present()
-                self._canvas.setFocus()
+                if self._may_focus:
+                    self._canvas.setFocus()
 
     @override
     def changeEvent(self, event: QEvent) -> None:

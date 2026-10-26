@@ -35,6 +35,10 @@ class Workspace(QObject):
         self._transferring = False
         self._drag: tuple[EditorWindow, DocumentPage] | None = None
         self._drag_generation = 0
+        self._pending_presentations: set[EditorWindow] = set()
+        self._presentation_timer = QTimer(self)
+        self._presentation_timer.setInterval(50)
+        self._presentation_timer.timeout.connect(self.present_retained)
 
     @property
     def windows(self) -> tuple[EditorWindow, ...]:
@@ -77,6 +81,7 @@ class Workspace(QObject):
         """Retry presentation after an allocation/attachment rollback failure."""
         from verdiclip.editor.window import EditorOptions, EditorWindow  # noqa: PLC0415
 
+        self.present_retained()
         for identifier, page in self._pages.items():
             if self.host_of(identifier) is not None:
                 continue
@@ -143,6 +148,9 @@ class Workspace(QObject):
     def forget_window(self, window: EditorWindow) -> None:
         """Forget an approved empty host without disposing moved documents."""
         if window in self._windows:
+            self._pending_presentations.discard(window)
+            if not self._pending_presentations:
+                self._presentation_timer.stop()
             self._windows.remove(window)
             self._clear_drag()
             self.window_removed.emit(window)
@@ -190,20 +198,73 @@ class Workspace(QObject):
             and QApplication.activePopupWidget() is None
             and QApplication.activeModalWidget() is None
         )
-        if existing is None:
-            target.add_document(record, activate=should_activate)
-        else:
-            target.attach_page(existing, len(target.pages))
-            if should_activate:
-                target.activate_page(existing)
-        target.setAttribute(
-            Qt.WidgetAttribute.WA_ShowWithoutActivating, not should_activate
-        )
-        target.show()
-        if should_activate:
+        with target.presentation_policy(activate=should_activate):
+            if existing is None:
+                target.add_document(record, activate=should_activate)
+            else:
+                target.attach_page(existing, len(target.pages))
+                if should_activate:
+                    target.activate_page(existing)
+            self._present_host(target, activate=should_activate)
+        return target
+
+    def _present_host(self, target: EditorWindow, *, activate: bool) -> None:
+        # Visible/minimized hosts need no presentation change for background work.
+        if activate:
+            self._pending_presentations.discard(target)
+        if not activate and not target.isVisible() and self._protected_ui():
+            target.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+            self._pending_presentations.add(target)
+            self._presentation_timer.start()
+        elif activate or not target.isVisible():
+            target.setAttribute(
+                Qt.WidgetAttribute.WA_ShowWithoutActivating, not activate
+            )
+            if activate and target.isMinimized():
+                target.setWindowState(
+                    target.windowState() & ~Qt.WindowState.WindowMinimized
+                )
+            target.show()
+        if activate:
             target.raise_()
             target.activateWindow()
-        return target
+
+    @staticmethod
+    def _protected_ui() -> bool:
+        return (
+            QApplication.activePopupWidget() is not None
+            or QApplication.activeModalWidget() is not None
+        )
+
+    def present_retained(self) -> None:
+        """Present deferred captures only after protected Qt UI ends naturally.
+
+        Qt itself dismisses an active QMenu when another top-level is shown,
+        even with WA_ShowWithoutActivating. Never trigger that path while the
+        popup/modal exists. Ownership remains in the workspace throughout.
+        """
+        if self._protected_ui():
+            return
+        for host in tuple(self._pending_presentations):
+            if host not in self._windows or not host.pages:
+                self._pending_presentations.discard(host)
+                continue
+            if host.isVisible():
+                self._pending_presentations.discard(host)
+                continue
+            try:
+                with host.presentation_policy(activate=False):
+                    host.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+                    host.show()
+            except (RuntimeError, MemoryError) as error:
+                self._presentation_timer.stop()
+                self.transfer_failed.emit(
+                    f"Editor retained but could not be shown. Retry Window > "
+                    f"Recover retained tabs. {error}"
+                )
+                return
+            self._pending_presentations.discard(host)
+        self._presentation_timer.stop()
 
     def move(
         self,

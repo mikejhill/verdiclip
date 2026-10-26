@@ -85,7 +85,7 @@ class CaptureDelivery:
     actions: CaptureSettings
     output: OutputSettings
     target: EditorWindow | None
-    activate: bool
+    activate_editor: bool
     saved: Path | None = None
     copied: bool = False
     admitted: bool = False
@@ -281,12 +281,14 @@ class AppController(QObject):
         result: ReviewedCapture,
         *,
         target: EditorWindow | None = None,
-        activate: bool = False,
+        activate_editor: bool = False,
     ) -> EditorWindow | None:
         """Apply chosen outputs once; preserve native popup/modal context by default.
 
         Partial images must already have passed producer-owned review. Capture
         plans, tiles, repeat targets and input backend objects never cross here.
+        Preserved-foreground producers keep activate_editor=False. Foreground
+        opt-in belongs to explicit user intent, outside the canonical image.
         """
         if result.capture_id in self._completed_deliveries:
             self._scroll_reviews.acknowledge_delivery(result.capture_id)
@@ -294,7 +296,11 @@ class AppController(QObject):
         attempt = self._pending_deliveries.setdefault(
             result.capture_id,
             CaptureDelivery(
-                result, self._settings.capture, self._settings.output, target, activate
+                result,
+                self._settings.capture,
+                self._settings.output,
+                target,
+                activate_editor,
             ),
         )
         if attempt.in_flight:
@@ -402,7 +408,7 @@ class AppController(QObject):
                 options,
                 delivered=attempt.saved is not None or attempt.copied,
                 target=attempt.target,
-                activate=attempt.activate,
+                activate=attempt.activate_editor,
             )
             attempt.admitted = True
             self._refresh_capture_delivery(attempt)
