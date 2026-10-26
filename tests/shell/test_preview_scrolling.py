@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from PySide6.QtCore import QObject
+from PySide6.QtCore import QEvent, QObject
 from PySide6.QtWidgets import QApplication
 from pytestqt.qtbot import QtBot
 from shiboken6 import isValid
@@ -171,7 +171,7 @@ def test_declared_rejection_disposes_only_unowned_adapter(
                 adapter_factory=lambda: adapter,
             )
         if owned:
-            QApplication.sendPostedEvents()
+            QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
             assert isValid(adapter)
             assert adapter.parent() is owner
         else:

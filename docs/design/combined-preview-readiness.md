@@ -62,6 +62,13 @@ or native input. Unqualified/default profiles return before resource creation;
 scrolling readiness requires native-UI readiness. The binding is now present;
 there is no missing composition dependency behind the input handoff.
 
+Independent live-globals fault replay exposed one ownership-test gap: changing
+the rejection cleanup guard from `and` to `or` survived a check performed before
+Qt deferred deletion. Explicitly processing `DeferredDelete` now rejects that
+fault directly at retained-object validity, while the unchanged control passes.
+This is a corrected assertion timing gap, not a production ownership defect or
+a retrospective revision of the running mutation score.
+
 The above matrix still requires the exclusive handoff and actual guarded input.
 Physical pointer behavior requires Mike's two-minute observation. Real UIA
 provider scrolling, progress/review delivery, desktop accessibility presentation,
