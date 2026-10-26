@@ -103,7 +103,7 @@ waits for broker readiness and confirmed cleanup, checks zero Hide/Close events
 and unchanged handles/modality/popups/grabs before teardown, and bounds cleanup
 failure independently. Teardown can unwind only explicitly declared fixture
 hosts; a foreign application-modal dialog remains untouched. The same coordinator
-has 45 portable regressions, including all eight scene setups with drag/Escape,
+has 51 portable regressions, including all eight scene setups with drag/Escape,
 nested menu/dialog loops, missing/negative cleanup and stale callbacks.
 
 `test_capture_native.py` is now a **native Qt/MSS presentation suite with replay
@@ -115,6 +115,39 @@ and mouse activation of a native menu. About uses a fixture QMessageBox and
 Settings uses the actual SettingsDialog widget; these are fixture-owned modal
 hosts rather than implicit ownership of whichever dialog happens to be active.
 Trace JSON labels native GUI, replay transport and absence of native hooks.
+
+### Passive surface focus regression
+
+Hosted deferred-readiness traces at `98a5ba2` show the existing popup surviving
+setup and overlay presentation, then receiving FocusOut/Close/Hide after overlay
+retirement. Capture-free controls pass. A smaller deterministic regression shows
+all three broker-driven surface construction paths acquiring Qt's focus window
+despite their nonactivation flags; all three fail before the policy change.
+
+Qt's [offscreen platform][offscreen-focus] unconditionally queues a focus change
+for shown Tool windows, ignoring those flags; it exempts ToolTip windows.
+Output-only capture surfaces now share the passive ToolTip window policy, while
+standalone interactive surfaces retain their existing type. This uses a plain
+QWidget, without QToolTip expiry timers. The new tests drain platform events
+through presentation and retirement and require the original focus window,
+popup, handles, visibility, modality and grabs to remain unchanged.
+
+Qt [omits ObjectShow for tooltip presentation][widget-show]; real capture panels
+explicitly announce their accessible controls instead. A regression checks the
+announcement and button accessible name/role. Completed delivery status remains
+passive and mouse-operable; it does not become a keyboard-focused editor.
+Keyboard review/retry requires a fresh capture lease. Its explicit Close action
+is tested after cleanup without changing the existing popup or foreground.
+
+This diagnoses the synthetic backend's focus-policy mismatch, not a new claim
+of Windows qualification. Hosted popup preservation must pass at the replacement
+head; native presentation, assistive-technology behavior and actual OS input
+remain separate pending gates. Windows [uses nonactivating presentation][windows-show]
+for both Tool and ToolTip windows, but source inspection alone is not native proof.
+
+[offscreen-focus]: https://github.com/qt/qtbase/blob/v6.11.2/src/plugins/platforms/offscreen/qoffscreenwindow.cpp#L78-L85
+[widget-show]: https://github.com/qt/qtbase/blob/v6.11.2/src/widgets/kernel/qwidget.cpp
+[windows-show]: https://github.com/qt/qtbase/blob/v6.11.2/src/plugins/platforms/windows/qwindowswindow.cpp#L1871-L1876
 
 Only after an authorized unlocked-desktop handoff, run this supplemental suite:
 

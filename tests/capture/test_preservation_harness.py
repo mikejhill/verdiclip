@@ -25,6 +25,7 @@ from tests.capture.test_popup_capture import CaptureContext, ExistingScene
 from tests.ux.test_app_journeys import App, make_app
 
 from verdiclip.capture.input_policy import InputKind, SelectionInput
+from verdiclip.capture.interaction import CapturePanel
 from verdiclip.capture.overlay import SelectionOverlay
 from verdiclip.geometry import Rect
 from verdiclip.settings import CaptureSettings, Settings
@@ -461,3 +462,41 @@ def test_popup_fixture_remains_stable_without_any_capture_request(
     finally:
         snapshot.close()
         scene.close()
+
+
+@pytest.mark.parametrize("surface", ["overlay", "panel", "opted_in_panel"])
+def test_output_only_surfaces_never_become_the_qt_focus_window(
+    qtbot: QtBot, qapp: QApplication, surface: str
+) -> None:
+    """Drain actual platform focus events through show/retirement, not just flags."""
+    scene = ExistingScene("popup", qapp)
+    qapp.processEvents()
+    original_focus = QGuiApplication.focusWindow()
+    snapshot = PreservationSnapshot(qapp, tuple(scene.windows))
+    context = CaptureContext(qapp)
+    panel = CapturePanel(external_input=surface == "panel")
+    try:
+        if surface == "overlay":
+            context.service.capture_region()
+            qtbot.waitUntil(lambda: bool(context.service.overlays))
+        else:
+            if surface == "opted_in_panel":
+                panel.use_capture_input()
+            panel.show()
+        qapp.processEvents()
+        assert QGuiApplication.focusWindow() is original_focus
+        assert not snapshot.errors()
+        if surface == "overlay":
+            context.cancel()
+        else:
+            panel.dismiss()
+        qapp.processEvents()
+        assert QGuiApplication.focusWindow() is original_focus
+        assert not snapshot.errors()
+        scene.assert_preserved()
+    finally:
+        snapshot.close()
+        context.service.cancel()
+        panel.close()
+        scene.close()
+        context.service.deleteLater()

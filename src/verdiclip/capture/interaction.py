@@ -5,11 +5,21 @@ from __future__ import annotations
 from typing import override
 
 from PySide6.QtCore import QPoint, Qt, Signal
-from PySide6.QtGui import QCloseEvent, QColor, QPainter, QPaintEvent, QPen
+from PySide6.QtGui import (
+    QAccessible,
+    QAccessibleEvent,
+    QCloseEvent,
+    QColor,
+    QPainter,
+    QPaintEvent,
+    QPen,
+    QShowEvent,
+)
 from PySide6.QtWidgets import QComboBox, QPushButton, QSpinBox, QWidget
 
 from verdiclip.capture.input_policy import InputKind, SelectionInput
 from verdiclip.capture.models import ScreenGeometry
+from verdiclip.capture.presentation import PASSIVE_WINDOW_FLAGS
 from verdiclip.geometry import Point
 
 
@@ -43,13 +53,7 @@ class CapturePanel(QWidget):
         """Keep legacy standalone use; preserved capture opts into output-only UI."""
         flags = Qt.WindowType.Window
         if external_input:
-            flags = (
-                Qt.WindowType.Tool
-                | Qt.WindowType.FramelessWindowHint
-                | Qt.WindowType.WindowStaysOnTopHint
-                | Qt.WindowType.WindowDoesNotAcceptFocus
-                | Qt.WindowType.WindowTransparentForInput
-            )
+            flags = PASSIVE_WINDOW_FLAGS
         super().__init__(parent, flags)
         if external_input:
             self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
@@ -71,13 +75,7 @@ class CapturePanel(QWidget):
         if self.isVisible():
             raise ValueError("Capture input must be configured before presentation")
         self._external_input = True
-        self.setWindowFlags(
-            Qt.WindowType.Tool
-            | Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.WindowDoesNotAcceptFocus
-            | Qt.WindowType.WindowTransparentForInput
-        )
+        self.setWindowFlags(PASSIVE_WINDOW_FLAGS)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         if self._pointer is None:
             self._pointer = VirtualPointer(self)
@@ -89,7 +87,11 @@ class CapturePanel(QWidget):
         self.close()
 
     def complete_capture_input(self) -> None:
-        """Transfer this panel to normal owner UI without activating the foreground."""
+        """Leave passive delivery status mouse-operable without taking foreground.
+
+        This is not a transfer to a keyboard-focused editor. The capture owner
+        retains the review; keyboard review/retry uses a fresh capture lease.
+        """
         visible = self.isVisible()
         self._external_input = False
         self._pressed = None
@@ -99,6 +101,17 @@ class CapturePanel(QWidget):
             self._pointer.hide()
         if visible:
             self.show()
+
+    @override
+    def showEvent(self, event: QShowEvent) -> None:
+        """Announce real controls omitted by Qt's tooltip presentation policy."""
+        super().showEvent(event)
+        if self.windowType() == Qt.WindowType.ToolTip:
+            # QWidget skips ObjectShow for ToolTip (QToolTip announces itself).
+            # This is a plain owned panel, so it must announce its own controls.
+            QAccessible.updateAccessibility(
+                QAccessibleEvent(self, QAccessible.Event.ObjectShow)
+            )
 
     def set_capture_controls(self, controls: tuple[QWidget, ...]) -> None:
         """Declare a bounded keyboard order instead of changing native focus."""
