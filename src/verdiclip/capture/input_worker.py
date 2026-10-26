@@ -85,6 +85,7 @@ class CaptureInputWorker:
         self.ready = threading.Event()
         self.stopped = threading.Event()
         self._release = threading.Event()
+        self._controls = threading.Event()
         self._released_at: float | None = None
         self._beat = clock()
         self._thread: threading.Thread | None = None
@@ -107,6 +108,20 @@ class CaptureInputWorker:
     def heartbeat(self) -> None:
         """Only an actively serviced Qt lease extends the UI responsiveness budget."""
         self._beat = self._clock()
+
+    @property
+    def active(self) -> bool:
+        """Latch loss of ownership immediately, including bounded release draining."""
+        return self.ready.is_set() and not (
+            self._release.is_set() or self.stopped.is_set()
+        )
+
+    def set_controls_mode(self, *, enabled: bool) -> None:
+        """Change semantic navigation without moving the virtual or OS pointer."""
+        if enabled:
+            self._controls.set()
+        else:
+            self._controls.clear()
 
     def release(self) -> None:
         """Request bounded pair draining and removal on the installer thread."""
@@ -347,5 +362,7 @@ class CaptureInputWorker:
             int(packet.code),
             pressed=message in {0x100, 0x104},
             control=api.control_held(),
+            shift=api.shift_held(),
+            controls=self._controls.is_set(),
         )
         return self._publish(decision) or api.forward(code, message, address)

@@ -27,6 +27,7 @@ class ReplayInputPlatform:
         self.recipient_supported = True
         self.held = False
         self.control = False
+        self.shift = False
         self.held_keys: frozenset[int] = frozenset()
         self.anchor = Point(262, 168)
         self.install_error = False
@@ -76,6 +77,10 @@ class ReplayInputPlatform:
     def control_held(self) -> bool:
         """Return a synthetic modifier."""
         return self.control
+
+    def shift_held(self) -> bool:
+        """Return a synthetic modifier for backwards control selection."""
+        return self.shift
 
     def keys_held(self) -> frozenset[int]:
         """Return only scripted initial key state."""
@@ -197,3 +202,10 @@ class ReplayInputBroker(InputBroker):
         """Replay semantic input without native Qt popup routing or physical input."""
         if self._active:
             self.input_event.emit(event)
+
+    def interrupt(self, message: str, *, cleaned: bool = True) -> None:
+        """Replay a spontaneous deadline/failure receipt after selection takeover."""
+        self._active = False
+        if cleaned:
+            self._busy = False
+        self.closed.emit(cleaned, message)

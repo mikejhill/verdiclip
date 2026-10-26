@@ -309,3 +309,31 @@ def test_finite_but_excessive_budgets_are_refused(
     """Finite values cannot disable the independent upper safety limits."""
     with pytest.raises(ValueError, match="safety limits"):
         InputWorkerOptions(*settings)
+
+
+def test_controls_navigation_and_release_latch_are_independent_of_gui_polling() -> None:
+    """A draining owned pair cannot still authorize a provider scroll operation."""
+    platform = ReplayInputPlatform()
+    worker = ReplayRun.make(platform)
+    worker.set_controls_mode(enabled=True)
+    platform.shift = True
+    platform.key(0x100, 0x09)
+    platform.key(0x101, 0x09)
+    platform.key(0x100, 0x27)
+    platform.key(0x101, 0x27)
+    platform.mouse(0x201, platform.anchor)
+    active: list[bool] = []
+    platform.actions.put(lambda: active.append(worker.active))
+    platform.actions.put(worker.release)
+    platform.actions.put(lambda: active.append(worker.active))
+    platform.mouse(0x202, platform.anchor)
+    ReplayRun.complete(worker)
+    events = worker.drain()
+    assert events[0].kind is InputKind.NEXT
+    assert events[0].reason == "previous"
+    assert events[1].point == platform.anchor
+    assert active == [True, False]
+    assert not worker.active
+    worker.set_controls_mode(enabled=False)
+    assert worker.cleaned
+    assert not platform.forwarded

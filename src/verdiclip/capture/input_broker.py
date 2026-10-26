@@ -42,6 +42,9 @@ class InputBroker(QObject):
         """The unavailable base has no native input to release."""
         self.closed.emit(not self.busy, "")
 
+    def set_controls_mode(self, *, enabled: bool) -> None:
+        """Let an available implementation distinguish controls from selection."""
+
 
 class NativeInputBroker(InputBroker):
     """Retain its thread lease until acknowledged cleanup, even if UI is deleted."""
@@ -64,6 +67,7 @@ class NativeInputBroker(InputBroker):
         self._announced = self._closing = self._released = self._broken = False
         self._started = 0.0
         self._failure = ""
+        self._controls = False
         self._poll = QTimer(self)
         self._poll.setInterval(10)
         self._poll.timeout.connect(self._advance)
@@ -77,11 +81,7 @@ class NativeInputBroker(InputBroker):
     def active(self) -> bool:
         """Read the independent terminal event even when Qt is temporarily busy."""
         worker = self._worker
-        return (
-            worker is not None
-            and worker.ready.is_set()
-            and not (worker.stopped.is_set() or self._closing)
-        )
+        return worker is not None and worker.active and not self._closing
 
     @property
     @override
@@ -99,6 +99,7 @@ class NativeInputBroker(InputBroker):
         self._announced = self._closing = False
         self._failure = ""
         worker = self._factory(initial, bounds)
+        worker.set_controls_mode(enabled=self._controls)
         self._worker = worker
         self._started = self._clock()
         worker.start()
@@ -119,6 +120,13 @@ class NativeInputBroker(InputBroker):
         if self._worker is None and not self._broken:
             self.deleteLater()
 
+    @override
+    def set_controls_mode(self, *, enabled: bool) -> None:
+        """Route arrows to owned controls without rebasing tracked pointer motion."""
+        self._controls = enabled
+        if self._worker is not None:
+            self._worker.set_controls_mode(enabled=enabled)
+
     def _shutdown(self) -> None:
         """Give only this owned worker a finite cleanup window before process exit."""
         self._released = True
@@ -137,11 +145,7 @@ class NativeInputBroker(InputBroker):
             return
         if not self._closing:
             worker.heartbeat()
-        if (
-            worker.ready.is_set()
-            and not worker.stopped.is_set()
-            and not (self._closing or self._announced)
-        ):
+        if worker.active and not (self._closing or self._announced):
             self._announced = True
             self.ready.emit()
         if worker is not self._worker:

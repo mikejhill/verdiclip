@@ -98,7 +98,12 @@ class FixtureBackend(ScrollBackend):
                 self.samples += 1
                 frame = BackendFrame(
                     work.target,
-                    self.source.copy(0, self.top, 96, 48),
+                    self.source.copy(
+                        0,
+                        self.top,
+                        int(work.target.viewport.width),
+                        int(work.target.viewport.height),
+                    ),
                     at_end=self.top >= 48,
                 )
                 self.sampled.emit(work, frame)

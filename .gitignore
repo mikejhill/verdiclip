@@ -62,3 +62,4 @@ docs/ux/gallery/
 docs/ux/gallery-native/
 mutants/
 /artifacts/tabs-ci/
+.tmp/

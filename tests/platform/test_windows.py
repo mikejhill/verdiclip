@@ -26,6 +26,7 @@ class FakeWindowApi:
     titles: dict[int, str] = field(default_factory=dict)
     bounds: dict[int, Rect] = field(default_factory=dict)
     foreground: int = 1
+    generations: dict[int, list[str | None]] = field(default_factory=dict)
 
     def enumerate_handles(self) -> list[int]:
         """Return a stable topmost-first sequence."""
@@ -59,9 +60,27 @@ class FakeWindowApi:
         """Return the configured foreground handle."""
         return self.foreground
 
+    def window_identity(self, handle: int) -> str | None:
+        """Legacy ordinary-window fixtures deliberately lack scrolling identity."""
+        values = self.generations.get(handle, [])
+        return values.pop(0) if len(values) > 1 else (values[0] if values else None)
+
 
 class TestWindowLocator:
     """Capture eligibility and topmost point lookup."""
+
+    @pytest.mark.parametrize(
+        "generations", [["1:2:3", "1:2:3"], ["1:2:3", "1:9:4"], [None, "1:2:3"]]
+    )
+    def test_metadata_requires_matching_generation_brackets(
+        self, generations: list[str | None]
+    ) -> None:
+        """A reused HWND cannot pair old metadata with a new scrolling identity."""
+        expected = generations[0] if generations[0] == generations[1] else None
+        locator = WindowLocator(FakeWindowApi(generations={1: generations}))
+        target = locator.foreground()
+        assert target is not None
+        assert target.window_identity == expected
 
     @pytest.mark.parametrize(
         "api",
@@ -241,6 +260,7 @@ class TestWin32WindowApi:
             Win32WindowApi()
 
     @pytest.mark.skipif(sys.platform != "win32", reason="Windows desktop smoke test")
+    @pytest.mark.native_desktop
     def test_real_discovery(self) -> None:
         """Read-only desktop discovery returns a window list."""
         assert isinstance(WindowLocator().visible_windows(), list)

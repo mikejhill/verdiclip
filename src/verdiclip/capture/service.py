@@ -17,8 +17,10 @@ from verdiclip.capture.input_broker import InputBroker, make_input_broker
 from verdiclip.capture.input_policy import InputKind, SelectionInput
 from verdiclip.capture.models import Capture, CaptureMode, ScreenGeometry
 from verdiclip.capture.overlay import SelectionOverlay, SharedSelection, WindowTarget
+from verdiclip.capture.scroll.workflow import ScrollWorkflow, WorkflowState
 from verdiclip.exceptions import AppError, CaptureError
 from verdiclip.geometry import Point, Rect
+from verdiclip.platform.windows import WindowInfo
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +53,7 @@ class CaptureService(QObject):
     captured = Signal(object)
     cancelled = Signal()
     failed = Signal(str)
+    work_changed = Signal()
 
     def __init__(
         self,
@@ -80,6 +83,9 @@ class CaptureService(QObject):
         self._starting = self._aborted = self._preparing = self._ending = False
         self._result: Capture | None = None
         self._error = ""
+        self._workflow: ScrollWorkflow | None = None
+        self._snapshot_windows: Sequence[WindowTarget] = ()
+        self._explicit_scroll = self._resuming_review = self._last_scroll = False
         self._generation = 0
         self._display_snapshot = display_snapshot
         self._prepared_screens: tuple[QScreen, ...] = ()
@@ -104,6 +110,7 @@ class CaptureService(QObject):
             or self._ending
             or bool(self._overlays)
             or self._broker.busy
+            or (self._workflow is not None and self._workflow.has_work)
         )
 
     @property
@@ -115,6 +122,39 @@ class CaptureService(QObject):
     def preserve_foreground(self) -> bool:
         """Delivery and failure presentation must also avoid foreground activation."""
         return True
+
+    @property
+    def input_active(self) -> bool:
+        """Expose the independent, latched lease predicate to a scoped backend."""
+        return self._broker.active
+
+    def set_scroll_workflow(self, workflow: ScrollWorkflow) -> None:
+        """Attach the qualified caller's factories once, before capture starts."""
+        if self.is_selecting or self._workflow is not None:
+            raise ValueError("Configure scrolling once while capture is idle")
+        self._workflow = workflow
+        workflow.setParent(self)
+        workflow.takeover.connect(self._dismiss_overlays)
+        workflow.fallback.connect(self._on_window)
+        workflow.release_requested.connect(self._end)
+        workflow.failed.connect(self._scroll_failed)
+        workflow.controls_mode.connect(
+            lambda enabled: self._broker.set_controls_mode(enabled=enabled)
+        )
+        workflow.work_changed.connect(self.work_changed)
+
+    def _scroll_failed(self, message: str) -> None:
+        self._end(error=message)
+
+    def capture_scrolling(self) -> None:
+        """Offer explicit scrolling selection; unsupported capability is an error."""
+        self._request(self._select_scrolling)
+
+    def _select_scrolling(self) -> None:
+        if self._workflow is None:
+            raise CaptureError("Scrolling capture is not qualified in this build.")
+        self._explicit_scroll = True
+        self._select_region()
 
     def set_show_magnifier(self, *, show: bool) -> None:
         """Configure guides for future selection windows."""
@@ -137,8 +177,19 @@ class CaptureService(QObject):
         self._request(self._repeat_last)
 
     def _request(self, start: Callable[[], None]) -> None:
+        workflow = self._workflow
+        if workflow is not None and workflow.paused_review and not self._broker.busy:
+            if self._pending is None:
+                self._resuming_review = True
+                self._pending = self._select_region
+                self._handoff.start(0)
+            return
+        if workflow is not None and workflow.state is WorkflowState.CLEANUP_FAILED:
+            workflow.retry_cleanup()
+            return
         if self.is_selecting:
             return
+        self._explicit_scroll = False
         self._pending = start
         self._handoff.start(0)
 
@@ -171,6 +222,7 @@ class CaptureService(QObject):
         shared.move_to(initial)
         self._shared = shared
         self._preparing = True
+        self._broker.set_controls_mode(enabled=self._resuming_review)
         bounds = Rect.bounding(
             [
                 point
@@ -181,14 +233,18 @@ class CaptureService(QObject):
         self._broker.start(initial, bounds)
 
     def _input_ready(self) -> None:
-        if not self._preparing or self._ending:
+        if not self._preparing or self._ending or not self._layout_valid():
             return
-        if not self._layout_valid():
+        if self._resuming_review and self._workflow is not None:
+            self._resuming_review = self._preparing = False
+            self._workflow.resume_review()
             return
         generation = self._generation
         try:
-            frozen = self._screens.freeze()
             windows = list(self._windows.visible_windows(exclude=frozenset()))
+            if generation != self._generation:
+                return
+            frozen = self._screens.freeze()
         except AppError as error:
             self._end(error=str(error))
             return
@@ -199,6 +255,7 @@ class CaptureService(QObject):
         ):
             return
         self._frozen = frozen
+        self._snapshot_windows = windows
         shared = self._shared
         if shared is None:
             self._end(error="The display layout changed during capture")
@@ -233,6 +290,7 @@ class CaptureService(QObject):
                 return
             overlay.region_chosen.connect(self._on_region)
             overlay.window_chosen.connect(self._on_window)
+            overlay.window_selected.connect(self._on_window_selected)
             overlay.cancelled.connect(self.cancel)
             self._overlays.append(overlay)
             overlay.show()
@@ -244,6 +302,18 @@ class CaptureService(QObject):
         if not isinstance(event, SelectionInput) or self._ending:
             return
         if not self._layout_valid():
+            return
+        if self._workflow is not None and self._workflow.has_work:
+            if event.kind is InputKind.CANCEL and event.reason not in {
+                "escape",
+                "right-button",
+            }:
+                self._end(
+                    error="Capture input changed. "
+                    "Captured rows are retained where possible."
+                )
+            else:
+                self._workflow.receive_input(event)
             return
         if event.kind is InputKind.CANCEL:
             if event.reason in {"escape", "right-button", "keyboard-interference"}:
@@ -292,6 +362,9 @@ class CaptureService(QObject):
         )
 
     def _repeat_last(self) -> None:
+        if self._last_scroll:
+            self._select_scrolling()
+            return
         mode, area = self._last_mode, self._last_area
         if mode is None:
             self._select_region()
@@ -304,7 +377,55 @@ class CaptureService(QObject):
             self._deliver(frozen.crop(area), mode, area, self._last_title)
 
     def _on_region(self, area: Rect) -> None:
+        if self._explicit_scroll:
+            window = next(
+                (
+                    window
+                    for window in self._snapshot_windows
+                    if window.bounds.contains(area.center)
+                ),
+                None,
+            )
+            if window is None:
+                self._end(error="No supported window was found in the selected area.")
+            else:
+                self._begin_scroll(window, area.center, viewport=area.rounded())
+            return
         self._finish_selection(area, CaptureMode.REGION, "Screenshot")
+
+    def _on_window_selected(self, window: WindowTarget, point: Point) -> None:
+        if self._workflow is not None:
+            self._begin_scroll(window, point)
+        elif self._explicit_scroll:
+            self._end(error="Scrolling capture is unavailable in this build.")
+        else:
+            self._on_window(window.bounds, window.title)
+
+    def _begin_scroll(
+        self, window: WindowTarget, point: Point, *, viewport: Rect | None = None
+    ) -> None:
+        workflow = self._workflow
+        if workflow is None or not isinstance(window, WindowInfo):
+            if self._explicit_scroll:
+                self._end(error="The selected window generation could not be verified.")
+            else:
+                self._on_window(window.bounds, window.title)
+            return
+        workflow.begin(
+            window,
+            point,
+            [geometry for _identity, geometry in self._layout],
+            explicit=self._explicit_scroll,
+            viewport=viewport,
+        )
+
+    def _dismiss_overlays(self) -> None:
+        self._generation += 1
+        overlays, self._overlays = self._overlays, []
+        for overlay in overlays:
+            overlay.dismiss()
+        self._frozen = None
+        self._shared = None
 
     def _on_window(self, area: Rect, title: str) -> None:
         self._finish_selection(area, CaptureMode.WINDOW, title)
@@ -325,7 +446,9 @@ class CaptureService(QObject):
 
     def cancel(self) -> None:
         """Cancel queued or active work; release only this capture's input lease."""
-        if self.is_selecting and not self._ending:
+        if self._workflow is not None and self._workflow.has_work and not self._ending:
+            self._workflow.cancel()
+        elif self.is_selecting and not self._ending:
             self._end()
 
     def _end(self, *, result: Capture | None = None, error: str = "") -> None:
@@ -353,6 +476,7 @@ class CaptureService(QObject):
         self._shared = None
         self._layout = ()
         self._prepared_screens = ()
+        self._snapshot_windows = ()
         return True
 
     def _connect_screens(self) -> None:
@@ -377,7 +501,11 @@ class CaptureService(QObject):
 
     def _input_closed(self, cleaned: bool, message: str) -> None:  # noqa: FBT001 - Qt signal payload
         if not self._ending:
-            if not (self._preparing or self._overlays):
+            if not (
+                self._preparing
+                or self._overlays
+                or (self._workflow is not None and self._workflow.has_work)
+            ):
                 return
             self._reserve_end(
                 result=None, error=message or "Capture input was interrupted"
@@ -390,6 +518,18 @@ class CaptureService(QObject):
                 "Capture input cleanup could not be confirmed. "
                 "Restart VerdiClip before retrying."
             )
+        workflow = self._workflow
+        if workflow is not None:
+            delivered_scroll = (
+                workflow.state is WorkflowState.DELIVERING and cleaned and not error
+            )
+            handled = workflow.input_closed(cleaned=cleaned, message=error)
+            if delivered_scroll:
+                self._last_scroll = True
+            if handled:
+                if error:
+                    self.failed.emit(error)
+                return
         if error:
             logger.warning("Capture stopped: %s", error)
             self.failed.emit(error)
@@ -424,6 +564,7 @@ class CaptureService(QObject):
             )
 
     def _commit(self, capture: Capture, *, repeat_area: bool = True) -> None:
+        self._last_scroll = False
         self._last_mode = capture.mode
         self._last_area = (
             capture.area

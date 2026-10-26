@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import override
 
 from PySide6.QtCore import Qt, Signal
@@ -17,6 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from verdiclip.capture.interaction import CapturePanel
 from verdiclip.capture.reviewed import ReviewedCapture
 from verdiclip.capture.scroll.models import ScrollTarget, StopReason
 from verdiclip.capture.scroll.session import ScrollSession, ScrollState
@@ -39,7 +41,7 @@ STOP_LABELS = {
 }
 
 
-class ScrollTargetPanel(QWidget):
+class ScrollTargetPanel(CapturePanel):
     """A proposal cannot move a target; only explicit Start emits confirmation."""
 
     confirmed = Signal(object)  # ScrollTarget
@@ -50,14 +52,18 @@ class ScrollTargetPanel(QWidget):
         title: str,
         candidates: tuple[TargetCandidate, ...],
         parent: QWidget | None = None,
+        *,
+        external_input: bool = False,
+        suggested_viewports: tuple[Rect, ...] = (),
     ) -> None:
         """Offer nearest-first semantic targets and an explicitly editable ROI."""
-        super().__init__(parent, Qt.WindowType.Window)
+        super().__init__(parent, external_input=external_input)
         self.setWindowTitle("Scrolling capture — choose content")
         escape = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
         escape.activated.connect(self.close)
         self._title = title
         self._candidates = candidates
+        self._suggested = suggested_viewports
         self._confirmed = False
         self._choice = QComboBox()
         self._choice.setAccessibleName("Scroll container")
@@ -99,6 +105,9 @@ class ScrollTargetPanel(QWidget):
         layout.addWidget(self._status)
         layout.addLayout(form)
         layout.addLayout(actions)
+        self.set_capture_controls(
+            (self._choice, *self._fields.values(), cancel, self._start)
+        )
         self._start.setEnabled(bool(candidates))
         if not candidates:
             self._status.setText(
@@ -111,7 +120,23 @@ class ScrollTargetPanel(QWidget):
         """Changing a proposed container does not confirm or touch its application."""
         if not 0 <= index < len(self._candidates):
             return
-        bounds = self._candidates[index].bounds
+        bounds = (
+            self._suggested[index]
+            if len(self._suggested) == len(self._candidates)
+            else self._candidates[index].bounds
+        )
+        values = (bounds.x, bounds.y, bounds.width, bounds.height)
+        fields = tuple(self._fields.values())
+        if any(
+            not math.isfinite(value) or not field.minimum() <= value <= field.maximum()
+            for field, value in zip(fields, values, strict=True)
+        ):
+            self._start.setEnabled(False)
+            self._status.setText(
+                "The proposed content geometry exceeds the supported range."
+            )
+            return
+        self._start.setEnabled(not self._confirmed)
         for key, value in (
             ("x", bounds.x),
             ("y", bounds.y),
@@ -137,29 +162,42 @@ class ScrollTargetPanel(QWidget):
         self._start.setEnabled(False)
         self.confirmed.emit(ScrollTarget(candidate.identity, self._title, area))
 
+    def confirmation_failed(self, message: str) -> None:
+        """Keep target selection editable when Start is safely refused."""
+        self._confirmed = False
+        self._status.setText(message)
+        self._start.setEnabled(bool(self._candidates))
+
     @override
     def closeEvent(self, event: QCloseEvent) -> None:
         """Cancel this panel only; no foreign or pre-existing window is touched."""
-        if not self._confirmed:
+        if not self._confirmed and not self._dismissing:
             self.cancelled.emit()
         super().closeEvent(event)
 
 
-class ScrollReviewPanel(QWidget):
+class ScrollReviewPanel(CapturePanel):
     """Inspect bounded pages and explicitly deliver whole or selected pixels."""
 
     reviewed_capture = Signal(object)  # canonical ReviewedCapture
+    capture_accept_requested = Signal(object)  # await input cleanup before publication
     cancelled = Signal()
 
     PAGE_ROWS = 768
     PREVIEW_WIDTH = 720
     PREVIEW_HEIGHT = 480
 
-    def __init__(self, session: ScrollSession, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        session: ScrollSession,
+        parent: QWidget | None = None,
+        *,
+        external_input: bool = False,
+    ) -> None:
         """Retain the session until its owner acknowledges delivery or cancellation."""
         if session.state is not ScrollState.REVIEW or session.result is None:
             raise CaptureError("Only a stopped capture can be reviewed")
-        super().__init__(parent, Qt.WindowType.Window)
+        super().__init__(parent, external_input=external_input)
         self.setWindowTitle("Review scrolling capture")
         escape = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
         escape.activated.connect(self.close)
@@ -168,6 +206,7 @@ class ScrollReviewPanel(QWidget):
         self._capture: ReviewedCapture | None = None
         self._awaiting_delivery = False
         self._acknowledged = False
+        self._capture_published = self._input_complete = self._cancel_notified = False
         result = session.result
         self._status = QLabel(
             f"{result.width} x {result.height} pixels. "
@@ -196,10 +235,10 @@ class ScrollReviewPanel(QWidget):
         self._range = QPushButton("Use &selected rows")
         self._whole.clicked.connect(self._accept_whole)
         self._range.clicked.connect(self._accept_range)
-        cancel = QPushButton("&Discard capture")
-        cancel.clicked.connect(self.close)
+        self._close_button = QPushButton("&Discard capture")
+        self._close_button.clicked.connect(self.close)
         actions = QHBoxLayout()
-        actions.addWidget(cancel)
+        actions.addWidget(self._close_button)
         actions.addWidget(self._range)
         actions.addWidget(self._whole)
         layout = QVBoxLayout(self)
@@ -207,6 +246,9 @@ class ScrollReviewPanel(QWidget):
         layout.addWidget(self._preview, 1)
         layout.addLayout(form)
         layout.addLayout(actions)
+        self.set_capture_controls(
+            (self._top, self._height, self._close_button, self._range, self._whole)
+        )
         self._render()
 
     def _range_changed(self) -> None:
@@ -261,7 +303,7 @@ class ScrollReviewPanel(QWidget):
                 self._awaiting_delivery = True
                 self._whole.setEnabled(False)
                 self._status.setText("Retrying capture delivery.")
-                self.reviewed_capture.emit(self._capture)
+                self._publish_or_wait()
             return
         try:
             capture = (
@@ -280,7 +322,50 @@ class ScrollReviewPanel(QWidget):
         for control in (self._whole, self._range, self._top, self._height):
             control.setEnabled(False)
         self._status.setText("Capture accepted. Waiting for delivery.")
-        self.reviewed_capture.emit(capture)
+        self._publish_or_wait()
+
+    def _publish_or_wait(self) -> None:
+        if self.external_input and not self._input_complete:
+            self.capture_accept_requested.emit(self._capture)
+        else:
+            self._capture_published = True
+            self.reviewed_capture.emit(self._capture)
+
+    def release_capture_delivery(self, capture_id: str) -> bool:
+        """Publish accepted pixels once after confirmed capture input cleanup."""
+        if (
+            self._capture is None
+            or self._capture.capture_id != capture_id
+            or self._input_complete
+        ):
+            return False
+        self._input_complete = True
+        self._publish_or_wait()
+        return True
+
+    @property
+    def delivery_retry_needed(self) -> bool:
+        """Distinguish a retained failed attempt from pending or acknowledged output."""
+        return self._capture_published and not (
+            self._awaiting_delivery or self._acknowledged
+        )
+
+    def resume_capture_input(self) -> None:
+        """Require a new cleanup receipt for a fresh explicit delivery attempt."""
+        self._input_complete = False
+
+    def capture_input_paused(self, message: str) -> None:
+        """Retain review pixels when a finite input lease ends before acceptance."""
+        self._status.setText(message)
+        if self._delivered and not self._capture_published:
+            self._awaiting_delivery = False
+            self._whole.setEnabled(True)
+
+    def discard_capture(self) -> None:
+        """Notify the review owner once of explicit discard before publication."""
+        if not self._capture_published and not self._cancel_notified:
+            self._cancel_notified = True
+            self.cancelled.emit()
 
     def acknowledge_delivery(self, capture_id: str) -> bool:
         """Acknowledge actual output success, including successful tray-only output.
@@ -292,6 +377,7 @@ class ScrollReviewPanel(QWidget):
         if self._capture is None or self._capture.capture_id != capture_id:
             return False
         self._acknowledged = True
+        self._close_button.setText("&Close review")
         self._awaiting_delivery = False
         self._whole.setEnabled(False)
         self._status.setText("Capture delivered.")
@@ -311,11 +397,15 @@ class ScrollReviewPanel(QWidget):
         self._status.setText(
             f"Capture delivery failed: {message}. Retry keeps the same image."
         )
+        if self._capture_published:
+            self._close_button.setText("&Close review (capture retained)")
         return True
 
     @override
     def closeEvent(self, event: QCloseEvent) -> None:
         """Ask the owner to discard only an unaccepted capture's resources."""
-        if not self._delivered:
-            self.cancelled.emit()
+        if (
+            not self._delivered or (self.external_input and not self._capture_published)
+        ) and not self._dismissing:
+            self.discard_capture()
         super().closeEvent(event)
