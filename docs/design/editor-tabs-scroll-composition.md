@@ -5,6 +5,34 @@ This record supersedes the source/readiness claims in
 release and replacing the daily installation require Mike's local verification
 of a completed, qualified candidate.
 
+## Readiness correction integration
+
+Capture correction `9429defd9f74ccd68ff98ac44b1e867f7cb635b2` is integrated on
+top of the published `cdb948c3` checkpoint. It repairs reproduced ordering races
+between timeout delivery and buffered READY/results, stale deadline callbacks,
+repeated request dispatch, and a delayed empty pending-connection callback.
+The startup and operation budgets remain 8s and 3s. A due callback performs one
+nonblocking inspection; it does not wait, pump GUI events or retry movement.
+Cleanup diagnostics do not release a busy process, pipe or resource scope before
+terminal confirmation. Bounded phase evidence excludes paths, payloads and
+arbitrary provider text.
+
+Document admission, canonical ReviewedCapture, passive presentation and review
+acknowledgement contracts need no adaptation. Independent combined review found
+no blocking integration issue. The original capture cohort at failing seed
+3660914482 passes 789 tests on both Qt 6.11.2 and 6.12.0 (17 supplemental native
+cases excluded). Initial restricted-process pipe setup failures and the approved
+protocol-only rerun are recorded separately; these are not desktop/input tests.
+
+The historical hosted incident's exact phase and cause remain unproven. These
+regressions qualify the reproduced races; passing reruns do not retroactively
+explain the old timeout. The original readiness failure, diagnostic rerun and
+18.6ms repaint outlier remain retained evidence. Renderer code and budgets are
+unchanged. New combined-head CI, CodeQL/scanner/thread audit and mutation evidence
+are required; previous green statuses are historical. Native qualification,
+production capability composition and Mike's isolated local verification remain
+held. No native/UI input, merge, release or installed-app replacement occurs.
+
 ## Current capture and mutation integration
 
 The combined source now includes capture checkpoint `024380ec` and its committed
