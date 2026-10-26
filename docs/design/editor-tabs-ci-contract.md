@@ -63,6 +63,11 @@ The focused gate adds proof; it does not replace their broader scope.
 
 ## Measured evidence and honest scope
 
+Latest published integration follow-up is tracked in
+[capture 18e72 integration](editor-tabs-capture18-integration.md) and draft PR #62.
+The runner now includes the independent contracts and standalone factory modules
+in its measured scope. The fixed-source measurements below remain historical.
+
 Each job uploads `environment.json`, `pytest.log`, `junit.xml`, `coverage.xml` and
 `summary.md`, also showing the scoped line/branch rates in the Actions summary.
 Named stale reports are cleared only in the dedicated checkout artifact folder;
@@ -70,7 +75,7 @@ symlink report destinations and output outside `.test-tmp/` or `artifacts/` are
 refused. Failed tests, timeout, missing coverage or branch-floor failure cannot
 produce a passed manifest. Logs/metadata avoid dumping the process environment.
 
-The current local replay passes 225 contracts and measures 97.77% scoped lines,
+The initial local replay passed 225 contracts and measured 97.77% scoped lines,
 91.88% scoped branches (96.46% combined). Its scope is the eleven production
 modules enumerated in the runner, not the whole editor window/controller or app.
 Full application coverage and prior native queue results are separately recorded.

@@ -5,9 +5,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from verdiclip.editor.contracts import WorkspaceOwner
+
 if TYPE_CHECKING:
     from verdiclip.editor import window as window_types
-    from verdiclip.editor import workspace as workspace_types
     from verdiclip.editor.page import DocumentPage
 
 
@@ -16,7 +17,7 @@ class CloseTransaction:
 
     def __init__(
         self,
-        owner: workspace_types.Workspace,
+        owner: WorkspaceOwner[window_types.EditorWindow],
         entries: tuple[
             tuple[window_types.EditorWindow, tuple[window_types.CloseApproval, ...]],
             ...,

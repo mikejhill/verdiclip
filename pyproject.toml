@@ -146,7 +146,7 @@ mutation = [
 # Mutation testing: change the code in small ways and check a test fails.
 # POSIX only (it forks); run it on Linux or WSL with `uv run poe mutate`.
 source_paths = ["src/verdiclip/"]
-also_copy = ["scripts/test_tabs_ci.py"]
+also_copy = ["scripts"]
 pytest_add_cli_args_test_selection = ["tests/"]
 # tests.mutation_support loads before any test imports verdiclip; see its docstring
 pytest_add_cli_args = [

@@ -5,9 +5,8 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
-from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, cast, override
+from typing import Final, cast, override
 
 from PySide6.QtCore import QEvent, QMimeData, QSize, Qt, QUrl, Signal
 from PySide6.QtGui import (
@@ -37,7 +36,6 @@ from PySide6.QtWidgets import (
 )
 
 from verdiclip import APP_NAME, DOCS_URL
-from verdiclip.document.admission import CaptureProvenance
 from verdiclip.document.annotations import CounterMarker, LabeledBox, TextNote
 from verdiclip.document.style import Style
 from verdiclip.document.transform import (
@@ -55,6 +53,7 @@ from verdiclip.editor.chrome import (
     ChromeStyle,
 )
 from verdiclip.editor.close_prompt import CloseChoice, ClosePrompt
+from verdiclip.editor.contracts import CloseApproval, EditorOptions, WorkspaceOwner
 from verdiclip.editor.icons import IconFactory
 from verdiclip.editor.page import DocumentPage, DocumentRecord
 from verdiclip.editor.resize_dialog import ResizeDialog
@@ -68,10 +67,9 @@ from verdiclip.output.delivery import ImageDelivery
 from verdiclip.render.renderer import Renderer
 from verdiclip.settings import ImageFormat
 
-if TYPE_CHECKING:
-    from verdiclip.editor import workspace as workspace_types
-
 logger = logging.getLogger(__name__)
+
+__all__ = ["CloseApproval", "EditorOptions", "EditorWindow"]
 
 ANNOTATION_MIME: Final = "application/x-verdiclip-annotations+json"
 STATUS_TIMEOUT_MS: Final = 4000
@@ -98,34 +96,6 @@ IMAGE_ACTIONS: Final = (
 IMAGE_FILTER: Final = "Images (*.png *.jpg *.jpeg *.bmp *.gif *.tif *.tiff *.webp)"
 
 
-@dataclass(frozen=True, slots=True)
-class EditorOptions:
-    """How an editor window presents its document."""
-
-    title: str = ""
-    source_path: Path | None = None
-    confirm_close: bool = True
-    provenance: CaptureProvenance | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class CloseApproval:
-    """Approve one exact content state, never a mutable active-tab position."""
-
-    page: DocumentPage
-    state_id: int
-
-    @property
-    def current(self) -> bool:
-        """Refuse new edits or output leases created after the decision."""
-        record = self.page.record
-        return (
-            record.session.history.state_id == self.state_id
-            and not record.operations
-            and not record.jobs.blocks_close
-        )
-
-
 class EditorWindow(QMainWindow):
     """Edit one document and deliver it."""
 
@@ -140,14 +110,12 @@ class EditorWindow(QMainWindow):
         options: EditorOptions | None = None,
         parent: QWidget | None = None,
         *,
-        workspace: workspace_types.Workspace | None = None,
+        workspace: WorkspaceOwner[EditorWindow],
     ) -> None:
         super().__init__(parent)
         self._application_label = "VerdiClip"
         options = options or EditorOptions()
-        from verdiclip.editor.workspace import Workspace  # noqa: PLC0415 - avoid cycle
-
-        self._workspace = workspace if workspace is not None else Workspace()
+        self._workspace = workspace
         self._confirm_close = options.confirm_close
         self._default_delivery = delivery
         self._page_ref: DocumentPage | None = None
@@ -194,7 +162,7 @@ class EditorWindow(QMainWindow):
             self._refresh_chrome()
 
     @property
-    def workspace(self) -> workspace_types.Workspace:
+    def workspace(self) -> WorkspaceOwner[EditorWindow]:
         """Return the application owner, also useful to standalone editors."""
         return self._workspace
 

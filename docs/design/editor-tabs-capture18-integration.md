@@ -39,6 +39,24 @@ That is an enforcement gap to report, not permission to change security settings
 PR #62 initially has no inline review threads; its CodeQL review and alerts are
 tracked independently. Live final-head status is authoritative in the PR checks.
 
+The first remediation, 3bbc541, passed the complete hosted CI gate, including
+Python 3.13/3.14, but CodeQL still identified ten ownership import cycles. The
+follow-up removes the real reverse dependency: Window requires an injected
+WorkspaceOwner protocol, shared options/close approvals live in contracts, and a
+separate standalone factory composes Workspace and Window without showing either.
+Only the gallery and UX fixture needed migration; transaction paths already
+inject the owner. Existing window imports of the shared values remain compatible.
+The independent reviewer passed 89 focused cases and found no remaining import
+cycle in an additional AST graph check (not a replacement for hosted CodeQL).
+
+The tabs harness now measures thirteen modules, adding contracts/factory, and
+includes the standalone ownership/no-show regression. Local uncommitted-source
+checks passed 250 contracts on both Qt versions at 97.49% scoped lines / 91.52%
+branches; clean final-head hosted receipts remain the publication gate. Mutmut's
+individual nested-file copy failed before stats because it does not create the
+destination parent; copying the scripts directory supplies the required tree.
+Neither failed mutation attempt yielded a valid score.
+
 ## Exact source and boundary
 
 Local branch `codex/combined-editor-capture-preview` merged capture head
