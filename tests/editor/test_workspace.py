@@ -676,6 +676,36 @@ def test_queued_drop_aborts_when_dragged_tab_closed_before_commit(
     assert workspace.documents == (neighbor.record,)
 
 
+def test_queued_drop_cannot_steal_page_moved_by_earlier_callback(
+    workspace: Workspace,
+    sample_image: QImage,
+    tmp_path: Path,
+    qtbot: QtBot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicit move wins over an older release queued for the former host."""
+    source = open_document(workspace, sample_image, tmp_path)
+    page = source.pages[0]
+    add_rectangle(page)
+    open_document(workspace, sample_image, tmp_path, title="Neighbor")
+    neighbor = source.pages[1]
+    target = open_document(workspace, sample_image, tmp_path, new=True, title="Target")
+    target_page = target.pages[0]
+    monkeypatch.setattr(QApplication, "widgetAt", lambda _point: source.tab_bar)
+    point = source.tab_bar.mapToGlobal(source.tab_bar.tabRect(0).topLeft())
+    source.tab_bar.drag_started.emit(page.record.identifier)
+    source.tab_bar.drag_released.emit(point)
+    assert workspace.move(source, page, target)
+    with qtbot.captureExceptions() as errors:
+        qtbot.wait(10)
+    assert errors == []
+    assert source.pages == (neighbor,)
+    assert target.pages == (target_page, page)
+    assert workspace.host_of(page.record.identifier) is target
+    assert len(page.record.session.document.annotations) == 1
+    assert len(workspace.documents) == 3
+
+
 @pytest.mark.parametrize("destination", ["same_slot", "interior", "other_host"])
 def test_queued_drop_preserves_exact_interior_order(  # noqa: PLR0913 - event loop and explicit policy
     workspace: Workspace,
