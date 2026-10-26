@@ -249,7 +249,7 @@ def test_native_run_uses_replay_worker_and_leaves_foreign_dialog_untouched(
         assert unrelated.isVisible()
     finally:
         run.close()
-        qtbot.waitUntil(lambda: not app.controller.capture.is_selecting)
+        qtbot.waitUntil(run.input_idle)
 
 
 def test_transport_refuses_unready_and_unknown_input(qapp: QApplication) -> None:
@@ -369,7 +369,7 @@ def test_native_scene_coordinator_has_portable_nested_loop_regressions(
         assert not transport.cleanup_errors()
     finally:
         run.close()
-        qtbot.waitUntil(lambda: not app.controller.capture.is_selecting)
+        qtbot.waitUntil(run.input_idle)
 
 
 def test_destroyed_observed_host_is_a_bounded_failure_not_a_qt_exception(

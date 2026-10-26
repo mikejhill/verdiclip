@@ -220,6 +220,10 @@ class NativeRun:
         self.app.controller.capture.cancel()
         self._finish_hosts()
 
+    def input_idle(self) -> bool:
+        """Expose cleanup completion without a deferred lambda inside finally."""
+        return not self.app.controller.capture.is_selecting
+
     def enter_scene(self, scenario: str) -> None:
         """Construct only explicit fixture hosts, sharing portable setup coverage."""
         if scenario in {"tray", "tray-exec", "nested-menu", "menu-action"}:
@@ -315,5 +319,5 @@ def test_native_capture_presentation_preserves_existing_owners(
         assert isinstance(directory, Path)
         run.record(directory, scenario, source)
         run.close()
-        qtbot.waitUntil(lambda: not app.controller.capture.is_selecting, timeout=2000)
+        qtbot.waitUntil(run.input_idle, timeout=2000)
         source.close()
