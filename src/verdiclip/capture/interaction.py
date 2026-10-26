@@ -200,7 +200,7 @@ class CapturePanel(QWidget):
     def _next_control(self, step: int) -> None:
         if not self._controls:
             return
-        for _attempt in self._controls:
+        for _ in self._controls:
             self._selected = (self._selected + step) % len(self._controls)
             if self._controls[self._selected].isEnabled():
                 break

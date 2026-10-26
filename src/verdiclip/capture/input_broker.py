@@ -44,7 +44,6 @@ class InputBroker(QObject):
 
     def set_controls_mode(self, *, enabled: bool) -> None:
         """Let an available implementation distinguish controls from selection."""
-        del enabled
 
 
 class NativeInputBroker(InputBroker):
