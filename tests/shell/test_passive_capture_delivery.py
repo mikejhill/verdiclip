@@ -338,7 +338,7 @@ def test_deferred_show_failure_retains_document_for_explicit_recovery(
     records = app.controller.workspace.documents
     original = host.show
     messages: list[str] = []
-    app.controller.workspace.transfer_failed.connect(messages.append)
+    app.controller.workspace.presentation_failed.connect(messages.append)
 
     def fail() -> None:
         raise MemoryError("Injected delayed show failure")
@@ -351,7 +351,7 @@ def test_deferred_show_failure_retains_document_for_explicit_recovery(
     assert not app.controller.workspace._presentation_timer.isActive()
     assert not host.isVisible()
     monkeypatch.setattr(host, "show", original)
-    assert app.controller.workspace.recover_retained()
+    app.controller.tray.messageClicked.emit()
     assert host.isVisible()
     assert presentation_calls == []
 
@@ -458,6 +458,135 @@ def test_close_rollback_keeps_deferred_presentation_for_late_edited_document(
         assert presentation_calls == []
     finally:
         host.tab_bar.currentChanged.disconnect(during_detach)
+
+
+def test_popup_opened_by_first_deferred_show_protects_remaining_windows(
+    factory: AppFactory,
+    qtbot: QtBot,
+    sample_image: QImage,
+    monkeypatch: pytest.MonkeyPatch,
+    presentation_calls: list[str],
+) -> None:
+    """Every queued show revalidates UI after synchronous earlier callbacks."""
+    app = factory()
+    anchor = QWidget()
+    qtbot.addWidget(anchor)
+    anchor.show()
+    initial = QMenu(anchor)
+    initial.addAction("Initial")
+    initial.popup(anchor.mapToGlobal(anchor.rect().center()))
+    qtbot.wait(0)
+    first = app.controller.deliver_reviewed_capture(capture(sample_image, "First"))
+    assert first is not None
+    first.begin_close_plan()
+    try:
+        second = app.controller.deliver_reviewed_capture(
+            capture(sample_image, "Second")
+        )
+    finally:
+        first.end_close_plan()
+    assert second is not None
+    assert second is not first
+    late = QMenu(anchor)
+    late.addAction("Opened by show callback")
+    observers: list[PreservedUi] = []
+    shown: list[EditorWindow] = []
+    original_show = EditorWindow.show
+
+    def show(window: EditorWindow) -> None:
+        original_show(window)
+        shown.append(window)
+        if len(shown) == 1:
+            late.popup(anchor.mapToGlobal(anchor.rect().center()))
+            observers.append(PreservedUi((late,)))
+
+    monkeypatch.setattr(EditorWindow, "show", show)
+    initial.close()
+    try:
+        app.controller.workspace.present_retained()
+        assert len(shown) == 1
+        assert late.isVisible()
+        assert observers[0].events == []
+        assert sum(host.isVisible() for host in (first, second)) == 1
+        assert presentation_calls == []
+    finally:
+        for observer in observers:
+            observer.stop()
+        late.close()
+    app.controller.workspace.present_retained()
+    assert first.isVisible()
+    assert second.isVisible()
+    assert presentation_calls == []
+
+
+def test_explicit_activation_rechecks_popup_created_by_admission_callback(
+    factory: AppFactory,
+    qtbot: QtBot,
+    sample_image: QImage,
+    presentation_calls: list[str],
+) -> None:
+    """Explicit intent cannot override a popup created during tab admission."""
+    app = factory()
+    anchor = QWidget()
+    qtbot.addWidget(anchor)
+    anchor.show()
+    menu = QMenu(anchor)
+    menu.addAction("Late admission popup")
+
+    def added(window: EditorWindow) -> None:
+        window.tab_bar.currentChanged.connect(
+            lambda _index: menu.popup(anchor.mapToGlobal(anchor.rect().center()))
+        )
+
+    app.controller.workspace.window_added.connect(added)
+    host = app.controller.deliver_reviewed_capture(
+        capture(sample_image), activate_editor=True
+    )
+    try:
+        assert host is not None
+        assert not host.isVisible()
+        assert menu.isVisible()
+        assert presentation_calls == []
+    finally:
+        app.controller.workspace.window_added.disconnect(added)
+        menu.close()
+    app.controller.workspace.present_retained()
+    assert host.isVisible()
+    assert presentation_calls == []
+
+
+def test_explicit_activation_rechecks_popup_created_by_show_callback(
+    factory: AppFactory,
+    qtbot: QtBot,
+    sample_image: QImage,
+    monkeypatch: pytest.MonkeyPatch,
+    presentation_calls: list[str],
+) -> None:
+    """No raise/activation may follow a show callback that creates protected UI."""
+    app = factory()
+    anchor = QWidget()
+    qtbot.addWidget(anchor)
+    anchor.show()
+    menu = QMenu(anchor)
+    menu.addAction("Late show popup")
+    original = EditorWindow.show
+
+    def show(window: EditorWindow) -> None:
+        original(window)
+        menu.popup(anchor.mapToGlobal(anchor.rect().center()))
+
+    monkeypatch.setattr(EditorWindow, "show", show)
+    host = app.controller.deliver_reviewed_capture(
+        capture(sample_image), activate_editor=True
+    )
+    try:
+        assert host is not None
+        assert host.isVisible()
+        assert menu.isVisible()
+        assert "raise" not in presentation_calls
+        assert "activate" not in presentation_calls
+    finally:
+        menu.close()
 
 
 @pytest.mark.parametrize("edit", [False, True])

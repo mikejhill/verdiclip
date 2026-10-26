@@ -134,6 +134,14 @@ class AppController(QObject):
         self._icon_factory = IconFactory(QApplication.palette().windowText().color())
         self._icon = self._icon_factory.brand()
         self._tray = TrayIcon(self._icon, self._tray_commands())
+        self._workspace.presentation_failed.connect(
+            lambda message: self._notify(
+                "Editor work retained",
+                message,
+                warning=True,
+                on_click=self._workspace.present_retained,
+            )
+        )
         self._last_saved_folder: Path | None = None
         self._message_action: Callable[[], None] = self._open_last_folder
         self._manual_check = False

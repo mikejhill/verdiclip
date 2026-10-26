@@ -24,6 +24,7 @@ class Workspace(QObject):
     window_added = Signal(object)
     window_removed = Signal(object)
     transfer_failed = Signal(str)
+    presentation_failed = Signal(str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -208,6 +209,7 @@ class Workspace(QObject):
 
     def _present_host(self, target: EditorWindow, *, activate: bool) -> None:
         # Visible/minimized hosts need no presentation change for background work.
+        activate = activate and not self._protected_ui()
         if not target.isVisible():
             # Reserve before show: failure must remain retryable/recoverable.
             self._pending_presentations.add(target)
@@ -217,9 +219,9 @@ class Workspace(QObject):
             self._presentation_timer.start()
             return
         if activate or not target.isVisible():
-            target.setAttribute(
-                Qt.WidgetAttribute.WA_ShowWithoutActivating, not activate
-            )
+            # Show is always passive; explicit activation is revalidated AFTER
+            # synchronous show/admission callbacks, which may create protected UI.
+            target.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
             if activate and target.isMinimized():
                 target.setWindowState(
                     target.windowState() & ~Qt.WindowState.WindowMinimized
@@ -228,9 +230,11 @@ class Workspace(QObject):
         self._pending_presentations.discard(target)
         if not self._pending_presentations:
             self._presentation_timer.stop()
-        if activate:
+        if activate and not self._protected_ui() and target in self._windows:
+            target.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, on=False)
             target.raise_()
-            target.activateWindow()
+            if not self._protected_ui():
+                target.activateWindow()
 
     @staticmethod
     def _protected_ui() -> bool:
@@ -239,6 +243,9 @@ class Workspace(QObject):
             or QApplication.activeModalWidget() is not None
         )
 
+    def _presentation_blocked(self) -> bool:
+        return self._transferring or self._protected_ui()
+
     def present_retained(self) -> None:
         """Present deferred captures only after protected Qt UI ends naturally.
 
@@ -246,9 +253,11 @@ class Workspace(QObject):
         even with WA_ShowWithoutActivating. Never trigger that path while the
         popup/modal exists. Ownership remains in the workspace throughout.
         """
-        if self._transferring or self._protected_ui():
+        if self._presentation_blocked():
             return
         for host in tuple(self._pending_presentations):
+            if self._presentation_blocked():
+                return
             if host not in self._windows:
                 self._pending_presentations.discard(host)
                 continue
@@ -262,16 +271,14 @@ class Workspace(QObject):
                 continue
             try:
                 with host.presentation_policy(activate=False):
-                    host.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
-                    host.show()
+                    self._present_host(host, activate=False)
             except (RuntimeError, MemoryError) as error:
                 self._presentation_timer.stop()
-                self.transfer_failed.emit(
+                self.presentation_failed.emit(
                     f"Editor retained but could not be shown. Retry Window > "
                     f"Recover retained tabs. {error}"
                 )
                 return
-            self._pending_presentations.discard(host)
         if not self._pending_presentations:
             self._presentation_timer.stop()
 
