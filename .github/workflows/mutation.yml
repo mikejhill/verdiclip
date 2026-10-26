@@ -116,6 +116,12 @@ jobs:
           # Verdicts only carry over between runs with the same dependencies and setup
           key: mutmut-v1-${{ hashFiles('uv.lock', 'pyproject.toml', 'tests/mutation_support.py', '.github/workflows/mutation.yml') }}-${{ github.run_id }}
           restore-keys: mutmut-v1-${{ hashFiles('uv.lock', 'pyproject.toml', 'tests/mutation_support.py', '.github/workflows/mutation.yml') }}-
+      - name: Verify portable baseline before mutation
+        if: steps.scope.outputs.run == 'true'
+        run: |
+          set -o pipefail
+          uv run pytest -m 'not native_desktop' -p no:randomly -q 2>&1 \
+            | tee mutation-baseline.txt
       - name: Run mutmut
         if: steps.scope.outputs.run == 'true'
         env:
@@ -181,4 +187,5 @@ jobs:
           path: |
             mutation-results.txt
             mutmut.log
+            mutation-baseline.txt
           if-no-files-found: ignore

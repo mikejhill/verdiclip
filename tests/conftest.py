@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtGui import QColor, QGuiApplication, QImage, QPainter
+from tests.capture.input_fixture import ReplayInputBroker
 
 from verdiclip.document.document import Document
 from verdiclip.editor.close_prompt import CloseChoice, ClosePrompt
@@ -15,6 +16,19 @@ from verdiclip.editor.session import EditorSession
 from verdiclip.settings import EditorSettings, OutputSettings
 
 WINDOWS_FONTS = Path("C:/Windows/Fonts")
+
+
+@pytest.fixture(autouse=True)
+def capture_input_boundary(
+    request: pytest.FixtureRequest,
+) -> Iterator[None]:
+    """Primary tests explicitly replace OS input; native compatibility opts out."""
+    with pytest.MonkeyPatch.context() as patch:
+        if request.node.get_closest_marker("native_desktop") is None:
+            patch.setattr(
+                "verdiclip.capture.service.make_input_broker", ReplayInputBroker
+            )
+        yield
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:

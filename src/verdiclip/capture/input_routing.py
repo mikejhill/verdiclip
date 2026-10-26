@@ -19,6 +19,7 @@ class MoveMode(Enum):
 
     ABSOLUTE = auto()
     OS_RELATIVE = auto()
+    RELATIVE_DELTA = auto()
 
 
 class PointerTracker:
@@ -65,6 +66,8 @@ class PointerTracker:
         candidate = proposed
         if mode is MoveMode.OS_RELATIVE:
             candidate = self._point + (proposed - anchor)
+        elif mode is MoveMode.RELATIVE_DELTA:
+            candidate = self._point + proposed
         self._point = self._clamp(candidate)
         return True
 

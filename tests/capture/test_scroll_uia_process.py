@@ -20,7 +20,7 @@ from verdiclip.exceptions import CaptureError
 def test_powershell_warm_pipe_accepts_repeated_variable_length_requests(
     qtbot: QtBot, tmp_path: Path
 ) -> None:
-    """The real host's stdin protocol works without UIA, a window or input hardware."""
+    """The real host's private pipe works without UIA, a window or input hardware."""
     peer = tmp_path / "pipe-peer.ps1"
     peer.write_text(
         "param([string]$PipeName)\n"
@@ -66,9 +66,11 @@ def test_powershell_warm_pipe_accepts_repeated_variable_length_requests(
         for length in (120, 344, 450, 4096):
             before = len(replies)
             client.start(UiaAction.SAMPLE, {"fixture": "x" * length})
+            # The first request includes cold startup before its operation budget.
+            # Wait for the production receipt/error rather than an earlier test cap.
             qtbot.waitUntil(
                 lambda previous=before: len(replies) > previous or bool(failures),
-                timeout=5000,
+                timeout=UiaProcess.STARTUP_MS + UiaProcess.DEADLINE_MS + 1000,
             )
             assert not failures, (length, failures)
     finally:
