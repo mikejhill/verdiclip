@@ -226,6 +226,10 @@ class Workspace(QObject):
                 target.setWindowState(
                     target.windowState() & ~Qt.WindowState.WindowMinimized
                 )
+            if self._protected_ui():
+                if not target.isVisible():
+                    self._presentation_timer.start()
+                return
             target.show()
         self._pending_presentations.discard(target)
         if not self._pending_presentations:

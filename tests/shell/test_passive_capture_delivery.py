@@ -589,6 +589,80 @@ def test_explicit_activation_rechecks_popup_created_by_show_callback(
         menu.close()
 
 
+def test_explicit_restore_rechecks_popup_created_by_window_state_callback(
+    factory: AppFactory,
+    qtbot: QtBot,
+    sample_image: QImage,
+    presentation_calls: list[str],
+) -> None:
+    """Restoration callbacks may open UI before a following show/activation."""
+    app = factory()
+    host = app.controller.deliver_reviewed_capture(capture(sample_image, "First"))
+    assert host is not None
+    host.showMinimized()
+    anchor = QWidget()
+    qtbot.addWidget(anchor)
+    anchor.show()
+    menu = QMenu(anchor)
+    menu.addAction("Opened during restore")
+
+    class OnRestore(QObject):
+        @override
+        def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+            if (
+                watched is host
+                and event.type() == QEvent.Type.WindowStateChange
+                and not host.isMinimized()
+            ):
+                menu.popup(anchor.mapToGlobal(anchor.rect().center()))
+            return False
+
+    observer = OnRestore()
+    host.installEventFilter(observer)
+    presentation_calls.clear()
+    try:
+        app.controller.deliver_reviewed_capture(
+            capture(sample_image, "Incoming"), activate_editor=True
+        )
+        assert menu.isVisible()
+        assert "raise" not in presentation_calls
+        assert "activate" not in presentation_calls
+    finally:
+        host.removeEventFilter(observer)
+        menu.close()
+
+
+def test_explicit_activation_rechecks_popup_created_by_raise_callback(
+    factory: AppFactory,
+    qtbot: QtBot,
+    sample_image: QImage,
+    monkeypatch: pytest.MonkeyPatch,
+    presentation_calls: list[str],
+) -> None:
+    """A raise callback cannot leave a stale permission to activate afterward."""
+    app = factory()
+    anchor = QWidget()
+    qtbot.addWidget(anchor)
+    anchor.show()
+    menu = QMenu(anchor)
+    menu.addAction("Opened during raise")
+    original = EditorWindow.raise_
+
+    def raise_editor(window: EditorWindow) -> None:
+        original(window)
+        menu.popup(anchor.mapToGlobal(anchor.rect().center()))
+
+    monkeypatch.setattr(EditorWindow, "raise_", raise_editor)
+    try:
+        app.controller.deliver_reviewed_capture(
+            capture(sample_image), activate_editor=True
+        )
+        assert menu.isVisible()
+        assert "activate" not in presentation_calls
+    finally:
+        menu.close()
+
+
 @pytest.mark.parametrize("edit", [False, True])
 def test_stable_capture_binding_delivers_canonical_result_without_disturbing_popup(  # noqa: PLR0913 - cross-feature matrix fixtures
     factory: AppFactory,
