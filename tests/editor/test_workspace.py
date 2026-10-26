@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from PySide6.QtCore import QPoint, QRect
 from PySide6.QtGui import QGuiApplication, QImage
+from PySide6.QtTest import QSignalSpy
 from PySide6.QtWidgets import QApplication, QFileDialog, QLabel, QMenu, QPlainTextEdit
 from pytestqt.qtbot import QtBot
 
@@ -17,7 +18,7 @@ from verdiclip.document.document import Document
 from verdiclip.document.style import Style
 from verdiclip.editor.close_prompt import CloseChoice, ClosePrompt
 from verdiclip.editor.jobs import JobKind, JobOutcome
-from verdiclip.editor.page import DocumentPage
+from verdiclip.editor.page import DocumentPage, DocumentRecord
 from verdiclip.editor.session import EditorSession, ToolId
 from verdiclip.editor.window import EditorOptions, EditorWindow
 from verdiclip.editor.workspace import Workspace
@@ -62,6 +63,185 @@ def add_rectangle(page: DocumentPage) -> None:
     rectangle = RectangleShape(rect=Rect(30, 40, 50, 60), style=Style())
     page.record.session.history.execute(AddAnnotations([rectangle], "Rectangle"))
     page.record.session.selection.set([rectangle.id])
+
+
+def test_recover_action_handles_attached_and_parked_documents_independently(
+    workspace: Workspace,
+    sample_image: QImage,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One failed page must not strand healthy parked work behind attached tabs."""
+    host = open_document(workspace, sample_image, tmp_path)
+    open_document(workspace, sample_image, tmp_path, title="Retry later")
+    open_document(workspace, sample_image, tmp_path, title="Healthy retained")
+    attached, blocked, healthy = host.pages
+    for page in host.pages:
+        add_rectangle(page)
+    states = {
+        p.record.identifier: p.record.session.history.state_id for p in host.pages
+    }
+    host.take_page(blocked)
+    host.take_page(healthy)
+    attach = EditorWindow.attach_page
+
+    def attaching(window: EditorWindow, page: DocumentPage, index: int) -> None:
+        if page is blocked:
+            raise ValueError("One view could not be attached")
+        attach(window, page, index)
+
+    monkeypatch.setattr(EditorWindow, "attach_page", attaching)
+    menu = QMenu(host)
+    workspace.populate_window_menu(menu, host)
+    recover = next(a for a in menu.actions() if a.text() == "Recover retained tabs")
+    recover.trigger()
+    assert workspace.host_of(attached.record.identifier) is host
+    assert workspace.host_of(blocked.record.identifier) is None
+    recovered = workspace.host_of(healthy.record.identifier)
+    assert recovered is not None
+    assert recovered.pages == (healthy,)
+    assert len(workspace.windows) == 2
+    for record in workspace.documents:
+        assert record.session.history.state_id == states[record.identifier]
+        assert record.session.document.annotations
+    monkeypatch.setattr(EditorWindow, "attach_page", attach)
+    recover.trigger()
+    assert all(workspace.host_of(r.identifier) is not None for r in workspace.documents)
+    assert workspace.host_of(healthy.record.identifier) is recovered
+
+
+def test_recovery_preserves_existing_popup_until_user_dismisses_it(
+    workspace: Workspace, sample_image: QImage, tmp_path: Path, qtbot: QtBot
+) -> None:
+    """Retrying an orphan presentation must use the same passive admission policy."""
+    host = open_document(workspace, sample_image, tmp_path)
+    page = host.pages[0]
+    host.take_page(page)
+    menu = QMenu(host)
+    action = menu.addAction("Keep this context")
+    hidden = QSignalSpy(menu.aboutToHide)
+    menu.popup(host.mapToGlobal(QPoint(20, 20)))
+    menu.setActiveAction(action)
+    qtbot.waitUntil(menu.isVisible)
+    try:
+        assert workspace.recover_retained()
+        recovered = workspace.host_of(page.record.identifier)
+        assert recovered is not None
+        assert menu.isVisible()
+        assert QApplication.activePopupWidget() is menu
+        assert menu.activeAction() is action
+        assert hidden.count() == 0
+    finally:
+        menu.close()
+    qtbot.waitUntil(recovered.isVisible)
+
+
+def test_recovery_tolerates_new_document_arriving_during_attachment(
+    workspace: Workspace,
+    sample_image: QImage,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reentrant admission must not invalidate registry iteration or lose work."""
+    host = open_document(workspace, sample_image, tmp_path)
+    page = host.pages[0]
+    host.take_page(page)
+    attach = EditorWindow.attach_page
+    arrived = False
+
+    def attaching(window: EditorWindow, value: DocumentPage, index: int) -> None:
+        nonlocal arrived
+        attach(window, value, index)
+        if value is page and not arrived:
+            arrived = True
+            open_document(workspace, sample_image, tmp_path, title="Late arrival")
+
+    monkeypatch.setattr(EditorWindow, "attach_page", attaching)
+    assert workspace.recover_retained()
+    assert arrived
+    assert len(workspace.documents) == 2
+    assert all(workspace.host_of(r.identifier) is not None for r in workspace.documents)
+    assert workspace.host_of(page.record.identifier) is not None
+
+
+def test_partial_recovery_attachment_keeps_a_passive_presentation_lease(
+    workspace: Workspace,
+    sample_image: QImage,
+    tmp_path: Path,
+    qtbot: QtBot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An exception after attachment cannot strand an invisible, owned document."""
+    host = open_document(workspace, sample_image, tmp_path)
+    page = host.pages[0]
+    add_rectangle(page)
+    state = page.record.session.history.state_id
+    host.take_page(page)
+    menu = QMenu(host)
+    action = menu.addAction("Keep this popup")
+    hidden = QSignalSpy(menu.aboutToHide)
+    menu.popup(host.mapToGlobal(QPoint(20, 20)))
+    menu.setActiveAction(action)
+    attach = EditorWindow.attach_page
+
+    def attaching(window: EditorWindow, value: DocumentPage, index: int) -> None:
+        attach(window, value, index)
+        raise MemoryError("Failure after successful attachment")
+
+    monkeypatch.setattr(EditorWindow, "attach_page", attaching)
+    try:
+        assert not workspace.recover_retained()
+        recovered = workspace.host_of(page.record.identifier)
+        assert recovered is not None
+        monkeypatch.setattr(EditorWindow, "attach_page", attach)
+        assert workspace.recover_retained()
+        assert menu.isVisible()
+        assert menu.activeAction() is action
+        assert hidden.count() == 0
+        assert page.record.session.history.state_id == state
+    finally:
+        menu.close()
+    qtbot.waitUntil(recovered.isVisible)
+    assert recovered.pages == (page,)
+
+
+@pytest.mark.parametrize("kind", ["document", "page"])
+def test_duplicate_identity_cannot_replace_live_document_or_view(
+    workspace: Workspace,
+    sample_image: QImage,
+    tmp_path: Path,
+    qtbot: QtBot,
+    kind: str,
+) -> None:
+    """Repeated registration is idempotent; a different owner cannot overwrite it."""
+    host = open_document(workspace, sample_image, tmp_path)
+    page = host.pages[0]
+    add_rectangle(page)
+    record = page.record
+    workspace.register_document(record)
+    workspace.register_page(page)
+    duplicate_page = None
+    try:
+        if kind == "document":
+            other = DocumentRecord(
+                EditorSession(Document(sample_image), EditorSettings()),
+                record.delivery,
+                identifier=record.identifier,
+            )
+            with pytest.raises(ValueError, match=r"\S"):
+                workspace.register_document(other)
+        else:
+            duplicate_page = DocumentPage(record)
+            qtbot.addWidget(duplicate_page)
+            with pytest.raises(ValueError, match=r"\S"):
+                workspace.register_page(duplicate_page)
+        assert workspace.documents == (record,)
+        assert workspace.host_of(record.identifier) is host
+        assert host.pages == (page,)
+        assert record.session.document.annotations
+    finally:
+        if duplicate_page is not None:
+            duplicate_page.dispose()
 
 
 def test_grouping_keeps_independent_history_selection_and_zoom(

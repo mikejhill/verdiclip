@@ -9,7 +9,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final
 
-from PySide6.QtCore import QObject, Qt, QTimer, QUrl
+from PySide6.QtCore import QObject, Qt, QThread, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QImage, QImageReader
 from PySide6.QtWidgets import (
     QApplication,
@@ -25,6 +25,12 @@ from verdiclip.capture.models import Capture
 from verdiclip.capture.reviewed import CaptureCompleteness, CaptureKind, ReviewedCapture
 from verdiclip.capture.scroll.panels import ScrollReviewPanel
 from verdiclip.capture.scroll.session import ScrollSession
+from verdiclip.capture.scroll.uia_adapter import UiaAdapter
+from verdiclip.capture.scroll.workflow import (
+    BackendFactory,
+    ScrollFactories,
+    ScrollWorkflow,
+)
 from verdiclip.capture.service import CaptureService, WindowSource
 from verdiclip.document.admission import CaptureProvenance
 from verdiclip.document.document import Document
@@ -116,6 +122,7 @@ class AppController(QObject):
         self._capture = CaptureService(
             screens, windows, show_magnifier=self._settings.capture.show_magnifier
         )
+        self._scroll_workflow: ScrollWorkflow | None = None
         self._editors: list[EditorWindow] = []
         self._workspace = Workspace()
         self._workspace.window_added.connect(self._wire_editor)
@@ -159,6 +166,7 @@ class AppController(QObject):
         self._capture.failed.connect(
             lambda message: self._notify("Capture failed", message, warning=True)
         )
+        self._capture.work_changed.connect(self._resume_idle_if_ready)
         self._hotkeys.triggered.connect(self._on_hotkey)
         self._tray.messageClicked.connect(self._on_message_clicked)
 
@@ -242,7 +250,15 @@ class AppController(QObject):
 
     def _on_hotkey(self, action: str) -> None:
         """Dispatch a global hotkey."""
+        if action == "scrolling" and self._scroll_workflow is None:
+            self._notify(
+                "Scrolling capture unavailable",
+                "Scrolling capture is not available in this build.",
+                warning=True,
+            )
+            return
         handlers = {
+            "scrolling": self._capture.capture_scrolling,
             "region": self._capture.capture_region,
             "window": self._capture.capture_active_window,
             "fullscreen": self._capture.capture_fullscreen,
@@ -252,6 +268,53 @@ class AppController(QObject):
         if handler is not None:
             self._workspace.cancel_drag()
             handler()
+
+    def configure_scrolling(
+        self, adapter: UiaAdapter, backend: BackendFactory, spool_parent: Path
+    ) -> ScrollWorkflow:
+        """Attach explicit scrolling services once; defaults enable no native path.
+
+        Transfer an idle, unparented adapter to application ownership. The backend
+        factory must bind the capture's latched input_active predicate when using
+        a qualified native adapter. Configuration itself launches no provider.
+        """
+        if QThread.currentThread() != self.thread():
+            raise ValueError("Configure scrolling on the application thread")
+        if self._scroll_workflow is not None or self._capture.is_selecting:
+            raise ValueError("Configure scrolling once while capture is idle")
+        if (
+            adapter.busy
+            or adapter.parent() is not None
+            or adapter.thread() != self.thread()
+        ):
+            raise ValueError(
+                "Scrolling requires an idle, unowned application-thread adapter"
+            )
+        workflow = ScrollWorkflow(
+            adapter,
+            factories=ScrollFactories(backend, self.review_scrolling_capture),
+            spool_parent=spool_parent,
+            input_active=lambda: self._capture.input_active,
+        )
+        adapter.setParent(workflow)
+        try:
+            self._capture.set_scroll_workflow(workflow)
+        except ValueError:
+            # The service's declared rejection occurs before it takes ownership.
+            adapter.setParent(None)
+            workflow.deleteLater()
+            raise
+        # An unexpected Qt attachment failure must not delete a graph that the
+        # capture service may already own. Such failures require caller recovery.
+        self._scroll_workflow = workflow
+        self._tray.set_scrolling_available(available=True)
+        for window in self._workspace.windows:
+            window.action("capture_scrolling").setEnabled(True)
+        return workflow
+
+    def capture_scrolling(self) -> None:
+        """Start scrolling selection through the same preserved input owner."""
+        self._on_hotkey("scrolling")
 
     def review_scrolling_capture(self, session: ScrollSession) -> ScrollReviewPanel:
         """Own stopped-result review without enabling native scrolling acquisition.
@@ -492,6 +555,8 @@ class AppController(QObject):
         )
         editor.settings_requested.connect(lambda e=editor: self.show_settings(e))
         editor.about_requested.connect(lambda e=editor: self._show_about(e))
+        editor.scrolling_requested.connect(self.capture_scrolling)
+        editor.action("capture_scrolling").setEnabled(self._scroll_workflow is not None)
         self._editors.append(editor)
 
     def open_image(
@@ -522,12 +587,7 @@ class AppController(QObject):
         self._resume_idle_if_ready()
 
     def _resume_idle_if_ready(self) -> None:
-        if (
-            not self._workspace.has_work
-            and not self._pending_deliveries
-            and not self._scroll_reviews.has_work
-            and self._idle_timer.isActive()
-        ):
+        if not self._has_retained_work() and self._idle_timer.isActive():
             self._idle_timer.start(0)  # A deferred update can go ahead now
 
     # Tray commands
@@ -545,6 +605,7 @@ class AppController(QObject):
             about=self._show_about,
             exit=self.request_exit,
             update=self.check_for_updates if self._updater is not None else None,
+            capture_scrolling=self.capture_scrolling,
         )
 
     def _ask_open_image(self) -> None:
@@ -806,14 +867,19 @@ class AppController(QObject):
             )
             self._notify("Could not check for updates", reason, warning=True)
 
-    def _defer_automatic_install(self) -> bool:
-        """Keep background updates away from retained work and visible app UI."""
-        busy = (
+    def _has_retained_work(self) -> bool:
+        """Capture leases and producer-owned originals outlive presentation windows."""
+        return (
             self._workspace.has_work
             or bool(self._pending_deliveries)
             or self._scroll_reviews.has_work
             or self._capture.is_selecting
-            or any(widget.isVisible() for widget in QApplication.topLevelWidgets())
+        )
+
+    def _defer_automatic_install(self) -> bool:
+        """Keep background updates away from retained work and visible app UI."""
+        busy = self._has_retained_work() or any(
+            widget.isVisible() for widget in QApplication.topLevelWidgets()
         )
         if busy:
             self._idle_timer.start(IDLE_RETRY_MS)
@@ -837,6 +903,13 @@ class AppController(QObject):
         """Resolve retained captures and approve every document before disposal."""
         if self._closing_editors:
             return False
+        if self._capture.is_selecting:
+            self._notify(
+                "Capture in progress",
+                "Finish, review or cancel the capture before closing.",
+                warning=True,
+            )
+            return False
         self._closing_editors = True
         try:
             return self._close_retained_and_workspace()
@@ -846,6 +919,7 @@ class AppController(QObject):
     def _pending_plan_current(self, plan: tuple[CaptureDelivery, ...]) -> bool:
         return (
             not self._scroll_reviews.has_unaccepted
+            and not self._capture.is_selecting
             and not any(item.in_flight for item in plan)
             and tuple(id(item) for item in self._pending_deliveries.values())
             == tuple(id(item) for item in plan)
@@ -888,7 +962,10 @@ class AppController(QObject):
         for attempt in plan:
             self._pending_deliveries.pop(attempt.capture.capture_id)
             self._completed_deliveries.add(attempt.capture.capture_id)
-        return self._scroll_reviews.close_resolved()
+        closed = self._scroll_reviews.close_resolved()
+        # A final review close can synchronously begin another capture or admit
+        # fresh work. Earlier close approvals cannot authorize its disposal.
+        return closed and not self._has_retained_work()
 
     def _save_retained_capture(self, attempt: CaptureDelivery) -> bool:
         delivery = ImageDelivery(self._settings.output)

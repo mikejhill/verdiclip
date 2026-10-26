@@ -45,6 +45,7 @@ from verdiclip.capture.grabber import ScreenSource
 from verdiclip.capture.input_policy import InputKind, SelectionInput
 from verdiclip.capture.models import Capture, CaptureMode
 from verdiclip.capture.overlay import SelectionOverlay
+from verdiclip.capture.service import WindowSource
 from verdiclip.document.commands import SetCrop
 from verdiclip.document.style import Color
 from verdiclip.editor.close_prompt import CloseChoice, ClosePrompt
@@ -206,12 +207,14 @@ def make_app(
         lambda *_args: LaunchCommand(PYTHONW, "-m verdiclip"),
     )
 
-    def factory(
+    def factory(  # noqa: PLR0913 - explicit screen/window OS boundary injection
         settings: Settings | None = None,
         taken: set[str] | None = None,
         links: FakeShortcutBackend | None = None,
         updater: Updater | None = None,
         screens: ScreenSource | None = None,
+        *,
+        windows: WindowSource | None = None,
     ) -> App:
         store = SettingsStore(tmp_path / "settings.json")
         base = settings or Settings()
@@ -221,15 +224,19 @@ def make_app(
         os_hotkeys = FakeHotkeys(taken=taken or set())
         hotkeys = HotkeyService(os_hotkeys)
         registry = FakeRegistry()
-        windows = FakeWindows([FakeWindow("Notepad", Rect(10, 10, 300, 200), 1)])
-        windows.active = windows.windows[0]
+        default_window = FakeWindow("Notepad", Rect(10, 10, 300, 200), 1)
+        window_source = (
+            windows
+            if windows is not None
+            else FakeWindows([default_window], active=default_window)
+        )
         associations = FakeAssociationBackend()
         links = links if links is not None else FakeShortcutBackend()
         folders = ShortcutFolders(tmp_path / "Startup", tmp_path / "Programs")
         controller = AppController(
             store,
             screens if screens is not None else FakeDesktop(),
-            windows,
+            window_source,
             hotkeys,
             ShellIntegration(
                 StartupRegistration(

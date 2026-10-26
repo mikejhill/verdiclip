@@ -102,6 +102,7 @@ class EditorWindow(QMainWindow):
     open_image_requested = Signal(object)  # Path
     settings_requested = Signal()
     about_requested = Signal()
+    scrolling_requested = Signal()
 
     def __init__(
         self,
@@ -658,6 +659,13 @@ class EditorWindow(QMainWindow):
             lambda: QDesktopServices.openUrl(QUrl(DOCS_URL)),
         )
         self._add_action("about", f"&About {APP_NAME}", None, self.about_requested.emit)
+        scrolling = self._add_action(
+            "capture_scrolling",
+            "Capture &scrolling area…",
+            None,
+            self.scrolling_requested.emit,
+        )
+        scrolling.setEnabled(False)
         self._add_action("undo", "&Undo", QKeySequence.StandardKey.Undo, self._undo)
         redo = self._add_action("redo", "&Redo", "Ctrl+Y", self._redo)
         redo.setShortcuts([QKeySequence("Ctrl+Y"), QKeySequence("Ctrl+Shift+Z")])
@@ -832,6 +840,8 @@ class EditorWindow(QMainWindow):
             lambda: self._workspace.populate_window_menu(tabs, self)
         )
         tools = bar.addMenu("&Tools")
+        tools.addAction(self._actions["capture_scrolling"])
+        tools.addSeparator()
         for action in self._tool_actions.values():
             tools.addAction(action)
         help_menu = bar.addMenu("&Help")

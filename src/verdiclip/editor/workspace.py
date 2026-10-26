@@ -78,13 +78,17 @@ class Workspace(QObject):
         if page is not None:
             page.changed.emit()
 
-    def recover_retained(self) -> bool:
-        """Retry presentation after an allocation/attachment rollback failure."""
+    def recover_retained(self, *, activate: bool = False) -> bool:
+        """Retry independent views; only an explicit UI action requests activation."""
         from verdiclip.editor.window import EditorOptions, EditorWindow  # noqa: PLC0415
 
         self.present_retained()
-        for identifier, page in self._pages.items():
-            if self.host_of(identifier) is not None:
+        recovered = True
+        for identifier, page in tuple(self._pages.items()):
+            if (
+                self._pages.get(identifier) is not page
+                or self.host_of(identifier) is not None
+            ):
                 continue
             host = None
             try:
@@ -92,15 +96,27 @@ class Workspace(QObject):
                     None, page.record.delivery, EditorOptions(), workspace=self
                 )
                 host.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-                host.attach_page(page, 0)
-                host.show()
+                with host.presentation_policy(
+                    activate=activate and not self._protected_ui()
+                ):
+                    host.attach_page(page, 0)
+                    self._present_host(host, activate=activate)
             except (RuntimeError, ValueError, MemoryError):
-                # Keep the registry and parking widget alive for another retry.
-                if host is not None and not host.pages:
-                    self.forget_window(host)
-                    host.deleteLater()
-                return False
-        return True
+                # One view failure cannot strand other independent documents.
+                # Keep its registry/parking ownership for a later explicit retry.
+                if host is not None:
+                    if not host.pages:
+                        self.forget_window(host)
+                        host.deleteLater()
+                    else:
+                        # A callback may fail after attachment succeeded. Preserve
+                        # a presentation lease for that already-owned page too.
+                        self._pending_presentations.add(host)
+                        self._presentation_timer.start()
+                recovered = False
+        return recovered and all(
+            self.host_of(key) is not None for key in self._documents
+        )
 
     def _existing_capture(
         self, options: window_types.EditorOptions
@@ -127,8 +143,12 @@ class Workspace(QObject):
 
     def register_page(self, page: DocumentPage) -> None:
         """Retain the view independently of both source and destination hosts."""
+        identifier = page.record.identifier
+        existing = self._pages.get(identifier)
+        if existing is not None and existing is not page:
+            raise ValueError("Document view identity already registered")
         self.register_document(page.record)
-        self._pages[page.record.identifier] = page
+        self._pages[identifier] = page
 
     def register_window(self, window: window_types.EditorWindow) -> None:
         """Wire one host without making a provisional window the active target."""
@@ -352,7 +372,12 @@ class Workspace(QObject):
         """Approve exact states before disposing any work, retaining reservations."""
         guard = can_commit or (lambda: True)
         self.cancel_drag()
-        if self._transferring or not guard() or not self.recover_retained():
+        if (
+            self._transferring
+            or not guard()
+            or not self.recover_retained()
+            or not guard()
+        ):
             return False
         windows = self.windows
         documents = self.documents
@@ -520,7 +545,9 @@ class Workspace(QObject):
         for action in menu.actions()[5:]:
             menu.removeAction(action)
             action.deleteLater()
-        menu.addAction("Recover retained tabs", self.recover_retained)
+        menu.addAction(
+            "Recover retained tabs", lambda: self.recover_retained(activate=True)
+        )
         if not source.pages:
             return
         self._add_targets(
