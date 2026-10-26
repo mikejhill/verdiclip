@@ -98,6 +98,49 @@ disabled by default; this checkpoint does not grant qualification.
 
 ## Pending compatibility and acceptance gates
 
+The activation-based native harness has been migrated. Its common coordinator
+waits for broker readiness and confirmed cleanup, checks zero Hide/Close events
+and unchanged handles/modality/popups/grabs before teardown, and bounds cleanup
+failure independently. Teardown can unwind only explicitly declared fixture
+hosts; a foreign application-modal dialog remains untouched. The same coordinator
+has 45 portable regressions, including all eight scene setups with drag/Escape,
+nested menu/dialog loops, missing/negative cleanup and stale callbacks.
+
+`test_capture_native.py` is now a **native Qt/MSS presentation suite with replay
+input transport**. It exercises production broker/worker scheduling through an
+explicit in-memory platform, without installing hooks, forwarding packets,
+registering global shortcuts or changing the user's clipboard. Posted WM_HOTKEY
+and programmatic menu-action callbacks are distinct from physical key delivery
+and mouse activation of a native menu. About uses a fixture QMessageBox and
+Settings uses the actual SettingsDialog widget; these are fixture-owned modal
+hosts rather than implicit ownership of whichever dialog happens to be active.
+Trace JSON labels native GUI, replay transport and absence of native hooks.
+
+Only after an authorized unlocked-desktop handoff, run this supplemental suite:
+
+```powershell
+$env:QT_QPA_PLATFORM = 'windows'
+uv run pytest tests/capture/test_capture_native.py --require-interactive-capture
+```
+
+That command does not qualify actual OS hooks, Raw Input devices, physical
+pointer behavior, external TrackPopupMenu windows, or UIA scrolling. Those still
+need a separate bounded production-broker/native-input matrix with the tool's
+input-target protections intact, and observed cleanup of all temporary resources.
+
+## Mutation evidence and limits
+
+The preserved run for `94a980d`, Actions run **40270992197**, completed
+successfully: **72.9%**, with **5,101 of 7,002** scoped mutants detected and
+**1,901** undetected. A successful workflow is not a claim that every behavior
+is tested. Report inspection found uncovered inclusive Raw Input endpoints;
+eight primary/virtual-display corner cases now exercise zero and maximum on
+both axes. Three reported boundary mutations were recreated in isolated source
+copies and killed by these tests. The broader survivor set remains a test-quality
+limitation rather than being dismissed as equivalent. The four earlier targeted consent,
+cleanup-publication, stale-review and input-ownership mutations were killed.
+Repository mutation thresholds and workflow permissions remain unchanged.
+
 The desktop is locked. No production native broker test has been attempted in
 that state. Earlier injected prototype traces are feasibility evidence only.
 Supplemental native qualification must cover real Qt/native menus, owned modal

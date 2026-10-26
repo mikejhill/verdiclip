@@ -92,3 +92,27 @@ def test_invalid_absolute_coordinates_refused() -> None:
         RawPointerDecoder.decode(
             mouse, primary=Rect(0, 0, 100, 100), virtual=Rect(0, 0, 100, 100)
         )
+
+
+@pytest.mark.parametrize("virtual", [False, True])
+@pytest.mark.parametrize(
+    ("raw", "primary_corner", "virtual_corner"),
+    [
+        (Point(0, 0), Point(0, 0), Point(-400, -300)),
+        (Point(65535, 0), Point(199, 0), Point(399, -300)),
+        (Point(0, 65535), Point(0, 99), Point(-400, 299)),
+        (Point(65535, 65535), Point(199, 99), Point(399, 299)),
+    ],
+)
+def test_absolute_pointer_inclusive_endpoints_cover_every_display_corner(
+    raw: Point, primary_corner: Point, virtual_corner: Point, *, virtual: bool
+) -> None:
+    """Tablet endpoint packets include zero and maximum on both axes."""
+    mouse = RawMouse()
+    mouse.flags = 3 if virtual else 1
+    mouse.x, mouse.y = int(raw.x), int(raw.y)
+    event = RawPointerDecoder.decode(
+        mouse, primary=Rect(0, 0, 200, 100), virtual=Rect(-400, -300, 800, 600)
+    )
+    assert event.mode is MoveMode.ABSOLUTE
+    assert event.point == (virtual_corner if virtual else primary_corner)
