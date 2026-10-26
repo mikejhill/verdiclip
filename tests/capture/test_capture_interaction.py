@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QCursor
+from PySide6.QtGui import QAccessible, QAccessibleEvent, QCursor, QGuiApplication
 from PySide6.QtWidgets import QApplication, QComboBox, QPushButton, QSpinBox
 from pytestqt.qtbot import QtBot
 from tests.capture.test_popup_capture import ExistingScene
@@ -236,3 +236,53 @@ def test_unrepresentable_semantic_geometry_refuses_start_without_overflow(
     panel.confirmed.connect(results.append)
     click(panel, start)
     assert not results
+
+
+def test_passive_panel_announces_accessible_controls(
+    qtbot: QtBot, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Plain passive panels explicitly provide the ObjectShow omitted by Qt."""
+    announcements: list[QAccessible.Event] = []
+
+    def record(event: QAccessibleEvent) -> None:
+        announcements.append(event.type())
+
+    monkeypatch.setattr(QAccessible, "updateAccessibility", record)
+    panel = CapturePanel(external_input=True)
+    qtbot.addWidget(panel)
+    close = QPushButton("Close review", panel)
+    panel.show()
+    assert announcements == [QAccessible.Event.ObjectShow]
+    interface = QAccessible.queryAccessibleInterface(close)
+    assert interface is not None
+    assert interface.role() == QAccessible.Role.Button
+    assert interface.text(QAccessible.Text.Name) == "Close review"
+
+
+def test_completed_panel_preserves_foreground_and_accepts_explicit_close(
+    qtbot: QtBot, qapp: QApplication
+) -> None:
+    """Delivery status stays passive; an explicit owned-button click can close it."""
+    scene = ExistingScene("popup", qapp)
+    qapp.processEvents()
+    original_focus = QGuiApplication.focusWindow()
+    panel = CapturePanel(external_input=True)
+    qtbot.addWidget(panel)
+    close = QPushButton("Close review", panel)
+    close.clicked.connect(panel.close)
+    try:
+        panel.show()
+        qapp.processEvents()
+        panel.complete_capture_input()
+        qapp.processEvents()
+        assert not panel.external_input
+        assert panel.isVisible()
+        assert not panel.windowFlags() & Qt.WindowType.WindowTransparentForInput
+        assert QGuiApplication.focusWindow() is original_focus
+        scene.assert_preserved()
+        qtbot.mouseClick(close, Qt.MouseButton.LeftButton)
+        assert not panel.isVisible()
+        scene.assert_preserved()
+    finally:
+        panel.close()
+        scene.close()

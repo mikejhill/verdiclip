@@ -26,6 +26,7 @@ from PySide6.QtWidgets import QWidget
 from verdiclip.capture.grabber import FrozenScreen
 from verdiclip.capture.input_policy import InputKind, SelectionInput
 from verdiclip.capture.models import ScreenGeometry
+from verdiclip.capture.presentation import PASSIVE_WINDOW_FLAGS
 from verdiclip.geometry import Point, Rect
 
 DRAG_THRESHOLD: Final = 3.0
@@ -201,10 +202,7 @@ class SelectionOverlay(QWidget):
             | Qt.WindowType.Tool
         )
         if external_input:
-            flags |= (
-                Qt.WindowType.WindowDoesNotAcceptFocus
-                | Qt.WindowType.WindowTransparentForInput
-            )
+            flags = PASSIVE_WINDOW_FLAGS
             self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setWindowFlags(flags)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
