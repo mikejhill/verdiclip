@@ -1,5 +1,12 @@
 # Capture input ownership
 
+Historical account of the **0.12.1 popup-closing implementation**. Its closure
+and activation policy is superseded by the no-dismissal requirement. Do not use
+the lifecycle below as implementation guidance for the replacement. Current
+contracts and evidence are in [capture-input-validation.md](capture-input-validation.md).
+The native presentation harness now uses replay input and waits for broker
+readiness; OS-hook/hardware qualification remains separate.
+
 ## Failure mechanism
 
 A capture overlay being visible or active does not imply that it receives

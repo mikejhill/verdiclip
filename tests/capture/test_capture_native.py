@@ -1,8 +1,7 @@
-"""Native Windows capture regression with the real tray menu and desktop freeze.
+"""Native Qt/MSS preservation with production broker scheduling and replay input.
 
-Run with QT_QPA_PLATFORM=windows and --require-interactive-capture. This posts
-WM_HOTKEY to this test's own GUI thread; it reserves no global shortcut and
-never interacts with the user's installed VerdiClip or its settings.
+This supplemental suite posts WM_HOTKEY to its own fixture thread. It does not
+install OS hooks, send OS input, reserve global keys or qualify physical input.
 """
 
 from __future__ import annotations
@@ -11,29 +10,32 @@ import ctypes
 import ctypes.wintypes
 import json
 import sys
+from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import override
 
 import pytest
-from PySide6.QtCore import QPoint, Qt, QThread, QTimer
+from PySide6.QtCore import QElapsedTimer, QPoint, Qt, QThread, QTimer
 from PySide6.QtGui import QGuiApplication, QImage
-from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
+from PySide6.QtWidgets import QApplication, QDialog, QMenu, QMessageBox, QWidget
 from pytestqt.qtbot import QtBot
+from shiboken6 import isValid
 from tests.capture.desktop import DesktopSession
+from tests.capture.harness_transport import ReplayWorkerTransport
+from tests.capture.preservation_harness import CaptureHarness, PreservationSnapshot
 from tests.capture.test_popup_capture import InputTrace
-from tests.ux.test_app_journeys import (
-    App,
-    make_app,
-)
+from tests.ux.test_app_journeys import App, make_app
 
 from verdiclip.capture.grabber import FrozenScreen, MssScreenSource
-from verdiclip.capture.models import Capture
+from verdiclip.settings import CaptureSettings, Settings
 from verdiclip.shell.settings_dialog import SettingsDialog
+
+pytestmark = pytest.mark.native_desktop
 
 
 class RealDesktop(MssScreenSource):
-    """Freeze real pixels and record the input owner at that exact boundary."""
+    """Record freeze ownership without persisting desktop pixels."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -41,85 +43,115 @@ class RealDesktop(MssScreenSource):
 
     @override
     def freeze(self) -> FrozenScreen:
-        """Record popup ownership and GUI-thread execution before native capture."""
+        """Keep the original popup present at the native freeze boundary."""
         app = QApplication.instance()
-        assert app is not None
         self.frames.append(
             {
                 "popup": InputTrace.name(QApplication.activePopupWidget()),
-                "gui_thread": QThread.currentThread() is app.thread(),
+                "gui_thread": isinstance(app, QApplication)
+                and QThread.currentThread() is app.thread(),
             }
         )
         return super().freeze()
 
 
 class NativeRun:
-    """Drive real QWindow input after overlay activation and bound test cleanup."""
+    """Wait for host exposure and broker readiness, never overlay activation."""
 
-    def __init__(self, app: App, qt_app: QApplication, *, outcome: str) -> None:
-        self.app = app
-        self.qt_app = qt_app
+    def __init__(
+        self,
+        app: App,
+        qapp: QApplication,
+        transport: ReplayWorkerTransport,
+        *,
+        outcome: str,
+    ) -> None:
+        self.app, self.qapp, self.transport = app, qapp, transport
         self.outcome = outcome
         self.done = False
-        self.scheduled = False
         self.errors: list[str] = []
-        self.captures: list[Capture] = []
-        self.trace = InputTrace()
-        self.qt_app.installEventFilter(self.trace)
-        self.qt_app.focusWindowChanged.connect(self._focus_changed)
-        self.app.controller.capture.captured.connect(self.captures.append)
-        self.deadline = QTimer()
-        self.deadline.setSingleShot(True)
-        self.deadline.timeout.connect(self._expired)
-        self.deadline.start(5000)
+        self.harness: CaptureHarness | None = None
+        self.expected_popup = "none"
+        self.hosts: list[QWidget] = [app.controller.tray.menu]
+        self._action: Callable[[], None] | None = None
+        self._elapsed = QElapsedTimer()
+        self._exposure = QTimer()
+        self._exposure.setInterval(5)
+        self._exposure.timeout.connect(self._exposed)
 
     @staticmethod
     def require_desktop(request: pytest.FixtureRequest) -> QApplication:
-        """Enforce real desktop prerequisites without hiding capture failures."""
+        """Refuse known unavailable sessions before creating any native fixture."""
         if sys.platform != "win32" or QGuiApplication.platformName() != "windows":
-            pytest.skip("Requires native Windows Qt; run with QT_QPA_PLATFORM=windows")
+            reason = "Requires native Windows Qt; set QT_QPA_PLATFORM=windows"
+            if request.config.getoption("--require-interactive-capture"):
+                pytest.fail(reason)
+            pytest.skip(reason)
         session = DesktopSession.current()
         reason = session.unavailable_reason() if session is not None else None
         if reason is not None:
             if request.config.getoption("--require-interactive-capture"):
                 pytest.fail(reason)
             pytest.skip(reason)
-        qapp = QApplication.instance()
-        assert isinstance(qapp, QApplication)
-        return qapp
+        app = QApplication.instance()
+        assert isinstance(app, QApplication)
+        return app
 
     @staticmethod
     def make(request: pytest.FixtureRequest, source: RealDesktop) -> App:
-        """Obtain the registered app fixture without changing any user services."""
+        """Use temporary files and fake registrations, never the user's clipboard."""
         factory = request.getfixturevalue(make_app.__name__)
         assert callable(factory)
-        app = factory(screens=source)
+        settings = replace(
+            Settings(), capture=CaptureSettings(open_editor=False, save_to_file=True)
+        )
+        app = factory(settings=settings, screens=source)
         assert isinstance(app, App)
         return app
 
-    def record(
-        self,
-        directory: Path,
-        scenario: str,
-        frames: list[dict[str, str | bool]],
-    ) -> None:
-        """Retain diagnostic events without saving captured desktop pixels."""
-        (directory / "native-capture-trace.json").write_text(
-            json.dumps(
-                {
-                    "scenario": scenario,
-                    "outcome": self.outcome,
-                    "errors": self.errors,
-                    "frames": frames,
-                    "events": self.trace.events,
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
+    def schedule(self, action: Callable[[], None]) -> None:
+        """Queue dispatch after the pre-existing native host has been exposed."""
+        if self.done or self.harness is not None or self._action is not None:
+            raise ValueError("A native harness run may be scheduled only once")
+        self._action = action
+        self._elapsed.start()
+        self._exposure.start()
+
+    def own_host(self, host: QWidget) -> None:
+        """Declare a fixture-created host explicitly, never infer modal ownership."""
+        if host not in self.hosts:
+            self.hosts.append(host)
+
+    def _exposed(self) -> None:
+        """Refuse stale setup callbacks and dispatch only after actual exposure."""
+        if self.done or self.harness is not None:
+            return
+        windows = tuple(w for w in QApplication.topLevelWidgets() if w.isVisible())
+        if self._elapsed.elapsed() >= 5000:
+            self.errors.append("Fixture hosts did not become exposed")
+            self._finish_hosts()
+            return
+        if not windows or any(
+            w.windowHandle() is None or not w.windowHandle().isExposed()
+            for w in windows
+        ):
+            return
+        self._exposure.stop()
+        self.expected_popup = InputTrace.name(QApplication.activePopupWidget())
+        self.harness = CaptureHarness(
+            self.app.controller.capture,
+            PreservationSnapshot(self.qapp, windows),
+            self.transport.send,
+            outcome=self.outcome,
         )
+        self.harness.completed.connect(self._complete)
+        self.harness.start()
+        action, self._action = self._action, None
+        if action is not None:
+            action()
 
     def post_hotkey(self) -> None:
-        """Post the actual Windows message to only this test's native event filter."""
+        """Post WM_HOTKEY only to the test filter, without global registration."""
         key = self.app.hotkeys.registered["region"]
         identifier = next(
             identifier
@@ -133,139 +165,159 @@ class NativeRun:
             ctypes.wintypes.WPARAM,
             ctypes.wintypes.LPARAM,
         )
-        posted = api.PostThreadMessageW(
-            ctypes.windll.kernel32.GetCurrentThreadId(),
-            0x0312,
-            identifier,
-            0,
-        )
-        if not posted:
-            self.errors.append(f"PostThreadMessage failed: {ctypes.get_last_error()}")
-            self.finish()
-
-    def _focus_changed(self, _window: object) -> None:
-        """Wait for a genuine native overlay activation, then leave that dispatch."""
-        service = self.app.controller.capture
-        focus = QGuiApplication.focusWindow()
-        if not self.scheduled and any(
-            focus is o.windowHandle() for o in service.overlays
+        api.PostThreadMessageW.restype = ctypes.wintypes.BOOL
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.GetCurrentThreadId.argtypes = ()
+        kernel.GetCurrentThreadId.restype = ctypes.wintypes.DWORD
+        if not api.PostThreadMessageW(
+            kernel.GetCurrentThreadId(), 0x0312, identifier, 0
         ):
-            self.scheduled = True
-            QTimer.singleShot(0, self._complete)
+            self.errors.append(f"PostThreadMessage failed: {ctypes.get_last_error()}")
+            self._finish_hosts()
 
     def _complete(self) -> None:
-        """Exercise native Qt key/mouse routing rather than QWidget.sendEvent."""
-        service = self.app.controller.capture
-        try:
-            assert service.overlays, "Selection disappeared before receiving input"
-            window = service.overlays[0].windowHandle()
-            assert window is not None
-            popup = QApplication.activePopupWidget()
-            if popup is not None:
-                QTest.keyClick(window, Qt.Key.Key_Escape)
-                self.errors.append(
-                    "Popup retained input; "
-                    f"selecting after Escape={service.is_selecting}"
-                )
-            elif self.outcome == "escape":
-                QTest.keyClick(window, Qt.Key.Key_Escape)
-                assert not service.is_selecting, "Native Escape must finish capture"
-                assert self.captures == [], "Escape must not deliver an image"
-            else:
-                QTest.mousePress(window, Qt.MouseButton.LeftButton, pos=QPoint(90, 90))
-                QTest.mouseMove(window, QPoint(160, 140))
-                QTest.mouseRelease(
-                    window, Qt.MouseButton.LeftButton, pos=QPoint(160, 140)
-                )
-                assert len(self.captures) == 1, "Native drag must deliver exactly once"
-                assert self.captures[0].image.size().width() == 70
-                assert self.captures[0].image.size().height() == 50
-                assert not service.is_selecting
-        except (AssertionError, RuntimeError) as error:
-            self.errors.append(str(error))
-        finally:
-            self.finish()
+        """Record cleanup/preservation before unwinding any owned modal loop."""
+        if self.harness is not None:
+            self.errors.extend(self.harness.errors)
+        self.errors.extend(self.transport.cleanup_errors())
+        self._finish_hosts()
 
-    def _expired(self) -> None:
-        """Fail and clean up even if Qt never transfers focus to the overlay."""
-        self.errors.append("Native selection never acquired input before the deadline")
-        self.finish()
-
-    def finish(self) -> None:
-        """End the test-owned selection and nested dialogs, preserving other apps."""
-        if self.done:
-            return
+    def _finish_hosts(self) -> None:
+        """Unwind only explicitly owned host loops, after preservation assertions."""
+        self._exposure.stop()
         self.done = True
-        self.deadline.stop()
-        self.app.controller.capture.cancel()
-        self.app.controller.tray.menu.close()
-        for widget in QApplication.topLevelWidgets():
-            if isinstance(widget, (QMessageBox, SettingsDialog, QDialog)):
-                widget.reject()
+        for host in reversed(self.hosts):
+            if not isValid(host):
+                continue
+            if isinstance(host, QDialog):
+                host.reject()
+            elif isinstance(host, QMenu):
+                host.close()
+
+    def record(self, directory: Path, scenario: str, source: RealDesktop) -> None:
+        """Label the evidence boundary and omit desktop pixels."""
+        (directory / "native-capture-trace.json").write_text(
+            json.dumps(
+                {
+                    "scenario": scenario,
+                    "outcome": self.outcome,
+                    "native_gui": True,
+                    "input_transport": "replay",
+                    "native_hooks": False,
+                    "errors": self.errors,
+                    "expected_popup": self.expected_popup,
+                    "frames": source.frames,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
 
     def close(self) -> None:
-        """Remove observers after the test's owned event loops have exited."""
-        self.finish()
-        self.qt_app.focusWindowChanged.disconnect(self._focus_changed)
-        self.qt_app.removeEventFilter(self.trace)
+        """Retire capture observers and this fixture's hosts, never other dialogs."""
+        if self.harness is not None:
+            self.harness.close()
+        self.app.controller.capture.cancel()
+        self._finish_hosts()
+
+    def input_idle(self) -> bool:
+        """Expose cleanup completion without a deferred lambda inside finally."""
+        return not self.app.controller.capture.is_selecting
+
+    def enter_scene(self, scenario: str) -> None:
+        """Construct only explicit fixture hosts, sharing portable setup coverage."""
+        if scenario in {"tray", "tray-exec", "nested-menu", "menu-action"}:
+            self._menu_scene(scenario)
+        elif scenario in {"about", "settings"}:
+            dialog = (
+                SettingsDialog(Settings())
+                if scenario == "settings"
+                else QMessageBox(QMessageBox.Icon.Information, "About", "Fixture")
+            )
+            self._modal_scene(dialog)
+        else:
+            image = QImage(160, 100, QImage.Format.Format_RGB32)
+            image.fill(Qt.GlobalColor.white)
+            editor = self.app.controller.open_editor(image, delivered=True)
+            if scenario == "modal":
+                self._modal_scene(QDialog(editor))
+            elif scenario == "main":
+                self.schedule(self.post_hotkey)
+            else:
+                raise ValueError("Unknown fixture scene")
+
+    def _modal_scene(self, dialog: QDialog) -> None:
+        """Only the caller-created dialog is eligible for fixture teardown."""
+        self.own_host(dialog)
+        dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
+        QTimer.singleShot(0, lambda: self.schedule(self.post_hotkey))
+        dialog.exec()
+
+    def _menu_scene(self, scenario: str) -> None:
+        """Exercise nested loops or action callbacks without OS input synthesis."""
+        menu = self.app.controller.tray.menu
+        if scenario == "tray-exec":
+            QTimer.singleShot(0, lambda: self.schedule(self.post_hotkey))
+            menu.exec(QPoint(80, 80))
+            return
+        menu.popup(QPoint(80, 80))
+        if scenario == "nested-menu":
+            child = menu.addMenu("Fixture nested menu")
+            child.addAction("Fixture item")
+            child.popup(QPoint(200, 80))
+            self.own_host(child)
+        action = (
+            self.app.controller.tray.action("region").trigger
+            if scenario == "menu-action"
+            else self.post_hotkey
+        )
+        self.schedule(action)
 
 
 @pytest.mark.ux
 @pytest.mark.parametrize(
     "scenario",
-    ["tray", "tray-exec", "menu-action", "main", "about", "settings", "modal"],
+    [
+        "tray",
+        "tray-exec",
+        "nested-menu",
+        "menu-action",
+        "main",
+        "about",
+        "settings",
+        "modal",
+    ],
 )
 @pytest.mark.parametrize("outcome", ["escape", "drag"])
-def test_native_capture_input_ownership(
+def test_native_capture_presentation_preserves_existing_owners(
     qtbot: QtBot,
     request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
     scenario: str,
     outcome: str,
 ) -> None:
-    """UX-G-10: real Windows capture works through tray/modal native input routing."""
+    """Native Qt/MSS plus replay input; OS-hook qualification remains separate."""
     qapp = NativeRun.require_desktop(request)
-    tmp_path = request.getfixturevalue("tmp_path")
-    assert isinstance(tmp_path, Path)
+    transport = ReplayWorkerTransport()
+    monkeypatch.setattr("verdiclip.capture.service.make_input_broker", transport.broker)
     source = RealDesktop()
     app = NativeRun.make(request, source)
-    run = NativeRun(app, qapp, outcome=outcome)
-    menu = app.controller.tray.menu
+    run = NativeRun(
+        app,
+        qapp,
+        transport,
+        outcome=outcome,
+    )
     try:
-        if scenario in {"tray", "tray-exec", "menu-action"}:
-            if scenario == "menu-action":
-                menu.setActiveAction(app.controller.tray.action("region"))
-                QTimer.singleShot(
-                    0, lambda: QTest.keyClick(menu.windowHandle(), Qt.Key.Key_Return)
-                )
-                menu.exec(QPoint(80, 80))
-            elif scenario == "tray-exec":
-                QTimer.singleShot(0, run.post_hotkey)
-                menu.exec(QPoint(80, 80))
-            else:
-                menu.popup(QPoint(80, 80))
-                assert QApplication.activePopupWidget() is menu
-                run.post_hotkey()
-        elif scenario in {"about", "settings"}:
-            QTimer.singleShot(0, run.post_hotkey)
-            app.controller.tray.action(scenario).trigger()
-        else:
-            image = QImage(160, 100, QImage.Format.Format_RGB32)
-            image.fill(Qt.GlobalColor.white)
-            editor = app.controller.open_editor(image, delivered=True)
-            if scenario == "modal":
-                dialog = QDialog(editor)
-                dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
-                QTimer.singleShot(0, run.post_hotkey)
-                dialog.exec()
-            else:
-                run.post_hotkey()
-        qtbot.waitUntil(lambda: run.done, timeout=6000)
-        assert run.errors == [], (
-            f"{scenario}/{outcome}: {run.errors}; frames={source.frames}"
-        )
-        assert source.frames == [{"popup": "none", "gui_thread": True}]
-        assert QApplication.activePopupWidget() is None
+        run.enter_scene(scenario)
+        qtbot.waitUntil(lambda: run.done, timeout=8000)
+        assert not run.errors
+        assert source.frames == [{"popup": run.expected_popup, "gui_thread": True}]
+        assert not app.controller.capture.is_selecting
     finally:
-        run.record(tmp_path, scenario, source.frames)
+        directory = request.getfixturevalue("tmp_path")
+        assert isinstance(directory, Path)
+        run.record(directory, scenario, source)
         run.close()
+        qtbot.waitUntil(run.input_idle, timeout=2000)
         source.close()

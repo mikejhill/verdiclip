@@ -94,6 +94,7 @@ addopts = ["--strict-markers", "--strict-config", "-ra", "--import-mode=importli
 xfail_strict = true
 qt_api = "pyside6"
 markers = [
+    "native_desktop: supplemental compatibility test requiring a real interactive Windows desktop",
     "ux: user journey test proving a UX contract item",
     "ux_budget: journey test that enforces a latency budget",
 ]

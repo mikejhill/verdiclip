@@ -6,11 +6,12 @@ import ctypes
 import ctypes.wintypes
 import sys
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Final, Protocol
 
 from verdiclip.exceptions import PlatformError
 from verdiclip.geometry import Point, Rect
+from verdiclip.platform.window_identity import Win32WindowIdentity
 
 _WS_EX_TOOLWINDOW: Final = 0x00000080
 _WS_EX_APPWINDOW: Final = 0x00040000
@@ -24,6 +25,7 @@ class WindowInfo:
     handle: int
     title: str
     bounds: Rect
+    window_identity: str | None = field(default=None, kw_only=True)
 
 
 class WindowApi(Protocol):
@@ -52,6 +54,9 @@ class WindowApi(Protocol):
 
     def foreground_handle(self) -> int:
         """Return the foreground handle, or zero."""
+
+    def window_identity(self, handle: int, /) -> str | None:
+        """Return HWND/PID/start generation, or None when it cannot be verified."""
 
 
 class _WindowEnumeration:
@@ -82,6 +87,7 @@ class Win32WindowApi:
             raise PlatformError(msg)
         self._user32 = ctypes.WinDLL("user32", use_last_error=True)
         self._dwmapi = ctypes.WinDLL("dwmapi", use_last_error=True)
+        self._identity = Win32WindowIdentity()
         self._callback_type = ctypes.WINFUNCTYPE(
             ctypes.wintypes.BOOL, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM
         )
@@ -172,6 +178,10 @@ class Win32WindowApi:
         """Return zero when there is no foreground window."""
         return int(self._user32.GetForegroundWindow() or 0)
 
+    def window_identity(self, handle: int) -> str | None:
+        """Snapshot native generation independently of captions and reused handles."""
+        return self._identity.read(handle)
+
 
 class WindowLocator:
     """Select visible capture targets without changing native z-order."""
@@ -209,13 +219,16 @@ class WindowLocator:
         style = self._api.ex_style(handle)
         if style & _WS_EX_TOOLWINDOW and not style & _WS_EX_APPWINDOW:
             return None
+        original_identity = self._api.window_identity(handle)
         title = self._api.title(handle)
         if not title:
             return None
         bounds = self._api.frame_bounds(handle)
         if bounds.width < _MINIMUM_SIZE or bounds.height < _MINIMUM_SIZE:
             return None
-        return WindowInfo(handle, title, bounds)
+        current_identity = self._api.window_identity(handle)
+        identity = current_identity if original_identity == current_identity else None
+        return WindowInfo(handle, title, bounds, window_identity=identity)
 
     @staticmethod
     def window_at(point: Point, windows: Sequence[WindowInfo]) -> WindowInfo | None:
