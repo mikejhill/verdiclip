@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast, override
 
@@ -22,6 +23,7 @@ from tests.capture.test_scroll_binding import FixtureBackend
 from tests.shell.test_reviewed_delivery import capture
 from tests.ux.test_app_journeys import AppFactory, make_app
 
+from verdiclip.capture.models import Capture, CaptureMode
 from verdiclip.capture.reviewed import CaptureCompleteness, ReviewedCapture
 from verdiclip.capture.scroll.binding import (
     BindingOptions,
@@ -37,6 +39,55 @@ from verdiclip.editor.window import EditorWindow
 from verdiclip.geometry import Rect
 from verdiclip.output.delivery import ImageDelivery
 from verdiclip.settings import CaptureSettings, Settings
+
+
+def test_ordinary_delivery_and_failure_keep_existing_modal_ui(
+    qtbot: QtBot,
+    factory: AppFactory,
+    sample_image: QImage,
+    presentation_calls: list[str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Ordinary producer signals share the passive reviewed-result/error boundary."""
+    app = factory(
+        Settings(
+            capture=CaptureSettings(
+                open_editor=True, copy_to_clipboard=False, save_to_file=False
+            )
+        )
+    )
+    dialog = QDialog()
+    qtbot.addWidget(dialog)
+    dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
+    dialog.show()
+    qtbot.waitUntil(lambda: QApplication.activeModalWidget() is dialog)
+    observed = PreservedUi((dialog,))
+    try:
+        app.controller._capture.captured.emit(
+            Capture(
+                sample_image,
+                CaptureMode.FULLSCREEN,
+                Rect(0, 0, sample_image.width(), sample_image.height()),
+                "Ordinary retained capture",
+                datetime(2026, 10, 26, tzinfo=UTC),
+            )
+        )
+        host = app.controller.editors[0]
+        assert host.tab_bar.tabText(0).startswith("Ordinary retained capture")
+        assert not host.session.history.is_delivered
+        assert not host.isVisible()
+        app.controller._capture.failed.emit("Synthetic provider failure")
+        qtbot.wait(0)
+        assert "Capture failed: Synthetic provider failure" in caplog.text
+        assert QApplication.activeModalWidget() is dialog
+        assert dialog.isVisible()
+        assert app.controller.workspace.documents == (host.pages[0].record,)
+        assert presentation_calls == []
+        assert observed.events == []
+    finally:
+        observed.stop()
+        dialog.close()
+        app.controller.workspace.present_retained()
 
 
 @pytest.fixture
