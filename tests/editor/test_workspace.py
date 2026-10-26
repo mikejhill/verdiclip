@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
-from typing import cast
+from typing import cast, override
 
 import pytest
-from PySide6.QtCore import QCoreApplication, QEvent, QPoint, QRect
+from PySide6.QtCore import QCoreApplication, QEvent, QObject, QPoint, QRect
 from PySide6.QtGui import QGuiApplication, QImage
 from PySide6.QtTest import QSignalSpy
 from PySide6.QtWidgets import (
@@ -19,7 +19,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from pytestqt.qtbot import QtBot
+from tests.shell.test_reviewed_delivery import capture
 
+from verdiclip.document.admission import CaptureProvenance
 from verdiclip.document.annotations import RectangleShape
 from verdiclip.document.commands import AddAnnotations
 from verdiclip.document.document import Document
@@ -1346,3 +1348,57 @@ def test_close_rollback_recovery_retains_documents_and_releases_job_reservations
     finally:
         monkeypatch.setattr(EditorWindow, "attach_page", original)
         host.tab_bar.currentChanged.disconnect(late_edit)
+
+
+def test_close_retains_reentrant_existing_capture_admission(
+    workspace: Workspace, sample_image: QImage, tmp_path: Path
+) -> None:
+    """A supported re-admission cannot be disposed with its former host."""
+    first = open_document(workspace, sample_image, tmp_path)
+    page = first.pages[0]
+    page.record.provenance = CaptureProvenance.from_capture(capture(sample_image))
+    open_document(workspace, sample_image, tmp_path, title="Neighbor")
+    second = open_document(workspace, sample_image, tmp_path, title="Other", new=True)
+    documents = workspace.documents
+    states = tuple(record.session.history.state_id for record in documents)
+    admitted: list[bool] = []
+
+    class Readmit(QObject):
+        @override
+        def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+            if (
+                watched is page
+                and event.type() == QEvent.Type.ParentChange
+                and page.parent() is workspace.parking
+                and not admitted
+            ):
+                admitted.append(True)
+                target = workspace.open_document(
+                    page.record.session,
+                    page.record.delivery,
+                    EditorOptions(
+                        title=page.record.title, provenance=page.record.provenance
+                    ),
+                    target=second,
+                    activate=False,
+                )
+                admitted[0] = target is second
+            return False
+
+    observer = Readmit()
+    page.installEventFilter(observer)
+    try:
+        closed = first.close_tab(0)
+        assert admitted == [True]
+        assert not closed
+        assert workspace.documents == documents
+        assert tuple(record.session.history.state_id for record in documents) == states
+        assert workspace.host_of(page.record.identifier) is first
+        assert page in first.pages
+        assert page not in second.pages
+    finally:
+        page.removeEventFilter(observer)
+        # Retire only residue from an intentionally broken disposal guard, so a
+        # fault failure is not obscured by a second failure in fixture teardown.
+        if page.record not in workspace.documents and page in second.pages:
+            second.take_page(page)
