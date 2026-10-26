@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import ctypes
+import json
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 from typing import NoReturn
 
@@ -42,29 +44,57 @@ def test_simulation_guards_refuse_all_backends_and_restore_only_test_doubles() -
         assert calls == [True]
 
 
-def test_wrong_runtime_fails_before_running_pytest_or_writing_evidence(
-    tmp_path: Path,
+@pytest.mark.parametrize("prior_pass", [False, True])
+def test_wrong_runtime_replaces_prior_green_evidence_without_running_pytest(
+    *,
+    prior_pass: bool,
 ) -> None:
-    """An incorrectly selected Qt runtime cannot produce a green qualification."""
+    """A failed prerequisite cannot leave an earlier successful report visible."""
     script = Path(__file__).resolve().parents[1] / "scripts/test_tabs_ci.py"
-    output = tmp_path / "must-not-exist"
-    result = subprocess.run(  # noqa: S603 - own script, literal arguments, no shell
-        [
-            sys.executable,
-            str(script),
-            "--expected-qt",
-            "0.0",
-            "--output-dir",
-            str(output),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=30,
-    )
-    assert result.returncode == 2
-    assert "Expected Qt 0.0, actual Qt" in result.stderr
-    assert not output.exists()
+    output = script.parents[1] / ".test-tmp" / ("preflight-unit-" + uuid.uuid4().hex)
+    output.mkdir(parents=True)
+    try:
+        if prior_pass:
+            (output / "environment.json").write_text(
+                '{"status":"passed","exit_code":0}', encoding="utf-8"
+            )
+            for name in ("summary.md", "coverage.xml", "junit.xml", "pytest.log"):
+                (output / name).write_text("prior green proof", encoding="utf-8")
+        result = subprocess.run(  # noqa: S603 - own script, literal arguments, no shell
+            [
+                sys.executable,
+                str(script),
+                "--expected-qt",
+                "0.0",
+                "--output-dir",
+                str(output),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        assert result.returncode == 2
+        assert "Expected Qt 0.0, actual Qt" in result.stderr
+        receipt = json.loads((output / "environment.json").read_text(encoding="utf-8"))
+        assert receipt["status"] == "failed"
+        assert receipt["phase"] == "preflight"
+        assert receipt["exit_code"] == 2
+        assert "**failed**" in (output / "summary.md").read_text(encoding="utf-8")
+        assert all(
+            not (output / name).exists()
+            for name in ("pytest.log", "coverage.xml", "junit.xml")
+        )
+    finally:
+        for name in (
+            "environment.json",
+            "summary.md",
+            "coverage.xml",
+            "junit.xml",
+            "pytest.log",
+        ):
+            (output / name).unlink(missing_ok=True)
+        output.rmdir()
 
 
 @pytest.mark.parametrize(("branch_rate", "expected"), [(0.90, 0), (0.899, 1)])

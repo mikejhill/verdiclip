@@ -117,12 +117,44 @@ def prepare_output(repo: Path, requested: Path) -> Path:
         )
     output.mkdir(parents=True, exist_ok=True)
     # No stale rates on collection failure, recursive cleanup or report symlinks.
-    for name in ("coverage.xml", "junit.xml", "pytest.log", "summary.md"):
-        target = output / name
-        if target.is_symlink():
-            raise ValueError("Report paths cannot be symbolic links")
+    targets = [
+        output / name
+        for name in (
+            "environment.json",
+            "coverage.xml",
+            "junit.xml",
+            "pytest.log",
+            "summary.md",
+        )
+    ]
+    if any(target.is_symlink() for target in targets):
+        raise ValueError("Report paths cannot be symbolic links")
+    for target in targets:
         target.unlink(missing_ok=True)
     return output
+
+
+def fail_preflight(output: Path, message: str, runtime: str, python: str) -> int:
+    """Replace prior green evidence with an explicit failed runtime prerequisite."""
+    manifest: dict[str, object] = {
+        "schema": 1,
+        "phase": "preflight",
+        "status": "failed",
+        "exit_code": 2,
+        "qt": runtime,
+        "python": python,
+        "source_head": None,
+        "source_dirty": None,
+        "seed": None,
+        "failure": message,
+        "native_or_physical_claim": False,
+    }
+    write_summary(output, manifest, 2)
+    (output / "environment.json").write_text(
+        json.dumps(manifest, indent=2), encoding="utf-8"
+    )
+    sys.stderr.write(message + "\n")
+    return 2
 
 
 def main() -> int:
@@ -136,16 +168,26 @@ def main() -> int:
     from PySide6.QtCore import qVersion  # noqa: PLC0415 - version only, no app
 
     runtime = qVersion()
-    if args.expected_qt is not None and runtime != args.expected_qt:
-        parser.error(f"Expected Qt {args.expected_qt}, actual Qt {runtime}")
     python = f"{sys.version_info.major}.{sys.version_info.minor}"
-    if args.expected_python is not None and python != args.expected_python:
-        parser.error(f"Expected Python {args.expected_python}, actual Python {python}")
     repo = Path(__file__).resolve().parents[1]
     try:
         output = prepare_output(repo, args.output_dir)
     except ValueError as error:
         parser.error(str(error))
+    if args.expected_qt is not None and runtime != args.expected_qt:
+        return fail_preflight(
+            output,
+            f"Expected Qt {args.expected_qt}, actual Qt {runtime}",
+            runtime,
+            python,
+        )
+    if args.expected_python is not None and python != args.expected_python:
+        return fail_preflight(
+            output,
+            f"Expected Python {args.expected_python}, actual Python {python}",
+            runtime,
+            python,
+        )
     seed = args.seed if args.seed is not None else secrets.randbits(32)
     if not 0 <= seed < 2**32:
         parser.error("Seed must fit an unsigned 32-bit integer")
@@ -189,6 +231,7 @@ def main() -> int:
     )
     manifest: dict[str, object] = {
         "schema": 1,
+        "phase": "tests",
         "qualification": "simulated repository tab contracts",
         "native_or_physical_claim": False,
         "source_head": head,

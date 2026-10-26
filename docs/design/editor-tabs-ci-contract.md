@@ -22,7 +22,8 @@ temporary test directory; disables inherited pytest addopts/plugins and Hypothes
 database state; supplies one recorded seed to pytest-randomly and Hypothesis.
 Failures preserve counterexamples/blob text in the log. There is no CLI option to
 add native tests or weaken coverage thresholds. Expected Qt/Python mismatches fail
-before pytest or evidence-directory creation.
+before pytest. Safely validated output directories receive an explicit failed
+preflight receipt; old green logs/XML/JUnit/summary are invalidated even on reuse.
 
 The `tests.tabs_ci_support` plugin fails before app construction unless the
 platform is offscreen. Per-test guards refuse actual Python ctypes DLL loading,
@@ -69,7 +70,7 @@ symlink report destinations and output outside `.test-tmp/` or `artifacts/` are
 refused. Failed tests, timeout, missing coverage or branch-floor failure cannot
 produce a passed manifest. Logs/metadata avoid dumping the process environment.
 
-The current local replay passes 224 contracts and measures 97.77% scoped lines,
+The current local replay passes 225 contracts and measures 97.77% scoped lines,
 91.88% scoped branches (96.46% combined). Its scope is the eleven production
 modules enumerated in the runner, not the whole editor window/controller or app.
 Full application coverage and prior native queue results are separately recorded.
