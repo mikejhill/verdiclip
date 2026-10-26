@@ -21,9 +21,11 @@ The three concrete candidates from mutation assessment were:
 These are four tests. Independent source-level replay rejected six faults:
 early cleanup threshold, missing idle guard, null elapsed time, wrong elapsed
 units, added rather than subtracted origin, and wrong lateness sign. This is
-fresh semantic evidence, not a revised aggregate mutation score. Three further
+fresh semantic evidence, not a revised aggregate mutation score. Four further
 portable cases check the exact Windows helper argument vector and independent
-missing-host/missing-script refusal without executing a helper. No production
+missing-host/missing-script refusal, plus the absolute fallback host when
+`SYSTEMROOT` is absent, without executing a helper. The fallback assertion uses
+Windows path semantics and case-insensitive comparison. No production
 behavior changed for these tests.
 
 The full randomized Qt 6.12 suite also exposed test-process logging leakage:
@@ -68,6 +70,25 @@ at-most-once dispatch, correlation and cumulative byte limits require semantic
 tests regardless of mapping. Existing tests cover those controls; the timing
 and portable command tests above close identified gaps. A cached aggregate run
 must not be represented as fresh verification of every newly added assertion.
+
+At the subsequent full 49-mutant command inventory, the 20 command names can
+be associated with their source bodies: the selected mapping uncertainty is
+now 52 for that head. Direct replays reject ten meaningful behavior faults and
+three case-only representations; the latter are not additional safety wins.
+One untested absent-`SYSTEMROOT` fallback candidate prompted the additional test
+above. Diagnostic wording and valid Windows case variants remain separate from
+behavior gaps. This does not revise the cached aggregate report.
+
+A separate tiny reproduction using the locked mutmut 3.8 generator/meta-merge
+API confirms a general cache limitation: earlier-line coverage expansion can
+change a same-ordinal mutant body while its original-function hash remains the
+same, allowing reuse of the old verdict. A source-derived model of this change's
+35-to-49 command inventory preserves the prior 35 bodies and appends 14; it is
+not a downloaded old inventory and does not establish corruption of this run.
+Keep the cached score informational. General coverage-safe reuse requires
+candidate-identity comparison or affected-verdict invalidation. This tooling
+follow-up does not invalidate the fresh direct semantic replays or portable
+functional suites.
 
 ## Mandatory gates and specific next actions
 

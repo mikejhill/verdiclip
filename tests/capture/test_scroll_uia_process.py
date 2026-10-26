@@ -6,7 +6,7 @@ import json
 import os
 import sys
 from dataclasses import asdict
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from textwrap import indent
 from types import SimpleNamespace
 
@@ -254,6 +254,20 @@ def test_default_command_uses_exact_private_script_invocation(
         "-Mta",
         "-File",
         str(helper),
+    )
+
+
+def test_default_command_without_systemroot_uses_absolute_windows_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An absent environment variable must not choose a relative helper host."""
+    monkeypatch.setattr(uia_process, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.delenv("SYSTEMROOT", raising=False)
+    monkeypatch.setattr(Path, "is_file", lambda _path: True)
+    host = PureWindowsPath(UiaProcess._default_command()[0])
+    assert host.is_absolute()
+    assert str(host).casefold() == (
+        r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe".casefold()
     )
 
 
