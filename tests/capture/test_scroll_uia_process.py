@@ -8,11 +8,13 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 from textwrap import indent
+from types import SimpleNamespace
 
 import pytest
 from PySide6.QtCore import QCoreApplication, QObject
 from pytestqt.qtbot import QtBot
 
+from verdiclip.capture.scroll import uia_process
 from verdiclip.capture.scroll.uia_process import UiaAction, UiaProcess
 from verdiclip.capture.scroll.uia_worker import UiaWorkerLease
 from verdiclip.exceptions import CaptureError
@@ -236,6 +238,40 @@ def test_default_host_has_no_profile_or_policy_bypass() -> None:
     assert Path(command[-1]).name == "uia_helper.ps1"
 
 
+def test_default_command_uses_exact_private_script_invocation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Check Windows command construction on every CI host without execution."""
+    monkeypatch.setattr(uia_process, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setenv("SYSTEMROOT", str(tmp_path))
+    host = tmp_path / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    helper = Path(uia_process.__file__).with_name("uia_helper.ps1")
+    monkeypatch.setattr(Path, "is_file", lambda path: path in (host, helper))
+    assert UiaProcess._default_command() == (
+        str(host),
+        "-NoProfile",
+        "-NonInteractive",
+        "-Mta",
+        "-File",
+        str(helper),
+    )
+
+
+@pytest.mark.parametrize("missing", ["host", "helper"])
+def test_either_missing_default_command_prerequisite_refuses_execution(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, missing: str
+) -> None:
+    """A missing host or script fails before any helper can be reserved."""
+    monkeypatch.setattr(uia_process, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setenv("SYSTEMROOT", str(tmp_path))
+    host = tmp_path / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    helper = Path(uia_process.__file__).with_name("uia_helper.ps1")
+    absent = host if missing == "host" else helper
+    monkeypatch.setattr(Path, "is_file", lambda path: path != absent)
+    with pytest.raises(CaptureError, match="helper is unavailable"):
+        UiaProcess._default_command()
+
+
 def test_oversized_request_does_not_reserve_child(helper: Path) -> None:
     """Provider request data is bounded before child creation or busy state."""
     client = UiaProcess(helper_command=(sys.executable, str(helper)), qualified=True)
@@ -370,7 +406,13 @@ def test_cleanup_callback_failure_cannot_strand_other_resources(
     client.cleanup_failed.connect(failures.append)
     client.register_scope_cleanup(broken)
     client.register_scope_cleanup(lambda: cleaned.append("second resource"))
-    with qtbot.waitSignal(client.completed):
+    # This integration fixture starts a real protocol-only child. Its observer
+    # must cover the unchanged 8s startup + 3s operation policy, rather than
+    # timing out at pytest-qt's default 5s before startup has expired.
+    with qtbot.waitSignal(
+        client.completed,
+        timeout=UiaProcess.STARTUP_MS + UiaProcess.DEADLINE_MS + 1000,
+    ):
         client.start(UiaAction.INSPECT, {})
     with qtbot.waitSignal(client.scope_closed):
         client.cancel()

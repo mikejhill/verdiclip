@@ -5,6 +5,17 @@ import pytest
 from verdiclip.capture.scroll.uia_diagnostics import WorkerTrace
 
 
+def test_positive_clock_stamps_are_relative_milliseconds() -> None:
+    """A nonzero monotonic origin never leaks into elapsed diagnostics."""
+    seconds = 100.25
+    trace = WorkerTrace(lambda: seconds)
+    seconds = 100.375
+    trace.mark("request_sent")
+    seconds = 101.75
+    trace.mark("response_received")
+    assert [event.elapsed_ms for event in trace.events] == [125, 1500]
+
+
 @pytest.mark.parametrize("split", [1, 7, 33])
 def test_fragmented_fixed_boot_marker_is_recognized(split: int) -> None:
     """Qt may deliver one stderr line in several independent chunks."""

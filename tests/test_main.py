@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -50,7 +52,7 @@ class FakeLocator:
 @pytest.fixture(autouse=True)
 def isolated(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, qapp: QApplication
-) -> None:
+) -> Iterator[None]:
     """Point settings at tmp_path and replace the OS boundaries with fakes."""
     del qapp
     monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
@@ -60,6 +62,21 @@ def isolated(
     )
     monkeypatch.setattr(entry, "MssScreenSource", FakeScreens)
     monkeypatch.setattr(entry, "WindowLocator", FakeLocator)
+    # Application.run owns process-wide logging in production. In a shared
+    # pytest process it must neither close pytest's handlers via force=True nor
+    # leave a StreamHandler attached to capsys after that stream is retired.
+    root = logging.getLogger()
+    handlers, level = root.handlers[:], root.level
+    root.handlers = []
+    try:
+        yield
+    finally:
+        for handler in root.handlers[:]:
+            root.removeHandler(handler)
+            if handler not in handlers:
+                handler.close()
+        root.handlers = handlers
+        root.setLevel(level)
 
 
 class TestApplication:

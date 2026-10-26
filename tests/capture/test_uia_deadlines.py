@@ -419,3 +419,61 @@ def test_repeated_dispatch_cannot_send_the_same_operation_twice(rig: Rig) -> Non
     assert len(rig.process.sent) == 1
     rig.response()
     assert len(rig.replies) == 1
+
+
+def test_cleanup_watchdog_retains_ownership_in_its_final_half_second(rig: Rig) -> None:
+    """An early callback cannot report timeout or release a still-live helper."""
+    rig.process.finish_on_kill = False
+    errors: list[str] = []
+    cleaned: list[bool] = []
+    rig.client.cleanup_failed.connect(errors.append)
+    rig.client.register_scope_cleanup(lambda: cleaned.append(True))
+    rig.client.cancel()
+    lease = rig.client._get_lease()
+    rig.clock.seconds = lease.CLEANUP_MS / 1000 - 0.5
+    lease._cleanup_timeout()
+    assert not errors
+    assert not cleaned
+    assert rig.client.busy
+    assert lease._cleanup_deadline.isActive()
+    rig.clock.seconds += 0.5
+    lease._cleanup_timeout()
+    assert len(errors) == 1
+    assert not cleaned
+    assert rig.client.busy
+    rig.process.finish()
+    assert cleaned == [True]
+    assert not rig.client.busy
+
+
+def test_stale_timeout_after_reply_preserves_idle_worker_and_next_request(
+    rig: Rig, qtbot: QtBot
+) -> None:
+    """A completed operation's queued callback cannot kill its warm worker."""
+    rig.ready()
+    rig.response()
+    rig.clock.seconds = 100
+    rig.client._get_lease()._timeout()
+    assert not rig.failures
+    assert rig.process.kill_count == 0
+    assert rig.process.state() is QProcess.ProcessState.Running
+    assert not rig.client.busy
+    assert len(rig.replies) == 1
+    rig.client.start(UiaAction.OBSERVE, {})
+    qtbot.waitUntil(lambda: len(rig.process.sent) == 2)
+    rig.response()
+    assert len(rig.replies) == 2
+    assert not rig.failures
+
+
+def test_operation_timeout_records_positive_lateness_in_milliseconds(rig: Rig) -> None:
+    """Timing evidence distinguishes the due time from Qt delivery lateness."""
+    rig.ready()
+    rig.clock.seconds = UiaProcess.DEADLINE_MS / 1000 + 0.125
+    rig.client._get_lease()._timeout()
+    assert len(rig.failures) == 1
+    diagnostics = rig.client.diagnostics
+    assert diagnostics is not None
+    assert diagnostics.max_deadline_lateness_ms == 125
+    assert diagnostics.request_sent
+    assert not rig.client.busy
