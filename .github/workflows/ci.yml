@@ -113,6 +113,55 @@ jobs:
           path: docs/ux/snapshots
           if-no-files-found: ignore
 
+  tabs-contracts:
+    name: Simulated tabs (Qt ${{ matrix.qt }}, Python 3.13)
+    runs-on: windows-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        qt: ["6.11.2", "6.12.0"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+          python-version: "3.13"
+      - name: Install locked test dependencies
+        run: uv sync
+      - name: Select the explicit supported Qt runtime without changing the lockfile
+        env:
+          QT_VERSION: ${{ matrix.qt }}
+        run: uv pip install --python .venv "pyside6-essentials==$env:QT_VERSION" "shiboken6==$env:QT_VERSION"
+      - name: Hardware-independent contracts and scoped branch coverage
+        env:
+          QT_VERSION: ${{ matrix.qt }}
+        run: >-
+          uv run --no-sync python scripts/test_tabs_ci.py
+          --expected-python 3.13 --expected-qt "$env:QT_VERSION"
+          --output-dir artifacts/tabs-ci
+      - name: Upload simulated-contract evidence (never native qualification)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: simulated-tabs-qt${{ matrix.qt }}
+          path: |
+            artifacts/tabs-ci/environment.json
+            artifacts/tabs-ci/pytest.log
+            artifacts/tabs-ci/junit.xml
+            artifacts/tabs-ci/coverage.xml
+            artifacts/tabs-ci/summary.md
+          if-no-files-found: warn
+      - name: Simulated contract summary
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path artifacts/tabs-ci/summary.md) {
+            Get-Content artifacts/tabs-ci/summary.md >> $env:GITHUB_STEP_SUMMARY
+          }
+
   ux-gallery:
     name: UX gallery (light and dark)
     runs-on: windows-latest
@@ -236,7 +285,7 @@ jobs:
   ci-passed:
     name: CI passed
     if: always()
-    needs: [lint, typecheck, test, ux-gallery, build, audit, workflows]
+    needs: [lint, typecheck, test, tabs-contracts, ux-gallery, build, audit, workflows]
     runs-on: ubuntu-latest
     steps:
       - name: Require every job to succeed

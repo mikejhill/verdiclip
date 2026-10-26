@@ -416,3 +416,102 @@ def test_panel_retry_uses_repaired_output_folder_without_changing_capture(
     assert not list((tmp_path / "out").glob("*.png"))
     assert not app.controller.editors
     assert app.controller._close_editors()
+
+
+def test_review_owner_rejects_duplicates_unknown_ack_and_late_delivery(
+    factory: AppFactory,
+    qtbot: QtBot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Wrong/late identities cannot release another session or repeat its output."""
+    app = factory(
+        replace(
+            Settings(),
+            capture=CaptureSettings(copy_to_clipboard=True, open_editor=False),
+        )
+    )
+    run = stopped(tmp_path / "spool")
+    panel = app.controller.review_scrolling_capture(run.session)
+    qtbot.addWidget(panel)
+    with pytest.raises(ValueError, match="already has a review owner"):
+        app.controller.review_scrolling_capture(run.session)
+    reviews = app.controller._scroll_reviews
+    reviews.acknowledge_delivery("unknown")
+    reviews.delivery_failed("unknown", "late callback")
+    assert run.session.state is ScrollState.REVIEW
+    with pytest.raises(RuntimeError, match="unreviewed capture"):
+        reviews.close_resolved()
+    copied: list[bool] = []
+    monkeypatch.setattr(ImageDelivery, "copy", lambda *_args: copied.append(True))
+    capture = run.session.accept()
+    Controls.button(panel, "whole").click()
+    panel.reviewed_capture.emit(capture)
+    reviews.acknowledge_delivery("unknown")
+    assert copied == [True]
+    assert run.session.state is ScrollState.CLOSED
+    assert app.controller._close_editors()
+
+
+def test_rejected_panel_ack_retains_spool_until_ack_can_be_repeated(
+    factory: AppFactory,
+    qtbot: QtBot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed consumer acknowledgement cannot destroy retained original storage."""
+    app = factory(
+        replace(
+            Settings(),
+            capture=CaptureSettings(copy_to_clipboard=True, open_editor=False),
+        )
+    )
+    run = stopped(tmp_path / "spool")
+    panel = app.controller.review_scrolling_capture(run.session)
+    qtbot.addWidget(panel)
+    copied: list[bool] = []
+    monkeypatch.setattr(ImageDelivery, "copy", lambda *_args: copied.append(True))
+    original_ack = panel.acknowledge_delivery
+    monkeypatch.setattr(panel, "acknowledge_delivery", lambda _id: False)
+    capture = run.session.accept()
+    Controls.button(panel, "whole").click()
+    assert run.session.state is ScrollState.DELIVERED
+    assert not app.controller.pending_deliveries
+    monkeypatch.setattr(panel, "acknowledge_delivery", original_ack)
+    app.controller.deliver_reviewed_capture(capture)
+    assert run.session.state is ScrollState.CLOSED
+    assert copied == [True]
+    assert app.controller._close_editors()
+
+
+def test_closed_review_with_cleanup_failure_retries_retained_owner_on_exit(
+    factory: AppFactory,
+    qtbot: QtBot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Destroying delivered UI cannot leak its failed-cleanup lease indefinitely."""
+    app = factory(
+        replace(
+            Settings(),
+            capture=CaptureSettings(copy_to_clipboard=True, open_editor=False),
+        )
+    )
+    run = stopped(tmp_path / "spool")
+    panel = app.controller.review_scrolling_capture(run.session)
+    qtbot.addWidget(panel)
+    monkeypatch.setattr(ImageDelivery, "copy", lambda *_args: None)
+    original_close = run.session.close
+
+    def fail() -> None:
+        raise CaptureError("Temporary storage is busy")
+
+    monkeypatch.setattr(run.session, "close", fail)
+    Controls.button(panel, "whole").click()
+    panel.close()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert not app.controller._close_editors()
+    monkeypatch.setattr(run.session, "close", original_close)
+    assert app.controller._close_editors()
+    assert run.session.state is ScrollState.CLOSED
+    assert not app.controller._scroll_reviews.has_work

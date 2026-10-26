@@ -18,6 +18,14 @@ uv run poe check   # Must pass before you open a pull request
 
 ## Test quality
 
+Tab ownership/transfer/topology, fake hotkey routing and accessibility contracts
+have a reproducible primary CI target: `uv run poe test-tabs-ci`. The two explicit
+Qt runtime jobs require separate scoped line and branch coverage of at least 90%
+and upload source/runtime/seed provenance with JUnit, logs and XML coverage. Native
+laptop checks are supplemental, not required infrastructure. See the
+[tab CI contract](docs/design/editor-tabs-ci-contract.md) for simulation boundaries
+and replay instructions. The whole-app and mutation gates below still apply.
+
 The real desktop smoke test runs automatically on Windows with an unlocked
 session. A positively identified locked or disconnected session skips only
 that test with the prerequisite reason; unknown session state and capture

@@ -7,8 +7,10 @@ from PySide6.QtGui import QContextMenuEvent, QKeyEvent, QMouseEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 from pytestqt.qtbot import QtBot
+from tests.platform.test_tab_drag import Api
 
 from verdiclip.editor.tab_bar import DocumentTabBar
+from verdiclip.platform.tab_drag import NativeTabDrag
 
 
 def mouse_move(bar: DocumentTabBar, offset: int, *, held: bool = True) -> None:
@@ -104,3 +106,55 @@ def test_non_document_tab_cannot_start_transfer(qtbot: QtBot) -> None:
     QTest.mousePress(bar, Qt.MouseButton.LeftButton, pos=bar.tabRect(0).center())
     mouse_move(bar, 30)
     assert started == []
+
+
+def test_late_callbacks_and_lost_button_state_cannot_arm_or_finish_drag(
+    qtbot: QtBot,
+) -> None:
+    """A late movement/release after cancellation never invents a drop."""
+    bar = DocumentTabBar()
+    qtbot.addWidget(bar)
+    bar.addTab("First")
+    bar.setTabData(0, "first")
+    bar.show()
+    events: list[str] = []
+    bar.drag_started.connect(lambda _id: events.append("start"))
+    bar.drag_released.connect(lambda _point: events.append("release"))
+    bar.drag_cancelled.connect(lambda: events.append("cancel"))
+    bar.moved(QPoint(5, 5))
+    bar.released(QPoint(5, 5))
+    bar.cancelled()
+    QTest.keyClick(bar, Qt.Key.Key_Escape)
+    QTest.mousePress(bar, Qt.MouseButton.MiddleButton, pos=bar.tabRect(0).center())
+    mouse_move(bar, 30)
+    QTest.mouseRelease(bar, Qt.MouseButton.MiddleButton, pos=bar.tabRect(0).center())
+    QTest.mousePress(bar, Qt.MouseButton.LeftButton, pos=bar.tabRect(0).center())
+    mouse_move(bar, 30, held=False)
+    QTest.mouseRelease(bar, Qt.MouseButton.LeftButton, pos=bar.tabRect(0).center())
+    assert events == []
+    assert bar.count() == 1
+
+
+def test_native_lease_failure_cancels_without_publishing_drag(qtbot: QtBot) -> None:
+    """Failed input acquisition retains the tab and cannot later become a drop."""
+    bar = DocumentTabBar()
+    qtbot.addWidget(bar)
+    bar.addTab("First")
+    bar.setTabData(0, "first")
+    bar.show()
+    api = Api()
+    api.available = False
+    driver = NativeTabDrag(bar, api)
+    bar._driver = driver
+    events: list[str] = []
+    bar.drag_started.connect(lambda _id: events.append("start"))
+    bar.drag_released.connect(lambda _point: events.append("release"))
+    bar.drag_cancelled.connect(lambda: events.append("cancel"))
+    QTest.mousePress(bar, Qt.MouseButton.LeftButton, pos=bar.tabRect(0).center())
+    mouse_move(bar, 30)
+    driver.dispatch(42, 0x0202, position=QPoint(500, 500))
+    QTest.mouseRelease(bar, Qt.MouseButton.LeftButton, pos=bar.tabRect(0).center())
+    assert events == ["cancel"]
+    assert not driver.active
+    assert api.owner == 0
+    assert bar.count() == 1
