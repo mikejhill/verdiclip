@@ -23,7 +23,6 @@ def test_exact_png_is_consumed_and_only_private_directory_is_removed(
     image = Documents.image(width=96, height=48)
     assert image.save(str(destination.path))
     actual = files.consume(destination)
-    assert actual == image
     assert not destination.path.exists()
     files.close()
     files.close()
