@@ -34,6 +34,11 @@ def capture_input_boundary(
 def pytest_addoption(parser: pytest.Parser) -> None:
     """Add ``--ux-snapshots DIR`` to save a PNG for each journey step."""
     parser.addoption(
+        "--native-delivery-handoff",
+        action="store_true",
+        help="Explicit future native UI window for synthetic-only delivery cases.",
+    )
+    parser.addoption(
         "--native-broker-handoff",
         action="store_true",
         help="Explicit exclusive-window execution of the production broker matrix.",

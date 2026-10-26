@@ -53,6 +53,28 @@ Failure to confirm cleanup fails the case and uses only its owned process-tree
 abort; it is never a successful preservation result. The external peer has its
 own 45-second watchdog. No normal application window is a teardown target.
 
+## Prepared synthetic-only native delivery lane
+
+A separate `-DeliveryOnly` plan reserves **two additional UI minutes** for three
+cases on each Qt runtime, without screenshot/input/clipboard or real registration:
+private PNG+deferred editor presentation behind a popup; background admission and
+provider error behind an owned modal; real private folder failure, retained result
+and notification-signal retry without a duplicate save. The real controller,
+canonical adaptation, ImageDelivery/QSaveFile and notification calls are retained.
+All image pixels are synthetic. Forbidden device/shell seams fail before acquisition.
+
+The three scenarios run portably with injected foreground observations; that is
+not native evidence. Future Windows runs sample actual foreground, preserve host
+handles/action/focus/modality/geometry, and record success/failure receipts. The
+native entry first waits for the actual foreground HWND to belong to its declared
+anchor/surface before establishing the preservation baseline, then revalidates membership after
+queued setup events. These observations
+do not certify every transient OS focus change, visible balloon
+rendering, or a physical notification click. The runner defaults to plan-only,
+requires explicit isolated interpreter paths, and bounds each owned case process
+to20s/the lane to120s. No readiness flag is changed automatically. This closes the
+missing delivery-test composition; native execution still requires its own grant.
+
 ## Composition and remaining gates
 
 An explicitly qualified private profile composes a single idle local-pipe UIA
