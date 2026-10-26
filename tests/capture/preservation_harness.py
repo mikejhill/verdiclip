@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import override
 
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
+from PySide6.QtGui import QWindow
 from PySide6.QtWidgets import QApplication, QWidget
 from shiboken6 import isValid
 
@@ -23,6 +24,8 @@ class PreservationSnapshot(QObject):
         super().__init__()
         self.app, self.windows = app, windows
         self.changes: list[str] = []
+        self.phase = "observing"
+        self.transitions: list[dict[str, str]] = []
         self.handles = tuple(window.windowHandle() for window in windows)
         self.modalities = tuple(window.windowModality() for window in windows)
         self.popup = QApplication.activePopupWidget()
@@ -31,7 +34,35 @@ class PreservationSnapshot(QObject):
 
     @override
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        """Record only destructive presentation events for the declared owners."""
+        """Trace event ordering; count destruction only for declared owners."""
+        if event.type() in {
+            QEvent.Type.WindowActivate,
+            QEvent.Type.WindowDeactivate,
+            QEvent.Type.Hide,
+            QEvent.Type.Close,
+            QEvent.Type.FocusIn,
+            QEvent.Type.FocusOut,
+            QEvent.Type.KeyPress,
+            QEvent.Type.KeyRelease,
+            QEvent.Type.MouseButtonPress,
+            QEvent.Type.MouseButtonRelease,
+        } and (
+            isinstance(watched, QWindow)
+            or (isinstance(watched, QWidget) and watched.isWindow())
+        ):
+            self.transitions.append(
+                {
+                    "phase": self.phase,
+                    "event": event.type().name,
+                    "target": watched.metaObject().className(),
+                    "existing": str(
+                        any(
+                            watched is window
+                            for window in (*self.windows, *self.handles)
+                        )
+                    ),
+                }
+            )
         if any(watched is window for window in self.windows) and event.type() in {
             QEvent.Type.Hide,
             QEvent.Type.Close,

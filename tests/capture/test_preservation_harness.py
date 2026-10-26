@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 import shiboken6
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QPoint, Qt, QTimer
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QApplication, QDialog
 from pytestqt.qtbot import QtBot
@@ -70,15 +70,23 @@ def test_shared_driver_waits_for_broker_not_focus_and_preserves_every_owner(
     harness = CaptureHarness(context.service, snapshot, driver.send, outcome=outcome)
     context.broker.defer_ready = True
     try:
+        snapshot.phase = "before_service_request"
         harness.start()
         context.service.capture_region()
         qtbot.waitUntil(lambda: context.broker.starts == 1)
+        snapshot.phase = "broker_reserved_without_overlays"
         harness.advance()
         assert not driver.sent
         assert not harness.done
+        snapshot.phase = "dispatching_broker_ready"
         context.broker.ready.emit()
+        snapshot.phase = "broker_ready_overlays_present"
         qtbot.waitUntil(lambda: harness.done)
-        assert not harness.errors
+        assert not harness.errors, (
+            harness.errors,
+            snapshot.transitions,
+            context.desktop.frames,
+        )
         assert driver.sent == [outcome]
         scene.assert_preserved()
     finally:
@@ -426,3 +434,25 @@ def test_native_requirement_never_silently_skips_requested_qualification(
     exception = pytest.fail.Exception if required else pytest.skip.Exception
     with pytest.raises(exception):
         NativeRun.require_desktop(request)
+
+
+@pytest.mark.parametrize("kind", ["popup", "submenu", "combo"])
+def test_popup_fixture_remains_stable_without_any_capture_request(
+    qtbot: QtBot,
+    qapp: QApplication,
+    kind: str,
+) -> None:
+    """A capture-free event-loop control distinguishes setup from capture effects."""
+    scene = ExistingScene(kind, qapp)
+    snapshot = PreservationSnapshot(qapp, tuple(scene.windows))
+    snapshot.phase = "control_without_capture"
+    turns: list[bool] = []
+    try:
+        QTimer.singleShot(0, lambda: turns.append(True))
+        qtbot.waitUntil(lambda: bool(turns))
+        errors = snapshot.errors()
+        assert not errors, (errors, snapshot.transitions, {"capture_requests": 0})
+        scene.assert_preserved()
+    finally:
+        snapshot.close()
+        scene.close()
