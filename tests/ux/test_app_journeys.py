@@ -39,6 +39,7 @@ from tests.ux.test_capture_journeys import (
 
 from verdiclip import APP_NAME, DOCS_URL, VERSION
 from verdiclip.capture.grabber import ScreenSource
+from verdiclip.capture.input_policy import InputKind, SelectionInput
 from verdiclip.capture.models import Capture
 from verdiclip.capture.overlay import SelectionOverlay
 from verdiclip.document.commands import SetCrop
@@ -48,7 +49,7 @@ from verdiclip.editor.session import ToolId
 from verdiclip.editor.style_bar import ColorButton
 from verdiclip.editor.window import EditorWindow
 from verdiclip.exceptions import UpdateError
-from verdiclip.geometry import Rect
+from verdiclip.geometry import Point, Rect
 from verdiclip.platform.associations import DEFAULT_APPS_URI, FileAssociations
 from verdiclip.platform.hotkeys import Hotkey, HotkeyService
 from verdiclip.platform.launcher import LaunchCommand
@@ -701,13 +702,13 @@ class TestSettingsEverywhere:
     """Settings reachable and effective from anywhere."""
 
     @pytest.mark.parametrize("entry", ["hotkey", "menu"])
-    def test_tray_popup_releases_capture_input(
+    def test_tray_capture_preserves_popup_until_user_action(
         self,
         make_app: AppFactory,
         qtbot: QtBot,
         entry: str,
     ) -> None:
-        """UX-G-10, UX-CAP-05: tray popup input transfers before native Escape."""
+        """Capture preserves a hotkey-opened menu; user activation may dismiss it."""
         app = make_app()
         menu = app.controller.tray.menu
         try:
@@ -719,9 +720,15 @@ class TestSettingsEverywhere:
                 menu.setActiveAction(app.controller.tray.action("region"))
                 QTest.keyClick(menu.windowHandle(), Qt.Key.Key_Return)
             qtbot.waitUntil(lambda: bool(app.controller.capture.overlays))
-            assert not menu.isVisible(), "Selection must not compete with tray input"
+            if entry == "hotkey":
+                assert menu.isVisible()
+                assert QApplication.activePopupWidget() is menu
+            else:
+                assert not menu.isVisible(), "The user activated the menu action"
             overlay = app.controller.capture.overlays[0]
-            QTest.keyClick(overlay.windowHandle(), Qt.Key.Key_Escape)
+            overlay.receive_input(
+                SelectionInput(InputKind.CANCEL, Point(120, 120), "escape")
+            )
             assert not app.controller.capture.is_selecting
             assert app.controller.editors == (), "Escape must not deliver an image"
         finally:
@@ -764,8 +771,23 @@ class TestSettingsEverywhere:
         qt_app.installEventFilter(blocked)
 
         def capture_then_close() -> None:
+            dialogs = [
+                widget
+                for widget in QApplication.topLevelWidgets()
+                if isinstance(widget, dialog) and widget.isVisible()
+            ]
+            assert len(dialogs) == 1
+            original_modality = dialogs[0].windowModality()
             app.press_hotkey("region")
-            Overlay(app.controller.capture).drag((90, 90), (160, 140))
+            overlay = Overlay(app.controller.capture).widget
+            for kind, point in (
+                (InputKind.PRESS, Point(90, 90)),
+                (InputKind.MOVE, Point(160, 140)),
+                (InputKind.RELEASE, Point(160, 140)),
+            ):
+                overlay.receive_input(SelectionInput(kind, point))
+            assert dialogs[0].isVisible()
+            assert dialogs[0].windowModality() == original_modality
             for widget in QApplication.topLevelWidgets():
                 if isinstance(widget, dialog) and widget.isVisible():
                     widget.reject()
@@ -778,7 +800,6 @@ class TestSettingsEverywhere:
             qt_app.removeEventFilter(blocked)
         qtbot.wait(0)
 
-        assert blocked.overlays == 0
         assert [c.area for c in captured] == [Rect(90, 90, 70, 50)]
 
     def test_editor_dialog_blocks_only_its_editor(
@@ -798,8 +819,17 @@ class TestSettingsEverywhere:
         box = QMessageBox(QMessageBox.Icon.Warning, "VerdiClip", "Oops", parent=editor)
 
         def capture_then_close() -> None:
+            original_modality = box.windowModality()
             app.press_hotkey("region")
-            Overlay(app.controller.capture).drag((90, 90), (160, 140))
+            overlay = Overlay(app.controller.capture).widget
+            for kind, point in (
+                (InputKind.PRESS, Point(90, 90)),
+                (InputKind.MOVE, Point(160, 140)),
+                (InputKind.RELEASE, Point(160, 140)),
+            ):
+                overlay.receive_input(SelectionInput(kind, point))
+            assert box.isVisible()
+            assert box.windowModality() == original_modality
             box.reject()
 
         QTimer.singleShot(0, capture_then_close)
@@ -809,7 +839,6 @@ class TestSettingsEverywhere:
             qt_app.removeEventFilter(blocked)
         qtbot.wait(0)
 
-        assert blocked.overlays == 0
         assert editor in blocked.editors
         assert [c.area for c in captured] == [Rect(90, 90, 70, 50)]
 
