@@ -791,6 +791,7 @@ class TestSettingsEverywhere:
         app.press_hotkey("fullscreen")
         qtbot.waitUntil(lambda: len(app.controller.editors) == 1)
         editor = app.controller.editors[0]
+        qtbot.waitExposed(editor)
         captured: list[Capture] = []
         app.controller.capture.captured.connect(captured.append)
         blocked = BlockedWindows()
@@ -798,16 +799,15 @@ class TestSettingsEverywhere:
         assert qt_app is not None
         qt_app.installEventFilter(blocked)
         box = QMessageBox(QMessageBox.Icon.Warning, "VerdiClip", "Oops", parent=editor)
-
-        def capture_then_close() -> None:
+        box.setWindowModality(Qt.WindowModality.WindowModal)
+        try:
+            box.show()
+            qtbot.waitExposed(box)
             app.press_hotkey("region")
             Overlay(app.controller.capture).drag((90, 90), (160, 140))
-            box.reject()
-
-        QTimer.singleShot(0, capture_then_close)
-        try:
-            box.exec()
+            assert box.isVisible()
         finally:
+            box.reject()
             qt_app.removeEventFilter(blocked)
         qtbot.wait(0)
 
