@@ -18,10 +18,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Protocol
-
-if TYPE_CHECKING:
-    from ctypes import _CData
+from typing import Final, Protocol
 
 from verdiclip import APP_NAME
 from verdiclip.exceptions import PlatformError
@@ -103,7 +100,9 @@ class _ComObject:
     def __init__(self, pointer: ctypes.c_void_p) -> None:
         self._pointer = pointer
 
-    def call(self, slot: int, argtypes: tuple[type[_CData], ...], *args: object) -> int:
+    def call(
+        self, slot: int, argtypes: tuple[type[ctypes._CData], ...], *args: object
+    ) -> int:
         """Call vtable ``slot``; failing HRESULTs raise ``OSError``."""
         vtable = ctypes.cast(
             self._pointer, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))
@@ -253,7 +252,10 @@ class ShellLinkBackend:
 
     @staticmethod
     def _text(
-        link: _ComObject, slot: int, argtypes: tuple[type[_CData], ...], *extra: object
+        link: _ComObject,
+        slot: int,
+        argtypes: tuple[type[ctypes._CData], ...],
+        *extra: object,
     ) -> str:
         """Call a ``(buffer, size, ...)`` getter and return the buffer's text."""
         buffer = ctypes.create_unicode_buffer(_MAX_TEXT)
