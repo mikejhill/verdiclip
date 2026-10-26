@@ -1,5 +1,8 @@
 # Editor tabs qualification checkpoint — 25 October 2026
 
+Historical checkpoint: use [capture 18e72 integration](editor-tabs-capture18-integration.md)
+for the current canonical API, source, tests and private artifact readiness.
+
 Latest combined migration/build evidence is in
 [the canonical integration record](editor-tabs-canonical-integration.md). It
 supersedes the historical reviewed-type mismatch below. The private artifact is

@@ -1,5 +1,8 @@
 # Canonical capture integration and private build checkpoint
 
+Historical checkpoint: [capture 18e72 integration](editor-tabs-capture18-integration.md)
+records the current merged source, passive presentation API and validation.
+
 The tabs branch imported the scrolling foundation through the exact approved
 canonical source `f25091d7af711d89db5a6e5d30f569a7f89fed16` with `cherry-pick -x`.
 Local corresponding commits: 6e109cc (8adc357), 99b18fe (2be572b), 066d3fc (a2e7e7d),

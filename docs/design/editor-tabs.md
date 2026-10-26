@@ -1,5 +1,8 @@
 # Editor tabs implementation checkpoint
 
+Current source and verification: [capture 18e72 integration](editor-tabs-capture18-integration.md).
+Earlier implementation details below remain as history where superseded.
+
 This is an isolated implementation checkpoint, not release qualification.
 The application controller now admits reviewed results through the approved
 boundary. Capture modules remain unchanged here and belong to the capture worker.

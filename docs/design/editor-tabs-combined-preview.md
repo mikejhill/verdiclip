@@ -1,5 +1,8 @@
 # Combined capture foundation and editor tabs checkpoint
 
+Historical checkpoint: the current source, activation API, CI and private artifact
+are recorded in [capture 18e72 integration](editor-tabs-capture18-integration.md).
+
 Local branch `codex/combined-editor-capture-preview` starts at exact capture head
 `50e70355a7173672a5ad64f3a1c092ce314e7b54`. Tabs-only source from fb2f44a was
 applied without importing its older capture commits or socket fix. Integration
