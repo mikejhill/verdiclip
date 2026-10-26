@@ -282,6 +282,7 @@ class ScrollCaptureBinding(QObject):
         try:
             self._backend.finish(self._probe, restore=self._restore)
         except CaptureError as error:
+            self._backend.cancel()
             self._finished(
                 BackendFinish(self._probe, restored=False, message=str(error))
             )

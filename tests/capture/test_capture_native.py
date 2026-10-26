@@ -31,6 +31,8 @@ from verdiclip.capture.grabber import FrozenScreen, MssScreenSource
 from verdiclip.capture.models import Capture
 from verdiclip.shell.settings_dialog import SettingsDialog
 
+pytestmark = pytest.mark.native_desktop
+
 
 class RealDesktop(MssScreenSource):
     """Freeze real pixels and record the input owner at that exact boundary."""

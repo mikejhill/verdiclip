@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from textwrap import indent
@@ -15,6 +16,63 @@ from verdiclip.capture.scroll.uia_worker import UiaWorkerLease
 from verdiclip.exceptions import CaptureError
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows PowerShell pipe protocol")
+def test_powershell_warm_pipe_accepts_repeated_variable_length_requests(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """The real host's stdin protocol works without UIA, a window or input hardware."""
+    peer = tmp_path / "pipe-peer.ps1"
+    peer.write_text(
+        "param([string]$PipeName)\n"
+        "$channel=[IO.Pipes.NamedPipeClientStream]::new('.', $PipeName,"
+        "[IO.Pipes.PipeDirection]::InOut)\n"
+        "$channel.Connect(4000)\n"
+        "$reader=[IO.StreamReader]::new($channel,[Text.UTF8Encoding]::new($false))\n"
+        "$writer=[IO.StreamWriter]::new($channel,[Text.UTF8Encoding]::new($false))\n"
+        "$writer.AutoFlush=$true\n"
+        "$writer.WriteLine((@{ready=$true;protocol=1}|ConvertTo-Json -Compress))\n"
+        "while($null -ne ($line=$reader.ReadLine())) {\n"
+        " $request=$line|ConvertFrom-Json\n"
+        " $writer.WriteLine((@{request_id=$request.request_id;ok=$true;result=@{}}|"
+        "ConvertTo-Json -Compress))\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    host = (
+        Path(os.environ["SYSTEMROOT"])
+        / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    )
+    client = UiaProcess(
+        helper_command=(
+            str(host),
+            "-NoProfile",
+            "-NonInteractive",
+            "-Mta",
+            "-File",
+            str(peer),
+        ),
+        qualified=True,
+        use_local_pipe=True,
+    )
+    failures: list[str] = []
+    replies: list[object] = []
+    client.failed.connect(lambda _request, error: failures.append(error))
+    client.completed.connect(lambda _request, reply: replies.append(reply))
+    try:
+        for length in (120, 344, 450, 4096):
+            before = len(replies)
+            client.start(UiaAction.SAMPLE, {"fixture": "x" * length})
+            qtbot.waitUntil(
+                lambda previous=before: len(replies) > previous or bool(failures),
+                timeout=5000,
+            )
+            assert not failures, (length, failures)
+    finally:
+        client.cancel()
+        qtbot.waitUntil(lambda: not client.busy)
+        client.deleteLater()
+
+
 @pytest.fixture
 def helper(tmp_path: Path) -> Path:
     """Create a fixed local protocol peer with deliberate failure modes."""
@@ -22,7 +80,8 @@ def helper(tmp_path: Path) -> Path:
     code = (
         "import json,sys,time\n"
         "mode=sys.argv[1]\n"
-        "print(json.dumps({'ready':True,'protocol':1}),flush=True)\n"
+        "ready={'ready':True,'protocol':0 if mode=='unsupported_ready' else 1}\n"
+        "print('not-json' if mode=='bad_ready' else json.dumps(ready),flush=True)\n"
         "request=json.load(sys.stdin)\n"
         "if mode=='hang': time.sleep(30)\n"
         "elif mode=='bad': print('not-json')\n"
@@ -301,5 +360,39 @@ def test_cleanup_callback_failure_cannot_strand_other_resources(
     assert cleaned == ["second resource"]
     assert len(failures) == 1
     assert error_type.__name__ in failures[0]
+    assert client.worker_pid is None
+    client.deleteLater()
+
+
+@pytest.mark.parametrize("mode", ["bad_ready", "unsupported_ready"])
+def test_bad_startup_handshake_cannot_dispatch_an_operation(
+    qtbot: QtBot, helper: Path, mode: str
+) -> None:
+    """Unreadable or incompatible workers fail visibly and release their child."""
+    client = UiaProcess(
+        helper_command=(sys.executable, str(helper), mode), qualified=True
+    )
+    with qtbot.waitSignal(client.failed) as failed:
+        client.start(UiaAction.INSPECT, {})
+    assert "startup" in failed.args[1] or "protocol" in failed.args[1]
+    qtbot.waitUntil(lambda: not client.busy)
+    assert client.worker_pid is None
+    client.deleteLater()
+
+
+@pytest.mark.parametrize("missing", ["platform", "host"])
+def test_missing_native_prerequisites_fail_without_creating_worker(
+    monkeypatch: pytest.MonkeyPatch, missing: str
+) -> None:
+    """An unsupported OS or incomplete installation cannot silently start capture."""
+    client = UiaProcess(qualified=True)
+    with monkeypatch.context() as patch:
+        if missing == "platform":
+            patch.setattr("verdiclip.capture.scroll.uia_process.sys.platform", "other")
+        else:
+            patch.setattr("verdiclip.capture.scroll.uia_process.sys.platform", "win32")
+            patch.setattr(Path, "is_file", lambda _path: False)
+        with pytest.raises(CaptureError, match=r"requires Windows|unavailable"):
+            client.start(UiaAction.INSPECT, {})
     assert client.worker_pid is None
     client.deleteLater()

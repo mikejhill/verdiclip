@@ -1,5 +1,9 @@
 # Scrolling acquisition component checkpoint
 
+Historical checkpoint for `d68a6bd`. For the later private-IPC/geometry fixes,
+portable CI boundary and supplemental native findings, see
+[capture-validation-matrix.md](capture-validation-matrix.md).
+
 This is a component checkpoint for draft PR #61, not a feature-ready release.
 The published 0.12.1 installation is unchanged. Merge remains subject to Mike's
 local verification of the completed combined preview.

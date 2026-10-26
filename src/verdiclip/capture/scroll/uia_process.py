@@ -39,11 +39,15 @@ class UiaProcess(QObject):
         *,
         helper_command: Sequence[str] | None = None,
         qualified: bool = False,
+        use_local_pipe: bool | None = None,
     ) -> None:
         """Allow a fixed protocol fixture command without native desktop execution."""
         super().__init__(parent)
         self._qualified = qualified
         self._command = tuple(helper_command) if helper_command is not None else ()
+        self._use_pipe = (
+            helper_command is None if use_local_pipe is None else use_local_pipe
+        )
         self._lease: UiaWorkerLease | None = None
 
     @property
@@ -78,7 +82,11 @@ class UiaProcess(QObject):
         command = self._command or self._default_command()
         lease = self._get_lease()
         lease.submit(
-            request, command, deadline_ms=self.DEADLINE_MS, startup_ms=self.STARTUP_MS
+            request,
+            command,
+            deadline_ms=self.DEADLINE_MS,
+            startup_ms=self.STARTUP_MS,
+            use_local_pipe=self._use_pipe,
         )
         return request
 

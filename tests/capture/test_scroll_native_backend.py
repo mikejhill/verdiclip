@@ -11,6 +11,7 @@ from pytestqt.qtbot import QtBot
 from tests.capture.test_scroll_core import Documents
 from tests.capture.test_scroll_uia_protocol import Payload
 
+from verdiclip.capture.scroll.acquisition import AcquisitionWork, WorkKind
 from verdiclip.capture.scroll.binding import (
     BindingOptions,
     BindingState,
@@ -25,6 +26,7 @@ from verdiclip.capture.scroll.session import ScrollSession, ScrollState
 from verdiclip.capture.scroll.uia_adapter import UiaAdapter
 from verdiclip.capture.scroll.uia_process import UiaAction, UiaProcess, UiaRequest
 from verdiclip.capture.scroll.uia_protocol import UiaReference
+from verdiclip.exceptions import CaptureError
 from verdiclip.geometry import Rect
 
 
@@ -58,7 +60,12 @@ class NativeFixture:
             "  log.write(action+'\\n')\n"
             " mode=Path(sys.argv[2]).read_text(encoding='utf-8')\n"
             " reference=payload['reference']\n"
+            " if (mode,action) in {('provider_fail','step'),"
+            "('restore_fail','restore')}:\n"
+            "  failure={'request_id':request['request_id'],'ok':False}\n"
+            "  print(json.dumps(failure),flush=True); continue\n"
             " if action=='step': position=min(100,position+50)\n"
+            " if mode=='extent_drift' and action=='step': reference['view_size']=49\n"
             " if action=='restore': position=payload['restore_percent']\n"
             " if mode=='sample_drift' and action=='sample' and position>0:\n"
             "  position+=1\n"
@@ -113,13 +120,16 @@ def native(qtbot: QtBot, tmp_path: Path) -> Iterator[NativeFixture]:
     assert not list(fixture.frames.iterdir())
 
 
+@pytest.mark.parametrize("restore", [True, False])
 def test_production_backend_captures_stitches_restores_and_cleans(
-    qtbot: QtBot, tmp_path: Path, native: NativeFixture
+    qtbot: QtBot, tmp_path: Path, native: NativeFixture, *, restore: bool
 ) -> None:
     """The real binding/backend/pixel decoder composes only verified fixture rows."""
     session = ScrollSession(tmp_path)
     binding = ScrollCaptureBinding(
-        session, native.backend, options=BindingOptions(interval_ms=5)
+        session,
+        native.backend,
+        options=BindingOptions(interval_ms=5, restore_position=restore),
     )
     with qtbot.waitSignal(binding.review_ready, timeout=8000):
         assert binding.start_confirmed(native.target)
@@ -127,7 +137,75 @@ def test_production_backend_captures_stitches_restores_and_cleans(
     assert session.accept().image == native.source
     assert not list(native.frames.iterdir())
     assert native.process.worker_pid is None
+    assert ("restore" in native.trace.read_text().splitlines()) is restore
     session.close()
+
+
+@pytest.mark.parametrize("mode", ["provider_fail", "restore_fail", "extent_drift"])
+def test_provider_failure_or_extent_drift_retains_only_verified_pixels(
+    qtbot: QtBot, tmp_path: Path, native: NativeFixture, mode: str
+) -> None:
+    """Failed movement/restore and changed layout cannot imply success or retry."""
+    native.mode.write_text(mode, encoding="utf-8")
+    session = ScrollSession(tmp_path)
+    binding = ScrollCaptureBinding(
+        session, native.backend, options=BindingOptions(interval_ms=5)
+    )
+    with qtbot.waitSignal(binding.review_ready, timeout=8000) as reviewed:
+        binding.start_confirmed(native.target)
+    actual = session.accept()
+    if mode == "restore_fail":
+        assert actual.image == native.source
+        assert "could not be safely restored" in reviewed.args[1]
+    else:
+        assert actual.image == native.source.copy(0, 0, 96, 48)
+        assert "restore" not in native.trace.read_text().splitlines()
+    assert native.process.worker_pid is None
+    assert not list(native.frames.iterdir())
+    session.close()
+
+
+def test_backend_rejects_target_changes_and_concurrent_operations(
+    qtbot: QtBot, native: NativeFixture
+) -> None:
+    """Neither a repeated request nor a different ROI may acquire a busy target."""
+    with pytest.raises(ValueError, match="positive"):
+        NativeBackendOptions(max_frame_pixels=0)
+    work = AcquisitionWork(1, WorkKind.SAMPLE, native.target, 0)
+    with pytest.raises(CaptureError, match="safety changed"):
+        native.backend.execute(work)
+    with qtbot.waitSignal(native.backend.verified):
+        native.backend.verify(native.target, 1)
+        with pytest.raises(CaptureError, match="in flight"):
+            native.backend.verify(native.target, 2)
+        with pytest.raises(CaptureError, match="in flight"):
+            native.backend.execute(work)
+    changed = ScrollTarget(native.target.identity, "changed", Rect(0, 0, 95, 48))
+    with qtbot.waitSignal(native.backend.verified) as receipt:
+        native.backend.verify(changed, 3)
+    assert not receipt.args[0].safe_to_scroll
+
+
+def test_input_guard_error_latches_interference(
+    qtbot: QtBot, native: NativeFixture
+) -> None:
+    """An unavailable native ownership predicate is unsafe, never a fallback."""
+
+    def unavailable() -> bool:
+        raise RuntimeError("Fixture ownership unavailable")
+
+    backend = UiaFrameBackend(
+        native.reference,
+        native.adapter,
+        options=NativeBackendOptions(
+            preservation_qualified=True, input_unchanged=unavailable
+        ),
+    )
+    with qtbot.waitSignal(backend.verified) as receipt:
+        backend.verify(native.target, 1)
+    assert not receipt.args[0].safe_to_scroll
+    assert native.process.worker_pid is None
+    backend.deleteLater()
 
 
 def test_unqualified_backend_never_starts_pixel_or_provider_work(

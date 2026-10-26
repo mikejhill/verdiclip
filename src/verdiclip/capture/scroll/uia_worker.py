@@ -9,6 +9,7 @@ from collections.abc import Callable
 from PySide6.QtCore import QCoreApplication, QObject, QProcess, QTimer, Signal
 
 from verdiclip.capture.scroll.uia_messages import UiaRequest
+from verdiclip.capture.scroll.uia_pipe import UiaPipe
 from verdiclip.exceptions import CaptureError
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,7 @@ class UiaWorkerLease(QObject):
         """Bind resource lifetime to the application rather than a dialog/widget."""
         super().__init__(QCoreApplication.instance())
         self._process: QProcess | None = None
+        self._pipe: UiaPipe | None = None
         self._pending: UiaRequest | None = None
         self._closing = False
         self._released = False
@@ -71,11 +73,18 @@ class UiaWorkerLease(QObject):
         *,
         deadline_ms: int,
         startup_ms: int,
+        use_local_pipe: bool = False,
     ) -> None:
         """Reserve one request, reusing a healthy warm MTA child when available."""
         if self.busy or self._released:
             raise CaptureError("The UI Automation helper is still busy or closing")
         first = self._process is None
+        if first and use_local_pipe:
+            pipe = UiaPipe(self)
+            pipe.listen()
+            self._pipe = pipe
+            pipe.received.connect(lambda data: self._pipe_read(pipe, data))
+            pipe.failed.connect(lambda message: self._pipe_failed(pipe, message))
         process = self._new_process() if first else self._process
         if process is None:
             raise CaptureError("The UI Automation worker is unavailable")
@@ -112,18 +121,38 @@ class UiaWorkerLease(QObject):
             if self._ready:
                 self._send(process)
         else:
-            process.start(command[0], list(command[1:]))
+            arguments = list(command[1:])
+            if self._pipe is not None:
+                arguments.extend(("-PipeName", self._pipe.name))
+            process.start(command[0], arguments)
+            if self._pipe is not None:
+                process.closeWriteChannel()
 
     def _send(self, process: QProcess) -> None:
         """Use newline-delimited JSON; retain stdin for subsequent MTA operations."""
         if process is self._process and self._pending is not None:
-            process.write(self._pending.encoded + b"\n")
+            data = self._pending.encoded + b"\n"
+            if self._pipe is None:
+                process.write(data)
+            else:
+                try:
+                    self._pipe.write(data)
+                except CaptureError as error:
+                    self._fail(str(error))
 
     def _read(self, process: QProcess) -> None:
         """Only the current request can consume one bounded, complete JSON line."""
         if process is not self._process:
             return
         data = process.readAllStandardOutput().data()
+        if self._pipe is not None:
+            if len(data) > self.MAX_BYTES:
+                self._fail("UI Automation exceeded its diagnostic limit")
+            return
+        self._read_data(bytes(data))
+
+    def _read_data(self, data: bytes) -> None:
+        """Use the same bounded protocol decoder for private IPC and test peers."""
         if self._pending is None or len(self._output) + len(data) > self.MAX_BYTES:
             self._fail("UI Automation returned unexpected or oversized data")
             return
@@ -139,6 +168,14 @@ class UiaWorkerLease(QObject):
             self._accept_line(bytes(line))
         else:
             self._accept_ready(bytes(line))
+
+    def _pipe_read(self, pipe: UiaPipe, data: bytes) -> None:
+        if pipe is self._pipe:
+            self._read_data(data)
+
+    def _pipe_failed(self, pipe: UiaPipe, message: str) -> None:
+        if pipe is self._pipe:
+            self._fail(message)
 
     def _accept_ready(self, line: bytes) -> None:
         """Separate host initialization from a provider operation's strict deadline."""
@@ -246,6 +283,10 @@ class UiaWorkerLease(QObject):
         self._idle.stop()
         self._lifetime.stop()
         process.deleteLater()
+        pipe, self._pipe = self._pipe, None
+        if pipe is not None:
+            pipe.setParent(QCoreApplication.instance())
+            pipe.close()
         self._close_scope()
         self.busy_changed.emit(self.busy)
         if self._released:

@@ -1,8 +1,15 @@
 # Bounded JSON-line operations in one warm MTA with a finite parent-owned lease.
 # No clicks, InvokePattern, activation, policy changes, or input injection.
+param([Parameter(Mandatory=$true)][string]$PipeName)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+if ($PipeName -notmatch '^verdiclip-uia-[a-f0-9]{32}$') { exit 1 }
+$channel = [IO.Pipes.NamedPipeClientStream]::new('.', $PipeName, [IO.Pipes.PipeDirection]::InOut)
+$channel.Connect(5000)
+$reader = [IO.StreamReader]::new($channel, [Text.UTF8Encoding]::new($false), $false, 1024, $true)
+$writer = [IO.StreamWriter]::new($channel, [Text.UTF8Encoding]::new($false), 1024, $true)
+$writer.AutoFlush = $true
 function Test-OwnedScrollMetrics {
     param([double]$Position, [double]$ViewSize, $Reference)
     $expectedPosition = [double]$Reference.vertical_percent
@@ -11,6 +18,16 @@ function Test-OwnedScrollMetrics {
         if ([double]::IsNaN($value) -or [double]::IsInfinity($value)) { return $false }
     }
     return $Position -ge 0 -and $Position -le 100 -and $ViewSize -gt 0 -and $ViewSize -lt 100 -and $expectedViewSize -gt 0 -and $expectedViewSize -lt 100 -and [Math]::Abs($Position - $expectedPosition) -le 0.001 -and [Math]::Abs($ViewSize - $expectedViewSize) -le 0.001
+}
+function Test-SamePhysicalBounds {
+    param($Actual, $Expected)
+    if (@($Actual).Count -ne 4 -or @($Expected).Count -ne 4) { return $false }
+    for ($index = 0; $index -lt 4; $index++) {
+        $a = [double]$Actual[$index]
+        $b = [double]$Expected[$index]
+        if ([double]::IsNaN($a) -or [double]::IsInfinity($a) -or [double]::IsNaN($b) -or [double]::IsInfinity($b) -or $a -ne $b) { return $false }
+    }
+    return $true
 }
 try {
     Add-Type -AssemblyName UIAutomationClient
@@ -59,12 +76,12 @@ public static class CaptureDesktop {
 }
 '@
 } catch {
-    @{ request_id=''; ok=$false; error='worker_startup_unavailable' } | ConvertTo-Json -Compress
+    $writer.WriteLine((@{ request_id=''; ok=$false; error='worker_startup_unavailable' } | ConvertTo-Json -Compress))
     exit 1
 }
 # Reuse this MTA only while the parent's finite active/idle lease remains alive.
-@{ ready=$true; protocol=1 } | ConvertTo-Json -Compress
-while ($null -ne ($requestLine = [Console]::ReadLine())) {
+$writer.WriteLine((@{ ready=$true; protocol=1 } | ConvertTo-Json -Compress))
+while ($null -ne ($requestLine = $reader.ReadLine())) {
     $requestId = ''
     $process = $null
     $dpiContext = [IntPtr]::Zero
@@ -96,7 +113,7 @@ try {
         # Insets exclude fractional pixels outside a provider's physical bounds.
         $left = [Math]::Ceiling($bounds.Left)
         $top = [Math]::Ceiling($bounds.Top)
-        return @($left, $top, [Math]::Floor($bounds.Right) - $left, [Math]::Floor($bounds.Bottom) - $top)
+        return @($left, $top, ([Math]::Floor($bounds.Right) - $left), ([Math]::Floor($bounds.Bottom) - $top))
     }
     function Get-Scroll($element) {
         $pattern = $null
@@ -153,7 +170,7 @@ try {
         foreach ($candidate in $chain) {
             if (($candidate.GetRuntimeId() -join '.') -eq $reference.runtime_id) { $element = $candidate; break }
         }
-        if ($null -eq $element -or ((Get-Bounds $element) -join ',') -ne ($bounds -join ',')) { throw 'target_geometry_changed' }
+        if ($null -eq $element -or -not (Test-SamePhysicalBounds (Get-Bounds $element) $bounds)) { throw 'target_geometry_changed' }
         $pattern = Get-Scroll $element
         if ($null -eq $pattern -or $element.Current.IsOffscreen -or -not $element.Current.IsEnabled) { throw 'unsupported_scroll_area' }
         $area = $bounds
@@ -210,13 +227,16 @@ try {
             $result.image_path = $output
         }
     }
-    @{ request_id=$requestId; ok=$true; result=$result } | ConvertTo-Json -Depth 12 -Compress
+    $writer.WriteLine((@{ request_id=$requestId; ok=$true; result=$result } | ConvertTo-Json -Depth 12 -Compress))
 } catch {
     # Provider text may contain document content. Return only a bounded generic code.
-    @{ request_id=$requestId; ok=$false; error='unsupported_or_changed' } | ConvertTo-Json -Compress
+    $writer.WriteLine((@{ request_id=$requestId; ok=$false; error='unsupported_or_changed' } | ConvertTo-Json -Compress))
 }
 finally {
     if ($null -ne $process) { $process.Dispose(); $process = $null }
     if ($dpiContext -ne [IntPtr]::Zero) { [CaptureDesktop]::SetThreadDpiAwarenessContext($dpiContext) | Out-Null }
 }
 }
+$reader.Dispose()
+$writer.Dispose()
+$channel.Dispose()

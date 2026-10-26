@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import override
 
@@ -27,6 +28,7 @@ from verdiclip.capture.scroll.binding import (
 from verdiclip.capture.scroll.models import ScrollTarget, StopReason
 from verdiclip.capture.scroll.panels import ScrollReviewPanel
 from verdiclip.capture.scroll.session import ScrollSession, ScrollState
+from verdiclip.exceptions import CaptureError
 from verdiclip.geometry import Rect
 
 
@@ -50,6 +52,10 @@ class FixtureBackend(ScrollBackend):
         self.silent_prepare = False
         self.silent_finish = False
         self.finish_restore: list[bool] = []
+        self.raise_stage = ""
+        self.interrupt_kind: WorkKind | None = None
+        self.interrupt: Callable[[], None] | None = None
+        self.interrupt_finish = False
 
     @property
     @override
@@ -60,6 +66,8 @@ class FixtureBackend(ScrollBackend):
     def verify(self, target: ScrollTarget, request_id: int) -> None:
         """Return independent fresh target evidence before every provider step."""
         self.verifications += 1
+        if self.raise_stage == "verify":
+            raise CaptureError("Fixture verification unavailable")
         safe = not self.unsafe_after_baseline or self.verifications == 1
         if not self.silent_prepare:
             QTimer.singleShot(
@@ -73,6 +81,9 @@ class FixtureBackend(ScrollBackend):
     def execute(self, work: AcquisitionWork) -> None:
         """Expose only known contiguous source rows from a finite document."""
         self.in_flight += 1
+        if self.raise_stage == "execute":
+            self.in_flight -= 1
+            raise CaptureError("Fixture capture unavailable")
         self.max_in_flight = max(self.max_in_flight, self.in_flight)
 
         def complete() -> None:
@@ -93,11 +104,16 @@ class FixtureBackend(ScrollBackend):
                 self.sampled.emit(work, frame)
 
         QTimer.singleShot(0, complete)
+        if work.kind is self.interrupt_kind and self.interrupt is not None:
+            interrupt, self.interrupt = self.interrupt, None
+            interrupt()
 
     @override
     def finish(self, request_id: int, *, restore: bool) -> None:
         """Keep position restoration distinct from image completeness."""
         self.finish_restore.append(restore)
+        if self.raise_stage == "finish":
+            raise CaptureError("Fixture restoration unavailable")
         if not self.silent_finish:
             if restore:
                 self.top = 0
@@ -105,6 +121,8 @@ class FixtureBackend(ScrollBackend):
                 0,
                 lambda: self.finished.emit(BackendFinish(request_id, restored=restore)),
             )
+            if self.interrupt_finish and self.interrupt is not None:
+                self.interrupt()
 
     @override
     def cancel(self) -> None:
@@ -161,6 +179,85 @@ def test_unsupported_backend_is_visible_and_creates_no_pixels(
     assert "preservation" in failed.args[0]
     assert binding.state is BindingState.FAILED
     assert session.state is ScrollState.IDLE
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("stage", ["verify", "execute", "finish"])
+def test_synchronous_backend_errors_cannot_escape_or_strand_progress(
+    qtbot: QtBot, tmp_path: Path, stage: str
+) -> None:
+    """Native adapter startup/IO errors yield failure or a useful verified prefix."""
+    backend = FixtureBackend()
+    backend.raise_stage = stage
+    session = ScrollSession(tmp_path)
+    binding = ScrollCaptureBinding(
+        session, backend, options=BindingOptions(interval_ms=1)
+    )
+    signal = binding.review_ready if stage == "finish" else binding.failed
+    with qtbot.waitSignal(signal):
+        binding.start_confirmed(backend.TARGET)
+    if stage == "finish":
+        assert binding.state is BindingState.REVIEW
+        assert session.accept().image.height() == 96
+        session.close()
+    else:
+        assert binding.state is BindingState.FAILED
+        assert session.state is ScrollState.IDLE
+    assert backend.cancel_count > 0
+
+
+def test_stop_before_preparation_and_unavailable_backend_contract(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """Stopping preparation discards no pixels; unavailable adapters cannot act."""
+    backend = FixtureBackend()
+    backend.silent_prepare = True
+    binding = ScrollCaptureBinding(ScrollSession(tmp_path), backend)
+    binding.stop()
+    binding.start_confirmed(backend.TARGET)
+    with qtbot.waitSignal(binding.cancelled):
+        binding.stop()
+    assert backend.samples == backend.moves == 0
+    binding.cancel()
+    unavailable = ScrollBackend()
+    with pytest.raises(CaptureError, match="preservation"):
+        unavailable.verify(backend.TARGET, 1)
+    work = AcquisitionWork(1, WorkKind.SAMPLE, backend.TARGET, 0)
+    with pytest.raises(CaptureError, match="preservation"):
+        unavailable.execute(work)
+    with qtbot.waitSignal(unavailable.finished) as finished:
+        unavailable.finish(1, restore=True)
+    assert not finished.args[0].restored
+
+
+@pytest.mark.parametrize("stage", ["sample", "move", "finish"])
+def test_cancel_between_dispatch_and_receipt_cannot_resurrect_capture(
+    qtbot: QtBot, tmp_path: Path, stage: str
+) -> None:
+    """Queued sample/movement/finish receipts lose ownership immediately on Cancel."""
+    backend = FixtureBackend()
+    session = ScrollSession(tmp_path)
+    binding = ScrollCaptureBinding(
+        session, backend, options=BindingOptions(interval_ms=1)
+    )
+    backend.interrupt = binding.cancel
+    if stage == "finish":
+        backend.interrupt_finish = True
+    else:
+        backend.interrupt_kind = (
+            WorkKind.SAMPLE if stage == "sample" else WorkKind.SCROLL
+        )
+    reviews: list[object] = []
+    binding.review_ready.connect(lambda *values: reviews.append(values))
+    with qtbot.waitSignal(binding.cancelled):
+        binding.start_confirmed(backend.TARGET)
+    qtbot.waitUntil(lambda: backend.in_flight == 0)
+    # A sentinel queued after dispatch lets its earlier terminal receipt run too.
+    with qtbot.waitSignal(backend.failed):
+        QTimer.singleShot(0, lambda: backend.failed.emit(None, "stale sentinel"))
+    assert binding.state is BindingState.CANCELLED
+    assert session.state is ScrollState.CANCELLED
+    assert not reviews
     assert not list(tmp_path.iterdir())
 
 

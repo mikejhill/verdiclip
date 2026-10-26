@@ -71,3 +71,9 @@ def test_invalid_topology_rejected(bounds: Rect) -> None:
     """A missing display is a failure rather than a fabricated selection."""
     with pytest.raises(ValueError, match="nonempty"):
         PointerTracker(Point(0, 0), bounds)
+
+
+def test_nonfinite_display_data_rejected_before_selection() -> None:
+    """Missing coordinate evidence cannot silently create a guessed desktop."""
+    with pytest.raises(ValueError, match="finite"):
+        PointerTracker(Point(float("inf"), 0), Rect(0, 0, 100, 100))
