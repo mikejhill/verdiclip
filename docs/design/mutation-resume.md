@@ -84,3 +84,16 @@ without timeout in 78.73s. This qualifies the specific regression. Adding the
 tests does not retroactively refresh the completed run's cached verdicts or
 classify its remaining survivors. Capture's four semantically unmapped service
 mutations and presentation-path coverage gaps remain explicit limits.
+
+The next test-only follow-up also checks multiple accepted reviews after their
+panels are destroyed: unknown, duplicate and matching acknowledgements can
+release only the matching original, preserving the other session, canonical
+object and pixels. The original code passes on both Qt versions; the exact
+selected `or` to `and` ID-guard fault fails the ownership assertion. Strict
+file-picker fakes additionally check the four-argument Qt contract, original
+title/timestamp, saved receipt, automatic and fallback paths, and cancellation
+retention. A missing-directory argument fault fails all three path cases.
+These are targeted test improvements, not production defects or a revised
+aggregate score. Independent assessment reviewed 449 selected survivors; 126
+semantic mappings remain unqualified, and the broader survivor set is not
+classified equivalent.

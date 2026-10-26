@@ -7,19 +7,22 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from PySide6.QtCore import QCoreApplication, QEvent
+from PySide6.QtCore import QCoreApplication, QEvent, QObject
 from PySide6.QtGui import QImage
-from PySide6.QtWidgets import QLabel
+from PySide6.QtWidgets import QApplication, QLabel
 from pytestqt.qtbot import QtBot
+from shiboken6 import isValid
 from tests.capture.test_scroll_acquisition import Run
 from tests.capture.test_scroll_panels import Controls
 from tests.ux.test_app_journeys import AppFactory, make_app
 
+from verdiclip.capture.reviewed import ReviewedCapture
 from verdiclip.capture.scroll.session import ScrollState
 from verdiclip.editor.close_prompt import CloseChoice, ClosePrompt
 from verdiclip.exceptions import CaptureError, DeliveryError
 from verdiclip.output.delivery import ImageDelivery
 from verdiclip.settings import CaptureSettings, Settings
+from verdiclip.shell.scroll_review import ScrollReviews
 
 
 @pytest.fixture
@@ -515,3 +518,47 @@ def test_closed_review_with_cleanup_failure_retries_retained_owner_on_exit(
     assert app.controller._close_editors()
     assert run.session.state is ScrollState.CLOSED
     assert not app.controller._scroll_reviews.has_work
+
+
+def test_closed_accepted_reviews_release_only_matching_capture(
+    qapp: QApplication, tmp_path: Path
+) -> None:
+    """Wrong, duplicate and valid receipts affect only their retained original."""
+    assert QApplication.instance() is qapp
+    owner = QObject()
+    reviews = ScrollReviews(owner)
+    captures: list[ReviewedCapture] = []
+    reviews.reviewed_capture.connect(captures.append)
+    runs = [stopped(tmp_path / str(i)) for i in range(2)]
+    panels = []
+    try:
+        for run in runs:
+            panel = reviews.open(run.session)
+            panels.append(panel)
+            Controls.button(panel, "whole").click()
+            closed = panel.close()
+            assert closed
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        assert len(captures) == 2
+        assert all(lease.panel is None for lease in reviews._leases)
+        assert all(run.session.state is ScrollState.DELIVERED for run in runs)
+        reviews.acknowledge_delivery("unknown")
+        assert all(run.session.state is ScrollState.DELIVERED for run in runs)
+        reviews.acknowledge_delivery(captures[0].capture_id)
+        assert runs[0].session.state is ScrollState.CLOSED
+        assert runs[1].session.state is ScrollState.DELIVERED
+        assert runs[1].session.accept() is captures[1]
+        assert captures[1].image == runs[1].image.copy(0, 0, 96, 48)
+        assert reviews.has_work
+        reviews.acknowledge_delivery(captures[0].capture_id)
+        assert runs[1].session.state is ScrollState.DELIVERED
+        reviews.acknowledge_delivery(captures[1].capture_id)
+        assert runs[1].session.state is ScrollState.CLOSED
+        assert not reviews.has_work
+    finally:
+        for panel in panels:
+            if isValid(panel):
+                panel.close()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        for run in runs:
+            run.session.close()

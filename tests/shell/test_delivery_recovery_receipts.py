@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import cast
 
 import pytest
 from PySide6.QtGui import QDesktopServices, QImage
-from PySide6.QtWidgets import QFileDialog
+from PySide6.QtWidgets import QFileDialog, QWidget
 from tests.shell.test_reviewed_delivery import capture
 from tests.ux.test_app_journeys import AppFactory, make_app
 
@@ -17,11 +18,12 @@ from verdiclip.document.document import Document
 from verdiclip.document.style import Style
 from verdiclip.editor.contracts import EditorOptions
 from verdiclip.editor.session import EditorSession
-from verdiclip.editor.window import EditorWindow
+from verdiclip.editor.window import IMAGE_FILTER, EditorWindow
 from verdiclip.exceptions import DeliveryError
 from verdiclip.geometry import Rect
 from verdiclip.output.delivery import ImageDelivery
 from verdiclip.settings import CaptureSettings, Settings
+from verdiclip.shell.controller import CaptureDelivery
 
 
 @pytest.fixture
@@ -207,3 +209,61 @@ def test_initial_save_path_survives_partial_admission_failure(
     app.controller.retry_delivery(result.capture_id)
     assert app.controller.pending_deliveries == ()
     assert app.controller.workspace.documents == (record,)
+
+
+@pytest.mark.parametrize("origin", ["saved", "automatic", "fallback"])
+def test_retained_save_dialog_preserves_original_path_contract(
+    factory: AppFactory,
+    sample_image: QImage,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    origin: str,
+) -> None:
+    """Cancel keeps the original while the picker receives its correct start path."""
+    app = factory()
+    result = capture(sample_image, "Retained original")
+    receipt = tmp_path / "existing receipt.png" if origin == "saved" else None
+    attempt = CaptureDelivery(
+        result,
+        app.controller.settings.capture,
+        app.controller.settings.output,
+        target=None,
+        activate_editor=False,
+        saved=receipt,
+    )
+    automatic = tmp_path / "original timestamp.png"
+    expected = (
+        receipt
+        if receipt
+        else app.controller.settings.output.directory / "Screenshot.png"
+        if origin == "fallback"
+        else automatic
+    )
+    calls = []
+
+    def auto_path(
+        _delivery: ImageDelivery, *, title: str = "", moment: datetime | None = None
+    ) -> Path:
+        calls.append((title, moment))
+        assert title == result.title
+        assert moment == result.created_at
+        if origin == "fallback":
+            raise DeliveryError("No automatic filename")
+        return automatic
+
+    def choose(
+        parent: QWidget | None, caption: str, directory: str, filters: str
+    ) -> tuple[str, str]:
+        assert parent is None
+        assert caption == "Save retained capture"
+        assert directory == str(expected)
+        assert filters == IMAGE_FILTER
+        return "", ""
+
+    monkeypatch.setattr(ImageDelivery, "auto_path", auto_path)
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", choose)
+    saved = app.controller._save_retained_capture(attempt)
+    assert not saved
+    assert attempt.saved == receipt
+    assert attempt.capture is result
+    assert calls == ([] if receipt else [(result.title, result.created_at)])
