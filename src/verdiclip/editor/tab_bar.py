@@ -9,6 +9,7 @@ from PySide6.QtCore import QEvent, QPoint, Qt, Signal
 from PySide6.QtGui import (
     QContextMenuEvent,
     QGuiApplication,
+    QHideEvent,
     QKeyEvent,
     QMouseEvent,
     QPainter,
@@ -16,7 +17,9 @@ from PySide6.QtGui import (
     QPen,
 )
 from PySide6.QtWidgets import QApplication, QTabBar
+from shiboken6 import isValid
 
+from verdiclip.editor.tab_preview import TabDragPreview
 from verdiclip.platform.tab_drag import NativeTabDrag, Win32CaptureApi
 
 
@@ -41,6 +44,7 @@ class DocumentTabBar(QTabBar):
         self._origin = QPoint()
         self._dragging = False
         self._insertion = -1
+        self._preview: TabDragPreview | None = None
         self._driver = (
             NativeTabDrag(self, Win32CaptureApi())
             if sys.platform == "win32" and QGuiApplication.platformName() == "windows"
@@ -63,13 +67,21 @@ class DocumentTabBar(QTabBar):
     def moved(self, position: QPoint) -> None:
         """Receive normalized driver movement in Qt global coordinates."""
         if self._dragging:
-            self.drag_moved.emit(position)
+            if self._preview is not None:
+                try:
+                    self._preview.follow(position)
+                except (MemoryError, RuntimeError):
+                    self.cancel_drag()
+                    return
+            if self._gesture_live():
+                self.drag_moved.emit(position)
 
     def released(self, position: QPoint) -> None:
         """Finish once; the driver has already released its input lease."""
         if self._dragging:
             self._dragging = False
             self._pressed = -1
+            self._clear_preview()
             self.drag_released.emit(position)
 
     def cancelled(self) -> None:
@@ -77,6 +89,7 @@ class DocumentTabBar(QTabBar):
         if self._dragging:
             self._dragging = False
             self._pressed = -1
+            self._clear_preview()
             self.drag_cancelled.emit()
 
     def cancel_drag(self) -> None:
@@ -84,6 +97,30 @@ class DocumentTabBar(QTabBar):
         if self._driver is not None:
             self._driver.cancel()
         self.cancelled()
+
+    def _clear_preview(self) -> None:
+        preview, self._preview = self._preview, None
+        if preview is not None and isValid(preview):
+            preview.hide()
+            preview.deleteLater()
+
+    def _make_preview(self) -> bool:
+        try:
+            rect = self.tabRect(self._pressed)
+            pixmap = self.grab(rect)
+            if pixmap.isNull() or not self._gesture_live():
+                return False
+            preview = TabDragPreview(self, pixmap, self._origin - rect.topLeft())
+            if not self._gesture_live():
+                preview.deleteLater()
+                return False
+            self._preview = preview
+        except (MemoryError, RuntimeError):
+            return False
+        return True
+
+    def _gesture_live(self) -> bool:
+        return self._dragging and self._pressed >= 0
 
     @override
     def mousePressEvent(self, event: QMouseEvent) -> None:
@@ -120,8 +157,17 @@ class DocumentTabBar(QTabBar):
         ):
             self.cancelled()
             return
+        if not self._make_preview():
+            self.cancel_drag()
+            return
         self.drag_started.emit(identifier)
         self.moved(event.globalPosition().toPoint())
+
+    @override
+    def hideEvent(self, event: QHideEvent) -> None:
+        """A hidden source cannot leave a carried tab or input lease behind."""
+        self.cancel_drag()
+        super().hideEvent(event)
 
     @override
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
