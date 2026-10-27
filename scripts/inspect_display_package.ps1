@@ -49,6 +49,12 @@ if ($toolSignature.Status -ne 'Valid' -or
 $osVersion = [Environment]::OSVersion.Version
 $policyOS = '2:' + $osVersion.Major + '.' + $osVersion.Minor + '.' + $osVersion.Build
 $verifications = [Collections.Generic.List[object]]::new()
+function Get-VerificationVerdict([int]$exitCode, [string]$output) {
+    if ($output -match '(?i)SignTool Error:.*(?:option|command|usage)|Usage:') {
+        return 'tool-error'
+    }
+    switch ($exitCode) { 0 {'verified'} 2 {'warnings'} default {'rejected'} }
+}
 function Verify-Data([string]$label, [string[]]$arguments) {
     $info = [Diagnostics.ProcessStartInfo]::new($tool.FullName)
     $info.UseShellExecute = $false
@@ -71,8 +77,8 @@ function Verify-Data([string]$label, [string[]]$arguments) {
         if (-not $stdout.Wait(5000) -or -not $stderr.Wait(5000)) { throw 'Verifier output drain timed out.' }
         # These logs describe public package data; replace the ephemeral root.
         $output = ($stdout.GetAwaiter().GetResult() + $stderr.GetAwaiter().GetResult()).Replace($root, '<inspection>')
-        $verdict = switch ($process.ExitCode) { 0 {'verified'} 2 {'warnings'} default {'rejected'} }
-        $verifications.Add([ordered]@{check=$label; verdict=$verdict; exit_code=$process.ExitCode; output=$output})
+        $verdict = Get-VerificationVerdict $process.ExitCode $output
+        $verifications.Add([ordered]@{check=$label; verdict=$verdict; exit_code=$process.ExitCode; arguments=@($arguments | ForEach-Object { $_.Replace($root, '<inspection>') }); output=$output})
     } finally {
         if (-not $process.HasExited) { $process.Kill($true); $process.WaitForExit(5000) | Out-Null }
         $process.Dispose()
@@ -116,13 +122,13 @@ foreach ($inf in $infs) {
         if (-not $catalog.StartsWith($destination + [IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase) -or
             -not (Test-Path -LiteralPath $catalog -PathType Leaf)) { throw 'INF catalog is missing or outside extracted data.' }
         $catRelative = [IO.Path]::GetRelativePath($destination,$catalog)
-        Verify-Data ($catRelative + ':authenticode') @('verify','/v','/pa','/o',$policyOS,$catalog)
-        Verify-Data ($catRelative + ':kernel-policy') @('verify','/v','/kp','/o',$policyOS,$catalog)
+        Verify-Data ($catRelative + ':authenticode') @('verify','/v','/pa',$catalog)
+        Verify-Data ($catRelative + ':kernel-policy') @('verify','/v','/kp',$catalog)
         $payloads = @($inf) + @(Get-ChildItem -LiteralPath $inf.DirectoryName -Recurse -File | Where-Object { $_.Extension -in @('.dll','.sys') })
         foreach ($payload in $payloads) {
             $payloadRelative = [IO.Path]::GetRelativePath($destination,$payload.FullName)
-            Verify-Data ($payloadRelative + ':catalog-membership-authenticode') @('verify','/v','/pa','/o',$policyOS,'/c',$catalog,$payload.FullName)
-            Verify-Data ($payloadRelative + ':catalog-membership-kernel-policy') @('verify','/v','/kp','/o',$policyOS,'/c',$catalog,$payload.FullName)
+            Verify-Data ($payloadRelative + ':catalog-membership-authenticode') @('verify','/v','/pa','/c',$catalog,$payload.FullName)
+            Verify-Data ($payloadRelative + ':catalog-membership-kernel-policy') @('verify','/v','/kp','/c',$catalog,$payload.FullName)
         }
     }
 }
@@ -133,7 +139,7 @@ $report = [ordered]@{
     archive_url=$uri; archive_sha256=$actual; pinned_hash_matched=$true
     sdk_tool_version=$tool.VersionInfo.FileVersion; sdk_tool_signature=$toolSignature.Status.ToString()
     sdk_tool_sha256=(Get-FileHash -LiteralPath $tool.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-    inspection_completed=$true; package_approved=$false; installed=$false; downloaded_code_executed=$false
+    inspection_completed=$true; verification_completed=(@($verifications | Where-Object { $_.verdict -in @('tool-error','timeout') }).Count -eq 0); explicit_os_policy_target=$false; package_approved=$false; installed=$false; downloaded_code_executed=$false
     certificates_imported=$false; catalog_database_modified=$false; display_configuration_changed=$false
     runtime_load_verified=$false; os_framework_compatibility_verified=$false; multi_monitor_profile_verified=$false
     inventory=$inventory; binary_metadata=$binaries; os_framework_inventory=@($frameworks)

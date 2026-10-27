@@ -242,6 +242,12 @@ No local inventory, driver, display change or provisioning is part of this step.
 
 ## Display-package signature preflight
 
+VerdiClip requires **no driver installation**. The product uses existing OS APIs;
+this virtual-display candidate is optional disposable CI infrastructure only.
+It is not a product dependency, distributed component or user-machine prerequisite.
+No driver may be installed on Mike's computer. Current authorization permits
+read-only inspection only; installation anywhere remains unauthorized.
+
 The separately authorized `driver_signature_preflight=true` dispatch inspects
 only the pinned VirtualDrivers 25.7.23 display-only archive. SHA256 must equal
 `e24210692b442b39af763536330ce78b423f19342b7a7792c26de3944e418b3a`
@@ -250,11 +256,16 @@ script, installer, utility, DLL or driver is executed or installed.
 
 The standard disposable Windows VM uses its existing, validly Microsoft-signed
 x64 SDK SignTool. It verifies catalog signatures and INF/DLL/SYS membership
-under Authenticode and kernel policy, passing the actual OS version explicitly.
+under Authenticode and kernel policy. The actual OS version is recorded as context;
+these calls do not claim explicit OS-version-targeted verification.
 Each verifier process has a fifteen-second deadline and owned-process cleanup;
 the whole job is capped at three minutes. A missing verifier, hash mismatch or
 uninspectable package fails inspection; no new verifier is installed. Failed
 signature policies remain rejected results even if inspection itself completes.
+Command-line errors are tool errors, not signature rejections; they and timeouts
+leave verification incomplete. The first run exposed incompatible `/o` arguments
+and supplies no signature acceptance or rejection evidence. Pure regression checks
+cover the corrected vectors and diagnostic classification without invoking tools.
 
 Receipts include package/file hashes, PE architecture and file versions, INF
 target/framework declarations, existing OS UMDF files and raw verifier outcomes.
