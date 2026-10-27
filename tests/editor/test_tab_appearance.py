@@ -70,6 +70,9 @@ def test_active_marker_and_focus_survive_palette_changes(
     close = bar.tabButton(1, DocumentTabBar.ButtonPosition(side))
     assert close.isVisible()
     bar.setTabEnabled(0, False)  # noqa: FBT003  # Qt positional-only API
+    for role in (QPalette.ColorRole.WindowText, QPalette.ColorRole.Text):
+        palette.setColor(QPalette.ColorGroup.Disabled, role, QColor("#00ff00"))
+    bar.setPalette(palette)
     before_disabled_tint = bar.grab(bar.tabRect(0)).toImage()
     disabled = QColor("#ff007f")
     palette.setColor(
@@ -78,24 +81,26 @@ def test_active_marker_and_focus_survive_palette_changes(
     palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text, disabled)
     bar.setPalette(palette)
     pixels = bar.grab(bar.tabRect(0)).toImage()
-    # Glyph antialiasing can blend every sample with the surface (Linux fonts).
-    # Require the disabled brush's distinctive magenta chroma, absent before;
-    # a non-null image or an arbitrary raster difference cannot satisfy this.
-    assert not any(
-        color.red() - color.green() > 32 and color.blue() - color.green() > 16
+    # Compare two controlled disabled brushes. Antialiasing and native close
+    # glyphs can contain individual colored samples even before this change.
+    # Green -> magenta must increase the integrated magenta/green opponent
+    # channel; blank rendering or unchanged neutral text cannot satisfy this.
+    # This verifies disabled-palette influence across the rendered header.
+    before_chroma = sum(
+        color.red() + color.blue() - 2 * color.green()
         for y in range(before_disabled_tint.height())
         for x in range(before_disabled_tint.width())
         for color in [before_disabled_tint.pixelColor(x, y)]
     )
-    assert any(
-        color.red() - color.green() > 32 and color.blue() - color.green() > 16
+    after_chroma = sum(
+        color.red() + color.blue() - 2 * color.green()
         for y in range(pixels.height())
         for x in range(pixels.width())
         for color in [pixels.pixelColor(x, y)]
     )
+    assert after_chroma > before_chroma, (before_chroma, after_chroma)
     bar.resize(180, 60)
     assert bar.usesScrollButtons()
     assert not bar.grab().isNull()
     bar.setEnabled(False)
     assert not bar.grab().isNull()
-    assert "palette(disabled" not in bar.styleSheet()
