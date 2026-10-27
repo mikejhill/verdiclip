@@ -240,6 +240,33 @@ or cost approval. Construct parity cases only from the preceding requirements;
 run identical approved fixtures/configuration on both targets when authorized.
 No local inventory, driver, display change or provisioning is part of this step.
 
+## Display-package signature preflight
+
+The separately authorized `driver_signature_preflight=true` dispatch inspects
+only the pinned VirtualDrivers 25.7.23 display-only archive. SHA256 must equal
+`e24210692b442b39af763536330ce78b423f19342b7a7792c26de3944e418b3a`
+before confined, size-bounded extraction. Downloaded files are data: no package
+script, installer, utility, DLL or driver is executed or installed.
+
+The standard disposable Windows VM uses its existing, validly Microsoft-signed
+x64 SDK SignTool. It verifies catalog signatures and INF/DLL/SYS membership
+under Authenticode and kernel policy, passing the actual OS version explicitly.
+Each verifier process has a fifteen-second deadline and owned-process cleanup;
+the whole job is capped at three minutes. A missing verifier, hash mismatch or
+uninspectable package fails inspection; no new verifier is installed. Failed
+signature policies remain rejected results even if inspection itself completes.
+
+Receipts include package/file hashes, PE architecture and file versions, INF
+target/framework declarations, existing OS UMDF files and raw verifier outcomes.
+These establish static declarations and trust-policy results on that image,
+not runtime driver compatibility, successful loading, a usable display or M.
+The script imports no certificates, modifies no catalog database or trust
+settings, and performs no reboot or display change. It never invokes the
+publisher's installer, including its TrustedPublisher-import behavior.
+Results remain logs/summary only, with all normal artifact/cache jobs skipped.
+An installation proposal must wait for the precise result and any tool gaps;
+installation and readiness are not approved by this preflight.
+
 ## Sources and existing evidence
 
 - [Preview CI contract][preview-ci] separates simulation and native evidence.

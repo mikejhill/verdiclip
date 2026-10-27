@@ -11,6 +11,10 @@ on:
         description: Read-only Windows desktop prerequisites; skip normal CI
         type: boolean
         default: false
+      driver_signature_preflight:
+        description: Inspect pinned display package signatures only; skip normal CI
+        type: boolean
+        default: false
       owned_window_canary:
         description: Bounded owned native window canary; skip normal CI
         type: boolean
@@ -32,7 +36,7 @@ env:
 jobs:
   desktop-capability:
     name: Windows desktop capability (bounded)
-    if: github.event_name == 'workflow_dispatch' && (inputs.desktop_capability_only || inputs.owned_window_canary)
+    if: github.event_name == 'workflow_dispatch' && !inputs.driver_signature_preflight && (inputs.desktop_capability_only || inputs.owned_window_canary)
     runs-on: windows-2025
     timeout-minutes: 2
     permissions:
@@ -49,8 +53,23 @@ jobs:
         shell: pwsh
         run: ./scripts/probe_owned_window.ps1
 
+  driver-signature:
+    name: Display package signature preflight (no installation)
+    if: github.event_name == 'workflow_dispatch' && inputs.driver_signature_preflight
+    runs-on: windows-2025
+    timeout-minutes: 3
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Inspect pinned package with existing Windows verification tools
+        shell: pwsh
+        run: ./scripts/inspect_display_package.ps1
+
   lint:
-    if: github.event_name != 'workflow_dispatch' || (!inputs.desktop_capability_only && !inputs.owned_window_canary)
+    if: github.event_name != 'workflow_dispatch' || (!inputs.desktop_capability_only && !inputs.owned_window_canary && !inputs.driver_signature_preflight)
     name: Format and lint
     runs-on: windows-latest
     steps:
@@ -67,7 +86,7 @@ jobs:
         run: uv run ruff check --output-format=github .
 
   typecheck:
-    if: github.event_name != 'workflow_dispatch' || (!inputs.desktop_capability_only && !inputs.owned_window_canary)
+    if: github.event_name != 'workflow_dispatch' || (!inputs.desktop_capability_only && !inputs.owned_window_canary && !inputs.driver_signature_preflight)
     name: Type check (ty, every rule at error)
     runs-on: windows-latest
     steps:
@@ -81,7 +100,7 @@ jobs:
       - run: uv run ty check --output-format github
 
   test:
-    if: github.event_name != 'workflow_dispatch' || (!inputs.desktop_capability_only && !inputs.owned_window_canary)
+    if: github.event_name != 'workflow_dispatch' || (!inputs.desktop_capability_only && !inputs.owned_window_canary && !inputs.driver_signature_preflight)
     name: Tests (Python ${{ matrix.python }})
     runs-on: windows-latest
     strategy:
@@ -145,7 +164,7 @@ jobs:
           if-no-files-found: ignore
 
   ux-gallery:
-    if: github.event_name != 'workflow_dispatch' || (!inputs.desktop_capability_only && !inputs.owned_window_canary)
+    if: github.event_name != 'workflow_dispatch' || (!inputs.desktop_capability_only && !inputs.owned_window_canary && !inputs.driver_signature_preflight)
     name: UX gallery (light and dark)
     runs-on: windows-latest
     steps:
@@ -165,7 +184,7 @@ jobs:
           path: docs/ux/gallery
 
   build:
-    if: github.event_name != 'workflow_dispatch' || (!inputs.desktop_capability_only && !inputs.owned_window_canary)
+    if: github.event_name != 'workflow_dispatch' || (!inputs.desktop_capability_only && !inputs.owned_window_canary && !inputs.driver_signature_preflight)
     name: Build and verify distributions
     runs-on: windows-latest
     steps:
@@ -193,7 +212,7 @@ jobs:
           path: dist/
 
   audit:
-    if: github.event_name != 'workflow_dispatch' || (!inputs.desktop_capability_only && !inputs.owned_window_canary)
+    if: github.event_name != 'workflow_dispatch' || (!inputs.desktop_capability_only && !inputs.owned_window_canary && !inputs.driver_signature_preflight)
     name: Dependency vulnerability audit
     runs-on: ubuntu-latest
     steps:
@@ -210,7 +229,7 @@ jobs:
           uvx pip-audit --strict --no-deps --disable-pip --requirement requirements-audit.txt
 
   workflows:
-    if: github.event_name != 'workflow_dispatch' || (!inputs.desktop_capability_only && !inputs.owned_window_canary)
+    if: github.event_name != 'workflow_dispatch' || (!inputs.desktop_capability_only && !inputs.owned_window_canary && !inputs.driver_signature_preflight)
     name: Workflow lint and security
     runs-on: ubuntu-latest
     permissions:
@@ -270,7 +289,7 @@ jobs:
 
   ci-passed:
     name: CI passed
-    if: always() && (github.event_name != 'workflow_dispatch' || (!inputs.desktop_capability_only && !inputs.owned_window_canary))
+    if: always() && (github.event_name != 'workflow_dispatch' || (!inputs.desktop_capability_only && !inputs.owned_window_canary && !inputs.driver_signature_preflight))
     needs: [lint, typecheck, test, ux-gallery, build, audit, workflows]
     runs-on: ubuntu-latest
     steps:
