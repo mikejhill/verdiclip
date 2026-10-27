@@ -278,6 +278,52 @@ Results remain logs/summary only, with all normal artifact/cache jobs skipped.
 An installation proposal must wait for the precise result and any tool gaps;
 installation and readiness are not approved by this preflight.
 
+### Interpret the signing policies separately
+
+The corrected inspection at `24749588d4161ecbd059c4ade66e524e61600bad`
+verified catalog Authenticode trust and INF/DLL membership, but rejected all
+three kernel-policy checks because the signer does not chain to a Microsoft
+root. These are distinct policy results, not a universal installation verdict.
+
+Microsoft defines an [IDD as a user-mode UMDF driver][idd-model]. SignTool's
+[`/kp` option tests x64 kernel-mode driver signing policy][signtool-policy].
+The inspected package contains an amd64 UMDF DLL and declares UMDF 2.25 with
+IddCx 1.2; its reference to the OS-provided `WUDFRd.sys` does not make its DLL
+a third-party kernel-mode driver. Therefore `/kp` rejection alone does not prove
+this user-mode package cannot install or load. Conversely, Authenticode success
+does not establish installation admission or runtime compatibility.
+
+Microsoft's [signing tutorial distinguishes user-mode requirements][um-signing]
+and package installation requirements. A valid chain to a trusted root is not
+the same as trusting the end-entity publisher for unattended PnP installation;
+the [Trusted Publishers store has a separate role][publisher-policy]. The
+publisher's installer explicitly imports a publisher certificate, which remains
+outside the authorized read-only scope. No trust change is proposed or tested.
+
+The precise verification limit is: no package staging, effective PnP admission,
+existing end-entity publisher trust, UMDF/IddCx loading, D3D rendering support,
+or required multi-monitor/mixed-DPI behavior has been proved on the hosted image.
+Static framework-file inventory cannot substitute for those results. The
+candidate is Authenticode-verified data, not an approved infrastructure component.
+
+No alternative package has yet been independently signature- and runtime-qualified.
+Parsec's vendor documents [Windows Server 2019+ support][parsec-displays], but
+multiple virtual displays require its [Warp or Teams offering][parsec-settings];
+its free fallback supplies only one display. That does not currently meet the
+no-spend required multi-monitor profile. These vendor statements also do not
+verify an exact binary's signature or compatibility with this runner image.
+
+VerdiClip itself continues to use existing OS APIs, with no driver dependency.
+Neither this distinction nor a valid signature authorizes driver installation,
+certificate import, security-policy changes or configuration of displays.
+
+[idd-model]: https://learn.microsoft.com/en-us/windows-hardware/drivers/display/indirect-display-driver-model-overview
+[signtool-policy]: https://learn.microsoft.com/en-us/windows/win32/seccrypto/signtool
+[um-signing]: https://learn.microsoft.com/en-us/windows-hardware/drivers/install/windows-driver-signing-tutorial
+[publisher-policy]: https://learn.microsoft.com/en-us/windows-hardware/drivers/install/trusted-publishers-certificate-store
+[parsec-displays]: https://support.parsec.app/hc/en-us/articles/32381733729044-Multiple-Monitors-and-Virtual-Displays
+[parsec-settings]: https://support.parsec.app/hc/en-us/articles/32381199341716-Parsec-App-for-Windows
+
 ## Sources and existing evidence
 
 - [Preview CI contract][preview-ci] separates simulation and native evidence.
