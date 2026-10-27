@@ -69,18 +69,29 @@ def test_active_marker_and_focus_survive_palette_changes(
     side = bar.style().styleHint(QStyle.StyleHint.SH_TabBar_CloseButtonPosition)
     close = bar.tabButton(1, DocumentTabBar.ButtonPosition(side))
     assert close.isVisible()
+    bar.setTabEnabled(0, False)  # noqa: FBT003  # Qt positional-only API
+    before_disabled_tint = bar.grab(bar.tabRect(0)).toImage()
     disabled = QColor("#ff007f")
     palette.setColor(
         QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText, disabled
     )
     palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text, disabled)
     bar.setPalette(palette)
-    bar.setTabEnabled(0, False)  # noqa: FBT003  # Qt positional-only API
     pixels = bar.grab(bar.tabRect(0)).toImage()
+    # Glyph antialiasing can blend every sample with the surface (Linux fonts).
+    # Require the disabled brush's distinctive magenta chroma, absent before;
+    # a non-null image or an arbitrary raster difference cannot satisfy this.
+    assert not any(
+        color.red() - color.green() > 32 and color.blue() - color.green() > 16
+        for y in range(before_disabled_tint.height())
+        for x in range(before_disabled_tint.width())
+        for color in [before_disabled_tint.pixelColor(x, y)]
+    )
     assert any(
-        pixels.pixelColor(x, y) == disabled
+        color.red() - color.green() > 32 and color.blue() - color.green() > 16
         for y in range(pixels.height())
         for x in range(pixels.width())
+        for color in [pixels.pixelColor(x, y)]
     )
     bar.resize(180, 60)
     assert bar.usesScrollButtons()
