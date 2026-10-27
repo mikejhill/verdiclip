@@ -6,6 +6,11 @@ on:
     branches: [main]
   merge_group:
   workflow_dispatch:
+    inputs:
+      desktop_capability_only:
+        description: Read-only Windows desktop prerequisites; skip normal CI
+        type: boolean
+        default: false
   workflow_call:
 
 permissions:
@@ -21,7 +26,23 @@ env:
   PYTHONUTF8: "1"
 
 jobs:
+  desktop-capability:
+    name: Windows desktop prerequisites (read-only)
+    if: github.event_name == 'workflow_dispatch' && inputs.desktop_capability_only
+    runs-on: windows-2025
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Query desktop prerequisites without windows or input
+        shell: pwsh
+        run: ./scripts/probe_windows_desktop.ps1
+
   lint:
+    if: github.event_name != 'workflow_dispatch' || !inputs.desktop_capability_only
     name: Format and lint
     runs-on: windows-latest
     steps:
@@ -38,6 +59,7 @@ jobs:
         run: uv run ruff check --output-format=github .
 
   typecheck:
+    if: github.event_name != 'workflow_dispatch' || !inputs.desktop_capability_only
     name: Type check (ty, every rule at error)
     runs-on: windows-latest
     steps:
@@ -51,6 +73,7 @@ jobs:
       - run: uv run ty check --output-format github
 
   test:
+    if: github.event_name != 'workflow_dispatch' || !inputs.desktop_capability_only
     name: Tests (Python ${{ matrix.python }})
     runs-on: windows-latest
     strategy:
@@ -114,6 +137,7 @@ jobs:
           if-no-files-found: ignore
 
   ux-gallery:
+    if: github.event_name != 'workflow_dispatch' || !inputs.desktop_capability_only
     name: UX gallery (light and dark)
     runs-on: windows-latest
     steps:
@@ -133,6 +157,7 @@ jobs:
           path: docs/ux/gallery
 
   build:
+    if: github.event_name != 'workflow_dispatch' || !inputs.desktop_capability_only
     name: Build and verify distributions
     runs-on: windows-latest
     steps:
@@ -160,6 +185,7 @@ jobs:
           path: dist/
 
   audit:
+    if: github.event_name != 'workflow_dispatch' || !inputs.desktop_capability_only
     name: Dependency vulnerability audit
     runs-on: ubuntu-latest
     steps:
@@ -176,6 +202,7 @@ jobs:
           uvx pip-audit --strict --no-deps --disable-pip --requirement requirements-audit.txt
 
   workflows:
+    if: github.event_name != 'workflow_dispatch' || !inputs.desktop_capability_only
     name: Workflow lint and security
     runs-on: ubuntu-latest
     permissions:
@@ -235,7 +262,7 @@ jobs:
 
   ci-passed:
     name: CI passed
-    if: always()
+    if: always() && (github.event_name != 'workflow_dispatch' || !inputs.desktop_capability_only)
     needs: [lint, typecheck, test, ux-gallery, build, audit, workflows]
     runs-on: ubuntu-latest
     steps:

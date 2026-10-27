@@ -1,0 +1,177 @@
+# Windows qualification requirements and parity
+
+Define capability requirements before writing parity tests. The discovery probe
+is an inventory, not a native test or migration acceptance. No local interactive
+execution or native enablement is authorized by a positive inventory.
+
+## Coverage classes
+
+- **B:** required common native baseline, plus existing portable contracts.
+- **M:** required additional profile for full native multi-monitor coverage.
+- **S:** supplemental physical-device or human assessment.
+
+A runner can qualify B without qualifying M. That is a bounded subset, not full
+replacement of product coverage. Missing capabilities are unsupported or unknown,
+never silently skipped into a green full-coverage result.
+
+## Capability and coverage matrix
+
+| ID | Class | Required capability | Local | Hosted |
+| --- | --- | --- | --- | --- |
+| A1 | B | Active input desktop and usable foreground | Held | Discovery |
+| I1 | B | Real hook, matched pairs and injected input | Held | Unverified |
+| C1 | B | Native capture of generated fixture content | Held | Unverified |
+| U1 | B | Real owned UIA ScrollPattern provider | Held | Unverified |
+| H1 | B | Real hotkey registration and chord routing | Held | Unverified |
+| Q1 | B | Qt 6.11.2 and 6.12.0, exact versions recorded | Held | Unverified |
+| L1 | B | Failure cleanup and retained documents | Held | Unverified |
+| R1 | B | Identical test/configuration provenance | Planned | Planned |
+| T1 | B | Synthetic topology and coordinate oracles | Existing | Existing |
+| M1 | M | At least two OS-enumerated monitors | Held | Discovery |
+| M2 | M | Negative origins and cross-monitor boundaries | Held | Discovery |
+| M3 | M | Mixed scaling, including fractional scaling | Held | Discovery |
+| P1 | S | Physical raw-device input | Held | Unsupported |
+| P2 | S | Hotplug, HDR/GPU and Narrator usability | Held | Unsupported |
+
+"Held" means no new local inventory or test has run. Historical laptop evidence
+does not establish the current state. "Discovery" means a read-only query can
+describe available resources, without qualifying application behavior. Existing
+T1 evidence is repository-defined simulation, not native display equivalence.
+
+## Acceptance criteria
+
+### A1: desktop and focus
+
+Require an active, unlocked session, a visible process window station and
+readable input desktop. Record the session state and caller context. After
+separate execution authorization, an owned canary must establish actual exposure,
+foreground admission and rendering. WTS success alone is insufficient. A lost
+foreground, unknown session or cleanup failure fails qualification.
+
+### I1, C1, U1 and H1: real boundaries
+
+- Exercise the production broker with an explicit fixture-scoped driver. Check
+  real input-pair receipts, cancellation, repeated acquisition and zero Hide/Close
+  of the preserved fixtures. The existing broker harness generates no input.
+- Use generated, identifiable content for actual capture. Assert physical ROI,
+  row order, no missing/duplicated content, and the declared pixel oracle. Keep
+  acquired frames in RAM except expressly approved synthetic output files.
+- Use a separate owned native UIA provider, with stable identity and verified
+  vertical ScrollPattern. Exercise discovery, explicit consent, movement,
+  settling, cancellation, partial review, selected delivery and restoration.
+  A JSON peer or replay provider cannot satisfy U1.
+- Register a temporary test chord through the production hotkey service. Verify
+  OS registration, exactly-once action dispatch, conflict handling, unregister
+  and reacquisition. A posted WM_HOTKEY is not chord-registration evidence.
+- The synthetic delivery lane must retain real save/retry/error and passive
+  presentation behavior. Separate real-input/RAM and synthetic/real-output lanes
+  do not constitute one capture-to-output end-to-end test.
+
+### M1-M3: full native monitor profile
+
+Require at least two independently OS-enumerated displays, a negative virtual
+origin case, cross-boundary selection/window transfer, and unequal effective
+scales including a fractional scale such as 150%. Record per-monitor bounds,
+work areas and successful scale queries, plus the actual capture process's DPI
+awareness and Qt/Win32 mapping. Test negative X and negative Y scenarios where
+the environment provides them; declare missing scenarios explicitly. Counts
+alone are insufficient: mirrored or invisible pseudo-monitors do not establish
+independent usable capture surfaces. Cross-check Qt screens and native capture.
+
+Synthetic negative coordinates, display removal/reordering and 100-250% scale
+contracts remain required algorithm evidence. They do not prove OS-backed
+monitor enumeration, native capture seams or mixed-DPI rounding. One monitor,
+resizing windows, system DPI alone or a fake screen list cannot satisfy M.
+
+Do not install virtual display drivers, alter monitor layout or scaling, or
+change system/security settings under this plan. If the standard hosted image
+lacks M, retain B as a subset and seek a separately approved suitable environment
+before claiming full native multi-monitor replacement.
+
+### Q1, L1 and R1: versions, ownership and reproducibility
+
+Use both supported Qt profiles and record exact Python patch, Qt, dependency,
+OS and runner-image versions. Run one input/focus case at a time per desktop.
+Bound the case and job, and independently prove worker/helper exit before fixture
+teardown. Failures must preserve documents, edits and retryable accepted results.
+Use only nonce/PID/creation-time-verified fixture owners. Release only owned input
+pairs, hotkeys, handles, processes and temporary files.
+
+The original hosted helper-timeout cause remains unproven. Preserve incident and
+corrected-run evidence; neither a rerun nor a capability probe diagnoses it.
+
+## Identical-test parity protocol
+
+Before constructing the suite, approve B and M requirements and evidence limits.
+Then run the same suite on the local isolated preview and the hosted runner:
+
+1. Match the exact Git commit, clean source, lockfile and dependency profile,
+   Python/Qt versions, fixture and driver hashes, seed, input profile, timeouts,
+   application flags, output policy and expected-oracle version.
+2. Select the same named capability profile and test IDs. Inventory the actual
+   environment separately. Fixture placement may follow the same documented
+   work-area algorithm; it must not hide missing displays or scaling profiles.
+3. Compare pass/fail, supported/unsupported status, event order/cardinality,
+   document/history identity, close/retry outcomes, ownership and cleanup,
+   target identity, scroll positions, completeness and image-content oracles.
+4. Compare normalized logical geometry with explicit per-host physical mapping.
+   Raw pixel hashes across different DPI/compositor/font environments are not
+   automatically equivalent. Define tolerances and rendering assumptions before
+   execution; never relax them after observing failures.
+5. Include negative cases: lost foreground, invalid session/provider, stale
+   window generation, lease/helper failure, duplicate/late callbacks, save
+   failure/retry, cancellation and unsupported topology. Use deterministic fault
+   adapters for system transitions that would otherwise require changing the
+   desktop. Label these as simulation, not actual lock/hotplug evidence.
+6. Require every mandatory case in a claimed profile to pass on both targets.
+   A skip, missing capability, unexplained mismatch or flake leaves that profile
+   unqualified. Keep unmatched cases and original failures in the report.
+
+Windows Server hosted results and Windows client results are different OS
+evidence, even when shared API contracts agree. Injected input is not physical
+raw input; provider fixtures do not certify arbitrary third-party applications;
+programmatic accessibility does not certify Narrator usability or balloon
+appearance. Mike's completed-build local acceptance remains separate.
+
+## Discovery and smallest next steps
+
+The hosted read-only probe records session/station/input-desktop state, virtual
+bounds, monitor rectangles/work areas, scale-query results and caller awareness.
+It creates no window or input and performs no capture, UIA or hotkey operation.
+It does not change DPI awareness or display settings. API failure fallback scale
+values are not reported as measurements. No device names, user names, titles,
+pixels or credentials are published.
+
+A minimal future local read-only inventory would use the same query script and
+schema, recording OS/Qt versions and the same topology/scaling fields. Local
+execution is currently held; the current script refuses non-hosted invocation.
+Any local mode requires separate authorization and source review first. Do not
+interact with Mike's desktop to obtain inventory.
+
+The present job uses standard public Windows x64 compute, a two-minute cap and
+logs/job summary only. It invokes no native tests, artifact uploads or new cache.
+Normal PR/push/merge CI remains unchanged; explicit capability-only dispatch
+skips its upload/cache-bearing jobs. The draft discovery PR uses a skip marker
+to avoid automatic pipelines. It is not merge qualification.
+
+After reviewing the actual discovery result, separately authorize an owned
+canary and the native baseline suite. If M is absent, report that limitation
+before selecting an alternative. No provisioning, paid runner, virtual display,
+RDP, autologon or security change is authorized. Native enablement, merge,
+release, installed replacement and local-acceptance holds remain.
+
+## Sources and existing evidence
+
+- [Preview CI contract][preview-ci] separates simulation and native evidence.
+- [GitHub runner specifications][runners] list standard Windows x64 images.
+- [GitHub billing][billing] separates public compute and storage allowances.
+- [Scale queries][scale] must check HRESULT; failure still supplies a fallback.
+- [DPI query context][dpi] changes results; system DPI is not per-monitor proof.
+- [SendInput][input] has integrity and existing-key-state constraints.
+
+[preview-ci]: https://github.com/mikejhill/verdiclip/blob/16fa747857318faa105e7e23b6252f3b94429863/docs/design/editor-tabs-ci-contract.md
+[runners]: https://docs.github.com/en/actions/reference/runners/github-hosted-runners
+[billing]: https://docs.github.com/en/billing/concepts/product-billing/github-actions
+[scale]: https://learn.microsoft.com/en-us/windows/win32/api/shellscalingapi/nf-shellscalingapi-getscalefactorformonitor
+[dpi]: https://learn.microsoft.com/en-us/windows/win32/api/shellscalingapi/nf-shellscalingapi-getdpiformonitor
+[input]: https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput
