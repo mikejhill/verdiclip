@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from PySide6.QtGui import QImage
@@ -118,3 +119,77 @@ def test_user_import_is_a_copy_and_default_save_stays_private(
             window.set_confirm_close(confirm=False)
             window.close()
         smoke.workspace.parking.deleteLater()
+
+
+@pytest.mark.parametrize("scene", ["synthetic", "import"])
+def test_launch_lifetime_uses_only_private_editor_and_retires_ipc(
+    qapp: QApplication,
+    tmp_path: Path,
+    sample_image: QImage,
+    monkeypatch: pytest.MonkeyPatch,
+    scene: str,
+) -> None:
+    """The real composition runs behind a fake event loop/IPC, never native UI."""
+    del qapp
+    closed: list[bool] = []
+    connections: list[object] = []
+    created: list[editor_smoke.EditorSmoke] = []
+    implementation = editor_smoke.EditorSmoke
+
+    class Application:
+        """Control event-loop exit without changing the actual offscreen app."""
+
+        @classmethod
+        def instance(cls) -> "Application":
+            return cls()
+
+        def setApplicationName(self, name: str) -> None:  # noqa: N802
+            assert name == "VerdiClip Editor Smoke aaaaaaaa"
+
+        def setQuitOnLastWindowClosed(self, value: bool) -> None:  # noqa: N802, FBT001
+            assert value is True
+
+        def exec(self) -> int:
+            assert len(created) == 1
+            return 17
+
+    def compose(profile: PreviewProfile) -> editor_smoke.EditorSmoke:
+        smoke = implementation(profile)
+        created.append(smoke)
+        return smoke
+
+    def instance(name: str) -> SimpleNamespace:
+        assert name.endswith("-EditorOnly")
+        return SimpleNamespace(
+            forward=lambda _files: False,
+            listen=lambda: True,
+            close=lambda: closed.append(True),
+            message_received=SimpleNamespace(connect=connections.append),
+        )
+
+    monkeypatch.setattr(editor_smoke, "QApplication", Application)
+    monkeypatch.setattr(editor_smoke, "EditorSmoke", compose)
+    monkeypatch.setattr(editor_smoke, "SingleInstance", instance)
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"mode": "editor-only-smoke", "commit": COMMIT}))
+    arguments = ["--manifest", str(manifest)]
+    if scene == "import":
+        selected = tmp_path / "selected.png"
+        assert sample_image.save(str(selected))
+        arguments.append(str(selected))
+    try:
+        assert editor_smoke.main(arguments) == 17
+        assert closed == [True]
+        assert len(connections) == 1
+        assert len(created[0].workspace.documents) == (2 if scene == "synthetic" else 1)
+        assert all(
+            record.saved_path is None for record in created[0].workspace.documents
+        )
+        assert (tmp_path / "logs" / "verification.log").exists()
+        assert not (tmp_path / "spool").exists()
+    finally:
+        for smoke in created:
+            for window in smoke.workspace.windows:
+                window.set_confirm_close(confirm=False)
+                window.close()
+            smoke.workspace.parking.deleteLater()

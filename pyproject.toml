@@ -97,6 +97,8 @@ xfail_strict = true
 qt_api = "pyside6"
 markers = [
     "native_desktop: supplemental compatibility test requiring a real interactive Windows desktop",
+    "native_hooks: installs real Windows hooks; exclude from local runs without a handoff",
+    "native_registry: mutates disposable Windows registry keys or notifies Explorer",
     "ux: user journey test proving a UX contract item",
     "ux_budget: journey test that enforces a latency budget",
 ]

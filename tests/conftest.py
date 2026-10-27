@@ -82,7 +82,15 @@ def clean_clipboard() -> Iterator[None]:
     Python-created QMimeData; real Windows does not.
     """
     yield
-    if QGuiApplication.instance() is not None:
+    clear_offscreen_clipboard()
+
+
+def clear_offscreen_clipboard() -> None:
+    """Release offscreen Python mime ownership without touching native clipboards."""
+    if (
+        QGuiApplication.instance() is not None
+        and QGuiApplication.platformName() == "offscreen"
+    ):
         QGuiApplication.clipboard().clear()
 
 
