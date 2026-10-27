@@ -11,6 +11,10 @@ on:
         description: Read-only Windows desktop prerequisites; skip normal CI
         type: boolean
         default: false
+      owned_window_canary:
+        description: Bounded owned native window canary; skip normal CI
+        type: boolean
+        default: false
   workflow_call:
 
 permissions:
@@ -27,8 +31,8 @@ env:
 
 jobs:
   desktop-capability:
-    name: Windows desktop prerequisites (read-only)
-    if: github.event_name == 'workflow_dispatch' && inputs.desktop_capability_only
+    name: Windows desktop capability (bounded)
+    if: github.event_name == 'workflow_dispatch' && (inputs.desktop_capability_only || inputs.owned_window_canary)
     runs-on: windows-2025
     timeout-minutes: 2
     permissions:
@@ -40,9 +44,13 @@ jobs:
       - name: Query desktop prerequisites without windows or input
         shell: pwsh
         run: ./scripts/probe_windows_desktop.ps1
+      - name: Qualify one owned window without input or activation
+        if: inputs.owned_window_canary
+        shell: pwsh
+        run: ./scripts/probe_owned_window.ps1
 
   lint:
-    if: github.event_name != 'workflow_dispatch' || !inputs.desktop_capability_only
+    if: github.event_name != 'workflow_dispatch' || (!inputs.desktop_capability_only && !inputs.owned_window_canary)
     name: Format and lint
     runs-on: windows-latest
     steps:
@@ -59,7 +67,7 @@ jobs:
         run: uv run ruff check --output-format=github .
 
   typecheck:
-    if: github.event_name != 'workflow_dispatch' || !inputs.desktop_capability_only
+    if: github.event_name != 'workflow_dispatch' || (!inputs.desktop_capability_only && !inputs.owned_window_canary)
     name: Type check (ty, every rule at error)
     runs-on: windows-latest
     steps:
@@ -73,7 +81,7 @@ jobs:
       - run: uv run ty check --output-format github
 
   test:
-    if: github.event_name != 'workflow_dispatch' || !inputs.desktop_capability_only
+    if: github.event_name != 'workflow_dispatch' || (!inputs.desktop_capability_only && !inputs.owned_window_canary)
     name: Tests (Python ${{ matrix.python }})
     runs-on: windows-latest
     strategy:
@@ -137,7 +145,7 @@ jobs:
           if-no-files-found: ignore
 
   ux-gallery:
-    if: github.event_name != 'workflow_dispatch' || !inputs.desktop_capability_only
+    if: github.event_name != 'workflow_dispatch' || (!inputs.desktop_capability_only && !inputs.owned_window_canary)
     name: UX gallery (light and dark)
     runs-on: windows-latest
     steps:
@@ -157,7 +165,7 @@ jobs:
           path: docs/ux/gallery
 
   build:
-    if: github.event_name != 'workflow_dispatch' || !inputs.desktop_capability_only
+    if: github.event_name != 'workflow_dispatch' || (!inputs.desktop_capability_only && !inputs.owned_window_canary)
     name: Build and verify distributions
     runs-on: windows-latest
     steps:
@@ -185,7 +193,7 @@ jobs:
           path: dist/
 
   audit:
-    if: github.event_name != 'workflow_dispatch' || !inputs.desktop_capability_only
+    if: github.event_name != 'workflow_dispatch' || (!inputs.desktop_capability_only && !inputs.owned_window_canary)
     name: Dependency vulnerability audit
     runs-on: ubuntu-latest
     steps:
@@ -202,7 +210,7 @@ jobs:
           uvx pip-audit --strict --no-deps --disable-pip --requirement requirements-audit.txt
 
   workflows:
-    if: github.event_name != 'workflow_dispatch' || !inputs.desktop_capability_only
+    if: github.event_name != 'workflow_dispatch' || (!inputs.desktop_capability_only && !inputs.owned_window_canary)
     name: Workflow lint and security
     runs-on: ubuntu-latest
     permissions:
@@ -262,7 +270,7 @@ jobs:
 
   ci-passed:
     name: CI passed
-    if: always() && (github.event_name != 'workflow_dispatch' || !inputs.desktop_capability_only)
+    if: always() && (github.event_name != 'workflow_dispatch' || (!inputs.desktop_capability_only && !inputs.owned_window_canary))
     needs: [lint, typecheck, test, ux-gallery, build, audit, workflows]
     runs-on: ubuntu-latest
     steps:

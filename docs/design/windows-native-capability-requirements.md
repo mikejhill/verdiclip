@@ -160,6 +160,86 @@ before selecting an alternative. No provisioning, paid runner, virtual display,
 RDP, autologon or security change is authorized. Native enablement, merge,
 release, installed replacement and local-acceptance holds remain.
 
+## Bounded hosted owned-window canary
+
+Discovery run [40567676713][discovery] at commit
+`66fff1cace2e1f161bb133befeb92ab4a06a55c4` observed an active, unlocked
+desktop with one 1024 by 768 monitor, origin (0,0), 100% scale. This is an
+observation of image `win25-vs2026 / 20261021.278.1`, not a runner guarantee.
+Its zero-error inventory does not qualify B or M.
+
+The separately authorized `owned_window_canary=true` dispatch still skips
+normal CI and uploads. It first repeats discovery on the actual job VM, then
+creates one 120 by 90 topmost, nonactivating synthetic Win32 popup. The popup
+paints two successive, distinct three-color patterns. Each of six sampled
+screen-pixel coordinates must belong to that window immediately before and
+after each read, and match their expected colors. These separate calls are not
+an atomic ownership guarantee against a new topmost surface. Pixel values are
+never published. Showing the window uses nonactivating SetWindowPos, avoiding
+ShowWindow's first-call dependence on the child process's hidden startup mode.
+
+The original foreground must remain valid and unchanged throughout admission
+checks and at completion. A matching foreground handle is admitted; the owned
+nonforeground handle is rejected. This is a small harness predicate, not the
+production broker. Positive admission of an owned foreground window remains
+unverified under A1: the positive identity belongs to the borrowed preexisting
+foreground. No foreground activation is requested. No input is generated,
+no hotkey is registered and no UIA or Qt application is launched.
+
+Pass requires both patterns, all six samples, successful window destruction,
+class unregistration and GDI/DC release. The paint/message loop has an eight
+second deadline. A separate process watchdog waits at most thirty seconds,
+then terminates only its owned child tree and waits at most five seconds for
+exit. A watchdog timeout is a failed capability result, not a cleanup pass.
+The workflow retains its two-minute ceiling and logs/summary-only receipt.
+
+Compilation and static review may run locally without invoking native methods;
+the execution script refuses non-hosted invocation. This canary does not prove
+input hooks, physical input, real UIA scrolling, application delivery, tabs,
+hotkeys, Qt rendering, multiple monitors or parity. Those remain separate gates.
+
+## Multi-monitor options: evidence and permissions
+
+No no-spend, configuration-free hosted M environment is established by current
+evidence. Keep portable topology tests running, but do not substitute them for M.
+
+| Option | Evidence | Missing proof / permission |
+| --- | --- | --- |
+| Current standard VM | One monitor observed | M absent on this image |
+| Another standard image | Windows labels documented | M unverified |
+| Larger / client / GPU VM | Images documented | M unverified; setup and cost |
+| Existing self-hosted M | Custom hardware supported | Availability and access |
+| External desktop service | No provider qualified | Topology, access and cost |
+| Driver / layout | Windows APIs documented | Driver or settings change |
+
+Standard public compute is free, but its specifications give no monitor-count
+or scaling guarantee. Another unchanged image would need its own inventory;
+multiple displays or unequal scales are conjecture until demonstrated.
+Larger runners are billed even for public repositories and require explicit
+setup and cost permission. No suitable existing self-hosted runner is established
+here; owner approval, runner access/security review, isolation and maintenance
+remain necessary. An external service must establish OS displays rather than
+browser viewports; access, costs and data handling need separate approval.
+Driver installation and display changes are outside authorization, not attempted.
+
+GitHub's larger-runner reference lists Windows 11 and GPU images, but neither
+GPU capacity nor Windows client branding proves multiple independent displays.
+Self-hosting can support a prescribed existing physical/virtual environment;
+that is infrastructure and access work, not permission granted by this probe.
+
+Microsoft distinguishes visible displays counted by `SM_CMONITORS` from
+`EnumDisplayMonitors` enumeration, which can include mirroring pseudo-monitors.
+M must demonstrate independently usable OS display surfaces, not merely a
+larger count, two windows, a resized viewport or two synthetic rectangles.
+Both negative origins and mixed fractional scaling remain explicit requirements.
+
+Recommended sequence: review the actual canary receipt, then separately qualify
+the bounded native B suite on standard hosted Windows. In parallel, obtain
+documented evidence for a pre-existing M environment before requesting access
+or cost approval. Construct parity cases only from the preceding requirements;
+run identical approved fixtures/configuration on both targets when authorized.
+No local inventory, driver, display change or provisioning is part of this step.
+
 ## Sources and existing evidence
 
 - [Preview CI contract][preview-ci] separates simulation and native evidence.
@@ -168,6 +248,12 @@ release, installed replacement and local-acceptance holds remain.
 - [Scale queries][scale] must check HRESULT; failure still supplies a fallback.
 - [DPI query context][dpi] changes results; system DPI is not per-monitor proof.
 - [SendInput][input] has integrity and existing-key-state constraints.
+- [Larger runners][larger] document compute and images, not M capabilities.
+- [Larger-runner billing][larger-billing] is separate from free standard compute.
+- [Self-hosted runners][self-hosted] permit custom hardware with owner maintenance.
+- [Indirect display drivers][idd] support virtual monitors through drivers.
+- [SetDisplayConfig][display-config] changes topology and display modes.
+- [EnumDisplayMonitors][enum-monitors] can include mirroring pseudo-monitors.
 
 [preview-ci]: https://github.com/mikejhill/verdiclip/blob/16fa747857318faa105e7e23b6252f3b94429863/docs/design/editor-tabs-ci-contract.md
 [runners]: https://docs.github.com/en/actions/reference/runners/github-hosted-runners
@@ -175,3 +261,10 @@ release, installed replacement and local-acceptance holds remain.
 [scale]: https://learn.microsoft.com/en-us/windows/win32/api/shellscalingapi/nf-shellscalingapi-getscalefactorformonitor
 [dpi]: https://learn.microsoft.com/en-us/windows/win32/api/shellscalingapi/nf-shellscalingapi-getdpiformonitor
 [input]: https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput
+[discovery]: https://github.com/mikejhill/verdiclip/actions/runs/40567676713
+[larger]: https://docs.github.com/en/actions/reference/runners/larger-runners
+[larger-billing]: https://docs.github.com/en/billing/concepts/product-billing/github-actions
+[self-hosted]: https://docs.github.com/en/actions/concepts/runners/self-hosted-runners
+[idd]: https://learn.microsoft.com/en-us/windows-hardware/drivers/display/indirect-display-driver-model-overview
+[display-config]: https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setdisplayconfig
+[enum-monitors]: https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-enumdisplaymonitors
