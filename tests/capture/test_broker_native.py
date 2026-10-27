@@ -7,6 +7,7 @@ import ctypes.wintypes as w
 import json
 import os
 import sys
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from typing import override
@@ -102,6 +103,12 @@ class ProductionRun(NativeRun):
         super().__init__(app, qapp, transport, outcome=case.outcome)
         self.case, self.peer, self.driver = case, peer, transport.driver
         self.journal = transport.journal
+        self._declared_popup: QMenu | None = None
+        self._binding_action: Callable[[], None] | None = None
+        self._binding_elapsed = QElapsedTimer()
+        self._binding_poll = QTimer()
+        self._binding_poll.setInterval(10)
+        self._binding_poll.timeout.connect(self._await_binding)
         self._platform_start = len(self.driver.platforms)
         self._final_sequence = 0
         self._final_checked = False
@@ -116,9 +123,53 @@ class ProductionRun(NativeRun):
             self._peer_poll.start()
 
     @override
+    def schedule(self, action: Callable[[], None]) -> None:
+        """Let the guarded driver bind exposed owners before starting capture."""
+        if self.done or self._binding_action is not None or self.harness is not None:
+            raise ValueError("Native binding may be scheduled only once")
+        self._binding_action = action
+        self._binding_elapsed.start()
+        self._binding_poll.start()
+
+    def _await_binding(self) -> None:
+        if self.done or self._binding_action is None:
+            self._binding_poll.stop()
+            return
+        try:
+            if self._binding_elapsed.elapsed() >= 20_000:
+                raise TimeoutError(
+                    "Driver target binding deadline expired before capture"
+                )
+            windows = tuple(w for w in self.qapp.topLevelWidgets() if w.isVisible())
+            if not windows or any(
+                w.windowHandle() is None or not w.windowHandle().isExposed()
+                for w in windows
+            ):
+                return
+            area = self.selection_area()
+            if self.journal.binding is None:
+                self.journal.prepare_binding(area)
+            if not self.journal.binding_ready(area):
+                return
+            if self._binding_elapsed.elapsed() >= 20_000:
+                raise TimeoutError(
+                    "Driver target binding deadline expired before capture"
+                )
+            action, self._binding_action = self._binding_action, None
+            self._binding_poll.stop()
+            super().schedule(action)
+        except (OSError, ValueError, RuntimeError, StopIteration) as error:
+            self.errors.append(str(error))
+            self._binding_action = None
+            self._binding_poll.stop()
+            self._finish_hosts()
+
+    @override
     def budgets(self) -> HarnessBudgets:
         """Allow ten seconds for guarded/human input without extending the worker."""
         area = self.selection_area()
+        if not self.journal.binding_ready(area):
+            raise ValueError("Driver binding is no longer ready before capture")
         api = ctypes.WinDLL("user32", use_last_error=True)
         api.GetForegroundWindow.restype = w.HWND
         allowed = tuple(
@@ -137,11 +188,20 @@ class ProductionRun(NativeRun):
 
     @override
     def _menu_scene(self, scenario: str) -> None:
-        """Pointer failures can hit only inert fixture items, never app commands."""
+        """Expose a normal owned anchor; popup-only processes can be undiscoverable."""
+        image = QImage(640, 480, QImage.Format.Format_RGB32)
+        image.fill(0xFFFFFFFF)
+        anchor = self.app.controller.open_editor(image, delivered=True)
+        anchor.setWindowTitle("VerdiClip owned broker fixture")
+        self.own_host(anchor)
         if self.case.profile is InputProfile.DEFAULT:
+            menu = self.app.controller.tray.menu
+            self._declared_popup = menu
+            menu.setParent(anchor, menu.windowFlags())
             super()._menu_scene(scenario)
             return
-        menu = QMenu("VerdiClip test-owned pointer fixture")
+        menu = QMenu("VerdiClip test-owned pointer fixture", anchor)
+        self._declared_popup = menu
         menu.addAction("Inert fixture item")
         menu.addAction("Inert second item")
         self.own_host(menu)
@@ -163,8 +223,20 @@ class ProductionRun(NativeRun):
                 raise ValueError("External native menu was not ready")
             bounds = state.bounds
             self.journal.owned_handles = (state.owner,)
+            self.journal.binding_handle = state.owner
         else:
-            host = next(host for host in reversed(self.hosts) if host.isVisible())
+            if self.case.scene == "qt-menu" and (
+                self._declared_popup is None
+                or not self._declared_popup.isVisible()
+                or QApplication.activePopupWidget() is not self._declared_popup
+            ):
+                raise ValueError("Declared fixture popup was lost before capture")
+            visible = tuple(host for host in reversed(self.hosts) if host.isVisible())
+            if not visible:
+                raise ValueError("Declared fixture hosts are no longer visible")
+            host = next(
+                (host for host in visible if isinstance(host, QMenu)), visible[0]
+            )
             api = ctypes.WinDLL("user32", use_last_error=True)
             api.GetWindowRect.argtypes = (w.HWND, ctypes.POINTER(w.RECT))
             api.GetWindowRect.restype = w.BOOL
@@ -174,7 +246,13 @@ class ProductionRun(NativeRun):
             bounds = Rect(
                 rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top
             )
-            self.journal.owned_handles = (int(host.winId()),)
+            anchor = host
+            while (parent := anchor.parentWidget()) is not None:
+                anchor = parent
+            self.journal.owned_handles = tuple(
+                dict.fromkeys((int(anchor.winId()), int(host.winId())))
+            )
+            self.journal.binding_handle = int(anchor.winId())
         area = Rect(
             bounds.x + bounds.width * 0.2,
             bounds.y + bounds.height * 0.5,
@@ -197,6 +275,12 @@ class ProductionRun(NativeRun):
         """Never dismiss even a fixture menu while a worker still owns input."""
         if self.done:
             return
+        self._binding_poll.stop()
+        self._binding_action = None
+        try:
+            self.journal.retire()
+        except OSError as error:
+            self.errors.append(f"Driver retirement receipt failed: {error}")
         if not cleanup_confirmed(
             self.driver, selecting=self.app.controller.capture.is_selecting
         ):
@@ -252,6 +336,10 @@ class ProductionRun(NativeRun):
                 "errors": self.errors,
                 "frames": source.frames,
                 "foreign_owner": self.peer.owner if self.peer else None,
+                "driver_bound_before_capture": self.journal.bound,
+                "binding_nonce": self.journal.binding.get("nonce")
+                if self.journal.binding is not None
+                else None,
             }
         )
         (directory / "production-native-trace.json").write_text(
@@ -310,7 +398,8 @@ def test_production_broker_preserves_declared_owners(
                     run.schedule(run.post_hotkey)
                 else:
                     run.enter_scene("modal" if case.scene == "owned-modal" else "tray")
-                qtbot.waitUntil(lambda active=run: active.done, timeout=14000)
+                # Distinct 20s bind-only phase + unchanged 14s completion observer.
+                qtbot.waitUntil(lambda active=run: active.done, timeout=34000)
                 assert not run.errors
                 assert not driver.cleanup_errors()
                 assert journal.requests

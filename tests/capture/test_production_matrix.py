@@ -149,6 +149,15 @@ def test_driver_journal_is_scoped_single_use_and_not_a_completion_receipt(
     with pytest.raises(ValueError, match="nonempty"):
         journal.request("escape", Rect(1, 1, 20, 20))
     journal.owned_handles = (42,)
+    journal.binding_handle = 42
+    with pytest.raises(ValueError, match="bind"):
+        journal.request("escape", Rect(1, 1, 20, 20))
+    journal.prepare_binding(Rect(1, 1, 20, 20))
+    assert journal.binding is not None
+    acknowledgement = {**journal.binding, "phase": "bound-no-input"}
+    (tmp_path / "driver-bound.json").write_text(json.dumps(acknowledgement))
+    assert journal.binding_ready(Rect(1, 1, 20, 20))
+    assert journal.requests == []
     journal.request("escape", Rect(1, 1, 20, 20))
     assert json.loads((tmp_path / "driver-request.json").read_text())[
         "owned_hwnds"
@@ -156,6 +165,99 @@ def test_driver_journal_is_scoped_single_use_and_not_a_completion_receipt(
     assert not hasattr(journal, "completed")
     with pytest.raises(ValueError, match="once"):
         journal.request("escape", Rect(1, 1, 20, 20))
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"nonce": "old"},
+        {"phase": "input-now"},
+        {"binding_hwnd": True},
+        {"binding_hwnd": 43},
+        {"owned_hwnds": [43]},
+        {"owned_hwnds": [True]},
+    ],
+)
+def test_binding_rejects_foreign_or_malformed_acknowledgements(
+    tmp_path: Path, change: dict[str, object]
+) -> None:
+    """A file from another case or a loose JSON identity cannot arm capture."""
+    journal = DriverJournal(tmp_path, CASES[0])
+    journal.owned_handles = (42,)
+    journal.binding_handle = 42
+    area = Rect(1, 1, 20, 20)
+    journal.prepare_binding(area)
+    assert journal.binding is not None
+    payload = {**journal.binding, "phase": "bound-no-input", **change}
+    (tmp_path / "driver-bound.json").write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="stale or unrelated"):
+        journal.binding_ready(area)
+    assert not journal.bound
+    assert not journal.requests
+
+
+def test_binding_waits_for_complete_matching_scope_and_never_completes_capture(
+    tmp_path: Path,
+) -> None:
+    """Absent/partial acknowledgements cannot consume the actual input window."""
+    journal = DriverJournal(tmp_path, CASES[0])
+    journal.owned_handles = (1, 2)
+    journal.binding_handle = 1
+    area = Rect(-30, 50, 20, 20)
+    journal.prepare_binding(area)
+    assert not journal.binding_ready(area)
+    path = tmp_path / "driver-bound.json"
+    path.write_text('{"nonce":')
+    assert not journal.binding_ready(area)
+    path.write_text("x" * 4097)
+    with pytest.raises(ValueError, match="frame bound"):
+        journal.binding_ready(area)
+    path.unlink()
+    journal.owned_handles = (1, 3)
+    with pytest.raises(ValueError, match="scope changed"):
+        journal.binding_ready(area)
+    journal.owned_handles = (1, 2)
+    with pytest.raises(ValueError, match="scope changed"):
+        journal.binding_ready(Rect(-29, 50, 20, 20))
+    assert not journal.requests
+    assert not hasattr(journal, "completed")
+
+
+@pytest.mark.parametrize(
+    "rectangle",
+    [
+        None,
+        {},
+        {"x": 2, "y": 1, "width": 20, "height": 20},
+        {"x": True, "y": 1, "width": 20, "height": 20},
+        {"x": 1.0, "y": 1, "width": 20, "height": 20},
+        {"x": 1, "y": 1, "width": 20, "height": 20, "extra": 0},
+    ],
+)
+def test_binding_acknowledgement_requires_exact_integer_geometry(
+    tmp_path: Path,
+    rectangle: object,
+) -> None:
+    """A nonce/owner match cannot acknowledge a different or ambiguous region."""
+    journal = DriverJournal(tmp_path, CASES[0])
+    journal.owned_handles = (42,)
+    journal.binding_handle = 42
+    area = Rect(1, 1, 20, 20)
+    journal.prepare_binding(area)
+    assert journal.binding is not None
+    (tmp_path / "driver-bound.json").write_text(
+        json.dumps(
+            {
+                **journal.binding,
+                "phase": "bound-no-input",
+                "physical_rectangle": rectangle,
+            }
+        )
+    )
+    with pytest.raises(ValueError, match="geometry"):
+        journal.binding_ready(area)
+    assert not journal.bound
+    assert not journal.requests
 
 
 @pytest.mark.parametrize(

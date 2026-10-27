@@ -98,6 +98,110 @@ class DriverJournal:
         self.directory, self.case = directory, case
         self.requests: list[dict[str, object]] = []
         self.owned_handles: tuple[int, ...] = ()
+        self.binding_handle = 0
+        self.binding: dict[str, object] | None = None
+        self.bound = False
+        self.retired = False
+
+    def prepare_binding(self, area: Rect) -> None:
+        """Offer owned identities before capture, without authorizing any input."""
+        if (
+            self.binding is not None
+            or self.retired
+            or not self.owned_handles
+            or any(
+                type(handle) is not int or not 0 < handle < 2**64
+                for handle in self.owned_handles
+            )
+            or area.is_empty
+            or not all(
+                math.isfinite(v) for v in (area.x, area.y, area.width, area.height)
+            )
+        ):
+            raise ValueError("Driver binding must be scoped and offered only once")
+        if (
+            type(self.binding_handle) is not int
+            or self.binding_handle not in self.owned_handles
+        ):
+            raise ValueError("Driver binding anchor must belong to the owned handles")
+        self.binding = {
+            "nonce": uuid4().hex,
+            "phase": "bind-only-no-input",
+            "binding_hwnd": self.binding_handle,
+            "owned_hwnds": list(self.owned_handles),
+            "physical_rectangle": asdict(area.rounded()),
+            "input_generated_by_harness": False,
+        }
+        self.directory.mkdir(parents=True, exist_ok=True)
+        (self.directory / "driver-bind-request.json").write_text(
+            json.dumps(self.binding, indent=2), encoding="utf-8"
+        )
+        sys.stdout.write(
+            "VERDICLIP_NATIVE_BIND_REQUEST=" + json.dumps(self.binding) + "\n"
+        )
+        sys.stdout.flush()
+
+    def binding_ready(self, area: Rect) -> bool:
+        """A nonce-bound acknowledgement permits arming, never test completion."""
+        if self.retired:
+            return False
+        if self.binding is None:
+            return False
+        if (
+            list(self.owned_handles) != self.binding["owned_hwnds"]
+            or any(type(handle) is not int for handle in self.owned_handles)
+            or type(self.binding_handle) is not int
+            or self.binding_handle != self.binding["binding_hwnd"]
+            or asdict(area.rounded()) != self.binding["physical_rectangle"]
+        ):
+            raise ValueError("Driver binding scope changed before arming")
+        path = self.directory / "driver-bound.json"
+        if not path.exists():
+            return False
+        with path.open(encoding="utf-8") as stream:
+            text = stream.read(4097)
+        if len(text) > 4096:
+            raise ValueError("Driver binding acknowledgement exceeds its frame bound")
+        try:
+            value = json.loads(text)
+        except json.JSONDecodeError:
+            return (
+                False  # A partial write is not readiness; the deadline still applies.
+            )
+        if (
+            not isinstance(value, dict)
+            or value.get("nonce") != self.binding["nonce"]
+            or value.get("phase") != "bound-no-input"
+            or type(value.get("binding_hwnd")) is not int
+            or value.get("binding_hwnd") != self.binding_handle
+            or value.get("owned_hwnds") != list(self.owned_handles)
+            or not isinstance(value.get("owned_hwnds"), list)
+            or not all(type(handle) is int for handle in value["owned_hwnds"])
+        ):
+            raise ValueError("Driver binding acknowledgement is stale or unrelated")
+        rectangle = value.get("physical_rectangle")
+        if (
+            not isinstance(rectangle, dict)
+            or set(rectangle) != {"x", "y", "width", "height"}
+            or not all(type(coordinate) is int for coordinate in rectangle.values())
+            or rectangle != self.binding["physical_rectangle"]
+        ):
+            raise ValueError("Driver binding acknowledgement geometry is unrelated")
+        self.bound = True
+        return True
+
+    def retire(self) -> None:
+        """Invalidate delayed input instructions before the fixture is removed."""
+        if self.retired:
+            return
+        self.retired = True
+        if self.binding is not None:
+            (self.directory / "driver-retired.json").write_text(
+                json.dumps(
+                    {"nonce": self.binding["nonce"], "phase": "retired-no-input"}
+                ),
+                encoding="utf-8",
+            )
 
     def request(self, outcome: str, area: Rect) -> None:
         """Only a live capture terminal signal can complete this instruction."""
@@ -113,8 +217,13 @@ class DriverJournal:
             or any(h < 1 for h in self.owned_handles)
         ):
             raise ValueError("Driver request must be nonempty and issued only once")
+        if self.retired or not self.bound or not self.binding_ready(area):
+            raise ValueError(
+                "Driver must bind the declared fixture before input arming"
+            )
         request: dict[str, object] = {
-            "nonce": uuid4().hex,
+            "nonce": self.binding["nonce"] if self.binding is not None else "",
+            "phase": "input-now",
             "scene": self.case.scene,
             "outcome": outcome,
             "profile": self.case.profile.value,
