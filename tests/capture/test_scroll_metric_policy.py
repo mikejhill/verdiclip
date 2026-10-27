@@ -14,11 +14,18 @@ from verdiclip.capture.scroll import uia_process
 POLICY_SCRIPT = r"""
 param([string]$Helper)
 $ErrorActionPreference = 'Stop'
+$clock = [Diagnostics.Stopwatch]::StartNew()
+function Write-PolicyPhase([string]$Phase) {
+    [Console]::WriteLine(
+        ('policy-phase={0};elapsed-ms={1}' -f $Phase, $clock.ElapsedMilliseconds))
+}
+Write-PolicyPhase 'entry'
 $tokens = $null
 $errors = $null
 $ast = [Management.Automation.Language.Parser]::ParseFile(
     $Helper, [ref]$tokens, [ref]$errors)
 if ($errors.Count -gt 0) { throw 'Helper syntax failed' }
+Write-PolicyPhase 'parsed'
 $function = $ast.Find({
     param($node)
     $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
@@ -26,6 +33,8 @@ $function = $ast.Find({
 }, $true)
 if ($null -eq $function) { throw 'Ownership predicate missing' }
 . ([scriptblock]::Create($function.Extent.Text))
+Write-PolicyPhase 'function-bound'
+Write-PolicyPhase 'assertions-start'
 $reference = [pscustomobject]@{ vertical_percent=20; view_size=50 }
 if (-not (Test-OwnedScrollMetrics 20 50 $reference)) {
     throw 'Unchanged ownership refused'
@@ -37,6 +46,7 @@ if (Test-OwnedScrollMetrics 20 ([double]::PositiveInfinity) $reference) {
     throw 'Infinity accepted'
 }
 [Console]::WriteLine('owned-metrics-policy-passed')
+Write-PolicyPhase 'completed'
 """
 
 GEOMETRY_SCRIPT = (
@@ -56,6 +66,7 @@ if ($bounds.Count -ne 4 -or ($bounds -join ',') -ne '-100,21,300,99') {
     throw ('Incorrect integral physical bounds: ' + ($bounds -join ','))
 }
 [Console]::WriteLine('owned-metrics-policy-passed')
+Write-PolicyPhase 'completed'
 """
 )
 
@@ -64,7 +75,9 @@ BOUNDS_SCRIPT = (
         "Test-OwnedScrollMetrics", "Test-SamePhysicalBounds"
     )
     + r"""
+Write-PolicyPhase 'json-start'
 $expected = '[88.0,111.0,404.0,281.0]' | ConvertFrom-Json
+Write-PolicyPhase 'json-ready'
 if (-not (Test-SamePhysicalBounds @(88,111,404,281) $expected)) {
     throw 'Equivalent JSON numeric bounds were refused'
 }
@@ -81,8 +94,35 @@ if (Test-SamePhysicalBounds @(88,111,404,281) @(88,111,404,[double]::NaN)) {
     throw 'Nonfinite geometry accepted'
 }
 [Console]::WriteLine('owned-metrics-policy-passed')
+Write-PolicyPhase 'completed'
 """
 )
+
+
+def run_policy_probe(command: list[str]) -> subprocess.CompletedProcess[str]:
+    """Keep the deadline strict and retain partial phase evidence on timeout."""
+    try:
+        return subprocess.run(  # noqa: S603 - caller builds fixed local policy command
+            command,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+            creationflags=0x08000000,
+        )
+    except subprocess.TimeoutExpired as error:
+
+        def describe(value: str | bytes | None) -> str:
+            if isinstance(value, bytes):
+                value = value.decode("utf-8", errors="replace")
+            return (value or "")[-8192:]
+
+        raise AssertionError(
+            "Pure policy probe exceeded the unchanged 15s deadline; "
+            f"partial stdout={describe(error.stdout)!r}; "
+            f"partial stderr={describe(error.stderr)!r}. "
+            "Phase evidence does not establish the original incident's cause."
+        ) from error
 
 
 @pytest.mark.skipif(
@@ -104,7 +144,7 @@ def test_native_movement_guard_refuses_extent_and_position_drift(
         / "System32/WindowsPowerShell/v1.0/powershell.exe"
     )
     helper = Path(uia_process.__file__).with_name("uia_helper.ps1")
-    result = subprocess.run(  # noqa: S603 - fixed local pure-policy test, no native calls
+    result = run_policy_probe(
         [
             str(host),
             "-NoProfile",
@@ -114,11 +154,6 @@ def test_native_movement_guard_refuses_extent_and_position_drift(
             "-Helper",
             str(helper),
         ],
-        capture_output=True,
-        text=True,
-        timeout=15,
-        check=False,
-        creationflags=0x08000000,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "owned-metrics-policy-passed" in result.stdout
