@@ -31,6 +31,8 @@ def test_self_check_cannot_start_gui_or_consult_normal_state(
     assert editor_smoke.main(["--manifest", str(manifest), "--self-check"]) == 0
     receipt = json.loads(capsys.readouterr().out)
     assert receipt["capture"] is receipt["scrolling"] is False
+    assert receipt["label"] == "VerdiClip Editor Smoke aaaaaaaa"
+    assert receipt["instance_name"].endswith("-EditorOnly")
     assert receipt["native_ui_ready"] is receipt["native_scrolling_ready"] is False
     assert not (tmp_path / "state").exists()
     manifest.write_text(
@@ -66,6 +68,10 @@ def test_real_workspace_preserves_editor_only_policy_through_transfer(
         assert smoke.workspace.move(host, page)
         assert len(smoke.workspace.documents) == 2
         assert len(smoke.workspace.windows) == 2
+        smoke.workspace.windows[-1].hide()
+        assert not smoke.workspace.windows[-1].isVisible()
+        smoke.handle_forwarded([])
+        assert smoke.workspace.windows[-1].isVisible()
         for window in smoke.workspace.windows:
             assert smoke.label in window.windowTitle()
             for name in ("capture_scrolling", "settings", "about", "help", "print"):

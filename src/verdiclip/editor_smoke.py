@@ -21,6 +21,14 @@ from verdiclip.shell.instance import SingleInstance
 from verdiclip.verification import PreviewProfile, preview_logging
 
 
+def _label(profile: PreviewProfile) -> str:
+    return f"VerdiClip Editor Smoke {profile.commit[:8]}"
+
+
+def _instance_name(profile: PreviewProfile) -> str:
+    return profile.instance_name + "-EditorOnly"
+
+
 class EditorSmoke:
     """Compose only document/editor services; never construct AppController."""
 
@@ -28,7 +36,7 @@ class EditorSmoke:
         if profile.native_ui_ready or profile.native_scrolling_ready:
             raise ValueError("Editor smoke requires unchanged false readiness flags")
         self.profile = profile
-        self.label = f"VerdiClip Editor Smoke {profile.commit[:8]}"
+        self.label = _label(profile)
         store = SettingsStore(profile.settings_path)
         self.settings = profile.settings(store.load())
         store.save(self.settings)
@@ -96,6 +104,19 @@ class EditorSmoke:
                 painter.end()
             self.open_image(image, f"Synthetic {index}")
 
+    def handle_forwarded(self, files: list[str]) -> None:
+        """Treat a second explicit launch as an open/restore user action."""
+        for path in files:
+            self.open_file(Path(path))
+        if not files and self.workspace.windows:
+            host = self.workspace.windows[-1]
+            if host.isMinimized():
+                host.showNormal()
+            else:
+                host.show()
+            host.raise_()
+            host.activateWindow()
+
 
 def _load_profile(manifest: Path) -> PreviewProfile:
     payload = json.loads(manifest.read_text(encoding="utf-8-sig"))
@@ -111,9 +132,9 @@ def _run(profile: PreviewProfile, files: list[Path]) -> int:
     app = QApplication.instance() or QApplication(sys.argv[:1])
     if not isinstance(app, QApplication):
         raise TypeError("Editor smoke requires a widget application")
-    app.setApplicationName(f"VerdiClip Editor Smoke {profile.commit[:8]}")
+    app.setApplicationName(_label(profile))
     app.setQuitOnLastWindowClosed(True)
-    instance = SingleInstance(profile.instance_name + "-EditorOnly")
+    instance = SingleInstance(_instance_name(profile))
     if instance.forward([str(path.resolve()) for path in files]):
         return 0
     if not instance.listen():
@@ -121,9 +142,7 @@ def _run(profile: PreviewProfile, files: list[Path]) -> int:
     try:
         with preview_logging(profile):
             smoke = EditorSmoke(profile)
-            instance.message_received.connect(
-                lambda paths: [smoke.open_file(Path(path)) for path in paths]
-            )
+            instance.message_received.connect(smoke.handle_forwarded)
             if files:
                 for path in files:
                     smoke.open_file(path)
@@ -150,6 +169,8 @@ def main(argv: list[str] | None = None) -> int:
                 json.dumps(
                     {
                         **profile.describe(),
+                        "label": _label(profile),
+                        "instance_name": _instance_name(profile),
                         "mode": "editor-only-smoke",
                         "capture": False,
                         "scrolling": False,
