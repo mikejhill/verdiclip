@@ -80,7 +80,9 @@ def test_scope_is_revalidated_before_any_native_foreground_query(
     def forbidden(_name: str, **_kwargs: object) -> None:
         pytest.fail("Stale driver scope reached a native admission query")
 
-    monkeypatch.setattr("tests.capture.test_broker_native.ctypes.WinDLL", forbidden)
+    monkeypatch.setattr(
+        "tests.capture.test_broker_native.ctypes.WinDLL", forbidden, raising=False
+    )
     try:
         with pytest.raises(ValueError, match="scope changed"):
             run.budgets()

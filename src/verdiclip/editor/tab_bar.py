@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from typing import override
 
-from PySide6.QtCore import QEvent, QPoint, Qt, Signal
+from PySide6.QtCore import QEvent, QPoint, QSize, Qt, Signal
 from PySide6.QtGui import (
     QContextMenuEvent,
     QGuiApplication,
@@ -14,9 +14,10 @@ from PySide6.QtGui import (
     QMouseEvent,
     QPainter,
     QPaintEvent,
+    QPalette,
     QPen,
 )
-from PySide6.QtWidgets import QApplication, QTabBar
+from PySide6.QtWidgets import QApplication, QStyle, QStyleOptionTab, QTabBar
 from shiboken6 import isValid
 
 from verdiclip.editor.tab_preview import TabDragPreview
@@ -24,7 +25,7 @@ from verdiclip.platform.tab_drag import NativeTabDrag, Win32CaptureApi
 
 
 class DocumentTabBar(QTabBar):
-    """Use native styling while keeping gesture completion separate from moves."""
+    """Present palette-aware document tabs with separate gesture ownership."""
 
     drag_started = Signal(str)
     drag_moved = Signal(QPoint)
@@ -40,6 +41,8 @@ class DocumentTabBar(QTabBar):
         self.setElideMode(Qt.TextElideMode.ElideMiddle)
         self.setTabsClosable(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover)
+        self.setMouseTracking(True)
         self._pressed = -1
         self._origin = QPoint()
         self._dragging = False
@@ -208,13 +211,78 @@ class DocumentTabBar(QTabBar):
         super().contextMenuEvent(event)
 
     @override
+    def tabSizeHint(self, index: int) -> QSize:
+        """Reserve readable labels and native close controls in logical pixels."""
+        size = super().tabSizeHint(index)
+        return QSize(min(280, max(120, size.width() + 24)), max(40, size.height() + 12))
+
+    @override
     def paintEvent(self, event: QPaintEvent) -> None:
-        """Keep standard tab drawing and add a palette-aware insertion line."""
-        super().paintEvent(event)
-        if self._insertion < 0:
-            return
-        rectangle = self.tabRect(min(self._insertion, self.count() - 1))
-        x = rectangle.left() if self._insertion < self.count() else rectangle.right()
+        """Mark selection and keyboard focus without replacing native labels."""
+        del event
         painter = QPainter(self)
-        painter.setPen(QPen(self.palette().highlight().color(), 3))
-        painter.drawLine(x, 3, x, self.height() - 3)
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            for index in range(self.count()):
+                option = QStyleOptionTab()
+                self.initStyleOption(option, index)
+                selected = bool(option.state & QStyle.StateFlag.State_Selected)
+                hovered = bool(option.state & QStyle.StateFlag.State_MouseOver)
+                surface = (
+                    self.palette().base()
+                    if selected or hovered
+                    else self.palette().window()
+                )
+                painter.setBrush(surface)
+                painter.setPen(
+                    self.palette().mid().color() if selected else Qt.PenStyle.NoPen
+                )
+                painter.drawRoundedRect(
+                    self.tabRect(index).adjusted(2, 3, -2, -3), 7, 7
+                )
+                for group in (
+                    QPalette.ColorGroup.Active,
+                    QPalette.ColorGroup.Inactive,
+                    QPalette.ColorGroup.Disabled,
+                ):
+                    brush = self.palette().brush(
+                        group,
+                        QPalette.ColorRole.Text
+                        if selected or hovered
+                        else QPalette.ColorRole.WindowText,
+                    )
+                    for role in (
+                        QPalette.ColorRole.WindowText,
+                        QPalette.ColorRole.ButtonText,
+                    ):
+                        option.palette.setBrush(group, role, brush)
+                option.state &= ~QStyle.StateFlag.State_HasFocus
+                if not option.state & QStyle.StateFlag.State_Enabled:
+                    option.palette.setCurrentColorGroup(QPalette.ColorGroup.Disabled)
+                self.style().drawControl(
+                    QStyle.ControlElement.CE_TabBarTabLabel, option, painter, self
+                )
+
+            if self.currentIndex() >= 0:
+                active = self.tabRect(self.currentIndex()).adjusted(12, 0, -12, -5)
+                painter.setPen(QPen(self.palette().highlight().color(), 3))
+                painter.drawLine(active.bottomLeft(), active.bottomRight())
+                if self.hasFocus():
+                    painter.setPen(
+                        QPen(self.palette().text().color(), 1, Qt.PenStyle.DotLine)
+                    )
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
+                    painter.drawRoundedRect(
+                        self.tabRect(self.currentIndex()).adjusted(5, 5, -5, -7), 4, 4
+                    )
+            if self._insertion >= 0 and self.count():
+                rectangle = self.tabRect(min(self._insertion, self.count() - 1))
+                x = (
+                    rectangle.left()
+                    if self._insertion < self.count()
+                    else rectangle.right()
+                )
+                painter.setPen(QPen(self.palette().highlight().color(), 3))
+                painter.drawLine(x, 3, x, self.height() - 3)
+        finally:
+            painter.end()
