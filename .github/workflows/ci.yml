@@ -85,7 +85,10 @@ jobs:
           persist-credentials: false
       - name: One bounded pinned staging attempt and exact-package cleanup
         shell: pwsh
-        run: ./scripts/test_display_staging.ps1
+        run: |
+          ./scripts/test_display_staging_policy.ps1
+          ./scripts/test_display_staging_diagnostics.ps1
+          ./scripts/test_display_staging.ps1
   lint:
     if: github.event_name != 'workflow_dispatch' || (!inputs.desktop_capability_only && !inputs.owned_window_canary && !inputs.driver_signature_preflight && !inputs.driver_store_staging)
     name: Format and lint

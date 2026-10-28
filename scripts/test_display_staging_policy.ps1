@@ -21,6 +21,10 @@ Assert-Refused { Assert-StagingCompletion 5 10 'baseline' 'late-window-change' }
 Assert-Refused { Assert-StagingCompletion 10 10 'baseline' 'baseline' }
 Assert-Refused { Assert-StagingCompletion 11 10 'baseline' 'baseline' }
 Assert-Refused { Assert-StagingCompletion 1 10 '' '' }
+Assert-StagingDeadline 9 10
+$checks++
+Assert-Refused { Assert-StagingDeadline 10 10 }
+Assert-Refused { Assert-StagingDeadline -1 10 }
 $published = Get-PublishedPackages 'Published: OEM2.inf Original: mttvdd.inf; repeated oem2.inf'
 if (($published -join ',') -cne 'oem2.inf') { throw 'Filename tokenization failed.' }
 $checks++
@@ -87,9 +91,18 @@ foreach ($file in @('test_display_staging.ps1','display_staging_inventory.ps1','
         $processHelper = $ast.Find({param($n)
             $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-StagingProcess'
         },$true).Extent.Text
-        if ($processHelper.LastIndexOf('Assert-StagingCompletion') -le $processHelper.LastIndexOf('$output.Length') -or
-            $processHelper.LastIndexOf('Assert-StagingCompletion') -ge $processHelper.LastIndexOf('return $output')) {
+        if ($processHelper.LastIndexOf('Assert-StagingDeadline') -le $processHelper.LastIndexOf('$output.Length') -or
+            $processHelper.LastIndexOf('Assert-StagingDeadline') -ge $processHelper.LastIndexOf('return $output')) {
             throw 'Completion checks must follow output draining even after fast exit.'
+        }
+        if ($processHelper.IndexOf('Assert-StagingObservationCommand') -ge $processHelper.IndexOf('$child.Start()') -or
+            -not $processHelper.Contains('if (-not $ObservationOnly -and ($guardEverTripped -or $admissionEverFailed))')) {
+            throw 'Observation allowlist/failure latch missing before child start.'
+        }
+        foreach ($required in @('Invoke-StagingObservations','Get-StagingPostmortemPlan',
+            'if (-not $cleanupPlan.permit_exact_package_removal)',
+            '$admissionEverFailed = $true','failed_output_tails','guard_ever_tripped')) {
+            if (-not $text.Contains($required)) { throw ('Postmortem safeguard missing: '+$required) }
         }
         $checks++
     }

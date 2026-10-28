@@ -78,4 +78,30 @@ foreach($forbidden in @('DllImport','Start-Process','ProcessStartInfo','pnputil'
     if($text.Contains($forbidden)){throw 'Pure policy prototype contains executor operation.'}
 }
 $checks++
+$script:snapshotRead=$false
+$observed=Invoke-StagingObservations { throw 'synthetic package failure' } {
+    $script:snapshotRead=$true; return [pscustomobject]@{devices=@('fixture')}
+}
+if (-not $snapshotRead -or $observed.package_error -cne 'synthetic package failure' -or
+    $null -eq $observed.snapshot -or $observed.snapshot_error) { throw 'Package failure suppressed final snapshot.' };$checks++
+$observed=Invoke-StagingObservations { 'synthetic packages' } { throw 'synthetic snapshot failure' }
+if ($observed.packages -cne 'synthetic packages' -or $observed.snapshot_error -cne 'synthetic snapshot failure' -or
+    $observed.package_error -or $null -ne $observed.snapshot) { throw 'Snapshot failure suppressed package evidence.' };$checks++
+$observed=Invoke-StagingObservations { throw 'package' } { throw 'snapshot' }
+if ($observed.package_error -cne 'package' -or $observed.snapshot_error -cne 'snapshot') { throw 'Independent failures lost.' };$checks++
+$hostFixture='C:/fixture/pwsh.exe';$pnpFixture='C:/fixture/pnp.exe';$inventoryFixture='C:/fixture/inventory.ps1'
+Assert-StagingObservationCommand 'package-inventory' $pnpFixture @('/enum-drivers','/files') $hostFixture $pnpFixture $inventoryFixture
+$checks++
+Assert-StagingObservationCommand 'inventory' $hostFixture @('-NoProfile','-NonInteractive','-File',$inventoryFixture) $hostFixture $pnpFixture $inventoryFixture
+$checks++
+foreach($bad in @(
+    @{label='one-staging-attempt';exe=$pnpFixture;argv=@('/add-driver','fixture.inf')},
+    @{label='package-inventory';exe=$pnpFixture;argv=@('/add-driver','fixture.inf')},
+    @{label='package-inventory';exe=$pnpFixture;argv=@('/enum-drivers','/files','/delete-driver')},
+    @{label='package-inventory';exe=$hostFixture;argv=@('/enum-drivers','/files')},
+    @{label='inventory';exe=$hostFixture;argv=@('-NoProfile','-NonInteractive','-File','other.ps1')},
+    @{label='inventory';exe=$hostFixture;argv=@('-NoProfile','-NonInteractive','-Command','unsafe')}
+)) {
+    Refused { Assert-StagingObservationCommand $bad.label $bad.exe $bad.argv $hostFixture $pnpFixture $inventoryFixture }
+}
 Write-Output ($checks.ToString()+' pure diagnostic-policy checks passed; no desktop/native/driver invocation.')

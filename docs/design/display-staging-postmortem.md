@@ -15,7 +15,8 @@ signature-policy rejection, successful admission, or driver loading.
 All seven recorded owned child processes exited. The receipt contains no accepted
 stage result, exact package identity, removal operation or final snapshot.
 `partial_operation_uncertainty=true`, `cleanup_verified=false` and `passed=false`
-remain authoritative. No retry or runtime experiment is authorized.
+remain authoritative. That one-shot authorization was consumed; no runtime
+experiment was authorized.
 
 ## Why the final inventory is absent
 
@@ -43,7 +44,7 @@ disk-erasure receipt. Orphan-process cleanup and decommissioning are not proof
 of Driver Store removal, unchanged trust, unchanged devices or unchanged displays.
 No self-hosted-runner API absence is used as evidence of VM deletion.
 
-## Proposed correction, not wired into execution
+## Reviewed correction design at the initial postmortem
 
 The pure prototype in `scripts/display_staging_diagnostics.ps1` has no executor,
 native API, driver operation or workflow import. Its fake-state checks are in
@@ -76,11 +77,38 @@ native API, driver operation or workflow import. Its fake-state checks are in
    180-second normal phase, 90-second cleanup reserve and owned-process deadlines.
    Collection can fail independently; report each failure without claiming cleanup.
 
-Before any future execution, wire the structured witness into the native reader,
-split cleanup observation blocks, qualify executor modes and failure paths, and
-obtain independent review plus new explicit experiment approval. The current
-prototype cannot recover this VM's missing state and does not change the consumed
-authorization, historical receipt, pinned package, trust policy or native gates.
+This initial prototype could not recover the VM's missing state or change the
+historical receipt, pinned package, trust policy or native gates.
+
+## Next authorized diagnostic attempt
+
+On October 28 at 04:07:47 UTC Mike authorized continued GitHub Actions experiments.
+The next attempt retains the same pinned package and staging-only action on one
+fresh standard public Windows x64 VM. It does not authorize device creation,
+deliberate driver loading, display changes, certificate-trust changes, security
+weakening, prompt acceptance, reboot, paid infrastructure or action on Mike's PC.
+VerdiClip remains driver-free.
+
+The executor now imports the pure diagnostic policy. It latches global window
+changes and admission failures; captures bounded redacted failed-child tails and
+window witnesses; and restricts observation mode to exact package enumeration
+and the repository's read-only inventory command. The global guard remains fatal
+to admission and deletion. Observation workers may collect evidence after that
+failure, but their own visible window stops collection. Each query is separately
+bounded and a failed query does not skip the other query. No failure is retried as
+a new staging action. A later return to baseline never clears failure history.
+
+Deletion still requires an observed successful stage, no latched failure, one
+baseline-relative package addition, exact exported hashes and stable inventories.
+A failure can therefore leave a staged package on the disposable VM. Report that
+as uncertain or retained state; VM disposal is containment, never cleanup proof.
+No force/uninstall/reboot flags are permitted.
+
+The workflow runs pure/static checks before the one add. Normal execution keeps
+its 180-second limit, cleanup its 270-second total deadline, and the job its
+five-minute cap. No new artifacts or cache uploads are added. Independent review
+and pure/static validation must complete before publication and dispatch. Read
+the terminal receipt before proposing a different action or experiment.
 
 [run]: https://github.com/mikejhill/verdiclip/actions/runs/40621338936
 [reference]: https://docs.github.com/en/actions/reference/runners/github-hosted-runners

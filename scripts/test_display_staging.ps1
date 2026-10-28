@@ -4,6 +4,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 . (Join-Path $PSScriptRoot 'display_staging_policy.ps1')
+. (Join-Path $PSScriptRoot 'display_staging_diagnostics.ps1')
 if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or
     $env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_ARCH -ne 'X64' -or
     $env:GITHUB_REPOSITORY -ne 'mikejhill/verdiclip' -or
@@ -31,31 +32,60 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using System.Text;
 public static class StagingWindowGuard {
     delegate bool Callback(IntPtr h,IntPtr p);
     [DllImport("user32.dll",SetLastError=true)] static extern bool EnumWindows(Callback cb,IntPtr p);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h,out uint pid);
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
-    public static string Read() {
-        var rows=new List<string>(); Exception error=null;
+    [DllImport("user32.dll",CharSet=CharSet.Unicode,ExactSpelling=true,SetLastError=true)]
+    static extern int GetClassNameW(IntPtr h,StringBuilder name,int count);
+    static string Handle(IntPtr h) { return "0x"+unchecked((ulong)h.ToInt64()).ToString("x"); }
+    public static object Read() {
+        var rows=new List<object>(); Exception error=null;
         Callback cb=(h,p)=>{try {
             if(IsWindowVisible(h)) {
                 if(rows.Count>=1024)throw new Exception("Visible window bound");
                 uint pid;if(GetWindowThreadProcessId(h,out pid)==0)throw new Win32Exception();
-                rows.Add(h.ToInt64()+":"+pid);
+                var name=new StringBuilder(257);
+                if(GetClassNameW(h,name,257)==0)throw new Win32Exception();
+                rows.Add(new {handle=Handle(h),pid=pid,@class=name.ToString()});
             } return true;
         }catch(Exception e){error=e;return false;}};
         bool ok=EnumWindows(cb,IntPtr.Zero);GC.KeepAlive(cb);
         if(error!=null)throw error;if(!ok)throw new Win32Exception();
-        rows.Sort(StringComparer.Ordinal);return GetForegroundWindow().ToInt64()+"|"+string.Join("|",rows);
+        return new {foreground=Handle(GetForegroundWindow()),windows=rows.ToArray()};
     }
 }
 '@
 $windowBaseline = [StagingWindowGuard]::Read()
 $journal = [Collections.Generic.List[object]]::new()
+$guardEverTripped = $false; $admissionEverFailed = $false
+$witnessCount = 0; $lastWitnessKey = $null
 $deadline = 180000L
-function Invoke-StagingProcess([string]$Label, [string]$Executable, [string[]]$Arguments, [int]$Limit) {
+function Assert-StagingWindows([string]$Label, [switch]$ObservationOnly, [long]$WorkerPid=0) {
+    $frame = [StagingWindowGuard]::Read()
+    $witness = Get-StagingWindowWitness $windowBaseline $frame
+    if ($witness.changed) {
+        $script:guardEverTripped = $true
+        $key = ConvertTo-Json $witness -Depth 8 -Compress
+        if ($script:witnessCount -lt 16 -and $key -cne $script:lastWitnessKey) {
+            $journal.Add(@{phase=$Label;elapsed_ms=$clock.ElapsedMilliseconds;window_witness=$witness})
+            $script:witnessCount++; $script:lastWitnessKey = $key
+        }
+        if ($WorkerPid -gt 0 -and @($frame.windows | Where-Object pid -eq $WorkerPid).Count) {
+            throw 'Observation worker exposed a visible window; collection stopped.'
+        }
+        if (-not $ObservationOnly) { throw 'Visible window/foreground changed; possible prompt.' }
+    }
+}
+function Invoke-StagingProcess([string]$Label, [string]$Executable, [string[]]$Arguments, [int]$Limit,
+    [switch]$ObservationOnly) {
+    if ($ObservationOnly) {
+        Assert-StagingObservationCommand $Label $Executable $Arguments $hostPath $pnp `
+            (Join-Path $PSScriptRoot 'display_staging_inventory.ps1')
+    }
     $budget = Get-StagingBudget $clock.ElapsedMilliseconds $deadline $Limit
     if ($budget -le 5000) { throw 'Insufficient remaining child cleanup budget.' }
     $operationDeadline = [Math]::Min($deadline,$clock.ElapsedMilliseconds+$budget)
@@ -65,8 +95,13 @@ function Invoke-StagingProcess([string]$Label, [string]$Executable, [string[]]$A
     $info.RedirectStandardInput = $true
     foreach ($arg in $Arguments) { $info.ArgumentList.Add($arg) }
     $child = [Diagnostics.Process]::new(); $child.StartInfo = $info
-    $started = $false; $stopped = $false
+    $started = $false; $stopped = $false; $stdout = $null; $stderr = $null
+    $operationFailure = $null; $killed = $false; $exitCode = $null
     try {
+        Assert-StagingWindows $Label -ObservationOnly:$ObservationOnly
+        if (-not $ObservationOnly -and ($guardEverTripped -or $admissionEverFailed)) {
+            throw 'Prior failure forbids further guarded operations.'
+        }
         $started = $child.Start()
         if (-not $started) { throw 'Owned child did not start.' }
         if ($Label -eq 'one-staging-attempt') { $script:attempted = $true }
@@ -74,15 +109,16 @@ function Invoke-StagingProcess([string]$Label, [string]$Executable, [string[]]$A
         $stdout = $child.StandardOutput.ReadToEndAsync(); $stderr = $child.StandardError.ReadToEndAsync()
         $waitEnd = $operationDeadline - 5000
         while (-not $child.HasExited) {
-            if ([StagingWindowGuard]::Read() -cne $windowBaseline) { throw 'Visible window/foreground changed; possible prompt.' }
+            Assert-StagingWindows $Label -ObservationOnly:$ObservationOnly -WorkerPid $child.Id
             if ($child.MainWindowHandle -ne [IntPtr]::Zero) { throw 'Owned process exposed a window/prompt.' }
             $remaining = $waitEnd - $clock.ElapsedMilliseconds
             if ($remaining -le 0) { throw ('Owned process deadline: ' + $Label) }
             $child.WaitForExit([int][Math]::Min(200,$remaining)) | Out-Null
         }
         $stopped = $true
-        $observedWindows = [StagingWindowGuard]::Read()
-        Assert-StagingCompletion $clock.ElapsedMilliseconds $operationDeadline $windowBaseline $observedWindows
+        $exitCode = $child.ExitCode
+        Assert-StagingWindows $Label -ObservationOnly:$ObservationOnly -WorkerPid $child.Id
+        Assert-StagingDeadline $clock.ElapsedMilliseconds $operationDeadline
         if (-not $stdout.Wait(500) -or -not $stderr.Wait(500)) { throw 'Owned output drain incomplete.' }
         $output = $stdout.GetAwaiter().GetResult() + $stderr.GetAwaiter().GetResult()
         if ($output.Length -gt 8388608) { throw 'Owned output size bound exceeded.' }
@@ -91,28 +127,45 @@ function Invoke-StagingProcess([string]$Label, [string]$Executable, [string[]]$A
             $tail = $output.Substring([Math]::Max(0,$output.Length-4000)).Replace($root,'<staging>')
             throw ($Label + ' exit ' + $child.ExitCode + ': ' + $tail)
         }
-        $observedWindows = [StagingWindowGuard]::Read()
-        Assert-StagingCompletion $clock.ElapsedMilliseconds $operationDeadline $windowBaseline $observedWindows
+        Assert-StagingWindows $Label -ObservationOnly:$ObservationOnly -WorkerPid $child.Id
+        Assert-StagingDeadline $clock.ElapsedMilliseconds $operationDeadline
         if ($Label -eq 'one-staging-attempt') { $script:stageOutcomeObserved = $true }
         return $output
+    } catch {
+        $operationFailure = $_.Exception.Message.Replace($root,'<staging>')
+        throw
     } finally {
         if ($started -and -not $child.HasExited) {
             $child.Kill($true)
+            $killed = $true
             $left = [Math]::Max(0,[Math]::Min(5000,$deadline-$clock.ElapsedMilliseconds))
             $stopped = $child.WaitForExit([int]$left)
         }
-        $journal.Add(@{phase=$Label;owned_process_started=$started;owned_process_exited=$stopped})
+        if ($started -and $child.HasExited) { $stopped=$true; $exitCode=$child.ExitCode }
+        $tails = [ordered]@{stdout=$null;stderr=$null}
+        foreach ($stream in @(@{name='stdout';task=$stdout},@{name='stderr';task=$stderr})) {
+            # Never wait in the exception path. Completed output only, bounded and redacted.
+            if ($null -ne $stream.task -and $stream.task.IsCompletedSuccessfully) {
+                $value=$stream.task.GetAwaiter().GetResult()
+                $tails[$stream.name]=$value.Substring([Math]::Max(0,$value.Length-4000)).Replace($root,'<staging>')
+            }
+        }
+        $journal.Add(@{phase=$Label;owned_process_started=$started;owned_process_exited=$stopped;
+            killed=$killed;exit=$exitCode;failure=$operationFailure;elapsed_ms=$clock.ElapsedMilliseconds;
+            stdout_drained=($null -ne $stdout -and $stdout.IsCompletedSuccessfully);
+            stderr_drained=($null -ne $stderr -and $stderr.IsCompletedSuccessfully);
+            failed_output_tails=$(if($operationFailure){$tails}else{$null})})
         $child.Dispose()
         if ($started -and -not $stopped) { throw 'Owned process cleanup uncertain.' }
     }
 }
-function Read-StagingSnapshot {
+function Read-StagingSnapshot([switch]$ObservationOnly) {
     $json = Invoke-StagingProcess 'inventory' $hostPath @('-NoProfile','-NonInteractive','-File',
-        (Join-Path $PSScriptRoot 'display_staging_inventory.ps1')) 15000
+        (Join-Path $PSScriptRoot 'display_staging_inventory.ps1')) 15000 -ObservationOnly:$ObservationOnly
     return ConvertFrom-Json -InputObject $json -Depth 20
 }
-function Read-StagingPackages {
-    return Invoke-StagingProcess 'package-inventory' $pnp @('/enum-drivers','/files') 15000
+function Read-StagingPackages([switch]$ObservationOnly) {
+    return Invoke-StagingProcess 'package-inventory' $pnp @('/enum-drivers','/files') 15000 -ObservationOnly:$ObservationOnly
 }
 function Confirm-ExportIdentity([string]$PublishedInf) {
     $exportRoot = Join-Path $root ('export-' + [guid]::NewGuid().ToString('N'))
@@ -175,17 +228,44 @@ try {
     Assert-StagingSnapshotEqual $before $after
     if ($clock.ElapsedMilliseconds -ge $deadline) { throw 'Normal-path deadline expired before admission acceptance.' }
     $admitted = $true
-} catch { $failure = $_.Exception.Message.Replace($root,'<staging>') }
+} catch {
+    $admissionEverFailed = $true
+    $failure = $_.Exception.Message.Replace($root,'<staging>')
+}
 finally {
     $deadline = 270000L
+    $observationErrors = @()
+    # Separate observation from privileged cleanup. Every read retains its own child cap.
+    $observations = Invoke-StagingObservations { Read-StagingPackages -ObservationOnly } {
+        Read-StagingSnapshot -ObservationOnly
+    }
+    $currentPackages = $observations.packages; $final = $observations.snapshot
+    $packageObservations = [Collections.Generic.List[object]]::new()
+    $packageObservations.Add(@{phase='before-cleanup';elapsed_ms=$clock.ElapsedMilliseconds;
+        names=$(if($null -ne $currentPackages){@(Get-PublishedPackages $currentPackages)}else{$null});
+        error=$observations.package_error})
+    foreach ($errorText in @($observations.package_error,$observations.snapshot_error)) {
+        if ($errorText) { $observationErrors += $errorText.Replace($root,'<staging>') }
+    }
+    $cleanupPlan = $null
     try {
         if ($attempted) {
-            # Reidentify even after a failed/timed-out add. Never delete by output alone.
-            $currentPackages = Read-StagingPackages
+            # Observations do not authorize removal after a failed/interrupted attempt.
+            if ($admissionEverFailed -or $guardEverTripped -or -not $stageOutcomeObserved) {
+                throw 'Latched failure or incomplete stage outcome forbids removal.'
+            }
+            if ($observationErrors.Count -or $null -eq $currentPackages -or $null -eq $final) {
+                throw 'Missing independent cleanup observations.'
+            }
             $ownedPackage = Get-NewStagedPackage (Get-PublishedPackages $beforePackages) (Get-PublishedPackages $currentPackages)
             Confirm-ExportIdentity $ownedPackage | Out-Null
-            $preDelete = Read-StagingSnapshot
+            $preDelete = Read-StagingSnapshot # guarded immediate admission check
             Assert-StagingSnapshotEqual $before $preDelete # no unexpected binding/trust/display change
+            $cleanupPlan = Get-StagingPostmortemPlan -StageStarted $attempted -StageOutcomeObserved $stageOutcomeObserved `
+                -GuardEverTripped $guardEverTripped -AdmissionEverFailed $admissionEverFailed `
+                -BaselineKnown ($null -ne $before) -IdentityVerified $true -BindingsStable $true `
+                -TrustStable $true -DisplayStable $true -RemainingMilliseconds ($deadline-$clock.ElapsedMilliseconds)
+            if (-not $cleanupPlan.permit_exact_package_removal) { throw 'Cleanup policy refused removal.' }
             Invoke-StagingProcess 'remove-exact-owned-package' $pnp @('/delete-driver',$ownedPackage) 30000 | Out-Null
             $remainingPackages = Get-PublishedPackages (Read-StagingPackages)
             $baselinePackages = Get-PublishedPackages $beforePackages
@@ -196,22 +276,39 @@ finally {
             $final = Read-StagingSnapshot
             Assert-StagingSnapshotEqual $before $final
             if ($clock.ElapsedMilliseconds -ge $deadline) { throw 'Cleanup deadline expired before final acceptance.' }
-            $cleanupVerified = $true
+            $cleanupVerified = -not $guardEverTripped -and -not $admissionEverFailed -and $observationErrors.Count -eq 0
         }
     } catch { $cleanupFailure = $_.Exception.Message.Replace($root,'<staging>') }
+    # Even a failed ownership/export/delete check must not suppress the final read.
+    if ($cleanupFailure) {
+        $postFailure = Invoke-StagingObservations { Read-StagingPackages -ObservationOnly } {
+            Read-StagingSnapshot -ObservationOnly
+        }
+        $packageObservations.Add(@{phase='after-cleanup-failure';elapsed_ms=$clock.ElapsedMilliseconds;
+            names=$(if($null -ne $postFailure.packages){@(Get-PublishedPackages $postFailure.packages)}else{$null});
+            error=$postFailure.package_error})
+        if ($null -ne $postFailure.snapshot) { $final=$postFailure.snapshot }
+        foreach ($errorText in @($postFailure.package_error,$postFailure.snapshot_error)) {
+            if ($errorText) { $observationErrors += $errorText.Replace($root,'<staging>') }
+        }
+    }
     $partialOperationUncertainty = $attempted -and -not $stageOutcomeObserved
     if ($partialOperationUncertainty) {
         $cleanupVerified = $false
         $cleanupFailure = ([string]$cleanupFailure + '; OS staging outcome remains uncertain after incomplete child result.').TrimStart(';',' ')
     }
+    if ($guardEverTripped -or $admissionEverFailed -or $observationErrors.Count) { $cleanupVerified=$false }
     $success = $admitted -and $cleanupVerified -and $packageRemoved -and -not $failure -and -not $cleanupFailure
     $report = [ordered]@{
-        schema=1;kind='approved-disposable-driver-store-staging-only';source_sha=$env:GITHUB_SHA
+        schema=2;kind='approved-disposable-driver-store-staging-only';source_sha=$env:GITHUB_SHA
         runner_image=$env:ImageOS;image_version=$env:ImageVersion;os=[Environment]::OSVersion.Version.ToString()
         archive_sha256='e24210692b442b39af763536330ce78b423f19342b7a7792c26de3944e418b3a'
         attempted=$attempted;admitted=$admitted;owned_package=$ownedPackage;package_removed=$packageRemoved
         stage_outcome_observed=$stageOutcomeObserved;partial_operation_uncertainty=$partialOperationUncertainty
         cleanup_verified=$cleanupVerified;passed=[bool]$success;failure=$failure;cleanup_failure=$cleanupFailure
+        guard_ever_tripped=$guardEverTripped;admission_ever_failed=$admissionEverFailed
+        observation_errors=$observationErrors;cleanup_plan=$cleanupPlan;window_witnesses_truncated=($witnessCount -ge 16)
+        package_observations=$packageObservations.ToArray()
         before_snapshot=(Get-StagingSnapshotReceipt $before);final_snapshot=(Get-StagingSnapshotReceipt $final)
         signature_preflight_completed=($null -ne $preflightReport -and $preflightReport.verification_completed)
         elapsed_ms=$clock.ElapsedMilliseconds;journal=$journal.ToArray()

@@ -12,6 +12,9 @@ function Assert-StagingCompletion([long]$Elapsed, [long]$Deadline, [string]$Base
         throw 'Late completion, changed window/foreground or invalid completion evidence.'
     }
 }
+function Assert-StagingDeadline([long]$Elapsed, [long]$Deadline) {
+    if ($Elapsed -lt 0 -or $Elapsed -ge $Deadline) { throw 'Late or invalid completion evidence.' }
+}
 function Get-PublishedPackages([string]$Text) {
     return @([regex]::Matches($Text,'(?i)\boem\d+\.inf\b') | ForEach-Object {
         $_.Value.ToLowerInvariant()

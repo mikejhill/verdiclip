@@ -1,4 +1,4 @@
-# Pure prototype only. Not imported by the staging workflow or its executor.
+# Pure diagnostic policy. Native reads and privileged actions stay in the executor.
 Set-StrictMode -Version Latest
 function Get-StagingPostmortemPlan(
     [bool]$StageStarted, [bool]$StageOutcomeObserved, [bool]$GuardEverTripped=$true,
@@ -21,6 +21,26 @@ function Get-StagingPostmortemPlan(
         cleanup_success_established=$false # a plan is never post-removal evidence
         stage_or_retry_permitted=$false
         answer_prompt_permitted=$false
+    }
+}
+function Invoke-StagingObservations([scriptblock]$ReadPackages, [scriptblock]$ReadSnapshot) {
+    # Independent reads: a failed package query must not suppress the final snapshot.
+    $result = [ordered]@{packages=$null;snapshot=$null;package_error=$null;snapshot_error=$null}
+    try { $result.packages = & $ReadPackages } catch { $result.package_error = $_.Exception.Message }
+    try { $result.snapshot = & $ReadSnapshot } catch { $result.snapshot_error = $_.Exception.Message }
+    return $result
+}
+function Assert-StagingObservationCommand([string]$Label,[string]$Executable,[string[]]$Arguments,
+    [string]$HostPath,[string]$PnPPath,[string]$InventoryPath) {
+    if ($Label -ceq 'package-inventory') { $expectedExecutable=$PnPPath; $expectedArguments=@('/enum-drivers','/files') }
+    elseif ($Label -ceq 'inventory') {
+        $expectedExecutable=$HostPath; $expectedArguments=@('-NoProfile','-NonInteractive','-File',$InventoryPath)
+    } else { throw 'Observation mode is restricted to the two read-only commands.' }
+    if (-not $Executable -or $Executable -cne $expectedExecutable -or $Arguments.Count -ne $expectedArguments.Count) {
+        throw 'Unexpected observation executable/argument count.'
+    }
+    for ($index=0;$index -lt $expectedArguments.Count;$index++) {
+        if ($Arguments[$index] -cne $expectedArguments[$index]) { throw 'Unexpected observation argument.' }
     }
 }
 function ConvertTo-StagingHandle([string]$Handle) {
