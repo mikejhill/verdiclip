@@ -148,6 +148,7 @@ jobs:
         run: >-
           uv run --no-sync pytest tests/capture tests/platform/test_hotkeys.py
           tests/shell/test_hotkey_field.py
+          tests/shell/test_preview_manifest_contract.py
           -m "not native_desktop"
           --junitxml=capture-contracts.xml
       - name: Upload reproducible contract results
