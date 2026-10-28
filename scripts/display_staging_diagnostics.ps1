@@ -1,0 +1,87 @@
+# Pure prototype only. Not imported by the staging workflow or its executor.
+Set-StrictMode -Version Latest
+function Get-StagingPostmortemPlan(
+    [bool]$StageStarted, [bool]$StageOutcomeObserved, [bool]$GuardEverTripped=$true,
+    [bool]$AdmissionEverFailed=$true,
+    [bool]$BaselineKnown, [bool]$IdentityVerified, [bool]$BindingsStable,
+    [bool]$TrustStable, [bool]$DisplayStable, [long]$RemainingMilliseconds
+) {
+    # The executor must recompute this before EACH operation. These are not leases.
+    $budgetAvailable = $RemainingMilliseconds -gt 5000
+    $uncertain = $StageStarted -and -not $StageOutcomeObserved
+    $failureLatched = $GuardEverTripped -or $AdmissionEverFailed -or $uncertain
+    return [ordered]@{
+        collect_package_inventory=$budgetAvailable
+        collect_final_snapshot=$budgetAvailable
+        permit_exact_package_removal=($budgetAvailable -and $StageStarted -and
+            $StageOutcomeObserved -and -not $failureLatched -and $BaselineKnown -and
+            $IdentityVerified -and $BindingsStable -and $TrustStable -and $DisplayStable)
+        admission_failure_latched=$failureLatched
+        forbid_cleanup_success_claim=$failureLatched
+        cleanup_success_established=$false # a plan is never post-removal evidence
+        stage_or_retry_permitted=$false
+        answer_prompt_permitted=$false
+    }
+}
+function ConvertTo-StagingHandle([string]$Handle) {
+    if ($Handle -notmatch '^0x[0-9a-fA-F]{1,16}$') { throw 'Invalid window handle.' }
+    $number=[UInt64]::Parse($Handle.Substring(2),[Globalization.NumberStyles]::AllowHexSpecifier,
+        [Globalization.CultureInfo]::InvariantCulture)
+    return '0x'+$number.ToString('x',[Globalization.CultureInfo]::InvariantCulture)
+}
+function ConvertTo-StagingWindowMap($Frame) {
+    if ($null -eq $Frame) {
+        throw 'Missing or invalid window observation.'
+    }
+    ConvertTo-StagingHandle $Frame.foreground | Out-Null
+    $windows = @($Frame.windows)
+    if ($windows.Count -gt 1024) { throw 'Window observation bound exceeded.' }
+    $result = @{}
+    foreach ($window in $windows) {
+        $integerPid=$window.pid -is [int] -or $window.pid -is [uint32] -or $window.pid -is [long]
+        if (-not $integerPid -or $window.pid -le 0 -or $window.pid -gt 4294967295L -or
+            $window.class -isnot [string] -or $window.class.Length -eq 0 -or $window.class.Length -gt 256) {
+            throw 'Invalid window row.'
+        }
+        $handle = ConvertTo-StagingHandle $window.handle
+        if ($handle -eq '0x0') { throw 'Visible window cannot have a null handle.' }
+        if ($result.ContainsKey($handle)) { throw 'Ambiguous duplicate window handle.' }
+        # Retain no titles, command lines, screenshots or raw class names.
+        $bytes = [Text.UTF8Encoding]::new($false,$true).GetBytes($window.class)
+        $hash = [Security.Cryptography.SHA256]::HashData($bytes)
+        $result[$handle] = [ordered]@{handle=$handle;pid=[long]$window.pid;
+            class_sha256=[Convert]::ToHexString($hash).ToLowerInvariant()}
+    }
+    return $result
+}
+function Get-StagingWindowWitness($Before, $After, [int]$Limit=16) {
+    if ($Limit -lt 1 -or $Limit -gt 16) { throw 'Invalid witness bound.' }
+    $left = ConvertTo-StagingWindowMap $Before
+    $right = ConvertTo-StagingWindowMap $After
+    $added = @(); $removed = @()
+    foreach ($handle in @($left.Keys | Sort-Object)) {
+        if (-not $right.ContainsKey($handle) -or
+            (ConvertTo-Json $left[$handle] -Compress) -cne (ConvertTo-Json $right[$handle] -Compress)) {
+            $removed += $left[$handle]
+        }
+    }
+    foreach ($handle in @($right.Keys | Sort-Object)) {
+        if (-not $left.ContainsKey($handle) -or
+            (ConvertTo-Json $right[$handle] -Compress) -cne (ConvertTo-Json $left[$handle] -Compress)) {
+            $added += $right[$handle]
+        }
+    }
+    $beforeForeground=ConvertTo-StagingHandle $Before.foreground
+    $afterForeground=ConvertTo-StagingHandle $After.foreground
+    $foregroundChanged = $beforeForeground -cne $afterForeground
+    return [ordered]@{
+        changed=($foregroundChanged -or $added.Count -gt 0 -or $removed.Count -gt 0)
+        foreground_changed=$foregroundChanged
+        before_foreground=$beforeForeground;after_foreground=$afterForeground
+        added_count=$added.Count;removed_count=$removed.Count
+        added=@($added | Select-Object -First $Limit);removed=@($removed | Select-Object -First $Limit)
+        truncated=($added.Count -gt $Limit -or $removed.Count -gt $Limit)
+        prompt_identity_established=$false
+        transient_activity_excluded=$false
+    }
+}
