@@ -23,6 +23,10 @@ on:
         description: Approved one-shot disposable Driver Store staging only
         type: boolean
         default: false
+      publisher_trust_staging:
+        description: Specifically approved exact leaf trust; requires staging mode
+        type: boolean
+        default: false
       owned_window_canary:
         description: Bounded owned native window canary; skip normal CI
         type: boolean
@@ -44,7 +48,7 @@ env:
 jobs:
   rdp-prerequisites:
     name: Read-only RDP prerequisites (bounded)
-    if: github.event_name == 'workflow_dispatch' && inputs.rdp_prerequisites_only && !inputs.desktop_capability_only && !inputs.owned_window_canary && !inputs.driver_signature_preflight && !inputs.driver_store_staging
+    if: inputs.publisher_trust_staging != true && github.event_name == 'workflow_dispatch' && inputs.rdp_prerequisites_only && !inputs.desktop_capability_only && !inputs.owned_window_canary && !inputs.driver_signature_preflight && !inputs.driver_store_staging
     runs-on: windows-2025
     timeout-minutes: 2
     permissions:
@@ -62,7 +66,7 @@ jobs:
 
   desktop-capability:
     name: Windows desktop capability (bounded)
-    if: github.event_name == 'workflow_dispatch' && !inputs.rdp_prerequisites_only && !inputs.driver_signature_preflight && !inputs.driver_store_staging && (inputs.desktop_capability_only || inputs.owned_window_canary)
+    if: inputs.publisher_trust_staging != true && github.event_name == 'workflow_dispatch' && !inputs.rdp_prerequisites_only && !inputs.driver_signature_preflight && !inputs.driver_store_staging && (inputs.desktop_capability_only || inputs.owned_window_canary)
     runs-on: windows-2025
     timeout-minutes: 2
     permissions:
@@ -81,7 +85,7 @@ jobs:
 
   driver-signature:
     name: Display package signature preflight (no installation)
-    if: github.event_name == 'workflow_dispatch' && !inputs.rdp_prerequisites_only && inputs.driver_signature_preflight && !inputs.driver_store_staging
+    if: inputs.publisher_trust_staging != true && github.event_name == 'workflow_dispatch' && !inputs.rdp_prerequisites_only && inputs.driver_signature_preflight && !inputs.driver_store_staging
     runs-on: windows-2025
     timeout-minutes: 3
     permissions:
@@ -110,9 +114,10 @@ jobs:
         run: |
           ./scripts/test_display_staging_policy.ps1
           ./scripts/test_display_staging_diagnostics.ps1
+          ./scripts/test_publisher_trust.ps1
           ./scripts/test_display_staging.ps1
   lint:
-    if: github.event_name != 'workflow_dispatch' || (!inputs.rdp_prerequisites_only && !inputs.desktop_capability_only && !inputs.owned_window_canary && !inputs.driver_signature_preflight && !inputs.driver_store_staging)
+    if: inputs.publisher_trust_staging != true && (github.event_name != 'workflow_dispatch' || (!inputs.rdp_prerequisites_only && !inputs.desktop_capability_only && !inputs.owned_window_canary && !inputs.driver_signature_preflight && !inputs.driver_store_staging))
     name: Format and lint
     runs-on: windows-latest
     steps:
@@ -129,7 +134,7 @@ jobs:
         run: uv run ruff check --output-format=github .
 
   typecheck:
-    if: github.event_name != 'workflow_dispatch' || (!inputs.rdp_prerequisites_only && !inputs.desktop_capability_only && !inputs.owned_window_canary && !inputs.driver_signature_preflight && !inputs.driver_store_staging)
+    if: inputs.publisher_trust_staging != true && (github.event_name != 'workflow_dispatch' || (!inputs.rdp_prerequisites_only && !inputs.desktop_capability_only && !inputs.owned_window_canary && !inputs.driver_signature_preflight && !inputs.driver_store_staging))
     name: Type check (ty, every rule at error)
     runs-on: windows-latest
     steps:
@@ -143,7 +148,7 @@ jobs:
       - run: uv run ty check --output-format github
 
   test:
-    if: github.event_name != 'workflow_dispatch' || (!inputs.rdp_prerequisites_only && !inputs.desktop_capability_only && !inputs.owned_window_canary && !inputs.driver_signature_preflight && !inputs.driver_store_staging)
+    if: inputs.publisher_trust_staging != true && (github.event_name != 'workflow_dispatch' || (!inputs.rdp_prerequisites_only && !inputs.desktop_capability_only && !inputs.owned_window_canary && !inputs.driver_signature_preflight && !inputs.driver_store_staging))
     name: Tests (Python ${{ matrix.python }})
     runs-on: windows-latest
     strategy:
@@ -207,7 +212,7 @@ jobs:
           if-no-files-found: ignore
 
   ux-gallery:
-    if: github.event_name != 'workflow_dispatch' || (!inputs.rdp_prerequisites_only && !inputs.desktop_capability_only && !inputs.owned_window_canary && !inputs.driver_signature_preflight && !inputs.driver_store_staging)
+    if: inputs.publisher_trust_staging != true && (github.event_name != 'workflow_dispatch' || (!inputs.rdp_prerequisites_only && !inputs.desktop_capability_only && !inputs.owned_window_canary && !inputs.driver_signature_preflight && !inputs.driver_store_staging))
     name: UX gallery (light and dark)
     runs-on: windows-latest
     steps:
@@ -227,7 +232,7 @@ jobs:
           path: docs/ux/gallery
 
   build:
-    if: github.event_name != 'workflow_dispatch' || (!inputs.rdp_prerequisites_only && !inputs.desktop_capability_only && !inputs.owned_window_canary && !inputs.driver_signature_preflight && !inputs.driver_store_staging)
+    if: inputs.publisher_trust_staging != true && (github.event_name != 'workflow_dispatch' || (!inputs.rdp_prerequisites_only && !inputs.desktop_capability_only && !inputs.owned_window_canary && !inputs.driver_signature_preflight && !inputs.driver_store_staging))
     name: Build and verify distributions
     runs-on: windows-latest
     steps:
@@ -255,7 +260,7 @@ jobs:
           path: dist/
 
   audit:
-    if: github.event_name != 'workflow_dispatch' || (!inputs.rdp_prerequisites_only && !inputs.desktop_capability_only && !inputs.owned_window_canary && !inputs.driver_signature_preflight && !inputs.driver_store_staging)
+    if: inputs.publisher_trust_staging != true && (github.event_name != 'workflow_dispatch' || (!inputs.rdp_prerequisites_only && !inputs.desktop_capability_only && !inputs.owned_window_canary && !inputs.driver_signature_preflight && !inputs.driver_store_staging))
     name: Dependency vulnerability audit
     runs-on: ubuntu-latest
     steps:
@@ -272,7 +277,7 @@ jobs:
           uvx pip-audit --strict --no-deps --disable-pip --requirement requirements-audit.txt
 
   workflows:
-    if: github.event_name != 'workflow_dispatch' || (!inputs.rdp_prerequisites_only && !inputs.desktop_capability_only && !inputs.owned_window_canary && !inputs.driver_signature_preflight && !inputs.driver_store_staging)
+    if: inputs.publisher_trust_staging != true && (github.event_name != 'workflow_dispatch' || (!inputs.rdp_prerequisites_only && !inputs.desktop_capability_only && !inputs.owned_window_canary && !inputs.driver_signature_preflight && !inputs.driver_store_staging))
     name: Workflow lint and security
     runs-on: ubuntu-latest
     permissions:
@@ -332,7 +337,7 @@ jobs:
 
   ci-passed:
     name: CI passed
-    if: always() && (github.event_name != 'workflow_dispatch' || (!inputs.rdp_prerequisites_only && !inputs.desktop_capability_only && !inputs.owned_window_canary && !inputs.driver_signature_preflight && !inputs.driver_store_staging))
+    if: inputs.publisher_trust_staging != true && always() && (github.event_name != 'workflow_dispatch' || (!inputs.rdp_prerequisites_only && !inputs.desktop_capability_only && !inputs.owned_window_canary && !inputs.driver_signature_preflight && !inputs.driver_store_staging))
     needs: [lint, typecheck, test, ux-gallery, build, audit, workflows]
     runs-on: ubuntu-latest
     steps:

@@ -5,6 +5,8 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 . (Join-Path $PSScriptRoot 'display_staging_policy.ps1')
 . (Join-Path $PSScriptRoot 'display_staging_diagnostics.ps1')
+. (Join-Path $PSScriptRoot 'publisher_trust_policy.ps1')
+. (Join-Path $PSScriptRoot 'publisher_trust_operations.ps1')
 if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or
     $env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_ARCH -ne 'X64' -or
     $env:GITHUB_REPOSITORY -ne 'mikejhill/verdiclip' -or
@@ -12,11 +14,14 @@ if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hoste
     throw 'Staging requires one explicit standard hosted Windows x64 attempt.'
 }
 $event = Get-Content -Raw -LiteralPath $env:GITHUB_EVENT_PATH | ConvertFrom-Json
+$publisherTrustRequested = $event.inputs.PSObject.Properties.Name -contains 'publisher_trust_staging' -and
+    [string]$event.inputs.publisher_trust_staging -eq 'true'
 if ($event.repository.private -ne $false -or
     [string]$event.inputs.driver_store_staging -ne 'true' -or
     [string]$event.inputs.driver_signature_preflight -eq 'true' -or
     [string]$event.inputs.desktop_capability_only -eq 'true' -or
-    [string]$event.inputs.owned_window_canary -eq 'true') { throw 'Exclusive public staging dispatch required.' }
+    [string]$event.inputs.owned_window_canary -eq 'true' -or
+    [string]$event.inputs.rdp_prerequisites_only -eq 'true') { throw 'Exclusive public staging dispatch required.' }
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -330,8 +335,15 @@ $before = $null; $beforePackages = $null; $beforePackagesElapsed=0L; $attempted 
 $stageOutcomeObserved = $false
 $admitted = $false; $cleanupVerified = $false; $failure = $null; $cleanupFailure = $null
 $preflightReport = $null; $final = $null; $packageRemoved = $false
+$originalBefore=$null;$publisherLeaf=$null;$publisherAddAttempted=$false;$publisherAdded=$false
+$publisherRollback=$null;$publisherFailure=$null;$publisherBaselineAbsent=$false
+$publisherRollbackStarted=$null;$publisherRollbackFinished=$null
+$publisherVerification=$null
+$observationErrors=@();$cleanupPlan=$null;$packageObservations=[Collections.Generic.List[object]]::new()
+$partialOperationUncertainty=$false;$setupLogs=@();$success=$false
 try {
     $before = Read-StagingSnapshot
+    $originalBefore=$before
     Invoke-StagingProcess 'verify-existing-pnputil' $hostPath @('-NoProfile','-NonInteractive','-File',
         (Join-Path $PSScriptRoot 'display_staging_inventory.ps1'),'-VerifyPnPTool') 15000 | Out-Null
     $stateFile = Join-Path $root 'preflight.json'
@@ -357,6 +369,23 @@ try {
     $beforePackagesElapsed=$clock.ElapsedMilliseconds
     if ($beforePackages -match '(?i)mttvdd' -or
         $beforePackages.IndexOf($model.provider,[StringComparison]::OrdinalIgnoreCase) -ge 0) { throw 'Preexisting package/provider.' }
+    if($publisherTrustRequested) {
+        $publisherLeaf=Read-VerifiedPublisherLeaf (Join-Path $dataRoot 'VirtualDisplayDriver/MttVDD.cat')
+        if(Read-PinnedPublisherPresent){throw 'Publisher leaf already exists; no trust modification allowed.'}
+        $publisherBaselineAbsent=$true
+        Assert-StagingWindows 'before-publisher-add'
+        if($clock.ElapsedMilliseconds -ge 150000){throw 'Insufficient certificate rollback reserve.'}
+        # Mark before the write: even a throw after Add must enter independent rollback.
+        Add-OwnedPublisherLeaf $publisherLeaf { $script:publisherAddAttempted=$true }
+        $publisherAdded=Read-PinnedPublisherPresent
+        if(-not $publisherAdded){throw 'Publisher add not observed.'}
+        $expected=ConvertFrom-Json ($originalBefore | ConvertTo-Json -Depth 20) -Depth 20
+        $key='LocalMachine/TrustedPublisher'
+        if($expected.trust.$key -is [string]){throw 'Existing publisher store baseline required.'}
+        $expected.trust.$key=@(@($expected.trust.$key)+'3CF8CF26D8BA266C3A483AB7D26D4A818E317D76' | Sort-Object -CaseSensitive)
+        $before=Read-StagingSnapshot
+        Assert-StagingSnapshotEqual $expected $before
+    }
     $immediate = Read-StagingSnapshot
     Assert-StagingSnapshotEqual $before $immediate
     Assert-NoStagingMatch @($immediate.devices) $model.ids
@@ -378,6 +407,8 @@ try {
 }
 finally {
     $deadline = 270000L
+    if($publisherTrustRequested){$deadline=240000L} # independent 30-second trust rollback reserve
+    try {
     $observationErrors = @()
     # Separate observation from privileged cleanup. Every read retains its own child cap.
     $observations = Invoke-StagingObservations { Read-StagingPackages -ObservationOnly } {
@@ -442,6 +473,31 @@ finally {
     if ($guardEverTripped -or $admissionEverFailed -or $observationErrors.Count) { $cleanupVerified=$false }
     $setupLogs=Read-StagingSetupLogs
     $success = $admitted -and $cleanupVerified -and $packageRemoved -and -not $failure -and -not $cleanupFailure
+    } catch {
+        $cleanupVerified=$false;$success=$false
+        $cleanupFailure=([string]$cleanupFailure+'; '+$_.Exception.Message.Replace($root,'<staging>')).TrimStart(';',' ')
+    } finally {
+        $deadline=270000L
+        # Certificate rollback is deliberately outside the package/guard path.
+        # No package failure or global window delta suppresses this exact owned-leaf removal.
+        if($publisherAddAttempted -and $publisherBaselineAbsent -and $null -ne $publisherLeaf) {
+            $publisherRollbackStarted=$clock.ElapsedMilliseconds
+            $publisherRollback=Invoke-PublisherRollback { Remove-OwnedPublisherLeaf $publisherLeaf } {
+                -not (Read-PinnedPublisherPresent)
+            }
+            $publisherRollbackFinished=$clock.ElapsedMilliseconds
+            try {
+                $restored=Read-StagingSnapshot -ObservationOnly
+                Assert-StagingSnapshotEqual $originalBefore $restored
+                Assert-StagingDeadline $clock.ElapsedMilliseconds $deadline
+                $final=$restored
+            } catch {$publisherFailure=$_.Exception.Message.Replace($root,'<staging>')}
+        }
+        if($publisherTrustRequested -and (-not $publisherAdded -or $null -eq $publisherRollback -or
+            -not $publisherRollback.absent_verified -or $publisherRollback.remove_error -or
+            $publisherRollback.verification_error -or $publisherFailure)) {$success=$false;$cleanupVerified=$false}
+        if($null -ne $publisherLeaf){$publisherLeaf.Dispose()}
+    }
     $report = [ordered]@{
         schema=3;kind='approved-disposable-driver-store-staging-only';source_sha=$env:GITHUB_SHA
         runner_image=$env:ImageOS;image_version=$env:ImageVersion;os=[Environment]::OSVersion.Version.ToString()
@@ -454,11 +510,21 @@ finally {
         package_observations=$packageObservations.ToArray()
         baseline_packages=(Get-StagingPackageObservation 'before-staging' $beforePackagesElapsed $beforePackages)
         staging_child_identity=$stageChildIdentity;setup_log_observations=@($setupLogs)
-        before_snapshot=(Get-StagingSnapshotReceipt $before);final_snapshot=(Get-StagingSnapshotReceipt $final)
+        before_snapshot=(Get-StagingSnapshotReceipt $originalBefore);staging_snapshot=(Get-StagingSnapshotReceipt $before)
+        final_snapshot=(Get-StagingSnapshotReceipt $final)
+        publisher_trust_requested=$publisherTrustRequested;publisher_baseline_absent=$publisherBaselineAbsent
+        publisher_add_attempted=$publisherAddAttempted;publisher_added=$publisherAdded
+        publisher_rollback=$publisherRollback;publisher_restore_failure=$publisherFailure
+        publisher_rollback_started_ms=$publisherRollbackStarted;publisher_rollback_finished_ms=$publisherRollbackFinished
+        publisher_rollback_timely=($null -ne $publisherRollbackStarted -and $null -ne $publisherRollbackFinished -and
+            $publisherRollbackStarted -lt 270000 -and $publisherRollbackFinished -lt 270000)
+        publisher_store='LocalMachine/TrustedPublisher'
+        publisher_verification=$publisherVerification
+        publisher_sha256='69dfd3e1cbd49f039463edfe4c0d876c1dc7fdcd3aef08700a41355dc6c15fdb'
         signature_preflight_completed=($null -ne $preflightReport -and $preflightReport.verification_completed)
         elapsed_ms=$clock.ElapsedMilliseconds;journal=$journal.ToArray()
         device_creation_requested=$false;driver_loading_requested=$false;display_changes_requested=$false
-        trust_changes_requested=$false;prompts_answered=$false;reboot_requested=$false;artifacts_uploaded=$false
+        trust_changes_requested=$publisherTrustRequested;prompts_answered=$false;reboot_requested=$false;artifacts_uploaded=$false
         runtime_verified=$false;multi_monitor_verified=$false;product_driver_dependency=$false
         visible_window_poll_ms=200;unobserved_transient_activity_excluded=$false
     }
