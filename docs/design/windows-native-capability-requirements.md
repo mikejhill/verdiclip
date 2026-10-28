@@ -330,6 +330,30 @@ certificate import, security-policy changes or configuration of displays.
 
 ## Sources and existing evidence
 
+### Read-only RDP prerequisite dispatch
+
+The separately approved `rdp_prerequisites_only=true` mode runs one standard
+public `windows-2025` x64 job, capped at two minutes, with `contents: read` and
+checkout credentials disabled. Other capability/staging and ordinary upload/cache
+jobs are excluded. Pure/static/compile-only checks precede the inventory.
+
+The probe reads only current WTS protocol, existing `TermService` status, six
+allowlisted RDS DWORD settings, TCP/UDP binding categories for the configured
+port, and existence of inbox RDP/VMConnect files. The local network-table reads
+create no RDP connection. Addresses, user names, credentials and arbitrary
+registry contents are not emitted. A matching port is not proof of service
+ownership; wildcard binding is not proof of Internet reachability. Firewall and
+reachability are deliberately not probed.
+
+The script has a 45-second admission deadline; the two-minute job watchdog bounds
+any stalled read. Query failures and absent prerequisites produce a blocked
+receipt, never service, listener, firewall, credential or security configuration.
+No client is launched and no authentication or connection is attempted. The
+inventory's full feasibility remains blocked even if initial settings appear
+usable: permitted authentication, a topology-generating client, actual negative
+origin/mixed DPI and same-session Qt/Win32/mss capture remain unverified. An
+inventory success is not authorization for a session/client fixture or parity.
+
 - [Preview CI contract][preview-ci] separates simulation and native evidence.
 - [GitHub runner specifications][runners] list standard Windows x64 images.
 - [GitHub billing][billing] separates public compute and storage allowances.
