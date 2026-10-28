@@ -2,7 +2,45 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'publisher_trust_policy.ps1')
+. (Join-Path $PSScriptRoot 'display_staging_policy.ps1')
 $checks=0
+$baseline=[pscustomobject]@{devices=@('fixture-device');display=@('fixture-display');trust=[pscustomobject][ordered]@{
+    'CurrentUser/TrustedPublisher'=@('AAAA','BBBB');'LocalMachine/Root'=@('ROOT');
+    'LocalMachine/TrustedPublisher'=@('AAAA')
+}}
+$inherited=Get-ExpectedPublisherSnapshot $baseline
+$legacy=ConvertFrom-Json ($baseline | ConvertTo-Json -Depth 20) -Depth 20
+$legacy.trust.'LocalMachine/TrustedPublisher'=@('3CF8CF26D8BA266C3A483AB7D26D4A818E317D76','AAAA')
+$refused=$false;try{Assert-StagingSnapshotEqual $legacy $inherited}catch{$refused=$true}
+if(-not $refused){throw 'Legacy one-view projection failed to reproduce inherited-view mismatch.'};$checks++
+if($baseline.trust.'LocalMachine/TrustedPublisher'.Count -ne 1 -or
+    $inherited.trust.'CurrentUser/TrustedPublisher'.Count -ne 3 -or
+    ($baseline.trust.'LocalMachine/Root' -join '|') -cne ($inherited.trust.'LocalMachine/Root' -join '|')){
+    throw 'Projection mutated original or broadened a root store.'
+};$checks++
+$delta=@(Get-PublisherTrustDelta $baseline.trust $inherited.trust)
+if($delta.Count -ne 2 -or @($delta | Where-Object {-not $_.pinned_added -or $_.added_count -ne 1 -or $_.removed_count -ne 0}).Count){
+    throw 'Inherited-view delta not restricted to the one approved public leaf.'
+};$checks++
+foreach($section in @('devices','display')){
+    $bad=ConvertFrom-Json ($inherited | ConvertTo-Json -Depth 20) -Depth 20;$bad.$section=@('unexpected')
+    $refused=$false;try{Assert-StagingSnapshotEqual $inherited $bad}catch{$refused=$true}
+    if(-not $refused){throw 'Projection bypassed non-trust inventory guard.'};$checks++
+}
+$bad=ConvertFrom-Json ($inherited | ConvertTo-Json -Depth 20) -Depth 20
+$bad.trust.'LocalMachine/Root'=@('ROOT','UNEXPECTED')
+$refused=$false;try{Assert-StagingSnapshotEqual $inherited $bad}catch{$refused=$true}
+if(-not $refused){throw 'Unexpected Root change admitted.'};$checks++
+$rootDelta=@(Get-PublisherTrustDelta $inherited.trust $bad.trust)
+if($rootDelta.Count -ne 1 -or $rootDelta[0].store -cne 'LocalMachine/Root' -or $rootDelta[0].pinned_added){
+    throw 'Unexpected non-publisher delta hidden.'
+};$checks++
+$absent=ConvertFrom-Json ($baseline | ConvertTo-Json -Depth 20) -Depth 20
+$absent.trust.'CurrentUser/TrustedPublisher'='absent'
+if((Get-ExpectedPublisherSnapshot $absent).trust.'CurrentUser/TrustedPublisher'.Count -ne 1){throw 'Absent logical user view cannot inherit.'};$checks++
+$absent.trust.'LocalMachine/TrustedPublisher'='absent'
+$refused=$false;try{Get-ExpectedPublisherSnapshot $absent | Out-Null}catch{$refused=$true}
+if(-not $refused){throw 'Absent writable machine store accepted.'};$checks++
 $embeddedFixture=@(
     @{subject='leaf';issuer='intermediate';ca=$false},
     @{subject='root';issuer='root';ca=$true},
@@ -78,11 +116,12 @@ foreach($name in @('publisher_trust_policy.ps1','publisher_trust_operations.ps1'
     $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot $name),[ref]$tokens,[ref]$errors)
     if($errors.Count){throw ('Invalid syntax: '+$name)};$checks++
     $text=$ast.Extent.Text
-    foreach($forbidden in @('Import-Certificate','certutil','CurrentUser','TrustedPeople','Set-ItemProperty',
+    foreach($forbidden in @('Import-Certificate','certutil','TrustedPeople','Set-ItemProperty',
         'Accept-Prompt','SendInput',"'/install'","'/force'","'/reboot'")){
         if($text.Contains($forbidden)){throw ('Out-of-scope operation: '+$forbidden)}
     }
     if($name -eq 'publisher_trust_operations.ps1'){
+        if($text.Contains('CurrentUser')){throw 'User-store operation added.'};$checks++
         foreach($required in @("::new('TrustedPublisher','LocalMachine')",'OpenExistingOnly',
             'DisableCertificateDownloads=$true','X509RevocationMode]::Offline',
             'X509ChainTrustMode]::System','ExtraStore.Add($embedded[$index])',

@@ -44,6 +44,16 @@ write ownership immediately before Add, after the final absence check; a
 partial write that throws still requires independent rollback. Verify the
 post-add snapshot differs from the baseline only by this leaf.
 
+[Windows logical current-user stores inherit machine-store contents][inheritance].
+The expected snapshot therefore includes this same leaf in both logical
+TrustedPublisher views; the executor still opens and writes only the machine
+store. Every other trust entry/store and all devices/displays must match the
+baseline. Removal must restore both logical views. Diagnostic receipts retain
+changed store names, added/removed counts, pinned-leaf classification and
+per-store hashes without dumping unrelated certificate identifiers.
+
+[inheritance]: https://learn.microsoft.com/en-us/windows-hardware/drivers/install/local-machine-and-current-user-certificate-stores
+
 The trust temporarily covers other software signed by this certificate, not
 only this catalog. It is not a root import and does not establish suitability
 for runtime. No Root/CA changes, security disabling, prompts answered, device

@@ -339,6 +339,7 @@ $originalBefore=$null;$publisherLeaf=$null;$publisherAddAttempted=$false;$publis
 $publisherRollback=$null;$publisherFailure=$null;$publisherBaselineAbsent=$false
 $publisherRollbackStarted=$null;$publisherRollbackFinished=$null
 $publisherVerification=$null
+$publisherTrustDelta=@()
 $observationErrors=@();$cleanupPlan=$null;$packageObservations=[Collections.Generic.List[object]]::new()
 $partialOperationUncertainty=$false;$setupLogs=@();$success=$false
 try {
@@ -373,17 +374,15 @@ try {
         $publisherLeaf=Read-VerifiedPublisherLeaf (Join-Path $dataRoot 'VirtualDisplayDriver/MttVDD.cat')
         if(Read-PinnedPublisherPresent){throw 'Publisher leaf already exists; no trust modification allowed.'}
         $publisherBaselineAbsent=$true
+        $expected=Get-ExpectedPublisherSnapshot $originalBefore
         Assert-StagingWindows 'before-publisher-add'
         if($clock.ElapsedMilliseconds -ge 150000){throw 'Insufficient certificate rollback reserve.'}
         # Mark before the write: even a throw after Add must enter independent rollback.
         Add-OwnedPublisherLeaf $publisherLeaf { $script:publisherAddAttempted=$true }
         $publisherAdded=Read-PinnedPublisherPresent
         if(-not $publisherAdded){throw 'Publisher add not observed.'}
-        $expected=ConvertFrom-Json ($originalBefore | ConvertTo-Json -Depth 20) -Depth 20
-        $key='LocalMachine/TrustedPublisher'
-        if($expected.trust.$key -is [string]){throw 'Existing publisher store baseline required.'}
-        $expected.trust.$key=@(@($expected.trust.$key)+'3CF8CF26D8BA266C3A483AB7D26D4A818E317D76' | Sort-Object -CaseSensitive)
         $before=Read-StagingSnapshot
+        $publisherTrustDelta=@(Get-PublisherTrustDelta $originalBefore.trust $before.trust)
         Assert-StagingSnapshotEqual $expected $before
     }
     $immediate = Read-StagingSnapshot
@@ -520,6 +519,7 @@ finally {
             $publisherRollbackStarted -lt 270000 -and $publisherRollbackFinished -lt 270000)
         publisher_store='LocalMachine/TrustedPublisher'
         publisher_verification=$publisherVerification
+        publisher_trust_delta=$publisherTrustDelta
         publisher_sha256='69dfd3e1cbd49f039463edfe4c0d876c1dc7fdcd3aef08700a41355dc6c15fdb'
         signature_preflight_completed=($null -ne $preflightReport -and $preflightReport.verification_completed)
         elapsed_ms=$clock.ElapsedMilliseconds;journal=$journal.ToArray()
