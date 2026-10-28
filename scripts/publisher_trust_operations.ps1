@@ -28,12 +28,37 @@ function Read-PinnedPublisherPresent {
     } finally {$store.Dispose()}
 }
 function Read-VerifiedPublisherLeaf([string]$Catalog) {
+    if([IO.FileInfo]::new($Catalog).Length -gt 1048576){throw 'Pinned catalog size exceeded.'}
+    $catalogBytes=[IO.File]::ReadAllBytes($Catalog)
+    if($catalogBytes.Length -gt 1048576 -or
+        [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($catalogBytes)).ToLowerInvariant() -cne
+        '08a0093fc9b2e32b287a6f8a77ca4de0a31830d29fc33d2b13a918dc859468f6'){
+        throw 'Pinned catalog data mismatch.'
+    }
     $signature=Get-AuthenticodeSignature -LiteralPath $Catalog
     $leaf=$signature.SignerCertificate
     if($null -eq $leaf){throw 'Catalog signer absent.'}
     $chain=[Security.Cryptography.X509Certificates.X509Chain]::new()
+    $embedded=@()
     try {
+        Add-Type -AssemblyName System.Security.Cryptography.Pkcs
+        $cms=[Security.Cryptography.Pkcs.SignedCms]::new()
+        $cms.Decode($catalogBytes) # Parse public certificates; no store import or downloaded code execution.
+        $embedded=@($cms.Certificates)
+        if($embedded.Count -gt 16){throw 'Embedded certificate count exceeded.'}
+        $rows=@($embedded | ForEach-Object {
+            $constraints=@($_.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.19' })
+            @{subject=[Convert]::ToHexString($_.SubjectName.RawData);issuer=[Convert]::ToHexString($_.IssuerName.RawData);
+                ca=($constraints.Count -eq 1 -and $constraints[0].CertificateAuthority)}
+        })
+        $intermediates=Get-PublisherIntermediateIndices ([Convert]::ToHexString($leaf.IssuerName.RawData)) $rows
+        $inputHashes=@(foreach($index in $intermediates){
+            # ExtraStore is only untrusted chain material. Self-issued roots are excluded above.
+            $chain.ChainPolicy.ExtraStore.Add($embedded[$index]) | Out-Null
+            [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($embedded[$index].RawData)).ToLowerInvariant()
+        })
         # Offline, fail closed on unavailable revocation evidence; never fetch/import certificates.
+        $chain.ChainPolicy.TrustMode=[Security.Cryptography.X509Certificates.X509ChainTrustMode]::System
         $chain.ChainPolicy.DisableCertificateDownloads=$true
         $chain.ChainPolicy.RevocationMode=[Security.Cryptography.X509Certificates.X509RevocationMode]::Offline
         $chain.ChainPolicy.VerificationFlags=[Security.Cryptography.X509Certificates.X509VerificationFlags]::NoFlag
@@ -50,11 +75,17 @@ function Read-VerifiedPublisherLeaf([string]$Catalog) {
             authenticode_valid=($signature.Status -eq 'Valid');chain_valid=$chain.Build($leaf)
         }
         $script:publisherVerification=@{identity=$identity;
-            offline_chain_status=@($chain.ChainStatus | ForEach-Object { $_.Status.ToString() })}
+            embedded_intermediate_sha256=$inputHashes;trust_mode='System';revocation_mode='Offline';
+            revocation_flag=$chain.ChainPolicy.RevocationFlag.ToString();
+            issuer_downloads_disabled=$true;
+            chain_elements=@($chain.ChainElements | ForEach-Object {
+                @{thumbprint=$_.Certificate.Thumbprint;
+                    status=@($_.ChainElementStatus | ForEach-Object { $_.Status.ToString() })}
+            });offline_chain_status=@($chain.ChainStatus | ForEach-Object { $_.Status.ToString() })}
         Assert-PinnedPublisherIdentity $identity
         # Copy public DER only; the catalog signature object remains separate.
         return [Security.Cryptography.X509Certificates.X509Certificate2]::new($leaf.RawData)
-    } finally {$chain.Dispose();$leaf.Dispose()}
+    } finally {foreach($cert in $embedded){$cert.Dispose()};$chain.Dispose();$leaf.Dispose()}
 }
 function Add-OwnedPublisherLeaf($Leaf,[scriptblock]$ClaimWrite) {
     $store=Open-PinnedPublisherStore $true

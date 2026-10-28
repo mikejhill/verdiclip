@@ -3,6 +3,30 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'publisher_trust_policy.ps1')
 $checks=0
+$embeddedFixture=@(
+    @{subject='leaf';issuer='intermediate';ca=$false},
+    @{subject='root';issuer='root';ca=$true},
+    @{subject='unrelated';issuer='other-root';ca=$true},
+    @{subject='intermediate';issuer='root';ca=$true}
+)
+$indices=Get-PublisherIntermediateIndices 'intermediate' $embeddedFixture
+if($indices.Count -ne 1 -or $indices[0] -ne 3){throw 'Intermediate context included a root/unrelated/leaf certificate.'};$checks++
+foreach($issuer in @('root','missing')){
+    if((Get-PublisherIntermediateIndices $issuer $embeddedFixture).Count -ne 0){throw 'Root or absent issuer became extra trust input.'};$checks++
+}
+if((Get-PublisherIntermediateIndices 'missing' @()).Count -ne 0){throw 'Empty context mishandled.'};$checks++
+$longChain=@(for($i=0;$i -lt 9;$i++){@{subject=('ca'+$i);issuer=('ca'+($i+1));ca=$true}})
+foreach($bad in @(
+    @{issuer='leaf';rows=$embeddedFixture},
+    @{issuer='intermediate';rows=@($embeddedFixture[3],$embeddedFixture[3])},
+    @{issuer='a';rows=@(@{subject='a';issuer='b';ca=$true},@{subject='b';issuer='a';ca=$true})},
+    @{issuer='ca0';rows=$longChain},
+    @{issuer='';rows=$embeddedFixture},
+    @{issuer='a';rows=@(1..17 | ForEach-Object {@{subject='a';issuer='b';ca=$true}})}
+)){
+    $refused=$false;try{Get-PublisherIntermediateIndices $bad.issuer $bad.rows | Out-Null}catch{$refused=$true}
+    if(-not $refused){throw 'Unsafe or ambiguous embedded chain context admitted.'};$checks++
+}
 $valid=@{sha256='69dfd3e1cbd49f039463edfe4c0d876c1dc7fdcd3aef08700a41355dc6c15fdb';
     thumbprint='3CF8CF26D8BA266C3A483AB7D26D4A818E317D76';code_signing_eku=$true;
     end_entity=$true;valid_now=$true;authenticode_valid=$true;chain_valid=$true}
@@ -61,9 +85,15 @@ foreach($name in @('publisher_trust_policy.ps1','publisher_trust_operations.ps1'
     if($name -eq 'publisher_trust_operations.ps1'){
         foreach($required in @("::new('TrustedPublisher','LocalMachine')",'OpenExistingOnly',
             'DisableCertificateDownloads=$true','X509RevocationMode]::Offline',
+            'X509ChainTrustMode]::System','ExtraStore.Add($embedded[$index])',
+            'Get-PublisherIntermediateIndices','embedded_intermediate_sha256=$inputHashes',
             'Assert-PinnedPublisherIdentity $identity','Publisher already present immediately before add.')){
             if(-not $text.Contains($required)){throw ('Required safety check missing: '+$required)}
         }
+        foreach($forbidden in @('CustomRootTrust','CustomTrustStore','X509RevocationMode]::NoCheck',
+            'X509RevocationMode]::Online','IgnoreEndRevocationUnknown','IgnoreCertificateAuthorityRevocationUnknown')){
+            if($text.Contains($forbidden)){throw ('Verification policy weakened: '+$forbidden)}
+        };$checks++
         if([regex]::Matches($text,'\.Add\(\$Leaf\)').Count -ne 1 -or
             [regex]::Matches($text,'\.Remove\(\$Leaf\)').Count -ne 1){throw 'Trust mutation count changed.'};$checks++
     }

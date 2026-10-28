@@ -19,6 +19,20 @@ code-signing EKU, end-entity constraints, current validity and an offline chain
 without certificate downloads. Missing offline revocation evidence blocks the
 experiment; it does not permit relaxed verification.
 
+Decode the hash-pinned catalog's embedded certificates as data. Select only
+non-self-issued CA intermediates following the actual leaf's issuer path and
+provide them through in-memory `X509ChainPolicy.ExtraStore`. Reject ambiguous
+issuers, cycles and excessive depth/count. Embedded roots, leaf and unrelated
+timestamp certificates are excluded. ExtraStore is untrusted chain material;
+the system-root trust mode still decides whether the resulting path is trusted.
+Nothing imports intermediates into Root, CA or another persistent store.
+
+Offline revocation needs cached certificate-status evidence. A fresh runner is
+not assumed to have it; embedded intermediates do not supply CRLs or OCSP proof.
+Record per-element statuses and fail before writing if any required evidence is
+missing. No online warm-up, ignored revocation status, custom root trust or
+certificate download is added by this correction.
+
 Only this public leaf may be added to `LocalMachine\TrustedPublisher`:
 
 - Subject: SignPath Foundation.
