@@ -1,19 +1,27 @@
 #Requires -Version 7.0
+param([string]$StateFile = '')
 # Downloaded files are data only. Never invoke the package's installer or tools.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or
     $env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_ARCH -ne 'X64' -or
     $env:GITHUB_EVENT_NAME -ne 'workflow_dispatch' -or
     $env:GITHUB_REPOSITORY -ne 'mikejhill/verdiclip') {
     throw 'Inspection requires explicit standard hosted Windows x64 dispatch.'
 }
+if ($StateFile) {
+    $stateTarget = [IO.Path]::GetFullPath($StateFile)
+    $tempPrefix = [IO.Path]::GetFullPath($env:RUNNER_TEMP) + [IO.Path]::DirectorySeparatorChar
+    if (-not $stateTarget.StartsWith($tempPrefix,[StringComparison]::OrdinalIgnoreCase) -or
+        (Test-Path -LiteralPath $stateTarget)) { throw 'State output must be a new runner-temp file.' }
+}
 $uri = 'https://github.com/VirtualDrivers/Virtual-Display-Driver/releases/download/25.7.23/VirtualDisplayDriver-x86.Driver.Only.zip'
 $expected = 'e24210692b442b39af763536330ce78b423f19342b7a7792c26de3944e418b3a'
 $root = Join-Path $env:RUNNER_TEMP ('display-inspect-' + [guid]::NewGuid().ToString('N'))
 [IO.Directory]::CreateDirectory($root) | Out-Null
 $archive = Join-Path $root 'package.zip'
-Invoke-WebRequest -Uri $uri -OutFile $archive -TimeoutSec 40 -MaximumRedirection 5
+Invoke-WebRequest -Uri $uri -OutFile $archive -TimeoutSec 30 -MaximumRedirection 5
 $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
 if ($actual -ne $expected) { throw 'Pinned archive SHA256 mismatch; no extraction performed.' }
 $destination = Join-Path $root 'data'
@@ -146,6 +154,10 @@ $report = [ordered]@{
     amd64_packages=$packages; verification_results=$verifications.ToArray()
 }
 $json = $report | ConvertTo-Json -Depth 12
+if ($StateFile) {
+    [ordered]@{data_root=$destination;report=$report} | ConvertTo-Json -Depth 14 |
+        Set-Content -LiteralPath $stateTarget -Encoding utf8
+}
 Write-Output $json
 @('### Display package inspection only', '', '```json', $json, '```',
     'Completed inspection does not approve installation, driver loading or display capability.') -join "`n" |

@@ -245,8 +245,10 @@ No local inventory, driver, display change or provisioning is part of this step.
 VerdiClip requires **no driver installation**. The product uses existing OS APIs;
 this virtual-display candidate is optional disposable CI infrastructure only.
 It is not a product dependency, distributed component or user-machine prerequisite.
-No driver may be installed on Mike's computer. Current authorization permits
-read-only inspection only; installation anywhere remains unauthorized.
+No driver may be installed on Mike's computer. Signature inspection remains
+read-only. The separately [approved staging experiment][staging-proposal] permits
+only one bounded Driver Store addition/removal on a disposable hosted VM;
+device creation, deliberate loading and runtime installation remain unauthorized.
 
 The separately authorized `driver_signature_preflight=true` dispatch inspects
 only the pinned VirtualDrivers 25.7.23 display-only archive. SHA256 must equal
@@ -276,7 +278,8 @@ settings, and performs no reboot or display change. It never invokes the
 publisher's installer, including its TrustedPublisher-import behavior.
 Results remain logs/summary only, with all normal artifact/cache jobs skipped.
 An installation proposal must wait for the precise result and any tool gaps;
-installation and readiness are not approved by this preflight.
+installation and readiness are not approved by this preflight. The separate
+staging authorization does not broaden that verification claim.
 
 ### Interpret the signing policies separately
 
@@ -323,6 +326,7 @@ certificate import, security-policy changes or configuration of displays.
 [publisher-policy]: https://learn.microsoft.com/en-us/windows-hardware/drivers/install/trusted-publishers-certificate-store
 [parsec-displays]: https://support.parsec.app/hc/en-us/articles/32381733729044-Multiple-Monitors-and-Virtual-Displays
 [parsec-settings]: https://support.parsec.app/hc/en-us/articles/32381199341716-Parsec-App-for-Windows
+[staging-proposal]: display-staging-experiment-proposal.md
 
 ## Sources and existing evidence
 

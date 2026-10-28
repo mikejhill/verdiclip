@@ -1,12 +1,13 @@
 # Disposable display-package admission experiment proposal
 
-**Status: proposal only; not authorized or executed.** VerdiClip has no driver
+**Status: staging-only scope approved October 28; execution remains pending
+implementation review.** VerdiClip has no driver
 dependency. This candidate is optional disposable CI infrastructure. It must never
 be installed on Mike's computer or included in the product.
 
 ## Recommended approval boundary
 
-Request one manually dispatched, five-minute job on a fresh standard public
+The approved scope permits one manually dispatched, five-minute job on a fresh standard public
 GitHub-hosted `windows-2025` x64 VM in this repository. Permit only staging the
 pinned package into that VM's Driver Store and removing that exact addition.
 Do not create a device, request `/install`, load its driver, change display
@@ -14,14 +15,14 @@ configuration or run native product tests. This first experiment answers whether
 the existing Windows policy admits the package without changing trust. It does
 not qualify a virtual display, multi-monitor coverage or parity.
 
-Staging is itself a privileged system change and needs specific approval beyond
-the completed signature preflight. Microsoft distinguishes [staging from device
+Staging is itself a privileged system change; its separate approval does not
+authorize device installation. Microsoft distinguishes [staging from device
 installation][store]. A later runtime experiment requires its own reviewed
 device-creation helper, exact INF hardware ID and explicit approval to load the
 third-party UMDF DLL and allow any display arrival it causes. Those prerequisites
 are not established by the current preflight receipt.
 
-Suggested approval wording: "Permit one five-minute staging-only experiment for
+Recorded approval boundary: "Permit one five-minute staging-only experiment for
 the pinned VirtualDrivers package on a disposable standard GitHub Windows VM,
 using Windows PnPUtil and exact-package cleanup. No device creation or driver
 loading, trust changes, prompts accepted, reboot, display changes or local work."
@@ -138,7 +139,26 @@ exact-instance removal followed by exact-package cleanup. Configuration changes
 for multiple monitors or scaling need a separate, concrete scope. A driver load
 alone still cannot establish the required M profile or local/hosted parity.
 
+## Candidate limitations remain separate
+
+The candidate is the third-party VirtualDrivers Virtual Display Driver (MTT VDD)
+25.7.23 display-only package. Upstream [issue 449][issue449] reports degradation
+with three or more virtual screens on that release. The corresponding
+[per-monitor swapchain worker fix][pr482] merged on May 18, 2026, after this pinned
+July 2025 release. A merged source fix is not evidence that the approved binary
+contains it. Do not compile unreleased code or substitute another package under
+this staging authorization.
+
+Upstream [issue 497][issue497] also records limited maintainer availability and
+an invitation for additional maintainers in August 2026. These are maintenance
+and runtime risks, not a measured failure rate or proof of universal unreliability.
+Successful staging cannot qualify performance, multi-monitor runtime, reliability,
+parity or adoption. VerdiClip remains independent of this driver.
+
 [receipt]: https://github.com/mikejhill/verdiclip/actions/runs/40586066468
 [store]: https://learn.microsoft.com/en-us/windows-hardware/drivers/install/driver-store
 [publisher]: https://learn.microsoft.com/en-us/windows-hardware/drivers/install/trusted-publishers-certificate-store
 [devgen]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/devgen-command-syntax
+[issue449]: https://github.com/VirtualDrivers/Virtual-Display-Driver/issues/449
+[pr482]: https://github.com/VirtualDrivers/Virtual-Display-Driver/pull/482
+[issue497]: https://github.com/VirtualDrivers/Virtual-Display-Driver/issues/497
