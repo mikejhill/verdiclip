@@ -104,6 +104,14 @@ foreach ($file in @('test_display_staging.ps1','display_staging_inventory.ps1','
             '$admissionEverFailed = $true','failed_output_tails','guard_ever_tripped')) {
             if (-not $text.Contains($required)) { throw ('Postmortem safeguard missing: '+$required) }
         }
+        foreach ($required in @('baseline_packages=','staging_child_identity=','setup_log_observations=',
+            'child_pid=','Get-StagingCaptionClassification','Get-StagingSetupLogClassification')) {
+            if (-not $text.Contains($required)) { throw ('Diagnostic correlation missing: '+$required) }
+        }
+        foreach ($forbidden in @('SendMessage','PostMessage','SendInput','SetForegroundWindow','EnumChildWindows','UIAutomation')) {
+            if ($text.Contains($forbidden)) { throw ('Interactive/control-query operation added: '+$forbidden) }
+        }
+        $checks++
         $checks++
     }
     foreach ($call in @($ast.FindAll({param($n)
@@ -112,6 +120,11 @@ foreach ($file in @('test_display_staging.ps1','display_staging_inventory.ps1','
         # Compile repository C# constant definitions, NEVER invoke their methods.
         $definition=$call.CommandElements[-1]
         if ($definition -isnot [Management.Automation.Language.StringConstantExpressionAst]) { throw 'Unexpected dynamic C# source.' }
+        if($file -eq 'test_display_staging.ps1') {
+            $foreignCheck=$definition.Value.IndexOf('if(expectedPid==(uint)Environment.ProcessId)')
+            $captionRead=$definition.Value.IndexOf('int n=GetWindowTextW')
+            if($foreignCheck -lt 0 -or $captionRead -le $foreignCheck){throw 'Foreign-process caption check must precede query.'};$checks++
+        }
         Add-Type -TypeDefinition $definition.Value
         $checks++
     }

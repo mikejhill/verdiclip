@@ -1,6 +1,7 @@
 # Fake observations and policy states only. No native/driver/process operations.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'display_staging_policy.ps1')
 . (Join-Path $PSScriptRoot 'display_staging_diagnostics.ps1')
 $checks=0
 function Refused([scriptblock]$Call) {
@@ -104,4 +105,46 @@ foreach($bad in @(
 )) {
     Refused { Assert-StagingObservationCommand $bad.label $bad.exe $bad.argv $hostFixture $pnpFixture $inventoryFixture }
 }
+$caption=Get-StagingCaptionClassification ' Windows Security '
+if($caption.category -cne 'windows-security' -or $caption.prompt_answered -or $caption.purpose_proven){throw 'Caption overclaim/classification.'};$checks++
+foreach($known in @(@('Security Warning','security-warning'),@('User Account Control','uac'))) {
+    if((Get-StagingCaptionClassification $known[0]).category -cne $known[1]){throw 'Known caption category lost.'};$checks++
+}
+$secretTitle='synthetic-private-title-token'
+$caption=Get-StagingCaptionClassification $secretTitle
+if($caption.category -cne 'unclassified' -or ($caption|ConvertTo-Json).Contains($secretTitle) -or
+    $caption.sha256 -notmatch '^[a-f0-9]{64}$'){throw 'Caption leaked raw text or lacks digest.'};$checks++
+Refused { Get-StagingCaptionClassification ('x'*513) }
+$absent=Get-StagingPackageObservation 'fixture' 10 $null
+$empty=Get-StagingPackageObservation 'fixture' 11 ''
+if($absent.known -or -not $empty.known -or $empty.names.Count -ne 0){throw 'Missing and empty package evidence conflated.'};$checks++
+$baseline=Get-StagingPackageObservation 'baseline' 12 'oem2.inf oem1.inf oem2.inf'
+$reordered=Get-StagingPackageObservation 'baseline' 13 'oem1.inf oem2.inf'
+$added=Get-StagingPackageObservation 'final' 14 'oem1.inf oem2.inf oem3.inf MttVDD.inf'
+if(($baseline.names -join '|') -cne 'oem1.inf|oem2.inf' -or $baseline.sha256 -cne $reordered.sha256 -or
+    $baseline.sha256 -ceq $added.sha256 -or $baseline.pinned_inf_mentioned -or -not $added.pinned_inf_mentioned){throw 'Package receipt failed to distinguish retention candidate.'};$checks++
+Refused { Get-StagingPackageObservation 'bad' 0 @('oem1.inf') }
+$log=@'
+>>> [Other import - private-fixture.inf]
+!!! user cancelled untrusted publisher 0x11111111
+>>> [Driver Package Import - MttVDD.inf]
+!!! sig: publisher is not trusted. Dialog prompt. 0x800b0109
+<<< [Exit status: FAILURE(0x800b0109)]
+'@
+$classified=Get-StagingSetupLogClassification $log
+if($classified.relevant_sections -ne 1 -or -not $classified.mentions_untrusted -or
+    -not $classified.mentions_prompt -or -not $classified.mentions_publisher -or $classified.mentions_user_cancel -or
+    ($classified.hex_tokens -join '|') -cne '0x800b0109' -or $classified.policy_outcome_proven -or
+    ($classified|ConvertTo-Json).Contains('private-fixture')){throw 'SetupAPI section scope/classification failed.'};$checks++
+$none=Get-StagingSetupLogClassification 'unrelated private-text 0x12345678'
+if($none.relevant_sections -ne 0 -or $none.hex_tokens.Count -ne 0 -or $none.mentions_prompt){throw 'Unrelated log became package evidence.'};$checks++
+Refused { Get-StagingSetupLogClassification ('x'*262145) }
+$checkpoint=@{present=$true;length=100L;identity='file-one';anchor='anchor-one'}
+Assert-StagingLogContinuity $checkpoint 'file-one' 120 'anchor-one';$checks++
+Refused { Assert-StagingLogContinuity $checkpoint 'file-two' 120 'anchor-one' }
+Refused { Assert-StagingLogContinuity $checkpoint 'file-two' 100 'anchor-one' }
+Refused { Assert-StagingLogContinuity $checkpoint 'file-one' 120 'anchor-two' }
+Refused { Assert-StagingLogContinuity $checkpoint 'file-one' 99 'anchor-one' }
+Refused { Assert-StagingLogContinuity $null 'file-one' 120 'anchor-one' }
+Assert-StagingLogContinuity @{present=$false;length=0L} 'new-file' 10 'unused';$checks++
 Write-Output ($checks.ToString()+' pure diagnostic-policy checks passed; no desktop/native/driver invocation.')

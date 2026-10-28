@@ -41,6 +41,53 @@ public static class StagingWindowGuard {
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll",CharSet=CharSet.Unicode,ExactSpelling=true,SetLastError=true)]
     static extern int GetClassNameW(IntPtr h,StringBuilder name,int count);
+    [DllImport("user32.dll",CharSet=CharSet.Unicode,ExactSpelling=true)]
+    static extern int GetWindowTextW(IntPtr h,StringBuilder text,int count);
+    [StructLayout(LayoutKind.Sequential,CharSet=CharSet.Unicode)]
+    struct Entry { public uint Size,Usage,Pid; public UIntPtr Heap; public uint Module,Threads,Parent;
+        public int Priority; public uint Flags; [MarshalAs(UnmanagedType.ByValTStr,SizeConst=260)] public string Exe; }
+    [DllImport("kernel32.dll",SetLastError=true)] static extern IntPtr CreateToolhelp32Snapshot(uint flags,uint pid);
+    [DllImport("kernel32.dll",CharSet=CharSet.Unicode,ExactSpelling=true,SetLastError=true)]
+    static extern bool Process32FirstW(IntPtr snapshot,ref Entry entry);
+    [DllImport("kernel32.dll",CharSet=CharSet.Unicode,ExactSpelling=true,SetLastError=true)]
+    static extern bool Process32NextW(IntPtr snapshot,ref Entry entry);
+    [DllImport("kernel32.dll",SetLastError=true)] static extern bool CloseHandle(IntPtr handle);
+    [StructLayout(LayoutKind.Sequential)]
+    struct FileInfo { public uint Attributes,CreationLow,CreationHigh,AccessLow,AccessHigh,WriteLow,WriteHigh,
+        Volume,SizeHigh,SizeLow,Links,IndexHigh,IndexLow; }
+    [DllImport("kernel32.dll",SetLastError=true)]
+    static extern bool GetFileInformationByHandle(IntPtr handle,out FileInfo info);
+    public static string FileIdentity(IntPtr handle) {
+        FileInfo info;if(!GetFileInformationByHandle(handle,out info))throw new Win32Exception();
+        return info.Volume.ToString("x8")+":"+info.IndexHigh.ToString("x8")+info.IndexLow.ToString("x8")+
+            ":"+info.CreationHigh.ToString("x8")+info.CreationLow.ToString("x8");
+    }
+    public static string Caption(string value,uint expectedPid) {
+        if(expectedPid==(uint)Environment.ProcessId)throw new Exception("Foreign caption only");
+        IntPtr h=new IntPtr(unchecked((long)Convert.ToUInt64(value.Substring(2),16)));
+        uint pid;if(GetWindowThreadProcessId(h,out pid)==0 || pid!=expectedPid)throw new Exception("Window identity changed");
+        var name=new StringBuilder(257);
+        if(GetClassNameW(h,name,257)==0 || name.ToString()!="#32770")throw new Exception("Dialog class changed");
+        // Foreign caption only: no WM_GETTEXT, UIA, input, control invocation or secure-desktop access.
+        var text=new StringBuilder(513);int n=GetWindowTextW(h,text,513);
+        uint after;if(GetWindowThreadProcessId(h,out after)==0 || after!=expectedPid)throw new Exception("Window identity changed");
+        if(n>=512)throw new Exception("Caption may be truncated");return text.ToString();
+    }
+    public static uint Parent(uint targetPid) {
+        IntPtr snapshot=CreateToolhelp32Snapshot(2,0);
+        if(snapshot==new IntPtr(-1))throw new Win32Exception();
+        try {
+            var e=new Entry{Size=(uint)Marshal.SizeOf(typeof(Entry))};
+            var clock=System.Diagnostics.Stopwatch.StartNew();
+            bool found=Process32FirstW(snapshot,ref e);int count=0;
+            while(found) {
+                if(++count>4096 || clock.ElapsedMilliseconds>=500)throw new Exception("Process snapshot bound");
+                if(e.Pid==targetPid)return e.Parent;
+                found=Process32NextW(snapshot,ref e);
+            }
+            throw new Exception("Process absent from snapshot");
+        } finally { if(!CloseHandle(snapshot))throw new Win32Exception(); }
+    }
     static string Handle(IntPtr h) { return "0x"+unchecked((ulong)h.ToInt64()).ToString("x"); }
     public static object Read() {
         var rows=new List<object>(); Exception error=null;
@@ -63,7 +110,31 @@ $windowBaseline = [StagingWindowGuard]::Read()
 $journal = [Collections.Generic.List[object]]::new()
 $guardEverTripped = $false; $admissionEverFailed = $false
 $witnessCount = 0; $lastWitnessKey = $null
+$dialogDiagnosticsTaken = $false
+$stageChildIdentity = $null; $setupLogOffsets = @{}
 $deadline = 180000L
+function Read-StagingDialog([string]$Handle,[long]$WindowPid,[long]$WorkerPid) {
+    $process = $null; $worker = $null
+    try {
+        $process = Get-Process -Id $WindowPid -ErrorAction Stop
+        $worker = Get-Process -Id $WorkerPid -ErrorAction Stop
+        $created=$process.StartTime.ToUniversalTime().Ticks
+        $workerCreated=$worker.StartTime.ToUniversalTime().Ticks
+        $parentPid=[StagingWindowGuard]::Parent([uint32]$WindowPid)
+        $caption=[StagingWindowGuard]::Caption($Handle,[uint32]$WindowPid)
+        # PID reuse/exits invalidate correlation. Names are classified, never emitted verbatim.
+        if ($process.HasExited -or $worker.HasExited -or $null -eq $stageChildIdentity -or
+            $workerCreated -ne $stageChildIdentity.created_utc_ticks) { throw 'Process generation changed.' }
+        $knownName=$process.ProcessName.ToLowerInvariant()
+        if ($knownName -notin @('pnputil','rundll32','drvinst','consent','dllhost','svchost')) { $knownName='other' }
+        return [ordered]@{window_pid=$WindowPid;process_created_utc_ticks=$created;process_category=$knownName;
+            parent_pid=$parentPid;worker_pid=$WorkerPid;worker_created_utc_ticks=$workerCreated;
+            same_process=($WindowPid -eq $WorkerPid -and $created -eq $workerCreated);
+            direct_child_observed=($parentPid -eq $WorkerPid -and $created -ge $workerCreated);
+            caption=(Get-StagingCaptionClassification $caption);failure=$null}
+    } catch { return [ordered]@{window_pid=$WindowPid;worker_pid=$WorkerPid;failure='Dialog identity/caption observation unavailable.'} }
+    finally { if($null -ne $process){$process.Dispose()};if($null -ne $worker){$worker.Dispose()} }
+}
 function Assert-StagingWindows([string]$Label, [switch]$ObservationOnly, [long]$WorkerPid=0) {
     $frame = [StagingWindowGuard]::Read()
     $witness = Get-StagingWindowWitness $windowBaseline $frame
@@ -73,6 +144,14 @@ function Assert-StagingWindows([string]$Label, [switch]$ObservationOnly, [long]$
         if ($script:witnessCount -lt 16 -and $key -cne $script:lastWitnessKey) {
             $journal.Add(@{phase=$Label;elapsed_ms=$clock.ElapsedMilliseconds;window_witness=$witness})
             $script:witnessCount++; $script:lastWitnessKey = $key
+        }
+        if ($Label -eq 'one-staging-attempt' -and $WorkerPid -gt 0 -and -not $script:dialogDiagnosticsTaken) {
+            $script:dialogDiagnosticsTaken = $true
+            $dialog=@($frame.windows | Where-Object { $_.handle -eq $frame.foreground -and $_.class -ceq '#32770' })
+            if ($dialog.Count -eq 1 -and $clock.ElapsedMilliseconds -lt $deadline-5000) {
+                $journal.Add(@{phase='dialog-diagnostic';elapsed_ms=$clock.ElapsedMilliseconds;
+                    observation=(Read-StagingDialog $dialog[0].handle $dialog[0].pid $WorkerPid)})
+            }
         }
         if ($WorkerPid -gt 0 -and @($frame.windows | Where-Object pid -eq $WorkerPid).Count) {
             throw 'Observation worker exposed a visible window; collection stopped.'
@@ -104,7 +183,10 @@ function Invoke-StagingProcess([string]$Label, [string]$Executable, [string[]]$A
         }
         $started = $child.Start()
         if (-not $started) { throw 'Owned child did not start.' }
-        if ($Label -eq 'one-staging-attempt') { $script:attempted = $true }
+        if ($Label -eq 'one-staging-attempt') {
+            $script:attempted = $true
+            $script:stageChildIdentity=@{pid=$child.Id;created_utc_ticks=$child.StartTime.ToUniversalTime().Ticks}
+        }
         $child.StandardInput.Close() # never answer a publisher/UAC/console prompt
         $stdout = $child.StandardOutput.ReadToEndAsync(); $stderr = $child.StandardError.ReadToEndAsync()
         $waitEnd = $operationDeadline - 5000
@@ -151,6 +233,7 @@ function Invoke-StagingProcess([string]$Label, [string]$Executable, [string[]]$A
             }
         }
         $journal.Add(@{phase=$Label;owned_process_started=$started;owned_process_exited=$stopped;
+            child_pid=$(if($started){$child.Id}else{$null});
             killed=$killed;exit=$exitCode;failure=$operationFailure;elapsed_ms=$clock.ElapsedMilliseconds;
             stdout_drained=($null -ne $stdout -and $stdout.IsCompletedSuccessfully);
             stderr_drained=($null -ne $stderr -and $stderr.IsCompletedSuccessfully);
@@ -166,6 +249,62 @@ function Read-StagingSnapshot([switch]$ObservationOnly) {
 }
 function Read-StagingPackages([switch]$ObservationOnly) {
     return Invoke-StagingProcess 'package-inventory' $pnp @('/enum-drivers','/files') 15000 -ObservationOnly:$ObservationOnly
+}
+function Read-StagingLogAnchor($File,[long]$Length) {
+    $start=[Math]::Max(0,$Length-64);$File.Seek($start,[IO.SeekOrigin]::Begin)|Out-Null
+    $bytes=[byte[]]::new([int]($Length-$start));$offset=0
+    while($offset -lt $bytes.Length) {
+        if ($clock.ElapsedMilliseconds -ge $deadline-5000) { throw 'Log anchor budget exhausted.' }
+        $read=$File.Read($bytes,$offset,$bytes.Length-$offset)
+        if($read -eq 0){throw 'Log anchor unavailable.'};$offset+=$read
+    }
+    return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+}
+function Get-StagingLogCheckpoint([string]$Path) {
+    if(-not [IO.File]::Exists($Path)){return @{present=$false;length=0L;identity=$null;anchor=$null}}
+    $file=[IO.File]::Open($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,
+        ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+    try {
+        $length=$file.Length
+        return @{present=$true;length=$length;identity=[StagingWindowGuard]::FileIdentity($file.SafeFileHandle.DangerousGetHandle());
+            anchor=(Read-StagingLogAnchor $file $length)}
+    } finally {$file.Dispose()}
+}
+function Read-StagingSetupLogs {
+    $rows=@()
+    foreach ($name in @('setupapi.dev.log','setupapi.app.log')) {
+        $file=$null
+        try {
+            if ($clock.ElapsedMilliseconds -ge $deadline-5000 -or -not $setupLogOffsets.ContainsKey($name)) {
+                throw 'Missing pre-stage log baseline or diagnostic budget.'
+            }
+            $path=Join-Path $env:SystemRoot ('INF/'+$name)
+            if (-not [IO.File]::Exists($path)) { $rows+=@{name=$name;present=$false};continue }
+            $file=[IO.File]::Open($path,[IO.FileMode]::Open,[IO.FileAccess]::Read,
+                ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+            $checkpoint=$setupLogOffsets[$name];$baseline=[long]$checkpoint.length;$length=$file.Length
+            $identity=[StagingWindowGuard]::FileIdentity($file.SafeFileHandle.DangerousGetHandle())
+            $anchor=Read-StagingLogAnchor $file $baseline
+            Assert-StagingLogContinuity $checkpoint $identity $length $anchor
+            $start=[Math]::Max($baseline,$length-262144)
+            $file.Seek($start,[IO.SeekOrigin]::Begin)|Out-Null
+            $bytes=[byte[]]::new([int]($length-$start));$offset=0
+            while($offset -lt $bytes.Length) {
+                if ($clock.ElapsedMilliseconds -ge $deadline-5000) { throw 'SetupAPI read budget exhausted.' }
+                $read=$file.Read($bytes,$offset,$bytes.Length-$offset)
+                if($read -eq 0){throw 'SetupAPI suffix changed during read.'};$offset+=$read
+            }
+            $text=[Text.Encoding]::Latin1.GetString($bytes)
+            Assert-StagingLogContinuity $checkpoint ([StagingWindowGuard]::FileIdentity($file.SafeFileHandle.DangerousGetHandle())) `
+                $file.Length (Read-StagingLogAnchor $file $baseline)
+            $rows+=@{name=$name;present=$true;baseline_bytes=$baseline;observed_bytes=$length;
+                continuity_checked=$true;baseline_present=$checkpoint.present;
+                suffix_bytes=$bytes.Length;truncated=($start -gt $baseline);
+                classification=(Get-StagingSetupLogClassification $text)}
+        } catch { $rows+=@{name=$name;failure='SetupAPI observation unavailable or bounded read refused.'} }
+        finally { if($null -ne $file){$file.Dispose()} }
+    }
+    return $rows
 }
 function Confirm-ExportIdentity([string]$PublishedInf) {
     $exportRoot = Join-Path $root ('export-' + [guid]::NewGuid().ToString('N'))
@@ -187,7 +326,7 @@ function Confirm-ExportIdentity([string]$PublishedInf) {
     }
     return $true
 }
-$before = $null; $beforePackages = $null; $attempted = $false; $ownedPackage = $null
+$before = $null; $beforePackages = $null; $beforePackagesElapsed=0L; $attempted = $false; $ownedPackage = $null
 $stageOutcomeObserved = $false
 $admitted = $false; $cleanupVerified = $false; $failure = $null; $cleanupFailure = $null
 $preflightReport = $null; $final = $null; $packageRemoved = $false
@@ -215,11 +354,16 @@ try {
         '550d211fe481e74dfe3f9d724ed78be48b3a9113405965d683d9373e8d672f5d') { throw 'Pinned INF mismatch.' }
     $model = Get-StagingInfIdentity (Get-Content -Raw -LiteralPath $inf)
     $beforePackages = Read-StagingPackages
+    $beforePackagesElapsed=$clock.ElapsedMilliseconds
     if ($beforePackages -match '(?i)mttvdd' -or
         $beforePackages.IndexOf($model.provider,[StringComparison]::OrdinalIgnoreCase) -ge 0) { throw 'Preexisting package/provider.' }
     $immediate = Read-StagingSnapshot
     Assert-StagingSnapshotEqual $before $immediate
     Assert-NoStagingMatch @($immediate.devices) $model.ids
+    foreach ($name in @('setupapi.dev.log','setupapi.app.log')) {
+        $path=Join-Path $env:SystemRoot ('INF/'+$name)
+        $setupLogOffsets[$name]=Get-StagingLogCheckpoint $path
+    }
     Invoke-StagingProcess 'one-staging-attempt' $pnp @('/add-driver',$inf) 30000 | Out-Null
     $afterPackages = Read-StagingPackages
     $ownedPackage = Get-NewStagedPackage (Get-PublishedPackages $beforePackages) (Get-PublishedPackages $afterPackages)
@@ -241,9 +385,8 @@ finally {
     }
     $currentPackages = $observations.packages; $final = $observations.snapshot
     $packageObservations = [Collections.Generic.List[object]]::new()
-    $packageObservations.Add(@{phase='before-cleanup';elapsed_ms=$clock.ElapsedMilliseconds;
-        names=$(if($null -ne $currentPackages){@(Get-PublishedPackages $currentPackages)}else{$null});
-        error=$observations.package_error})
+    $packageReceipt=Get-StagingPackageObservation 'before-cleanup' $clock.ElapsedMilliseconds $currentPackages
+    $packageReceipt.error=$observations.package_error;$packageObservations.Add($packageReceipt)
     foreach ($errorText in @($observations.package_error,$observations.snapshot_error)) {
         if ($errorText) { $observationErrors += $errorText.Replace($root,'<staging>') }
     }
@@ -284,9 +427,8 @@ finally {
         $postFailure = Invoke-StagingObservations { Read-StagingPackages -ObservationOnly } {
             Read-StagingSnapshot -ObservationOnly
         }
-        $packageObservations.Add(@{phase='after-cleanup-failure';elapsed_ms=$clock.ElapsedMilliseconds;
-            names=$(if($null -ne $postFailure.packages){@(Get-PublishedPackages $postFailure.packages)}else{$null});
-            error=$postFailure.package_error})
+        $packageReceipt=Get-StagingPackageObservation 'after-cleanup-failure' $clock.ElapsedMilliseconds $postFailure.packages
+        $packageReceipt.error=$postFailure.package_error;$packageObservations.Add($packageReceipt)
         if ($null -ne $postFailure.snapshot) { $final=$postFailure.snapshot }
         foreach ($errorText in @($postFailure.package_error,$postFailure.snapshot_error)) {
             if ($errorText) { $observationErrors += $errorText.Replace($root,'<staging>') }
@@ -298,9 +440,10 @@ finally {
         $cleanupFailure = ([string]$cleanupFailure + '; OS staging outcome remains uncertain after incomplete child result.').TrimStart(';',' ')
     }
     if ($guardEverTripped -or $admissionEverFailed -or $observationErrors.Count) { $cleanupVerified=$false }
+    $setupLogs=Read-StagingSetupLogs
     $success = $admitted -and $cleanupVerified -and $packageRemoved -and -not $failure -and -not $cleanupFailure
     $report = [ordered]@{
-        schema=2;kind='approved-disposable-driver-store-staging-only';source_sha=$env:GITHUB_SHA
+        schema=3;kind='approved-disposable-driver-store-staging-only';source_sha=$env:GITHUB_SHA
         runner_image=$env:ImageOS;image_version=$env:ImageVersion;os=[Environment]::OSVersion.Version.ToString()
         archive_sha256='e24210692b442b39af763536330ce78b423f19342b7a7792c26de3944e418b3a'
         attempted=$attempted;admitted=$admitted;owned_package=$ownedPackage;package_removed=$packageRemoved
@@ -309,6 +452,8 @@ finally {
         guard_ever_tripped=$guardEverTripped;admission_ever_failed=$admissionEverFailed
         observation_errors=$observationErrors;cleanup_plan=$cleanupPlan;window_witnesses_truncated=($witnessCount -ge 16)
         package_observations=$packageObservations.ToArray()
+        baseline_packages=(Get-StagingPackageObservation 'before-staging' $beforePackagesElapsed $beforePackages)
+        staging_child_identity=$stageChildIdentity;setup_log_observations=@($setupLogs)
         before_snapshot=(Get-StagingSnapshotReceipt $before);final_snapshot=(Get-StagingSnapshotReceipt $final)
         signature_preflight_completed=($null -ne $preflightReport -and $preflightReport.verification_completed)
         elapsed_ms=$clock.ElapsedMilliseconds;journal=$journal.ToArray()

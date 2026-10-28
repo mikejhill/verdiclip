@@ -110,6 +110,50 @@ five-minute cap. No new artifacts or cache uploads are added. Independent review
 and pure/static validation must complete before publication and dispatch. Read
 the terminal receipt before proposing a different action or experiment.
 
+## Guarded diagnostic result and correlation correction
+
+[Run 40631068564][diagnostic-run] at `8f86c07` failed closed after 7.113 seconds
+of script execution. The new witness identifies a changed foreground window whose
+class hash matches `#32770`. Its purpose, caption and relationship to PnPUtil
+were not captured. The child printed that it was adding `MttVDD.inf`; the guard
+killed it with exit -1. No prompt was accepted and no package deletion occurred.
+All ten recorded children exited. Post-failure package queries succeeded and
+final device/trust/display hashes match baseline. Baseline package identifiers
+were missing, so package retention and cleanup remain unverified.
+
+The next correction retains baseline package identifiers, a canonical digest and
+observation timing. It records the staging child's PID and creation time and
+correlates a changed dialog's process/parent PID and creation time while the child
+is still present. PID alone never proves ownership. Correlation is observation,
+not authorization to control the dialog or remove a package.
+
+Only the changed foreground dialog is queried. [GetWindowTextW][caption] reads
+its foreign-process caption without activating it; no control text, messages,
+UIA invocation or secure-desktop access is requested. Raw captions are discarded;
+only an allowlisted caption category, length and digest enter the receipt. A
+caption category is not proof of the dialog's full purpose or policy outcome.
+
+The script records offsets, read-only file identity/creation information and a
+64-byte baseline anchor digest before staging, then rechecks continuity before
+and after reading at most 256 KiB of appended data from each [SetupAPI text log][setup-log]. Only sections
+mentioning the pinned INF contribute fixed keyword classifications, bounded hex
+tokens and a digest; a hex token is not necessarily an error code. No raw log lines
+are emitted. Rotation, unavailable data,
+truncation and limits remain explicit. Equal/larger replacements and changed
+baseline anchors are refused. A file absent before staging is reported separately
+if it appears afterward. Logging levels are never changed.
+
+Microsoft documents that the [Trusted Publishers store][publishers] affects
+silent driver installation. This is context for interpreting evidence, not a
+finding that the observed dialog is a publisher prompt, and not permission to
+change any store. No trust import, prompt acceptance or guard bypass is allowed.
+If the diagnostic evidence establishes that either is required, unattended
+staging remains blocked under the current constraints.
+
 [run]: https://github.com/mikejhill/verdiclip/actions/runs/40621338936
 [reference]: https://docs.github.com/en/actions/reference/runners/github-hosted-runners
 [lifecycle]: https://docs.github.com/actions/using-github-hosted-runners/using-github-hosted-runners
+[diagnostic-run]: https://github.com/mikejhill/verdiclip/actions/runs/40631068564
+[caption]: https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getwindowtextw
+[setup-log]: https://learn.microsoft.com/en-us/windows-hardware/drivers/install/setupapi-text-logs
+[publishers]: https://learn.microsoft.com/en-us/windows-hardware/drivers/install/trusted-publishers-certificate-store
