@@ -83,7 +83,6 @@ $workflow=Get-Content -Raw (Join-Path $PSScriptRoot '../.github/workflows/ci.yml
 if(-not $workflow.Contains('publisher_trust_staging:') -or -not $workflow.Contains('./scripts/test_publisher_trust.ps1')){
     throw 'Explicit opt-in or pure policy preflight missing.'
 };$checks++
-$jobs=[regex]::Matches($workflow,'(?ms)^  ([a-z][a-z0-9-]+):\r?\n(.*?)(?=^  [a-z][a-z0-9-]+:\r?\n|\z)')
 function Test-DispatchCondition([string]$Condition,$Flags){
     # Evaluate this repository's small boolean-only gate grammar, never arbitrary commands.
     $expression=$Condition.Replace('github.event_name',"'workflow_dispatch'")
@@ -104,10 +103,12 @@ function Test-UnexpectedGateCommand {$script:unexpectedGateCalled=$true;return $
 $refused=$false
 try {Test-DispatchCondition 'Test-UnexpectedGateCommand' @{}} catch {$refused=$true}
 if(-not $refused -or $unexpectedGateCalled){throw 'Gate evaluator admitted a command instead of boolean tokens.'};$checks++
+foreach($workflowVariant in @($workflow.Replace("`r`n","`n"),$workflow.Replace("`r`n","`n").Replace("`n","`r`n"))){
+$jobs=[regex]::Matches($workflowVariant,'(?ms)^  ([a-z][a-z0-9-]+):\r?\n(.*?)(?=^  [a-z][a-z0-9-]+:\r?\n|\z)')
 foreach($job in $jobs){
     $body=$job.Groups[2].Value
     if($body -notmatch '(?m)^    if: (.+)$'){continue}
-    $condition=$Matches[1]
+    $condition=$Matches[1].Trim()
     if($job.Groups[1].Value -eq 'driver-staging'){
         if(-not $condition.Contains('&& inputs.driver_store_staging &&') -or
             $condition.Contains('inputs.publisher_trust_staging != true') -or
@@ -126,5 +127,6 @@ foreach($job in $jobs){
         if((Test-DispatchCondition $condition $flags) -ne $expected){throw ('Wrong publisher flag matrix: '+$job.Groups[1].Value+' mask '+$mask)}
         $checks++
     }
+}
 }
 Write-Output ($checks.ToString()+' pure publisher identity/rollback/static checks passed; no store/native invocation.')

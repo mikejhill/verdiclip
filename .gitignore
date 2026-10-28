@@ -58,3 +58,6 @@ htmlcov/
 docs/ux/snapshots/
 docs/ux/gallery/
 mutants/
+
+# Local diagnostic receipts and synthetic reproductions
+.tmp/
