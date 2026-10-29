@@ -217,7 +217,10 @@ def hosted_bindings(item: Item) -> Bindings:
     import pytest  # noqa: PLC0415 - child hook only
     from PySide6.QtCore import qVersion  # noqa: PLC0415 - called only after target
     from PySide6.QtGui import QGuiApplication  # noqa: PLC0415 - metadata after target
-    from PySide6.QtWidgets import QSpinBox  # noqa: PLC0415 - descriptor only
+    from PySide6.QtWidgets import (  # noqa: PLC0415 - descriptors only
+        QFontComboBox,
+        QSpinBox,
+    )
 
     from verdiclip.editor.style_bar import StyleBar  # noqa: PLC0415
     from verdiclip.editor.window import EditorWindow  # noqa: PLC0415
@@ -236,8 +239,12 @@ def hosted_bindings(item: Item) -> Bindings:
         ),
         Patch(AppController, "_on_captured", "controller_on_captured"),
         Patch(EditorWindow, "__init__", "editor_init"),
+        Patch(EditorWindow, "show", "editor_show"),
+        Patch(EditorWindow, "raise_", "editor_raise"),
+        Patch(EditorWindow, "activateWindow", "editor_activate"),
         Patch(StyleBar, "__init__", "style_bar_init"),
         Patch(QSpinBox, "__init__", "spin_box_init"),
+        Patch(QFontComboBox, "__init__", "font_combo_init"),
     )
     return Bindings(
         patches if mode == "phases" else (),
