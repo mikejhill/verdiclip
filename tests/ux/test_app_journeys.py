@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 )
 from pytestqt.qtbot import QtBot
 from scripts.latency_trace import LatencyTrace
+from scripts.owned_modal import run_owned_modal
 from tests.platform.test_associations import FakeAssociationBackend
 from tests.platform.test_launcher import GUI, write_pe
 from tests.platform.test_shortcuts import FakeShortcutBackend
@@ -852,11 +853,27 @@ class TestSettingsEverywhere:
         def capture_then_close() -> None:
             app.press_hotkey("region")
             Overlay(app.controller.capture).drag((90, 90), (160, 140))
-            box.reject()
 
-        QTimer.singleShot(0, capture_then_close)
+        def arm_once(delay_ms: int, callback: Callable[[], None]) -> Callable[[], None]:
+            timer = QTimer(box)
+            timer.setSingleShot(True)
+            timer.timeout.connect(callback)
+            timer.start(delay_ms)
+
+            def stop() -> None:
+                timer.stop()
+                timer.deleteLater()
+
+            return stop
+
         try:
-            box.exec()
+            run_owned_modal(
+                execute=box.exec,
+                close=box.reject,
+                callback=capture_then_close,
+                arm=arm_once,
+                timeout_ms=5000,
+            )
         finally:
             qt_app.removeEventFilter(blocked)
         qtbot.wait(0)
