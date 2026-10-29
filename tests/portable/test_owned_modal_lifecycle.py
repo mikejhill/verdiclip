@@ -12,13 +12,18 @@ def test_early_return_still_propagates_retained_control_and_cleans() -> None:
     original = KeyboardInterrupt("cancel")
     closed = []
     stopped = []
-    state = _ModalState(lambda: None, lambda: closed.append(True), lambda: 0.0, 1.0)
+    reached_return = []
+
+    def fail_callback() -> None:
+        raise original
+
+    state = _ModalState(fail_callback, lambda: closed.append(True), lambda: 0.0, 1.0)
     state.stops.append(lambda: stopped.append(True))
 
     def return_early() -> None:
         with state:
-            with _DeferredCallbackScope(state):
-                raise original
+            state.invoke()
+            reached_return.append(True)
             return
 
     with pytest.raises(KeyboardInterrupt) as caught:
@@ -26,17 +31,20 @@ def test_early_return_still_propagates_retained_control_and_cleans() -> None:
     assert caught.value is original
     assert closed == [True]
     assert stopped == [True]
+    assert reached_return == [True]
     assert not state.scope_open
 
 
 def test_capture_without_mandatory_outer_propagation_is_rejected() -> None:
     """A callback capture cannot exist without an owner that must propagate it."""
     state = _ModalState(lambda: None, lambda: None, lambda: 0.0, 1.0)
+    body_entered = []
     with (
         pytest.raises(RuntimeError, match="active propagation scope"),
         _DeferredCallbackScope(state),
     ):
-        raise KeyboardInterrupt("must never be captured")
+        body_entered.append(True)
+    assert body_entered == []
     assert state.errors == []
 
 
