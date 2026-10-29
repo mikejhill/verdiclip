@@ -174,6 +174,21 @@ the actual spinbox constructor or prove font enumeration caused a delay. A fresh
 process also does not imply a cold OS font cache. No alternate backend, warmed
 path or reduced acceptance threshold replaces the failing product test.
 
+The later primitive probes may inherit OS file-cache warmth from the preceding
+capture and font-control tests. An independent standard Windows job therefore
+runs only the stock spinbox first, once per supported Qt profile, without any
+earlier editor, font or modal test on that VM. Its duration is informational;
+complete validated measurement is required, not a new speed threshold. This job
+does not warm or replace the product's first-capture job or its 300 ms assertion.
+
+Both jobs collect a fixed allowlist of source/run identity, runner image version,
+Windows build, actual Qt/QPA/style and font-directory inventory after measurement.
+The product timer is sampled at the original exposure endpoint before metadata
+is collected. Missing or differing profile facts make comparison incomparable.
+Even equal facts and independent VMs do not prove equally cold OS caches or an
+internal cause. Pytest hooks, prior product construction and extension-method
+patches remain distinct context factors for later matched subsets if needed.
+
 [qt-spin-init]: https://github.com/qt/qtbase/blob/v6.11.2/src/widgets/widgets/qabstractspinbox.cpp#L1512
 [qt-line-init]: https://github.com/qt/qtbase/blob/v6.11.2/src/widgets/widgets/qlineedit_p.cpp#L163
 [qt-line-layout]: https://github.com/qt/qtbase/blob/v6.11.2/src/widgets/widgets/qwidgetlinecontrol.cpp#L306

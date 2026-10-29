@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import subprocess
 from pathlib import Path
@@ -165,6 +166,102 @@ def test_supervisor_complete_children_remain_diagnostic(tmp_path: Path) -> None:
         receipt = json.loads((tmp_path / f"{mode}.json").read_text())
         assert receipt["complete"] is True
         assert receipt["report"] == report_for(mode)
+
+
+def test_single_mode_starts_no_predecessor_probe(tmp_path: Path) -> None:
+    """An independent stock job executes exactly its first selected operation."""
+    calls: list[str] = []
+
+    def runner(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(args[-1])
+        return subprocess.CompletedProcess(
+            args, 0, json.dumps(report_for(args[-1])), ""
+        )
+
+    complete = run_qt_cold_probes.run_all(tmp_path, runner, modes=("spinbox",))
+    assert complete is True
+    assert calls == ["spinbox"]
+    assert [p.name for p in tmp_path.iterdir()] == ["spinbox.json"]
+
+
+@pytest.mark.parametrize("field", run_qt_cold_probes.COMPARISON_FIELDS)
+@pytest.mark.parametrize("missing", [False, True])
+def test_comparison_rejects_every_missing_or_mismatched_profile_fact(
+    field: str, *, missing: bool
+) -> None:
+    """A matching Qt version alone cannot qualify environments as comparable."""
+    product: dict[str, object] = dict.fromkeys(
+        run_qt_cold_probes.COMPARISON_FIELDS, "same"
+    )
+    stock = dict(product)
+    if missing:
+        del product[field]
+        del stock[field]
+    else:
+        stock[field] = "different"
+    result = run_qt_cold_probes.compare_contexts(product, stock)
+    assert result["comparable_environment"] is False
+    assert result["missing_or_different"] == [field]
+
+
+def test_matching_profile_still_preserves_cache_and_causality_limit() -> None:
+    """An eligible comparison never proves OS cache state or a product fix."""
+    context: dict[str, object] = dict.fromkeys(
+        run_qt_cold_probes.COMPARISON_FIELDS, "same"
+    )
+    result = run_qt_cold_probes.compare_contexts(context, context)
+    assert result["comparable_environment"] is True
+    assert result["missing_or_different"] == []
+    assert "does not establish cold OS caches or causality" in str(result["limit"])
+
+
+def test_runner_metadata_is_allowlisted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No unrelated environment variable is copied into retained receipts."""
+    monkeypatch.setenv("GITHUB_SHA", "reviewed-source")
+    monkeypatch.setenv("UNRELATED_SECRET_SENTINEL", "never-copy-this")
+    result = qt_cold_probe.runner_context()
+    assert result["source_sha"] == "reviewed-source"
+    assert "never-copy-this" not in json.dumps(result)
+
+
+def test_product_samples_timer_before_context_inventory() -> None:
+    """Metadata collection cannot inflate or prewarm the original 300 ms path."""
+    root = Path(__file__).resolve().parents[2]
+    tree = ast.parse((root / "tests/ux/test_app_journeys.py").read_text())
+    case = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "test_hotkey_opens_focused_editor_with_select_tool"
+    )
+    sample = next(
+        node
+        for node in ast.walk(case)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(t, ast.Name) and t.id == "capture_elapsed_ms"
+            for t in node.targets
+        )
+    )
+    inventory = next(
+        node
+        for node in ast.walk(case)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "environment_metadata"
+    )
+    budget = next(
+        node
+        for node in ast.walk(case)
+        if isinstance(node, ast.Compare)
+        and isinstance(node.left, ast.Name)
+        and node.left.id == "capture_elapsed_ms"
+    )
+    assert isinstance(sample.value, ast.Attribute)
+    assert sample.value.attr == "elapsed_ms"
+    assert sample.lineno < inventory.lineno < budget.lineno
+    assert isinstance(budget.ops[0], ast.Lt)
+    assert ast.literal_eval(budget.comparators[0]) == 300
 
 
 def test_workflow_runs_probes_after_cold_gate_with_outer_deadline() -> None:

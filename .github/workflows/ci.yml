@@ -187,6 +187,40 @@ jobs:
             qt-cold-probes/
           if-no-files-found: warn
 
+  stock-cold:
+    name: Stock QSpinBox first workload (Qt ${{ matrix.qt }}, Python 3.13)
+    runs-on: windows-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        qt: ["6.11.2", "6.12.0"]
+    env:
+      QT_QPA_PLATFORM: offscreen
+      QT_VERSION: ${{ matrix.qt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+          python-version: "3.13"
+      - name: Install locked test dependencies
+        run: uv sync
+      - name: Select the explicit supported Qt profile
+        run: uv pip install --python .venv "pyside6-essentials==$env:QT_VERSION" "shiboken6==$env:QT_VERSION"
+      - name: First stock widget before any editor or font test
+        timeout-minutes: 1
+        run: uv run --no-sync python -m scripts.run_qt_cold_probes --mode spinbox --output qt-stock-first
+      - name: Retain first primitive receipt including incomplete evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: stock-first-qt${{ matrix.qt }}
+          path: qt-stock-first/
+          if-no-files-found: warn
+
   ux-gallery:
     name: UX gallery (light and dark)
     runs-on: windows-latest
@@ -312,7 +346,7 @@ jobs:
   ci-passed:
     name: CI passed
     if: always()
-    needs: [lint, typecheck, test, readiness-cold, ux-gallery, build, audit, workflows]
+    needs: [lint, typecheck, test, readiness-cold, stock-cold, ux-gallery, build, audit, workflows]
     runs-on: ubuntu-latest
     steps:
       - name: Require every job to succeed

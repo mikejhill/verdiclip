@@ -16,6 +16,41 @@ from scripts.qt_cold_probe import MODES
 
 TIMEOUT_SECONDS = 30
 OUTPUT_LIMIT = 65_536
+COMPARISON_FIELDS = (
+    "source_sha",
+    "run_id",
+    "run_attempt",
+    "python",
+    "qt",
+    "qpa",
+    "style",
+    "configured_font_directory",
+    "matching_direct_font_files",
+    "matching_direct_font_bytes",
+    "image_os",
+    "image_version",
+    "windows_build",
+    "runner_os",
+    "runner_arch",
+)
+
+
+def compare_contexts(
+    product: dict[str, object], stock: dict[str, object]
+) -> dict[str, object]:
+    """Missing or mismatched provenance makes timing comparison incomparable."""
+    differences = [
+        key
+        for key in COMPARISON_FIELDS
+        if product.get(key) is None
+        or product.get(key) == ""
+        or stock.get(key) != product.get(key)
+    ]
+    return {
+        "comparable_environment": not differences,
+        "missing_or_different": differences,
+        "limit": "Matched environment does not establish cold OS caches or causality",
+    }
 
 
 def _bounded_output(value: str | bytes | None) -> str:
@@ -77,11 +112,12 @@ def run_all(
     *,
     expected_qt: str | None = None,
     expected_qpa: str | None = None,
+    modes: tuple[str, ...] = MODES,
 ) -> bool:
     """One child per primitive; expiry/nonzero/invalid output never passes."""
     directory.mkdir(parents=True, exist_ok=True)
     complete = True
-    for mode in MODES:
+    for mode in modes:
         receipt: dict[str, object] = {"schema": 1, "mode": mode, "complete": False}
         try:
             child = runner(
@@ -120,6 +156,7 @@ def main(argv: list[str] | None = None) -> None:
     """Refuse accidental local use before launching any child or importing Qt."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--mode", choices=MODES)
     args = parser.parse_args(argv)
     if (
         os.environ.get("GITHUB_ACTIONS") != "true"
@@ -133,6 +170,7 @@ def main(argv: list[str] | None = None) -> None:
         args.output,
         expected_qt=expected_qt,
         expected_qpa=os.environ.get("QT_QPA_PLATFORM", "offscreen"),
+        modes=(args.mode,) if args.mode is not None else MODES,
     ):
         raise SystemExit(
             "One or more constituent probes are incomplete; inspect receipts."

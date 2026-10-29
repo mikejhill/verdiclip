@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import platform
 import sys
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -51,14 +52,37 @@ def font_inventory(directory: str | None) -> dict[str, object]:
     return result
 
 
-def _metadata(app: QApplication) -> dict[str, object]:
+def runner_context() -> dict[str, object]:
+    """Read a fixed allowlist, never the complete runner environment."""
+    return {
+        "python": sys.version.split()[0],
+        "source_sha": os.environ.get("GITHUB_SHA"),
+        "run_id": os.environ.get("GITHUB_RUN_ID"),
+        "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+        "image_os": os.environ.get("IMAGEOS"),
+        "image_version": os.environ.get("IMAGEVERSION"),
+        "windows_build": platform.version(),
+        "runner_os": os.environ.get("RUNNER_OS"),
+        "runner_arch": os.environ.get("RUNNER_ARCH"),
+    }
+
+
+def environment_metadata(app: QApplication) -> dict[str, object]:
+    """Collect only whitelisted comparison facts after the measured path."""
     from PySide6.QtCore import qVersion  # noqa: PLC0415 - no Qt before hosted admission
 
     return {
-        "python": sys.version.split()[0],
+        **runner_context(),
         "qt": qVersion(),
         "qpa": app.platformName(),
         "style": app.style().objectName(),
+        **font_inventory(os.environ.get("QT_QPA_FONTDIR")),
+    }
+
+
+def _metadata(app: QApplication) -> dict[str, object]:
+    return {
+        **environment_metadata(app),
         "os_font_cache": "unknown; not reset",
         "process_font_cache": (
             "application constructed; no earlier explicit probe/widget; "
@@ -68,7 +92,6 @@ def _metadata(app: QApplication) -> dict[str, object]:
             "Independent constituent probes, not internal C++ phase accounting; "
             "not native Windows latency or foreground/input qualification"
         ),
-        **font_inventory(os.environ.get("QT_QPA_FONTDIR")),
     }
 
 

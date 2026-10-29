@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 from pytestqt.qtbot import QtBot
 from scripts.latency_trace import LatencyTrace
 from scripts.owned_modal import run_owned_modal
+from scripts.qt_cold_probe import environment_metadata
 from tests.platform.test_associations import FakeAssociationBackend
 from tests.platform.test_launcher import GUI, write_pe
 from tests.platform.test_shortcuts import FakeShortcutBackend
@@ -268,6 +269,7 @@ class TestAfterCapture:
         qtbot: QtBot,
         monkeypatch: pytest.MonkeyPatch,
         request: pytest.FixtureRequest,
+        record_testsuite_property: Callable[[str, object], None],
     ) -> None:
         """Time the first capture after tray startup without hiding cold costs.
 
@@ -359,7 +361,14 @@ class TestAfterCapture:
             editor: EditorWindow = app.controller.editors[0]
             with trace.phase("wait-for-actual-exposure"), qtbot.waitExposed(editor):
                 pass
-            assert clock.elapsed_ms < 300
+            # Freeze the same endpoint before any diagnostic inventory work.
+            capture_elapsed_ms = clock.elapsed_ms
+            qapp = QApplication.instance()
+            assert isinstance(qapp, QApplication)
+            context = environment_metadata(qapp)
+            trace.metadata.update(context)
+            record_testsuite_property("first_capture_context", json.dumps(context))
+            assert capture_elapsed_ms < 300
             assert editor.action("tool_select").isChecked()
             assert editor._style_bar._font_controls is None
 
