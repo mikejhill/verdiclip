@@ -198,10 +198,12 @@ class PatchSet:
 def hosted_bindings(item: Item) -> Bindings:
     """Hosted-only lazy imports; never call this loader in local pure tests."""
     if (
-        os.environ.get("GITHUB_ACTIONS") != "true"
-        or os.environ.get("QT_QPA_PLATFORM") != "offscreen"
+        sys.platform != "win32"
+        or os.environ.get("GITHUB_ACTIONS") != "true"
+        or os.environ.get("RUNNER_OS") != "Windows"
+        or os.environ.get("QT_QPA_PLATFORM") not in {"offscreen", "windows"}
     ):
-        raise RuntimeError("Profiler requires hosted offscreen comparison")
+        raise RuntimeError("Profiler requires a hosted Windows backend comparison")
     import PySide6  # noqa: PLC0415 - Qt already used by collection; no constructors
     import pytest  # noqa: PLC0415 - child hook only
     from PySide6.QtCore import qVersion  # noqa: PLC0415 - called only after target
@@ -255,7 +257,8 @@ def pytest_configure(config: Config) -> None:
         "coverage_requested": bool(getoption("cov_source", default=[])),
         "snapshots_requested": bool(getoption("ux_snapshots", default=None)),
         "qpa_requested": os.environ.get("QT_QPA_PLATFORM"),
-        "selection_and_threshold_unchanged": True,
+        "measurement_scope": os.environ.get("EDITOR_PROFILE_SCOPE", "unspecified"),
+        "plugin_does_not_change_selection_or_threshold": True,
         "profiling_overhead_present": True,
     }
     manager = config.pluginmanager

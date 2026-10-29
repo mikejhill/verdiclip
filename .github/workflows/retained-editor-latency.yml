@@ -30,6 +30,7 @@ jobs:
       QT_QPA_PLATFORM: offscreen
       EDITOR_PROFILE_SOURCE_SHA: ${{ matrix.source.sha }}
       EDITOR_PROFILE_ROLE: ${{ matrix.source.label }}
+      EDITOR_PROFILE_SCOPE: same-seed-aggregate
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:

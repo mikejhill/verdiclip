@@ -1,0 +1,70 @@
+name: Retained editor backend comparison
+
+on:
+  pull_request:
+    paths:
+      - scripts/retained_editor_backend_runner.py
+      - scripts/retained_editor_latency_profile.py
+      - tests/tooling/test_retained_editor_backend_runner.py
+      - .github/workflows/retained-editor-backends.yml
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    name: Single owned editor / ${{ matrix.qpa }} / ${{ matrix.source.label }}
+    runs-on: windows-2025
+    timeout-minutes: 6
+    strategy:
+      fail-fast: false
+      matrix:
+        qpa: [offscreen, windows]
+        source:
+          - label: retained-main
+            sha: 5fe14b25b651c02caea31786e44e9508595e4e19
+          - label: owned-fixture-fix
+            sha: 92c8d0cd4e1f5114a4ddf210b30bbf4e5c40f510
+    env:
+      UV_LOCKED: "1"
+      PYTHONUTF8: "1"
+      PYTHONUNBUFFERED: "1"
+      QT_QPA_PLATFORM: ${{ matrix.qpa }}
+      EDITOR_PROFILE_SOURCE_SHA: ${{ matrix.source.sha }}
+      EDITOR_PROFILE_ROLE: ${{ matrix.source.label }}
+      EDITOR_PROFILE_SCOPE: single-case-backend-comparison
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: control
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ matrix.source.sha }}
+          path: subject
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          enable-cache: false
+          python-version: "3.13.16"
+      - name: Locked reviewed subject only
+        working-directory: subject
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          uv sync --locked
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if ((git rev-parse HEAD) -ne $env:EDITOR_PROFILE_SOURCE_SHA) { throw 'Source identity mismatch' }
+          uv run --no-sync python -c 'import sys; from PySide6.QtCore import qVersion; assert sys.version_info[:3]==(3,13,16) and qVersion()=="6.11.2"'
+      - name: One synthetic capture-to-editor case, no native input
+        working-directory: subject
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = Join-Path $env:GITHUB_WORKSPACE 'control/scripts'
+          Write-Output 'Only the reviewed fake-hotkey/fake-screen case runs. No input injection or global registration. Owned Qt editor/tray UI and VM-only clipboard teardown; no local-PC effect.'
+          Write-Output 'Coverage instrumentation stays enabled; the partial-case floor is zero only in this diagnostic. Full CI retains 90% coverage and the test retains its 300ms assertion.'
+          uv run --no-sync python ../control/scripts/retained_editor_backend_runner.py
+          $status = $LASTEXITCODE
+          Write-Output "backend_exit=$status; single-case contrast, not full-aggregate replay, focus/input/UIA/multimonitor or feature acceptance. Original 300ms assertion unchanged."
+          exit $status
