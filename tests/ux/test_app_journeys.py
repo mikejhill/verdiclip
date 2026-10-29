@@ -14,7 +14,7 @@ from typing import override
 
 import pytest
 from PySide6.QtCore import QEvent, QObject, QPoint, QProcess, Qt, QTimer, QUrl, qVersion
-from PySide6.QtGui import QDesktopServices, QGuiApplication, QImage
+from PySide6.QtGui import QDesktopServices, QGuiApplication, QIcon, QImage
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
@@ -47,6 +47,7 @@ from verdiclip.capture.models import Capture
 from verdiclip.capture.overlay import SelectionOverlay
 from verdiclip.document.commands import SetCrop
 from verdiclip.document.style import Color
+from verdiclip.editor import icons as icons_module
 from verdiclip.editor import style_bar as style_bar_module
 from verdiclip.editor.close_prompt import CloseChoice, ClosePrompt
 from verdiclip.editor.session import ToolId
@@ -283,6 +284,9 @@ class TestAfterCapture:
                 "coverage_enabled": bool(
                     request.config.getoption("cov_source", default=[])
                 ),
+                "font_paint_trace_scope": (
+                    "Python QFont/drawText calls only; excludes Qt internal rendering"
+                ),
             }
         )
 
@@ -300,6 +304,44 @@ class TestAfterCapture:
         original_captured = AppController._on_captured
         original_crop = FrozenScreen.crop
         original_style = StyleBar.__init__
+
+        def measured_call[**P, R](
+            name: str, operation: Callable[P, R]
+        ) -> Callable[P, R]:
+            def timed(*args: P.args, **kwargs: P.kwargs) -> R:
+                with trace.phase(name):
+                    return operation(*args, **kwargs)
+
+            return timed
+
+        for owner, name, label in (
+            (style_bar_module.QToolBar, "__init__", "actual-qtoolbar-base-init"),
+            (style_bar_module.ColorButton, "__init__", "color-button-init"),
+            (style_bar_module.ColorButton, "_build_menu", "color-button-build-menu"),
+            (style_bar_module.QSpinBox, "__init__", "actual-qspinbox-init"),
+            (icons_module.QFont, "__init__", "python-qfont-init"),
+            (icons_module.QPainter, "drawText", "python-qpainter-draw-text"),
+            (StyleBar, "_build", "stylebar-build"),
+            (StyleBar, "set_icons", "stylebar-set-icons"),
+            (StyleBar, "show_for", "stylebar-show-for"),
+        ):
+            monkeypatch.setattr(owner, name, measured_call(label, getattr(owner, name)))
+
+        original_style_icon = icons_module.IconFactory.style
+        original_tool_icon = icons_module.IconFactory.tool
+
+        def measured_style_icon(factory: icons_module.IconFactory, name: str) -> QIcon:
+            with trace.phase(f"style-icon:{name}"):
+                return original_style_icon(factory, name)
+
+        def measured_tool_icon(
+            factory: icons_module.IconFactory, tool: ToolId
+        ) -> QIcon:
+            with trace.phase(f"tool-icon:{tool.value}"):
+                return original_tool_icon(factory, tool)
+
+        monkeypatch.setattr(icons_module.IconFactory, "style", measured_style_icon)
+        monkeypatch.setattr(icons_module.IconFactory, "tool", measured_tool_icon)
 
         def measured_captured(controller: AppController, capture: Capture) -> None:
             with trace.phase("captured-signal-delivery-and-editor-admission"):
@@ -345,10 +387,11 @@ class TestAfterCapture:
         """
         trace = LatencyTrace(
             metadata={
-                "scenario": "first-font-activation-in-new-editor",
+                "scenario": "first-font-after-editor-construction",
                 "process_isolated": os.environ.get("VERDICLIP_FIRST_FONT_PROCESS")
                 == "1",
                 "os_font_cache": "unknown; not reset",
+                "process_font_cache": "editor startup already ran; not pristine",
                 "python": sys.version.split()[0],
                 "qt": qVersion(),
                 "qpa": os.environ.get("QT_QPA_PLATFORM", "unspecified"),

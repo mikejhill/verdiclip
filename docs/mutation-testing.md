@@ -145,7 +145,9 @@ process on Qt 6.11.2 and 6.12.0. StyleBar creates its native font picker only wh
 FONT fields are needed, so opening a Select editor no longer needs that work.
 This defers the cost rather than eliminating it. Another fresh test process
 records first-FONT activation and the real native picker constructor using
-wall/process/thread clocks. A queued timer reports its first delivery delay;
+wall/process/thread clocks after that process constructs its editor; editor
+startup may already load fonts, so this is not a pristine font-cache measurement.
+A queued timer reports its first delivery delay;
 this is not a bound on every possible GUI stall. OS font cache state is unknown.
 The first-FONT measurement has no invented latency floor and does not replace
 the capture budget. Its JSON is retained as a `first_font_timing` JUnit suite
