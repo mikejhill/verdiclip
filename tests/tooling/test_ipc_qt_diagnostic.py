@@ -6,6 +6,7 @@ import io
 import unittest
 from typing import override
 
+import pytest
 from scripts.ipc_qt_diagnostic import QtHandler, tee_qt_messages
 
 
@@ -55,7 +56,7 @@ class TestMessageTee(unittest.TestCase):
         """A test exception propagates without leaving the tee installed."""
         slot = FakeHandlerSlot()
         with (
-            self.assertRaisesRegex(ValueError, "test failure"),  # noqa: PT027 - direct unittest avoids Qt conftest
+            pytest.raises(ValueError, match="test failure"),
             tee_qt_messages(slot.install, io.StringIO()),
         ):
             raise ValueError("test failure")
@@ -68,12 +69,10 @@ class TestMessageTee(unittest.TestCase):
             raise ValueError("capture failure")
 
         slot = FakeHandlerSlot(previous)
-        with (
-            self.assertRaisesRegex(ValueError, "capture failure"),  # noqa: PT027 - direct unittest avoids Qt conftest
-            tee_qt_messages(slot.install, io.StringIO()),
-        ):
+        with tee_qt_messages(slot.install, io.StringIO()):
             assert slot.current is not None
-            slot.current("warning", None, "message")
+            with pytest.raises(ValueError, match="capture failure"):
+                slot.current("warning", None, "message")
         assert slot.current is previous
 
     def test_forwards_even_when_output_fails(self) -> None:
@@ -89,12 +88,10 @@ class TestMessageTee(unittest.TestCase):
             forwarded.append(message)
 
         slot = FakeHandlerSlot(previous)
-        with (
-            self.assertRaisesRegex(OSError, "output failure"),  # noqa: PT027 - direct unittest avoids Qt conftest
-            tee_qt_messages(slot.install, BrokenSink()),
-        ):
+        with tee_qt_messages(slot.install, BrokenSink()):
             assert slot.current is not None
-            slot.current("fatal", None, "fatal text")
+            with pytest.raises(OSError, match="output failure"):
+                slot.current("fatal", None, "fatal text")
         assert forwarded == ["fatal text"]
         assert slot.current is previous
 
