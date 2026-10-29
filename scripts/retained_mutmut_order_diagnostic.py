@@ -14,7 +14,7 @@ import subprocess
 import sys
 from abc import abstractmethod
 from collections.abc import Callable, Generator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, cast
@@ -42,6 +42,7 @@ PYTEST_ARGUMENTS = [
 ]
 type Operation = Callable[..., object]
 DATA_MODULE_NAME = "_verdiclip_diagnostic_duration_data"
+OBSERVER_MODULE_NAME = "_verdiclip_diagnostic_overlay_observer"
 HISTORICAL_CACHE_KEY = (
     "mutmut-v5-Linux-X64-5fe14b25b651c02caea31786e44e9508595e4e19-"
     "380086239e0a24f09e8b3f6a97c3ac122cdb7ec536097c5e004083b8c092b948-"
@@ -53,6 +54,37 @@ class ReplayResult(Protocol):
     """Only the fixed data-validation receipt crosses the control boundary."""
 
     receipt: dict[str, object]
+    expected_order: tuple[str, ...]
+
+
+class ObservationCall(Protocol):
+    """One mandatory observed call, with an outcome only after scope exit."""
+
+    result: int | None
+
+    @abstractmethod
+    def complete(self, original_exit: int) -> None:
+        """Retain the original clean runner's integer outcome."""
+
+
+class ObserverPort(Protocol):
+    """The fixed observer owns finalizers and deferred control propagation."""
+
+    @abstractmethod
+    def scope(self) -> AbstractContextManager[ObservationCall]:
+        """Finish even when the original runner raises or returns early."""
+
+
+class ObserverApi(Protocol):
+    """Only the reviewed current-control factory is loaded."""
+
+    Observer: Callable[..., ObserverPort]
+
+
+class ExecuteTarget(Protocol):
+    """The pinned pytest harness class's one temporary method replacement."""
+
+    execute_pytest: Operation
 
 
 class ReplayDataApi(Protocol):
@@ -294,6 +326,67 @@ def control_data_api() -> Generator[ReplayDataApi]:
             sys.modules.pop(DATA_MODULE_NAME)
 
 
+@contextmanager
+def control_observer_api() -> Generator[ObserverApi]:
+    """Load the fixed pure helper without importing pytest or cached modules."""
+    path = Path(__file__).with_name("retained_overlay_signal_observer.py")
+    spec = importlib.util.spec_from_file_location(OBSERVER_MODULE_NAME, path)
+    if spec is None or spec.loader is None or OBSERVER_MODULE_NAME in sys.modules:
+        raise RuntimeError("Control signal observer cannot be admitted")
+    loaded = importlib.util.module_from_spec(spec)
+    sys.modules[OBSERVER_MODULE_NAME] = loaded
+    try:
+        spec.loader.exec_module(loaded)
+        yield cast(ObserverApi, loaded)
+    finally:
+        if sys.modules.get(OBSERVER_MODULE_NAME) is loaded:
+            sys.modules.pop(OBSERVER_MODULE_NAME)
+
+
+@contextmanager
+def observe_clean_execution(
+    target: ExecuteTarget,
+    observer_api: ObserverApi,
+    root: Path,
+    expected_order: Callable[[], tuple[str, ...] | None],
+    report: Callable[[dict[str, object]], None],
+) -> Generator[None]:
+    """Add one plugin only to the admitted clean child; restore the harness."""
+    original = target.execute_pytest
+    parent_pid = os.getpid()
+
+    def execute(runner: object, params: list[str], **kwargs: object) -> object:
+        order = expected_order()
+        if order is None:
+            return original(runner, params, **kwargs)
+        if os.getpid() == parent_pid:
+            raise RuntimeError("Observed pytest must execute in the isolated child")
+        plugins = kwargs.get("plugins")
+        if plugins is not None and type(plugins) is not list:
+            raise RuntimeError("Unexpected clean pytest plugin argument")
+        # Import only here: the pinned parent must remain pytest/Qt-pristine.
+        pytest_api = importlib.import_module("pytest")
+        observer = observer_api.Observer(
+            root / "mutants", order, report, pytest_api.exit.Exception
+        )
+        forwarded = dict(kwargs)
+        forwarded["plugins"] = [*(plugins or []), observer]
+        with observer.scope() as call:
+            outcome = original(runner, params, **forwarded)
+            if type(outcome) is not int:
+                raise RuntimeError("Clean pytest did not return an integer")
+            call.complete(outcome)
+        if type(call.result) is not int:
+            raise RuntimeError("Observed clean outcome was not finalized")
+        return call.result
+
+    target.execute_pytest = execute
+    try:
+        yield
+    finally:
+        target.execute_pytest = original
+
+
 def main(arguments: list[str]) -> int:
     """Future hosted-only entry; never invoked during local preparation."""
     parser = argparse.ArgumentParser()
@@ -335,14 +428,19 @@ def main(arguments: list[str]) -> int:
             args=["run", "--max-children", "1"], standalone_mode=False
         )
 
-    with control_data_api() as data:
+    with control_data_api() as data, control_observer_api() as observer_api:
+        if "pytest" in sys.modules or "PySide6" in sys.modules:
+            raise RuntimeError("SDK parent was not pytest/Qt-pristine")
+        order: tuple[str, ...] | None = None
 
         def install_durations() -> None:
+            nonlocal order
             # Pinned collect_stats waits for its child, and save_stats finishes
             # before this hook. The dedicated job has no concurrent SDK writer.
             # These exclusive directories are a precondition, not a hostile-
             # writer or filesystem compare-and-swap guarantee.
             replay = data.install_replay(root / "mutants", root.parent / "mutants")
+            order = replay.expected_order
             emit(
                 {
                     "diagnostic_phase": "historical_durations_installed",
@@ -356,9 +454,22 @@ def main(arguments: list[str]) -> int:
                 }
             )
 
-        return clean_tests_only(
-            cast("CleanApi", module), config, invoke, after_statistics=install_durations
-        )
+        harness = importlib.import_module("mutmut.runners.harness")
+        with observe_clean_execution(
+            cast(ExecuteTarget, harness.PytestRunner),
+            observer_api,
+            root,
+            lambda: order,
+            lambda packet: emit(
+                {"diagnostic_phase": "overlay_clean_observer", "observation": packet}
+            ),
+        ):
+            return clean_tests_only(
+                cast("CleanApi", module),
+                config,
+                invoke,
+                after_statistics=install_durations,
+            )
 
 
 if __name__ == "__main__":
