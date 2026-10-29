@@ -10,7 +10,7 @@ import threading
 from abc import abstractmethod
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import BinaryIO, Protocol, cast
+from typing import BinaryIO, Literal, Protocol, cast
 
 TARGET = (
     "tests/ux/test_app_journeys.py::TestAfterCapture::"
@@ -22,9 +22,17 @@ RETIRE_WAIT = 5
 OUTPUT_PER_STREAM = 512 * 1024
 CHUNK = 8192
 STREAM_COUNT = 2
+type InstrumentationMode = Literal["phases", "metadata-only"]
 
 
-def admit(platform: str, environment: Mapping[str, str]) -> None:
+def validated_mode(value: str) -> InstrumentationMode:
+    """Reject unknown instrumentation before any child can be created."""
+    if type(value) is not str or value not in {"phases", "metadata-only"}:
+        raise ValueError("Unknown editor instrumentation mode")
+    return value
+
+
+def admit(platform: str, environment: Mapping[str, str]) -> InstrumentationMode:
     """Gate before creating a child; no local Qt execution is admitted."""
     if (
         platform != "win32"
@@ -33,10 +41,17 @@ def admit(platform: str, environment: Mapping[str, str]) -> None:
         or environment.get("QT_QPA_PLATFORM") not in {"windows", "offscreen"}
     ):
         raise RuntimeError("Requires standard hosted Windows and admitted QPA")
+    return validated_mode(environment.get("EDITOR_PROFILE_MODE", "phases"))
 
 
-def command(executable: str) -> list[str]:
+def command(executable: str, mode: InstrumentationMode = "phases") -> list[str]:
     """Run the exact single unchanged target; no warmup or broader selection."""
+    validated_mode(mode)
+    coverage = (
+        ["--cov", "--cov-fail-under=0", "--cov-report=xml", "--cov-report=term"]
+        if mode == "phases"
+        else ["--no-cov"]
+    )
     return [
         executable,
         "-m",
@@ -45,10 +60,7 @@ def command(executable: str) -> list[str]:
         "-p",
         "retained_editor_latency_profile",
         f"--randomly-seed={SEED}",
-        "--cov",
-        "--cov-fail-under=0",
-        "--cov-report=xml",
-        "--cov-report=term",
+        *coverage,
         "--junitxml=junit.xml",
         "--ux-snapshots=docs/ux/snapshots",
         "-vv",
@@ -279,9 +291,9 @@ def supervise(
 
 def main() -> int:
     """Real hosted-only process entry; never invoked by local pure tests."""
-    admit(sys.platform, os.environ)
+    mode = admit(sys.platform, os.environ)
     process = subprocess.Popen(  # noqa: S603 - fixed exact owned test command
-        command(sys.executable),
+        command(sys.executable, mode),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -295,6 +307,7 @@ def main() -> int:
             {
                 "editor_backend_runner": {
                     "original_exit": outcome.original_exit,
+                    "instrumentation_mode": mode,
                     "timed_out": outcome.timed_out,
                     "owned_process_gone": outcome.owned_process_gone,
                     "readers_gone": outcome.readers_gone,

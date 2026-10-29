@@ -12,6 +12,7 @@ from scripts.retained_editor_backend_runner import (
     OUTPUT_PER_STREAM,
     SEED,
     TARGET,
+    InstrumentationMode,
     Outcome,
     Reader,
     admit,
@@ -178,6 +179,59 @@ def test_command_selects_only_exact_target_with_explicit_original_flags() -> Non
     assert "--cov-fail-under=0" in args
     assert "--ux-snapshots=docs/ux/snapshots" in args
     assert "retained_editor_latency_profile" in args
+
+
+def test_default_phase_command_preserves_exact_previous_argument_order() -> None:
+    """Default mode retains the already-qualified coverage/profiling recipe."""
+    assert command("reviewed-python.exe") == [
+        "reviewed-python.exe",
+        "-m",
+        "pytest",
+        TARGET,
+        "-p",
+        "retained_editor_latency_profile",
+        f"--randomly-seed={SEED}",
+        "--cov",
+        "--cov-fail-under=0",
+        "--cov-report=xml",
+        "--cov-report=term",
+        "--junitxml=junit.xml",
+        "--ux-snapshots=docs/ux/snapshots",
+        "-vv",
+        "--capture=tee-sys",
+    ]
+
+
+def test_metadata_only_command_disables_coverage_but_keeps_exact_target() -> None:
+    """The control removes coverage overhead without altering the original case."""
+    args = command("reviewed-python.exe", "metadata-only")
+    assert args[:4] == ["reviewed-python.exe", "-m", "pytest", TARGET]
+    assert "--no-cov" in args
+    assert not any(argument.startswith("--cov") for argument in args)
+    assert "retained_editor_latency_profile" in args
+    assert f"--randomly-seed={SEED}" in args
+    assert "--ux-snapshots=docs/ux/snapshots" in args
+
+
+def test_mode_admission_defaults_and_rejects_unknown_before_child_recipe() -> None:
+    """Only validated mode values reach the hosted command construction."""
+    facts = {
+        "GITHUB_ACTIONS": "true",
+        "RUNNER_OS": "Windows",
+        "QT_QPA_PLATFORM": "offscreen",
+    }
+    assert admit("win32", facts) == "phases"
+    assert (
+        admit("win32", {**facts, "EDITOR_PROFILE_MODE": "metadata-only"})
+        == "metadata-only"
+    )
+    with pytest.raises(ValueError, match="Unknown editor instrumentation"):
+        admit("win32", {**facts, "EDITOR_PROFILE_MODE": "unknown"})
+    with pytest.raises(ValueError, match="Unknown editor instrumentation"):
+        command(
+            "reviewed-python.exe",
+            cast("InstrumentationMode", "".join(("un", "known"))),
+        )
 
 
 @pytest.mark.parametrize("qpa", ["windows", "offscreen"])

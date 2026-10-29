@@ -39,8 +39,15 @@ jobs:
           path: control
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        if: matrix.source.label == 'retained-main'
         with:
-          ref: ${{ matrix.source.sha }}
+          ref: 5fe14b25b651c02caea31786e44e9508595e4e19
+          path: subject
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        if: matrix.source.label == 'owned-fixture-fix'
+        with:
+          ref: 92c8d0cd4e1f5114a4ddf210b30bbf4e5c40f510
           path: subject
           persist-credentials: false
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 from types import SimpleNamespace
 
 import pytest
@@ -13,7 +14,37 @@ from scripts.retained_editor_latency_profile import (
     PatchSet,
     Plugin,
     Trace,
+    hosted_bindings,
+    instrumentation_mode,
 )
+
+
+@pytest.mark.parametrize(
+    ("environment", "expected"),
+    [
+        ({}, "phases"),
+        ({"EDITOR_PROFILE_MODE": "phases"}, "phases"),
+        ({"EDITOR_PROFILE_MODE": "metadata-only"}, "metadata-only"),
+    ],
+)
+def test_instrumentation_mode_is_explicit_and_does_not_load_qt(
+    environment: dict[str, str], expected: str
+) -> None:
+    """Mode admission selects only declared observation semantics."""
+    assert instrumentation_mode(environment) == expected
+
+
+def test_unknown_instrumentation_mode_is_not_a_silent_phase_bypass() -> None:
+    """Unknown settings cannot manufacture an uninstrumented measurement."""
+    with pytest.raises(ValueError, match="Unknown"):
+        instrumentation_mode({"EDITOR_PROFILE_MODE": "disabled"})
+
+
+def test_default_loader_is_a_one_argument_instance_callback() -> None:
+    """Dataclass construction cannot bind an implicit extra self parameter."""
+    plugin = Plugin({}, lambda _packet: None)
+    assert plugin.loader is hosted_bindings
+    assert list(inspect.signature(plugin.loader).parameters) == ["item"]
 
 
 class SessionExitError(Exception):
@@ -83,7 +114,8 @@ def test_clock_error_does_not_prevent_original_operation() -> None:
         raise ValueError("clock")
 
     timing.wall = broken
-    assert timing.wrap("phase", lambda: called.append(True))() is None
+    result = timing.wrap("phase", lambda: called.append(True))()
+    assert result is None
     assert called == [True]
     assert timing.errors == ["start_clock"]
 

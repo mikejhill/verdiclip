@@ -8,7 +8,7 @@ import os
 import sys
 import time
 from abc import abstractmethod
-from collections.abc import Callable, Generator, Sequence
+from collections.abc import Callable, Generator, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import wraps
 from typing import Protocol
@@ -22,6 +22,14 @@ TARGET = (
 )
 MAX_PHASES = 64
 MAX_ERRORS = 16
+
+
+def instrumentation_mode(environment: Mapping[str, str]) -> str:
+    """Admit only explicit phase or post-test metadata observation."""
+    mode = environment.get("EDITOR_PROFILE_MODE", "phases")
+    if mode not in {"phases", "metadata-only"}:
+        raise ValueError("Unknown editor instrumentation mode")
+    return mode
 
 
 @dataclass(frozen=True)
@@ -204,6 +212,7 @@ def hosted_bindings(item: Item) -> Bindings:
         or os.environ.get("QT_QPA_PLATFORM") not in {"offscreen", "windows"}
     ):
         raise RuntimeError("Profiler requires a hosted Windows backend comparison")
+    mode = instrumentation_mode(os.environ)
     import PySide6  # noqa: PLC0415 - Qt already used by collection; no constructors
     import pytest  # noqa: PLC0415 - child hook only
     from PySide6.QtCore import qVersion  # noqa: PLC0415 - called only after target
@@ -214,23 +223,24 @@ def hosted_bindings(item: Item) -> Bindings:
     from verdiclip.editor.window import EditorWindow  # noqa: PLC0415
     from verdiclip.shell.controller import AppController  # noqa: PLC0415
 
-    return Bindings(
-        (
-            Patch(
-                item.module.App,
-                "press_hotkey",
-                "hotkey_dispatch",
-            ),
-            Patch(
-                item.module.FakeDesktop,
-                "freeze",
-                "fake_desktop_freeze",
-            ),
-            Patch(AppController, "_on_captured", "controller_on_captured"),
-            Patch(EditorWindow, "__init__", "editor_init"),
-            Patch(StyleBar, "__init__", "style_bar_init"),
-            Patch(QSpinBox, "__init__", "spin_box_init"),
+    patches = (
+        Patch(
+            item.module.App,
+            "press_hotkey",
+            "hotkey_dispatch",
         ),
+        Patch(
+            item.module.FakeDesktop,
+            "freeze",
+            "fake_desktop_freeze",
+        ),
+        Patch(AppController, "_on_captured", "controller_on_captured"),
+        Patch(EditorWindow, "__init__", "editor_init"),
+        Patch(StyleBar, "__init__", "style_bar_init"),
+        Patch(QSpinBox, "__init__", "spin_box_init"),
+    )
+    return Bindings(
+        patches if mode == "phases" else (),
         pytest.exit.Exception,
         lambda: {
             "python": sys.version.split()[0],
@@ -250,6 +260,7 @@ def pytest_configure(config: Config) -> None:
     import pytest  # noqa: PLC0415 - actual hosted pytest hook only, never module import
 
     getoption = config.getoption
+    mode = instrumentation_mode(os.environ)
     metadata = {
         "source_sha_expected": os.environ.get("EDITOR_PROFILE_SOURCE_SHA"),
         "comparison_role": os.environ.get("EDITOR_PROFILE_ROLE"),
@@ -259,7 +270,9 @@ def pytest_configure(config: Config) -> None:
         "qpa_requested": os.environ.get("QT_QPA_PLATFORM"),
         "measurement_scope": os.environ.get("EDITOR_PROFILE_SCOPE", "unspecified"),
         "plugin_does_not_change_selection_or_threshold": True,
-        "profiling_overhead_present": True,
+        "phase_wrappers_enabled": mode == "phases",
+        "instrumentation_mode": mode,
+        "optional_plugin_present": True,
     }
     manager = config.pluginmanager
     manager.register(
@@ -281,7 +294,7 @@ class Plugin:
 
     metadata: dict[str, object]
     emit: Callable[[dict[str, object]], None]
-    loader: Callable[[Item], Bindings] = hosted_bindings
+    loader: Callable[[Item], Bindings] = field(default_factory=lambda: hosted_bindings)
     trace: Trace = field(default_factory=Trace)
     seen: bool = False
 
