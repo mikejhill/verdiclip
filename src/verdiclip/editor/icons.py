@@ -9,7 +9,6 @@ from typing import Final
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import (
     QColor,
-    QFont,
     QIcon,
     QPainter,
     QPainterPath,
@@ -100,13 +99,7 @@ class IconFactory:
             p.setBrush(self._paper)
             p.drawRect(QRectF(7, 8, 28, 24))
         else:  # auto_fit: a "T" hugged by corner brackets
-            font = QFont("Segoe UI", 1)
-            font.setPixelSize(26)
-            font.setBold(True)
-            p.setFont(font)
-            p.drawText(
-                QRectF(0, 0, SIZE, SIZE), int(Qt.AlignmentFlag.AlignCenter.value), "T"
-            )
+            self._draw_t(p, QRectF(16, 15, 16, 19))
             p.setPen(self._pen(3))
             for x, y, dx, dy in (
                 (7, 7, 1, 1),
@@ -138,6 +131,30 @@ class IconFactory:
             Qt.PenStyle.SolidLine,
             Qt.PenCapStyle.RoundCap,
             Qt.PenJoinStyle.RoundJoin,
+        )
+
+    def _draw_t(self, p: QPainter, bounds: QRectF) -> None:
+        """Draw a fixed toolbar symbol without resolving any text font."""
+        x, y, width, height = (bounds.x(), bounds.y(), bounds.width(), bounds.height())
+        # Keep the small auto-fit stem legible after rasterizing to a 16px icon.
+        stem_width = max(width / 4, 5.0)
+        stem_left = x + (width - stem_width) / 2
+        stem_right = stem_left + stem_width
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(self._ink)
+        p.drawPolygon(
+            QPolygonF(
+                [
+                    QPointF(x, y),
+                    QPointF(x + width, y),
+                    QPointF(x + width, y + height / 4),
+                    QPointF(stem_right, y + height / 4),
+                    QPointF(stem_right, y + height),
+                    QPointF(stem_left, y + height),
+                    QPointF(stem_left, y + height / 4),
+                    QPointF(x, y + height / 4),
+                ]
+            )
         )
 
     def _draw_tool(self, p: QPainter, tool: ToolId) -> None:  # noqa: C901, PLR0912 — one glyph per tool
@@ -175,23 +192,28 @@ class IconFactory:
             p.setBrush(self._ink)
             p.drawPolygon(QPolygonF([QPointF(40, 8), QPointF(24, 14), QPointF(34, 24)]))
         elif tool is ToolId.TEXT:
-            font = QFont("Segoe UI", 1)
-            font.setPixelSize(36)
-            font.setBold(True)
-            p.setFont(font)
-            p.drawText(
-                QRectF(0, 0, SIZE, SIZE), int(Qt.AlignmentFlag.AlignCenter.value), "T"
-            )
+            self._draw_t(p, QRectF(12, 11, 24, 27))
         elif tool is ToolId.COUNTER:
             p.setBrush(self._ink)
             p.drawEllipse(QRectF(8, 8, 32, 32))
-            font = QFont("Segoe UI", 1)
-            font.setPixelSize(22)
-            font.setBold(True)
-            p.setFont(font)
-            p.setPen(self._paper)
-            p.drawText(
-                QRectF(8, 8, 32, 32), int(Qt.AlignmentFlag.AlignCenter.value), "1"
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(self._paper)
+            p.drawPolygon(
+                QPolygonF(
+                    [
+                        QPointF(17, 20),
+                        QPointF(22, 16),
+                        QPointF(27, 16),
+                        QPointF(27, 30),
+                        QPointF(31, 30),
+                        QPointF(31, 34),
+                        QPointF(18, 34),
+                        QPointF(18, 30),
+                        QPointF(23, 30),
+                        QPointF(23, 21),
+                        QPointF(20, 23),
+                    ]
+                )
             )
         elif tool is ToolId.HIGHLIGHT:
             p.fillRect(QRectF(6, 18, 36, 14), QColor(255, 235, 59, 200))

@@ -3,20 +3,32 @@
 from __future__ import annotations
 
 import logging
+import signal
 import subprocess
 import sys
+import uuid
+from collections.abc import Iterator
+from contextlib import ExitStack
 from dataclasses import dataclass, replace
+from functools import partial
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from PySide6.QtCore import QAbstractNativeEventFilter, QTimer
 from PySide6.QtGui import QColor, QGuiApplication, QImage
+from PySide6.QtNetwork import QLocalServer
 from PySide6.QtWidgets import QApplication
+from tests.ux.test_app_journeys import FakeHotkeys
 
 from verdiclip import __main__ as entry
 from verdiclip.__main__ import Application
 from verdiclip.capture.grabber import FrozenScreen
 from verdiclip.geometry import Rect
+from verdiclip.platform.hotkeys import HotkeyService
 from verdiclip.settings import Settings, SettingsStore
+from verdiclip.shell.gui_readiness import GuiReadinessError
+from verdiclip.shell.instance import SingleInstance
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,3 +213,195 @@ class TestApplication:
             Application.main(["capture", "screen", "-o", str(tmp_path / "x.png")])
 
         assert excinfo.value.code == 0
+
+
+def owned_instance(
+    name: str, owners: list[SingleInstance], safety: ExitStack
+) -> SingleInstance:
+    """Own the exact test listener immediately after construction."""
+    owned = SingleInstance(name)
+    owners.append(owned)
+    safety.callback(owned.close)
+    return owned
+
+
+def owned_hotkeys(owners: list[HotkeyService], safety: ExitStack) -> HotkeyService:
+    """Own the exact service with its fake OS API immediately after construction."""
+    owned = HotkeyService(FakeHotkeys())
+    owners.append(owned)
+    safety.callback(owned.close)
+    return owned
+
+
+def owned_timer(owners: list[QTimer], safety: ExitStack) -> QTimer:
+    """Own the exact signal-poll timer immediately after construction."""
+    owned = QTimer()
+    owners.append(owned)
+    safety.callback(owned.stop)
+    return owned
+
+
+def tracked_signal_install(safety: ExitStack) -> SimpleNamespace:
+    """Restore only a handler actually installed by this hosted test invocation."""
+    previous = signal.getsignal(signal.SIGINT)
+    original = Application._install_sigint
+
+    def restore(handler: object) -> None:
+        if signal.getsignal(signal.SIGINT) is handler:
+            signal.signal(signal.SIGINT, previous)
+
+    def install(application: Application, app: QApplication) -> None:
+        try:
+            original(application, app)
+        finally:
+            handler = signal.getsignal(signal.SIGINT)
+            if handler is not previous:
+                safety.callback(restore, handler)
+
+    return SimpleNamespace(previous=previous, install=install)
+
+
+class OwnedFilterCalls:
+    """Call through actual Qt methods and retire only captured test filters."""
+
+    def __init__(self, app: QApplication, safety: ExitStack) -> None:
+        self.install_actual = app.installNativeEventFilter
+        self.remove_actual = app.removeNativeEventFilter
+        self.safety = safety
+        self.installed: list[QAbstractNativeEventFilter] = []
+        self.removed: list[QAbstractNativeEventFilter] = []
+
+    def install(self, native_filter: QAbstractNativeEventFilter) -> None:
+        """Retain exact ownership after Qt accepts the native event filter."""
+        self.install_actual(native_filter)
+        self.installed.append(native_filter)
+        self.safety.callback(self.remove_actual, native_filter)
+
+    def remove(self, native_filter: QAbstractNativeEventFilter) -> None:
+        """Record actual product removal before fallback safety retirement."""
+        self.remove_actual(native_filter)
+        self.removed.append(native_filter)
+
+
+@pytest.fixture
+def qt_entry_owners(
+    qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[SimpleNamespace]:
+    """Own real Qt test resources even if production or retirement assertions fail."""
+    failure = GuiReadinessError("fixture preparation failure")
+    instances: list[SingleInstance] = []
+    hotkeys: list[HotkeyService] = []
+    timers: list[QTimer] = []
+    shutdowns: list[bool] = []
+    safety = ExitStack()
+    filters = OwnedFilterCalls(qapp, safety)
+    name = f"VerdiClip-readiness-fixture-{uuid.uuid4().hex}"
+
+    instance = partial(owned_instance, name, instances, safety)
+    service = partial(owned_hotkeys, hotkeys, safety)
+    timer = partial(owned_timer, timers, safety)
+    sigint = tracked_signal_install(safety)
+    monkeypatch.setattr(qapp, "installNativeEventFilter", filters.install)
+    monkeypatch.setattr(qapp, "removeNativeEventFilter", filters.remove)
+
+    class Controller:
+        """The real controller's pre-admission failure at the entry boundary."""
+
+        def __init__(self, *_args: object) -> None:
+            pass
+
+        def start(self) -> None:
+            raise failure
+
+        def shutdown(self) -> None:
+            shutdowns.append(True)
+
+        def handle_forwarded(self, _arguments: list[str]) -> None:
+            raise AssertionError("Retired forwarding callback must not run")
+
+    monkeypatch.setattr(entry, "SingleInstance", instance)
+    monkeypatch.setattr(entry, "HotkeyService", service)
+    monkeypatch.setattr(entry, "QTimer", timer)
+    monkeypatch.setattr(entry, "AppController", Controller)
+    monkeypatch.setattr(Application, "_install_sigint", sigint.install)
+    monkeypatch.setattr(
+        QApplication, "exec", lambda _app: pytest.fail("Startup must not enter exec")
+    )
+    monkeypatch.setattr(
+        entry,
+        "ShellLinkBackend",
+        lambda: SimpleNamespace(known_folder=lambda _folder: tmp_path),
+    )
+    for boundary in (
+        "ShortcutRegistration",
+        "StartupRegistration",
+        "WinRegRunKey",
+        "FileAssociations",
+        "LowLevelKeyboardHook",
+        "Updater",
+        "ReleaseFeed",
+        "UpdateLauncher",
+    ):
+        monkeypatch.setattr(entry, boundary, lambda *_args: object())
+    monkeypatch.setattr(entry.Installation, "current", staticmethod(object))
+    application = Application()
+    request = entry.CommandLine().parse([])
+    store = SettingsStore(tmp_path / "failure-settings.json")
+    with safety:
+        yield SimpleNamespace(
+            application=application,
+            request=request,
+            store=store,
+            qapp=qapp,
+            failure=failure,
+            instances=instances,
+            hotkeys=hotkeys,
+            timers=timers,
+            shutdowns=shutdowns,
+            name=name,
+            previous=sigint.previous,
+            filters=filters,
+        )
+
+
+def test_gui_readiness_failure_retires_real_qt_owners_without_exec(
+    qt_entry_owners: SimpleNamespace,
+) -> None:
+    """Observe production retirement before the fixture safety cleanup runs."""
+    for _attempt in range(2):
+        with pytest.raises(GuiReadinessError) as caught:
+            qt_entry_owners.application._run_gui(
+                qt_entry_owners.request, qt_entry_owners.store
+            )
+        assert caught.value is qt_entry_owners.failure
+        assert QApplication.instance() is qt_entry_owners.qapp
+        assert signal.getsignal(signal.SIGINT) is qt_entry_owners.previous
+        assert qt_entry_owners.application._signal_timer is None
+        assert qt_entry_owners.instances[-1]._server is None
+        assert (
+            qt_entry_owners.instances[-1]
+            .metaObject()
+            .indexOfSignal("message_received(QVariantList)")
+            >= 0
+        )
+        assert (
+            qt_entry_owners.instances[-1].receivers("2message_received(QVariantList)")
+            == 0
+        )
+        assert qt_entry_owners.hotkeys[-1]._closed
+        native_filter = qt_entry_owners.hotkeys[-1]._filter
+        assert qt_entry_owners.filters.installed[-1] is native_filter
+        assert (
+            sum(removed is native_filter for removed in qt_entry_owners.filters.removed)
+            == 1
+        )
+        assert not qt_entry_owners.hotkeys[-1].registered
+        assert not qt_entry_owners.timers[-1].isActive()
+        # Prove the exact owned address was released before the next attempt.
+        probe = QLocalServer()
+        try:
+            listening = probe.listen(qt_entry_owners.name)
+            assert listening, probe.errorString()
+        finally:
+            probe.close()
+    assert len(qt_entry_owners.shutdowns) == 2

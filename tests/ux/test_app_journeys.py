@@ -12,7 +12,16 @@ from pathlib import Path
 from typing import override
 
 import pytest
-from PySide6.QtCore import QEvent, QObject, QPoint, QProcess, Qt, QTimer, QUrl
+from PySide6.QtCore import (
+    QCoreApplication,
+    QEvent,
+    QObject,
+    QPoint,
+    QProcess,
+    Qt,
+    QTimer,
+    QUrl,
+)
 from PySide6.QtGui import QDesktopServices, QGuiApplication, QImage
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
@@ -250,12 +259,36 @@ def make_app(
         for editor in app.controller.editors:
             editor.session.history.mark_delivered()
             editor.close()
-        app.controller.shutdown()
+        status = app.controller._update_status
+        if status is None:
+            app.controller.shutdown()
+        else:
+            # Shutdown schedules deletion. Finish only this fixture-owned widget's
+            # deferred disposal before a following journey acquires input.
+            with qtbot.waitSignal(status.destroyed, timeout=1000) as destroyed:
+                app.controller.shutdown()
+                if not destroyed.signal_triggered:
+                    QCoreApplication.sendPostedEvents(
+                        status, QEvent.Type.DeferredDelete
+                    )
     qtbot.wait(0)  # Let closed editors process their deferred deletes
 
 
 class TestAfterCapture:
     """What happens when a capture finishes."""
+
+    def test_startup_publishes_gui_readiness_before_capture(
+        self, make_app: AppFactory
+    ) -> None:
+        """An admitted controller exposes prepared fonts before any capture."""
+        app = make_app()
+
+        readiness = app.controller.gui_readiness
+        assert readiness is not None
+        assert readiness.fonts.family_count > 0
+        assert readiness.fonts.digit_advance > 0
+        assert 0 <= readiness.fonts.elapsed_ms <= readiness.controller_start_ms
+        assert app.controller.editors == ()
 
     def test_hotkey_opens_focused_editor_with_select_tool(
         self, make_app: AppFactory, qtbot: QtBot
