@@ -56,6 +56,11 @@ from verdiclip.settings import (
     Settings,
     SettingsStore,
 )
+from verdiclip.shell.gui_readiness import (
+    StartupReadiness,
+    prepare_and_admit,
+    prepare_gui_fonts,
+)
 from verdiclip.shell.scroll_review import ScrollReviews
 from verdiclip.shell.settings_dialog import HOTKEY_FIELDS, SettingsDialog
 from verdiclip.shell.theme import ThemeManager
@@ -152,6 +157,7 @@ class AppController(QObject):
         self._last_saved_folder: Path | None = None
         self._message_action: Callable[[], None] = self._open_last_folder
         self._manual_check = False
+        self._gui_readiness: StartupReadiness | None = None
         self._update_status: QMessageBox | None = None
         self._announced: str | None = None
         self._check_timer = QTimer(self)
@@ -204,9 +210,31 @@ class AppController(QObject):
 
     # Lifecycle
 
+    @property
+    def gui_readiness(self) -> StartupReadiness | None:
+        """Return measured startup admission costs, excluding outer ready logging."""
+        return self._gui_readiness
+
     def start(self) -> None:
-        """Apply the theme, show the tray, and register hotkeys (UX-TRY-01)."""
-        ThemeManager.apply(self._settings.appearance.theme)
+        """Prepare GUI resources before offering tray/hotkeys (UX-TRY-01)."""
+        self._gui_readiness = None
+        readiness = prepare_and_admit(
+            lambda: ThemeManager.apply(self._settings.appearance.theme),
+            prepare_gui_fonts,
+            self._admit_startup,
+        )
+        self._gui_readiness = readiness
+        logger.info(
+            "%s %s ready; startup admission %.1f ms "
+            "(font preparation %.1f ms included)",
+            APP_NAME,
+            VERSION,
+            readiness.controller_start_ms,
+            readiness.fonts.elapsed_ms,
+        )
+
+    def _admit_startup(self) -> None:
+        """Expose capture entry points only after required font preparation."""
         self._tray.show()
         self._apply_hotkeys()
         # Re-assert Windows registrations so they survive moved installs and
@@ -220,7 +248,6 @@ class AppController(QObject):
             self._apply_start_menu(keep_others=True)
         self._report_update()
         self._schedule_update_checks()
-        logger.info("%s %s ready", APP_NAME, VERSION)
 
     def shutdown(self) -> None:
         """Release global resources."""

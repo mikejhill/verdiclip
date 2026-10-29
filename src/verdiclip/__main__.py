@@ -6,7 +6,7 @@ import logging
 import signal
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from types import FrameType
@@ -33,6 +33,7 @@ from verdiclip.platform.windows import WindowLocator
 from verdiclip.settings import SettingsStore
 from verdiclip.shell.controller import AppController, ShellIntegration
 from verdiclip.shell.instance import SingleInstance
+from verdiclip.startup_lifetime import StartupLifetime
 from verdiclip.update.feed import ReleaseFeed
 from verdiclip.update.install import Installation
 from verdiclip.update.service import UpdateLauncher, Updater
@@ -48,6 +49,10 @@ class Application:
 
     def __init__(self) -> None:
         self._signal_timer: QTimer | None = None
+        self._sigint_handler: Callable[[int, FrameType | None], None] | None = None
+        self._previous_sigint: (
+            int | Callable[[int, FrameType | None], object] | None
+        ) = None
 
     @classmethod
     def main(cls, argv: Sequence[str] | None = None) -> None:
@@ -81,42 +86,54 @@ class Application:
         app.setApplicationVersion(VERSION)
         app.setQuitOnLastWindowClosed(False)
         files = [str(p.resolve()) for p in request.files]
-        instance = SingleInstance()
-        if instance.forward(files):
-            logger.info("Forwarded to the running instance")
-            return 0
-        instance.listen()
-        links = ShellLinkBackend()
-        controller = AppController(
-            store,
-            MssScreenSource(),
-            WindowLocator(),
-            HotkeyService(),
-            ShellIntegration(
-                StartupRegistration(
-                    ShortcutRegistration(
-                        links.known_folder(KnownFolder.STARTUP), links
+        with StartupLifetime() as lifetime:
+            instance = SingleInstance()
+            lifetime.callback(instance.close)
+            if instance.forward(files):
+                logger.info("Forwarded to the running instance")
+                return 0
+            instance.listen()
+            hotkeys = HotkeyService()
+            lifetime.callback(hotkeys.close)
+            links = ShellLinkBackend()
+            controller = AppController(
+                store,
+                MssScreenSource(),
+                WindowLocator(),
+                hotkeys,
+                ShellIntegration(
+                    StartupRegistration(
+                        ShortcutRegistration(
+                            links.known_folder(KnownFolder.STARTUP), links
+                        ),
+                        WinRegRunKey(),
                     ),
-                    WinRegRunKey(),
+                    FileAssociations(),
+                    ShortcutRegistration(
+                        links.known_folder(KnownFolder.PROGRAMS), links
+                    ),
+                    LowLevelKeyboardHook(),
+                    Updater(
+                        Installation.current(),
+                        ReleaseFeed(),
+                        UpdateLauncher(store.path.parent / "update"),
+                    ),
                 ),
-                FileAssociations(),
-                ShortcutRegistration(links.known_folder(KnownFolder.PROGRAMS), links),
-                LowLevelKeyboardHook(),
-                Updater(
-                    Installation.current(),
-                    ReleaseFeed(),
-                    UpdateLauncher(store.path.parent / "update"),
-                ),
-            ),
-        )
-        instance.message_received.connect(controller.handle_forwarded)
-        app.aboutToQuit.connect(controller.shutdown)
-        app.aboutToQuit.connect(instance.close)
-        self._install_sigint(app)
-        controller.start()
-        for path in request.files:
-            controller.open_image(path)
-        return app.exec()
+            )
+            lifetime.callback(controller.shutdown)
+            # Register both owners before installation: even partial setup must
+            # stop its timer and independently restore the process handler.
+            lifetime.callback(self._restore_sigint)
+            lifetime.callback(self._stop_signal_timer)
+            instance.message_received.connect(controller.handle_forwarded)
+            lifetime.callback(
+                instance.message_received.disconnect, controller.handle_forwarded
+            )
+            self._install_sigint(app)
+            controller.start()
+            for path in request.files:
+                controller.open_image(path)
+            return app.exec()
 
     def _run_capture(self, request: CliRequest, store: SettingsStore) -> int:
         """Capture without UI, then save or copy."""
@@ -153,12 +170,29 @@ class Application:
             logger.info("Interrupted; quitting")
             app.quit()
 
+        self._previous_sigint = signal.getsignal(signal.SIGINT)
+        if self._previous_sigint is None:
+            msg = "Cannot replace an unknown SIGINT handler that Python cannot restore"
+            raise AppError(msg)
+        self._sigint_handler = on_sigint
         signal.signal(signal.SIGINT, on_sigint)
         # Qt's event loop blocks Python signal handling; wake it periodically
         timer = QTimer()
+        self._signal_timer = timer
         timer.timeout.connect(lambda: None)
         timer.start(SIGNAL_POLL_MS)
-        self._signal_timer = timer
+
+    def _stop_signal_timer(self) -> None:
+        """Retire only this run's signal-poll timer, without pumping Qt events."""
+        timer, self._signal_timer = self._signal_timer, None
+        if timer is not None:
+            timer.stop()
+
+    def _restore_sigint(self) -> None:
+        """Restore the prior handler only while this run still owns SIGINT."""
+        handler, self._sigint_handler = self._sigint_handler, None
+        if handler is not None and signal.getsignal(signal.SIGINT) is handler:
+            signal.signal(signal.SIGINT, self._previous_sigint)
 
     @staticmethod
     def _configure_logging(level: str, log_dir: Path) -> None:

@@ -1,0 +1,103 @@
+name: GUI readiness repeatability
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/gui-readiness-phases.yml'
+      - '.github/workflows/gui-resource-readiness.yml'
+      - 'src/verdiclip/shell/**'
+      - 'src/verdiclip/__main__.py'
+      - 'src/verdiclip/startup_lifetime.py'
+      - 'src/verdiclip/editor/**'
+      - 'tests/ux/test_gui_readiness.py'
+      - 'tests/ux/test_app_journeys.py'
+      - 'scripts/gui_benchmark_context.py'
+      - 'tests/tooling/test_gui_benchmark_context.py'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gui-readiness-repeatability-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    if: github.repository == 'mikejhill/verdiclip'
+    name: Qt ${{ matrix.qt }} / five fresh processes
+    runs-on: windows-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        qt: ['6.11.2', '6.12.0']
+    env:
+      UV_LOCKED: '1'
+      PYTHONUTF8: '1'
+      PYTHONUNBUFFERED: '1'
+      QT_QPA_PLATFORM: windows
+      VERDICLIP_EXPECTED_QT: ${{ matrix.qt }}
+      VERDICLIP_EXPECTED_QPA: windows
+      VERDICLIP_GUI_READINESS_QUALIFICATION: '1'
+      VERDICLIP_BENCHMARK_ROLE: hosted
+      VERDICLIP_BENCHMARK_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: '3.13.16'
+          enable-cache: false
+      - run: uv sync --locked
+      - name: Select explicit isolated Qt compatibility runtime
+        shell: pwsh
+        run: uv pip install --python .venv "pyside6-essentials==$env:VERDICLIP_EXPECTED_QT" "shiboken6==$env:VERDICLIP_EXPECTED_QT"
+      - name: Verify exact source and record non-identifying VM hardware
+        shell: pwsh
+        run: |
+          if (-not $IsWindows -or $env:RUNNER_OS -cne 'Windows' -or
+              $env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_ENVIRONMENT -cne 'github-hosted') {
+            throw 'Qualification requires a disposable GitHub-hosted Windows job.'
+          }
+          $actualSource = (& git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $actualSource -cne $env:VERDICLIP_BENCHMARK_SOURCE_SHA) {
+            throw 'Checked-out source identity mismatch.'
+          }
+          $hardware = [ordered]@{
+            os_version = [Environment]::OSVersion.VersionString
+            cpu_models = @((Get-CimInstance Win32_Processor).Name)
+            logical_processors = [Environment]::ProcessorCount
+            memory_bytes = (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory
+            runner_image = $env:ImageOS
+            runner_image_version = $env:ImageVersion
+            runner_arch = $env:RUNNER_ARCH
+          }
+          $hardwareJson = $hardware | ConvertTo-Json -Compress
+          "VERDICLIP_BENCHMARK_HARDWARE_JSON=$hardwareJson" >> $env:GITHUB_ENV
+          Write-Output "GUI_BENCHMARK_SOURCE=$actualSource; HARDWARE=$hardwareJson"
+      - name: Five fresh-process startup, first and warm capture trials
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $aggregate = 0
+          foreach ($trial in 1..5) {
+            Write-Output "GUI_BENCHMARK_TRIAL=$trial/5; fresh-process-same-VM-not-cold-OS"
+            $report = Join-Path $env:RUNNER_TEMP ('readiness-repeat-' + [guid]::NewGuid().ToString('N') + '.xml')
+            & .venv/Scripts/python.exe -m pytest tests/ux/test_gui_readiness.py::test_first_controller_start_and_capture_costs --no-cov -p no:randomly -vv --capture=tee-sys "--junitxml=$report"
+            $testExit = $LASTEXITCODE
+            if ($testExit -notin @(0, 1)) { exit $testExit }
+            if (-not (Test-Path -LiteralPath $report)) { throw 'Trial JUnit receipt missing.' }
+            [xml]$junit = Get-Content -LiteralPath $report -Raw
+            $failures = @($junit.SelectNodes('//failure')).Count
+            if (@($junit.SelectNodes('//testcase')).Count -ne 1 -or
+                @($junit.SelectNodes('//skipped | //error')).Count -ne 0 -or
+                ($testExit -eq 0 -and $failures -ne 0) -or ($testExit -eq 1 -and $failures -ne 1)) {
+              throw 'Trial must execute exactly one non-skipped case with consistent status.'
+            }
+            if ($testExit -ne 0) { $aggregate = 1 }
+            Write-Output "GUI_BENCHMARK_TRIAL_EXIT=$trial/$testExit"
+          }
+          exit $aggregate

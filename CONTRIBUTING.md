@@ -72,7 +72,7 @@ Coverage shows code ran, not that a test checked it. These keep the tests honest
 | Diff coverage ≥ 95% | CI, pull requests | New or changed lines without tests |
 | Random test order ([pytest-randomly](https://github.com/pytest-dev/pytest-randomly)) | Every run | Tests that pass only after another test; rerun a failure with the printed `-p randomly --randomly-seed=N` |
 | Property tests ([Hypothesis](https://hypothesis.readthedocs.io/)) | `tests/test_properties.py` | Edge cases hand-picked examples miss |
-| Mutation testing ([mutmut](https://github.com/boxed/mutmut)) | CI: report on the modules a pull request changes; weekly whole-package run must score ≥ `MUTATION_FLOOR` | Code that runs under test but whose behavior no assertion checks |
+| Mutation testing ([mutmut](https://github.com/boxed/mutmut)) | Asynchronous default-branch runs; [72% floor and durable triage](docs/mutation-testing.md) | Code that runs under test but whose behavior no assertion checks |
 
 Run mutation testing locally on Linux or WSL (mutmut forks, so not on native Windows):
 
@@ -82,7 +82,15 @@ uv run --group mutation mutmut run "verdiclip.geometry.*"   # one module
 uv run --group mutation mutmut show <mutant-name>      # what a survivor changed
 ```
 
-mutmut keeps its verdicts in `mutants/`, so running it again without a pattern retests only the functions you changed. A pattern retests every mutant it matches. Delete `mutants/` for a fresh score, for example after changing only tests. CI does the same: pull requests and pushes to `main` reuse cached verdicts, and the weekly run starts fresh.
+mutmut keeps its verdicts in `mutants/`, so a local rerun can retain earlier
+results. A pattern retests every mutant it matches. Delete `mutants/` for a
+fresh local score after any dependency/source/test change; an unchanged
+candidate body alone does not prove unchanged behavior. CI runs independently
+after default-branch pushes and weekly, or manually on the default branch. PR
+and release checks do not wait for mutation. Push reruns may resume qualified
+identity-verified verdicts only for the same complete commit, OS and
+architecture. Weekly and manual runs start fresh. See [mutation testing and
+triage](docs/mutation-testing.md).
 
 A surviving mutant is a change no test noticed: add an assertion that fails for it, or mark the line `# pragma: no mutate` if the change is truly equivalent.
 

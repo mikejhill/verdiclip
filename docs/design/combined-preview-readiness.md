@@ -98,7 +98,15 @@ and native tab interaction remain separate native qualification gates; this
 broker matrix does not certify them. Portable tests and replay transports cannot
 substitute for those observations. No current readiness flag is enabled.
 
-## Mutation cache correction
+## Mutation cache correction history
+
+The following ordinal/AST investigation is retained historical evidence. The
+current integrated workflow additionally isolates verdict reuse to the exact
+commit, OS and architecture, then verifies candidate identities and original
+source hashes. It runs asynchronously on main, weekly and explicit default-ref
+dispatch; PRs do not start mutation or wait for it. A score at or above the
+configured 72% floor passes; incomplete execution has a separate alert and never
+counts as a score. See [current mutation policy](../mutation-testing.md).
 
 The prior ordinal-cache risk is reproduced. The new locked-3.8.0 guard hashes
 actual candidate AST bodies and original functions, requires verified provenance
@@ -149,10 +157,11 @@ behavior changed for these tests.
 
 The full randomized Qt 6.12 suite also exposed test-process logging leakage:
 entry-point tests replaced root handlers with a stream tied to temporary pytest
-stderr, then later tests logged through the closed stream. Their fixture now
-detaches and restores prior handlers/level and closes only its own handlers.
-This fixes test isolation without suppressing logging errors or changing the
-application's production logging setup. Preserve the triggering run alongside
+stderr, then later tests logged through the closed stream. The initial fixture
+correction detached/restored handlers; the integrated main fixture now stubs
+in-process logging configuration and verifies real file/stderr configuration in
+a separate child. This confines logging to its owner without closing pytest's
+handlers, suppressing logging errors or changing production logging setup. Preserve the triggering run alongside
 the corrected same-order run.
 
 That clean-logging run exposed a separate premature observer timeout in the
@@ -218,7 +227,7 @@ functional suites.
 
 | Gate | Present state | Next action and evidence |
 | --- | --- | --- |
-| Exact-head portable qualification | Required after this test/document change | Both Qt suites, hosted CI, independent review, CodeQL findings and PR threads, and the existing mutation workflow must reach terminal results. Preserve failures and cached/fresh scope labels. |
+| Exact-head portable qualification | Required after this test/document change | Both Qt suites, hosted CI, independent review, CodeQL findings and PR threads must qualify this exact candidate. Mutation runs asynchronously on main after merge and on its schedule; it is not a PR, acceptance or release dependency. Preserve failures and cached/fresh scope labels. |
 | Permission and exclusive desktop slot | Native input is currently held | Parent must explicitly hand over a bounded qualification window. A read-only WTS query on 2026-10-26 returned active/unlocked (state 0, flags 1); the desktop is **not** the sole blocker. No UI/input was sent for that check. Recheck at execution time. |
 | Combined native presentation | Existing capture harness is available but unrun for this combined head | After handoff, run `tests/capture/test_capture_native.py --require-interactive-capture` with Windows QPA on both supported Qt runtimes. It uses actual Qt/MSS presentation with replay input transport; retain that label. Assert existing menu/dialog identity, visibility, handles and zero Hide/Close. Its RAM-only observer does not qualify production delivery; production nonactivating delivery/error presentation needs its own reviewed native lane. |
 | Production capture input | Repo-defined real-broker matrix prepared; not executed | Run the bounded exclusive matrix described above. Positive foreground ownership, actual scoped input pairs and independent cleanup are required. RAM-only observation does not qualify delivery. |
@@ -251,3 +260,50 @@ readiness correction addresses reproduced races, and passing corrected runs
 provide current evidence; they do not retroactively establish that incident's
 cause. Preserve the original failure, unchanged rerun, phase traces and repaint
 budget outlier without relaxing deadlines or repaint budgets.
+
+
+## Main readiness integration and next local scope
+
+The next feature candidate integrates qualified main
+`594215905b6f1010bcccfa8179a3921f699a0551`, including explicit startup/font
+readiness, failure cleanup, owned-modal fixture cleanup and same-commit mutation
+cache isolation. The delivered editor smoke snapshots and prior frozen feature
+source `d06ce3df611c0ab1f1bf0f4c648f7f055b152473` remain unchanged. Passing checks
+or native receipts for that older source do not qualify a new candidate.
+
+Before requesting an exclusive desktop slot, freeze the new application commit,
+run its hosted feature contracts and independent review, and bind a separately
+hashed harness to that exact source. Preload the supported coordinator definitions,
+commands and instructions before any fixture is created. The existing pure
+bootstrap/action tests demonstrate modeled expiry, one-shot dispatch and delayed
+response rejection; they do not establish actual tool latency or popup-preserving
+activation. The previous expired binding receipt remains a failed qualification.
+
+A first autonomous local lane can be bounded to twelve minutes: thirty seconds
+for session/source admission; at most six fifty-second broker Escape cases
+(Qt menu, owned modal and Win32 menu on both Qt profiles); three minutes shared
+for native tab transfer/cancel and carried-header checks; two minutes shared for
+synthetic nonactivating delivery; and ninety seconds reserved for cleanup/control
+return. Stop at the first failed gate, foreground/ownership change, user input,
+refusal or uncertain cleanup. No clipboard read/write/clear/restore, monitor or
+settings change, installed-app replacement, driver action or physical-user step
+is included. Scoped production broker leases and owned helper/window effects must
+be disclosed at the fresh handoff. Synthetic/native events do not qualify physical
+Raw Input, Narrator or mixed-monitor parity.
+
+Real UIA provider composition is a separate ten-minute owned-fixture lane:
+end, Stop and provider drift across both Qt versions. It exercises actual helper,
+frame/backend/session and canonical PNG/editor delivery, but bypasses the user-facing
+selection/confirmation and interactive review through explicit fixture composition.
+It cannot qualify the full scrolling feature. The autonomous full-workflow
+selection/confirmation/review fixture remains a concrete implementation gap;
+do not enable normal scrolling or substitute a component pass for that gap.
+
+Matched performance uses the shared [benchmark protocol](gui-benchmark-protocol.md),
+with five fresh processes on the identical application commit, Python/Qt versions
+and Windows QPA on hosted and local machines. A tree-equivalent different SHA is
+not an identical-commit comparison. All outcomes and environment differences are
+retained; the 300 ms first-capture criterion is unchanged. Startup admission,
+factory envelope, first capture and warm capture remain separately reported.
+The local wrapper needs an independent ownership-specific process watchdog and
+fresh handoff; the hosted loop does not grant local execution authority.

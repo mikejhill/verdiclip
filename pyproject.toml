@@ -90,7 +90,7 @@ all = "error"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Console pytest and python -m pytest must import the same checkout tooling.
+# Tooling tests resolve scripts.* from both checkout and mutmut staging root.
 pythonpath = ["."]
 addopts = ["--strict-markers", "--strict-config", "-ra", "--import-mode=importlib"]
 xfail_strict = true
@@ -148,7 +148,8 @@ mutation = [
 # Mutation testing: change the code in small ways and check a test fails.
 # POSIX only (it forks); run it on Linux or WSL with `uv run poe mutate`.
 source_paths = ["src/verdiclip/"]
-also_copy = ["scripts"]
+# Tooling tests import scripts.* and inspect workflow contracts in staging.
+also_copy = ["scripts/", ".github/workflows/"]
 pytest_add_cli_args_test_selection = ["tests/"]
 # tests.mutation_support loads before any test imports verdiclip; see its docstring
 pytest_add_cli_args = [

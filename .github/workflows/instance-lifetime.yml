@@ -1,0 +1,68 @@
+name: IPC lifetime qualification
+
+on:
+  pull_request:
+    paths:
+      - src/verdiclip/shell/instance.py
+      - tests/shell/test_instance_lifetime.py
+      - tests/ipc_process_source.py
+      - scripts/ipc_qt_diagnostic.py
+      - tests/tooling/test_ipc_qt_diagnostic.py
+      - .github/workflows/instance-lifetime.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ipc-lifetime-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+env:
+  UV_LOCKED: "1"
+  PYTHONUTF8: "1"
+  PYTHONUNBUFFERED: "1"
+  PYTHONFAULTHANDLER: "1"
+  QT_QPA_PLATFORM: offscreen
+  QT_MESSAGE_PATTERN: "[%{time process} %{type} %{category}] %{message}"
+
+jobs:
+  qualify:
+    name: Python 3.14 / Qt ${{ matrix.qt }} / seed 786614348
+    runs-on: windows-2025
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        qt: ["6.11.2", "6.12.0"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: false
+          python-version: "3.14"
+      - name: Install locked dependencies and exact Qt profile
+        timeout-minutes: 4
+        shell: pwsh
+        env:
+          QT_VERSION: ${{ matrix.qt }}
+        run: |
+          uv sync --locked
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          uv pip install --python .venv "pyside6-essentials==$env:QT_VERSION" "shiboken6==$env:QT_VERSION"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          uv run --no-sync python -c "import sys; from PySide6.QtCore import qVersion; print(sys.version, 'Qt', qVersion(), flush=True)"
+      - name: Isolated lifetime regression in fresh process
+        timeout-minutes: 2
+        run: >-
+          uv run --no-sync python -X faulthandler scripts/ipc_qt_diagnostic.py
+          -vv -rA --capture=tee-sys --log-cli-level=INFO
+          --randomly-seed=786614348 tests/shell/test_instance_lifetime.py
+      - name: Exact-seed aggregate in separate fresh process
+        timeout-minutes: 12
+        run: >-
+          uv run --no-sync python -X faulthandler scripts/ipc_qt_diagnostic.py
+          -vv -rA --capture=tee-sys --log-cli-level=INFO
+          --randomly-seed=786614348 --junitxml=ipc-seed-786614348.xml

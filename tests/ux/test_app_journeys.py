@@ -13,7 +13,16 @@ from pathlib import Path
 from typing import override
 
 import pytest
-from PySide6.QtCore import QEvent, QObject, QPoint, QProcess, Qt, QTimer, QUrl
+from PySide6.QtCore import (
+    QCoreApplication,
+    QEvent,
+    QObject,
+    QPoint,
+    QProcess,
+    Qt,
+    QTimer,
+    QUrl,
+)
 from PySide6.QtGui import QDesktopServices, QGuiApplication, QImage
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
@@ -25,6 +34,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from pytestqt.qtbot import QtBot
+from scripts.owned_modal import run_owned_modal
 from tests.capture.test_scroll_acquisition import Run
 from tests.capture.test_scroll_panels import Controls
 from tests.platform.test_associations import FakeAssociationBackend
@@ -268,12 +278,36 @@ def make_app(
         for editor in app.controller.editors:
             editor.session.history.mark_delivered()
             editor.close()
-        app.controller.shutdown()
+        status = app.controller._update_status
+        if status is None:
+            app.controller.shutdown()
+        else:
+            # Shutdown schedules deletion. Finish only this fixture-owned widget's
+            # deferred disposal before a following journey acquires input.
+            with qtbot.waitSignal(status.destroyed, timeout=1000) as destroyed:
+                app.controller.shutdown()
+                if not destroyed.signal_triggered:
+                    QCoreApplication.sendPostedEvents(
+                        status, QEvent.Type.DeferredDelete
+                    )
     qtbot.wait(0)  # Let closed editors process their deferred deletes
 
 
 class TestAfterCapture:
     """What happens when a capture finishes."""
+
+    def test_startup_publishes_gui_readiness_before_capture(
+        self, make_app: AppFactory
+    ) -> None:
+        """An admitted controller exposes prepared fonts before any capture."""
+        app = make_app()
+
+        readiness = app.controller.gui_readiness
+        assert readiness is not None
+        assert readiness.fonts.family_count > 0
+        assert readiness.fonts.digit_advance > 0
+        assert 0 <= readiness.fonts.elapsed_ms <= readiness.controller_start_ms
+        assert app.controller.editors == ()
 
     def test_hotkey_opens_focused_editor_with_select_tool(
         self, make_app: AppFactory, qtbot: QtBot
@@ -836,11 +870,11 @@ class TestSettingsEverywhere:
         assert qt_app is not None
         qt_app.installEventFilter(blocked)
         box = QMessageBox(QMessageBox.Icon.Warning, "VerdiClip", "Oops", parent=editor)
+
         box.setWindowModality(Qt.WindowModality.WindowModal)
-        try:
-            box.show()
-            qtbot.waitExposed(box)
-            original_modality = box.windowModality()
+        original_modality = box.windowModality()
+
+        def capture_then_close() -> None:
             app.press_hotkey("region")
             overlay = Overlay(app.controller.capture).widget
             for kind, point in (
@@ -851,6 +885,27 @@ class TestSettingsEverywhere:
                 overlay.receive_input(SelectionInput(kind, point))
             assert box.isVisible()
             assert box.windowModality() == original_modality
+
+        def arm_once(delay_ms: int, callback: Callable[[], None]) -> Callable[[], None]:
+            timer = QTimer(box)
+            timer.setSingleShot(True)
+            timer.timeout.connect(callback)
+            timer.start(delay_ms)
+
+            def stop() -> None:
+                timer.stop()
+                timer.deleteLater()
+
+            return stop
+
+        try:
+            run_owned_modal(
+                execute=box.exec,
+                close=box.reject,
+                callback=capture_then_close,
+                arm=arm_once,
+                timeout_ms=5000,
+            )
         finally:
             box.reject()
             qt_app.removeEventFilter(blocked)

@@ -1,0 +1,147 @@
+name: GUI resource readiness
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/gui-resource-readiness.yml'
+      - 'src/verdiclip/shell/controller.py'
+      - 'src/verdiclip/shell/gui_readiness.py'
+      - 'src/verdiclip/__main__.py'
+      - 'src/verdiclip/startup_lifetime.py'
+      - 'src/verdiclip/editor/**'
+      - 'tests/ux/test_gui_readiness.py'
+      - 'tests/ux/test_app_journeys.py'
+      - 'tests/portable/test_gui_readiness.py'
+      - 'docs/design/gui-resource-readiness.md'
+      - 'scripts/gui_benchmark_context.py'
+      - 'tests/tooling/test_gui_benchmark_context.py'
+  push:
+    branches: [main]
+    paths:
+      - 'src/verdiclip/shell/**'
+      - 'src/verdiclip/__main__.py'
+      - 'src/verdiclip/startup_lifetime.py'
+      - 'src/verdiclip/editor/**'
+      - 'tests/ux/test_gui_readiness.py'
+      - 'tests/ux/test_app_journeys.py'
+      - 'scripts/gui_benchmark_context.py'
+      - '.github/workflows/gui-resource-readiness.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gui-resource-readiness-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  qualification:
+    if: github.repository == 'mikejhill/verdiclip'
+    name: Qt ${{ matrix.qt }} / ${{ matrix.qpa }} readiness costs
+    runs-on: windows-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        qt: ['6.11.2', '6.12.0']
+        qpa: [offscreen, windows]
+    env:
+      UV_LOCKED: '1'
+      PYTHONUTF8: '1'
+      QT_QPA_PLATFORM: ${{ matrix.qpa }}
+      VERDICLIP_GUI_READINESS_QUALIFICATION: '1'
+      VERDICLIP_EXPECTED_QT: ${{ matrix.qt }}
+      VERDICLIP_EXPECTED_QPA: ${{ matrix.qpa }}
+      VERDICLIP_BENCHMARK_ROLE: hosted
+      VERDICLIP_BENCHMARK_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: '3.13.16'
+          enable-cache: false
+      - run: uv sync --locked
+      - name: Select explicit isolated Qt compatibility runtime
+        id: runtime
+        shell: pwsh
+        run: uv pip install --python .venv "pyside6-essentials==$env:VERDICLIP_EXPECTED_QT" "shiboken6==$env:VERDICLIP_EXPECTED_QT"
+      - name: Verify hosted Windows profile and exact checked-out source
+        shell: pwsh
+        run: |
+          if (-not $IsWindows -or $env:RUNNER_OS -cne 'Windows' -or
+              $env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_ENVIRONMENT -cne 'github-hosted') {
+            throw 'Qualification requires a disposable GitHub-hosted Windows job.'
+          }
+          $actualSource = (& git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $actualSource -cne $env:VERDICLIP_BENCHMARK_SOURCE_SHA) {
+            throw 'Checked-out source does not match the job source identity.'
+          }
+          Write-Output "GUI_READINESS_SOURCE=$actualSource"
+          $hardware = [ordered]@{
+            os_version = [Environment]::OSVersion.VersionString
+            cpu_models = @((Get-CimInstance Win32_Processor).Name)
+            logical_processors = [Environment]::ProcessorCount
+            memory_bytes = (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory
+            runner_image = $env:ImageOS
+            runner_image_version = $env:ImageVersion
+            runner_arch = $env:RUNNER_ARCH
+          }
+          $hardwareJson = $hardware | ConvertTo-Json -Compress
+          "VERDICLIP_BENCHMARK_HARDWARE_JSON=$hardwareJson" >> $env:GITHUB_ENV
+          Write-Output "GUI_BENCHMARK_HARDWARE=$hardwareJson"
+      - name: First controller startup and capture in one fresh pytest process
+        id: timing
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $report = Join-Path $env:RUNNER_TEMP ('gui-readiness-timing-' + [guid]::NewGuid().ToString('N') + '.xml')
+          & .venv/Scripts/python.exe -m pytest tests/ux/test_gui_readiness.py::test_first_controller_start_and_capture_costs --no-cov -p no:randomly -vv --capture=tee-sys "--junitxml=$report"
+          $testExit = $LASTEXITCODE
+          if ($testExit -notin @(0, 1)) { exit $testExit }
+          if (-not (Test-Path -LiteralPath $report)) { throw 'Timing JUnit receipt missing.' }
+          [xml]$junit = Get-Content -LiteralPath $report -Raw
+          $cases = @($junit.SelectNodes('//testcase'))
+          $failures = @($junit.SelectNodes('//failure')).Count
+          if ($cases.Count -ne 1 -or @($junit.SelectNodes('//skipped')).Count -ne 0 -or
+              @($junit.SelectNodes('//error')).Count -ne 0 -or
+              ($testExit -eq 0 -and $failures -ne 0) -or ($testExit -eq 1 -and $failures -ne 1)) {
+            throw 'Timing must execute exactly one non-skipped case with consistent pytest status.'
+          }
+          'process_returned=true' >> $env:GITHUB_OUTPUT
+          exit $testExit
+      - name: Preparation failure admission in a separate fresh pytest process
+        if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.timing.outputs.process_returned == 'true' }}
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $report = Join-Path $env:RUNNER_TEMP ('gui-readiness-admission-' + [guid]::NewGuid().ToString('N') + '.xml')
+          & .venv/Scripts/python.exe -m pytest tests/ux/test_gui_readiness.py::test_preparation_failure_never_admits_tray_or_hotkeys --no-cov -p no:randomly -vv --capture=tee-sys "--junitxml=$report"
+          $testExit = $LASTEXITCODE
+          if ($testExit -ne 0) { exit $testExit }
+          if (-not (Test-Path -LiteralPath $report)) { throw 'Admission JUnit receipt missing.' }
+          [xml]$junit = Get-Content -LiteralPath $report -Raw
+          if (@($junit.SelectNodes('//testcase')).Count -ne 1 -or
+              @($junit.SelectNodes('//failure | //error | //skipped')).Count -ne 0) {
+            throw 'Admission proof must execute exactly one passed, non-skipped case.'
+          }
+      - name: Entry failure retires actual owned Qt resources
+        if: ${{ !cancelled() && steps.runtime.outcome == 'success' }}
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $report = Join-Path $env:RUNNER_TEMP ('entry-readiness-cleanup-' + [guid]::NewGuid().ToString('N') + '.xml')
+          & .venv/Scripts/python.exe -m pytest tests/test_main.py::test_gui_readiness_failure_retires_real_qt_owners_without_exec --no-cov -p no:randomly -vv --capture=tee-sys "--junitxml=$report"
+          $testExit = $LASTEXITCODE
+          if ($testExit -ne 0) { exit $testExit }
+          if (-not (Test-Path -LiteralPath $report)) { throw 'Entry cleanup JUnit receipt missing.' }
+          [xml]$junit = Get-Content -LiteralPath $report -Raw
+          if (@($junit.SelectNodes('//testcase')).Count -ne 1 -or
+              @($junit.SelectNodes('//failure | //error | //skipped')).Count -ne 0) {
+            throw 'Entry cleanup must execute exactly one passed, non-skipped case.'
+          }
