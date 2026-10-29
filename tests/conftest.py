@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtGui import QColor, QGuiApplication, QImage, QPainter
+from tests.capture.input_fixture import ReplayInputBroker
 
 from verdiclip.document.document import Document
 from verdiclip.editor.close_prompt import CloseChoice, ClosePrompt
@@ -17,8 +18,36 @@ from verdiclip.settings import EditorSettings, OutputSettings
 WINDOWS_FONTS = Path("C:/Windows/Fonts")
 
 
+@pytest.fixture(autouse=True)
+def capture_input_boundary(
+    request: pytest.FixtureRequest,
+) -> Iterator[None]:
+    """Primary tests explicitly replace OS input; native compatibility opts out."""
+    with pytest.MonkeyPatch.context() as patch:
+        if request.node.get_closest_marker("native_desktop") is None:
+            patch.setattr(
+                "verdiclip.capture.service.make_input_broker", ReplayInputBroker
+            )
+        yield
+
+
 def pytest_addoption(parser: pytest.Parser) -> None:
     """Add ``--ux-snapshots DIR`` to save a PNG for each journey step."""
+    parser.addoption(
+        "--native-delivery-handoff",
+        action="store_true",
+        help="Explicit future native UI window for synthetic-only delivery cases.",
+    )
+    parser.addoption(
+        "--native-broker-handoff",
+        action="store_true",
+        help="Explicit exclusive-window execution of the production broker matrix.",
+    )
+    parser.addoption(
+        "--native-broker-physical",
+        action="store_true",
+        help="Include physical raw-pointer cases requiring the human operator.",
+    )
     parser.addoption(
         "--ux-snapshots",
         default="",
@@ -53,7 +82,15 @@ def clean_clipboard() -> Iterator[None]:
     Python-created QMimeData; real Windows does not.
     """
     yield
-    if QGuiApplication.instance() is not None:
+    clear_offscreen_clipboard()
+
+
+def clear_offscreen_clipboard() -> None:
+    """Release offscreen Python mime ownership without touching native clipboards."""
+    if (
+        QGuiApplication.instance() is not None
+        and QGuiApplication.platformName() == "offscreen"
+    ):
         QGuiApplication.clipboard().clear()
 
 

@@ -6,7 +6,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtCore import QIODevice, QPointF, QRectF, QSaveFile, Qt
 from PySide6.QtGui import (
     QClipboard,
     QGuiApplication,
@@ -76,15 +76,27 @@ class ImageDelivery:
         except OSError as err:
             msg = f"Could not create folder {path.parent}: {err.strerror}"
             raise DeliveryError(msg) from err
-        writer = QImageWriter(str(path), image_format.value.encode())
+        destination = QSaveFile(str(path))
+        destination.setDirectWriteFallback(False)
+        if not destination.open(QIODevice.OpenModeFlag.WriteOnly):
+            raise DeliveryError(
+                f"Could not save {path.name}: {destination.errorString()}"
+            )
+        writer = QImageWriter(destination, image_format.value.encode())
         if image_format is ImageFormat.JPG:
             writer.setQuality(self._settings.jpeg_quality)
         to_write = image
         if image_format in (ImageFormat.JPG, ImageFormat.BMP):
             to_write = self._flatten_alpha(image)
         if not writer.write(to_write):
+            destination.cancelWriting()
+            destination.commit()
             msg = f"Could not save {path.name}: {writer.errorString()}"
             raise DeliveryError(msg)
+        if not destination.commit():
+            raise DeliveryError(
+                f"Could not save {path.name}: {destination.errorString()}"
+            )
         logger.info("Saved image to %s", path)
         return path
 

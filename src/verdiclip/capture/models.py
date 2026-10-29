@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from typing import Self
@@ -32,6 +32,7 @@ class Capture:
     area: Rect
     title: str
     taken_at: datetime
+    preserve_foreground: bool = field(default=False, kw_only=True)
 
 
 @dataclass(frozen=True, slots=True)

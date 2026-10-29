@@ -8,6 +8,7 @@ import sys
 import uuid
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
+from datetime import datetime
 from pathlib import Path
 from typing import override
 
@@ -34,6 +35,8 @@ from PySide6.QtWidgets import (
 )
 from pytestqt.qtbot import QtBot
 from scripts.owned_modal import run_owned_modal
+from tests.capture.test_scroll_acquisition import Run
+from tests.capture.test_scroll_panels import Controls
 from tests.platform.test_associations import FakeAssociationBackend
 from tests.platform.test_launcher import GUI, write_pe
 from tests.platform.test_shortcuts import FakeShortcutBackend
@@ -49,16 +52,19 @@ from tests.ux.test_capture_journeys import (
 
 from verdiclip import APP_NAME, DOCS_URL, VERSION
 from verdiclip.capture.grabber import ScreenSource
-from verdiclip.capture.models import Capture
+from verdiclip.capture.input_policy import InputKind, SelectionInput
+from verdiclip.capture.models import Capture, CaptureMode
 from verdiclip.capture.overlay import SelectionOverlay
+from verdiclip.capture.service import WindowSource
 from verdiclip.document.commands import SetCrop
 from verdiclip.document.style import Color
 from verdiclip.editor.close_prompt import CloseChoice, ClosePrompt
 from verdiclip.editor.session import ToolId
 from verdiclip.editor.style_bar import ColorButton
 from verdiclip.editor.window import EditorWindow
-from verdiclip.exceptions import UpdateError
-from verdiclip.geometry import Rect
+from verdiclip.exceptions import DeliveryError, UpdateError
+from verdiclip.geometry import Point, Rect
+from verdiclip.output.delivery import ImageDelivery
 from verdiclip.platform.associations import DEFAULT_APPS_URI, FileAssociations
 from verdiclip.platform.hotkeys import Hotkey, HotkeyService
 from verdiclip.platform.launcher import LaunchCommand
@@ -78,7 +84,12 @@ from verdiclip.shell.controller import AppController, ShellIntegration
 from verdiclip.shell.instance import SingleInstance
 from verdiclip.shell.settings_dialog import SettingsDialog
 from verdiclip.shell.tray import TrayIcon
-from verdiclip.update.install import Installation, InstallKind, UpdatePlanner
+from verdiclip.update.install import (
+    Installation,
+    InstallKind,
+    UpdatePlan,
+    UpdatePlanner,
+)
 from verdiclip.update.service import UpdateLauncher, Updater
 
 pytestmark = pytest.mark.ux
@@ -206,12 +217,14 @@ def make_app(
         lambda *_args: LaunchCommand(PYTHONW, "-m verdiclip"),
     )
 
-    def factory(
+    def factory(  # noqa: PLR0913 - explicit screen/window OS boundary injection
         settings: Settings | None = None,
         taken: set[str] | None = None,
         links: FakeShortcutBackend | None = None,
         updater: Updater | None = None,
         screens: ScreenSource | None = None,
+        *,
+        windows: WindowSource | None = None,
     ) -> App:
         store = SettingsStore(tmp_path / "settings.json")
         base = settings or Settings()
@@ -221,15 +234,19 @@ def make_app(
         os_hotkeys = FakeHotkeys(taken=taken or set())
         hotkeys = HotkeyService(os_hotkeys)
         registry = FakeRegistry()
-        windows = FakeWindows([FakeWindow("Notepad", Rect(10, 10, 300, 200), 1)])
-        windows.active = windows.windows[0]
+        default_window = FakeWindow("Notepad", Rect(10, 10, 300, 200), 1)
+        window_source = (
+            windows
+            if windows is not None
+            else FakeWindows([default_window], active=default_window)
+        )
         associations = FakeAssociationBackend()
         links = links if links is not None else FakeShortcutBackend()
         folders = ShortcutFolders(tmp_path / "Startup", tmp_path / "Programs")
         controller = AppController(
             store,
             screens if screens is not None else FakeDesktop(),
-            windows,
+            window_source,
             hotkeys,
             ShellIntegration(
                 StartupRegistration(
@@ -256,6 +273,8 @@ def make_app(
 
     yield factory
     for app in created:
+        for record in app.controller.workspace.documents:
+            record.session.history.mark_delivered()
         for editor in app.controller.editors:
             editor.session.history.mark_delivered()
             editor.close()
@@ -735,13 +754,13 @@ class TestSettingsEverywhere:
     """Settings reachable and effective from anywhere."""
 
     @pytest.mark.parametrize("entry", ["hotkey", "menu"])
-    def test_tray_popup_releases_capture_input(
+    def test_tray_capture_preserves_popup_until_user_action(
         self,
         make_app: AppFactory,
         qtbot: QtBot,
         entry: str,
     ) -> None:
-        """UX-G-10, UX-CAP-05: tray popup input transfers before native Escape."""
+        """Capture preserves a hotkey-opened menu; user activation may dismiss it."""
         app = make_app()
         menu = app.controller.tray.menu
         try:
@@ -753,9 +772,15 @@ class TestSettingsEverywhere:
                 menu.setActiveAction(app.controller.tray.action("region"))
                 QTest.keyClick(menu.windowHandle(), Qt.Key.Key_Return)
             qtbot.waitUntil(lambda: bool(app.controller.capture.overlays))
-            assert not menu.isVisible(), "Selection must not compete with tray input"
+            if entry == "hotkey":
+                assert menu.isVisible()
+                assert QApplication.activePopupWidget() is menu
+            else:
+                assert not menu.isVisible(), "The user activated the menu action"
             overlay = app.controller.capture.overlays[0]
-            QTest.keyClick(overlay.windowHandle(), Qt.Key.Key_Escape)
+            overlay.receive_input(
+                SelectionInput(InputKind.CANCEL, Point(120, 120), "escape")
+            )
             assert not app.controller.capture.is_selecting
             assert app.controller.editors == (), "Escape must not deliver an image"
         finally:
@@ -798,8 +823,23 @@ class TestSettingsEverywhere:
         qt_app.installEventFilter(blocked)
 
         def capture_then_close() -> None:
+            dialogs = [
+                widget
+                for widget in QApplication.topLevelWidgets()
+                if isinstance(widget, dialog) and widget.isVisible()
+            ]
+            assert len(dialogs) == 1
+            original_modality = dialogs[0].windowModality()
             app.press_hotkey("region")
-            Overlay(app.controller.capture).drag((90, 90), (160, 140))
+            overlay = Overlay(app.controller.capture).widget
+            for kind, point in (
+                (InputKind.PRESS, Point(90, 90)),
+                (InputKind.MOVE, Point(160, 140)),
+                (InputKind.RELEASE, Point(160, 140)),
+            ):
+                overlay.receive_input(SelectionInput(kind, point))
+            assert dialogs[0].isVisible()
+            assert dialogs[0].windowModality() == original_modality
             for widget in QApplication.topLevelWidgets():
                 if isinstance(widget, dialog) and widget.isVisible():
                     widget.reject()
@@ -812,7 +852,6 @@ class TestSettingsEverywhere:
             qt_app.removeEventFilter(blocked)
         qtbot.wait(0)
 
-        assert blocked.overlays == 0
         assert [c.area for c in captured] == [Rect(90, 90, 70, 50)]
 
     def test_editor_dialog_blocks_only_its_editor(
@@ -823,6 +862,7 @@ class TestSettingsEverywhere:
         app.press_hotkey("fullscreen")
         qtbot.waitUntil(lambda: len(app.controller.editors) == 1)
         editor = app.controller.editors[0]
+        qtbot.waitExposed(editor)
         captured: list[Capture] = []
         app.controller.capture.captured.connect(captured.append)
         blocked = BlockedWindows()
@@ -831,9 +871,20 @@ class TestSettingsEverywhere:
         qt_app.installEventFilter(blocked)
         box = QMessageBox(QMessageBox.Icon.Warning, "VerdiClip", "Oops", parent=editor)
 
+        box.setWindowModality(Qt.WindowModality.WindowModal)
+        original_modality = box.windowModality()
+
         def capture_then_close() -> None:
             app.press_hotkey("region")
-            Overlay(app.controller.capture).drag((90, 90), (160, 140))
+            overlay = Overlay(app.controller.capture).widget
+            for kind, point in (
+                (InputKind.PRESS, Point(90, 90)),
+                (InputKind.MOVE, Point(160, 140)),
+                (InputKind.RELEASE, Point(160, 140)),
+            ):
+                overlay.receive_input(SelectionInput(kind, point))
+            assert box.isVisible()
+            assert box.windowModality() == original_modality
 
         def arm_once(delay_ms: int, callback: Callable[[], None]) -> Callable[[], None]:
             timer = QTimer(box)
@@ -856,10 +907,10 @@ class TestSettingsEverywhere:
                 timeout_ms=5000,
             )
         finally:
+            box.reject()
             qt_app.removeEventFilter(blocked)
         qtbot.wait(0)
 
-        assert blocked.overlays == 0
         assert editor in blocked.editors
         assert [c.area for c in captured] == [Rect(90, 90, 70, 50)]
 
@@ -1122,16 +1173,15 @@ class TestRememberedStyles:
     """Style choices carry over to the next screenshot."""
 
     def _open(self, app: App, qtbot: QtBot) -> EditorWindow:
-        """Capture and return the new editor."""
-        before = sum(editor.isVisible() for editor in app.controller.editors)
+        """Capture and select its tab without assuming a new top-level window."""
+        before = len(app.controller.workspace.documents)
         app.press_hotkey("fullscreen")
-        qtbot.waitUntil(
-            lambda: (
-                sum(editor.isVisible() for editor in app.controller.editors)
-                == before + 1
-            )
-        )
-        return app.controller.editors[-1]
+        qtbot.waitUntil(lambda: len(app.controller.workspace.documents) == before + 1)
+        record = app.controller.workspace.documents[-1]
+        host = app.controller.workspace.host_of(record.identifier)
+        assert host is not None
+        host.activate_page(next(page for page in host.pages if page.record is record))
+        return host
 
     @staticmethod
     def _pick_fill(editor: EditorWindow, hex_color: str) -> None:
@@ -1631,6 +1681,264 @@ class TestUpdates:
         assert updates.quits == []
         assert app.controller.tray.action("update").text() == "Check for updates"
 
+    @staticmethod
+    def protected_context(kind: str) -> QWidget:
+        """Show existing app UI without running a nested modal loop."""
+        if kind == "popup":
+            menu = QMenu()
+            menu.addAction("Keep this menu open")
+            menu.popup(QPoint(40, 40))
+            return menu
+        dialog = QDialog()
+        if kind == "modal":
+            dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
+        dialog.show()
+        return dialog
+
+    @pytest.mark.parametrize("context", ["popup", "modal", "modeless"])
+    def test_tray_capture_keeps_pending_update_behind_existing_ui(
+        self,
+        make_app: AppFactory,
+        updates: Updates,
+        qtbot: QtBot,
+        context: str,
+    ) -> None:
+        """Completing capture cannot accelerate an update across preserved UI."""
+        app = make_app(
+            Settings(
+                capture=CaptureSettings(open_editor=False, copy_to_clipboard=True)
+            ),
+            updater=updates.updater,
+        )
+        app.press_hotkey("region")
+        overlay = Overlay(app.controller.capture).widget
+        updates.updater.check()
+        assert app.controller._idle_timer.isActive()
+        existing = self.protected_context(context)
+        qtbot.addWidget(existing)
+        try:
+            qtbot.waitExposed(existing)
+            for kind, point in (
+                (InputKind.PRESS, Point(90, 90)),
+                (InputKind.MOVE, Point(160, 140)),
+                (InputKind.RELEASE, Point(160, 140)),
+            ):
+                overlay.receive_input(SelectionInput(kind, point))
+            qtbot.wait(10)
+            assert not app.controller.capture.is_selecting
+            assert app.controller.editors == ()
+            assert existing.isVisible()
+            assert updates.spawns.calls == []
+            assert updates.quits == []
+            assert app.controller._idle_timer.isActive()
+        finally:
+            existing.close()
+        app.controller._install_when_idle()
+        assert len(updates.spawns.calls) == 1
+        assert updates.quits == [True]
+
+    @pytest.mark.parametrize("context", ["popup", "modal", "modeless"])
+    def test_direct_automatic_install_preserves_existing_ui(
+        self,
+        make_app: AppFactory,
+        updates: Updates,
+        qtbot: QtBot,
+        context: str,
+    ) -> None:
+        """The automatic-install API itself protects UI, independently of timers."""
+        updates.updater.check()
+        app = make_app(updater=updates.updater)
+        existing = self.protected_context(context)
+        qtbot.addWidget(existing)
+        try:
+            qtbot.waitExposed(existing)
+            app.controller.install_update(manual=False)
+            assert existing.isVisible()
+            assert updates.spawns.calls == []
+            assert updates.quits == []
+            assert app.controller._idle_timer.isActive()
+        finally:
+            existing.close()
+        app.controller.install_update(manual=False)
+        assert len(updates.spawns.calls) == 1
+        assert updates.quits == [True]
+
+    @pytest.mark.parametrize(
+        "late", ["popup", "modal", "modeless", "capture", "document"]
+    )
+    def test_automatic_install_rechecks_work_created_during_prepare(
+        self,
+        make_app: AppFactory,
+        updates: Updates,
+        qtbot: QtBot,
+        monkeypatch: pytest.MonkeyPatch,
+        late: str,
+    ) -> None:
+        """Late capture, document or dialog must veto launch without close prompts."""
+        updates.updater.check()
+        app = make_app(updater=updates.updater)
+        prepare = updates.updater.prepare
+        shown: list[QWidget] = []
+
+        def prepare_with_arrival(relaunch: str) -> UpdatePlan:
+            plan = prepare(relaunch)
+            if late == "capture":
+                app.press_hotkey("region")
+            elif late == "document":
+                image = QImage(10, 10, QImage.Format.Format_RGB32)
+                image.fill(Qt.GlobalColor.white)
+                app.controller._on_captured(
+                    Capture(
+                        image,
+                        CaptureMode.FULLSCREEN,
+                        Rect(0, 0, 10, 10),
+                        "Arrived during update preparation",
+                        datetime.now().astimezone(),
+                    )
+                )
+            else:
+                widget = self.protected_context(late)
+                qtbot.addWidget(widget)
+                shown.append(widget)
+            return plan
+
+        def must_not_close() -> bool:
+            pytest.fail(
+                "Automatic update must not close content admitted during prepare"
+            )
+
+        monkeypatch.setattr(updates.updater, "prepare", prepare_with_arrival)
+        monkeypatch.setattr(app.controller, "_close_editors", must_not_close)
+        try:
+            app.controller.install_update(manual=False)
+            assert updates.spawns.calls == []
+            assert updates.quits == []
+            assert app.controller._idle_timer.isActive()
+            if late == "document":
+                assert len(app.controller.workspace.documents) == 1
+            elif late == "capture":
+                assert app.controller.capture.is_selecting
+            else:
+                assert shown[0].isVisible()
+        finally:
+            app.controller.capture.cancel()
+            for widget in shown:
+                widget.close()
+
+    @pytest.mark.parametrize("arrival", ["before", "during_prepare"])
+    def test_automatic_install_retains_failed_tray_output(
+        self,
+        make_app: AppFactory,
+        updates: Updates,
+        monkeypatch: pytest.MonkeyPatch,
+        sample_image: QImage,
+        arrival: str,
+    ) -> None:
+        """An image awaiting retry must survive even when it has no editor or UI."""
+        updates.updater.check()
+        app = make_app(
+            Settings(
+                capture=CaptureSettings(open_editor=False, copy_to_clipboard=True)
+            ),
+            updater=updates.updater,
+        )
+        prepare = updates.updater.prepare
+
+        def unavailable(_delivery: ImageDelivery, _image: QImage) -> None:
+            raise DeliveryError("Clipboard temporarily unavailable")
+
+        monkeypatch.setattr(ImageDelivery, "copy", unavailable)
+        monkeypatch.setattr(
+            ClosePrompt,
+            "ask",
+            lambda *_args: pytest.fail(
+                "Automatic installation cannot discard captures"
+            ),
+        )
+
+        def retain() -> None:
+            app.controller._on_captured(
+                Capture(
+                    sample_image,
+                    CaptureMode.FULLSCREEN,
+                    Rect(0, 0, sample_image.width(), sample_image.height()),
+                    "Retained without an editor",
+                    datetime.now().astimezone(),
+                )
+            )
+
+        def prepare_with_arrival(relaunch: str) -> UpdatePlan:
+            plan = prepare(relaunch)
+            retain()
+            return plan
+
+        if arrival == "before":
+            retain()
+        else:
+            monkeypatch.setattr(updates.updater, "prepare", prepare_with_arrival)
+        app.controller.install_update(manual=False)
+        assert updates.spawns.calls == []
+        assert updates.quits == []
+        assert app.controller.editors == ()
+        retained = app.controller.pending_deliveries
+        assert len(retained) == 1
+        assert retained[0].image == sample_image
+        assert app.controller._idle_timer.isActive()
+        monkeypatch.setattr(updates.updater, "prepare", prepare)
+        monkeypatch.setattr(ImageDelivery, "copy", lambda _self, _image: None)
+        app.controller.retry_delivery(retained[0].capture_id)
+        assert app.controller.pending_deliveries == ()
+        app.controller._install_when_idle()
+        assert len(updates.spawns.calls) == 1
+        assert updates.quits == [True]
+
+    @pytest.mark.parametrize("arrival", ["before", "during_prepare"])
+    def test_automatic_install_retains_hidden_unaccepted_review(
+        self,
+        make_app: AppFactory,
+        updates: Updates,
+        qtbot: QtBot,
+        monkeypatch: pytest.MonkeyPatch,
+        arrival: str,
+    ) -> None:
+        """Hiding review presentation cannot turn producer-owned pixels into idle."""
+        updates.updater.check()
+        app = make_app(updater=updates.updater)
+        prepare = updates.updater.prepare
+        panels = []
+
+        def retain() -> None:
+            run = Run(updates.folder.parent / "review-spool")
+            run.start()
+            run.settle()
+            run.driver.stop()
+            panel = app.controller.review_scrolling_capture(run.session)
+            qtbot.addWidget(panel)
+            panels.append(panel)
+
+        def prepare_with_arrival(relaunch: str) -> UpdatePlan:
+            plan = prepare(relaunch)
+            retain()
+            return plan
+
+        if arrival == "before":
+            retain()
+        else:
+            monkeypatch.setattr(updates.updater, "prepare", prepare_with_arrival)
+        app.controller.install_update(manual=False)
+        assert updates.spawns.calls == []
+        assert updates.quits == []
+        assert app.controller.workspace.documents == ()
+        assert app.controller._scroll_reviews.has_unaccepted
+        assert not panels[0].isVisible()
+        assert app.controller._idle_timer.isActive()
+        monkeypatch.setattr(updates.updater, "prepare", prepare)
+        Controls.button(panels[0], "Discard").click()
+        assert not app.controller._scroll_reviews.has_work
+        app.controller._install_when_idle()
+        assert len(updates.spawns.calls) == 1
+        assert updates.quits == [True]
+
     @pytest.mark.usefixtures("check_at_once")
     def test_automatic_install_when_idle(
         self, make_app: AppFactory, updates: Updates, qtbot: QtBot
@@ -1820,6 +2128,7 @@ class TestUpdates:
         """
         app = make_app(updater=updates.updater)
         app.controller.tray.action("update").trigger()
+        status = self.status()
         app.press_hotkey("fullscreen")
         qtbot.waitUntil(lambda: len(app.controller.editors) == 1)
         editor = app.controller.editors[0]
@@ -1830,9 +2139,16 @@ class TestUpdates:
 
         app.controller.tray.action("update").trigger()
 
-        assert editor.isVisible()
+        assert editor in app.controller.editors
+        assert not editor.session.history.is_delivered
+        assert status.isVisible(), (
+            "Capture/update cancellation must preserve the dialog"
+        )
         assert updates.spawns.calls == []
         assert updates.quits == []
+        status.close()  # Explicit user dismissal permits passive editor presentation.
+        qtbot.waitUntil(editor.isVisible)
+        assert not editor.session.history.is_delivered
 
     def test_helper_that_cannot_start_keeps_running(
         self, make_app: AppFactory, updates: Updates, balloons: Balloons

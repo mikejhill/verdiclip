@@ -96,6 +96,9 @@ addopts = ["--strict-markers", "--strict-config", "-ra", "--import-mode=importli
 xfail_strict = true
 qt_api = "pyside6"
 markers = [
+    "native_desktop: supplemental compatibility test requiring a real interactive Windows desktop",
+    "native_hooks: installs real Windows hooks; exclude from local runs without a handoff",
+    "native_registry: mutates disposable Windows registry keys or notifies Explorer",
     "ux: user journey test proving a UX contract item",
     "ux_budget: journey test that enforces a latency budget",
 ]
@@ -117,6 +120,7 @@ lint = { cmd = "ruff check .", help = "Lint code" }
 lint-fix = { cmd = "ruff check . --fix", help = "Lint and auto-fix" }
 typecheck = { cmd = "ty check", help = "Type check (strict)" }
 test = { cmd = "pytest --cov", help = "Run tests with coverage" }
+test-tabs-ci = { cmd = "python scripts/test_tabs_ci.py", help = "Run simulated tab/topology contracts with scoped coverage and replay evidence" }
 ux = { cmd = "pytest -m ux tests/ux", help = "Run UX journey tests only" }
 ux-gallery = { cmd = "python scripts/ux_gallery.py", help = "Render key screens in light and dark themes into docs/ux/gallery for design review" }
 ux-snapshots = { cmd = "pytest -m ux tests/ux --ux-snapshots=docs/ux/snapshots", help = "Run UX journeys and save a PNG per step for review" }

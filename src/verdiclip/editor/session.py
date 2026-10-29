@@ -72,6 +72,11 @@ class Selection:
         """Call ``listener`` whenever the selection changes."""
         self._listeners.append(listener)
 
+    def unsubscribe(self, listener: SelectionListener) -> None:
+        """Release a view's listener without affecting the selection."""
+        if listener in self._listeners:
+            self._listeners.remove(listener)
+
     def set(self, ids: Iterable[str]) -> None:
         """Replace the selection."""
         new = list(dict.fromkeys(ids))

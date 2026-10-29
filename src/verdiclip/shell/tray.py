@@ -29,6 +29,7 @@ class TrayCommands:
     about: Callable[[], None]
     exit: Callable[[], None]
     update: Callable[[], None] | None = None  # None: no update entry
+    capture_scrolling: Callable[[], None] | None = None
 
 
 class TrayIcon(QSystemTrayIcon):
@@ -48,6 +49,7 @@ class TrayIcon(QSystemTrayIcon):
         self._hotkey_labels: Mapping[str, str] = {}
         self._update_label = CHECK_UPDATES_LABEL
         self._update_checking = False
+        self._scrolling_available = False
         self._click = QTimer(self)
         self._click.setSingleShot(True)
         self._click.timeout.connect(self._on_click)
@@ -75,6 +77,13 @@ class TrayIcon(QSystemTrayIcon):
         self._update_checking = checking
         self.rebuild_menu(self._hotkey_labels)
 
+    def set_scrolling_available(self, *, available: bool) -> None:
+        """Expose configured capability without rebuilding an open popup."""
+        self._scrolling_available = available
+        action = self._actions.get("scrolling")
+        if action is not None:
+            action.setEnabled(available)
+
     def rebuild_menu(self, hotkey_labels: Mapping[str, str]) -> None:
         """Rebuild the menu, showing each capture's hotkey (UX-TRY-03)."""
         c = self._commands
@@ -86,10 +95,16 @@ class TrayIcon(QSystemTrayIcon):
             "Checking for updates..." if self._update_checking else self._update_label
         )
         update = [("update", label, check)] if check is not None else []
+        scrolling = (
+            [("scrolling", "Capture scrolling area…", c.capture_scrolling)]
+            if c.capture_scrolling is not None
+            else []
+        )
         entries: list[tuple[str, str, Callable[[], None]] | None] = [
             ("region", "Capture region or window", c.capture_region),
             ("window", "Capture active window", c.capture_window),
             ("fullscreen", "Capture full screen", c.capture_fullscreen),
+            *scrolling,
             ("repeat", "Repeat last capture", c.repeat_last),
             None,
             ("open", "Open image…", c.open_image),
@@ -111,6 +126,8 @@ class TrayIcon(QSystemTrayIcon):
             self._actions[name] = action
             if name == "update":
                 action.setEnabled(not self._update_checking)
+            elif name == "scrolling":
+                action.setEnabled(self._scrolling_available)
 
     def _on_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         """Capture a region on click, or open the folder on double-click (UX-TRY-02)."""

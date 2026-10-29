@@ -70,5 +70,6 @@ jobs:
           tests/ux/test_app_fixture_lifecycle.py
           tests/ux/test_app_journeys.py::TestUpdates::test_numeric_checkout_checks_the_stable_release
           tests/ux/test_capture_journeys.py::TestRegionCapture::test_click_finishes_a_selection_started_with_enter
-          tests/capture/test_popup_capture.py::test_application_deactivation_cancels_selection
-          tests/capture/test_popup_capture.py::test_losing_input_cancels_and_next_capture_recovers
+          tests/capture/test_popup_capture.py::test_capture_preserves_existing_windows_popups_and_modal_state
+          tests/capture/test_popup_capture.py::test_queued_cancel_and_reentrant_freeze_cancel_do_not_resurrect_selection
+          tests/capture/test_popup_capture.py::test_unexpected_lease_loss_ends_overlays_without_closing_other_windows

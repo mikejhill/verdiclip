@@ -88,6 +88,29 @@ class CanvasView(QAbstractScrollArea):
 
     # Properties
 
+    def suspend(self) -> None:
+        """Finish typing and abandon transient input without undoing edits."""
+        self._editors.commit()
+        if self._tool is not None:
+            self._tool.deactivate()
+        self._pan_anchor = None
+        self._space_held = False
+        self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
+        self.refresh()
+
+    def dispose(self) -> None:
+        """Release bound model methods before destroying the canvas."""
+        self._session.document.unsubscribe(self._on_document_changed)
+        self._session.selection.unsubscribe(self.refresh)
+
+    def center_on(self, point: Point) -> None:
+        """Restore an image-space center, clamped by the live scroll ranges."""
+        position = self.to_view(point)
+        center = self.viewport().rect().center()
+        horizontal, vertical = self.horizontalScrollBar(), self.verticalScrollBar()
+        horizontal.setValue(horizontal.value() + round(position.x() - center.x()))
+        vertical.setValue(vertical.value() + round(position.y() - center.y()))
+
     @property
     def zoom(self) -> float:
         """Return the zoom factor (1.0 = 100%)."""
