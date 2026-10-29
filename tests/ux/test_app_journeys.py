@@ -12,7 +12,16 @@ from pathlib import Path
 from typing import override
 
 import pytest
-from PySide6.QtCore import QEvent, QObject, QPoint, QProcess, Qt, QTimer, QUrl
+from PySide6.QtCore import (
+    QCoreApplication,
+    QEvent,
+    QObject,
+    QPoint,
+    QProcess,
+    Qt,
+    QTimer,
+    QUrl,
+)
 from PySide6.QtGui import QDesktopServices, QGuiApplication, QImage
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
@@ -250,7 +259,18 @@ def make_app(
         for editor in app.controller.editors:
             editor.session.history.mark_delivered()
             editor.close()
-        app.controller.shutdown()
+        status = app.controller._update_status
+        if status is None:
+            app.controller.shutdown()
+        else:
+            # Shutdown schedules deletion. Finish only this fixture-owned widget's
+            # deferred disposal before a following journey acquires input.
+            with qtbot.waitSignal(status.destroyed, timeout=1000) as destroyed:
+                app.controller.shutdown()
+                if not destroyed.signal_triggered:
+                    QCoreApplication.sendPostedEvents(
+                        status, QEvent.Type.DeferredDelete
+                    )
     qtbot.wait(0)  # Let closed editors process their deferred deletes
 
 
