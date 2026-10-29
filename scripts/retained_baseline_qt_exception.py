@@ -15,7 +15,7 @@ from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from types import TracebackType
+from types import FrameType, TracebackType
 from typing import BinaryIO, Protocol, cast
 
 MINIMUM_BYTES = 64
@@ -24,6 +24,8 @@ SOURCE_SHA = "f3066d3cf458a4d8f72a4b679a22c72cc922d191"
 LOCK_SHA = "14e1d58cd3d516b6eff172dba8b92beccb93ecd7741add578af7a99adb39da78"
 BASE_SELECTION = ["-m", "not native_desktop", "-p", "no:randomly", "-q"]
 DIAGNOSTIC_OPTIONS = ["-o", "faulthandler_timeout=10"]
+OVERLAY_FAILURE_LINE = 137
+OVERLAY_FAILURE_FILE = Path("tests/ux/test_capture_journeys.py")
 type Hook = Callable[..., object]
 type Recorder = Callable[..., None]
 
@@ -39,6 +41,25 @@ class CollectedItem(Protocol):
 
     nodeid: str
     path: Path
+
+
+class TraceView(Protocol):
+    """Read-only traceback shape, also usable by pure synthetic frame ports."""
+
+    @property
+    def tb_frame(self) -> FrameType:
+        """Return the one frame referenced by this traceback link."""
+        ...
+
+    @property
+    def tb_lineno(self) -> int:
+        """Return the error line, without evaluating any frame local."""
+        ...
+
+    @property
+    def tb_next(self) -> TraceView | None:
+        """Return the next traceback link, without inspecting its locals."""
+        ...
 
 
 def emit(value: object) -> None:
@@ -126,6 +147,57 @@ def require_hosted_linux(platform: str, environment: dict[str, str]) -> None:
     )
     if not admitted:
         raise RuntimeError("Retained Qt diagnostic requires hosted Linux Actions")
+
+
+def capture_service_snapshot(
+    root: Path,
+    kind: type[BaseException],
+    tback: TraceView | None,
+) -> dict[str, bool | int | None] | None:
+    """Read only whitelisted Python storage on the reproduced retained error.
+
+    This is a point-in-time snapshot AFTER Overlay.__init__ called processEvents.
+    Empty overlays cannot establish that an overlay previously existed, or why
+    startup failed. A cancellation flag may belong to an earlier request.
+    Never call properties, Qt APIs, object repr/bool or inspect other locals.
+    """
+    if kind is not IndexError:
+        return None
+    expected = (root / OVERLAY_FAILURE_FILE).resolve()
+    current = tback
+    while current is not None:
+        frame = current.tb_frame
+        code = frame.f_code
+        matches = (
+            Path(code.co_filename).resolve() == expected
+            and code.co_name == "__init__"
+            and code.co_qualname == "Overlay.__init__"
+            and current.tb_lineno == OVERLAY_FAILURE_LINE
+        )
+        if matches:
+            attributes = vars(frame.f_locals["service"])
+            if type(attributes) is not dict:
+                raise TypeError(
+                    "Capture service storage is not a plain Python dictionary"
+                )
+            pending = attributes.get("_pending")
+            overlays = attributes.get("_overlays")
+            snapshot: dict[str, bool | int | None] = {
+                "pending_present": pending is not None
+                if "_pending" in attributes
+                else None,
+                "overlay_count": len(overlays) if type(overlays) is list else None,
+            }
+            for source, target in (
+                ("_starting", "starting"),
+                ("_cancelled_start", "cancelled_start"),
+                ("_deactivated", "deactivated"),
+            ):
+                value = attributes.get(source)
+                snapshot[target] = value if type(value) is bool else None
+            return snapshot
+        current = current.tb_next
+    return None
 
 
 def admit_source(options: argparse.Namespace) -> Path:
@@ -285,6 +357,11 @@ def run_pytest(root: Path, output: Path) -> int:
                 json.dumps({"nodeid": provenance.nodeid, "phase": provenance.phase})
                 + "\n"
             )
+            snapshot = capture_service_snapshot(root, kind, tback)
+            if snapshot is not None:
+                writer.write(
+                    json.dumps({"capture_state_after_process_events": snapshot}) + "\n"
+                )
             traceback.print_exception(kind, value, tback, file=writer)
             writer.flush()
 

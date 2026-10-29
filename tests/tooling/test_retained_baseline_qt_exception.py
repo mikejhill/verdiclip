@@ -9,7 +9,7 @@ import json
 from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
-from typing import BinaryIO, cast
+from typing import BinaryIO, cast, override
 
 import pytest
 from pluggy import PluginManager
@@ -18,6 +18,8 @@ from scripts.retained_baseline_qt_exception import (
     CollectedItem,
     HookModule,
     Provenance,
+    TraceView,
+    capture_service_snapshot,
     installed_exception_tee,
     require_hosted_linux,
     tee_exception_hook,
@@ -269,3 +271,206 @@ def test_provenance_plugin_preserves_identity_in_plugin_inventory() -> None:
     assert plugin in manager.get_plugins()
     assert plugin is not same_facts
     assert plugin != same_facts
+
+
+class NoInspection:
+    """Fail loudly if a diagnostic calls user/Qt-like object protocols."""
+
+    @override
+    def __repr__(self) -> str:
+        """Reject representation of any captured widget-like object."""
+        raise AssertionError("repr is forbidden")
+
+    def __bool__(self) -> bool:
+        """Reject truthiness conversion of any unapproved storage field."""
+        raise AssertionError("bool is forbidden")
+
+    def __len__(self) -> int:
+        """Reject length conversion outside an exact builtin list."""
+        raise AssertionError("len is forbidden")
+
+
+def overlay_trace(
+    service: object,
+    *,
+    line: int = 137,
+    name: str = "__init__",
+    qualname: str = "Overlay.__init__",
+    file: str = "tests/ux/test_capture_journeys.py",
+) -> TraceView:
+    """Build only fake traceback ports; no application/Qt frames execute."""
+    root = Path(__file__).resolve().parents[2]
+    frame = SimpleNamespace(
+        f_code=SimpleNamespace(
+            co_filename=str(root / file), co_name=name, co_qualname=qualname
+        ),
+        f_locals={"service": service, "unrelated_secret": NoInspection()},
+    )
+    return cast(
+        "TraceView", SimpleNamespace(tb_frame=frame, tb_lineno=line, tb_next=None)
+    )
+
+
+def test_snapshot_pending_after_processing_is_not_disappearance_proof() -> None:
+    """Current pending/empty state is exported without inventing a history."""
+    service = SimpleNamespace(
+        _pending=NoInspection(),
+        _starting=False,
+        _overlays=[],
+        _cancelled_start=False,
+        _deactivated=False,
+        secret=NoInspection(),
+    )
+    root = Path(__file__).resolve().parents[2]
+    snapshot = capture_service_snapshot(root, IndexError, overlay_trace(service))
+    assert snapshot == {
+        "pending_present": True,
+        "starting": False,
+        "overlay_count": 0,
+        "cancelled_start": False,
+        "deactivated": False,
+    }
+    assert json.loads(json.dumps(snapshot)) == snapshot
+
+
+def test_snapshot_cancel_flag_is_recorded_without_history_inference() -> None:
+    """A cancellation flag is a primitive fact, not proof overlays existed."""
+    service = SimpleNamespace(
+        _pending=None,
+        _starting=False,
+        _overlays=[],
+        _cancelled_start=True,
+        _deactivated=True,
+    )
+    snapshot = capture_service_snapshot(
+        Path(__file__).resolve().parents[2],
+        IndexError,
+        overlay_trace(service),
+    )
+    assert snapshot == {
+        "pending_present": False,
+        "starting": False,
+        "overlay_count": 0,
+        "cancelled_start": True,
+        "deactivated": True,
+    }
+
+
+def test_snapshot_rejects_nonprimitive_fields_without_converting_them() -> None:
+    """Unknown field shapes stay null; no repr/bool/len fallback is allowed."""
+    service = SimpleNamespace(
+        _starting=1,
+        _overlays=NoInspection(),
+        _cancelled_start="true",
+        _deactivated=NoInspection(),
+    )
+    snapshot = capture_service_snapshot(
+        Path(__file__).resolve().parents[2],
+        IndexError,
+        overlay_trace(service),
+    )
+    assert snapshot == dict.fromkeys(
+        [
+            "pending_present",
+            "starting",
+            "overlay_count",
+            "cancelled_start",
+            "deactivated",
+        ],
+    )
+
+
+def test_snapshot_counts_plain_list_without_touching_overlays() -> None:
+    """Only Python list length is read, never widget properties or elements."""
+    service = SimpleNamespace(_overlays=[NoInspection(), NoInspection()])
+    snapshot = capture_service_snapshot(
+        Path(__file__).resolve().parents[2],
+        IndexError,
+        overlay_trace(service),
+    )
+    assert snapshot is not None
+    assert snapshot["overlay_count"] == 2
+
+
+@pytest.mark.parametrize("mismatch", ["kind", "line", "name", "qualname", "file"])
+def test_snapshot_filters_before_reading_any_frame_locals(mismatch: str) -> None:
+    """Every exact retained-frame guard must match before touching service."""
+    trace = overlay_trace(object())
+    kind: type[BaseException] = IndexError
+    if mismatch == "kind":
+        kind = ValueError
+    elif mismatch == "line":
+        trace = overlay_trace(object(), line=138)
+    elif mismatch == "name":
+        trace = overlay_trace(object(), name="other")
+    elif mismatch == "qualname":
+        trace = overlay_trace(object(), qualname="Other.__init__")
+    else:
+        trace = overlay_trace(object(), file="foreign/test_capture_journeys.py")
+    assert (
+        capture_service_snapshot(Path(__file__).resolve().parents[2], kind, trace)
+        is None
+    )
+
+
+def test_snapshot_walks_only_traceback_identifiers_outside_target() -> None:
+    """Unmatched outer-frame locals are never inspected or serialized."""
+    target = overlay_trace(SimpleNamespace(_pending=None))
+    outer = SimpleNamespace(
+        tb_frame=SimpleNamespace(
+            f_code=SimpleNamespace(
+                co_filename="foreign.py",
+                co_name="outer",
+                co_qualname="outer",
+            )
+        ),
+        tb_lineno=1,
+        tb_next=target,
+    )
+    result = capture_service_snapshot(
+        Path(__file__).resolve().parents[2],
+        IndexError,
+        cast("TraceView", outer),
+    )
+    assert result is not None
+    assert result["pending_present"] is False
+    assert capture_service_snapshot(Path.cwd(), IndexError, None) is None
+
+
+def test_snapshot_observation_keeps_exact_original_hook_forwarding() -> None:
+    """Adding the narrow state read does not replace the original hook call."""
+    trace = overlay_trace(SimpleNamespace(_pending=NoInspection(), _overlays=[]))
+    value = IndexError("tuple index out of range")
+    calls = []
+
+    def original(*args: object, **kwargs: object) -> str:
+        calls.append((args, kwargs))
+        return "original-result"
+
+    def record(*_args: object, **_kwargs: object) -> None:
+        snapshot = capture_service_snapshot(
+            Path(__file__).resolve().parents[2], IndexError, trace
+        )
+        assert snapshot is not None
+
+    assert (
+        tee_exception_hook(original, record)(IndexError, value, trace)
+        == "original-result"
+    )
+    assert calls == [((IndexError, value, trace), {})]
+
+
+def test_snapshot_storage_failure_still_forwards_original_hook() -> None:
+    """A failed diagnostic cannot prevent the existing exception collector."""
+    trace = overlay_trace(object())
+    calls = []
+
+    def record(*_args: object, **_kwargs: object) -> None:
+        capture_service_snapshot(Path(__file__).resolve().parents[2], IndexError, trace)
+
+    def original(*_args: object, **_kwargs: object) -> None:
+        calls.append(True)
+
+    with pytest.raises(TypeError):
+        tee_exception_hook(original, record)(IndexError, IndexError("bad"), trace)
+    assert calls == [True]
