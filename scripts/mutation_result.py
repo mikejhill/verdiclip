@@ -12,9 +12,10 @@ import sys
 from pathlib import Path
 from typing import Final, cast
 
+from scripts.mutation_cache import context, matches
 from scripts.mutation_report import DETECTED, UNDETECTED, MutationReport
 
-POLICY: Final = "verdiclip-mutmut-3.8-full-v1"
+POLICY: Final = "verdiclip-mutmut-3.8-full-v2"
 MAX_EVIDENCE: Final = 8 * 1024 * 1024
 MAX_PERCENT: Final = 100
 
@@ -47,7 +48,7 @@ def result(root: Path, environment: dict[str, str]) -> dict[str, object]:
     if not re.fullmatch("[0-9a-f]{40}", source):
         raise ValueError("Invalid source revision")
     report: dict[str, object] = {
-        "schema": 1,
+        "schema": 2,
         "repository": "mikejhill/verdiclip",
         "source_sha": source,
         "run_id": int(environment["GITHUB_RUN_ID"]),
@@ -72,10 +73,14 @@ def result(root: Path, environment: dict[str, str]) -> dict[str, object]:
             "PROBE_OUTCOME",
             "MUTATION_OUTCOME",
             "IDENTITY_OUTCOME",
+            "CACHE_CONTEXT_OUTCOME",
         )
     }
     report["outcomes"] = outcomes
     try:
+        qualification = read_object(root / "mutation-cache-context.json")
+        expected_context = context(environment)
+        report["verdict_context"] = qualification.get("context")
         state = read_object(root / "mutation-run-state.json")
         identity = read_object(root / "mutation-identity-receipt.json")
         parsed = MutationReport.parse(read_evidence(root / "mutation-results.txt"))
@@ -89,6 +94,11 @@ def result(root: Path, environment: dict[str, str]) -> dict[str, object]:
         candidates, reused = identity.get("candidates"), identity.get("reused")
         complete = (
             all(value == "success" for value in outcomes.values())
+            and type(qualification.get("schema")) is int
+            and qualification.get("schema") == 1
+            and matches(qualification.get("context"), expected_context)
+            and qualification.get("prepared") is True
+            and qualification.get("sealed") is True
             and state.get("run_completed") is True
             and state.get("source_sha") == source
             and state.get("scope") == []
