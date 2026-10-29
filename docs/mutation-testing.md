@@ -87,6 +87,13 @@ Skip/xfail cannot hide a genuine failure. Timeout and late completion fail the
 test. The watchdog requires a responsive GUI thread and cannot replace the outer
 CI deadline or prove the cause of a previously stalled run.
 
+Required PR CI also runs the complete portable baseline on Linux/offscreen,
+with the same ordered, non-native selection used before mutation. It first runs
+the six actual Qt guard proofs. The baseline has a ten-minute step cap inside
+a fifteen-minute job cap, verbose test names, live captured output and a
+45-second faulthandler stack diagnostic. A deadline or callback error fails CI;
+none of these diagnostics turns an incomplete run into a mutation score.
+
 Pure timer/clock tests cover these boundaries without importing Qt. Six actual
 offscreen Qt tests exercise assertion, cancellation, pytest outcomes and deadline
 failure. Identical helper/proof sources previously passed all six tests on Qt
