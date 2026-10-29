@@ -42,7 +42,7 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: e56087d8711c409fa9465d510649575e6974f181
+          ref: 25dc0181c49647bb0a4cd9d2670af107428bd065
           path: .tmp/profile-control
           persist-credentials: false
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
@@ -65,7 +65,7 @@ jobs:
             throw 'Candidate source identity mismatch.'
           }
           $control = (& git -C .tmp/profile-control rev-parse HEAD).Trim()
-          if ($LASTEXITCODE -ne 0 -or $control -cne 'e56087d8711c409fa9465d510649575e6974f181') {
+          if ($LASTEXITCODE -ne 0 -or $control -cne '25dc0181c49647bb0a4cd9d2670af107428bd065') {
             throw 'Profiler control identity mismatch.'
           }
           Write-Output "GUI_PHASES_CANDIDATE=$candidate; GUI_PHASES_CONTROL=$control"
