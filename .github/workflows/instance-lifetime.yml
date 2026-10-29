@@ -5,6 +5,7 @@ on:
     paths:
       - src/verdiclip/shell/instance.py
       - tests/shell/test_instance_lifetime.py
+      - tests/ipc_process_source.py
       - scripts/ipc_qt_diagnostic.py
       - tests/tooling/test_ipc_qt_diagnostic.py
       - .github/workflows/instance-lifetime.yml
