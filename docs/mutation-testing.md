@@ -83,22 +83,29 @@ The editor-modal journey uses a test-owned loop guard. Callback failure rejects
 only its fixture dialog, revokes queued actions and disarms each owned timer.
 The original exception is re-raised outside the Qt callback boundary, including
 interpreter cancellation; secondary errors remain in the explicit cause group.
+An enclosing single-use scope owns cleanup, final propagation and validity
+checks on every exit, including an early return or partial timer setup. Inner
+callback scopes require that live owner. They still deliberately defer arbitrary
+control exceptions across Qt; the protocol does not remove that policy. It makes
+final propagation mandatory instead of depending on a later caller statement.
 Skip/xfail cannot hide a genuine failure. Timeout and late completion fail the
 test. The watchdog requires a responsive GUI thread and cannot replace the outer
 CI deadline or prove the cause of a previously stalled run.
 
 Required PR CI also runs the complete portable baseline on Linux/offscreen,
 with the same ordered, non-native selection used before mutation. It first runs
-the six actual Qt guard proofs. The baseline has a ten-minute step cap inside
+the eight actual Qt guard proofs. The baseline has a ten-minute step cap inside
 a fifteen-minute job cap, verbose test names, live captured output and a
 45-second faulthandler stack diagnostic. A deadline or callback error fails CI;
 none of these diagnostics turns an incomplete run into a mutation score.
 
-Pure timer/clock tests cover these boundaries without importing Qt. Six actual
+Pure timer/clock tests cover these boundaries without importing Qt. Eight actual
 offscreen Qt tests exercise assertion, cancellation, pytest outcomes and deadline
-failure. Identical helper/proof sources previously passed all six tests on Qt
-6.11.2 and 6.12.0 in PR68; that evidence does not establish native desktop behavior
-or resolve PR68's separate cold-editor performance failure.
+failure, including GeneratorExit and an application-specific control type. The
+earlier helper passed the original six proofs on Qt 6.11.2 and 6.12.0 in PR68;
+that is historical evidence, not qualification of the mandatory-scope revision.
+Neither those proofs nor offscreen results establish native desktop behavior or
+resolve PR68's separate cold-editor performance failure.
 
 The executor has `contents: read`. The serialized publisher has only
 `contents: read`, `actions: read` and `issues: write`. It checks out trusted

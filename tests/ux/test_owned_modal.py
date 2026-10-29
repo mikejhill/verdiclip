@@ -11,12 +11,18 @@ from pytestqt.qtbot import QtBot
 from scripts.owned_modal import run_owned_modal
 
 
+class OwnedCancellation(BaseException):
+    """An application-specific control signal must survive the Qt boundary."""
+
+
 @pytest.mark.parametrize(
     "kind",
     [
         AssertionError,
         KeyboardInterrupt,
         SystemExit,
+        GeneratorExit,
+        OwnedCancellation,
         pytest.fail.Exception,
         pytest.skip.Exception,
     ],
