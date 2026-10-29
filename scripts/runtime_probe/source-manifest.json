@@ -1,0 +1,18 @@
+[
+  {
+    "name": "SoftwareDeviceLease.cs",
+    "sha256": "c57cfaab042b4bbd54fbe9838379b7743a342fefc0596d4585f596ad4cfe8b54"
+  },
+  {
+    "name": "SoftwareDeviceLeaseTests.cs",
+    "sha256": "90a461d17203b0da18819d1aba41a256f7cc69546c0daadce4040f456b3ba397"
+  },
+  {
+    "name": "RuntimeController.cs",
+    "sha256": "cb13aaf00ecae4abc808e3f2e29beb733489ee444f8f87a31fc48adbb47804ae"
+  },
+  {
+    "name": "RuntimeControllerTests.cs",
+    "sha256": "13f07b88f4a85006f907658e319dc40ad6b216cada940073f2599a63fbbaa7a1"
+  }
+]
