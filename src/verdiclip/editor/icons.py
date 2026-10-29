@@ -136,6 +136,10 @@ class IconFactory:
     def _draw_t(self, p: QPainter, bounds: QRectF) -> None:
         """Draw a fixed toolbar symbol without resolving any text font."""
         x, y, width, height = (bounds.x(), bounds.y(), bounds.width(), bounds.height())
+        # Keep the small auto-fit stem legible after rasterizing to a 16px icon.
+        stem_width = max(width / 4, 5.0)
+        stem_left = x + (width - stem_width) / 2
+        stem_right = stem_left + stem_width
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(self._ink)
         p.drawPolygon(
@@ -144,10 +148,10 @@ class IconFactory:
                     QPointF(x, y),
                     QPointF(x + width, y),
                     QPointF(x + width, y + height / 4),
-                    QPointF(x + width * 5 / 8, y + height / 4),
-                    QPointF(x + width * 5 / 8, y + height),
-                    QPointF(x + width * 3 / 8, y + height),
-                    QPointF(x + width * 3 / 8, y + height / 4),
+                    QPointF(stem_right, y + height / 4),
+                    QPointF(stem_right, y + height),
+                    QPointF(stem_left, y + height),
+                    QPointF(stem_left, y + height / 4),
                     QPointF(x, y + height / 4),
                 ]
             )
