@@ -5,20 +5,22 @@ from __future__ import annotations
 import io
 import subprocess
 from collections.abc import Mapping
-from typing import BinaryIO, cast, override
+from typing import TYPE_CHECKING, BinaryIO, cast, override
 
 import pytest
 from scripts.retained_editor_backend_runner import (
     OUTPUT_PER_STREAM,
     SEED,
     TARGET,
-    InstrumentationMode,
     Outcome,
     Reader,
     admit,
     command,
     supervise,
 )
+
+if TYPE_CHECKING:
+    from scripts.retained_editor_backend_runner import InstrumentationMode
 
 
 class FakeProcess:

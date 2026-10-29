@@ -1,6 +1,9 @@
 name: Retained mutmut clean-test diagnosis
 on:
   pull_request:
+    # Completed historical diagnosis; reopen this draft for an explicit replay.
+    # Required CI and CodeQL continue on every change.
+    types: [opened, reopened]
     paths:
       - scripts/retained_mutmut_clean_diagnostic.py
       - scripts/retained_mutmut_clean_source.json

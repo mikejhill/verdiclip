@@ -1,6 +1,9 @@
 name: Retained mutation order replay
 on:
   pull_request:
+    # Completed historical diagnosis; reopen this draft for an explicit replay.
+    # Required CI and CodeQL continue on every change.
+    types: [opened, reopened]
     paths:
       - scripts/retained_mutmut_order_diagnostic.py
       - scripts/retained_mutmut_order_source.json

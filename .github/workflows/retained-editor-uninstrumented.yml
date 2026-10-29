@@ -2,6 +2,9 @@ name: Retained uninstrumented editor control
 
 on:
   pull_request:
+    # Completed historical diagnosis; reopen this draft for an explicit replay.
+    # Required CI and CodeQL continue on every change.
+    types: [opened, reopened]
     paths:
       - scripts/retained_editor_backend_runner.py
       - scripts/retained_editor_latency_profile.py
