@@ -155,3 +155,25 @@ property and printed by the job after test success. Separate actual Qt widget
 tests check current-style propagation, native picker edits and height reservation
 on both supported profiles. Offscreen proof remains distinct from native desktop
 focus/input qualification.
+
+The constructor diagnostic runs only after that unchanged cold case. Four
+separate processes measure stock `QSpinBox`, `QLineEdit`, `QTextLayout` and style
+hints on the same pinned Qt/QPA configuration. Each records application startup
+separately and reads QPA/style/font-directory inventory only after measurement.
+Every child has a 30-second deadline inside a three-minute outer step. Timeout,
+nonzero exit or invalid evidence fails the diagnostic and retains an incomplete
+JSON receipt; a slow but complete measurement has no invented speed threshold.
+
+This comparison follows Qt's constructor path: the abstract spinbox creates a
+line edit, whose private initialization creates a text control and configures
+font/style data ([spinbox source][qt-spin-init], [line-edit source][qt-line-init]).
+The text control performs layout even for its initial empty string
+([layout source][qt-line-layout]). Python constructor wrappers do not intercept
+these internal C++ allocations. Independent primitive timings cannot partition
+the actual spinbox constructor or prove font enumeration caused a delay. A fresh
+process also does not imply a cold OS font cache. No alternate backend, warmed
+path or reduced acceptance threshold replaces the failing product test.
+
+[qt-spin-init]: https://github.com/qt/qtbase/blob/v6.11.2/src/widgets/widgets/qabstractspinbox.cpp#L1512
+[qt-line-init]: https://github.com/qt/qtbase/blob/v6.11.2/src/widgets/widgets/qlineedit_p.cpp#L163
+[qt-line-layout]: https://github.com/qt/qtbase/blob/v6.11.2/src/widgets/widgets/qwidgetlinecontrol.cpp#L306

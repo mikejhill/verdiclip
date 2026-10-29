@@ -169,6 +169,11 @@ jobs:
       - name: Actual Qt font picker behavior and reserved height
         if: ${{ !cancelled() && steps.readiness_profile.outcome == 'success' }}
         run: uv run --no-sync pytest tests/editor/test_style_bar.py -vv --junitxml=font-controls.xml
+      - name: Independent fresh-process constituent diagnostics (not acceptance)
+        if: ${{ !cancelled() && steps.readiness_profile.outcome == 'success' }}
+        timeout-minutes: 3
+        # Four children, each bounded to 30 seconds. Never before the cold gate.
+        run: uv run --no-sync python -m scripts.run_qt_cold_probes --output qt-cold-probes
       - name: Retain focused qualification including failure phase notes
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -179,6 +184,7 @@ jobs:
             modal-boundary.xml
             first-font.xml
             font-controls.xml
+            qt-cold-probes/
           if-no-files-found: warn
 
   ux-gallery:
