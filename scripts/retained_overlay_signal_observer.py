@@ -23,6 +23,10 @@ TARGET = (
     "tests/ux/test_capture_journeys.py::TestRegionCapture::"
     "test_click_finishes_a_selection_started_with_enter"
 )
+FOCUS_PREDECESSOR = (
+    "tests/ux/test_app_journeys.py::TestUpdates::"
+    "test_numeric_checkout_checks_the_stable_release"
+)
 MAX_EVENTS = 16
 MAX_FRAMES = 24
 MAX_WALK = 96
@@ -37,8 +41,22 @@ DECISION_FUNCTIONS = frozenset(
 MISSING = object()
 
 
+class FocusProbe(Protocol):
+    """Pure weak-identity comparison; the Qt sampler is a separate phase."""
+
+    @abstractmethod
+    def register(self, tokens: tuple[object, ...]) -> None:
+        """Remember admitted predecessor window tokens without extending life."""
+
+    @abstractmethod
+    def match(self, focus: object | None) -> dict[str, object]:
+        """Compare identity only; never query Qt or format objects."""
+
+
 def input_owner_decision(
-    frame: object, admitted_service_filename: str
+    frame: object,
+    admitted_service_filename: str,
+    focus_probe: FocusProbe | None = None,
 ) -> dict[str, object] | None:
     """Copy only precomputed primitives; do not evaluate the original decision.
 
@@ -60,6 +78,9 @@ def input_owner_decision(
     for key in ("focus", "active"):
         value = values.get(key, MISSING)
         result[key + "_present"] = None if value is MISSING else value is not None
+    focus = values.get("focus", MISSING)
+    if focus_probe is not None and focus is not MISSING:
+        result["predecessor_focus_identity"] = focus_probe.match(focus)
     return result
 
 
@@ -148,6 +169,9 @@ class Observer:
     expected_order: tuple[str, ...]
     emit: Callable[[dict[str, object]], None]
     exit_control: type[Exception]
+    focus_probe: FocusProbe | None = None
+    focus_sample: Callable[[], tuple[object, ...]] | None = None
+    focus_sampled: bool = field(default=False, init=False)
     events: list[dict[str, object]] = field(default_factory=list, init=False)
     errors: list[str] = field(default_factory=list, init=False)
     controls: list[BaseException] = field(default_factory=list, init=False)
@@ -170,6 +194,8 @@ class Observer:
             self.exit_control, Exception
         ):
             raise ValueError("Require admitted pytest session-exit exception class")
+        if (self.focus_probe is None) != (self.focus_sample is None):
+            raise ValueError("Focus probe and sampler must be supplied together")
         if (
             type(self.expected_order) is not tuple
             or not 0 < len(self.expected_order) <= MAX_ORDER_ITEMS
@@ -180,6 +206,13 @@ class Observer:
             or len(set(self.expected_order)) != len(self.expected_order)
         ):
             raise ValueError("Expected order must be a validated unique bounded tuple")
+        if self.focus_probe is not None and (
+            FOCUS_PREDECESSOR not in self.expected_order
+            or TARGET not in self.expected_order
+            or self.expected_order.index(FOCUS_PREDECESSOR)
+            >= self.expected_order.index(TARGET)
+        ):
+            raise ValueError("Focus predecessor must precede the target")
         self._service_filename = str(self.root / SERVICE_FILE)
         for relative in (
             SERVICE_FILE,
@@ -196,6 +229,7 @@ class Observer:
             and self.attached
             and self.retired
             and self.target_call_seen
+            and (self.focus_probe is None or self.focus_sampled)
             and not self.errors
         )
 
@@ -231,7 +265,9 @@ class Observer:
                         "function": frame.f_code.co_name,
                         "line": frame.f_lineno,
                     }
-                    decision = input_owner_decision(frame, self._service_filename)
+                    decision = input_owner_decision(
+                        frame, self._service_filename, self.focus_probe
+                    )
                     if decision is not None:
                         entry["precomputed_input_owner_decision"] = decision
                     found.append(entry)
@@ -322,27 +358,39 @@ class Observer:
             self._error("connection", error)
         return result
 
+    def _sample_focus(self) -> None:
+        """Sample once outside signal callbacks, at the admitted report boundary."""
+        if self.focus_sampled or self.focus_sample is None or self.focus_probe is None:
+            raise RuntimeError("Invalid repeated focus sampling")
+        self.focus_probe.register(self.focus_sample())
+        self.focus_sampled = True
+
     @hookimpl(wrapper=True)
     def pytest_runtest_makereport(self, item: Item) -> Generator[None, Report, Report]:
         """Emit only after the original failed call; never mask its report."""
         report = yield
         if item.nodeid == TARGET and report.when == "call":
             self.target_call_seen = True
-        if item.nodeid == TARGET and report.when == "call" and report.failed:
+        stage = "emitter"
+        if report.when == "call":
             try:
-                self.emit(
-                    {
-                        "overlay_signal_observer": list(self.events),
-                        "dropped_events": self.dropped,
-                        "observer_errors": len(self.errors),
-                        "observer_error_stages": list(self.error_stages),
-                        "post_signal_storage_only": True,
-                        "decision_locals_are_precomputed": True,
-                        "synchronous_emitter_stack_not_guaranteed": True,
-                    }
-                )
+                if item.nodeid == FOCUS_PREDECESSOR and self.focus_probe is not None:
+                    stage = "focus_sample"
+                    self._sample_focus()
+                if item.nodeid == TARGET and report.failed:
+                    self.emit(
+                        {
+                            "overlay_signal_observer": list(self.events),
+                            "dropped_events": self.dropped,
+                            "observer_errors": len(self.errors),
+                            "observer_error_stages": list(self.error_stages),
+                            "post_signal_storage_only": True,
+                            "decision_locals_are_precomputed": True,
+                            "synchronous_emitter_stack_not_guaranteed": True,
+                        }
+                    )
             except BaseException as error:  # noqa: BLE001 - preserve the original failed report
-                self._error("emitter", error)
+                self._error(stage, error)
         return report
 
     def summary(self) -> dict[str, object]:
@@ -356,6 +404,8 @@ class Observer:
             "observer_retired": self.retired,
             "target_fixture_seen": self.attached,
             "target_call_seen": self.target_call_seen,
+            "focus_probe_required": self.focus_probe is not None,
+            "focus_predecessor_sampled": self.focus_sampled,
             "signal_events": list(self.events),
             "observer_errors": len(self.errors),
             "observer_error_stages": list(self.error_stages),

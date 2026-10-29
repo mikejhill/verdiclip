@@ -17,6 +17,7 @@ from collections.abc import Callable, Generator
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Protocol, cast
 
 SOURCE_SHA = "5fe14b25b651c02caea31786e44e9508595e4e19"
@@ -43,6 +44,7 @@ PYTEST_ARGUMENTS = [
 type Operation = Callable[..., object]
 DATA_MODULE_NAME = "_verdiclip_diagnostic_duration_data"
 OBSERVER_MODULE_NAME = "_verdiclip_diagnostic_overlay_observer"
+FOCUS_MODULE_NAME = "_verdiclip_diagnostic_status_focus"
 HISTORICAL_CACHE_KEY = (
     "mutmut-v5-Linux-X64-5fe14b25b651c02caea31786e44e9508595e4e19-"
     "380086239e0a24f09e8b3f6a97c3ac122cdb7ec536097c5e004083b8c092b948-"
@@ -79,6 +81,16 @@ class ObserverApi(Protocol):
     """Only the reviewed current-control factory is loaded."""
 
     Observer: Callable[..., ObserverPort]
+
+
+class FocusApi(Protocol):
+    """The fixed pure model and lazily invoked hosted-only Qt sampler."""
+
+    Probe: Callable[[], object]
+
+    @abstractmethod
+    def sample_manual_status_windows(self) -> tuple[object, ...]:
+        """Query only existing owned-process status windows after a test call."""
 
 
 class ExecuteTarget(Protocol):
@@ -344,6 +356,23 @@ def control_observer_api() -> Generator[ObserverApi]:
 
 
 @contextmanager
+def control_focus_api() -> Generator[FocusApi]:
+    """Load fixed pure control code; its Qt sampler remains uncalled here."""
+    path = Path(__file__).with_name("retained_status_focus_probe.py")
+    spec = importlib.util.spec_from_file_location(FOCUS_MODULE_NAME, path)
+    if spec is None or spec.loader is None or FOCUS_MODULE_NAME in sys.modules:
+        raise RuntimeError("Control focus probe cannot be admitted")
+    loaded = importlib.util.module_from_spec(spec)
+    sys.modules[FOCUS_MODULE_NAME] = loaded
+    try:
+        spec.loader.exec_module(loaded)
+        yield cast(FocusApi, loaded)
+    finally:
+        if sys.modules.get(FOCUS_MODULE_NAME) is loaded:
+            sys.modules.pop(FOCUS_MODULE_NAME)
+
+
+@contextmanager
 def observe_clean_execution(
     target: ExecuteTarget,
     observer_api: ObserverApi,
@@ -387,6 +416,19 @@ def observe_clean_execution(
         target.execute_pytest = original
 
 
+def with_focus_probe(observer_api: ObserverApi, focus_api: FocusApi) -> ObserverApi:
+    """Bind pure ports lazily; construction occurs only in the admitted child."""
+
+    def factory(*args: object) -> ObserverPort:
+        return observer_api.Observer(
+            *args,
+            focus_probe=focus_api.Probe(),
+            focus_sample=focus_api.sample_manual_status_windows,
+        )
+
+    return cast(ObserverApi, SimpleNamespace(Observer=factory))
+
+
 def main(arguments: list[str]) -> int:
     """Future hosted-only entry; never invoked during local preparation."""
     parser = argparse.ArgumentParser()
@@ -428,7 +470,11 @@ def main(arguments: list[str]) -> int:
             args=["run", "--max-children", "1"], standalone_mode=False
         )
 
-    with control_data_api() as data, control_observer_api() as observer_api:
+    with (
+        control_data_api() as data,
+        control_observer_api() as observer_api,
+        control_focus_api() as focus_api,
+    ):
         if "pytest" in sys.modules or "PySide6" in sys.modules:
             raise RuntimeError("SDK parent was not pytest/Qt-pristine")
         order: tuple[str, ...] | None = None
@@ -457,7 +503,7 @@ def main(arguments: list[str]) -> int:
         harness = importlib.import_module("mutmut.runners.harness")
         with observe_clean_execution(
             cast(ExecuteTarget, harness.PytestRunner),
-            observer_api,
+            with_focus_probe(observer_api, focus_api),
             root,
             lambda: order,
             lambda packet: emit(

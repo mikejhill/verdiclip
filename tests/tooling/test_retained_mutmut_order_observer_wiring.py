@@ -178,3 +178,47 @@ def test_fixed_observer_loader_preserves_paths_and_retires_registry() -> None:
         assert diagnostic.OBSERVER_MODULE_NAME in sys.modules
     assert diagnostic.OBSERVER_MODULE_NAME not in sys.modules
     assert sys.path == before
+
+
+def test_focus_factory_binding_does_not_sample_or_construct_until_child_call() -> None:
+    """Binding SDK-parent ports does not invoke model or Qt sampler."""
+    calls: list[str] = []
+    probe, observer = object(), Observer()
+
+    def model() -> object:
+        calls.append("model")
+        return probe
+
+    def sample() -> tuple[object, ...]:
+        pytest.fail("Binding or construction must not query Qt")
+
+    def factory(*args: object, **kwargs: object) -> Observer:
+        assert args == ("arguments",)
+        assert kwargs == {"focus_probe": probe, "focus_sample": sample}
+        calls.append("observer")
+        return observer
+
+    focus = cast(
+        diagnostic.FocusApi,
+        SimpleNamespace(Probe=model, sample_manual_status_windows=sample),
+    )
+    bound = diagnostic.with_focus_probe(
+        cast(diagnostic.ObserverApi, SimpleNamespace(Observer=factory)), focus
+    )
+    assert not calls
+    assert bound.Observer("arguments") is observer
+    assert calls == ["model", "observer"]
+
+
+def test_fixed_focus_loader_is_pure_and_retires_registry() -> None:
+    """The imported model does not import Qt or alter Python search paths."""
+    before_paths, before_modules = list(sys.path), set(sys.modules)
+    assert diagnostic.FOCUS_MODULE_NAME not in sys.modules
+    with diagnostic.control_focus_api() as api:
+        assert callable(api.Probe)
+        assert callable(api.sample_manual_status_windows)
+        assert sys.path == before_paths
+        assert not any(
+            name.startswith("PySide6") for name in set(sys.modules) - before_modules
+        )
+    assert diagnostic.FOCUS_MODULE_NAME not in sys.modules

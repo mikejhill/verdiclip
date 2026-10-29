@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import sys
 from types import FrameType
-from typing import override
+from typing import cast, override
 
 import pytest
 from scripts.retained_overlay_signal_observer import (
     DECISION_FUNCTIONS,
+    FocusProbe,
     input_owner_decision,
 )
 
@@ -16,13 +17,16 @@ ADMITTED = "/retained/mutants/src/verdiclip/capture/service.py"
 
 
 def observe(
-    function: str, filename: str = ADMITTED, statements: str | None = None
+    function: str,
+    filename: str = ADMITTED,
+    statements: str | None = None,
+    probe: FocusProbe | None = None,
 ) -> list[dict[str, object] | None]:
     """Compile fixed synthetic storage and inspect its live optimized frame."""
     result: list[dict[str, object] | None] = []
 
     def callback(frame: FrameType) -> None:
-        result.append(input_owner_decision(frame, ADMITTED))
+        result.append(input_owner_decision(frame, ADMITTED, probe))
 
     hostile = Hostile()
     namespace: dict[str, object] = {
@@ -135,3 +139,33 @@ def test_nonframe_is_rejected_before_any_attribute_access() -> None:
     hostile = Hostile()
     assert input_owner_decision(hostile, ADMITTED) is None
     assert not hostile.attempts
+
+
+def test_focus_match_receives_only_exact_precomputed_token() -> None:
+    """Identity matching uses the existing local; no Qt query is recomputed."""
+
+    class Probe:
+        def match(self, focus: object | None) -> dict[str, object]:
+            assert type(focus) is Hostile
+            return {"identity_match_only": True}
+
+    result = observe("_check_input_owner", probe=cast(FocusProbe, Probe()))[0]
+    assert result is not None
+    assert result["predecessor_focus_identity"] == {"identity_match_only": True}
+
+
+def test_missing_focus_local_cannot_become_a_negative_identity_match() -> None:
+    """Unavailable frame data remains unknown rather than inventing None focus."""
+
+    class Probe:
+        def match(self, _focus: object | None) -> dict[str, object]:
+            pytest.fail("Missing focus must not call the identity matcher")
+
+    result = observe(
+        "_check_input_owner",
+        statements="owns_focus = False",
+        probe=cast(FocusProbe, Probe()),
+    )[0]
+    assert result is not None
+    assert result["focus_present"] is None
+    assert "predecessor_focus_identity" not in result

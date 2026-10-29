@@ -6,9 +6,12 @@ on:
       - scripts/retained_mutmut_order_source.json
       - scripts/retained_mutmut_duration_data.py
       - scripts/retained_overlay_signal_observer.py
+      - scripts/retained_status_focus_probe.py
       - tests/tooling/test_retained_mutmut_duration_data.py
       - tests/tooling/test_retained_overlay_signal_observer.py
       - tests/tooling/test_retained_overlay_input_decision.py
+      - tests/tooling/test_retained_status_focus_probe.py
+      - tests/tooling/test_retained_focus_sampling.py
       - tests/tooling/test_retained_mutmut_order_observer_wiring.py
       - tests/tooling/test_retained_mutmut_order_diagnostic.py
       - .github/workflows/retained-mutmut-order-diagnostic.yml
@@ -71,7 +74,8 @@ jobs:
           sha256sum ../control/scripts/retained_mutmut_order_diagnostic.py \
             ../control/scripts/retained_mutmut_order_source.json \
             ../control/scripts/retained_mutmut_duration_data.py \
-            ../control/scripts/retained_overlay_signal_observer.py
+            ../control/scripts/retained_overlay_signal_observer.py \
+            ../control/scripts/retained_status_focus_probe.py
           set +e
           timeout --signal=TERM --kill-after=5s 120s \
             uv run --no-sync --group mutation python -u -I \
