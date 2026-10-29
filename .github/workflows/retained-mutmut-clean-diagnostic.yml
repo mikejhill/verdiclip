@@ -1,9 +1,8 @@
 name: Retained mutmut clean-test diagnosis
 on:
   pull_request:
-    # Completed historical diagnosis; reopen this draft for an explicit replay.
-    # Required CI and CodeQL continue on every change.
-    types: [opened, reopened]
+    # Two-source fresh statistics/clean comparison; never executes mutants.
+    types: [opened, reopened, synchronize]
     paths:
       - scripts/retained_mutmut_clean_diagnostic.py
       - scripts/retained_mutmut_clean_source.json
@@ -16,10 +15,17 @@ jobs:
   diagnose:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        source:
+          - 5fe14b25b651c02caea31786e44e9508595e4e19
+          - 92c8d0cd4e1f5114a4ddf210b30bbf4e5c40f510
     env:
       UV_LOCKED: "1"
       PYTHONUTF8: "1"
       QT_QPA_PLATFORM: offscreen
+      RETAINED_SOURCE_SHA: ${{ matrix.source }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -27,7 +33,7 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 5fe14b25b651c02caea31786e44e9508595e4e19
+          ref: ${{ matrix.source }}
           path: retained
           persist-credentials: false
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
@@ -56,7 +62,7 @@ jobs:
           timeout --signal=TERM --kill-after=5s 120s \
             uv run --no-sync --group mutation python -u -I \
             ../control/scripts/retained_mutmut_clean_diagnostic.py \
-            --source-root "$PWD"
+            --source-root "$PWD" --source-sha "$RETAINED_SOURCE_SHA"
           code=$?
           set -e
           echo "diagnostic_exit=$code; timeout124_or137_is_incomplete; exit0_is_clean_only; no_mutation_score"

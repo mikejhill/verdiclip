@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import Protocol, cast
 
 SOURCE_SHA = "5fe14b25b651c02caea31786e44e9508595e4e19"
+FIXTURE_SHA = "92c8d0cd4e1f5114a4ddf210b30bbf4e5c40f510"
+SOURCE_CHOICES = (SOURCE_SHA, FIXTURE_SHA)
 LOCK_SHA = "14e1d58cd3d516b6eff172dba8b92beccb93ecd7741add578af7a99adb39da78"
 PINNED_FILES = {
     "__main__.py",
@@ -177,8 +179,12 @@ def validate_manifest(value: object) -> dict[str, object]:
     return data
 
 
-def admit(root: Path, manifest: dict[str, object]) -> Path:
+def admit(
+    root: Path, manifest: dict[str, object], source_sha: str = SOURCE_SHA
+) -> Path:
     """Read-only source/version/hash checks before loading POSIX mutmut code."""
+    if source_sha not in SOURCE_CHOICES:
+        raise ValueError("Unreviewed requested source")
     if (
         sys.platform != "linux"
         or os.environ.get("GITHUB_ACTIONS") != "true"
@@ -200,7 +206,7 @@ def admit(root: Path, manifest: dict[str, object]) -> Path:
         text=True,
         capture_output=True,
     ).stdout.strip()
-    if actual != SOURCE_SHA:
+    if actual != source_sha:
         raise RuntimeError("Source identity mismatch")
     subprocess.run(["/usr/bin/git", "diff", "--quiet", "HEAD", "--"], check=True)
     extras = subprocess.run(
@@ -253,11 +259,12 @@ def main(arguments: list[str]) -> int:
     """Future hosted-only entry; never invoked during local preparation."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--source-root", required=True)
+    parser.add_argument("--source-sha", choices=SOURCE_CHOICES, default=SOURCE_SHA)
     options = parser.parse_args(arguments)
     root = Path(options.source_root).resolve(strict=True)
     manifest_path = Path(__file__).with_name("retained_mutmut_clean_source.json")
     manifest = validate_manifest(json.loads(manifest_path.read_text(encoding="utf-8")))
-    package = admit(root, manifest)
+    package = admit(root, manifest, options.source_sha)
     module = importlib.import_module("mutmut.__main__")
     config = module.config()
     if config.source_paths != [Path(path) for path in SOURCE_ROOTS]:
@@ -271,7 +278,8 @@ def main(arguments: list[str]) -> int:
         raise RuntimeError("Statistics isolation differs from retained source")
     emit(
         {
-            "source_sha": SOURCE_SHA,
+            "source_sha": options.source_sha,
+            "manifest_context_source_sha": SOURCE_SHA,
             "mutmut": "3.8.0",
             "mutmut_origin": str(package),
             "python": sys.version,

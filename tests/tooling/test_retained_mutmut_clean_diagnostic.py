@@ -185,3 +185,110 @@ def test_manifest_is_exact_main_and_all_six_implementations() -> None:
     assert diagnostic.validate_manifest(data) is data
     assert data["source_sha"] == "5fe14b25b651c02caea31786e44e9508595e4e19"
     assert set(data["mutmut_normalized_source_sha256"]) == diagnostic.PINNED_FILES
+
+
+def source_admission_ports(
+    monkeypatch: pytest.MonkeyPatch, root: Path, actual_head: str
+) -> tuple[dict[str, object], list[list[str]], list[str]]:
+    """Fake only OS/process/package ports; inspect no installed mutmut or Qt."""
+    manifest_path = Path(diagnostic.__file__).with_name(
+        "retained_mutmut_clean_source.json"
+    )
+    manifest = diagnostic.validate_manifest(
+        json.loads(manifest_path.read_text(encoding="utf-8"))
+    )
+    control_root = Path(diagnostic.__file__).parents[1]
+    (root / "uv.lock").write_bytes((control_root / "uv.lock").read_bytes())
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("RUNNER_OS", "Linux")
+    monkeypatch.setattr(
+        diagnostic,
+        "sys",
+        SimpleNamespace(
+            platform="linux",
+            flags=SimpleNamespace(isolated=True),
+            stdout=SimpleNamespace(write_through=True),
+            stderr=SimpleNamespace(write_through=True),
+        ),
+    )
+    commands: list[list[str]] = []
+    packages: list[str] = []
+
+    def git(command: list[str], **_kwargs: object) -> SimpleNamespace:
+        commands.append(command)
+        return SimpleNamespace(
+            stdout=actual_head if command[1:3] == ["rev-parse", "HEAD"] else ""
+        )
+
+    def package(checkout: Path, context: dict[str, object]) -> Path:
+        assert checkout == root
+        assert context is manifest
+        packages.append("admitted")
+        return root / ".venv" / "mutmut"
+
+    monkeypatch.setattr(diagnostic.subprocess, "run", git)
+    monkeypatch.setattr(diagnostic, "admit_package", package)
+    return manifest, commands, packages
+
+
+@pytest.mark.parametrize("source", diagnostic.SOURCE_CHOICES)
+def test_requested_source_admits_only_its_exact_head(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, source: str
+) -> None:
+    """Both reviewed checkouts retain clean-source and identical lock checks."""
+    manifest, commands, packages = source_admission_ports(monkeypatch, tmp_path, source)
+    assert diagnostic.admit(tmp_path, manifest, source) == tmp_path / ".venv" / "mutmut"
+    assert [command[1] for command in commands] == ["rev-parse", "diff", "ls-files"]
+    assert packages == ["admitted"]
+    assert (
+        manifest["source_sha"] == diagnostic.SOURCE_SHA
+    )  # Shared historical package context.
+
+
+@pytest.mark.parametrize("source", diagnostic.SOURCE_CHOICES)
+def test_other_reviewed_head_is_not_substitutable_for_requested_source(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, source: str
+) -> None:
+    """An allowed SHA is still rejected when it is not the requested checkout."""
+    actual = next(pin for pin in diagnostic.SOURCE_CHOICES if pin != source)
+    manifest, commands, packages = source_admission_ports(monkeypatch, tmp_path, actual)
+    with pytest.raises(RuntimeError, match="Source identity mismatch"):
+        diagnostic.admit(tmp_path, manifest, source)
+    assert len(commands) == 1
+    assert packages == []
+
+
+def test_default_source_remains_historical(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Existing callers cannot silently change from the historical default."""
+    manifest, _, packages = source_admission_ports(
+        monkeypatch, tmp_path, diagnostic.SOURCE_SHA
+    )
+    diagnostic.admit(tmp_path, manifest)
+    assert packages == ["admitted"]
+
+
+def test_unknown_source_is_rejected_before_process_or_package_access(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """No arbitrary checkout or implicit current HEAD can enter the diagnostic."""
+    manifest, commands, packages = source_admission_ports(
+        monkeypatch, tmp_path, diagnostic.SOURCE_SHA
+    )
+    with pytest.raises(ValueError, match="Unreviewed requested source"):
+        diagnostic.admit(tmp_path, manifest, "0" * 40)
+    assert commands == []
+    assert packages == []
+
+
+def test_unknown_cli_source_fails_before_even_resolving_checkout(
+    tmp_path: Path,
+) -> None:
+    """Argparse restricts the public entry to the same two literal pins."""
+    with pytest.raises(SystemExit) as caught:
+        diagnostic.main(
+            ["--source-root", str(tmp_path / "absent"), "--source-sha", "HEAD"]
+        )
+    assert caught.value.code == 2
