@@ -277,6 +277,19 @@ def make_app(
 class TestAfterCapture:
     """What happens when a capture finishes."""
 
+    def test_startup_publishes_gui_readiness_before_capture(
+        self, make_app: AppFactory
+    ) -> None:
+        """An admitted controller exposes prepared fonts before any capture."""
+        app = make_app()
+
+        readiness = app.controller.gui_readiness
+        assert readiness is not None
+        assert readiness.fonts.family_count > 0
+        assert readiness.fonts.digit_advance > 0
+        assert 0 <= readiness.fonts.elapsed_ms <= readiness.controller_start_ms
+        assert app.controller.editors == ()
+
     def test_hotkey_opens_focused_editor_with_select_tool(
         self, make_app: AppFactory, qtbot: QtBot
     ) -> None:

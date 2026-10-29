@@ -7,6 +7,7 @@ on:
       - 'src/verdiclip/shell/controller.py'
       - 'src/verdiclip/shell/gui_readiness.py'
       - 'tests/ux/test_gui_readiness.py'
+      - 'tests/ux/test_app_journeys.py'
       - 'tests/portable/test_gui_readiness.py'
       - 'docs/design/gui-resource-readiness.md'
 
