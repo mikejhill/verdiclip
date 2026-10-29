@@ -79,6 +79,20 @@ will execute.
 
 ## Permissions and validation
 
+The editor-modal journey uses a test-owned loop guard. Callback failure rejects
+only its fixture dialog, revokes queued actions and disarms each owned timer.
+The original exception is re-raised outside the Qt callback boundary, including
+interpreter cancellation; secondary errors remain in the explicit cause group.
+Skip/xfail cannot hide a genuine failure. Timeout and late completion fail the
+test. The watchdog requires a responsive GUI thread and cannot replace the outer
+CI deadline or prove the cause of a previously stalled run.
+
+Pure timer/clock tests cover these boundaries without importing Qt. Six actual
+offscreen Qt tests exercise assertion, cancellation, pytest outcomes and deadline
+failure. Identical helper/proof sources previously passed all six tests on Qt
+6.11.2 and 6.12.0 in PR68; that evidence does not establish native desktop behavior
+or resolve PR68's separate cold-editor performance failure.
+
 The executor has `contents: read`. The serialized publisher has only
 `contents: read`, `actions: read` and `issues: write`. It checks out trusted
 default-branch publisher code with no persisted checkout credential. It consumes
