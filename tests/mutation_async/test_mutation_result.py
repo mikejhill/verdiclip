@@ -9,6 +9,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from scripts.mutation_cache import context
 from scripts.mutation_result import result
 
 
@@ -20,6 +21,8 @@ def evidence(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         "GITHUB_RUN_ID": "10",
         "GITHUB_RUN_ATTEMPT": "1",
         "MUTATION_FLOOR": "72",
+        "RUNNER_OS": "Linux",
+        "RUNNER_ARCH": "X64",
     }
     env.update(
         dict.fromkeys(
@@ -28,6 +31,7 @@ def evidence(tmp_path: Path) -> tuple[Path, dict[str, str]]:
                 "PROBE_OUTCOME",
                 "MUTATION_OUTCOME",
                 "IDENTITY_OUTCOME",
+                "CACHE_CONTEXT_OUTCOME",
             ),
             "success",
         )
@@ -46,6 +50,11 @@ def evidence(tmp_path: Path) -> tuple[Path, dict[str, str]]:
                 "candidates": 100,
                 "reused": 0,
             }
+        )
+    )
+    (tmp_path / "mutation-cache-context.json").write_text(
+        json.dumps(
+            {"schema": 1, "context": context(env), "prepared": True, "sealed": True}
         )
     )
     return tmp_path, env
@@ -183,3 +192,32 @@ def test_mutation_staging_copies_tooling_imports(tmp_path: Path) -> None:
         path = staging.joinpath(*module.split(".")).with_suffix(".py")
         assert path.is_file()
         compile(path.read_text(), str(path), "exec")
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["missing", "legacy", "cross_commit", "cross_os", "cross_arch", "unsealed"],
+)
+def test_unqualified_context_is_never_complete(
+    evidence: tuple[Path, dict[str, str]], change: str
+) -> None:
+    """Legacy historical scores remain informational rather than current evidence."""
+    root, env = evidence
+    verdicts(root, 100)
+    path = root / "mutation-cache-context.json"
+    data = json.loads(path.read_text())
+    if change == "missing":
+        path.unlink()
+    else:
+        if change == "legacy":
+            data = {}
+        elif change == "cross_commit":
+            data["context"]["source_sha"] = "b" * 40
+        elif change == "cross_os":
+            data["context"]["os"] = "Windows"
+        elif change == "cross_arch":
+            data["context"]["arch"] = "ARM64"
+        elif change == "unsealed":
+            data["sealed"] = False
+        path.write_text(json.dumps(data))
+    assert result(root, env)["status"] == "incomplete"

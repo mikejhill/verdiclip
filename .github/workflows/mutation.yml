@@ -61,9 +61,10 @@ jobs:
       - name: Choose compatible verdict cache
         id: cache_plan
         env:
-          CACHE_PREFIX: mutmut-v4-${{ hashFiles('uv.lock', 'pyproject.toml', 'tests/**/*.py', '.github/workflows/mutation.yml', 'scripts/mutation_ci.py', 'scripts/mutation_identity.py', 'scripts/mutation_identity_probe.py', 'scripts/mutation-cache-compatibility.json') }}-
+          CACHE_FINGERPRINT: ${{ hashFiles('uv.lock', 'pyproject.toml', 'tests/**/*.py', '.github/workflows/mutation.yml', 'scripts/mutation_ci.py', 'scripts/mutation_identity.py', 'scripts/mutation_identity_probe.py', 'scripts/mutation-cache-compatibility.json', 'scripts/mutation_cache.py') }}
         run: |
-          echo "prefix=$CACHE_PREFIX" >> "$GITHUB_OUTPUT"
+          prefix=$(uv run --no-sync python scripts/mutation_cache.py prefix)
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
       - name: Restore earlier verdicts
         # The weekly run starts fresh, so its score never rests on a stale verdict
         if: github.event_name == 'push'
@@ -80,6 +81,9 @@ jobs:
           set -o pipefail
           uv run pytest -m 'not native_desktop' -p no:randomly -q 2>&1 \
             | tee mutation-baseline.txt
+      - name: Qualify restored verdict context
+        id: cache_context
+        run: uv run --no-sync python scripts/mutation_cache.py prepare
       - name: Prepare candidate identity guard
         id: prepare
         run: uv run --group mutation python scripts/mutation_identity.py prepare --max-children "$(nproc)"
@@ -109,16 +113,20 @@ jobs:
           if [ "$IDENTITY_OUTCOME" = 'success' ]; then
             uv run --no-sync --group mutation mutmut results --all true > mutation-results.txt
           fi
+      - name: Seal qualified verdict context
+        id: cache_seal
+        if: always() && steps.identity.outcome == 'success'
+        run: uv run --no-sync python scripts/mutation_cache.py seal
       - name: Save verdicts for later runs
         # Also after a failure or cancellation: mutmut records each verdict as
         # it goes, so the next run resumes instead of starting over
-        if: always() && steps.identity.outcome == 'success'
+        if: always() && steps.cache_seal.outcome == 'success'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: mutants
           key: ${{ steps.cache_plan.outputs.prefix }}${{ github.run_id }}-${{ github.run_attempt }}
       - name: Report asynchronous score and findings
-        if: always() && steps.mutate.outcome == 'success' && steps.identity.outcome == 'success' && steps.verdicts.outcome == 'success'
+        if: always() && steps.mutate.outcome == 'success' && steps.identity.outcome == 'success' && steps.verdicts.outcome == 'success' && steps.cache_seal.outcome == 'success'
         run: |
           set -o pipefail
           uv run --group mutation python scripts/mutation_report.py mutation-results.txt \
@@ -131,9 +139,16 @@ jobs:
               cp -- ".test-tmp/mutation-identity/$name.json" "mutation-identity-$name.json"
             fi
           done
+      - name: Retain verdict context qualification
+        if: always()
+        run: |
+          if [ -f .test-tmp/mutation-cache-context.json ]; then
+            cp -- .test-tmp/mutation-cache-context.json mutation-cache-context.json
+          fi
       - name: Emit structured completion evidence
         if: always()
         env:
+          CACHE_CONTEXT_OUTCOME: ${{ steps.cache_context.outcome == 'success' && steps.cache_seal.outcome == 'success' && 'success' || 'failure' }}
           BASELINE_OUTCOME: ${{ steps.baseline.outcome }}
           PROBE_OUTCOME: ${{ steps.probe.outcome }}
           MUTATION_OUTCOME: ${{ steps.mutate.outcome }}
@@ -145,6 +160,7 @@ jobs:
         with:
           name: mutation-results-${{ github.run_attempt }}
           path: |
+            mutation-cache-context.json
             mutation-result.json
             mutation-results.txt
             mutmut.log

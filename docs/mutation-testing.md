@@ -43,17 +43,35 @@ closed for manual reconciliation rather than being overwritten.
 
 ## Cache and evidence limits
 
-Push runs can resume verdicts only when generated candidate bodies and original
-sources match verified provenance from the locked mutmut 3.8.0 generator.
-Dependency, tool, workflow or test changes invalidate the cache. Legacy
-ordinal-only verdicts are not reused. Weekly/manual runs start cold. Every run
+Push reruns can resume verdicts only for the **same complete commit, OS and
+architecture**, with the same configuration/test fingerprint. Candidate identity
+alone is insufficient: an unchanged function can call a changed helper, changing
+a mutant's result. Cross-commit restoration is prohibited even when candidate
+bodies match. The restored cache must also contain the exact qualified context;
+missing, legacy or mismatched caches are quarantined before reconciliation.
+
+Generated candidate bodies and original sources must still match verified
+provenance from the locked mutmut 3.8.0 generator. Context is sealed only after
+identity verification, including for incomplete progress saved for same-commit
+resumption. Legacy ordinal-only verdicts are not reused. Weekly/manual runs start
+cold. Every run
 qualifies the locked generator and requires a passing baseline before mutation.
 Postflight rejects candidate or source drift before saving or reporting evidence.
 
-Resumed verdicts are explicitly historical, even when their bodies match. Their
-informational score does not prove every verdict was retested against the current
-source. A cached pass cannot automatically resolve findings; use a fresh weekly
-or manual full run. Partial caches can be retained only after identity verification
+Schema 2 result evidence must carry the qualified current commit/OS/architecture
+context and successful context qualification. The publisher currently admits the
+reviewed Linux/X64 profile only. Legacy schema 1, missing context or mismatched
+context is **incomplete execution evidence**, regardless of an informational
+score
+or `fresh: false` label; it cannot create current score findings, clear findings
+or
+recover execution health. Prior artifacts remain informational. Existing findings
+for an older policy remain open for explicit reconciliation rather than being
+silently cleared by an incomparable new policy.
+
+Resumed same-context verdicts remain explicitly historical. A cached pass cannot
+automatically resolve findings; use a fresh weekly or manual full run. Partial
+caches can be retained only after context and identity verification
 so a later push can resume useful work. Healthy runs are not cancelled by newer
 pushes. GitHub's concurrency queue can replace pending jobs; default-branch runs
 qualify their actual recorded revision rather than promising every pushed commit

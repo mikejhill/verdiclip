@@ -3,9 +3,9 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const {publish, classify, strictJSON, marker} = require('./mutation_alerts.cjs');
-const policy = 'verdiclip-mutmut-3.8-full-v1';
+const policy = 'verdiclip-mutmut-3.8-full-v2';
 function run(id=10, attempt=1) { return {id, workflow_id:123, run_attempt:attempt, run_number:id, head_sha:'a'.repeat(40), head_branch:'main', head_repository:{full_name:'mikejhill/verdiclip'}, status:'completed', conclusion:'success', event:'push', created_at:`2026-10-${String(id).padStart(2,'0')}T00:00:00Z`, html_url:`https://github.com/mikejhill/verdiclip/actions/runs/${id}`}; }
-function evidence(r, killed=72, fresh=true, threshold=72) {return {schema:1, repository:'mikejhill/verdiclip', source_sha:r.head_sha, run_id:r.id, run_attempt:r.run_attempt, policy, scope:'full', threshold, status:killed<threshold?'findings':'healthy', complete:true, fresh, historical_verdicts:fresh?0:5, counts:{killed,survived:100-killed}, total:100, detected:killed, undetected:100-killed, score:killed, outcomes:Object.fromEntries(['BASELINE_OUTCOME','PROBE_OUTCOME','MUTATION_OUTCOME','IDENTITY_OUTCOME'].map(k=>[k,'success'])), comparable_key:crypto.createHash('sha256').update(`${policy}\nfull\n${threshold.toFixed(6)}`).digest('hex')}; }
+function evidence(r, killed=72, fresh=true, threshold=72) {return {schema:2,verdict_context:{schema:1,policy:'same-commit-os-arch-v1',source_sha:r.head_sha,os:'Linux',arch:'X64'}, repository:'mikejhill/verdiclip', source_sha:r.head_sha, run_id:r.id, run_attempt:r.run_attempt, policy, scope:'full', threshold, status:killed<threshold?'findings':'healthy', complete:true, fresh, historical_verdicts:fresh?0:5, counts:{killed,survived:100-killed}, total:100, detected:killed, undetected:100-killed, score:killed, outcomes:Object.fromEntries(['BASELINE_OUTCOME','PROBE_OUTCOME','MUTATION_OUTCOME','IDENTITY_OUTCOME','CACHE_CONTEXT_OUTCOME'].map(k=>[k,'success'])), comparable_key:crypto.createHash('sha256').update(`${policy}\nfull\n${threshold.toFixed(6)}`).digest('hex')}; }
 function harness(seed=[]) {
  const issues=structuredClone(seed), writes=[], calls=[];
  const core={info:()=>{},summary:{addHeading(){return this;},addRaw(){return this;},async write(){}}};
@@ -103,4 +103,17 @@ test('publisher workflow retains reviewed security boundaries',()=>{
  assert.match(text,/path: \$\{\{ runner.temp \}\}/);
  assert.doesNotMatch(text,/ref:.*head_sha|id-token:|secrets\.|actions\/cache|run:.*mutation-evidence/);
  assert.match(text,/actions: read\s+contents: read\s+issues: write/);
+});
+test('legacy or cross-context evidence cannot recover execution or close findings',async()=>{
+ for (const mutate of [e=>{e.schema=1;e.policy='verdiclip-mutmut-3.8-full-v1';delete e.verdict_context;e.fresh=false;e.historical_verdicts=5;},e=>delete e.verdict_context,e=>e.verdict_context.source_sha='b'.repeat(40),e=>e.verdict_context.os='Windows',e=>e.verdict_context.arch='ARM64',e=>e.outcomes.CACHE_CONTEXT_OUTCOME='failure']) {
+  const h=harness();await h.send(run(),evidence(run(),60));await h.send(run(11),null);
+  const r=run(12),e=evidence(r,90);mutate(e);await h.send(r,e);
+  assert.equal(h.issues[0].state,'open');assert.equal(h.issues[1].state,'open');
+  assert.ok(h.issues[1].body.includes('incomplete'));
+ }
+});
+test('legacy cached pass creates execution alert rather than a current score finding',async()=>{
+ const h=harness(),r=run(),e=evidence(r,90,false);e.schema=1;e.policy='verdiclip-mutmut-3.8-full-v1';delete e.verdict_context;
+ await h.send(r,e);assert.equal(h.issues.length,1);assert.ok(h.issues[0].body.includes(marker('execution')));
+ assert.ok(h.issues[0].body.includes('Score/completion not established'));
 });

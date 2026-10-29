@@ -65,7 +65,15 @@ uv run --group mutation mutmut run "verdiclip.geometry.*"   # one module
 uv run --group mutation mutmut show <mutant-name>      # what a survivor changed
 ```
 
-mutmut keeps its verdicts in `mutants/`, so running it again without a pattern retests only the functions you changed. A pattern retests every mutant it matches. Delete `mutants/` for a fresh score, for example after changing only tests. CI runs independently after default-branch pushes and weekly, or manually on the default branch. PR and release checks do not wait for mutation. Pushes may reuse identity-verified candidate verdicts; test changes invalidate that cache. Weekly and manual runs start fresh. See [mutation testing and triage](docs/mutation-testing.md).
+mutmut keeps its verdicts in `mutants/`, so a local rerun can retain earlier
+results. A pattern retests every mutant it matches. Delete `mutants/` for a
+fresh local score after any dependency/source/test change; an unchanged
+candidate body alone does not prove unchanged behavior. CI runs independently
+after default-branch pushes and weekly, or manually on the default branch. PR
+and release checks do not wait for mutation. Push reruns may resume qualified
+identity-verified verdicts only for the same complete commit, OS and
+architecture. Weekly and manual runs start fresh. See [mutation testing and
+triage](docs/mutation-testing.md).
 
 A surviving mutant is a change no test noticed: add an assertion that fails for it, or mark the line `# pragma: no mutate` if the change is truly equivalent.
 

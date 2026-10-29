@@ -5,7 +5,8 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 
 const REPOSITORY = 'mikejhill/verdiclip';
-const POLICY = 'verdiclip-mutmut-3.8-full-v1';
+const POLICY = 'verdiclip-mutmut-3.8-full-v2';
+const LEGACY_POLICY = 'verdiclip-mutmut-3.8-full-v1';
 const ASSIGNEE = 'mikejhill';
 const DETECTED = ['killed', 'timeout', 'caught by type check', 'segfault'];
 const UNDETECTED = ['survived', 'no tests', 'suspicious'];
@@ -55,7 +56,7 @@ function strictJSON(text) {
 
 function classify(report, run, expectedScoreFailure = false) {
   const failure = reason => ({status: 'incomplete', complete: false, reason, report: null});
-  if (!report || report.schema !== 1 || report.repository !== REPOSITORY || report.source_sha !== run.head_sha ||
+  if (!report || report.schema !== 2 || report.repository !== REPOSITORY || report.source_sha !== run.head_sha ||
       report.run_id !== run.id || report.run_attempt !== run.run_attempt || report.policy !== POLICY || report.scope !== 'full') {
     return failure('Missing, malformed, stale or mismatched structured evidence');
   }
@@ -63,6 +64,10 @@ function classify(report, run, expectedScoreFailure = false) {
     return failure('Unsupported result state');
   }
   if (report.status === 'incomplete' || !report.complete) return failure(`Execution incomplete (${run.conclusion})`);
+  const qualified = report.verdict_context;
+  if (!qualified || qualified.schema !== 1 || qualified.policy !== 'same-commit-os-arch-v1' ||
+      qualified.source_sha !== run.head_sha || qualified.os !== 'Linux' || qualified.arch !== 'X64' ||
+      Object.keys(qualified).length !== 5) return failure('Missing or unqualified same-commit OS/architecture verdict context');
   const counts = report.counts;
   const statuses = [...DETECTED, ...UNDETECTED];
   if (!counts || Array.isArray(counts) || Object.keys(counts).some(key => !statuses.includes(key)) ||
@@ -77,7 +82,7 @@ function classify(report, run, expectedScoreFailure = false) {
       !Number.isFinite(report.score) || Math.abs(score - report.score) > 1e-8 ||
       !Number.isFinite(report.threshold) || report.threshold < 0 || report.threshold > 100 ||
       Number(report.threshold.toFixed(6)) !== report.threshold ||
-      !report.outcomes || ['BASELINE_OUTCOME', 'PROBE_OUTCOME', 'MUTATION_OUTCOME', 'IDENTITY_OUTCOME']
+      !report.outcomes || ['BASELINE_OUTCOME', 'PROBE_OUTCOME', 'MUTATION_OUTCOME', 'IDENTITY_OUTCOME', 'CACHE_CONTEXT_OUTCOME']
         .some(key => report.outcomes[key] !== 'success')) return failure('Completion/score disagrees with raw evidence');
   const key = crypto.createHash('sha256').update(`${POLICY}\nfull\n${report.threshold.toFixed(6)}`).digest('hex');
   if (report.comparable_key !== key) return failure('Incomparable policy identity');
@@ -99,7 +104,7 @@ function parseState(issue, kind) {
       Object.keys(state.pending).length > 64 || Object.keys(state.pending).some(key => !/^[a-f0-9]{64}$/u.test(key))) {
     throw new Error('Malformed managed issue state; no overwrite');
   }
-  if (Object.values(state.pending).some(item => !item || item.policy !== POLICY || item.scope !== 'full' ||
+  if (Object.values(state.pending).some(item => !item || ![POLICY, LEGACY_POLICY].includes(item.policy) || item.scope !== 'full' ||
       !Number.isFinite(item.threshold) || item.threshold < 0 || item.threshold > 100)) throw new Error('Malformed outstanding policy');
   if (state.watermark !== null && (!state.watermark || typeof state.watermark !== 'object' ||
       !integer(state.watermark.run_id) || !state.watermark.run_id || !integer(state.watermark.attempt) || !state.watermark.attempt ||
