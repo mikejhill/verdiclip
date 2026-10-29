@@ -163,7 +163,7 @@ def test_supervisor_complete_children_remain_diagnostic(tmp_path: Path) -> None:
     complete = run_qt_cold_probes.run_all(tmp_path, runner)
     assert complete is True
     for mode in qt_cold_probe.MODES:
-        receipt = json.loads((tmp_path / f"{mode}.json").read_text())
+        receipt = json.loads((tmp_path / f"{mode}.json").read_text(encoding="utf-8"))
         assert receipt["complete"] is True
         assert receipt["report"] == report_for(mode)
 
@@ -219,7 +219,7 @@ def test_runner_metadata_is_allowlisted(monkeypatch: pytest.MonkeyPatch) -> None
     """No unrelated environment variable is copied into retained receipts."""
     monkeypatch.setenv("GITHUB_SHA", "reviewed-source")
     monkeypatch.setenv("UNRELATED_SECRET_SENTINEL", "never-copy-this")
-    result = qt_cold_probe.runner_context()
+    result = qt_cold_probe.runner_context(windows_build=lambda: "mock-build")
     assert result["source_sha"] == "reviewed-source"
     assert "never-copy-this" not in json.dumps(result)
 
@@ -227,7 +227,9 @@ def test_runner_metadata_is_allowlisted(monkeypatch: pytest.MonkeyPatch) -> None
 def test_product_samples_timer_before_context_inventory() -> None:
     """Metadata collection cannot inflate or prewarm the original 300 ms path."""
     root = Path(__file__).resolve().parents[2]
-    tree = ast.parse((root / "tests/ux/test_app_journeys.py").read_text())
+    tree = ast.parse(
+        (root / "tests/ux/test_app_journeys.py").read_text(encoding="utf-8")
+    )
     case = next(
         node
         for node in ast.walk(tree)
@@ -267,7 +269,7 @@ def test_product_samples_timer_before_context_inventory() -> None:
 def test_workflow_runs_probes_after_cold_gate_with_outer_deadline() -> None:
     """Constituent inspection cannot warm or replace the acceptance process."""
     root = Path(__file__).resolve().parents[2]
-    workflow = (root / ".github/workflows/ci.yml").read_text()
+    workflow = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     cold = workflow.index("- name: First capture before any other editor test")
     probe = workflow.index("- name: Independent fresh-process constituent diagnostics")
     artifact = workflow.index("- name: Retain focused qualification")
@@ -301,11 +303,14 @@ def test_supervisor_preserves_failure_and_runs_each_fresh_child_once(
         return subprocess.CompletedProcess(args, 0, json.dumps(report_for(mode)), "")
 
     complete = run_qt_cold_probes.run_all(tmp_path, runner)
-    receipts = [json.loads(p.read_text()) for p in sorted(tmp_path.glob("*.json"))]
+    receipts = [
+        json.loads(p.read_text(encoding="utf-8"))
+        for p in sorted(tmp_path.glob("*.json"))
+    ]
     assert complete is False
     assert calls == list(qt_cold_probe.MODES)
     assert len(receipts) == 4
-    failed = json.loads((tmp_path / "spinbox.json").read_text())
+    failed = json.loads((tmp_path / "spinbox.json").read_text(encoding="utf-8"))
     assert failed["complete"] is False
     expected = {
         "timeout": "timeout",

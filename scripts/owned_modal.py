@@ -5,6 +5,8 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from types import TracebackType
+from typing import Self
 
 import pytest
 
@@ -26,13 +28,50 @@ def _failure_priority(error: BaseException) -> int:
 
 
 @dataclass(slots=True)
+class _DeferredCallbackScope:
+    """Temporarily intercept all failure kinds across a Qt callback boundary.
+
+    This deliberately suppresses only until the enclosing active owner exits.
+    It is not a generic ignore-errors context: entry requires a single-use
+    owner whose exit performs cleanup, propagation and validity checks.
+    """
+
+    owner: _ModalState
+    used: bool = False
+    entered: bool = False
+
+    def __enter__(self) -> None:
+        if not self.owner.scope_open:
+            raise RuntimeError("Deferred callback requires an active propagation scope")
+        if self.used:
+            raise RuntimeError("Deferred callback scope cannot be reused")
+        self.used = True
+        self.entered = True
+
+    def __exit__(
+        self,
+        kind: type[BaseException] | None,
+        error: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> bool:
+        del kind, traceback
+        if not self.entered or not self.owner.scope_open:
+            raise RuntimeError("Deferred callback scope has no active owner")
+        self.entered = False
+        if error is None:
+            return False
+        self.owner.errors.append(error)
+        return True
+
+
+@dataclass(slots=True)
 class _ModalState:
     """Defer failures across Qt callbacks; never resolve or discard cancellation.
 
     PySide cannot propagate an arbitrary Python callback failure through the
     nested C++ event loop. We retain even KeyboardInterrupt/SystemExit until the
-    exact owned dialog is rejected and timers are disarmed. run_owned_modal then
-    unconditionally calls raise_deferred outside Qt. True control flow has
+    exact owned dialog is rejected and timers are disarmed. The outer context
+    unconditionally calls raise_deferred outside Qt on every exit. Control has
     priority over real failures; a skip/xfail can never hide a retained failure.
     Every secondary object remains inspectable in the explicit cause group.
     """
@@ -47,16 +86,48 @@ class _ModalState:
     expired: bool = False
     closed: bool = False
     errors: list[BaseException] = field(default_factory=list)
+    stops: list[Stop] = field(default_factory=list)
+    scope_started: bool = False
+    scope_open: bool = False
+
+    def __enter__(self) -> Self:
+        if self.scope_started:
+            raise RuntimeError("Owned modal propagation scope cannot be reused")
+        self.scope_started = True
+        self.scope_open = True
+        return self
+
+    def __exit__(
+        self,
+        kind: type[BaseException] | None,
+        error: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """Every scope exit performs cleanup and propagates retained control."""
+        del kind, traceback
+        if error is not None:
+            self.errors.append(error)
+        try:
+            self.cleanup(self.stops)
+            self.raise_deferred()
+            if self.expired or self.clock() >= self.deadline:
+                raise TimeoutError(
+                    "Owned modal test exceeded its deadline; cleanup is not success"
+                )
+            if not self.finished:
+                raise RuntimeError(
+                    "Owned modal test exited before its callback completed"
+                )
+        finally:
+            self.scope_open = False
 
     def reject_owned(self) -> None:
         """Reject this exact fixture once; retain failures for pytest outside Qt."""
         if self.closed:
             return
-        try:
+        with _DeferredCallbackScope(self):
             self.close()
             self.closed = True
-        except BaseException as error:  # noqa: BLE001 - re-raised outside Qt after cleanup
-            self.errors.append(error)
 
     def invoke(self) -> None:
         """Close even when the scheduled assertion/action raises."""
@@ -64,12 +135,11 @@ class _ModalState:
             return
         self.started = True
         try:
-            if self.clock() >= self.deadline:
-                self.expire()
-                return
-            self.callback()
-        except BaseException as error:  # noqa: BLE001 - re-raised outside Qt after cleanup
-            self.errors.append(error)
+            with _DeferredCallbackScope(self):
+                if self.clock() >= self.deadline:
+                    self.expire()
+                    return
+                self.callback()
         finally:
             self.finished = True
             self.reject_owned()
@@ -85,10 +155,8 @@ class _ModalState:
         """Disarm independently; stale queued callbacks lose ownership first."""
         self.active = False
         for stop in stops:
-            try:
+            with _DeferredCallbackScope(self):
                 stop()
-            except BaseException as error:  # noqa: BLE001 - re-raised outside Qt after cleanup
-                self.errors.append(error)
         self.reject_owned()
 
     def raise_deferred(self) -> None:
@@ -125,20 +193,7 @@ def run_owned_modal(  # noqa: PLR0913 - explicit injected IO keeps this Qt-indep
         raise ValueError("The owned modal deadline must be positive")
     deadline = clock() + timeout_ms / 1000
     state = _ModalState(callback, close, clock, deadline)
-    stops: list[Stop] = []
-    try:
-        stops.append(arm(0, state.invoke))
-        stops.append(arm(timeout_ms, state.expire))
+    with state:
+        state.stops.append(arm(0, state.invoke))
+        state.stops.append(arm(timeout_ms, state.expire))
         execute()
-    except BaseException as error:  # noqa: BLE001 - re-raised outside Qt after cleanup
-        state.errors.append(error)
-    finally:
-        state.cleanup(stops)
-    # This is outside the Qt callback boundary and is never skipped after cleanup.
-    state.raise_deferred()
-    if state.expired or clock() >= deadline:
-        raise TimeoutError(
-            "Owned modal test exceeded its deadline; cleanup is not success"
-        )
-    if not state.finished:
-        raise RuntimeError("Owned modal test exited before its callback completed")

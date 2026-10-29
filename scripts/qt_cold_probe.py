@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import platform
 import sys
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -52,7 +51,13 @@ def font_inventory(directory: str | None) -> dict[str, object]:
     return result
 
 
-def runner_context() -> dict[str, object]:
+def _windows_build() -> str:
+    return ".".join(str(part) for part in sys.getwindowsversion().platform_version)
+
+
+def runner_context(
+    *, windows_build: Callable[[], str] = _windows_build
+) -> dict[str, object]:
     """Read a fixed allowlist, never the complete runner environment."""
     return {
         "python": sys.version.split()[0],
@@ -61,7 +66,7 @@ def runner_context() -> dict[str, object]:
         "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
         "image_os": os.environ.get("IMAGEOS"),
         "image_version": os.environ.get("IMAGEVERSION"),
-        "windows_build": platform.version(),
+        "windows_build": windows_build(),
         "runner_os": os.environ.get("RUNNER_OS"),
         "runner_arch": os.environ.get("RUNNER_ARCH"),
     }

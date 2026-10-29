@@ -79,6 +79,34 @@ will execute.
 
 ## Permissions and validation
 
+The editor-modal journey uses a test-owned loop guard. Callback failure rejects
+only its fixture dialog, revokes queued actions and disarms each owned timer.
+The original exception is re-raised outside the Qt callback boundary, including
+interpreter cancellation; secondary errors remain in the explicit cause group.
+An enclosing single-use scope owns cleanup, final propagation and validity
+checks on every exit, including an early return or partial timer setup. Inner
+callback scopes require that live owner. They still deliberately defer arbitrary
+control exceptions across Qt; the protocol does not remove that policy. It makes
+final propagation mandatory instead of depending on a later caller statement.
+Skip/xfail cannot hide a genuine failure. Timeout and late completion fail the
+test. The watchdog requires a responsive GUI thread and cannot replace the outer
+CI deadline or prove the cause of a previously stalled run.
+
+Required PR CI also runs the complete portable baseline on Linux/offscreen,
+with the same ordered, non-native selection used before mutation. It first runs
+the eight actual Qt guard proofs. The baseline has a ten-minute step cap inside
+a fifteen-minute job cap, verbose test names, live captured output and a
+45-second faulthandler stack diagnostic. A deadline or callback error fails CI;
+none of these diagnostics turns an incomplete run into a mutation score.
+
+Pure timer/clock tests cover these boundaries without importing Qt. Eight actual
+offscreen Qt tests exercise assertion, cancellation, pytest outcomes and deadline
+failure, including GeneratorExit and an application-specific control type. The
+earlier helper passed the original six proofs on Qt 6.11.2 and 6.12.0 in PR68;
+that is historical evidence, not qualification of the mandatory-scope revision.
+Neither those proofs nor offscreen results establish native desktop behavior or
+resolve PR68's separate cold-editor performance failure.
+
 The executor has `contents: read`. The serialized publisher has only
 `contents: read`, `actions: read` and `issues: write`. It checks out trusted
 default-branch publisher code with no persisted checkout credential. It consumes
@@ -127,18 +155,12 @@ the outer CI deadline is still necessary. Mock clock/timer tests prove these
 ownership rules, while actual Qt delivery needs hosted widget validation. These
 changes do not establish the cause of the retained fatal abort or latency outlier.
 
-The modal helper deliberately retains `BaseException` at four callback/cleanup
-boundaries. Removing that handling would lose interpreter cancellation and pytest
-outcomes at the C++ callback boundary. Collection is temporary: after owned cleanup,
-`run_owned_modal` unconditionally calls `raise_deferred` outside Qt. A genuine
-interrupt/session-exit request takes priority; otherwise real failures take
-priority over skip/xfail. The exact selected object is re-raised, and all secondary
-objects remain in an explicit cause group. A cleanup skip therefore cannot hide
-an existing assertion failure. Portable tests cover primary and secondary control
-signals, mixed skips/failures and cleanup faults. Dedicated hosted Qt tests cover
-actual timer delivery and failure propagation; mocks alone cannot establish it.
-The generic `py/catch-base-exception` warning requires this source-level review;
-the query has not been disabled or hidden with an opaque suppression wrapper.
+The canonical mandatory-scope helper described above retains cancellation and
+pytest outcomes until exact owned cleanup, then propagates them on every owner
+exit. PR68 preserves that reviewed main implementation and its 41 portable cases
+and eight actual Qt proofs. The earlier broad-catch version and its six proofs
+remain historical evidence. This integration does not restore the old boundary,
+dismiss scanning findings or disable a query.
 
 The cold-profile job retains the same first-capture 300 ms assertion in its own
 process on Qt 6.11.2 and 6.12.0. StyleBar creates its native font picker only when
