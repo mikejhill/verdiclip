@@ -7,9 +7,10 @@ import signal
 import subprocess
 import sys
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -214,21 +215,30 @@ class TestApplication:
         assert excinfo.value.code == 0
 
 
-def owned_factory[T](
-    create: Callable[[], T],
-    owners: list[T],
-    retire: Callable[[T], None],
-    safety: ExitStack,
-) -> Callable[[], T]:
-    """Register safety ownership immediately after each successful acquisition."""
+def owned_instance(
+    name: str, owners: list[SingleInstance], safety: ExitStack
+) -> SingleInstance:
+    """Own the exact test listener immediately after construction."""
+    owned = SingleInstance(name)
+    owners.append(owned)
+    safety.callback(owned.close)
+    return owned
 
-    def acquire() -> T:
-        owned = create()
-        owners.append(owned)
-        safety.callback(retire, owned)
-        return owned
 
-    return acquire
+def owned_hotkeys(owners: list[HotkeyService], safety: ExitStack) -> HotkeyService:
+    """Own the exact service with its fake OS API immediately after construction."""
+    owned = HotkeyService(FakeHotkeys())
+    owners.append(owned)
+    safety.callback(owned.close)
+    return owned
+
+
+def owned_timer(owners: list[QTimer], safety: ExitStack) -> QTimer:
+    """Own the exact signal-poll timer immediately after construction."""
+    owned = QTimer()
+    owners.append(owned)
+    safety.callback(owned.stop)
+    return owned
 
 
 def tracked_signal_install(safety: ExitStack) -> SimpleNamespace:
@@ -287,13 +297,9 @@ def qt_entry_owners(
     filters = OwnedFilterCalls(qapp, safety)
     name = f"VerdiClip-readiness-fixture-{uuid.uuid4().hex}"
 
-    instance = owned_factory(
-        lambda: SingleInstance(name), instances, SingleInstance.close, safety
-    )
-    service = owned_factory(
-        lambda: HotkeyService(FakeHotkeys()), hotkeys, HotkeyService.close, safety
-    )
-    timer = owned_factory(QTimer, timers, QTimer.stop, safety)
+    instance = partial(owned_instance, name, instances, safety)
+    service = partial(owned_hotkeys, hotkeys, safety)
+    timer = partial(owned_timer, timers, safety)
     sigint = tracked_signal_install(safety)
     monkeypatch.setattr(qapp, "installNativeEventFilter", filters.install)
     monkeypatch.setattr(qapp, "removeNativeEventFilter", filters.remove)
