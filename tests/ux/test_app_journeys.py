@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 import uuid
 from collections.abc import Callable, Iterator
@@ -12,7 +13,7 @@ from pathlib import Path
 from typing import override
 
 import pytest
-from PySide6.QtCore import QEvent, QObject, QPoint, QProcess, Qt, QTimer, QUrl
+from PySide6.QtCore import QEvent, QObject, QPoint, QProcess, Qt, QTimer, QUrl, qVersion
 from PySide6.QtGui import QDesktopServices, QGuiApplication, QImage
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from pytestqt.qtbot import QtBot
+from scripts.latency_trace import LatencyTrace
 from tests.platform.test_associations import FakeAssociationBackend
 from tests.platform.test_launcher import GUI, write_pe
 from tests.platform.test_shortcuts import FakeShortcutBackend
@@ -38,14 +40,14 @@ from tests.ux.test_capture_journeys import (
 )
 
 from verdiclip import APP_NAME, DOCS_URL, VERSION
-from verdiclip.capture.grabber import ScreenSource
+from verdiclip.capture.grabber import FrozenScreen, ScreenSource
 from verdiclip.capture.models import Capture
 from verdiclip.capture.overlay import SelectionOverlay
 from verdiclip.document.commands import SetCrop
 from verdiclip.document.style import Color
 from verdiclip.editor.close_prompt import CloseChoice, ClosePrompt
 from verdiclip.editor.session import ToolId
-from verdiclip.editor.style_bar import ColorButton
+from verdiclip.editor.style_bar import ColorButton, StyleBar
 from verdiclip.editor.window import EditorWindow
 from verdiclip.exceptions import UpdateError
 from verdiclip.geometry import Rect
@@ -257,22 +259,72 @@ class TestAfterCapture:
     """What happens when a capture finishes."""
 
     def test_hotkey_opens_focused_editor_with_select_tool(
-        self, make_app: AppFactory, qtbot: QtBot
+        self,
+        make_app: AppFactory,
+        qtbot: QtBot,
+        monkeypatch: pytest.MonkeyPatch,
+        request: pytest.FixtureRequest,
     ) -> None:
-        """By default a capture opens an editor quickly, Select tool active.
+        """Time the first capture after tray startup without hiding cold costs.
 
-        UX-CAP-11.
+        UX-CAP-11. Phase diagnostics are emitted only if the original budget fails.
         """
-        app = make_app()
+        trace = LatencyTrace(
+            metadata={
+                "scenario": "first-capture-after-tray-start",
+                "process_font_cache": "not reset; preceding tests may have warmed it",
+                "seed": request.config.getoption("randomly_seed", default=None),
+                "python": sys.version.split()[0],
+                "qt": qVersion(),
+                "qpa": os.environ.get("QT_QPA_PLATFORM", "unspecified"),
+                "coverage_enabled": bool(
+                    request.config.getoption("cov_source", default=[])
+                ),
+            }
+        )
+
+        class TimedDesktop(FakeDesktop):
+            @override
+            def freeze(self) -> FrozenScreen:
+                with trace.phase("fake-screen-freeze"):
+                    frozen = super().freeze()
+                trace.metadata["image_size"] = [
+                    frozen.image.width(),
+                    frozen.image.height(),
+                ]
+                return frozen
+
+        original_captured = AppController._on_captured
+        original_crop = FrozenScreen.crop
+        original_style = StyleBar.__init__
+
+        def measured_captured(controller: AppController, capture: Capture) -> None:
+            with trace.phase("captured-signal-delivery-and-editor-admission"):
+                original_captured(controller, capture)
+
+        def measured_crop(frozen: FrozenScreen, area: Rect) -> QImage:
+            with trace.phase("frozen-screen-crop"):
+                return original_crop(frozen, area)
+
+        def measured_style(bar: StyleBar, parent: QWidget | None = None) -> None:
+            with trace.phase("stylebar-construction-including-font-selector"):
+                original_style(bar, parent)
+
+        monkeypatch.setattr(AppController, "_on_captured", measured_captured)
+        monkeypatch.setattr(FrozenScreen, "crop", measured_crop)
+        monkeypatch.setattr(StyleBar, "__init__", measured_style)
+        app = make_app(screens=TimedDesktop())
         clock = Stopwatch()
-
-        app.press_hotkey("fullscreen")
-
-        qtbot.waitUntil(lambda: len(app.controller.editors) == 1)
-        editor: EditorWindow = app.controller.editors[0]
-        qtbot.waitExposed(editor)
-        assert clock.elapsed_ms < 300
-        assert editor.action("tool_select").isChecked()
+        with trace.on_failure():
+            with trace.phase("hotkey-dispatch-and-process-events"):
+                app.press_hotkey("fullscreen")
+            with trace.phase("wait-for-editor-record"):
+                qtbot.waitUntil(lambda: len(app.controller.editors) == 1)
+            editor: EditorWindow = app.controller.editors[0]
+            with trace.phase("wait-for-actual-exposure"), qtbot.waitExposed(editor):
+                pass
+            assert clock.elapsed_ms < 300
+            assert editor.action("tool_select").isChecked()
 
     def test_clipboard_action_copies_without_window(
         self, make_app: AppFactory, qtbot: QtBot, caplog: pytest.LogCaptureFixture

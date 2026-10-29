@@ -65,7 +65,8 @@ def shown(qtbot: QtBot) -> Iterator[QMessageBox]:
     box = ClosePrompt.describe(file_name=None, copied=False).build(None)
     qtbot.addWidget(box)
     box.show()
-    qtbot.waitExposed(box)
+    with qtbot.waitExposed(box):
+        pass
     yield box
     box.close()
 
