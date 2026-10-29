@@ -43,17 +43,35 @@ closed for manual reconciliation rather than being overwritten.
 
 ## Cache and evidence limits
 
-Push runs can resume verdicts only when generated candidate bodies and original
-sources match verified provenance from the locked mutmut 3.8.0 generator.
-Dependency, tool, workflow or test changes invalidate the cache. Legacy
-ordinal-only verdicts are not reused. Weekly/manual runs start cold. Every run
+Push reruns can resume verdicts only for the **same complete commit, OS and
+architecture**, with the same configuration/test fingerprint. Candidate identity
+alone is insufficient: an unchanged function can call a changed helper, changing
+a mutant's result. Cross-commit restoration is prohibited even when candidate
+bodies match. The restored cache must also contain the exact qualified context;
+missing, legacy or mismatched caches are quarantined before reconciliation.
+
+Generated candidate bodies and original sources must still match verified
+provenance from the locked mutmut 3.8.0 generator. Context is sealed only after
+identity verification, including for incomplete progress saved for same-commit
+resumption. Legacy ordinal-only verdicts are not reused. Weekly/manual runs start
+cold. Every run
 qualifies the locked generator and requires a passing baseline before mutation.
 Postflight rejects candidate or source drift before saving or reporting evidence.
 
-Resumed verdicts are explicitly historical, even when their bodies match. Their
-informational score does not prove every verdict was retested against the current
-source. A cached pass cannot automatically resolve findings; use a fresh weekly
-or manual full run. Partial caches can be retained only after identity verification
+Schema 2 result evidence must carry the qualified current commit/OS/architecture
+context and successful context qualification. The publisher currently admits the
+reviewed Linux/X64 profile only. Legacy schema 1, missing context or mismatched
+context is **incomplete execution evidence**, regardless of an informational
+score
+or `fresh: false` label; it cannot create current score findings, clear findings
+or
+recover execution health. Prior artifacts remain informational. Existing findings
+for an older policy remain open for explicit reconciliation rather than being
+silently cleared by an incomparable new policy.
+
+Resumed same-context verdicts remain explicitly historical. A cached pass cannot
+automatically resolve findings; use a fresh weekly or manual full run. Partial
+caches can be retained only after context and identity verification
 so a later push can resume useful work. Healthy runs are not cancelled by newer
 pushes. GitHub's concurrency queue can replace pending jobs; default-branch runs
 qualify their actual recorded revision rather than promising every pushed commit
@@ -88,3 +106,23 @@ historical verdicts, incomparable policies and stale ordering. Structured
 evidence and candidate identity tests are portable. The actual mutation executor
 requires Linux. The new trigger and publisher take effect only after this change
 is on the default branch; mock tests are not a live alert-delivery qualification.
+
+## Readiness test diagnostics
+
+Qt exposure waits are context managers and must actually be entered/exited. A
+portable AST audit rejects discarded exposure/activation context factories.
+Latency journeys retain the original 300 ms assertion and do not warm editors or
+pin test order to hide cold initialization. Failure-only notes retain inclusive
+phase wall/process/thread CPU times; nested timings overlap, and low CPU cannot
+distinguish native blocking from runner scheduling. Font-cache state is explicitly
+uncontrolled rather than inferred from a green rerun. Diagnostic failures preserve
+the original exception.
+
+The owned modal journey rejects only its fixture dialog on callback failure and
+uses cancellable, dialog-owned single-shot timers. Deadline expiry revokes queued
+actions and fails the test; a monotonic check also rejects delayed timer admission
+and late success. All timers are stopped independently, and callback errors are
+re-raised outside Qt after cleanup. A QTimer cannot interrupt a blocked GUI thread;
+the outer CI deadline is still necessary. Mock clock/timer tests prove these
+ownership rules, while actual Qt delivery needs hosted widget validation. These
+changes do not establish the cause of the retained fatal abort or latency outlier.
