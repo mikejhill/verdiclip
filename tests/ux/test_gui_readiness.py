@@ -1,6 +1,6 @@
-"""Hosted first-controller cost accounting; never a total cold-launch claim.
+"""Shared explicit GUI benchmark; never a total cold-launch claim.
 
-Each selector runs alone in a fresh pytest process on a disposable hosted VM.
+Each selector runs alone in a fresh pytest process, locally or on a hosted VM.
 QApplication, imports and fixture setup precede the measured factory interval.
 """
 
@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import sys
 import time
 from dataclasses import asdict
@@ -18,6 +19,8 @@ from PySide6 import __version__ as pyside_version
 from PySide6.QtCore import qVersion
 from PySide6.QtWidgets import QApplication
 from pytestqt.qtbot import QtBot
+from scripts.gui_benchmark_context import benchmark_context
+from shiboken6 import __version__ as shiboken_version
 from tests.ux.test_app_journeys import FakeHotkeys, make_app
 
 from verdiclip.shell import controller as controller_module
@@ -27,16 +30,11 @@ from verdiclip.shell.tray import TrayIcon
 if TYPE_CHECKING:
     from tests.ux.test_app_journeys import AppFactory
 
-HOSTED_OPT_IN = (
-    sys.platform == "win32"
-    and os.environ.get("GITHUB_ACTIONS") == "true"
-    and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted"
-    and os.environ.get("VERDICLIP_GUI_READINESS_QUALIFICATION") == "1"
-)
 pytestmark = [
     pytest.mark.ux,
     pytest.mark.skipif(
-        not HOSTED_OPT_IN, reason="Explicit disposable hosted GUI qualification only"
+        os.environ.get("VERDICLIP_GUI_READINESS_QUALIFICATION") != "1",
+        reason="Explicit hosted or separately authorized local qualification only",
     ),
 ]
 NS_PER_MS = 1_000_000
@@ -44,27 +42,65 @@ CAPTURE_BUDGET_MS = 300
 VISIBLE_TIMEOUT_MS = 2500
 
 
+@pytest.fixture(autouse=True)
+def clean_clipboard() -> None:
+    """Override root teardown: these two selectors never use the clipboard."""
+
+
 def _profile(request: pytest.FixtureRequest, qapp: QApplication) -> dict[str, object]:
-    """Require the exact single-node hosted profile and record actual versions."""
+    """Require identical explicit single-node/runtime admission for both roles."""
+    context = benchmark_context(os.environ, sys.platform)
     assert request.session.testscollected == 1, (
         "Each qualification selector needs a fresh process"
     )
     assert qVersion() == os.environ["VERDICLIP_EXPECTED_QT"]
     assert qapp.platformName() == os.environ["VERDICLIP_EXPECTED_QPA"]
     return {
-        "source_sha": os.environ.get("GITHUB_SHA"),
+        **context,
         "pid": os.getpid(),
         "node": request.node.nodeid,
         "python": sys.version,
         "qt": qVersion(),
         "pyside": pyside_version,
+        "shiboken": shiboken_version,
         "qpa": qapp.platformName(),
         "real_os_backends": False,
         "input_injected": False,
         "qapplication_and_import_costs_included": False,
         "fixture_setup_costs_included": False,
         "total_cold_launch_measured": False,
-        "root_fixture_may_clear_vm_clipboard_on_teardown": True,
+        "root_fixture_may_clear_vm_clipboard_on_teardown": False,
+        "benchmark_clipboard_access": False,
+    }
+
+
+def _runtime_context(qapp: QApplication) -> dict[str, object]:
+    """Read anonymous environment facts only after the measured interval."""
+    screens = []
+    for screen in qapp.screens():
+        geometry = screen.geometry()
+        screens.append(
+            {
+                "geometry": [
+                    geometry.x(),
+                    geometry.y(),
+                    geometry.width(),
+                    geometry.height(),
+                ],
+                "dpr": screen.devicePixelRatio(),
+            }
+        )
+    return {
+        "os_system": platform.system(),
+        "os_release": platform.release(),
+        "os_build": platform.version(),
+        "architecture": platform.machine(),
+        "processor": platform.processor(),
+        "logical_cpus": os.cpu_count(),
+        "screen_count": len(screens),
+        "screens": screens,
+        "environment_sampled_after_interval": True,
+        "physical_dpi_or_local_hosted_parity_proved": False,
     }
 
 
@@ -74,6 +110,15 @@ def _emit(receipt: dict[str, object]) -> None:
         "GUI_READINESS_RECEIPT=" + json.dumps(receipt, sort_keys=True) + "\n"
     )
     sys.stdout.flush()
+
+
+def _document_dimensions(controller: AppController) -> list[int] | None:
+    """Read actual synthetic pixels after timing; absent/ambiguous editors stay null."""
+    editors = controller.editors
+    if len(editors) != 1:
+        return None
+    image = editors[0].session.document.image
+    return [image.width(), image.height()]
 
 
 def test_first_controller_start_and_capture_costs(
@@ -102,9 +147,11 @@ def test_first_controller_start_and_capture_costs(
         _emit(
             {
                 **profile,
+                **_runtime_context(qapp),
                 "case": "first-controller-start-and-capture",
                 "outer_make_app_ms": (startup_completed - started) / NS_PER_MS,
                 "first_capture_ms": first_capture_ms,
+                "document_image_dimensions": _document_dimensions(app.controller),
                 "outer_factory_minus_start_sequence_ms": (startup_completed - started)
                 / NS_PER_MS
                 - readiness.controller_start_ms
@@ -137,6 +184,42 @@ def test_first_controller_start_and_capture_costs(
     assert "fullscreen" in app.hotkeys.registered
     assert app.controller.editors[0].action("tool_select").isChecked()
     assert first_capture_ms < CAPTURE_BUDGET_MS
+
+    # Retire only the first fixture-owned editor before measuring a warm capture.
+    first_editor = app.controller.editors[0]
+    first_editor.session.history.mark_delivered()
+    closed = first_editor.close()
+    assert closed
+    qtbot.waitUntil(lambda: app.controller.editors == (), timeout=VISIBLE_TIMEOUT_MS)
+    warm_started = time.perf_counter_ns()
+    try:
+        app.press_hotkey("fullscreen")
+        qtbot.waitUntil(
+            lambda: (
+                len(app.controller.editors) == 1
+                and app.controller.editors[0].isVisible()
+            ),
+            timeout=VISIBLE_TIMEOUT_MS,
+        )
+    finally:
+        warm_ms = (time.perf_counter_ns() - warm_started) / NS_PER_MS
+        _emit(
+            {
+                **profile,
+                **_runtime_context(qapp),
+                "case": "warm-capture",
+                "warm_capture_ms": warm_ms,
+                "document_image_dimensions": _document_dimensions(app.controller),
+                "capture_budget_ms": CAPTURE_BUDGET_MS,
+                "editor_visible": len(app.controller.editors) == 1
+                and app.controller.editors[0].isVisible(),
+                "same_controller_as_first_capture": True,
+                "preceded_by_first_capture_and_environment_sampling": True,
+            }
+        )
+    assert app.controller.editors[0] is not first_editor
+    assert app.controller.editors[0].action("tool_select").isChecked()
+    assert warm_ms < CAPTURE_BUDGET_MS
 
 
 def test_preparation_failure_never_admits_tray_or_hotkeys(
@@ -179,6 +262,7 @@ def test_preparation_failure_never_admits_tray_or_hotkeys(
         _emit(
             {
                 **profile,
+                **_runtime_context(qapp),
                 "case": "preparation-failure-admission",
                 "controllers_created": len(controllers),
                 "admission_calls": admission,

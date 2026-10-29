@@ -1,4 +1,4 @@
-name: GUI resource readiness prototype
+name: GUI resource readiness
 
 on:
   pull_request:
@@ -6,10 +6,26 @@ on:
       - '.github/workflows/gui-resource-readiness.yml'
       - 'src/verdiclip/shell/controller.py'
       - 'src/verdiclip/shell/gui_readiness.py'
+      - 'src/verdiclip/__main__.py'
+      - 'src/verdiclip/startup_lifetime.py'
+      - 'src/verdiclip/editor/**'
       - 'tests/ux/test_gui_readiness.py'
       - 'tests/ux/test_app_journeys.py'
       - 'tests/portable/test_gui_readiness.py'
       - 'docs/design/gui-resource-readiness.md'
+      - 'scripts/gui_benchmark_context.py'
+      - 'tests/tooling/test_gui_benchmark_context.py'
+  push:
+    branches: [main]
+    paths:
+      - 'src/verdiclip/shell/**'
+      - 'src/verdiclip/__main__.py'
+      - 'src/verdiclip/startup_lifetime.py'
+      - 'src/verdiclip/editor/**'
+      - 'tests/ux/test_gui_readiness.py'
+      - 'tests/ux/test_app_journeys.py'
+      - 'scripts/gui_benchmark_context.py'
+      - '.github/workflows/gui-resource-readiness.yml'
 
 permissions:
   contents: read
@@ -36,13 +52,16 @@ jobs:
       VERDICLIP_GUI_READINESS_QUALIFICATION: '1'
       VERDICLIP_EXPECTED_QT: ${{ matrix.qt }}
       VERDICLIP_EXPECTED_QPA: ${{ matrix.qpa }}
+      VERDICLIP_BENCHMARK_ROLE: hosted
+      VERDICLIP_BENCHMARK_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
-          python-version: '3.13'
+          python-version: '3.13.16'
           enable-cache: false
       - run: uv sync --locked
       - name: Select explicit isolated Qt compatibility runtime
@@ -57,10 +76,22 @@ jobs:
             throw 'Qualification requires a disposable GitHub-hosted Windows job.'
           }
           $actualSource = (& git rev-parse HEAD).Trim()
-          if ($LASTEXITCODE -ne 0 -or $actualSource -cne $env:GITHUB_SHA) {
+          if ($LASTEXITCODE -ne 0 -or $actualSource -cne $env:VERDICLIP_BENCHMARK_SOURCE_SHA) {
             throw 'Checked-out source does not match the job source identity.'
           }
           Write-Output "GUI_READINESS_SOURCE=$actualSource"
+          $hardware = [ordered]@{
+            os_version = [Environment]::OSVersion.VersionString
+            cpu_models = @((Get-CimInstance Win32_Processor).Name)
+            logical_processors = [Environment]::ProcessorCount
+            memory_bytes = (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory
+            runner_image = $env:ImageOS
+            runner_image_version = $env:ImageVersion
+            runner_arch = $env:RUNNER_ARCH
+          }
+          $hardwareJson = $hardware | ConvertTo-Json -Compress
+          "VERDICLIP_BENCHMARK_HARDWARE_JSON=$hardwareJson" >> $env:GITHUB_ENV
+          Write-Output "GUI_BENCHMARK_HARDWARE=$hardwareJson"
       - name: First controller startup and capture in one fresh pytest process
         id: timing
         timeout-minutes: 2
@@ -97,4 +128,20 @@ jobs:
           if (@($junit.SelectNodes('//testcase')).Count -ne 1 -or
               @($junit.SelectNodes('//failure | //error | //skipped')).Count -ne 0) {
             throw 'Admission proof must execute exactly one passed, non-skipped case.'
+          }
+      - name: Entry failure retires actual owned Qt resources
+        if: ${{ !cancelled() && steps.runtime.outcome == 'success' }}
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $report = Join-Path $env:RUNNER_TEMP ('entry-readiness-cleanup-' + [guid]::NewGuid().ToString('N') + '.xml')
+          & .venv/Scripts/python.exe -m pytest tests/test_main.py::test_gui_readiness_failure_retires_real_qt_owners_without_exec --no-cov -p no:randomly -vv --capture=tee-sys "--junitxml=$report"
+          $testExit = $LASTEXITCODE
+          if ($testExit -ne 0) { exit $testExit }
+          if (-not (Test-Path -LiteralPath $report)) { throw 'Entry cleanup JUnit receipt missing.' }
+          [xml]$junit = Get-Content -LiteralPath $report -Raw
+          if (@($junit.SelectNodes('//testcase')).Count -ne 1 -or
+              @($junit.SelectNodes('//failure | //error | //skipped')).Count -ne 0) {
+            throw 'Entry cleanup must execute exactly one passed, non-skipped case.'
           }
