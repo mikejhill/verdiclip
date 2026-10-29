@@ -71,24 +71,33 @@ jobs:
           Write-Output "GUI_PHASES_CANDIDATE=$candidate; GUI_PHASES_CONTROL=$control"
           & .venv/Scripts/python.exe -c 'import os; from PySide6.QtCore import qVersion; assert qVersion() == os.environ["VERDICLIP_EXPECTED_QT"]'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Original single capture case with reviewed inclusive phase profiling
+      - name: Five fresh-process trials of the original capture case
         timeout-minutes: 2
         shell: pwsh
         run: |
           $PSNativeCommandUseErrorActionPreference = $false
           $env:PYTHONPATH = Join-Path $env:GITHUB_WORKSPACE '.tmp/profile-control/scripts'
-          $report = Join-Path $env:RUNNER_TEMP ('gui-readiness-phases-' + [guid]::NewGuid().ToString('N') + '.xml')
-          & .venv/Scripts/python.exe -m pytest tests/ux/test_app_journeys.py::TestAfterCapture::test_hotkey_opens_focused_editor_with_select_tool -p retained_editor_latency_profile --no-cov -p no:randomly -vv --capture=tee-sys "--junitxml=$report"
-          $testExit = $LASTEXITCODE
-          if ($testExit -notin @(0, 1)) { exit $testExit }
-          if (-not (Test-Path -LiteralPath $report)) { throw 'Phase diagnosis JUnit receipt missing.' }
-          [xml]$junit = Get-Content -LiteralPath $report -Raw
-          $cases = @($junit.SelectNodes('//testcase'))
-          $failures = @($junit.SelectNodes('//failure')).Count
-          if ($cases.Count -ne 1 -or @($junit.SelectNodes('//skipped')).Count -ne 0 -or
-              @($junit.SelectNodes('//error')).Count -ne 0 -or
-              ($testExit -eq 0 -and $failures -ne 0) -or ($testExit -eq 1 -and $failures -ne 1)) {
-            throw 'Diagnosis must execute exactly one non-skipped case with consistent pytest status.'
+          $env:EDITOR_PROFILE_SCOPE = 'candidate-after-font-preparation-5-fresh-processes-same-VM-not-cold-OS'
+          $aggregateExit = 0
+          # Normal teardown belongs to each pytest process; timeout cleanup is UNKNOWN.
+          for ($trial = 1; $trial -le 5; $trial++) {
+            $env:EDITOR_PROFILE_ROLE = "candidate-trial-$trial"
+            Write-Output "GUI_PHASES_TRIAL=$trial/5; role=$env:EDITOR_PROFILE_ROLE; scope=$env:EDITOR_PROFILE_SCOPE"
+            $report = Join-Path $env:RUNNER_TEMP ('gui-readiness-phases-trial-' + $trial + '-' + [guid]::NewGuid().ToString('N') + '.xml')
+            & .venv/Scripts/python.exe -m pytest tests/ux/test_app_journeys.py::TestAfterCapture::test_hotkey_opens_focused_editor_with_select_tool -p retained_editor_latency_profile --no-cov -p no:randomly -vv --capture=tee-sys "--junitxml=$report"
+            $testExit = $LASTEXITCODE
+            Write-Output "GUI_PHASES_TRIAL_EXIT=$trial/$testExit"
+            if ($testExit -notin @(0, 1)) { exit $testExit }
+            if (-not (Test-Path -LiteralPath $report)) { throw 'Phase diagnosis JUnit receipt missing.' }
+            [xml]$junit = Get-Content -LiteralPath $report -Raw
+            $cases = @($junit.SelectNodes('//testcase'))
+            $failures = @($junit.SelectNodes('//failure')).Count
+            if ($cases.Count -ne 1 -or @($junit.SelectNodes('//skipped')).Count -ne 0 -or
+                @($junit.SelectNodes('//error')).Count -ne 0 -or
+                ($testExit -eq 0 -and $failures -ne 0) -or ($testExit -eq 1 -and $failures -ne 1)) {
+              throw 'Each trial must execute exactly one non-skipped case with consistent pytest status.'
+            }
+            if ($testExit -eq 1) { $aggregateExit = 1 }
           }
-          Write-Output "profile_exit=$testExit; inclusive phases overlap; retained 300ms assertion unchanged; green is non-reproduction, not flake resolution"
-          exit $testExit
+          Write-Output "profile_aggregate_exit=$aggregateExit; distribution diagnostic only; inclusive phases overlap; retained 300ms assertion unchanged; green is non-reproduction, not native acceptance or flake resolution"
+          exit $aggregateExit
