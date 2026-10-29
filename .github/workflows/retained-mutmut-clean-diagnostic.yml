@@ -1,8 +1,8 @@
 name: Retained mutmut clean-test diagnosis
 on:
   pull_request:
-    # Two-source fresh statistics/clean comparison; never executes mutants.
-    types: [opened, reopened, synchronize]
+    # Completed paired diagnosis; reopen explicitly for another comparison.
+    types: [opened, reopened]
     paths:
       - scripts/retained_mutmut_clean_diagnostic.py
       - scripts/retained_mutmut_clean_source.json

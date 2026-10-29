@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -198,7 +199,10 @@ def source_admission_ports(
         json.loads(manifest_path.read_text(encoding="utf-8"))
     )
     control_root = Path(diagnostic.__file__).parents[1]
-    (root / "uv.lock").write_bytes((control_root / "uv.lock").read_bytes())
+    # Model the real Linux checkout, even when these pure ports run on Windows.
+    lock = (control_root / "uv.lock").read_text(encoding="utf-8").encode("utf-8")
+    assert hashlib.sha256(lock).hexdigest() == manifest["uv_lock_sha256"]
+    (root / "uv.lock").write_bytes(lock)
     monkeypatch.chdir(root)
     monkeypatch.setenv("GITHUB_ACTIONS", "true")
     monkeypatch.setenv("RUNNER_OS", "Linux")
@@ -268,6 +272,20 @@ def test_default_source_remains_historical(
     )
     diagnostic.admit(tmp_path, manifest)
     assert packages == ["admitted"]
+
+
+def test_changed_fixture_lock_is_rejected_before_package_access(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Fixture normalization must not weaken the production's exact hash gate."""
+    manifest, _, packages = source_admission_ports(
+        monkeypatch, tmp_path, diagnostic.SOURCE_SHA
+    )
+    lock = tmp_path / "uv.lock"
+    lock.write_bytes(lock.read_bytes() + b"\n# changed dependency input\n")
+    with pytest.raises(RuntimeError, match="Retained lock mismatch"):
+        diagnostic.admit(tmp_path, manifest)
+    assert packages == []
 
 
 def test_unknown_source_is_rejected_before_process_or_package_access(
