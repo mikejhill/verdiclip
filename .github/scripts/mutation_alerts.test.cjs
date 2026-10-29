@@ -104,4 +104,3 @@ test('publisher workflow retains reviewed security boundaries',()=>{
  assert.doesNotMatch(text,/ref:.*head_sha|id-token:|secrets\.|actions\/cache|run:.*mutation-evidence/);
  assert.match(text,/actions: read\s+contents: read\s+issues: write/);
 });
-
