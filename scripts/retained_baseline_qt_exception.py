@@ -12,6 +12,7 @@ import os
 import subprocess
 import sys
 import traceback
+from abc import abstractmethod
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -58,40 +59,40 @@ class CollectedItem(Protocol):
 class StashReader(Protocol):
     """Only the existing pytest stash read operation; never a handler/filter."""
 
+    @abstractmethod
     def get(self, key: object, default: object) -> object:
         """Read a previously stored value without installing capture hooks."""
-        ...
 
 
 class ExceptionArgsDescriptor(Protocol):
     """Builtin exception payload access without calling custom str/args APIs."""
 
+    @abstractmethod
     def __get__(
         self,
         instance: BaseException,
         owner: type[BaseException] | None = None,
     ) -> tuple[object, ...]:
         """Return the builtin exception's stored argument tuple."""
-        ...
 
 
 class TraceView(Protocol):
     """Read-only traceback shape, also usable by pure synthetic frame ports."""
 
     @property
+    @abstractmethod
     def tb_frame(self) -> FrameType:
         """Return the one frame referenced by this traceback link."""
-        ...
 
     @property
+    @abstractmethod
     def tb_lineno(self) -> int:
         """Return the error line, without evaluating any frame local."""
-        ...
 
     @property
+    @abstractmethod
     def tb_next(self) -> TraceView | None:
         """Return the next traceback link, without inspecting its locals."""
-        ...
 
 
 def emit(value: object) -> None:

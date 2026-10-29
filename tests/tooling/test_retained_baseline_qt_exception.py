@@ -7,10 +7,11 @@ import hashlib
 import io
 import json
 import logging
+from collections.abc import Generator
 from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
-from typing import BinaryIO, cast, override
+from typing import BinaryIO, ClassVar, cast, override
 
 import pytest
 from pluggy import PluginManager
@@ -118,14 +119,14 @@ def test_flush_failure_propagates() -> None:
 
     stream = SimpleNamespace(write=len, flush=fail_flush)
     with pytest.raises(OSError, match="flush"):
-        BoundedUtf8(cast("BinaryIO", stream)).write("record")
+        BoundedUtf8(cast(BinaryIO, stream)).write("record")
 
 
 def test_partial_write_failure_propagates() -> None:
     """Partial binary writes are observation failures, never valid UTF-8 proof."""
     stream = SimpleNamespace(write=lambda value: len(value) - 1, flush=lambda: None)
     with pytest.raises(OSError, match="partial write"):
-        BoundedUtf8(cast("BinaryIO", stream)).write("record")
+        BoundedUtf8(cast(BinaryIO, stream)).write("record")
 
 
 def test_install_restores_exact_hook_on_body_error() -> None:
@@ -140,9 +141,7 @@ def test_install_restores_exact_hook_on_body_error() -> None:
         raise ValueError("body")
 
     def invoke() -> None:
-        with installed_exception_tee(
-            cast("HookModule", module), lambda *_a, **_k: None
-        ):
+        with installed_exception_tee(cast(HookModule, module), lambda *_a, **_k: None):
             assert module._except_hook is not original
             fail_body()
 
@@ -156,8 +155,8 @@ def test_collection_preserves_order_and_digest() -> None:
     root = Path(__file__).resolve().parents[2]
     protocol = Provenance(root)
     items = [
-        cast("CollectedItem", SimpleNamespace(path=root / "tests/b.py", nodeid="b")),
-        cast("CollectedItem", SimpleNamespace(path=root / "tests/a.py", nodeid="a")),
+        cast(CollectedItem, SimpleNamespace(path=root / "tests/b.py", nodeid="b")),
+        cast(CollectedItem, SimpleNamespace(path=root / "tests/a.py", nodeid="a")),
     ]
     output = io.StringIO()
     with redirect_stdout(output):
@@ -173,7 +172,7 @@ def test_collection_rejects_external_test() -> None:
     """Foreign source is rejected before executing any test body."""
     root = Path(__file__).resolve().parents[2]
     item = cast(
-        "CollectedItem", SimpleNamespace(path=root.parent / "external.py", nodeid="x")
+        CollectedItem, SimpleNamespace(path=root.parent / "external.py", nodeid="x")
     )
     with pytest.raises(RuntimeError, match="outside retained tests"):
         Provenance(root).pytest_collection_modifyitems([item])
@@ -194,7 +193,7 @@ def test_phase_wrapper_preserves_result() -> None:
 def test_protocol_preserves_failure_and_finally_phase() -> None:
     """Failure forwarding still retires last-known phase state."""
     protocol = Provenance(Path(__file__).resolve().parents[2])
-    item = cast("CollectedItem", SimpleNamespace(nodeid="old::item"))
+    item = cast(CollectedItem, SimpleNamespace(nodeid="old::item"))
     gen = protocol.pytest_runtest_protocol(item, None)
     next(gen)
     assert protocol.current_item is item
@@ -281,20 +280,45 @@ def test_provenance_plugin_preserves_identity_in_plugin_inventory() -> None:
 
 
 class NoInspection:
-    """Fail loudly if a diagnostic calls user/Qt-like object protocols."""
+    """Record forbidden protocol calls even when the reader catches errors."""
+
+    attempts: ClassVar[list[str]] = []
 
     @override
     def __repr__(self) -> str:
-        """Reject representation of any captured widget-like object."""
-        raise AssertionError("repr is forbidden")
+        """Record representation without raising from a special method."""
+        self.attempts.append("repr")
+        return "<uninspected>"
 
     def __bool__(self) -> bool:
-        """Reject truthiness conversion of any unapproved storage field."""
-        raise AssertionError("bool is forbidden")
+        """Record truthiness conversion of any unapproved storage field."""
+        self.attempts.append("bool")
+        return False
 
     def __len__(self) -> int:
-        """Reject length conversion outside an exact builtin list."""
-        raise AssertionError("len is forbidden")
+        """Record length conversion outside an exact builtin list."""
+        self.attempts.append("len")
+        return 0
+
+
+@pytest.fixture(autouse=True)
+def no_object_protocol_calls() -> Generator[None]:
+    """Fail every reader test if any hostile object was inspected."""
+    NoInspection.attempts.clear()
+    yield
+    assert NoInspection.attempts == []
+
+
+def test_object_protocol_observer_records_all_attempts() -> None:
+    """The observer reports calls without depending on uncaught exceptions."""
+    value = NoInspection()
+    try:
+        assert repr(value) == "<uninspected>"
+        assert not value
+        assert len(value) == 0
+        assert NoInspection.attempts == ["repr", "bool", "len"]
+    finally:
+        NoInspection.attempts.clear()
 
 
 def overlay_trace(
@@ -528,7 +552,7 @@ def warning_provenance(stored: object) -> tuple[Provenance, object, FakeStash]:
     root = Path(__file__).resolve().parents[2]
     key = object()
     stash = FakeStash(key, stored)
-    item = cast("CollectedItem", SimpleNamespace(stash=stash))
+    item = cast(CollectedItem, SimpleNamespace(stash=stash))
     provenance = Provenance(
         root, nodeid=MODAL_FAILURE_NODE, phase="call", current_item=item
     )
@@ -644,7 +668,7 @@ def test_stash_error_still_forwards_original_exception_hook() -> None:
         raise failure
 
     provenance.current_item = cast(
-        "CollectedItem", SimpleNamespace(stash=SimpleNamespace(get=fail_get))
+        CollectedItem, SimpleNamespace(stash=SimpleNamespace(get=fail_get))
     )
     calls = []
 
