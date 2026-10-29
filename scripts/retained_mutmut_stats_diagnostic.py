@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, cast
 
-SOURCE_SHA = "805492f6c5e97169ca564a89ef8755cc773ba384"
+SOURCE_SHA = "12d62f4efee585ee433ed9e2cc8a498cd05b4111"
 LOCK_SHA = "14e1d58cd3d516b6eff172dba8b92beccb93ecd7741add578af7a99adb39da78"
 PINNED_FILES = {
     "__main__.py",
