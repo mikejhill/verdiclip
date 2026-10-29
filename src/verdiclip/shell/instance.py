@@ -8,7 +8,7 @@ import logging
 from collections.abc import Sequence
 from typing import Final
 
-from PySide6.QtCore import QCoreApplication, QObject, Signal
+from PySide6.QtCore import QObject, Signal
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 
 logger = logging.getLogger(__name__)
@@ -79,10 +79,6 @@ class SingleInstance(QObject):
     def _read(self, socket: QLocalSocket) -> None:
         """Decode and emit a forwarded argument list."""
         payload = bytes(socket.readAll().data()).decode("utf-8", errors="replace")
-        # Windows pipe callbacks can still be queued after disconnection. Keep
-        # the client alive until DeferredDelete even if its server is destroyed
-        # immediately after receipt. Never pump a nested event loop to drain it.
-        socket.setParent(QCoreApplication.instance())
         socket.deleteLater()
         try:
             decoded: object = json.loads(payload)
