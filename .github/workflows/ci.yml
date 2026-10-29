@@ -103,6 +103,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && !inputs.rdp_prerequisites_only && inputs.driver_store_staging && !inputs.driver_signature_preflight && !inputs.desktop_capability_only && !inputs.owned_window_canary
     runs-on: windows-2025
     timeout-minutes: 5
+    cache-mode: none
     permissions:
       contents: read
     steps:
@@ -116,6 +117,21 @@ jobs:
           ./scripts/test_display_staging_diagnostics.ps1
           ./scripts/test_publisher_trust.ps1
           ./scripts/test_display_staging.ps1
+  runtime-model:
+    name: Runtime controller (managed fakes only)
+    if: github.event_name == 'pull_request'
+    runs-on: windows-2025
+    timeout-minutes: 2
+    cache-mode: none
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Compile declarations and execute only managed fake tests
+        shell: pwsh
+        run: ./scripts/test_runtime_probe.ps1
   lint:
     if: inputs.publisher_trust_staging != true && (github.event_name != 'workflow_dispatch' || (!inputs.rdp_prerequisites_only && !inputs.desktop_capability_only && !inputs.owned_window_canary && !inputs.driver_signature_preflight && !inputs.driver_store_staging))
     name: Format and lint
@@ -288,9 +304,20 @@ jobs:
         with:
           persist-credentials: false
       - name: actionlint
-        uses: docker://rhysd/actionlint:1.7.12
+        shell: bash
+        run: |
+          mkdir -p .tmp
+          status=0
+          docker run --rm -v "$GITHUB_WORKSPACE:/repo" -w /repo rhysd/actionlint:1.7.12 -format '{{json .}}' > .tmp/actionlint.json || status=$?
+          if [ "$status" -gt 1 ]; then exit "$status"; fi
+          echo "ACTIONLINT_STATUS=$status" >> "$GITHUB_ENV"
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
-          args: -color
+          enable-cache: false
+      - name: Check documented cache-mode extension and all other lint results
+        run: |
+          uv run --no-project python scripts/test_actionlint_cache_compat.py
+          uv run --no-project python scripts/actionlint_cache_compat.py .tmp/actionlint.json "$ACTIONLINT_STATUS"
       - name: zizmor
         uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
 

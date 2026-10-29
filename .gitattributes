@@ -1,0 +1,2 @@
+# The reviewed source manifest pins exact bytes across Windows/Linux checkouts.
+scripts/runtime_probe/*.cs text eol=lf

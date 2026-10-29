@@ -182,7 +182,8 @@ foreach($job in $jobs){
         if(-not $condition.Contains('&& inputs.driver_store_staging &&') -or
             $condition.Contains('inputs.publisher_trust_staging != true') -or
             -not $body.Contains('timeout-minutes: 5') -or $body.Contains('upload-artifact') -or
-            $body.Contains('cache') -or -not $body.Contains('contents: read')){throw 'Staging job scope changed.'}
+            $body.Contains('actions/cache') -or -not $body.Contains('cache-mode: none') -or
+            -not $body.Contains('contents: read')){throw 'Staging job scope changed.'}
     }elseif($condition -cne "github.event_name == 'pull_request'" -and
         -not $condition.Contains('inputs.publisher_trust_staging != true')){throw 'Publisher flag can run another job.'}
     $checks++
