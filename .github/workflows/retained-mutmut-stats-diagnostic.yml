@@ -1,0 +1,60 @@
+name: Retained mutmut statistics diagnosis
+on:
+  pull_request:
+    paths:
+      - scripts/retained_mutmut_stats_diagnostic.py
+      - scripts/retained_mutmut_stats_source.json
+      - tests/tooling/test_retained_mutmut_stats_diagnostic.py
+      - .github/workflows/retained-mutmut-stats-diagnostic.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      UV_LOCKED: "1"
+      PYTHONUTF8: "1"
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: control
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 09e204577e2f78d247db49a3ff5c9fe0d93d179c
+          path: retained
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          enable-cache: false
+      - name: Same trusted Qt system libraries
+        timeout-minutes: 2
+        run: >-
+          sudo apt-get update -qq &&
+          sudo apt-get install -y -qq --no-install-recommends
+          libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3 libglib2.0-0
+      - name: Retained locked mutation environment
+        working-directory: retained
+        timeout-minutes: 1
+        run: uv sync --locked --group mutation
+      - name: Bounded statistics only (never a mutation score)
+        working-directory: retained
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          set -o pipefail
+          echo "Control source: $(git -C ../control rev-parse HEAD)"
+          sha256sum ../control/scripts/retained_mutmut_stats_diagnostic.py \
+            ../control/scripts/retained_mutmut_stats_source.json
+          set +e
+          timeout --signal=TERM --kill-after=5s 120s \
+            uv run --no-sync --group mutation python -I \
+            ../control/scripts/retained_mutmut_stats_diagnostic.py \
+            --source-root "$PWD"
+          code=$?
+          set -e
+          echo "diagnostic_exit=$code; timeout124_or137_is_incomplete; exit0_is_stats_only; no_mutation_score"
+          exit "$code"
