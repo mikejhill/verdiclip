@@ -68,6 +68,20 @@ one bounded JSON data file from the same repository's completed default-branch
 run; artifact files are never executed. No PR code, repository secrets, OIDC or
 downstream privileged workflow is used. Platform job tokens still exist.
 
+`workflow_run` is retained so a separate publisher can observe cancellation and
+hard timeout when a same-run job cannot execute. Its categorical zizmor warning
+has one documented inline exception, independently reviewed against
+[zizmor's case-by-case guidance](https://docs.zizmor.sh/audits/#dangerous-triggers).
+Admission rejects foreign repositories, PR events and non-default branches
+before artifact download. Only trusted default-branch publisher code runs.
+Artifacts download into `runner.temp`, outside the executable checkout, as
+[GitHub recommends](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_run).
+The reader requires the fixed attempt's bounded UTF-8 JSON file, rejects symlinks
+and duplicate keys, validates run identity/accounting and never uses artifact
+strings as shell commands, paths or executable code. The exception does not
+disable other security audits or repository protections. Changes to any of these
+boundaries require renewed source review.
+
 Normal PR CI tests the publisher with mock GitHub APIs: threshold boundaries,
 create/update/reopen/recovery, pagination, incomplete/malformed evidence,
 historical verdicts, incomparable policies and stale ordering. Structured

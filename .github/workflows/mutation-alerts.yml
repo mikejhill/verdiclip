@@ -1,7 +1,10 @@
 name: Mutation alerts
 
 on:
-  workflow_run:
+  # Needed for cancelled/timed-out runs; a same-run job cannot guarantee this.
+  # Own default-branch events only, trusted checkout, data outside workspace,
+  # bounded JSON parser, no artifact execution, minimal per-job permissions.
+  workflow_run: # zizmor: ignore[dangerous-triggers] Reviewed data-only default-branch publisher; see docs/mutation-testing.md.
     workflows: [Mutation testing]
     types: [completed]
 
@@ -34,10 +37,12 @@ jobs:
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: mutation-results-${{ github.event.workflow_run.run_attempt }}
-          path: mutation-evidence
+          path: ${{ runner.temp }}/mutation-evidence-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ github.token }}
       - name: Reconcile durable trackers
+        env:
+          MUTATION_EVIDENCE_DIR: ${{ runner.temp }}/mutation-evidence-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         with:
           script: |

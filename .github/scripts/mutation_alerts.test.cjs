@@ -92,3 +92,16 @@ test('a second failed job without step evidence remains execution incomplete',as
  h.github.rest.actions.listJobsForWorkflowRunAttempt=async()=>({data:{total_count:2,jobs:[{conclusion:'failure',steps:[{name:'Report asynchronous score and findings',conclusion:'failure'}]},{conclusion:'failure',steps:[]}]}});
  await h.send(r,evidence(r,60));assert.ok(h.issues[0].body.includes(marker('execution')));
 });
+test('publisher workflow retains reviewed security boundaries',()=>{
+ const fs=require('node:fs'), text=fs.readFileSync('.github/workflows/mutation-alerts.yml','utf8');
+ assert.match(text,/workflow_run: # zizmor: ignore\[dangerous-triggers\]/);
+ assert.match(text,/head_repository.full_name == github.repository/);
+ assert.match(text,/head_branch == github.event.repository.default_branch/);
+ assert.match(text,/ref: \$\{\{ github.event.repository.default_branch \}\}/);
+ assert.match(text,/persist-credentials: false/);
+ assert.match(text,/MUTATION_EVIDENCE_DIR: \$\{\{ runner.temp \}\}/);
+ assert.match(text,/path: \$\{\{ runner.temp \}\}/);
+ assert.doesNotMatch(text,/ref:.*head_sha|id-token:|secrets\.|actions\/cache|run:.*mutation-evidence/);
+ assert.match(text,/actions: read\s+contents: read\s+issues: write/);
+});
+

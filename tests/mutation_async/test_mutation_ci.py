@@ -53,11 +53,14 @@ def test_scope_changes_only_generation_selection_and_restores_bytes(
     )
     assert files == ["src/verdiclip/alpha.py", "src/verdiclip/nested/__init__.py"]
     scoped = tomllib.loads((tmp_path / "pyproject.toml").read_text(encoding="utf-8"))
-    assert scoped["tool"]["mutmut"].pop("only_mutate") == files
+    configured_files = scoped["tool"]["mutmut"].pop("only_mutate")
+    assert configured_files == files
     assert scoped == expected
-    assert restore_scope(tmp_path)
+    restored = restore_scope(tmp_path)
+    assert restored
     assert (tmp_path / "pyproject.toml").read_bytes() == original
-    assert not restore_scope(tmp_path)
+    restored_again = restore_scope(tmp_path)
+    assert not restored_again
 
 
 @pytest.mark.parametrize(
@@ -103,7 +106,8 @@ def test_existing_lease_or_scope_policy_requires_explicit_recovery(
     apply_scope(tmp_path, ["verdiclip.alpha.*"])
     with pytest.raises(ValueError, match=r"\S"):
         apply_scope(tmp_path, ["verdiclip.alpha.*"])
-    assert restore_scope(tmp_path)
+    restored = restore_scope(tmp_path)
+    assert restored
     path = tmp_path / "pyproject.toml"
     path.write_bytes(path.read_bytes() + b'only_mutate = ["src/verdiclip/alpha.py"]\n')
     with pytest.raises(ValueError, match="existing only_mutate"):

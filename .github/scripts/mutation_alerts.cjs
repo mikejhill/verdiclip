@@ -194,7 +194,9 @@ async function publish({github, context, core, report: supplied}) {
   let report = supplied;
   if (report === undefined) {
     try {
-      const directory = path.resolve('mutation-evidence');
+      const configured = process.env.MUTATION_EVIDENCE_DIR;
+      if (!configured || !path.isAbsolute(configured)) throw new Error('Missing trusted artifact directory');
+      const directory = path.resolve(configured);
       const filename = path.join(directory, 'mutation-result.json');
       const dirInfo = fs.lstatSync(directory), fileInfo = fs.lstatSync(filename);
       if (!dirInfo.isDirectory() || dirInfo.isSymbolicLink() || !fileInfo.isFile() || fileInfo.isSymbolicLink() ||
