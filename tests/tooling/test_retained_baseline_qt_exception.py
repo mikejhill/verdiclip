@@ -6,6 +6,7 @@ import ast
 import hashlib
 import io
 import json
+import logging
 from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,16 +15,20 @@ from typing import BinaryIO, cast, override
 import pytest
 from pluggy import PluginManager
 from scripts.retained_baseline_qt_exception import (
+    MODAL_FAILURE_NODE,
+    PYTEST_LOGGING_SHA,
     BoundedUtf8,
     CollectedItem,
     HookModule,
     Provenance,
     TraceView,
     capture_service_snapshot,
+    capture_warning_snapshot,
     installed_exception_tee,
     require_hosted_linux,
     tee_exception_hook,
     unexpected_python_sources,
+    warning_counts,
 )
 
 
@@ -192,12 +197,14 @@ def test_protocol_preserves_failure_and_finally_phase() -> None:
     item = cast("CollectedItem", SimpleNamespace(nodeid="old::item"))
     gen = protocol.pytest_runtest_protocol(item, None)
     next(gen)
+    assert protocol.current_item is item
     failure = ValueError("test error")
     with pytest.raises(ValueError, match="test error") as caught:
         gen.throw(failure)
     assert caught.value is failure
     assert protocol.nodeid == "old::item"
     assert protocol.phase == "between-items"
+    assert protocol.current_item is None
 
 
 def test_locked_venv_is_not_source_additions() -> None:
@@ -474,3 +481,244 @@ def test_snapshot_storage_failure_still_forwards_original_hook() -> None:
     with pytest.raises(TypeError):
         tee_exception_hook(original, record)(IndexError, IndexError("bad"), trace)
     assert calls == [True]
+
+
+class CaptureError(Exception):
+    """Pure retained exception stand-in; formatting it would change semantics."""
+
+    __module__ = "verdiclip.exceptions"
+
+    @override
+    def __str__(self) -> str:
+        """Prove the warning reader never invokes exception formatting."""
+        raise AssertionError("exception str is forbidden")
+
+
+class FakeStash:
+    """Read-only identity-checked stash port; no pytest logging plugin imports."""
+
+    def __init__(self, key: object, value: object) -> None:
+        self.key = key
+        self.value = value
+        self.reads = 0
+
+    def get(self, key: object, default: object) -> object:
+        """Permit only the admitted opaque key and the no-value default."""
+        assert key is self.key
+        assert default is None
+        self.reads += 1
+        return self.value
+
+
+def capture_warning(message: object) -> logging.LogRecord:
+    """Construct only an in-memory record; no handler, filter or logger call."""
+    return logging.LogRecord(
+        "verdiclip.capture.service",
+        logging.WARNING,
+        "synthetic.py",
+        1,
+        "Capture failed: %s",
+        (CaptureError(message),),
+        None,
+    )
+
+
+def warning_provenance(stored: object) -> tuple[Provenance, object, FakeStash]:
+    """Set a synthetic current CALL item without entering pytest or Qt."""
+    root = Path(__file__).resolve().parents[2]
+    key = object()
+    stash = FakeStash(key, stored)
+    item = cast("CollectedItem", SimpleNamespace(stash=stash))
+    provenance = Provenance(
+        root, nodeid=MODAL_FAILURE_NODE, phase="call", current_item=item
+    )
+    return provenance, key, stash
+
+
+def test_existing_call_warning_codes_without_formatting_or_export() -> None:
+    """Only two fixed reason codes and an unknown count may leave the reader."""
+    records = [
+        capture_warning("Another window is holding input; try capturing again"),
+        capture_warning("Close the open popup before capturing"),
+        capture_warning("synthetic-secret-not-to-export"),
+        capture_warning(NoInspection()),
+    ]
+    stored = {"call": records}
+    provenance, key, stash = warning_provenance(stored)
+    summary = capture_warning_snapshot(
+        provenance, key, IndexError, overlay_trace(object())
+    )
+    assert summary == {
+        "call_records_available": True,
+        "INPUT_OWNER_REFUSED": 1,
+        "POPUP_REFUSED": 1,
+        "unknown_warning_count": 2,
+        "records_shape_valid": True,
+        "records_truncated": False,
+    }
+    assert "synthetic-secret" not in json.dumps(summary)
+    assert stash.value is stored
+    assert stored["call"] is records
+    assert stash.reads == 1
+
+
+@pytest.mark.parametrize("stored", [None, {}, {"call": None}, {"call": ()}])
+def test_missing_call_records_are_unavailable_not_absence_proof(stored: object) -> None:
+    """Missing capture storage cannot be interpreted as no warning/failure."""
+    provenance, key, _stash = warning_provenance(stored)
+    assert capture_warning_snapshot(
+        provenance, key, IndexError, overlay_trace(object())
+    ) == {
+        "call_records_available": False,
+    }
+
+
+@pytest.mark.parametrize("guard", ["node", "phase", "kind", "frame"])
+def test_warning_guard_rejects_before_any_stash_access(guard: str) -> None:
+    """Only the exact reproduced CALL node/error/frame may inspect logs."""
+    provenance, key, stash = warning_provenance({"call": []})
+    kind: type[BaseException] = IndexError
+    trace = overlay_trace(object())
+    if guard == "node":
+        provenance.nodeid = "other::test"
+    elif guard == "phase":
+        provenance.phase = "teardown"
+    elif guard == "kind":
+        kind = ValueError
+    else:
+        trace = overlay_trace(object(), line=138)
+    assert capture_warning_snapshot(provenance, key, kind, trace) is None
+    assert stash.reads == 0
+
+
+def test_retired_current_item_makes_call_records_unavailable() -> None:
+    """The reader does not recover a stale item after protocol retirement."""
+    provenance, key, stash = warning_provenance({"call": []})
+    provenance.current_item = None
+    assert capture_warning_snapshot(
+        provenance, key, IndexError, overlay_trace(object())
+    ) == {
+        "call_records_available": False,
+    }
+    assert stash.reads == 0
+
+
+def test_unknown_records_and_loggers_do_not_export_raw_data() -> None:
+    """Unqualified records are labelled; other loggers and levels are ignored."""
+    other = capture_warning("Close the open popup before capturing")
+    other.name = "other.logger"
+    info = capture_warning("Close the open popup before capturing")
+    info.levelno = logging.INFO
+    raw = logging.LogRecord(
+        "verdiclip.capture.service",
+        logging.WARNING,
+        "synthetic.py",
+        1,
+        NoInspection(),
+        (),
+        None,
+    )
+    summary = warning_counts([other, info, raw, NoInspection()])
+    assert summary["INPUT_OWNER_REFUSED"] == 0
+    assert summary["POPUP_REFUSED"] == 0
+    assert summary["unknown_warning_count"] == 1
+    assert summary["records_shape_valid"] is False
+
+
+def test_warning_limit_labels_incomplete_record_scan() -> None:
+    """A capped scan cannot silently imply no later warning existed."""
+    record = capture_warning("unknown")
+    summary = warning_counts([record] * 1001)
+    assert summary["records_truncated"] is True
+    assert summary["unknown_warning_count"] == 1000
+
+
+def test_stash_error_still_forwards_original_exception_hook() -> None:
+    """Observer lookup failure cannot prevent the existing exception collector."""
+    provenance, key, _stash = warning_provenance({"call": []})
+    original_item = provenance.current_item
+    assert original_item is not None
+    failure = ValueError("stash read")
+
+    def fail_get(_key: object, _default: object) -> object:
+        raise failure
+
+    provenance.current_item = cast(
+        "CollectedItem", SimpleNamespace(stash=SimpleNamespace(get=fail_get))
+    )
+    calls = []
+
+    def record(*_args: object, **_kwargs: object) -> None:
+        capture_warning_snapshot(provenance, key, IndexError, overlay_trace(object()))
+
+    def original(*_args: object, **_kwargs: object) -> None:
+        calls.append(True)
+
+    with pytest.raises(ValueError, match="stash read") as caught:
+        tee_exception_hook(original, record)(IndexError, IndexError("bad"), None)
+    assert caught.value is failure
+    assert calls == [True]
+
+
+def test_private_pytest_call_log_stash_matches_reviewed_locked_source() -> None:
+    """Read installed source only; never load pytest's logging plugin here."""
+    source = Path(pytest.__file__).parent.parent / "_pytest/logging.py"
+    text = source.read_text(encoding="utf-8")
+    assert hashlib.sha256(text.encode()).hexdigest() == PYTEST_LOGGING_SHA
+    tree = ast.parse(text)
+    targets = [
+        ast.unparse(node.targets[0])
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign) and len(node.targets) == 1
+    ]
+    assert "item.stash[caplog_records_key]" in targets
+    assert "item.stash[caplog_records_key][when]" in targets
+    assignments = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and ast.unparse(node.targets[0]) == "item.stash[caplog_records_key][when]"
+    ]
+    assert len(assignments) == 1
+    assert ast.unparse(assignments[0].value) == "caplog_handler.records"
+    deleted = [
+        ast.unparse(target)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Delete)
+        for target in node.targets
+    ]
+    assert "item.stash[caplog_records_key]" in deleted
+
+
+def test_nonstring_exception_module_does_not_run_comparison() -> None:
+    """Unknown class metadata is not allowed to execute equality protocols."""
+
+    class HostileModule:
+        @override
+        def __hash__(self) -> int:
+            """Retain identity hashing; comparison must never be invoked."""
+            return object.__hash__(self)
+
+        @override
+        def __eq__(self, _other: object) -> bool:
+            raise AssertionError("module equality is forbidden")
+
+        @override
+        def __ne__(self, _other: object) -> bool:
+            raise AssertionError("module inequality is forbidden")
+
+    error_type = type("CaptureError", (Exception,), {"__module__": HostileModule()})
+    record = logging.LogRecord(
+        "verdiclip.capture.service",
+        logging.WARNING,
+        "synthetic.py",
+        1,
+        "Capture failed: %s",
+        (error_type("Close the open popup before capturing"),),
+        None,
+    )
+    summary = warning_counts([record])
+    assert summary["unknown_warning_count"] == 1
+    assert summary["INPUT_OWNER_REFUSED"] == 0
+    assert summary["POPUP_REFUSED"] == 0
