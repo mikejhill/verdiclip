@@ -77,6 +77,8 @@ jobs:
             ${{ steps.cache_plan.outputs.prefix }}
       - name: Verify portable baseline before mutation
         id: baseline
+        # Fail a stalled baseline while preserving time for failure evidence.
+        timeout-minutes: 10
         run: |
           set -o pipefail
           uv run pytest -m 'not native_desktop' -p no:randomly -q 2>&1 \

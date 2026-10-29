@@ -7,6 +7,7 @@ import json
 import shutil
 import tomllib
 from pathlib import Path
+from typing import cast
 
 import pytest
 from scripts.mutation_cache import context
@@ -96,6 +97,22 @@ def test_failed_phase_is_not_a_pass(
     verdicts(root, 100)
     env[key] = "failure"
     assert result(root, env)["status"] == "incomplete"
+
+
+@pytest.mark.parametrize("outcome", ["failure", "cancelled", "skipped"])
+def test_expired_baseline_cannot_reuse_complete_score(
+    evidence: tuple[Path, dict[str, str]], outcome: str
+) -> None:
+    """Even complete passing verdicts cannot hide baseline failure or interruption."""
+    root, env = evidence
+    verdicts(root, 100)
+    env["BASELINE_OUTCOME"] = outcome
+    report = result(root, env)
+    assert report["status"] == "incomplete"
+    assert report["complete"] is False
+    assert report["fresh"] is False
+    outcomes = cast("dict[str, str]", report["outcomes"])
+    assert outcomes["BASELINE_OUTCOME"] == outcome
 
 
 @pytest.mark.parametrize(

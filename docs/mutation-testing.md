@@ -56,6 +56,11 @@ identity verification, including for incomplete progress saved for same-commit
 resumption. Legacy ordinal-only verdicts are not reused. Weekly/manual runs start
 cold. Every run
 qualifies the locked generator and requires a passing baseline before mutation.
+The baseline has a ten-minute step deadline, against observed healthy runs of
+about one minute. Expiry fails validation; it does not count as a mutation score.
+The separate 150-minute job budget leaves time for always-run diagnostics and
+result upload after that failure. Runner termination or an outage can still
+prevent upload; the independent publisher treats missing evidence as incomplete.
 Postflight rejects candidate or source drift before saving or reporting evidence.
 
 Schema 2 result evidence must carry the qualified current commit/OS/architecture
