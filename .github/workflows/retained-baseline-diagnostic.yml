@@ -1,0 +1,67 @@
+name: Retained Linux baseline diagnosis
+on:
+  pull_request:
+    paths:
+      - scripts/retained_baseline_qt_exception.py
+      - tests/tooling/test_retained_baseline_qt_exception.py
+      - .github/workflows/retained-baseline-diagnostic.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      UV_LOCKED: "1"
+      PYTHONUTF8: "1"
+      QT_QPA_PLATFORM: offscreen
+      RETAINED_SHA: f3066d3cf458a4d8f72a4b679a22c72cc922d191
+      LOCK_SHA256: 14e1d58cd3d516b6eff172dba8b92beccb93ecd7741add578af7a99adb39da78
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: control
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: f3066d3cf458a4d8f72a4b679a22c72cc922d191
+          path: retained
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          enable-cache: false
+      - name: Same trusted Qt system libraries
+        timeout-minutes: 2
+        run: >-
+          sudo apt-get update -qq &&
+          sudo apt-get install -y -qq --no-install-recommends
+          libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3 libglib2.0-0
+      - name: Retained locked mutation environment
+        working-directory: retained
+        timeout-minutes: 1
+        run: uv sync --locked --group mutation
+      - name: One bounded diagnostic attempt (never a mutation score)
+        working-directory: retained
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          set -o pipefail
+          output=$(mktemp -d "$RUNNER_TEMP/retained-baseline.XXXXXX")
+          echo "Control source: $(git -C ../control rev-parse HEAD)"
+          sha256sum ../control/scripts/retained_baseline_qt_exception.py
+          set +e
+          timeout --signal=TERM --kill-after=5s 60s \
+            uv run --no-sync --group mutation python -I \
+            ../control/scripts/retained_baseline_qt_exception.py \
+            --source-root "$PWD" --source-sha "$RETAINED_SHA" \
+            --lock-sha256 "$LOCK_SHA256" \
+            --exception-file "$output/callback-exception.txt" 2>&1 | tee "$output/baseline.txt"
+          statuses=("${PIPESTATUS[@]}")
+          code=${statuses[0]}
+          tee_code=${statuses[1]}
+          if test "$code" = 0 && test "$tee_code" != 0; then code=$tee_code; fi
+          set -e
+          if test -f "$output/callback-exception.txt"; then cat "$output/callback-exception.txt"; fi
+          echo "child_exit=${statuses[0]}; tee_exit=$tee_code; diagnostic_exit=$code; timeout124_or137_is_incomplete; exit0_is_nonreproduction_only; no_mutation_score"
+          exit "$code"
