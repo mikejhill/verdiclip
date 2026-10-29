@@ -6,18 +6,32 @@ import subprocess
 import sys
 from pathlib import Path
 
+from tests.ipc_process_source import CHILD_IMPORT_PREFIX
+
 from verdiclip.shell import instance as instance_module
 
-SCRIPT = r"""import sys
+SENDER_SCRIPT = (
+    CHILD_IMPORT_PREFIX
+    + r"""
+from PySide6.QtCore import QCoreApplication
+app = QCoreApplication(sys.argv)
+from verdiclip.shell import instance as module
+assert Path(module.__file__).resolve() == expected_source
+sys.exit(0 if module.SingleInstance(sys.argv[2]).forward(['forwarded.png']) else 3)
+"""
+)
+
+SCRIPT = (
+    CHILD_IMPORT_PREFIX
+    + r"""
 import time
 import uuid
-from pathlib import Path
 
 import shiboken6
 from PySide6.QtCore import QCoreApplication, QEvent, QProcess
 from verdiclip.shell import instance as instance_module
 
-assert Path(instance_module.__file__).resolve() == Path(sys.argv[1]).resolve()
+assert Path(instance_module.__file__).resolve() == expected_source
 
 class ObservedInstance(instance_module.SingleInstance):
     def _read(self, socket):
@@ -33,16 +47,7 @@ def receive_once():
     assert listening
     primary.message_received.connect(received.append)
     sender = QProcess()
-    script = (
-        "import sys; from pathlib import Path; "
-        "from PySide6.QtCore import QCoreApplication; "
-        "app = QCoreApplication(sys.argv); "
-        "from verdiclip.shell import instance as module; "
-        "assert Path(module.__file__).resolve() == Path(sys.argv[2]).resolve(); "
-        "sys.exit(0 if module.SingleInstance(sys.argv[1]).forward("
-        "['forwarded.png']) else 3)"
-    )
-    sender.start(sys.executable, ["-c", script, primary.name, sys.argv[1]])
+    sender.start(sys.executable, ["-c", sys.argv[2], sys.argv[1], primary.name])
     deadline = time.monotonic() + 5
     while not received and time.monotonic() < deadline:
         app.processEvents()
@@ -66,6 +71,7 @@ for _ in range(5):
     receive_once()
 print("delivery-and-teardown-completed")
 """
+)
 
 
 def test_received_client_survives_immediate_server_destruction() -> None:
@@ -78,6 +84,7 @@ def test_received_client_survives_immediate_server_destruction() -> None:
             "-c",
             SCRIPT,
             str(Path(instance_module.__file__).resolve()),
+            SENDER_SCRIPT,
         ],
         capture_output=True,
         text=True,
