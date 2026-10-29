@@ -51,12 +51,14 @@ def font_inventory(directory: str | None) -> dict[str, object]:
     return result
 
 
-def _windows_build() -> str:
+def _windows_build() -> str | None:
+    if sys.platform != "win32":
+        return None
     return ".".join(str(part) for part in sys.getwindowsversion().platform_version)
 
 
 def runner_context(
-    *, windows_build: Callable[[], str] = _windows_build
+    *, windows_build: Callable[[], str | None] = _windows_build
 ) -> dict[str, object]:
     """Read a fixed allowlist, never the complete runner environment."""
     return {

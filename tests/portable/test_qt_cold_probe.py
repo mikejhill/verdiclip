@@ -6,6 +6,7 @@ import ast
 import json
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from scripts import qt_cold_probe, run_qt_cold_probes
@@ -222,6 +223,19 @@ def test_runner_metadata_is_allowlisted(monkeypatch: pytest.MonkeyPatch) -> None
     result = qt_cold_probe.runner_context(windows_build=lambda: "mock-build")
     assert result["source_sha"] == "reviewed-source"
     assert "never-copy-this" not in json.dumps(result)
+
+
+def test_non_windows_context_does_not_call_windows_build_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Linux product journey records unavailable rather than invoking Win32."""
+    # Replace only the probe module's reference, not the interpreter's sys state.
+    # This fake deliberately has no getwindowsversion method.
+    monkeypatch.setattr(
+        qt_cold_probe, "sys", SimpleNamespace(platform="linux", version="test-python")
+    )
+    result = qt_cold_probe.runner_context()
+    assert result["windows_build"] is None
 
 
 def test_product_samples_timer_before_context_inventory() -> None:
