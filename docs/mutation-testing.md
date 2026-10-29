@@ -126,3 +126,16 @@ re-raised outside Qt after cleanup. A QTimer cannot interrupt a blocked GUI thre
 the outer CI deadline is still necessary. Mock clock/timer tests prove these
 ownership rules, while actual Qt delivery needs hosted widget validation. These
 changes do not establish the cause of the retained fatal abort or latency outlier.
+
+The modal helper deliberately retains `BaseException` at four callback/cleanup
+boundaries. Removing that handling would lose interpreter cancellation and pytest
+outcomes at the C++ callback boundary. Collection is temporary: after owned cleanup,
+`run_owned_modal` unconditionally calls `raise_deferred` outside Qt. A genuine
+interrupt/session-exit request takes priority; otherwise real failures take
+priority over skip/xfail. The exact selected object is re-raised, and all secondary
+objects remain in an explicit cause group. A cleanup skip therefore cannot hide
+an existing assertion failure. Portable tests cover primary and secondary control
+signals, mixed skips/failures and cleanup faults. Dedicated hosted Qt tests cover
+actual timer delivery and failure propagation; mocks alone cannot establish it.
+The generic `py/catch-base-exception` warning requires this source-level review;
+the query has not been disabled or hidden with an opaque suppression wrapper.

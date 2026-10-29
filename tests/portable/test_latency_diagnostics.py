@@ -67,8 +67,13 @@ def test_phase_clocks_report_wall_and_cpu_without_causal_claim() -> None:
 def test_exception_phase_is_retained_without_suppression() -> None:
     """Failure diagnostics must not swallow the actual product failure."""
     trace = LatencyTrace()
-    with pytest.raises(ValueError, match="original failure"), trace.phase("delivery"):
-        raise ValueError("original failure")
+
+    def fail_delivery() -> None:
+        with trace.phase("delivery"):
+            raise ValueError("original failure")
+
+    with pytest.raises(ValueError, match="original failure"):
+        fail_delivery()
     assert trace.phases[0]["completed"] is False
 
 
@@ -100,12 +105,13 @@ def test_failure_notes_are_lazy_and_preserve_exception(
         pass
     assert calls == []
     error = ValueError("original failure")
-    with (
-        pytest.raises(ValueError, match="original failure") as caught,
-        trace.on_failure(),
-        trace.phase("delivery"),
-    ):
-        raise error
+
+    def fail_delivery() -> None:
+        with trace.on_failure(), trace.phase("delivery"):
+            raise error
+
+    with pytest.raises(ValueError, match="original failure") as caught:
+        fail_delivery()
     assert caught.value is error
     assert calls == ["serialized"]
     note = json.loads(error.__notes__[0])
@@ -116,11 +122,13 @@ def test_unserializable_diagnostics_cannot_replace_product_failure() -> None:
     """Malformed metadata loses diagnostics, never the failure being diagnosed."""
     trace = LatencyTrace(metadata={"invalid": object()})
     original = AssertionError("budget exceeded")
-    with (
-        pytest.raises(AssertionError, match="budget exceeded") as caught,
-        trace.on_failure(),
-    ):
-        raise original
+
+    def fail_budget() -> None:
+        with trace.on_failure():
+            raise original
+
+    with pytest.raises(AssertionError, match="budget exceeded") as caught:
+        fail_budget()
     assert caught.value is original
     assert "diagnostics unavailable: TypeError" in original.__notes__[0]
 
@@ -130,12 +138,34 @@ def test_failed_exit_clock_cannot_replace_body_exception() -> None:
     clock = iter([0])
     trace = LatencyTrace(wall=lambda: next(clock))
     original = ValueError("delivery failed")
-    with (
-        pytest.raises(ValueError, match="delivery failed") as caught,
-        trace.on_failure(),
-        trace.phase("delivery"),
-    ):
-        raise original
+
+    def fail_delivery() -> None:
+        with trace.on_failure(), trace.phase("delivery"):
+            raise original
+
+    with pytest.raises(ValueError, match="delivery failed") as caught:
+        fail_delivery()
     assert caught.value is original
     assert "clocks unavailable: StopIteration" in original.__notes__[0]
     assert trace.phases == []
+
+
+def test_focused_cold_profile_runs_before_other_editor_tests() -> None:
+    """The outlier path is qualified in its own process rather than shuffled warm."""
+    root = Path(__file__).resolve().parents[2]
+    workflow = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    profile = workflow.split("  readiness-cold:", 1)[1].split("  ux-gallery:", 1)[0]
+    assert 'qt: ["6.11.2", "6.12.0"]' in profile
+    assert "QT_QPA_PLATFORM: offscreen" in profile
+    assert "uv run --no-sync pytest" in profile
+    assert (
+        "tests/ux/test_app_journeys.py::TestAfterCapture::test_hotkey_opens_focused_editor_with_select_tool"
+        in profile
+    )
+    assert "--randomly-seed" not in profile
+    assert profile.count("uv run --no-sync pytest") == 2
+    assert "!cancelled()" in profile
+    assert profile.index(
+        "test_hotkey_opens_focused_editor_with_select_tool"
+    ) < profile.index("tests/ux/test_owned_modal.py")
+    assert "readiness-cold" in workflow.split("  ci-passed:", 1)[1]

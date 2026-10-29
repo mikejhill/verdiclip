@@ -6,12 +6,37 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+import pytest
+
 type Stop = Callable[[], None]
 type Arm = Callable[[int, Callable[[], None]], Stop]
 
 
+def _failure_priority(error: BaseException) -> int:
+    """Honor control flow, then real failures, then standalone pytest outcomes."""
+    if isinstance(
+        error, (KeyboardInterrupt, SystemExit, GeneratorExit, pytest.exit.Exception)
+    ):
+        return 0
+    if isinstance(error, (pytest.skip.Exception, pytest.xfail.Exception)):
+        return 2
+    if isinstance(error, (Exception, pytest.fail.Exception)):
+        return 1
+    return 0  # Unknown BaseException subclasses retain their control-flow status.
+
+
 @dataclass(slots=True)
 class _ModalState:
+    """Defer failures across Qt callbacks; never resolve or discard cancellation.
+
+    PySide cannot propagate an arbitrary Python callback failure through the
+    nested C++ event loop. We retain even KeyboardInterrupt/SystemExit until the
+    exact owned dialog is rejected and timers are disarmed. run_owned_modal then
+    unconditionally calls raise_deferred outside Qt. True control flow has
+    priority over real failures; a skip/xfail can never hide a retained failure.
+    Every secondary object remains inspectable in the explicit cause group.
+    """
+
     callback: Callable[[], None]
     close: Callable[[], None]
     clock: Callable[[], float]
@@ -66,6 +91,20 @@ class _ModalState:
                 self.errors.append(error)
         self.reject_owned()
 
+    def raise_deferred(self) -> None:
+        """Prioritize retained control flow and keep every other failure as cause."""
+        if not self.errors:
+            return
+        primary = min(self.errors, key=_failure_priority)
+        secondary = [error for error in self.errors if error is not primary]
+        if secondary:
+            # Re-raise the exact control object, rather than hiding cancellation
+            # behind an earlier AssertionError. Retain full secondary objects.
+            raise primary from BaseExceptionGroup(
+                "Other owned modal failures", secondary
+            )
+        raise primary
+
 
 def run_owned_modal(  # noqa: PLR0913 - explicit injected IO keeps this Qt-independent
     *,
@@ -95,12 +134,8 @@ def run_owned_modal(  # noqa: PLR0913 - explicit injected IO keeps this Qt-indep
         state.errors.append(error)
     finally:
         state.cleanup(stops)
-    if state.errors:
-        original = state.errors[0]
-        for secondary in state.errors[1:]:
-            kind = type(secondary).__name__
-            original.add_note(f"Additional owned modal cleanup error: {kind}")
-        raise original
+    # This is outside the Qt callback boundary and is never skipped after cleanup.
+    state.raise_deferred()
     if state.expired or clock() >= deadline:
         raise TimeoutError(
             "Owned modal test exceeded its deadline; cleanup is not success"

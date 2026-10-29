@@ -185,7 +185,8 @@ def test_cleanup_failure_does_not_hide_original_callback_error() -> None:
             arm=arm,
         )
     assert caught.value is original
-    assert len(original.__notes__) == 2
+    assert isinstance(original.__cause__, BaseExceptionGroup)
+    assert len(original.__cause__.exceptions) == 2
     assert timers.stopped == [0, 1]
     assert closed == ["owned"]
 
@@ -223,3 +224,164 @@ def test_delayed_action_is_not_admitted_when_watchdog_also_delayed() -> None:
             clock=lambda: next(clock),
         )
     assert called == []
+
+
+class CustomCancellation(BaseException):
+    """Represent control signals outside the ordinary Exception hierarchy."""
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        KeyboardInterrupt,
+        SystemExit,
+        GeneratorExit,
+        CustomCancellation,
+        pytest.fail.Exception,
+        pytest.skip.Exception,
+    ],
+)
+def test_control_signals_are_reraised_outside_qt_after_cleanup(
+    kind: type[BaseException],
+) -> None:
+    """Cancellation is delayed only long enough to reject this owned fixture."""
+    timers = Timers()
+    closed = []
+    original = kind("cancel requested")
+    callback_returned = []
+
+    def fail() -> None:
+        raise original
+
+    def execute() -> None:
+        timers.fire_action()
+        callback_returned.append(True)
+        assert closed == ["owned"]
+
+    with pytest.raises(kind) as caught:
+        run_owned_modal(
+            execute=execute,
+            close=lambda: closed.append("owned"),
+            callback=fail,
+            arm=timers.arm,
+        )
+    assert caught.value is original
+    assert callback_returned == [True]
+    assert timers.stopped == [0, 1]
+
+
+@pytest.mark.parametrize("phase", ["close", "stop", "execute"])
+@pytest.mark.parametrize("kind", [KeyboardInterrupt, SystemExit, CustomCancellation])
+def test_secondary_control_signal_wins_and_retains_original_failure(
+    phase: str, kind: type[BaseException]
+) -> None:
+    """Cleanup/exec cancellation cannot be reduced to a type-name diagnostic note."""
+    timers = Timers()
+    ordinary = AssertionError("capture failed")
+    control = kind("cancel requested")
+
+    def fail() -> None:
+        raise ordinary
+
+    def close() -> None:
+        if phase == "close":
+            raise control
+
+    def arm(delay: int, callback: Callable[[], None]) -> Callable[[], None]:
+        stop = timers.arm(delay, callback)
+
+        def disarm() -> None:
+            stop()
+            if phase == "stop":
+                raise control
+
+        return disarm
+
+    def execute() -> None:
+        timers.fire_action()
+        if phase == "execute":
+            raise control
+
+    with pytest.raises(kind) as caught:
+        run_owned_modal(execute=execute, close=close, callback=fail, arm=arm)
+    assert caught.value is control
+    assert isinstance(control.__cause__, BaseExceptionGroup)
+    assert ordinary in control.__cause__.exceptions
+    assert timers.stopped == [0, 1]
+
+
+def test_multiple_control_objects_are_retained_not_reduced_to_notes() -> None:
+    """First control identity propagates while the other control remains inspectable."""
+    timers = Timers()
+    first = KeyboardInterrupt("first")
+    second = SystemExit("second")
+
+    def fail() -> None:
+        raise first
+
+    def close() -> None:
+        raise second
+
+    with pytest.raises(KeyboardInterrupt) as caught:
+        run_owned_modal(
+            execute=timers.fire_action, close=close, callback=fail, arm=timers.arm
+        )
+    assert caught.value is first
+    assert isinstance(first.__cause__, BaseExceptionGroup)
+    assert second in first.__cause__.exceptions
+
+
+@pytest.mark.parametrize("skip_kind", [pytest.skip.Exception, pytest.xfail.Exception])
+@pytest.mark.parametrize("skip_first", [False, True])
+def test_skip_cannot_hide_a_real_callback_or_cleanup_failure(
+    skip_kind: type[BaseException], *, skip_first: bool
+) -> None:
+    """A retained assertion must fail even when another phase requests skip/xfail."""
+    timers = Timers()
+    failure = AssertionError("real failure")
+    skipped = skip_kind("skip requested")
+    callback_error = skipped if skip_first else failure
+    cleanup_error = failure if skip_first else skipped
+
+    def callback() -> None:
+        raise callback_error
+
+    def arm(delay: int, action: Callable[[], None]) -> Callable[[], None]:
+        stop = timers.arm(delay, action)
+
+        def disarm() -> None:
+            stop()
+            raise cleanup_error
+
+        return disarm
+
+    with pytest.raises(AssertionError, match="real failure") as caught:
+        run_owned_modal(
+            execute=timers.fire_action, close=lambda: None, callback=callback, arm=arm
+        )
+    assert caught.value is failure
+    assert isinstance(failure.__cause__, BaseExceptionGroup)
+    assert skipped in failure.__cause__.exceptions
+    assert timers.stopped == [0, 1]
+
+
+def test_pytest_session_exit_is_preserved_over_an_ordinary_failure() -> None:
+    """pytest.exit is an explicit control request despite deriving from Exception."""
+    timers = Timers()
+    failure = AssertionError("real failure")
+    exit_request = pytest.exit.Exception("session exit")
+
+    def callback() -> None:
+        raise failure
+
+    def execute() -> None:
+        timers.fire_action()
+        raise exit_request
+
+    with pytest.raises(pytest.exit.Exception) as caught:
+        run_owned_modal(
+            execute=execute, close=lambda: None, callback=callback, arm=timers.arm
+        )
+    assert caught.value is exit_request
+    assert isinstance(exit_request.__cause__, BaseExceptionGroup)
+    assert failure in exit_request.__cause__.exceptions
