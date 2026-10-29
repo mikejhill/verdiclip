@@ -1,0 +1,267 @@
+"""Dormant hosted-only mutmut3.8 statistics diagnosis; no Qt imports on import."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import importlib
+import importlib.metadata
+import importlib.util
+import json
+import os
+import re
+import subprocess
+import sys
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Protocol, cast
+
+SOURCE_SHA = "12d62f4efee585ee433ed9e2cc8a498cd05b4111"
+LOCK_SHA = "14e1d58cd3d516b6eff172dba8b92beccb93ecd7741add578af7a99adb39da78"
+PINNED_FILES = {
+    "__main__.py",
+    "configuration.py",
+    "runners/harness.py",
+    "workers/isolation.py",
+    "utils/file_utils.py",
+    "code_coverage.py",
+}
+SOURCE_ROOTS = ["src/verdiclip/"]
+STATS_SELECTION = ["tests/"]
+PYTEST_ARGUMENTS = [
+    "-p",
+    "tests.mutation_support",
+    "-p",
+    "no:randomly",
+    "-p",
+    "no:cacheprovider",
+]
+type Operation = Callable[..., object]
+
+
+class StatsApi(Protocol):
+    """Only the two pinned mutmut orchestration functions temporarily observed."""
+
+    run_stats_collection: Operation
+    collect_or_load_stats: Operation
+
+
+class DebugConfig(Protocol):
+    """The documented mutable configuration switch; not a CLI flag."""
+
+    debug: bool
+
+
+class _StatisticsBoundaryError(Exception):
+    """Owned stop after statistics; never allow actual mutant execution."""
+
+
+@dataclass
+class Observation:
+    """Distinguish collected statistics from cached/skipped/failed attempts."""
+
+    entered: bool = False
+    completed: bool = False
+
+
+def emit(value: object) -> None:
+    """Write only explicit diagnostic phase metadata to normal stdout."""
+    sys.stdout.write(json.dumps(value) + "\n")
+    sys.stdout.flush()
+
+
+def statistics_only(
+    api: StatsApi,
+    config: DebugConfig,
+    invoke: Callable[[], object],
+    report: Callable[[object], None] = emit,
+) -> int:
+    """Use actual statistics then stop at its caller boundary, even on success.
+
+    Tests/assertions/selection/isolation are unchanged. Only debug verbosity is
+    enabled. No skipped/cached statistics can masquerade as fresh collection.
+    All original failures propagate and both functions/config are restored.
+    """
+    original_stats = api.run_stats_collection
+    original_collect = api.collect_or_load_stats
+    original_debug = config.debug
+    observation = Observation()
+
+    def observe_stats(*args: object, **kwargs: object) -> object:
+        if observation.entered:
+            raise RuntimeError("Unexpected repeated statistics entry")
+        observation.entered = True
+        report({"diagnostic_phase": "actual_statistics_entered"})
+        result = original_stats(*args, **kwargs)
+        observation.completed = True
+        return result
+
+    def collect_then_stop(*args: object, **kwargs: object) -> object:
+        original_collect(*args, **kwargs)
+        if not observation.completed:
+            raise RuntimeError("Statistics were loaded/skipped, not freshly collected")
+        raise _StatisticsBoundaryError
+
+    config.debug = True
+    api.run_stats_collection = observe_stats
+    api.collect_or_load_stats = collect_then_stop
+    try:
+        report({"diagnostic_phase": "generation_before_statistics", "debug": True})
+        invoke()
+        raise RuntimeError("CLI returned without the required statistics boundary")
+    except _StatisticsBoundaryError:
+        report(
+            {
+                "diagnostic_phase": "statistics_completed_then_stopped",
+                "mutant_execution_started": False,
+                "mutation_score": None,
+            }
+        )
+        return 0
+    finally:
+        api.run_stats_collection = original_stats
+        api.collect_or_load_stats = original_collect
+        config.debug = original_debug
+
+
+def validate_manifest(value: object) -> dict[str, object]:
+    """Reject malformed/omitted pins before any package inspection or import."""
+    if type(value) is not dict:
+        raise ValueError("Manifest must be an object")
+    data = cast("dict[str,object]", value)
+    if set(data) != {
+        "source_sha",
+        "uv_lock_sha256",
+        "mutmut_version",
+        "mutmut_normalized_source_sha256",
+    }:
+        raise ValueError("Unexpected manifest schema")
+    if (
+        data["source_sha"] != SOURCE_SHA
+        or data["uv_lock_sha256"] != LOCK_SHA
+        or data["mutmut_version"] != "3.8.0"
+    ):
+        raise ValueError("Unreviewed source/lock/version identity")
+    hashes = data["mutmut_normalized_source_sha256"]
+    if type(hashes) is not dict or set(hashes) != PINNED_FILES:
+        raise ValueError("Require all six exact reviewed source pins")
+    if any(
+        type(item) is not str or re.fullmatch("[0-9a-f]{64}", item) is None
+        for item in hashes.values()
+    ):
+        raise ValueError("Malformed source digest")
+    return data
+
+
+def admit(root: Path, manifest: dict[str, object]) -> Path:
+    """Read-only source/version/hash checks before loading POSIX mutmut code."""
+    if (
+        sys.platform != "linux"
+        or os.environ.get("GITHUB_ACTIONS") != "true"
+        or os.environ.get("RUNNER_OS") != "Linux"
+    ):
+        raise RuntimeError("Diagnostic requires hosted Linux Actions")
+    if not sys.flags.isolated or Path.cwd().resolve() != root:
+        raise RuntimeError("Require isolated Python in the retained source checkout")
+    if Path("mutants").exists():
+        raise RuntimeError("Fresh owned checkout required; no verdict/statistics cache")
+    actual = subprocess.run(
+        ["/usr/bin/git", "rev-parse", "HEAD"],
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+    if actual != SOURCE_SHA:
+        raise RuntimeError("Source identity mismatch")
+    subprocess.run(["/usr/bin/git", "diff", "--quiet", "HEAD", "--"], check=True)
+    extras = subprocess.run(
+        [
+            "/usr/bin/git",
+            "ls-files",
+            "--others",
+            "--",
+            "src",
+            "tests",
+            "scripts",
+            ":(top,glob)*.py",
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.splitlines()
+    if any(Path(name).suffix == ".py" for name in extras):
+        raise RuntimeError("Unexpected Python source in retained checkout")
+    if (
+        hashlib.sha256((root / "uv.lock").read_bytes()).hexdigest()
+        != manifest["uv_lock_sha256"]
+    ):
+        raise RuntimeError("Retained lock mismatch")
+    return admit_package(root, manifest)
+
+
+def admit_package(root: Path, manifest: dict[str, object]) -> Path:
+    """Bind every reviewed statistics implementation file to the locked venv."""
+    if importlib.metadata.version("mutmut") != "3.8.0":
+        raise RuntimeError("Re-review the statistics boundary for a different mutmut")
+    environment = (root / ".venv").resolve(strict=True)
+    if Path(sys.prefix).resolve() != environment:
+        raise RuntimeError("Python is not retained locked environment")
+    spec = importlib.util.find_spec("mutmut")
+    if spec is None or spec.origin is None:
+        raise RuntimeError("Pinned mutmut package absent")
+    package = Path(spec.origin).resolve().parent
+    if not package.is_relative_to(environment):
+        raise RuntimeError("mutmut origin outside retained venv")
+    hashes = cast("dict[str,str]", manifest["mutmut_normalized_source_sha256"])
+    for name, expected in hashes.items():
+        text = (package / name).read_text(encoding="utf-8")
+        if hashlib.sha256(text.encode()).hexdigest() != expected:
+            raise RuntimeError("Pinned mutmut source differs from reviewed3.8.0")
+    return package
+
+
+def main(arguments: list[str]) -> int:
+    """Future hosted-only entry; never invoked during local preparation."""
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--source-root", required=True)
+    options = parser.parse_args(arguments)
+    root = Path(options.source_root).resolve(strict=True)
+    manifest_path = Path(__file__).with_name("retained_mutmut_stats_source.json")
+    manifest = validate_manifest(json.loads(manifest_path.read_text(encoding="utf-8")))
+    package = admit(root, manifest)
+    module = importlib.import_module("mutmut.__main__")
+    config = module.config()
+    if config.source_paths != [Path(path) for path in SOURCE_ROOTS]:
+        raise RuntimeError("Source-path configuration changed")
+    if (
+        config.pytest_add_cli_args_test_selection != STATS_SELECTION
+        or config.pytest_add_cli_args != PYTEST_ARGUMENTS
+    ):
+        raise RuntimeError("Statistics selection/flags changed")
+    if str(config.process_isolation.value) != "forkserver":
+        raise RuntimeError("Statistics isolation differs from retained source")
+    emit(
+        {
+            "source_sha": SOURCE_SHA,
+            "mutmut": "3.8.0",
+            "mutmut_origin": str(package),
+            "python": sys.version,
+            "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+            "debug_override_only": True,
+            "driver_isolated_import_admission": True,
+            "selection": STATS_SELECTION,
+            "pytest_arguments": PYTEST_ARGUMENTS,
+        }
+    )
+
+    def invoke() -> object:
+        return module.cli.main(
+            args=["run", "--max-children", "1"], standalone_mode=False
+        )
+
+    return statistics_only(cast("StatsApi", module), config, invoke)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

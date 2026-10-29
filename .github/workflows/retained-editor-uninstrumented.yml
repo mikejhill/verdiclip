@@ -1,0 +1,84 @@
+name: Retained uninstrumented editor control
+
+on:
+  pull_request:
+    # Completed historical diagnosis; reopen this draft for an explicit replay.
+    # Required CI and CodeQL continue on every change.
+    types: [opened, reopened]
+    paths:
+      - scripts/retained_editor_backend_runner.py
+      - scripts/retained_editor_latency_profile.py
+      - tests/tooling/test_retained_editor_backend_runner.py
+      - tests/tooling/test_retained_editor_latency_profile.py
+      - .github/workflows/retained-editor-uninstrumented.yml
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    name: Legacy endpoint / Qt ${{ matrix.qt }} / ${{ matrix.source.label }}
+    runs-on: windows-2025
+    timeout-minutes: 6
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        qt: ["6.11.2", "6.12.0"]
+        source:
+          - label: retained-main
+            sha: 5fe14b25b651c02caea31786e44e9508595e4e19
+          - label: owned-fixture-fix
+            sha: 92c8d0cd4e1f5114a4ddf210b30bbf4e5c40f510
+    env:
+      UV_LOCKED: "1"
+      PYTHONUTF8: "1"
+      PYTHONUNBUFFERED: "1"
+      QT_QPA_PLATFORM: windows
+      QT_VERSION: ${{ matrix.qt }}
+      EDITOR_PROFILE_MODE: metadata-only
+      EDITOR_PROFILE_SOURCE_SHA: ${{ matrix.source.sha }}
+      EDITOR_PROFILE_ROLE: ${{ matrix.source.label }}
+      EDITOR_PROFILE_SCOPE: single-case-no-phase-wrappers-no-coverage
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: control
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        if: matrix.source.label == 'retained-main'
+        with:
+          ref: 5fe14b25b651c02caea31786e44e9508595e4e19
+          path: subject
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        if: matrix.source.label == 'owned-fixture-fix'
+        with:
+          ref: 92c8d0cd4e1f5114a4ddf210b30bbf4e5c40f510
+          path: subject
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          enable-cache: false
+          python-version: "3.13.16"
+      - name: Immutable subject and exact Qt profile
+        working-directory: subject
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          uv sync --locked
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if ((git rev-parse HEAD) -ne $env:EDITOR_PROFILE_SOURCE_SHA) { throw 'Source identity mismatch' }
+          uv pip install --python .venv "pyside6-essentials==$env:QT_VERSION" "shiboken6==$env:QT_VERSION"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          uv run --no-sync python -c 'import os,sys; from PySide6.QtCore import qVersion; assert sys.version_info[:3]==(3,13,16) and qVersion()==os.environ["QT_VERSION"]'
+      - name: One owned native case without coverage or phase wrappers
+        working-directory: subject
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = Join-Path $env:GITHUB_WORKSPACE 'control/scripts'
+          Write-Output 'Fixed fake-hotkey/fake-screen case only; owned native Qt editor/tray and VM-only clipboard cleanup. No injected input, real hotkey registration, driver, trust or local-PC changes.'
+          Write-Output 'Original 300ms assertion stays; no coverage or phase wrappers. This does not change full-CI coverage or prove exposure, focus, input or feature acceptance.'
+          uv run --no-sync python ../control/scripts/retained_editor_backend_runner.py
+          exit $LASTEXITCODE

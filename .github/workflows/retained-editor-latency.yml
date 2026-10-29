@@ -1,0 +1,84 @@
+name: Retained editor latency diagnosis
+
+on:
+  pull_request:
+    # Completed historical diagnosis; reopen this draft for an explicit replay.
+    # Required CI and CodeQL continue on every change.
+    types: [opened, reopened]
+    paths:
+      - scripts/retained_editor_latency_profile.py
+      - tests/tooling/test_retained_editor_latency_profile.py
+      - .github/workflows/retained-editor-latency.yml
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    name: Offscreen Python 3.13.16 / ${{ matrix.source.label }}
+    runs-on: windows-2025
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        source:
+          - label: retained-main
+            sha: 5fe14b25b651c02caea31786e44e9508595e4e19
+          - label: owned-fixture-fix
+            sha: 92c8d0cd4e1f5114a4ddf210b30bbf4e5c40f510
+    env:
+      UV_LOCKED: "1"
+      PYTHONUTF8: "1"
+      PYTHONUNBUFFERED: "1"
+      QT_QPA_PLATFORM: offscreen
+      EDITOR_PROFILE_SOURCE_SHA: ${{ matrix.source.sha }}
+      EDITOR_PROFILE_ROLE: ${{ matrix.source.label }}
+      EDITOR_PROFILE_SCOPE: same-seed-aggregate
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: control
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        if: matrix.source.label == 'retained-main'
+        with:
+          ref: 5fe14b25b651c02caea31786e44e9508595e4e19
+          path: subject
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        if: matrix.source.label == 'owned-fixture-fix'
+        with:
+          ref: 92c8d0cd4e1f5114a4ddf210b30bbf4e5c40f510
+          path: subject
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          enable-cache: false
+          python-version: "3.13.16"
+      - name: Retained locked dependencies and identical test collection
+        working-directory: subject
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          uv sync --locked
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if ((git rev-parse HEAD) -ne $env:EDITOR_PROFILE_SOURCE_SHA) { throw 'Source identity mismatch' }
+          uv run --no-sync python -c 'import subprocess; from pathlib import Path; p=Path("tests/ux/test_app_fixture_lifecycle.py"); p.write_bytes(subprocess.check_output(["git","show","92c8d0cd4e1f5114a4ddf210b30bbf4e5c40f510:tests/ux/test_app_fixture_lifecycle.py"]))'
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Write-Output 'Same added fixture module is collected and its new case deselected in BOTH revisions; all original selected tests remain.'
+          Get-FileHash tests/ux/test_app_fixture_lifecycle.py -Algorithm SHA256 | Select-Object Hash
+          uv run --no-sync python -c 'import sys; from PySide6.QtCore import qVersion; print(sys.version,"Qt",qVersion(),flush=True); assert sys.version_info[:3]==(3,13,16) and qVersion()=="6.11.2"'
+      - name: Same-seed aggregate with optional phase observation
+        working-directory: subject
+        timeout-minutes: 4
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = Join-Path $env:GITHUB_WORKSPACE 'control/scripts'
+          uv run --no-sync pytest -p retained_editor_latency_profile --cov --cov-report=xml --cov-report=term `
+            --junitxml=profile-junit.xml --ux-snapshots=docs/ux/snapshots --randomly-seed=2725389588 `
+            --deselect=tests/ux/test_app_fixture_lifecycle.py::test_app_fixture_completes_owned_status_disposal
+          $status = $LASTEXITCODE
+          Write-Output "profile_exit=$status; retained 300ms assertion unchanged; green is non-reproduction, not resolution; no native or mutation qualification"
+          exit $status
