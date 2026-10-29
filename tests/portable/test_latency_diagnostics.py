@@ -163,9 +163,18 @@ def test_focused_cold_profile_runs_before_other_editor_tests() -> None:
         in profile
     )
     assert "--randomly-seed" not in profile
-    assert profile.count("uv run --no-sync pytest") == 2
+    assert profile.count("uv run --no-sync pytest") == 4
     assert "!cancelled()" in profile
     assert profile.index(
         "test_hotkey_opens_focused_editor_with_select_tool"
     ) < profile.index("tests/ux/test_owned_modal.py")
+    assert profile.index("tests/ux/test_owned_modal.py") < profile.index(
+        "test_first_font_activation_reports_separate_cost"
+    )
+    assert profile.index(
+        "test_first_font_activation_reports_separate_cost"
+    ) < profile.index("tests/editor/test_style_bar.py")
+    assert 'VERDICLIP_FIRST_FONT_PROCESS: "1"' in profile
+    assert "first-font.xml" in profile
+    assert "font-controls.xml" in profile
     assert "readiness-cold" in workflow.split("  ci-passed:", 1)[1]

@@ -155,6 +155,20 @@ jobs:
       - name: Actual Qt modal failure boundary (after the cold case)
         if: ${{ !cancelled() && steps.readiness_profile.outcome == 'success' }}
         run: uv run --no-sync pytest tests/ux/test_owned_modal.py -vv --junitxml=modal-boundary.xml
+      - name: First FONT activation in a separate process (diagnostic timing)
+        if: ${{ !cancelled() && steps.readiness_profile.outcome == 'success' }}
+        env:
+          VERDICLIP_FIRST_FONT_PROCESS: "1"
+        run: |
+          uv run --no-sync pytest tests/ux/test_app_journeys.py::TestAfterCapture::test_first_font_activation_reports_separate_cost -vv --junitxml=first-font.xml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          [xml]$report = Get-Content -LiteralPath first-font.xml -Raw
+          $measurements = $report.SelectNodes('//property[@name="first_font_timing"]')
+          if ($measurements.Count -ne 1) { throw 'Missing unique first-FONT timing evidence' }
+          Write-Output ('FIRST_FONT_TIMING=' + $measurements[0].GetAttribute('value'))
+      - name: Actual Qt font picker behavior and reserved height
+        if: ${{ !cancelled() && steps.readiness_profile.outcome == 'success' }}
+        run: uv run --no-sync pytest tests/editor/test_style_bar.py -vv --junitxml=font-controls.xml
       - name: Retain focused qualification including failure phase notes
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -163,6 +177,8 @@ jobs:
           path: |
             first-capture.xml
             modal-boundary.xml
+            first-font.xml
+            font-controls.xml
           if-no-files-found: warn
 
   ux-gallery:

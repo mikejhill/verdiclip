@@ -19,6 +19,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
+    QFontComboBox,
     QMenu,
     QMessageBox,
     QSystemTrayIcon,
@@ -46,6 +47,7 @@ from verdiclip.capture.models import Capture
 from verdiclip.capture.overlay import SelectionOverlay
 from verdiclip.document.commands import SetCrop
 from verdiclip.document.style import Color
+from verdiclip.editor import style_bar as style_bar_module
 from verdiclip.editor.close_prompt import CloseChoice, ClosePrompt
 from verdiclip.editor.session import ToolId
 from verdiclip.editor.style_bar import ColorButton, StyleBar
@@ -308,7 +310,7 @@ class TestAfterCapture:
                 return original_crop(frozen, area)
 
         def measured_style(bar: StyleBar, parent: QWidget | None = None) -> None:
-            with trace.phase("stylebar-construction-including-font-selector"):
+            with trace.phase("stylebar-construction"):
                 original_style(bar, parent)
 
         monkeypatch.setattr(AppController, "_on_captured", measured_captured)
@@ -326,6 +328,74 @@ class TestAfterCapture:
                 pass
             assert clock.elapsed_ms < 300
             assert editor.action("tool_select").isChecked()
+            assert editor._style_bar._font_controls is None
+
+    def test_first_font_activation_reports_separate_cost(
+        self,
+        make_app: AppFactory,
+        qtbot: QtBot,
+        monkeypatch: pytest.MonkeyPatch,
+        record_testsuite_property: Callable[[str, object], None],
+    ) -> None:
+        """Measure deferred native FONT cost separately; never warm capture acceptance.
+
+        Focused CI invokes this case alone in another process. Other invocations
+        may have a warm font database; OS font cache state is always unknown.
+        No first-FONT latency budget is established by this diagnostic test.
+        """
+        trace = LatencyTrace(
+            metadata={
+                "scenario": "first-font-activation-in-new-editor",
+                "process_isolated": os.environ.get("VERDICLIP_FIRST_FONT_PROCESS")
+                == "1",
+                "os_font_cache": "unknown; not reset",
+                "python": sys.version.split()[0],
+                "qt": qVersion(),
+                "qpa": os.environ.get("QT_QPA_PLATFORM", "unspecified"),
+                "latency_budget": "not established; diagnostic measurement only",
+            }
+        )
+        native_picker = style_bar_module.QFontComboBox
+        made: list[QFontComboBox] = []
+
+        def measured_picker(parent: QWidget | None = None) -> QFontComboBox:
+            with trace.phase("actual-native-font-picker-constructor"):
+                picker = native_picker(parent)
+            made.append(picker)
+            return picker
+
+        monkeypatch.setattr(style_bar_module, "QFontComboBox", measured_picker)
+        app = make_app()
+        app.press_hotkey("fullscreen")
+        qtbot.waitUntil(lambda: len(app.controller.editors) == 1)
+        editor = app.controller.editors[0]
+        with qtbot.waitExposed(editor):
+            pass
+        assert made == []
+        assert editor._style_bar._font_controls is None
+        could_undo = editor.session.history.can_undo
+        heartbeat_ms: list[float] = []
+        heartbeat_clock = Stopwatch()
+        timer = QTimer(editor)
+        timer.setSingleShot(True)
+        timer.timeout.connect(lambda: heartbeat_ms.append(heartbeat_clock.elapsed_ms))
+        try:
+            timer.start(0)
+            with trace.on_failure():
+                with trace.phase("first-font-tool-action"):
+                    editor.action("tool_text").trigger()
+                with trace.phase("post-activation-event-drain"):
+                    qtbot.waitUntil(lambda: bool(heartbeat_ms))
+                assert len(made) == 1
+                assert isinstance(made[0], native_picker)
+                assert editor.action("tool_text").isChecked()
+                assert editor.session.history.can_undo == could_undo
+        finally:
+            timer.stop()
+            timer.deleteLater()
+        trace.metadata["first_queued_heartbeat_delay_ms"] = heartbeat_ms[0]
+        measurement = trace.describe()
+        record_testsuite_property("first_font_timing", measurement)
 
     def test_clipboard_action_copies_without_window(
         self, make_app: AppFactory, qtbot: QtBot, caplog: pytest.LogCaptureFixture

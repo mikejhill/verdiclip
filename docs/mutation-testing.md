@@ -139,3 +139,17 @@ signals, mixed skips/failures and cleanup faults. Dedicated hosted Qt tests cove
 actual timer delivery and failure propagation; mocks alone cannot establish it.
 The generic `py/catch-base-exception` warning requires this source-level review;
 the query has not been disabled or hidden with an opaque suppression wrapper.
+
+The cold-profile job retains the same first-capture 300 ms assertion in its own
+process on Qt 6.11.2 and 6.12.0. StyleBar creates its native font picker only when
+FONT fields are needed, so opening a Select editor no longer needs that work.
+This defers the cost rather than eliminating it. Another fresh test process
+records first-FONT activation and the real native picker constructor using
+wall/process/thread clocks. A queued timer reports its first delivery delay;
+this is not a bound on every possible GUI stall. OS font cache state is unknown.
+The first-FONT measurement has no invented latency floor and does not replace
+the capture budget. Its JSON is retained as a `first_font_timing` JUnit suite
+property and printed by the job after test success. Separate actual Qt widget
+tests check current-style propagation, native picker edits and height reservation
+on both supported profiles. Offscreen proof remains distinct from native desktop
+focus/input qualification.
