@@ -1,0 +1,94 @@
+name: GUI readiness capture phases
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/gui-readiness-phases.yml'
+      - 'src/verdiclip/shell/**'
+      - 'src/verdiclip/editor/**'
+      - 'src/verdiclip/capture/**'
+      - 'tests/ux/test_app_journeys.py'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gui-readiness-phases-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    if: github.repository == 'mikejhill/verdiclip'
+    name: Qt ${{ matrix.qt }} / windows capture phases
+    runs-on: windows-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        qt: ['6.11.2', '6.12.0']
+    env:
+      UV_LOCKED: '1'
+      PYTHONUTF8: '1'
+      PYTHONUNBUFFERED: '1'
+      QT_QPA_PLATFORM: windows
+      VERDICLIP_EXPECTED_QT: ${{ matrix.qt }}
+      EDITOR_PROFILE_MODE: phases
+      EDITOR_PROFILE_SOURCE_SHA: ${{ github.sha }}
+      EDITOR_PROFILE_ROLE: candidate
+      EDITOR_PROFILE_SCOPE: candidate-after-font-preparation
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 272d542bbba6d541df14ff07dc45b814b5f1c3d4
+          path: .tmp/profile-control
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: '3.13.16'
+          enable-cache: false
+      - run: uv sync --locked
+      - name: Select explicit isolated Qt compatibility runtime
+        shell: pwsh
+        run: uv pip install --python .venv "pyside6-essentials==$env:VERDICLIP_EXPECTED_QT" "shiboken6==$env:VERDICLIP_EXPECTED_QT"
+      - name: Verify hosted Windows and both exact source identities
+        shell: pwsh
+        run: |
+          if (-not $IsWindows -or $env:RUNNER_OS -cne 'Windows' -or
+              $env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_ENVIRONMENT -cne 'github-hosted') {
+            throw 'Diagnosis requires a disposable GitHub-hosted Windows job.'
+          }
+          $candidate = (& git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $candidate -cne $env:GITHUB_SHA) {
+            throw 'Candidate source identity mismatch.'
+          }
+          $control = (& git -C .tmp/profile-control rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $control -cne '272d542bbba6d541df14ff07dc45b814b5f1c3d4') {
+            throw 'Profiler control identity mismatch.'
+          }
+          Write-Output "GUI_PHASES_CANDIDATE=$candidate; GUI_PHASES_CONTROL=$control"
+          & .venv/Scripts/python.exe -c 'import os; from PySide6.QtCore import qVersion; assert qVersion() == os.environ["VERDICLIP_EXPECTED_QT"]'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Original single capture case with reviewed inclusive phase profiling
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $env:PYTHONPATH = Join-Path $env:GITHUB_WORKSPACE '.tmp/profile-control/scripts'
+          $report = Join-Path $env:RUNNER_TEMP ('gui-readiness-phases-' + [guid]::NewGuid().ToString('N') + '.xml')
+          & .venv/Scripts/python.exe -m pytest tests/ux/test_app_journeys.py::TestAfterCapture::test_hotkey_opens_focused_editor_with_select_tool -p retained_editor_latency_profile --no-cov -p no:randomly -vv --capture=tee-sys "--junitxml=$report"
+          $testExit = $LASTEXITCODE
+          if ($testExit -notin @(0, 1)) { exit $testExit }
+          if (-not (Test-Path -LiteralPath $report)) { throw 'Phase diagnosis JUnit receipt missing.' }
+          [xml]$junit = Get-Content -LiteralPath $report -Raw
+          $cases = @($junit.SelectNodes('//testcase'))
+          $failures = @($junit.SelectNodes('//failure')).Count
+          if ($cases.Count -ne 1 -or @($junit.SelectNodes('//skipped')).Count -ne 0 -or
+              @($junit.SelectNodes('//error')).Count -ne 0 -or
+              ($testExit -eq 0 -and $failures -ne 0) -or ($testExit -eq 1 -and $failures -ne 1)) {
+            throw 'Diagnosis must execute exactly one non-skipped case with consistent pytest status.'
+          }
+          Write-Output "profile_exit=$testExit; inclusive phases overlap; retained 300ms assertion unchanged; green is non-reproduction, not flake resolution"
+          exit $testExit

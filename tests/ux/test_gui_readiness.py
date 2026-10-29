@@ -11,7 +11,7 @@ import os
 import sys
 import time
 from dataclasses import asdict
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 import pytest
 from PySide6 import __version__ as pyside_version
@@ -81,7 +81,7 @@ def test_first_controller_start_and_capture_costs(
 ) -> None:
     """Report the cost shift and retain UX-CAP-11's unchanged 300ms budget."""
     profile = _profile(request, qapp)
-    factory = cast("AppFactory", request.getfixturevalue(make_app.__name__))
+    factory: AppFactory = request.getfixturevalue(make_app.__name__)
     started = time.perf_counter_ns()
     app = factory()
     startup_completed = time.perf_counter_ns()
@@ -144,7 +144,7 @@ def test_preparation_failure_never_admits_tray_or_hotkeys(
 ) -> None:
     """Exercise the real Qt controller boundary with a failed preparation call."""
     profile = _profile(request, qapp)
-    factory = cast("AppFactory", request.getfixturevalue(make_app.__name__))
+    factory: AppFactory = request.getfixturevalue(make_app.__name__)
     controllers: list[AppController] = []
     admission: list[str] = []
     original_start = AppController.start
