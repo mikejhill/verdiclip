@@ -82,11 +82,23 @@ jobs:
         shell: pwsh
         run: |
           $PSNativeCommandUseErrorActionPreference = $false
+          # Match the separately bounded local benchmark's explicit plugin profile.
+          foreach ($name in @([Environment]::GetEnvironmentVariables().Keys)) {
+            if ($name.StartsWith('PYTEST_', [StringComparison]::OrdinalIgnoreCase)) {
+              [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+            }
+          }
+          foreach ($name in @('PYTHONHOME', 'PYTHONSTARTUP', 'PYTHONINSPECT')) {
+            [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+          }
+          $env:PYTEST_DISABLE_PLUGIN_AUTOLOAD = '1'
+          $env:PYTHONNOUSERSITE = '1'
+          $env:PYTHONPATH = (Join-Path $PWD 'src') + [IO.Path]::PathSeparator + $PWD
           $aggregate = 0
           foreach ($trial in 1..5) {
             Write-Output "GUI_BENCHMARK_TRIAL=$trial/5; fresh-process-same-VM-not-cold-OS"
             $report = Join-Path $env:RUNNER_TEMP ('readiness-repeat-' + [guid]::NewGuid().ToString('N') + '.xml')
-            & .venv/Scripts/python.exe -m pytest tests/ux/test_gui_readiness.py::test_first_controller_start_and_capture_costs --no-cov -p no:randomly -vv --capture=tee-sys "--junitxml=$report"
+            & .venv/Scripts/python.exe -m pytest tests/ux/test_gui_readiness.py::test_first_controller_start_and_capture_costs --no-cov -p pytestqt.plugin -p pytest_cov.plugin -p _hypothesis_pytestplugin -p no:randomly -vv --capture=tee-sys "--junitxml=$report" "--basetemp=$report.tmp"
             $testExit = $LASTEXITCODE
             if ($testExit -notin @(0, 1)) { exit $testExit }
             if (-not (Test-Path -LiteralPath $report)) { throw 'Trial JUnit receipt missing.' }
