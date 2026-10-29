@@ -1,0 +1,211 @@
+"""Separate hosted-only cold constituent probes; never a product latency gate."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+from collections.abc import Callable, Mapping
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from scripts.latency_trace import LatencyTrace
+
+if TYPE_CHECKING:
+    from PySide6.QtWidgets import QApplication
+
+MODES = ("spinbox", "lineedit", "text-layout", "style-hints")
+
+
+def measure_operation(
+    mode: str,
+    operations: Mapping[str, Callable[[], object]],
+    metadata: Callable[[], dict[str, object]],
+    trace: LatencyTrace,
+) -> object:
+    """Invoke exactly one constituent, retaining its lifetime through metadata."""
+    operation = operations[mode]
+    with trace.phase(mode):
+        retained = operation()
+    # Inventory can touch font files; it must never precede the measured path.
+    trace.metadata.update(metadata())
+    return retained
+
+
+def font_inventory(directory: str | None) -> dict[str, object]:
+    """Match Qt FreeType's direct-directory extensions after measurement only."""
+    result: dict[str, object] = {"configured_font_directory": directory}
+    if directory is None or directory == "":
+        return result
+    try:
+        files = [
+            entry
+            for entry in Path(directory).iterdir()
+            if entry.suffix.lower() in {".ttf", ".pfa", ".pfb", ".otf"}
+            and entry.is_file()
+        ]
+        result["matching_direct_font_files"] = len(files)
+        result["matching_direct_font_bytes"] = sum(p.stat().st_size for p in files)
+    except OSError as error:
+        result["font_inventory_error"] = type(error).__name__
+    return result
+
+
+def _windows_build() -> str | None:
+    if sys.platform != "win32":
+        return None
+    return ".".join(str(part) for part in sys.getwindowsversion().platform_version)
+
+
+def runner_context(
+    *, windows_build: Callable[[], str | None] = _windows_build
+) -> dict[str, object]:
+    """Read a fixed allowlist, never the complete runner environment."""
+    return {
+        "python": sys.version.split()[0],
+        "source_sha": os.environ.get("GITHUB_SHA"),
+        "run_id": os.environ.get("GITHUB_RUN_ID"),
+        "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+        "image_os": os.environ.get("IMAGEOS"),
+        "image_version": os.environ.get("IMAGEVERSION"),
+        "windows_build": windows_build(),
+        "runner_os": os.environ.get("RUNNER_OS"),
+        "runner_arch": os.environ.get("RUNNER_ARCH"),
+    }
+
+
+def environment_metadata(app: QApplication) -> dict[str, object]:
+    """Collect only whitelisted comparison facts after the measured path."""
+    from PySide6.QtCore import qVersion  # noqa: PLC0415 - no Qt before hosted admission
+
+    return {
+        **runner_context(),
+        "qt": qVersion(),
+        "qpa": app.platformName(),
+        "style": app.style().objectName(),
+        **font_inventory(os.environ.get("QT_QPA_FONTDIR")),
+    }
+
+
+def backend_evidence(qpa: str) -> dict[str, object]:
+    """Label platform effects without claiming introspection or product parity."""
+    return {
+        "evidence_limit": (
+            "Independent constituent probes, not internal C++ phase accounting; "
+            "not visible product readiness, foreground/input or capture qualification"
+        ),
+        "platform_startup": (
+            "Windows QPA automatically initializes native context, screen/input "
+            "integration and a hidden clipboard listener; no explicit clipboard "
+            "content calls are made by this probe"
+            if qpa == "windows"
+            else "Non-Windows QPA; no native Windows product-backend qualification"
+        ),
+        "font_backend": (
+            "Qt source suggests backend-specific font database selection; "
+            "actual binary implementation is not introspected"
+        ),
+        "font_inventory_role": (
+            "Configured directory inventory only; native Windows font database "
+            "need not use this directory or the offscreen font implementation"
+        ),
+        "cleanup_scope": (
+            "Process-bound; supervisor returncode records direct-child exit; "
+            "no independent native resource inventory"
+        ),
+    }
+
+
+def require_unshown(is_visible: Callable[[], bool]) -> bool:
+    """Unexpected owned visibility fails without sending a window operation."""
+    visible = is_visible()
+    if visible:
+        raise RuntimeError("Stock diagnostic unexpectedly made a visible widget")
+    return visible
+
+
+def _metadata(app: QApplication) -> dict[str, object]:
+    context = environment_metadata(app)
+    return {
+        **context,
+        **backend_evidence(app.platformName()),
+        "os_font_cache": "unknown; not reset",
+        "process_font_cache": (
+            "application constructed; no earlier explicit probe/widget; "
+            "caches not reset"
+        ),
+    }
+
+
+def _run_qt(mode: str) -> str:
+    # Qt is imported only after the entry point admits a hosted Windows job.
+    from PySide6.QtGui import QTextLayout  # noqa: PLC0415 - hosted-only native imports
+    from PySide6.QtWidgets import (  # noqa: PLC0415 - hosted-only native imports
+        QApplication,
+        QLineEdit,
+        QSpinBox,
+        QStyle,
+        QWidget,
+    )
+
+    trace = LatencyTrace(metadata={"mode": mode, "process_isolated": True})
+    with trace.on_failure():
+        with trace.phase("application-construction"):
+            app = QApplication([])
+
+        def text_layout() -> object:
+            layout = QTextLayout("", app.font())
+            layout.beginLayout()
+            line = layout.createLine()
+            layout.endLayout()
+            return (layout, line.ascent())
+
+        def style_hints() -> object:
+            style = app.style()
+            return [
+                style.styleHint(hint)
+                for hint in (
+                    QStyle.StyleHint.SH_SpinBox_ClickAutoRepeatRate,
+                    QStyle.StyleHint.SH_SpinBox_ClickAutoRepeatThreshold,
+                    QStyle.StyleHint.SH_LineEdit_PasswordCharacter,
+                    QStyle.StyleHint.SH_LineEdit_PasswordMaskDelay,
+                )
+            ]
+
+        operations: dict[str, Callable[[], object]] = {
+            "spinbox": QSpinBox,
+            "lineedit": QLineEdit,
+            "text-layout": text_layout,
+            "style-hints": style_hints,
+        }
+        retained = measure_operation(mode, operations, lambda: _metadata(app), trace)
+        # No explicit Show, input, clipboard content or product calls. Windows
+        # QPA itself initializes native context and a hidden clipboard listener.
+        # Record visibility only after measurement, without creating a handle.
+        if isinstance(retained, QWidget):
+            trace.metadata["probe_widget_visible"] = require_unshown(retained.isVisible)
+        # Objects remain alive through measurement; cleanup is process-bound.
+        del retained
+        return trace.describe()
+
+
+def main(argv: list[str] | None = None) -> None:
+    """One constituent per new hosted process; local Qt execution is refused."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("mode", choices=MODES)
+    args = parser.parse_args(argv)
+    if (
+        os.environ.get("GITHUB_ACTIONS") != "true"
+        or os.environ.get("RUNNER_OS") != "Windows"
+    ):
+        raise SystemExit("This diagnostic is restricted to hosted Windows CI.")
+    # The same default as tests/conftest.py, without importing its Qt fixtures.
+    fonts = Path("C:/Windows/Fonts")
+    if fonts.is_dir():
+        os.environ.setdefault("QT_QPA_FONTDIR", str(fonts))
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    sys.stdout.write(_run_qt(args.mode) + "\n")
+
+
+if __name__ == "__main__":
+    main()

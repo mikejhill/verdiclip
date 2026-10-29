@@ -140,6 +140,115 @@ jobs:
           path: docs/ux/snapshots
           if-no-files-found: ignore
 
+  readiness-cold:
+    name: First capture readiness (Qt ${{ matrix.qt }}, Python 3.13)
+    runs-on: windows-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        qt: ["6.11.2", "6.12.0"]
+    env:
+      QT_QPA_PLATFORM: offscreen
+      QT_VERSION: ${{ matrix.qt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+          python-version: "3.13"
+      - name: Install locked test dependencies
+        run: uv sync
+      - name: Select the explicit supported Qt profile
+        run: uv pip install --python .venv "pyside6-essentials==$env:QT_VERSION" "shiboken6==$env:QT_VERSION"
+      - name: Verify selected profile and evidence boundary
+        id: readiness_profile
+        run: >-
+          uv run --no-sync python -c
+          "import os, sys, PySide6; from PySide6.QtCore import qVersion;
+          actual = qVersion(); expected = os.environ['QT_VERSION'];
+          print(sys.version); print('PySide6', PySide6.__version__, 'Qt', actual);
+          print('First editor in the test process; OS font cache is unknown.
+          Offscreen widget exposure is not native foreground/input qualification.');
+          sys.exit(0 if actual == expected else 2)"
+      - name: First capture before any other editor test in this process
+        # Same 300 ms assertion; no warm-up, seeded pass selection or retry.
+        run: >-
+          uv run --no-sync pytest
+          tests/ux/test_app_journeys.py::TestAfterCapture::test_hotkey_opens_focused_editor_with_select_tool
+          -vv --junitxml=first-capture.xml
+      - name: Actual Qt modal failure boundary (after the cold case)
+        if: ${{ !cancelled() && steps.readiness_profile.outcome == 'success' }}
+        run: uv run --no-sync pytest tests/ux/test_owned_modal.py -vv --junitxml=modal-boundary.xml
+      - name: First FONT activation in a separate process (diagnostic timing)
+        if: ${{ !cancelled() && steps.readiness_profile.outcome == 'success' }}
+        env:
+          VERDICLIP_FIRST_FONT_PROCESS: "1"
+        run: |
+          uv run --no-sync pytest tests/ux/test_app_journeys.py::TestAfterCapture::test_first_font_activation_reports_separate_cost -vv --junitxml=first-font.xml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          [xml]$report = Get-Content -LiteralPath first-font.xml -Raw
+          $measurements = $report.SelectNodes('//property[@name="first_font_timing"]')
+          if ($measurements.Count -ne 1) { throw 'Missing unique first-FONT timing evidence' }
+          Write-Output ('FIRST_FONT_TIMING=' + $measurements[0].GetAttribute('value'))
+      - name: Actual Qt font picker behavior and reserved height
+        if: ${{ !cancelled() && steps.readiness_profile.outcome == 'success' }}
+        run: uv run --no-sync pytest tests/editor/test_style_bar.py -vv --junitxml=font-controls.xml
+      - name: Independent fresh-process constituent diagnostics (not acceptance)
+        if: ${{ !cancelled() && steps.readiness_profile.outcome == 'success' }}
+        timeout-minutes: 3
+        # Four children, each bounded to 30 seconds. Never before the cold gate.
+        run: uv run --no-sync python -m scripts.run_qt_cold_probes --output qt-cold-probes
+      - name: Retain focused qualification including failure phase notes
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: first-capture-qt${{ matrix.qt }}
+          path: |
+            first-capture.xml
+            modal-boundary.xml
+            first-font.xml
+            font-controls.xml
+            qt-cold-probes/
+          if-no-files-found: warn
+
+  stock-cold:
+    name: Stock QSpinBox first workload (${{ matrix.qpa }}, Qt ${{ matrix.qt }})
+    runs-on: windows-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        qt: ["6.11.2", "6.12.0"]
+        qpa: [offscreen, windows]
+    env:
+      QT_QPA_PLATFORM: ${{ matrix.qpa }}
+      QT_VERSION: ${{ matrix.qt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+          python-version: "3.13"
+      - name: Install locked test dependencies
+        run: uv sync
+      - name: Select the explicit supported Qt profile
+        run: uv pip install --python .venv "pyside6-essentials==$env:QT_VERSION" "shiboken6==$env:QT_VERSION"
+      - name: First stock widget before any editor or font test
+        timeout-minutes: 1
+        run: uv run --no-sync python -m scripts.run_qt_cold_probes --mode spinbox --output qt-stock-first
+      - name: Retain first primitive receipt including incomplete evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: stock-first-${{ matrix.qpa }}-qt${{ matrix.qt }}
+          path: qt-stock-first/
+          if-no-files-found: warn
+
   ux-gallery:
     name: UX gallery (light and dark)
     runs-on: windows-latest
@@ -265,7 +374,7 @@ jobs:
   ci-passed:
     name: CI passed
     if: always()
-    needs: [portable-baseline, lint, typecheck, test, ux-gallery, build, audit, workflows]
+    needs: [portable-baseline, lint, typecheck, test, readiness-cold, stock-cold, ux-gallery, build, audit, workflows]
     runs-on: ubuntu-latest
     steps:
       - name: Require every job to succeed

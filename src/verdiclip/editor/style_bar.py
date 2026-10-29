@@ -19,6 +19,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QColorDialog,
+    QComboBox,
     QFontComboBox,
     QLabel,
     QMenu,
@@ -210,6 +211,16 @@ _V_ALIGN_ICONS: Final = {
 }
 
 
+@dataclass(frozen=True, slots=True)
+class FontControls:
+    """Native font controls, created only when a displayed field needs them."""
+
+    family: QFontComboBox
+    size: QSpinBox
+    bold: QAction
+    italic: QAction
+
+
 class StyleBar(QToolBar):
     """Edits the style of the selection, or of the active tool when none."""
 
@@ -230,13 +241,8 @@ class StyleBar(QToolBar):
         self._width_label = QLabel()
         self._width = QSpinBox()
         self._width.setRange(1, 60)
-        self._font = QFontComboBox()
-        self._font.setMaximumWidth(170)
-        self._font.setToolTip("Font")
-        self._font_size = QSpinBox()
-        self._font_size.setRange(6, 200)
-        self._bold = QAction("B", self)
-        self._italic = QAction("I", self)
+        self._font_controls: FontControls | None = None
+        self._font_anchor = QAction(self)
         self._shadow = QAction("Shadow", self)
         self._auto_fit = QAction("Auto-fit", self)
         self._h_align = {
@@ -261,8 +267,20 @@ class StyleBar(QToolBar):
 
     def tallest_height(self) -> int:
         """Return the bar height with every field shown (so it never resizes)."""
-        widgets = (self._font, self._font_size, self._width, self._stroke)
-        tallest = max(w.sizeHint().height() for w in widgets)
+        widgets: tuple[QWidget, ...] = (self._width, self._stroke)
+        if self._font_controls is not None:
+            widgets += (self._font_controls.family, self._font_controls.size)
+        # Respect editable-combo styling without loading a font-family model.
+        # The explicitly hidden probe is owned by this toolbar until deletion.
+        probe = QComboBox(self)
+        probe.hide()
+        probe.setEditable(True)
+        probe.setIconSize(self.iconSize())
+        probe.addItem(self._stroke.icon(), "Font")
+        probe.ensurePolished()
+        combo_height = probe.sizeHint().height()
+        probe.deleteLater()
+        tallest = max(combo_height, *(w.sizeHint().height() for w in widgets))
         margins = self.contentsMargins()
         layout = self.layout()
         spacing = layout.spacing() if layout is not None else 0
@@ -283,6 +301,9 @@ class StyleBar(QToolBar):
                 fields.add(StyleField.AUTO_FIT)
             if fit is TextFit.FIXED:
                 fields.add(StyleField.ALIGN)
+            font_controls = (
+                self._ensure_font_controls() if StyleField.FONT in fields else None
+            )
             for field, actions in self._actions.items():
                 for action in actions:
                     action.setVisible(field in fields)
@@ -298,10 +319,11 @@ class StyleBar(QToolBar):
             self._h_align[style.h_align].setChecked(True)
             self._v_align[style.v_align].setChecked(True)
             self._width.setValue(round(style.width))
-            self._font.setCurrentFont(QFont(style.font_family))
-            self._font_size.setValue(style.font_size)
-            self._bold.setChecked(style.bold)
-            self._italic.setChecked(style.italic)
+            if font_controls is not None:
+                font_controls.family.setCurrentFont(QFont(style.font_family))
+                font_controls.size.setValue(style.font_size)
+                font_controls.bold.setChecked(style.bold)
+                font_controls.italic.setChecked(style.italic)
         finally:
             self._updating = False
 
@@ -313,17 +335,9 @@ class StyleBar(QToolBar):
         self._group(StyleField.FILL, self._fill_label, self._fill)
         self._group(StyleField.OUTLINE, self._outline_label, self._outline)
         self._group(StyleField.WIDTH, self._width_label, self._width)
-        self._group(StyleField.FONT, self._font, self._font_size)
-        for action, tip in ((self._bold, "Bold"), (self._italic, "Italic")):
-            font = QFont()
-            font.setBold(action is self._bold)
-            font.setItalic(action is self._italic)
-            action.setFont(font)
-            action.setCheckable(True)
-            action.setToolTip(tip)
-            self.addAction(action)
-            self._actions[StyleField.FONT].append(action)
-        self._actions[StyleField.FONT].append(self.addSeparator())
+        self.addAction(self._font_anchor)
+        self._font_anchor.setVisible(False)
+        self._actions[StyleField.FONT] = []
         self._toggle(StyleField.SHADOW, self._shadow, "Drop shadow")
         self._toggle(StyleField.AUTO_FIT, self._auto_fit, "Size the box to its text")
         self._actions[StyleField.ALIGN] = [
@@ -359,16 +373,45 @@ class StyleBar(QToolBar):
         self._width.valueChanged.connect(
             lambda v: self._emit(lambda s: replace(s, width=float(v)))
         )
-        self._font.currentFontChanged.connect(
+
+    def _ensure_font_controls(self) -> FontControls:
+        """Keep native picker behavior and individual toolbar overflow actions."""
+        if self._font_controls is not None:
+            return self._font_controls
+        family = QFontComboBox(self)
+        family.setMaximumWidth(170)
+        family.setToolTip("Font")
+        family.setAccessibleName("Font family")
+        size = QSpinBox(self)
+        size.setRange(6, 200)
+        size.setAccessibleName("Font size")
+        bold, italic = QAction("B", self), QAction("I", self)
+        actions: list[QAction] = [
+            self.insertWidget(self._font_anchor, family),
+            self.insertWidget(self._font_anchor, size),
+            self.insertSeparator(self._font_anchor),
+        ]
+        for action, tip in ((bold, "Bold"), (italic, "Italic")):
+            font = QFont()
+            font.setBold(action is bold)
+            font.setItalic(action is italic)
+            action.setFont(font)
+            action.setCheckable(True)
+            action.setToolTip(tip)
+            self.insertAction(self._font_anchor, action)
+            actions.append(action)
+        actions.append(self.insertSeparator(self._font_anchor))
+        self._font_controls = FontControls(family, size, bold, italic)
+        self._actions[StyleField.FONT] = actions
+        family.currentFontChanged.connect(
             lambda f: self._emit(lambda s: replace(s, font_family=f.family()))
         )
-        self._font_size.valueChanged.connect(
+        size.valueChanged.connect(
             lambda v: self._emit(lambda s: replace(s, font_size=v))
         )
-        self._bold.toggled.connect(lambda on: self._emit(lambda s: replace(s, bold=on)))
-        self._italic.toggled.connect(
-            lambda on: self._emit(lambda s: replace(s, italic=on))
-        )
+        bold.toggled.connect(lambda on: self._emit(lambda s: replace(s, bold=on)))
+        italic.toggled.connect(lambda on: self._emit(lambda s: replace(s, italic=on)))
+        return self._font_controls
 
     def _group(self, field: StyleField, *widgets: QWidget) -> None:
         """Add ``widgets`` and remember their actions for show/hide."""

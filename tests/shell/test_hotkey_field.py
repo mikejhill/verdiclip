@@ -89,7 +89,8 @@ def field(qtbot: QtBot) -> HotkeyField:
     qtbot.addWidget(created)
     created.edit.setText("Ctrl+PrtSc")
     created.show()
-    qtbot.waitExposed(created)
+    with qtbot.waitExposed(created):
+        pass
     return created
 
 
@@ -310,7 +311,8 @@ class TestNativeCapture:
         qtbot.addWidget(created)
         created.edit.setText("Ctrl+PrtSc")
         created.show()
-        qtbot.waitExposed(created)
+        with qtbot.waitExposed(created):
+            pass
         return created
 
     def test_hook_runs_only_while_recording(

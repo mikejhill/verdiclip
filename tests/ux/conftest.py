@@ -215,7 +215,8 @@ def open_editor(
         qtbot.addWidget(window)
         window.resize(900, 700)
         window.show()
-        qtbot.waitExposed(window)
+        with qtbot.waitExposed(window):
+            pass
         window.activateWindow()
         qtbot.waitUntil(lambda: QApplication.activeWindow() is window)
         window.canvas.setFocus()

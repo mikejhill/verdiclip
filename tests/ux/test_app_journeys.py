@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 import uuid
 from collections.abc import Callable, Iterator
@@ -12,19 +13,22 @@ from pathlib import Path
 from typing import override
 
 import pytest
-from PySide6.QtCore import QEvent, QObject, QPoint, QProcess, Qt, QTimer, QUrl
-from PySide6.QtGui import QDesktopServices, QGuiApplication, QImage
+from PySide6.QtCore import QEvent, QObject, QPoint, QProcess, Qt, QTimer, QUrl, qVersion
+from PySide6.QtGui import QDesktopServices, QGuiApplication, QIcon, QImage
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
+    QFontComboBox,
     QMenu,
     QMessageBox,
     QSystemTrayIcon,
     QWidget,
 )
 from pytestqt.qtbot import QtBot
+from scripts.latency_trace import LatencyTrace
 from scripts.owned_modal import run_owned_modal
+from scripts.qt_cold_probe import environment_metadata
 from tests.platform.test_associations import FakeAssociationBackend
 from tests.platform.test_launcher import GUI, write_pe
 from tests.platform.test_shortcuts import FakeShortcutBackend
@@ -39,14 +43,16 @@ from tests.ux.test_capture_journeys import (
 )
 
 from verdiclip import APP_NAME, DOCS_URL, VERSION
-from verdiclip.capture.grabber import ScreenSource
+from verdiclip.capture.grabber import FrozenScreen, ScreenSource
 from verdiclip.capture.models import Capture
 from verdiclip.capture.overlay import SelectionOverlay
 from verdiclip.document.commands import SetCrop
 from verdiclip.document.style import Color
+from verdiclip.editor import icons as icons_module
+from verdiclip.editor import style_bar as style_bar_module
 from verdiclip.editor.close_prompt import CloseChoice, ClosePrompt
 from verdiclip.editor.session import ToolId
-from verdiclip.editor.style_bar import ColorButton
+from verdiclip.editor.style_bar import ColorButton, StyleBar
 from verdiclip.editor.window import EditorWindow
 from verdiclip.exceptions import UpdateError
 from verdiclip.geometry import Rect
@@ -258,22 +264,181 @@ class TestAfterCapture:
     """What happens when a capture finishes."""
 
     def test_hotkey_opens_focused_editor_with_select_tool(
-        self, make_app: AppFactory, qtbot: QtBot
+        self,
+        make_app: AppFactory,
+        qtbot: QtBot,
+        monkeypatch: pytest.MonkeyPatch,
+        request: pytest.FixtureRequest,
+        record_testsuite_property: Callable[[str, object], None],
     ) -> None:
-        """By default a capture opens an editor quickly, Select tool active.
+        """Time the first capture after tray startup without hiding cold costs.
 
-        UX-CAP-11.
+        UX-CAP-11. Phase diagnostics are emitted only if the original budget fails.
         """
-        app = make_app()
+        trace = LatencyTrace(
+            metadata={
+                "scenario": "first-capture-after-tray-start",
+                "process_font_cache": "not reset; preceding tests may have warmed it",
+                "seed": request.config.getoption("randomly_seed", default=None),
+                "python": sys.version.split()[0],
+                "qt": qVersion(),
+                "qpa": os.environ.get("QT_QPA_PLATFORM", "unspecified"),
+                "coverage_enabled": bool(
+                    request.config.getoption("cov_source", default=[])
+                ),
+                "font_paint_trace_scope": (
+                    "Python QFont/drawText calls only; excludes Qt internal rendering"
+                ),
+            }
+        )
+
+        class TimedDesktop(FakeDesktop):
+            @override
+            def freeze(self) -> FrozenScreen:
+                with trace.phase("fake-screen-freeze"):
+                    frozen = super().freeze()
+                trace.metadata["image_size"] = [
+                    frozen.image.width(),
+                    frozen.image.height(),
+                ]
+                return frozen
+
+        original_captured = AppController._on_captured
+        original_crop = FrozenScreen.crop
+        original_style = StyleBar.__init__
+
+        for owner, name, label in (
+            (style_bar_module.QToolBar, "__init__", "actual-qtoolbar-base-init"),
+            (style_bar_module.ColorButton, "__init__", "color-button-init"),
+            (style_bar_module.ColorButton, "_build_menu", "color-button-build-menu"),
+            (style_bar_module.QSpinBox, "__init__", "actual-qspinbox-init"),
+            (icons_module.QFont, "__init__", "python-qfont-init"),
+            (icons_module.QPainter, "drawText", "python-qpainter-draw-text"),
+            (StyleBar, "_build", "stylebar-build"),
+            (StyleBar, "set_icons", "stylebar-set-icons"),
+            (StyleBar, "show_for", "stylebar-show-for"),
+        ):
+            monkeypatch.setattr(owner, name, trace.wrap(label, getattr(owner, name)))
+
+        original_style_icon = icons_module.IconFactory.style
+        original_tool_icon = icons_module.IconFactory.tool
+
+        def measured_style_icon(factory: icons_module.IconFactory, name: str) -> QIcon:
+            with trace.phase(f"style-icon:{name}"):
+                return original_style_icon(factory, name)
+
+        def measured_tool_icon(
+            factory: icons_module.IconFactory, tool: ToolId
+        ) -> QIcon:
+            with trace.phase(f"tool-icon:{tool.value}"):
+                return original_tool_icon(factory, tool)
+
+        monkeypatch.setattr(icons_module.IconFactory, "style", measured_style_icon)
+        monkeypatch.setattr(icons_module.IconFactory, "tool", measured_tool_icon)
+
+        def measured_captured(controller: AppController, capture: Capture) -> None:
+            with trace.phase("captured-signal-delivery-and-editor-admission"):
+                original_captured(controller, capture)
+
+        def measured_crop(frozen: FrozenScreen, area: Rect) -> QImage:
+            with trace.phase("frozen-screen-crop"):
+                return original_crop(frozen, area)
+
+        def measured_style(bar: StyleBar, parent: QWidget | None = None) -> None:
+            with trace.phase("stylebar-construction"):
+                original_style(bar, parent)
+
+        monkeypatch.setattr(AppController, "_on_captured", measured_captured)
+        monkeypatch.setattr(FrozenScreen, "crop", measured_crop)
+        monkeypatch.setattr(StyleBar, "__init__", measured_style)
+        app = make_app(screens=TimedDesktop())
         clock = Stopwatch()
+        with trace.on_failure():
+            with trace.phase("hotkey-dispatch-and-process-events"):
+                app.press_hotkey("fullscreen")
+            with trace.phase("wait-for-editor-record"):
+                qtbot.waitUntil(lambda: len(app.controller.editors) == 1)
+            editor: EditorWindow = app.controller.editors[0]
+            with trace.phase("wait-for-actual-exposure"), qtbot.waitExposed(editor):
+                pass
+            # Freeze the same endpoint before any diagnostic inventory work.
+            capture_elapsed_ms = clock.elapsed_ms
+            qapp = QApplication.instance()
+            assert isinstance(qapp, QApplication)
+            context = environment_metadata(qapp)
+            trace.metadata.update(context)
+            record_testsuite_property("first_capture_context", json.dumps(context))
+            assert capture_elapsed_ms < 300
+            assert editor.action("tool_select").isChecked()
+            assert editor._style_bar._font_controls is None
 
+    def test_first_font_activation_reports_separate_cost(
+        self,
+        make_app: AppFactory,
+        qtbot: QtBot,
+        monkeypatch: pytest.MonkeyPatch,
+        record_testsuite_property: Callable[[str, object], None],
+    ) -> None:
+        """Measure deferred native FONT cost separately; never warm capture acceptance.
+
+        Focused CI invokes this case alone in another process. Other invocations
+        may have a warm font database; OS font cache state is always unknown.
+        No first-FONT latency budget is established by this diagnostic test.
+        """
+        trace = LatencyTrace(
+            metadata={
+                "scenario": "first-font-after-editor-construction",
+                "process_isolated": os.environ.get("VERDICLIP_FIRST_FONT_PROCESS")
+                == "1",
+                "os_font_cache": "unknown; not reset",
+                "process_font_cache": "editor startup already ran; not pristine",
+                "python": sys.version.split()[0],
+                "qt": qVersion(),
+                "qpa": os.environ.get("QT_QPA_PLATFORM", "unspecified"),
+                "latency_budget": "not established; diagnostic measurement only",
+            }
+        )
+        native_picker = style_bar_module.QFontComboBox
+        made: list[QFontComboBox] = []
+
+        def measured_picker(parent: QWidget | None = None) -> QFontComboBox:
+            with trace.phase("actual-native-font-picker-constructor"):
+                picker = native_picker(parent)
+            made.append(picker)
+            return picker
+
+        monkeypatch.setattr(style_bar_module, "QFontComboBox", measured_picker)
+        app = make_app()
         app.press_hotkey("fullscreen")
-
         qtbot.waitUntil(lambda: len(app.controller.editors) == 1)
-        editor: EditorWindow = app.controller.editors[0]
-        qtbot.waitExposed(editor)
-        assert clock.elapsed_ms < 300
-        assert editor.action("tool_select").isChecked()
+        editor = app.controller.editors[0]
+        with qtbot.waitExposed(editor):
+            pass
+        assert made == []
+        assert editor._style_bar._font_controls is None
+        could_undo = editor.session.history.can_undo
+        heartbeat_ms: list[float] = []
+        heartbeat_clock = Stopwatch()
+        timer = QTimer(editor)
+        timer.setSingleShot(True)
+        timer.timeout.connect(lambda: heartbeat_ms.append(heartbeat_clock.elapsed_ms))
+        try:
+            timer.start(0)
+            with trace.on_failure():
+                with trace.phase("first-font-tool-action"):
+                    editor.action("tool_text").trigger()
+                with trace.phase("post-activation-event-drain"):
+                    qtbot.waitUntil(lambda: bool(heartbeat_ms))
+                assert len(made) == 1
+                assert isinstance(made[0], native_picker)
+                assert editor.action("tool_text").isChecked()
+                assert editor.session.history.can_undo == could_undo
+        finally:
+            timer.stop()
+            timer.deleteLater()
+        trace.metadata["first_queued_heartbeat_delay_ms"] = heartbeat_ms[0]
+        measurement = trace.describe()
+        record_testsuite_property("first_font_timing", measurement)
 
     def test_clipboard_action_copies_without_window(
         self, make_app: AppFactory, qtbot: QtBot, caplog: pytest.LogCaptureFixture

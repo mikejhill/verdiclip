@@ -139,3 +139,105 @@ historical verdicts, incomparable policies and stale ordering. Structured
 evidence and candidate identity tests are portable. The actual mutation executor
 requires Linux. The new trigger and publisher take effect only after this change
 is on the default branch; mock tests are not a live alert-delivery qualification.
+
+## Readiness test diagnostics
+
+Qt exposure waits are context managers and must actually be entered/exited. A
+portable AST audit rejects discarded exposure/activation context factories.
+Latency journeys retain the original 300 ms assertion and do not warm editors or
+pin test order to hide cold initialization. Failure-only notes retain inclusive
+phase wall/process/thread CPU times; nested timings overlap, and low CPU cannot
+distinguish native blocking from runner scheduling. Font-cache state is explicitly
+uncontrolled rather than inferred from a green rerun. Diagnostic failures preserve
+the original exception.
+
+The owned modal journey rejects only its fixture dialog on callback failure and
+uses cancellable, dialog-owned single-shot timers. Deadline expiry revokes queued
+actions and fails the test; a monotonic check also rejects delayed timer admission
+and late success. All timers are stopped independently, and callback errors are
+re-raised outside Qt after cleanup. A QTimer cannot interrupt a blocked GUI thread;
+the outer CI deadline is still necessary. Mock clock/timer tests prove these
+ownership rules, while actual Qt delivery needs hosted widget validation. These
+changes do not establish the cause of the retained fatal abort or latency outlier.
+
+The canonical mandatory-scope helper described above retains cancellation and
+pytest outcomes until exact owned cleanup, then propagates them on every owner
+exit. PR68 preserves that reviewed main implementation and its 41 portable cases
+and eight actual Qt proofs. The earlier broad-catch version and its six proofs
+remain historical evidence. This integration does not restore the old boundary,
+dismiss scanning findings or disable a query.
+
+The cold-profile job retains the same first-capture 300 ms assertion in its own
+process on Qt 6.11.2 and 6.12.0. StyleBar creates its native font picker only when
+FONT fields are needed, so opening a Select editor no longer needs that work.
+This defers the cost rather than eliminating it. Another fresh test process
+records first-FONT activation and the real native picker constructor using
+wall/process/thread clocks after that process constructs its editor; editor
+startup may already load fonts, so this is not a pristine font-cache measurement.
+A queued timer reports its first delivery delay;
+this is not a bound on every possible GUI stall. OS font cache state is unknown.
+The first-FONT measurement has no invented latency floor and does not replace
+the capture budget. Its JSON is retained as a `first_font_timing` JUnit suite
+property and printed by the job after test success. Separate actual Qt widget
+tests check current-style propagation, native picker edits and height reservation
+on both supported profiles. Offscreen proof remains distinct from native desktop
+focus/input qualification.
+
+The constructor diagnostic runs only after that unchanged cold case. Four
+separate processes measure stock `QSpinBox`, `QLineEdit`, `QTextLayout` and style
+hints on the same pinned Qt/QPA configuration. Each records application startup
+separately and reads QPA/style/font-directory inventory only after measurement.
+Every child has a 30-second deadline inside a three-minute outer step. Timeout,
+nonzero exit or invalid evidence fails the diagnostic and retains an incomplete
+JSON receipt; a slow but complete measurement has no invented speed threshold.
+
+This comparison follows Qt's constructor path: the abstract spinbox creates a
+line edit, whose private initialization creates a text control and configures
+font/style data ([spinbox source][qt-spin-init], [line-edit source][qt-line-init]).
+The text control performs layout even for its initial empty string
+([layout source][qt-line-layout]). Python constructor wrappers do not intercept
+these internal C++ allocations. Independent primitive timings cannot partition
+the actual spinbox constructor or prove font enumeration caused a delay. A fresh
+process also does not imply a cold OS font cache. No alternate backend, warmed
+path or reduced acceptance threshold replaces the failing product test.
+
+The later primitive probes may inherit OS file-cache warmth from the preceding
+capture and font-control tests. An independent standard Windows job therefore
+runs only the stock spinbox first, once per supported Qt profile, without any
+earlier editor, font or modal test on that VM. Its duration is informational;
+complete validated measurement is required, not a new speed threshold. This job
+does not warm or replace the product's first-capture job or its 300 ms assertion.
+
+Both jobs collect a fixed allowlist of source/run identity, runner image version,
+Windows build, actual Qt/QPA/style and font-directory inventory after measurement.
+The product timer is sampled at the original exposure endpoint before metadata
+is collected. Missing or differing profile facts make comparison incomparable.
+Even equal facts and independent VMs do not prove equally cold OS caches or an
+internal cause. Pytest hooks, prior product construction and extension-method
+patches remain distinct context factors for later matched subsets if needed.
+
+The stock-first matrix also records an intentional `windows` QPA contrast on
+separate standard GitHub Windows VMs. It constructs one stock widget without
+Show, activation, input, global hotkeys or explicit clipboard-content calls.
+Qt's Windows integration automatically initializes native context, screen/input
+integration and a hidden clipboard listener. The child remains bounded to 30
+seconds; successful subprocess completion observes process exit. Cleanup is
+process-bound rather than an independent native resource inventory. No local
+desktop, new driver, trust store or system setting is involved.
+
+This changes only the stock diagnostic matrix. The offscreen capture jobs and
+their 300 ms criterion remain unchanged. The strict environment comparator must
+reject QPA/style differences; native/offscreen values are an intentional backend
+contrast, not identical-environment parity or a replacement passing gate. Qt's
+[Windows integration][qt-native-fonts] selects a backend-specific font database,
+while [offscreen on Windows][qt-offscreen-fonts] uses the generic FreeType path.
+The actual binary font implementation and OS cache state remain unproven. A
+hidden stock constructor timing cannot qualify visible editor readiness,
+foreground preservation, broker behavior, capture delivery or native UX.
+
+[qt-native-fonts]: https://github.com/qt/qtbase/blob/v6.12.0/src/plugins/platforms/windows/qwindowsintegration.cpp#L444
+[qt-offscreen-fonts]: https://github.com/qt/qtbase/blob/v6.12.0/src/plugins/platforms/offscreen/qoffscreenintegration.cpp#L65
+
+[qt-spin-init]: https://github.com/qt/qtbase/blob/v6.11.2/src/widgets/widgets/qabstractspinbox.cpp#L1512
+[qt-line-init]: https://github.com/qt/qtbase/blob/v6.11.2/src/widgets/widgets/qlineedit_p.cpp#L163
+[qt-line-layout]: https://github.com/qt/qtbase/blob/v6.11.2/src/widgets/widgets/qwidgetlinecontrol.cpp#L306
