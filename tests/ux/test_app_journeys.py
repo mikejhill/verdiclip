@@ -305,15 +305,6 @@ class TestAfterCapture:
         original_crop = FrozenScreen.crop
         original_style = StyleBar.__init__
 
-        def measured_call[**P, R](
-            name: str, operation: Callable[P, R]
-        ) -> Callable[P, R]:
-            def timed(*args: P.args, **kwargs: P.kwargs) -> R:
-                with trace.phase(name):
-                    return operation(*args, **kwargs)
-
-            return timed
-
         for owner, name, label in (
             (style_bar_module.QToolBar, "__init__", "actual-qtoolbar-base-init"),
             (style_bar_module.ColorButton, "__init__", "color-button-init"),
@@ -325,7 +316,7 @@ class TestAfterCapture:
             (StyleBar, "set_icons", "stylebar-set-icons"),
             (StyleBar, "show_for", "stylebar-show-for"),
         ):
-            monkeypatch.setattr(owner, name, measured_call(label, getattr(owner, name)))
+            monkeypatch.setattr(owner, name, trace.wrap(label, getattr(owner, name)))
 
         original_style_icon = icons_module.IconFactory.style
         original_tool_icon = icons_module.IconFactory.tool

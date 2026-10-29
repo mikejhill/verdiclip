@@ -20,6 +20,17 @@ class LatencyTrace:
     thread: Callable[[], int] = time.thread_time_ns
     phases: list[dict[str, Any]] = field(default_factory=list)
 
+    def wrap(
+        self, name: str, operation: Callable[..., object]
+    ) -> Callable[..., object]:
+        """Forward a dynamically patched operation unchanged through one phase."""
+
+        def timed(*args: object, **kwargs: object) -> object:
+            with self.phase(name):
+                return operation(*args, **kwargs)
+
+        return timed
+
     @contextmanager
     def phase(self, name: str) -> Generator[None]:
         """Retain timing even on exceptions, without suppressing the exception."""

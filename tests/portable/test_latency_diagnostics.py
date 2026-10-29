@@ -10,6 +10,41 @@ from scripts.latency_trace import LatencyTrace
 from scripts.qt_wait_audit import discarded_waits
 
 
+def test_wrapped_operation_preserves_arguments_result_and_phase() -> None:
+    """Dynamic Qt patches forward identity and keyword arguments unchanged."""
+    trace = LatencyTrace()
+    value = object()
+    result = object()
+    calls: list[tuple[object, object]] = []
+
+    def operation(first: object, *, second: object) -> object:
+        calls.append((first, second))
+        return result
+
+    wrapped = trace.wrap("operation", operation)
+    observed = wrapped(value, second=result)
+    assert observed is result
+    assert calls == [(value, result)]
+    assert len(trace.phases) == 1
+    assert trace.phases[0]["name"] == "operation"
+    assert trace.phases[0]["completed"] is True
+
+
+@pytest.mark.parametrize("error", [ValueError("failure"), SystemExit("cancel")])
+def test_wrapped_operation_preserves_exact_failure(error: BaseException) -> None:
+    """Diagnostics never replace a failure or interpreter control exception."""
+    trace = LatencyTrace()
+
+    def operation() -> object:
+        raise error
+
+    with pytest.raises(type(error)) as caught:
+        trace.wrap("operation", operation)()
+    assert caught.value is error
+    assert len(trace.phases) == 1
+    assert trace.phases[0]["completed"] is False
+
+
 @pytest.mark.parametrize(
     "call", ["waitExposed", "wait_exposed", "waitActive", "wait_active"]
 )
