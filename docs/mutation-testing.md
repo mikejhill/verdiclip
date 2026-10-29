@@ -1,0 +1,90 @@
+# Asynchronous mutation testing
+
+[Mutation runs](https://github.com/mikejhill/verdiclip/actions/workflows/mutation.yml)
+run after pushes to `main`, Mondays at 05:23 UTC, and manual dispatch on the
+default branch. Other manual refs are rejected. Mutation is independent of PR,
+merge and release checks. Existing coverage, CI and CodeQL gates remain intact;
+no repository protection or security settings are changed.
+
+The configured whole-package floor remains **72%**. Complete comparable scores
+**at or above 72% pass**, including equality. Surviving mutants remain available
+for meaningful test improvement; their presence alone does not create an issue.
+Timeouts and segfaults retain their distinct raw verdicts; counting them as detected
+does not establish that every such mutant represents correct behavior.
+
+## Durable alerts and triage
+
+The separate [alert publisher](https://github.com/mikejhill/verdiclip/actions/workflows/mutation-alerts.yml)
+maintains at most one findings issue and one execution issue, assigned to
+`mikejhill`. It reopens existing trackers instead of creating duplicates.
+
+- **Findings:** a complete comparable score below the configured floor. Review
+  survivor diffs, add assertions for meaningful behavior and document equivalent
+  mutants. Never lower the floor just to clear an alert.
+- **Execution:** missing, malformed, skipped, cancelled or incomplete evidence,
+  setup/baseline/identity failures, or an unexpected workflow failure. Repair
+  the execution; a timeout is not a passing score. A later successful execution
+  does not prove the original failure's root cause was fixed.
+
+Triage within one working day and review open trackers weekly. Keep investigation
+notes in comments because the publisher manages issue bodies. Each tracker links
+the run, source revision, scope, floor, score and verdict counts when established.
+The run summary and attempt-specific `mutation-results-N` artifact retain raw
+verdicts, baseline output, mutation logs and identity receipts. If cancellation
+prevents upload, the publisher still reports execution failure from run metadata.
+Publisher API/permission failures are visible as failed alert workflow runs and
+must also be investigated; issue delivery cannot be guaranteed during an outage.
+
+Only newer complete **fresh** evidence for the same scope, policy and floor can
+close findings. A changed floor cannot silently clear an older policy tracker.
+Incomplete runs preserve findings. Delayed older events cannot overwrite newer
+evidence, including rerun attempts. Duplicate or malformed managed trackers fail
+closed for manual reconciliation rather than being overwritten.
+
+## Cache and evidence limits
+
+Push runs can resume verdicts only when generated candidate bodies and original
+sources match verified provenance from the locked mutmut 3.8.0 generator.
+Dependency, tool, workflow or test changes invalidate the cache. Legacy
+ordinal-only verdicts are not reused. Weekly/manual runs start cold. Every run
+qualifies the locked generator and requires a passing baseline before mutation.
+Postflight rejects candidate or source drift before saving or reporting evidence.
+
+Resumed verdicts are explicitly historical, even when their bodies match. Their
+informational score does not prove every verdict was retested against the current
+source. A cached pass cannot automatically resolve findings; use a fresh weekly
+or manual full run. Partial caches can be retained only after identity verification
+so a later push can resume useful work. Healthy runs are not cancelled by newer
+pushes. GitHub's concurrency queue can replace pending jobs; default-branch runs
+qualify their actual recorded revision rather than promising every pushed commit
+will execute.
+
+## Permissions and validation
+
+The executor has `contents: read`. The serialized publisher has only
+`contents: read`, `actions: read` and `issues: write`. It checks out trusted
+default-branch publisher code with no persisted checkout credential. It consumes
+one bounded JSON data file from the same repository's completed default-branch
+run; artifact files are never executed. No PR code, repository secrets, OIDC or
+downstream privileged workflow is used. Platform job tokens still exist.
+
+`workflow_run` is retained so a separate publisher can observe cancellation and
+hard timeout when a same-run job cannot execute. Its categorical zizmor warning
+has one documented inline exception, independently reviewed against
+[zizmor's case-by-case guidance](https://docs.zizmor.sh/audits/#dangerous-triggers).
+Admission rejects foreign repositories, PR events and non-default branches
+before artifact download. Only trusted default-branch publisher code runs.
+Artifacts download into `runner.temp`, outside the executable checkout, as
+[GitHub recommends](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_run).
+The reader requires the fixed attempt's bounded UTF-8 JSON file, rejects symlinks
+and duplicate keys, validates run identity/accounting and never uses artifact
+strings as shell commands, paths or executable code. The exception does not
+disable other security audits or repository protections. Changes to any of these
+boundaries require renewed source review.
+
+Normal PR CI tests the publisher with mock GitHub APIs: threshold boundaries,
+create/update/reopen/recovery, pagination, incomplete/malformed evidence,
+historical verdicts, incomparable policies and stale ordering. Structured
+evidence and candidate identity tests are portable. The actual mutation executor
+requires Linux. The new trigger and publisher take effect only after this change
+is on the default branch; mock tests are not a live alert-delivery qualification.

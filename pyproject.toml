@@ -90,6 +90,8 @@ all = "error"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Tooling tests resolve scripts.* from both checkout and mutmut staging root.
+pythonpath = ["."]
 addopts = ["--strict-markers", "--strict-config", "-ra", "--import-mode=importlib"]
 xfail_strict = true
 qt_api = "pyside6"
@@ -142,6 +144,8 @@ mutation = [
 # Mutation testing: change the code in small ways and check a test fails.
 # POSIX only (it forks); run it on Linux or WSL with `uv run poe mutate`.
 source_paths = ["src/verdiclip/"]
+# Tooling tests import scripts.* inside mutmut's isolated staging root.
+also_copy = ["scripts/"]
 pytest_add_cli_args_test_selection = ["tests/"]
 # tests.mutation_support loads before any test imports verdiclip; see its docstring
 pytest_add_cli_args = [

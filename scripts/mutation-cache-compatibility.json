@@ -1,0 +1,5 @@
+{
+  "restore_key": "",
+  "files": {},
+  "reason": "Disabled: legacy caches have no verified candidate-identity provenance. Preserve their artifacts, but compute fresh verdicts once. Subsequent v3 identity-verified caches can resume; historical informational scores are not retroactively requalified."
+}

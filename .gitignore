@@ -58,3 +58,5 @@ htmlcov/
 docs/ux/snapshots/
 docs/ux/gallery/
 mutants/
+.tmp/
+.test-tmp/
