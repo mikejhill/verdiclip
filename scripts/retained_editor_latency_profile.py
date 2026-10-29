@@ -216,7 +216,10 @@ def hosted_bindings(item: Item) -> Bindings:
     import PySide6  # noqa: PLC0415 - Qt already used by collection; no constructors
     import pytest  # noqa: PLC0415 - child hook only
     from PySide6.QtCore import qVersion  # noqa: PLC0415 - called only after target
-    from PySide6.QtGui import QGuiApplication  # noqa: PLC0415 - metadata after target
+    from PySide6.QtGui import (  # noqa: PLC0415 - descriptor; metadata after target
+        QGuiApplication,
+        QPainter,
+    )
     from PySide6.QtWidgets import (  # noqa: PLC0415 - descriptors only
         QFontComboBox,
         QSpinBox,
@@ -245,6 +248,7 @@ def hosted_bindings(item: Item) -> Bindings:
         Patch(StyleBar, "__init__", "style_bar_init"),
         Patch(QSpinBox, "__init__", "spin_box_init"),
         Patch(QFontComboBox, "__init__", "font_combo_init"),
+        Patch(QPainter, "drawText", "painter_draw_text"),
     )
     return Bindings(
         patches if mode == "phases" else (),
