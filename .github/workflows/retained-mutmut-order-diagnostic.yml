@@ -1,0 +1,78 @@
+name: Retained mutation order replay
+on:
+  pull_request:
+    paths:
+      - scripts/retained_mutmut_order_diagnostic.py
+      - scripts/retained_mutmut_order_source.json
+      - scripts/retained_mutmut_duration_data.py
+      - tests/tooling/test_retained_mutmut_duration_data.py
+      - tests/tooling/test_retained_mutmut_order_diagnostic.py
+      - .github/workflows/retained-mutmut-order-diagnostic.yml
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      UV_LOCKED: "1"
+      PYTHONUTF8: "1"
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: control
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 5fe14b25b651c02caea31786e44e9508595e4e19
+          path: retained
+          persist-credentials: false
+      # actionlint1.7.12 cannot parse cache-mode (rhysd/actionlint#762).
+      # PR-scoped job: restore-only action, no cache save or upload steps.
+      - name: Restore only the exact failed-run cache as separate data
+        id: history
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: mutants
+          key: mutmut-v5-Linux-X64-5fe14b25b651c02caea31786e44e9508595e4e19-380086239e0a24f09e8b3f6a97c3ac122cdb7ec536097c5e004083b8c092b948-40889523071-1
+          fail-on-cache-miss: true
+      - name: Require the exact historical cache match
+        env:
+          CACHE_HIT: ${{ steps.history.outputs.cache-hit }}
+          MATCHED_KEY: ${{ steps.history.outputs.cache-matched-key }}
+        run: |
+          test "$CACHE_HIT" = true
+          test "$MATCHED_KEY" = 'mutmut-v5-Linux-X64-5fe14b25b651c02caea31786e44e9508595e4e19-380086239e0a24f09e8b3f6a97c3ac122cdb7ec536097c5e004083b8c092b948-40889523071-1'
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          enable-cache: false
+      - name: Same trusted Qt system libraries
+        timeout-minutes: 2
+        run: >-
+          sudo apt-get update -qq &&
+          sudo apt-get install -y -qq --no-install-recommends
+          libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3 libglib2.0-0
+      - name: Retained locked mutation environment
+        working-directory: retained
+        timeout-minutes: 1
+        run: uv sync --locked --group mutation
+      - name: Bounded historical-order clean replay (never a mutation score)
+        working-directory: retained
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          set -o pipefail
+          echo "Control source: $(git -C ../control rev-parse HEAD)"
+          sha256sum ../control/scripts/retained_mutmut_order_diagnostic.py \
+            ../control/scripts/retained_mutmut_order_source.json \
+            ../control/scripts/retained_mutmut_duration_data.py
+          set +e
+          timeout --signal=TERM --kill-after=5s 120s \
+            uv run --no-sync --group mutation python -u -I \
+            ../control/scripts/retained_mutmut_order_diagnostic.py \
+            --source-root "$PWD"
+          code=$?
+          set -e
+          echo "diagnostic_exit=$code; timeout124_or137_is_incomplete; exit0_is_order_replay_only; no_mutation_score"
+          exit "$code"
