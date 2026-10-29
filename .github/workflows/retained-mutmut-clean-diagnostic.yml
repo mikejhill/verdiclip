@@ -1,8 +1,8 @@
 name: Retained mutmut clean-test diagnosis
 on:
   pull_request:
-    # Completed paired diagnosis; reopen explicitly for another comparison.
-    types: [opened, reopened]
+    # Qualify the new immutable readiness source; historical receipts stay retained.
+    types: [opened, reopened, synchronize]
     paths:
       - scripts/retained_mutmut_clean_diagnostic.py
       - scripts/retained_mutmut_clean_source.json
@@ -19,8 +19,7 @@ jobs:
       fail-fast: false
       matrix:
         source:
-          - 5fe14b25b651c02caea31786e44e9508595e4e19
-          - 92c8d0cd4e1f5114a4ddf210b30bbf4e5c40f510
+          - 97f6473d04e3aeddf03fb891178c3a0b25fa003a
     env:
       UV_LOCKED: "1"
       PYTHONUTF8: "1"

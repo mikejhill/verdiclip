@@ -240,7 +240,7 @@ def source_admission_ports(
 def test_requested_source_admits_only_its_exact_head(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, source: str
 ) -> None:
-    """Both reviewed checkouts retain clean-source and identical lock checks."""
+    """Every reviewed checkout retains clean-source and identical lock checks."""
     manifest, commands, packages = source_admission_ports(monkeypatch, tmp_path, source)
     assert diagnostic.admit(tmp_path, manifest, source) == tmp_path / ".venv" / "mutmut"
     assert [command[1] for command in commands] == ["rev-parse", "diff", "ls-files"]
@@ -250,12 +250,19 @@ def test_requested_source_admits_only_its_exact_head(
     )  # Shared historical package context.
 
 
-@pytest.mark.parametrize("source", diagnostic.SOURCE_CHOICES)
+@pytest.mark.parametrize(
+    ("source", "actual"),
+    [
+        (requested, head)
+        for requested in diagnostic.SOURCE_CHOICES
+        for head in diagnostic.SOURCE_CHOICES
+        if head != requested
+    ],
+)
 def test_other_reviewed_head_is_not_substitutable_for_requested_source(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, source: str
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, source: str, actual: str
 ) -> None:
     """An allowed SHA is still rejected when it is not the requested checkout."""
-    actual = next(pin for pin in diagnostic.SOURCE_CHOICES if pin != source)
     manifest, commands, packages = source_admission_ports(monkeypatch, tmp_path, actual)
     with pytest.raises(RuntimeError, match="Source identity mismatch"):
         diagnostic.admit(tmp_path, manifest, source)
@@ -304,7 +311,7 @@ def test_unknown_source_is_rejected_before_process_or_package_access(
 def test_unknown_cli_source_fails_before_even_resolving_checkout(
     tmp_path: Path,
 ) -> None:
-    """Argparse restricts the public entry to the same two literal pins."""
+    """Argparse restricts the public entry to the reviewed literal pins."""
     with pytest.raises(SystemExit) as caught:
         diagnostic.main(
             ["--source-root", str(tmp_path / "absent"), "--source-sha", "HEAD"]
