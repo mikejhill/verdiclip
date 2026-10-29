@@ -3,17 +3,23 @@
 from __future__ import annotations
 
 import sys
-from collections.abc import Callable, Generator, Iterator, Sequence
+from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 from importlib.metadata import version
-from typing import TextIO, cast
+from typing import Protocol, TextIO, cast
 
 QtHandler = Callable[[object, object, str], None]
 InstallHandler = Callable[[QtHandler | None], QtHandler | None]
 
 
+class EventDrainApi(Protocol):
+    """The exact private adapter reviewed for the locked pytest-qt version."""
+
+    _process_events: Callable[[], None]
+
+
 @contextmanager
-def tee_qt_messages(install: InstallHandler, destination: TextIO) -> Iterator[None]:
+def tee_qt_messages(install: InstallHandler, destination: TextIO) -> Generator[None]:
     """Flush each message before forwarding it to the exact previous handler."""
     previous: QtHandler | None = None
 
@@ -37,12 +43,13 @@ def main(arguments: Sequence[str]) -> int:
     # Imports are deliberately deferred: pure forwarding tests never load Qt.
     import pytest  # noqa: PLC0415 - pure forwarding tests must never import Qt
     from PySide6 import QtCore  # noqa: PLC0415 - hosted execution only
-    from pytestqt import plugin as qt_plugin  # noqa: PLC0415 - hosted execution only
+    from pytestqt import plugin as qt_plugin_module  # noqa: PLC0415 - hosted only
 
     if version("pytest-qt") != "4.5.0":
         raise RuntimeError(
             "Re-review the private event-drain adapter after pytest-qt changes"
         )
+    qt_plugin = cast("EventDrainApi", qt_plugin_module)
     install = cast("InstallHandler", QtCore.qInstallMessageHandler)
     destination = sys.__stderr__ or sys.stderr
     original_process_events = qt_plugin._process_events

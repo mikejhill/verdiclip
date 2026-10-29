@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import unittest
+from typing import override
 
 from scripts.ipc_qt_diagnostic import QtHandler, tee_qt_messages
 
@@ -30,6 +31,7 @@ class TestMessageTee(unittest.TestCase):
         arguments: list[tuple[object, object, str]] = []
 
         class Sink(io.StringIO):
+            @override
             def flush(self) -> None:
                 order.append("flush")
                 super().flush()
@@ -79,6 +81,7 @@ class TestMessageTee(unittest.TestCase):
         forwarded: list[str] = []
 
         class BrokenSink(io.StringIO):
+            @override
             def flush(self) -> None:
                 raise OSError("output failure")
 
