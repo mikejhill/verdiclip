@@ -55,11 +55,18 @@ class TestMessageTee(unittest.TestCase):
     def test_restores_on_test_body_failure(self) -> None:
         """A test exception propagates without leaving the tee installed."""
         slot = FakeHandlerSlot()
-        with (
-            pytest.raises(ValueError, match="test failure"),
-            tee_qt_messages(slot.install, io.StringIO()),
-        ):
+
+        def fail_body() -> None:
             raise ValueError("test failure")
+
+        caught: ValueError | None = None
+        try:
+            with tee_qt_messages(slot.install, io.StringIO()):
+                fail_body()
+        except ValueError as error:
+            caught = error
+        assert isinstance(caught, ValueError)
+        assert str(caught) == "test failure"
         assert slot.current is None
 
     def test_preserves_previous_handler_exception(self) -> None:
