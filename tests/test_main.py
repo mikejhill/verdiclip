@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+import subprocess
+import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -50,7 +53,7 @@ class FakeLocator:
 @pytest.fixture(autouse=True)
 def isolated(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, qapp: QApplication
-) -> None:
+) -> list[tuple[str, Path]]:
     """Point settings at tmp_path and replace the OS boundaries with fakes."""
     del qapp
     monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
@@ -60,10 +63,74 @@ def isolated(
     )
     monkeypatch.setattr(entry, "MssScreenSource", FakeScreens)
     monkeypatch.setattr(entry, "WindowLocator", FakeLocator)
+    # Application startup owns process-wide logging in production. In-process
+    # command tests must not close pytest's handlers or retain its captured stderr
+    # after that test ends. The real configuration is checked in a child below.
+    logging_calls: list[tuple[str, Path]] = []
+
+    def record_logging(level: str, directory: Path) -> None:
+        logging_calls.append((level, directory))
+
+    monkeypatch.setattr(Application, "_configure_logging", staticmethod(record_logging))
+    return logging_calls
 
 
 class TestApplication:
     """Tests for Application."""
+
+    def test_capture_preserves_test_process_logging(
+        self, tmp_path: Path, isolated: list[tuple[str, Path]]
+    ) -> None:
+        """Entry-point tests leave pytest's handlers and level intact."""
+        root = logging.getLogger()
+        handlers, level = tuple(root.handlers), root.level
+
+        code = Application().run(
+            [
+                "--log-level",
+                "DEBUG",
+                "capture",
+                "screen",
+                "-o",
+                str(tmp_path / "isolated.png"),
+            ]
+        )
+
+        assert code == 0
+        assert tuple(root.handlers) == handlers
+        assert root.level == level
+        assert isolated == [("DEBUG", SettingsStore.default_path().parent / "logs")]
+
+    def test_real_logging_is_confined_to_child_process(self, tmp_path: Path) -> None:
+        """The real entry-point configuration still writes stderr and its file."""
+        root = logging.getLogger()
+        handlers, level = tuple(root.handlers), root.level
+        log_dir = tmp_path / "child-logs"
+        result = subprocess.run(  # noqa: S603 - this Python and fixed source
+            [
+                sys.executable,
+                "-c",
+                "import logging, sys; from pathlib import Path; "
+                "from verdiclip.__main__ import Application; "
+                "Application._configure_logging('INFO', Path(sys.argv[1])); "
+                "logging.getLogger('isolated-startup').debug('hidden-debug'); "
+                "logging.getLogger('isolated-startup').info('visible-info'); "
+                "logging.shutdown()",
+                str(log_dir),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "INFO isolated-startup: visible-info" in result.stderr
+        contents = (log_dir / "verdiclip.log").read_text(encoding="utf-8")
+        assert "INFO isolated-startup: visible-info" in contents
+        assert "hidden-debug" not in result.stderr + contents
+        assert tuple(root.handlers) == handlers
+        assert root.level == level
 
     def test_capture_screen_to_file_prints_path(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -100,15 +167,15 @@ class TestApplication:
         assert QGuiApplication.clipboard().image().width() == 100
 
     def test_capture_without_window_fails_cleanly(
-        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """No foreground window → exit code 1 and the reason on stderr."""
+        """No foreground window returns 1 and logs the reason."""
         monkeypatch.setattr(FakeLocator, "window", None)
 
         code = Application().run(["capture", "window", "--clipboard"])
 
         assert code == 1
-        assert "no active window" in capsys.readouterr().err
+        assert "no active window" in caplog.text
 
     def test_capture_uses_auto_name_without_output(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
