@@ -465,6 +465,28 @@ def test_explicit_pytest_style_session_exit_is_deferred_as_control() -> None:
     assert caught.value is control
 
 
+def test_grouped_session_exit_is_preserved_without_inspecting_group_members() -> None:
+    """A grouped session control must not become an ordinary diagnostic count."""
+    control = ExceptionGroup("grouped session", [SessionExitError("stop session")])
+
+    class Broken(Observer):
+        @override
+        def _frames(self) -> list[dict[str, object]]:
+            raise control
+
+    observer = Broken(
+        Path("/admitted/mutants"), (TARGET,), lambda _packet: None, SessionExitError
+    )
+    service, request = Service(), Request()
+    setup(observer, request, service)
+    service.cancelled.emit()
+    request.finish()
+    with pytest.raises(ExceptionGroup) as caught:
+        observer.finish(1)
+    assert caught.value is control
+    assert caught.value.exceptions[0] is control.exceptions[0]
+
+
 def test_builtin_chain_descriptors_bypass_hostile_control_overrides() -> None:
     """Arbitrary controls cannot throw from custom chain attribute setters."""
 

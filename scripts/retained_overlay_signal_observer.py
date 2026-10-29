@@ -204,9 +204,15 @@ class Observer:
         if len(self.errors) < MAX_ERRORS:
             self.errors.append(stage)
             self.error_stages.append(stage)
-        if not isinstance(error, Exception) or isinstance(error, self.exit_control):
+        if not isinstance(error, Exception) or isinstance(
+            error, (self.exit_control, BaseExceptionGroup)
+        ):
             # Preserve control object identity for mandatory out-of-Qt propagation.
-            # Strip chains which could otherwise retain callback payload locals.
+            # Groups remain opaque: a session control may be nested inside an
+            # ExceptionGroup, so preserve the whole group without inspecting it.
+            # Strip only this outer object's chains. Opaque group members may
+            # retain their own payloads/chains under the control-retention
+            # exception; they are never traversed or serialized as metadata.
             for slot in CHAIN_SLOTS:
                 slot.__set__(error, None)
             self.controls.append(error)
