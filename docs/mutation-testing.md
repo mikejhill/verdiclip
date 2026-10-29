@@ -211,6 +211,28 @@ Even equal facts and independent VMs do not prove equally cold OS caches or an
 internal cause. Pytest hooks, prior product construction and extension-method
 patches remain distinct context factors for later matched subsets if needed.
 
+The stock-first matrix also records an intentional `windows` QPA contrast on
+separate standard GitHub Windows VMs. It constructs one stock widget without
+Show, activation, input, global hotkeys or explicit clipboard-content calls.
+Qt's Windows integration automatically initializes native context, screen/input
+integration and a hidden clipboard listener. The child remains bounded to 30
+seconds; successful subprocess completion observes process exit. Cleanup is
+process-bound rather than an independent native resource inventory. No local
+desktop, new driver, trust store or system setting is involved.
+
+This changes only the stock diagnostic matrix. The offscreen capture jobs and
+their 300 ms criterion remain unchanged. The strict environment comparator must
+reject QPA/style differences; native/offscreen values are an intentional backend
+contrast, not identical-environment parity or a replacement passing gate. Qt's
+[Windows integration][qt-native-fonts] selects a backend-specific font database,
+while [offscreen on Windows][qt-offscreen-fonts] uses the generic FreeType path.
+The actual binary font implementation and OS cache state remain unproven. A
+hidden stock constructor timing cannot qualify visible editor readiness,
+foreground preservation, broker behavior, capture delivery or native UX.
+
+[qt-native-fonts]: https://github.com/qt/qtbase/blob/v6.12.0/src/plugins/platforms/windows/qwindowsintegration.cpp#L444
+[qt-offscreen-fonts]: https://github.com/qt/qtbase/blob/v6.12.0/src/plugins/platforms/offscreen/qoffscreenintegration.cpp#L65
+
 [qt-spin-init]: https://github.com/qt/qtbase/blob/v6.11.2/src/widgets/widgets/qabstractspinbox.cpp#L1512
 [qt-line-init]: https://github.com/qt/qtbase/blob/v6.11.2/src/widgets/widgets/qlineedit_p.cpp#L163
 [qt-line-layout]: https://github.com/qt/qtbase/blob/v6.11.2/src/widgets/widgets/qwidgetlinecontrol.cpp#L306

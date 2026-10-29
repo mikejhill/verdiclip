@@ -87,17 +87,52 @@ def environment_metadata(app: QApplication) -> dict[str, object]:
     }
 
 
-def _metadata(app: QApplication) -> dict[str, object]:
+def backend_evidence(qpa: str) -> dict[str, object]:
+    """Label platform effects without claiming introspection or product parity."""
     return {
-        **environment_metadata(app),
+        "evidence_limit": (
+            "Independent constituent probes, not internal C++ phase accounting; "
+            "not visible product readiness, foreground/input or capture qualification"
+        ),
+        "platform_startup": (
+            "Windows QPA automatically initializes native context, screen/input "
+            "integration and a hidden clipboard listener; no explicit clipboard "
+            "content calls are made by this probe"
+            if qpa == "windows"
+            else "Non-Windows QPA; no native Windows product-backend qualification"
+        ),
+        "font_backend": (
+            "Qt source suggests backend-specific font database selection; "
+            "actual binary implementation is not introspected"
+        ),
+        "font_inventory_role": (
+            "Configured directory inventory only; native Windows font database "
+            "need not use this directory or the offscreen font implementation"
+        ),
+        "cleanup_scope": (
+            "Process-bound; supervisor returncode records direct-child exit; "
+            "no independent native resource inventory"
+        ),
+    }
+
+
+def require_unshown(is_visible: Callable[[], bool]) -> bool:
+    """Unexpected owned visibility fails without sending a window operation."""
+    visible = is_visible()
+    if visible:
+        raise RuntimeError("Stock diagnostic unexpectedly made a visible widget")
+    return visible
+
+
+def _metadata(app: QApplication) -> dict[str, object]:
+    context = environment_metadata(app)
+    return {
+        **context,
+        **backend_evidence(app.platformName()),
         "os_font_cache": "unknown; not reset",
         "process_font_cache": (
             "application constructed; no earlier explicit probe/widget; "
             "caches not reset"
-        ),
-        "evidence_limit": (
-            "Independent constituent probes, not internal C++ phase accounting; "
-            "not native Windows latency or foreground/input qualification"
         ),
     }
 
@@ -110,6 +145,7 @@ def _run_qt(mode: str) -> str:
         QLineEdit,
         QSpinBox,
         QStyle,
+        QWidget,
     )
 
     trace = LatencyTrace(metadata={"mode": mode, "process_isolated": True})
@@ -143,8 +179,12 @@ def _run_qt(mode: str) -> str:
             "style-hints": style_hints,
         }
         retained = measure_operation(mode, operations, lambda: _metadata(app), trace)
-        # No show, input, clipboard, settings or application code is involved.
-        # Owned Qt objects remain alive until all measured phases are finished.
+        # No explicit Show, input, clipboard content or product calls. Windows
+        # QPA itself initializes native context and a hidden clipboard listener.
+        # Record visibility only after measurement, without creating a handle.
+        if isinstance(retained, QWidget):
+            trace.metadata["probe_widget_visible"] = require_unshown(retained.isVisible)
+        # Objects remain alive through measurement; cleanup is process-bound.
         del retained
         return trace.describe()
 

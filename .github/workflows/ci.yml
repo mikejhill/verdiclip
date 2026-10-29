@@ -215,15 +215,16 @@ jobs:
           if-no-files-found: warn
 
   stock-cold:
-    name: Stock QSpinBox first workload (Qt ${{ matrix.qt }}, Python 3.13)
+    name: Stock QSpinBox first workload (${{ matrix.qpa }}, Qt ${{ matrix.qt }})
     runs-on: windows-latest
     timeout-minutes: 5
     strategy:
       fail-fast: false
       matrix:
         qt: ["6.11.2", "6.12.0"]
+        qpa: [offscreen, windows]
     env:
-      QT_QPA_PLATFORM: offscreen
+      QT_QPA_PLATFORM: ${{ matrix.qpa }}
       QT_VERSION: ${{ matrix.qt }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -244,7 +245,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: stock-first-qt${{ matrix.qt }}
+          name: stock-first-${{ matrix.qpa }}-qt${{ matrix.qt }}
           path: qt-stock-first/
           if-no-files-found: warn
 

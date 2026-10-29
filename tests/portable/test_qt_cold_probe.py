@@ -216,6 +216,85 @@ def test_matching_profile_still_preserves_cache_and_causality_limit() -> None:
     assert "does not establish cold OS caches or causality" in str(result["limit"])
 
 
+def test_qpa_contrast_cannot_be_reported_as_matched_environment() -> None:
+    """Changing the product backend is an explicit contrast, never parity."""
+    offscreen: dict[str, object] = dict.fromkeys(
+        run_qt_cold_probes.COMPARISON_FIELDS, "same"
+    )
+    offscreen.update(qpa="offscreen", style="fusion")
+    native = {**offscreen, "qpa": "windows", "style": "windows11"}
+    comparison = run_qt_cold_probes.compare_contexts(offscreen, native)
+    assert comparison["comparable_environment"] is False
+    assert comparison["missing_or_different"] == ["qpa", "style"]
+    evidence = qt_cold_probe.backend_evidence("windows")
+    assert "hidden clipboard listener" in str(evidence["platform_startup"])
+    assert "not visible product readiness" in str(evidence["evidence_limit"])
+    assert "not introspected" in str(evidence["font_backend"])
+
+
+@pytest.mark.parametrize("visible", [False, True])
+def test_visibility_is_read_once_and_never_repaired_with_window_actions(
+    *, visible: bool
+) -> None:
+    """An unexpected Show is a failed probe, not something to hide and pass."""
+    calls: list[bool] = []
+
+    def inspect() -> bool:
+        calls.append(visible)
+        return visible
+
+    if visible:
+        with pytest.raises(RuntimeError, match="unexpectedly made a visible widget"):
+            qt_cold_probe.require_unshown(inspect)
+    else:
+        result = qt_cold_probe.require_unshown(inspect)
+        assert result is False
+    assert calls == [visible]
+
+
+def test_probe_has_no_explicit_show_input_or_clipboard_content_calls() -> None:
+    """Native Qt startup effects remain distinct from explicit probe actions."""
+    root = Path(__file__).resolve().parents[2]
+    tree = ast.parse((root / "scripts/qt_cold_probe.py").read_text(encoding="utf-8"))
+    forbidden = {
+        "show",
+        "showNormal",
+        "showMaximized",
+        "activateWindow",
+        "raise_",
+        "setFocus",
+        "clipboard",
+        "setMimeData",
+        "setText",
+        "installNativeEventFilter",
+        "mousePress",
+        "mouseRelease",
+        "keyPress",
+        "keyRelease",
+        "processEvents",
+    }
+    calls = {
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    assert calls.isdisjoint(forbidden)
+
+
+def test_native_matrix_does_not_change_offscreen_product_gate() -> None:
+    """Only the stock diagnostic intentionally varies the QPA selection."""
+    root = Path(__file__).resolve().parents[2]
+    workflow = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    product = workflow.split("  readiness-cold:", 1)[1].split("  stock-cold:", 1)[0]
+    stock = workflow.split("  stock-cold:", 1)[1].split("  ux-gallery:", 1)[0]
+    assert "QT_QPA_PLATFORM: offscreen" in product
+    assert "matrix.qpa" not in product
+    assert "qpa: [offscreen, windows]" in stock
+    assert "runs-on: windows-latest" in stock
+    assert "--mode spinbox" in stock
+    assert "pytest" not in stock
+
+
 def test_runner_metadata_is_allowlisted(monkeypatch: pytest.MonkeyPatch) -> None:
     """No unrelated environment variable is copied into retained receipts."""
     monkeypatch.setenv("GITHUB_SHA", "reviewed-source")
