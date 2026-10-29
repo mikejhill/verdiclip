@@ -235,14 +235,17 @@ def test_frames_are_whitelisted_metadata_without_locals_or_external_paths() -> N
 
 def test_storage_does_not_call_hostile_truthiness_or_list_subclass_length() -> None:
     """Storage does not call hostile truthiness or list subclass length."""
+    attempts = []
 
     class Hostile(list[object]):
         @override
         def __len__(self) -> int:
-            raise AssertionError("custom length")
+            attempts.append("len")
+            return 0
 
         def __bool__(self) -> bool:
-            raise AssertionError("truthiness")
+            attempts.append("bool")
+            return False
 
     service = SimpleNamespace(
         _overlays=Hostile(), _starting=Hostile(), _pending=Hostile()
@@ -251,6 +254,7 @@ def test_storage_does_not_call_hostile_truthiness_or_list_subclass_length() -> N
     assert result["overlay_count"] is None
     assert result["starting"] is None
     assert result["pending_present"] is True
+    assert attempts == []
 
 
 def test_recorder_error_is_deferred_and_report_result_is_never_replaced() -> None:
@@ -559,9 +563,17 @@ def test_scope_preserves_original_session_exit_when_alone() -> None:
     """An original explicit session exit remains the exact original object."""
     observer, _ = plugin()
     original = SessionExitError("session")
-    with pytest.raises(SessionExitError) as caught, observer.scope():
-        raise original
+    entered = []
+
+    def invoke() -> None:
+        with observer.scope():
+            entered.append(True)
+            raise original
+
+    with pytest.raises(SessionExitError) as caught:
+        invoke()
     assert caught.value is original
+    assert entered == [True]
 
 
 def test_scope_rejects_early_return_reentry_and_completion_after_exit() -> None:
@@ -602,6 +614,57 @@ def test_scope_passes_only_with_target_call_and_finalized_fixture() -> None:
         call.complete(0)
     assert call.result == 0
     assert observer.diagnostic_ok
+
+
+def test_failed_report_control_preserves_report_then_propagates_outside_hook() -> None:
+    """A diagnostic session exit cannot replace the original failed Report."""
+    observer, output = plugin()
+    control = SessionExitError("failed-report control")
+    original = SimpleNamespace(when="call", failed=True)
+
+    def emit(packet: dict[str, object]) -> None:
+        if "overlay_signal_observer" in packet:
+            raise control
+        output.append(packet)
+
+    observer.emit = emit
+
+    def invoke() -> None:
+        with observer.scope() as call:
+            hook = observer.pytest_runtest_makereport(SimpleNamespace(nodeid=TARGET))
+            next(hook)
+            with pytest.raises(StopIteration) as stopped:
+                hook.send(original)
+            assert stopped.value.value is original
+            call.complete(1)
+
+    with pytest.raises(SessionExitError) as caught:
+        invoke()
+    assert caught.value is control
+    assert observer.error_stages == ["emitter"]
+    assert output[-1]["deferred_controls"] == 1
+
+
+def test_summary_control_cannot_replace_original_runner_exception() -> None:
+    """Mandatory finalization preserves both the runner and summary controls."""
+    observer, _ = plugin()
+    original = ValueError("original runner")
+    control = SessionExitError("summary control")
+
+    def emit(_packet: dict[str, object]) -> None:
+        raise control
+
+    observer.emit = emit
+
+    def invoke() -> None:
+        with observer.scope():
+            raise original
+
+    with pytest.raises(BaseExceptionGroup) as caught:
+        invoke()
+    assert caught.value.exceptions == (original, control)
+    assert observer.error_stages == ["summary_emitter"]
+    assert not observer.diagnostic_ok
 
 
 def test_duplicate_setup_cannot_retire_original_owned_connections() -> None:

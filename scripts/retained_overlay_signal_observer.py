@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import hashlib
 import sys
+from abc import abstractmethod
 from collections.abc import Callable, Generator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from types import TracebackType
+from types import FrameType, TracebackType
 from typing import Protocol, cast
 
 from pluggy import HookimplMarker
@@ -29,6 +30,38 @@ MAX_ORDER_ITEMS = 10000
 MAX_NODE_LENGTH = 4096
 MAX_ERRORS = 8
 
+SERVICE_FILE = "src/verdiclip/capture/service.py"
+DECISION_FUNCTIONS = frozenset(
+    {"_check_input_owner", "xǁCaptureServiceǁ_check_input_owner__mutmut_orig"}
+)
+MISSING = object()
+
+
+def input_owner_decision(
+    frame: object, admitted_service_filename: str
+) -> dict[str, object] | None:
+    """Copy only precomputed primitives; do not evaluate the original decision.
+
+    The caller supplies the exact admitted generated service filename. CPython
+    3.13 optimized frames expose a live f_locals proxy; no exact-dict assumption,
+    iteration, object formatting, Qt properties or other locals are needed.
+    """
+    if (
+        type(frame) is not FrameType
+        or frame.f_code.co_filename != admitted_service_filename
+        or frame.f_code.co_name not in DECISION_FUNCTIONS
+    ):
+        return None
+    values = frame.f_locals
+    result: dict[str, object] = {}
+    for key in ("owns_focus", "lost_focus", "owns_grabs"):
+        value = values.get(key, MISSING)
+        result[key] = value if type(value) is bool else None
+    for key in ("focus", "active"):
+        value = values.get(key, MISSING)
+        result[key + "_present"] = None if value is MISSING else value is not None
+    return result
+
 
 class Item(Protocol):
     """Only item identity is inspected."""
@@ -40,13 +73,13 @@ class Request(Protocol):
     """Public fixture ownership port."""
 
     @property
+    @abstractmethod
     def node(self) -> Item:
         """Return the current fixture item."""
-        ...
 
+    @abstractmethod
     def addfinalizer(self, finalizer: Callable[[], None]) -> None:
         """Register exact owned cleanup."""
-        ...
 
 
 class Fixture(Protocol):
@@ -58,13 +91,13 @@ class Fixture(Protocol):
 class Signal(Protocol):
     """Keep exact receiver identities; never inspect emitted payloads."""
 
+    @abstractmethod
     def connect(self, callback: Callable[..., None]) -> object:
         """Attach the owned callback."""
-        ...
 
+    @abstractmethod
     def disconnect(self, callback: Callable[..., None]) -> object:
         """Remove only the owned callback."""
-        ...
 
 
 class Report(Protocol):
@@ -77,9 +110,9 @@ class Report(Protocol):
 class ExceptionSlot(Protocol):
     """The builtin BaseException getset descriptor, never a subclass override."""
 
+    @abstractmethod
     def __set__(self, instance: BaseException, value: None) -> None:
         """Clear a builtin chain field directly."""
-        ...
 
 
 CHAIN_SLOTS = tuple(
@@ -127,6 +160,7 @@ class Observer:
     observed_order_hash: str = field(default="", init=False)
     target_call_seen: bool = field(default=False, init=False)
     _allowed: dict[str, str] = field(default_factory=dict, init=False)
+    _service_filename: str = field(default="", init=False)
     _retire_callback: Callable[[], None] | None = field(default=None, init=False)
     _scope_started: bool = field(default=False, init=False)
 
@@ -146,8 +180,9 @@ class Observer:
             or len(set(self.expected_order)) != len(self.expected_order)
         ):
             raise ValueError("Expected order must be a validated unique bounded tuple")
+        self._service_filename = str(self.root / SERVICE_FILE)
         for relative in (
-            "src/verdiclip/capture/service.py",
+            SERVICE_FILE,
             "src/verdiclip/capture/overlay.py",
             "tests/ux/test_capture_journeys.py",
         ):
@@ -185,13 +220,15 @@ class Observer:
                     break
                 relative = self._allowed.get(frame.f_code.co_filename)
                 if relative is not None:
-                    found.append(
-                        {
-                            "file": relative,
-                            "function": frame.f_code.co_name,
-                            "line": frame.f_lineno,
-                        }
-                    )
+                    entry: dict[str, object] = {
+                        "file": relative,
+                        "function": frame.f_code.co_name,
+                        "line": frame.f_lineno,
+                    }
+                    decision = input_owner_decision(frame, self._service_filename)
+                    if decision is not None:
+                        entry["precomputed_input_owner_decision"] = decision
+                    found.append(entry)
                     if len(found) == MAX_FRAMES:
                         break
                 frame = frame.f_back
@@ -294,6 +331,7 @@ class Observer:
                         "observer_errors": len(self.errors),
                         "observer_error_stages": list(self.error_stages),
                         "post_signal_storage_only": True,
+                        "decision_locals_are_precomputed": True,
                         "synchronous_emitter_stack_not_guaranteed": True,
                     }
                 )
