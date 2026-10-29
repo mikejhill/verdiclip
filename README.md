@@ -1,6 +1,10 @@
 # VerdiClip
 
-![VerdiClip — capture, annotate, deliver](https://raw.githubusercontent.com/mikejhill/verdiclip/main/docs/images/wordmark.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/mikejhill/verdiclip/main/docs/brand/wordmark-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/mikejhill/verdiclip/main/docs/brand/wordmark-light.png">
+  <img src="https://raw.githubusercontent.com/mikejhill/verdiclip/main/docs/brand/wordmark-light.png" alt="VerdiClip — capture, annotate, deliver" width="320">
+</picture>
 
 [![CI](https://github.com/mikejhill/verdiclip/actions/workflows/ci.yml/badge.svg)](https://github.com/mikejhill/verdiclip/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/verdiclip.svg)](https://pypi.org/project/verdiclip/)
