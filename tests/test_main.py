@@ -106,16 +106,23 @@ class TestApplication:
         root = logging.getLogger()
         handlers, level = tuple(root.handlers), root.level
         log_dir = tmp_path / "child-logs"
+        script = "\n".join(
+            (
+                "import logging",
+                "import sys",
+                "from pathlib import Path",
+                "from verdiclip.__main__ import Application",
+                "Application._configure_logging('INFO', Path(sys.argv[1]))",
+                "logging.getLogger('isolated-startup').debug('hidden-debug')",
+                "logging.getLogger('isolated-startup').info('visible-info')",
+                "logging.shutdown()",
+            )
+        )
         result = subprocess.run(  # noqa: S603 - this Python and fixed source
             [
                 sys.executable,
                 "-c",
-                "import logging, sys; from pathlib import Path; "
-                "from verdiclip.__main__ import Application; "
-                "Application._configure_logging('INFO', Path(sys.argv[1])); "
-                "logging.getLogger('isolated-startup').debug('hidden-debug'); "
-                "logging.getLogger('isolated-startup').info('visible-info'); "
-                "logging.shutdown()",
+                script,
                 str(log_dir),
             ],
             capture_output=True,
