@@ -19,10 +19,12 @@ from tests.capture.input_fixture import ReplayInputBroker
 from tests.capture.test_popup_capture import ExistingScene
 from tests.capture.test_scroll_binding import FixtureBackend
 from tests.capture.test_scroll_entry import DiscoveryFixture, EntryFixture
+from tests.capture.test_scroll_uia_protocol import Payload
 
 from verdiclip.capture.input_policy import InputKind, SelectionInput
 from verdiclip.capture.scroll.acquisition import AcquisitionWork, WorkKind
 from verdiclip.capture.scroll.panels import ScrollReviewPanel, ScrollTargetPanel
+from verdiclip.capture.scroll.uia_protocol import UiaDiscovery
 from verdiclip.capture.scroll.workflow import WorkflowState
 from verdiclip.geometry import Point, Rect
 from verdiclip.startup_lifetime import StartupLifetime
@@ -253,7 +255,23 @@ class ScrollJourney:
             assert self.workflow.state is WorkflowState.DISCOVERING
             assert not self.providers
             assert not self.ordinary_captures
-            self.adapter.deliver(EntryFixture.discovery())
+            if entry == "scrollbar":
+                assert self.adapter.points[-1] == end
+                discovery = EntryFixture.discovery()
+            else:
+                # An explicit region discovers its center's content ancestry,
+                # not the scrollbar ancestry of the separate convenience click.
+                assert self.adapter.points[-1] == self.ROI.center
+                discovery = UiaDiscovery.decode(
+                    {
+                        "result": {
+                            "window_identity": Payload.WINDOW,
+                            "hit_identity": Payload.WINDOW + "/42.7",
+                            "nodes": Payload.nodes()[1:],
+                        }
+                    }
+                )
+            self.adapter.deliver(discovery)
 
         self.command(Action.FINISH_SELECTION, finish, Phase.CONFIRMING)
         panel = self.workflow.panel

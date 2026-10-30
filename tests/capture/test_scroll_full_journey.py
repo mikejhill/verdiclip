@@ -131,23 +131,51 @@ def write_receipt(value: ScrollJourney, source: str) -> None:
         ).write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
 
 
+def assert_exact_pixels(actual: QImage, expected: QImage) -> None:
+    """Compare dimensions and every RGBA pixel across storage-format conversion."""
+    assert not actual.isNull()
+    assert actual.size() == expected.size()
+    pixel_format = QImage.Format.Format_RGBA8888
+    assert actual.convertToFormat(pixel_format) == expected.convertToFormat(
+        pixel_format
+    )
+
+
 def assert_delivered_pixels(journey: ScrollJourney, expected: QImage) -> None:
     """Verify exact row content, ordinary document provenance and one real PNG."""
     assert len(journey.accepted) >= 1
     capture = journey.accepted[0]
     assert all(value is capture for value in journey.accepted)
-    assert capture.image == expected
+    assert_exact_pixels(capture.image, expected)
     records = journey.app.controller.workspace.documents
     assert len(records) == 1
-    assert records[0].session.document.image == expected
+    assert_exact_pixels(records[0].session.document.image, expected)
     assert records[0].provenance is not None
     assert records[0].provenance.capture_id == capture.capture_id
     assert records[0].provenance.completeness is capture.completeness
     files = list(journey.app.store.load().output.directory.glob("*.png"))
     assert len(files) == 1
-    assert QImage(str(files[0])) == expected
+    assert_exact_pixels(QImage(str(files[0])), expected)
     assert journey.app.controller.pending_deliveries == ()
     journey.delivered()
+
+
+def test_pixel_oracle_allows_storage_conversion_but_rejects_content_changes() -> None:
+    """Format normalization cannot hide changed channels, alpha or dimensions."""
+    expected = QImage(3, 2, QImage.Format.Format_ARGB32)
+    expected.fill(0xFF305070)
+    assert_exact_pixels(
+        expected.convertToFormat(QImage.Format.Format_ARGB32_Premultiplied), expected
+    )
+    for pixel in (0xFF315070, 0x80305070):
+        changed = expected.copy()
+        changed.setPixel(1, 1, pixel)
+        with pytest.raises(AssertionError):
+            assert_exact_pixels(changed, expected)
+    with pytest.raises(AssertionError):
+        assert_exact_pixels(expected.copy(0, 0, 2, 2), expected)
+    with pytest.raises(AssertionError):
+        assert_exact_pixels(QImage(), expected)
 
 
 @pytest.mark.parametrize(
