@@ -65,3 +65,6 @@ mutants/
 .tmp/
 .test-tmp/
 /mutation-identity-*.json
+
+# Synthetic scrolling workflow receipts
+/artifacts/scroll-workflow/
