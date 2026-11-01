@@ -1,0 +1,13 @@
+{
+  "source_sha": "12d62f4efee585ee433ed9e2cc8a498cd05b4111",
+  "uv_lock_sha256": "14e1d58cd3d516b6eff172dba8b92beccb93ecd7741add578af7a99adb39da78",
+  "mutmut_version": "3.8.0",
+  "mutmut_normalized_source_sha256": {
+    "__main__.py": "823209c10a6fed56600b42260ac79493df57d3cad58643a482ea077240bd14d9",
+    "configuration.py": "c9933b8da52e69604daf509ffb6f08904bdca408aefce3cfc3568c01ff6f1af7",
+    "runners/harness.py": "667da68b2a6f7f7bccabb0fcace8392288008194df78119a7c690601104da9d1",
+    "workers/isolation.py": "56fa26579e0f94f20689525e403985e076576f14428bc662137833a54564f8af",
+    "utils/file_utils.py": "1757d79ac9d53163916eeef725c6e8fe3683447ecd818792366677a415077c63",
+    "code_coverage.py": "b0d7dc9a8841dfa54e49fe5002ddb568cd7cc62b16f548554dcf52577013d970"
+  }
+}
