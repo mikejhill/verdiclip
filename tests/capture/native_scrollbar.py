@@ -197,6 +197,7 @@ class ScrollbarCase:
         self.journal.owned_handles = (self.peer.handle, int(self.menu.winId()))
         self.journal.binding_handle = self.peer.handle
         self.journal.prepare_binding(self.target())
+        self.check_passive_retirement()
 
     def check_passive_retirement(self) -> None:
         """Isolate ordinary owned tooltip retirement before hooks, input or UIA."""
@@ -204,7 +205,12 @@ class ScrollbarCase:
         api = ctypes.WinDLL("user32", use_last_error=True)
         api.GetForegroundWindow.restype = w.HWND
         before = int(api.GetForegroundWindow() or 0)
-        self.retirement_probe = {"stage": "before_show", "foreground_before": before}
+        previous = self.retirement_probe
+        self.retirement_probe = {
+            "stage": "before_show",
+            "foreground_before": before,
+            "previous_environment": previous,
+        }
         assert not fixture_foreground_errors(before, self.journal.owned_handles)
         screen = self.menu.screen()
         geometry = ScreenGeometry.from_screen(screen)
