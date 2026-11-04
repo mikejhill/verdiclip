@@ -124,6 +124,7 @@ def test_cleanup_continues_after_journal_failure(tmp_path: Path) -> None:
             retired=lambda: True,
             popup_trace=None,
             retirement_probe={},
+            operation_trace=[],
             snapshot=SimpleNamespace(
                 close=lambda: calls.append("snapshot"), transitions=[]
             ),

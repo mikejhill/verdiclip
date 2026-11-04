@@ -59,7 +59,8 @@ def record_operation(events: list[dict[str, object]], name: str, phase: str) -> 
         if len(events) < 128:
             events.append({"operation": name, "phase": phase, "time": time.monotonic()})
     except (OSError, RuntimeError, MemoryError):
-        pass
+        # Optional trace loss must not prevent or replace the product operation.
+        return
 
 
 def observe_operation[**P, R](
@@ -70,17 +71,19 @@ def observe_operation[**P, R](
     def mark(phase: str) -> None:
         record_operation(events, name, phase)
 
-    def observed(*args: P.args, **kwargs: P.kwargs) -> R:
+    callable_operation = cast(Callable[..., object], operation)
+
+    def observed(*args: object, **kwargs: object) -> object:
         mark("entered")
         try:
-            result = operation(*args, **kwargs)
+            result = callable_operation(*args, **kwargs)
         except BaseException:
             mark("raised")
             raise
         mark("returned")
         return result
 
-    return observed
+    return cast(Callable[P, R], observed)
 
 
 class PopupFailureTrace(QObject):

@@ -669,3 +669,21 @@ def test_operation_clock_failure_preserves_product_execution(
         observe_operation(events, "error", broken_operation)()
     assert caught.value is error
     assert events == []
+
+
+def test_operation_observer_preserves_method_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Class patches still bind the real widget/binding owner as self."""
+
+    class Owner:
+        def method(self, value: object) -> tuple[object, object]:
+            return self, value
+
+    events: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        Owner, "method", observe_operation(events, "method", Owner.method)
+    )
+    owner, value = Owner(), object()
+    assert owner.method(value) == (owner, value)
+    assert [event["phase"] for event in events] == ["entered", "returned"]
