@@ -37,17 +37,50 @@ from verdiclip.capture.grabber import FrozenScreen
 from verdiclip.capture.models import ScreenGeometry
 from verdiclip.capture.overlay import SelectionOverlay
 from verdiclip.capture.reviewed import CaptureCompleteness, CaptureKind
+from verdiclip.capture.scroll.binding import ScrollCaptureBinding
 from verdiclip.capture.scroll.native_backend import (
     NativeBackendOptions,
     UiaFrameBackend,
 )
 from verdiclip.capture.scroll.targets import SemanticTargets
 from verdiclip.capture.scroll.uia_adapter import UiaAdapter
+from verdiclip.capture.scroll.uia_messages import UiaAction, UiaRequest
 from verdiclip.capture.scroll.uia_process import UiaProcess
 from verdiclip.capture.scroll.uia_protocol import UiaDiscovery, UiaReference
+from verdiclip.capture.scroll.workflow import ScrollProgressPanel
 from verdiclip.geometry import Rect
 from verdiclip.platform.windows import WindowLocator
 from verdiclip.settings import CaptureSettings, Settings
+
+
+def record_operation(events: list[dict[str, object]], name: str, phase: str) -> None:
+    """A diagnostic clock/buffer failure must never change the product call."""
+    try:
+        if len(events) < 128:
+            events.append({"operation": name, "phase": phase, "time": time.monotonic()})
+    except (OSError, RuntimeError, MemoryError):
+        pass
+
+
+def observe_operation[**P, R](
+    events: list[dict[str, object]], name: str, operation: Callable[P, R]
+) -> Callable[P, R]:
+    """Observe existing calls only; preserve values/exceptions and bound metadata."""
+
+    def mark(phase: str) -> None:
+        record_operation(events, name, phase)
+
+    def observed(*args: P.args, **kwargs: P.kwargs) -> R:
+        mark("entered")
+        try:
+            result = operation(*args, **kwargs)
+        except BaseException:
+            mark("raised")
+            raise
+        mark("returned")
+        return result
+
+    return observed
 
 
 class PopupFailureTrace(QObject):
@@ -107,7 +140,38 @@ class ScrollbarCase:
         self.peer = ScrollPeer(directory / "provider")
         self.menu = QMenu("Owned scrollbar test popup")
         request.addfinalizer(self.close_owned_windows)
+        self.operation_trace: list[dict[str, object]] = []
         self.process = UiaProcess(qualified=True, use_local_pipe=True)
+        original_start = self.process.start
+
+        def start(action: UiaAction, payload: dict[str, object]) -> UiaRequest:
+            return observe_operation(
+                self.operation_trace, f"uia.{action.value}", original_start
+            )(action, payload)
+
+        def completed(request: UiaRequest, _result: object) -> None:
+            record_operation(
+                self.operation_trace, f"uia.{request.action.value}", "completed"
+            )
+
+        patch.setattr(self.process, "start", start)
+        self.process.completed.connect(completed)
+        patch.setattr(
+            ScrollProgressPanel,
+            "show",
+            observe_operation(
+                self.operation_trace, "progress.show", ScrollProgressPanel.show
+            ),
+        )
+        patch.setattr(
+            ScrollCaptureBinding,
+            "start_confirmed",
+            observe_operation(
+                self.operation_trace,
+                "binding.start_confirmed",
+                ScrollCaptureBinding.start_confirmed,
+            ),
+        )
         self.adapter = UiaAdapter(process=self.process)
         self.discoveries: list[UiaDiscovery] = []
         self.adapter.discovered.connect(
@@ -383,6 +447,7 @@ class ScrollbarCase:
                     "visible_test_windows_before_cleanup": visible_owned,
                     "first_popup_loss": popup_loss,
                     "passive_retirement_probe": self.retirement_probe,
+                    "operation_trace": self.operation_trace,
                     "popup_transitions_before_cleanup": transitions,
                     "declared_owned_handles": self.journal.owned_handles,
                     "retired": self.retired(),

@@ -16,7 +16,11 @@ from PySide6.QtWidgets import QApplication, QMenu, QWidget
 from pytestqt.qtbot import QtBot
 from tests.capture.input_fixture import ReplayInputPlatform
 from tests.capture.menu_peer import MenuPeer, decode_menu_state
-from tests.capture.native_scrollbar import PopupFailureTrace, ScrollbarCase
+from tests.capture.native_scrollbar import (
+    PopupFailureTrace,
+    ScrollbarCase,
+    observe_operation,
+)
 from tests.capture.preservation_harness import (
     CaptureHarness,
     HarnessBudgets,
@@ -574,6 +578,7 @@ def test_popup_observer_detach_failure_cannot_skip_retirement(
     case = SimpleNamespace()
     case.popup_trace = SimpleNamespace(first={})
     case.retirement_probe = {}
+    case.operation_trace = []
     case.snapshot = None
     case.menu = SimpleNamespace(removeEventFilter=broken_detach)
     case.journal = SimpleNamespace(
@@ -602,3 +607,65 @@ def test_popup_observer_detach_failure_cannot_skip_retirement(
     with pytest.raises(AssertionError, match="observer detach failed"):
         ScrollbarCase.close(cast(ScrollbarCase, case))
     assert calls == ["journal", "capture", "adapter", "wait", "windows", "source"]
+
+
+def test_operation_observation_preserves_values_and_exception_identity() -> None:
+    """Observation cannot consume a value, exception or repeated invocation."""
+    events: list[dict[str, object]] = []
+    token = object()
+    calls = []
+
+    def operation(value: object, *, fail: bool = False) -> object:
+        calls.append(value)
+        if fail:
+            raise error
+        return value
+
+    error = RuntimeError("sentinel")
+    observed = observe_operation(events, "owned.operation", operation)
+    assert observed(token) is token
+    with pytest.raises(RuntimeError) as caught:
+        observed(token, fail=True)
+    assert caught.value is error
+    assert calls == [token, token]
+    assert [event["phase"] for event in events] == [
+        "entered",
+        "returned",
+        "entered",
+        "raised",
+    ]
+    assert all(set(event) == {"operation", "phase", "time"} for event in events)
+
+
+def test_operation_observation_budget_does_not_skip_operations() -> None:
+    """A full diagnostic buffer never prevents the underlying product call."""
+    events: list[dict[str, object]] = []
+    calls = []
+    observed = observe_operation(events, "owned.operation", calls.append)
+    for index in range(200):
+        observed(index)
+    assert calls == list(range(200))
+    assert len(events) == 128
+
+
+def test_operation_clock_failure_preserves_product_execution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Optional trace collection never replaces a product value or failure."""
+
+    def broken_clock() -> float:
+        raise OSError("diagnostic clock unavailable")
+
+    monkeypatch.setattr("tests.capture.native_scrollbar.time.monotonic", broken_clock)
+    events: list[dict[str, object]] = []
+    token = object()
+    assert observe_operation(events, "value", lambda: token)() is token
+    error = RuntimeError("original operation error")
+
+    def broken_operation() -> None:
+        raise error
+
+    with pytest.raises(RuntimeError) as caught:
+        observe_operation(events, "error", broken_operation)()
+    assert caught.value is error
+    assert events == []
