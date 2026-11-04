@@ -1,0 +1,94 @@
+name: GUI readiness cold-path diagnosis
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/gui-readiness-profile.yml'
+      - 'scripts/gui_readiness_profile.py'
+      - 'tests/tooling/test_gui_readiness_profile.py'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gui-readiness-profile-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    cache-mode: none
+    if: github.repository == 'mikejhill/verdiclip'
+    name: Qt ${{ matrix.qt }} / first instrumented GUI process
+    runs-on: windows-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        qt: ['6.11.2', '6.12.0']
+    env:
+      UV_LOCKED: '1'
+      PYTHONUTF8: '1'
+      PYTHONUNBUFFERED: '1'
+      QT_QPA_PLATFORM: windows
+      VERDICLIP_EXPECTED_QT: ${{ matrix.qt }}
+      VERDICLIP_EXPECTED_QPA: windows
+      VERDICLIP_GUI_READINESS_QUALIFICATION: '1'
+      VERDICLIP_BENCHMARK_ROLE: hosted
+      VERDICLIP_BENCHMARK_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      VERDICLIP_GUI_PROFILE: '1'
+      VERDICLIP_GUI_PROFILE_TRIAL: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: '3.13.16'
+          enable-cache: false
+      - run: uv sync --locked
+      - name: Select explicit isolated Qt compatibility runtime
+        shell: pwsh
+        run: uv pip install --python .venv "pyside6-essentials==$env:VERDICLIP_EXPECTED_QT" "shiboken6==$env:VERDICLIP_EXPECTED_QT"
+      - name: Verify hosted Windows and immutable checked-out source
+        shell: pwsh
+        run: |
+          if (-not $IsWindows -or $env:RUNNER_OS -cne 'Windows' -or
+              $env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_ENVIRONMENT -cne 'github-hosted') {
+            throw 'Diagnosis requires standard disposable GitHub-hosted Windows.'
+          }
+          $actual = (& git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $actual -cne $env:VERDICLIP_BENCHMARK_SOURCE_SHA) {
+            throw 'Diagnostic checkout identity mismatch.'
+          }
+          Write-Output "GUI_READINESS_PROFILE_SOURCE=$actual"
+      - name: First GUI benchmark process with bounded inclusive phase clocks
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          foreach ($name in @([Environment]::GetEnvironmentVariables().Keys)) {
+            if ($name.StartsWith('PYTEST_', [StringComparison]::OrdinalIgnoreCase)) {
+              [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+            }
+          }
+          foreach ($name in @('PYTHONHOME', 'PYTHONSTARTUP', 'PYTHONINSPECT')) {
+            [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+          }
+          $env:PYTEST_DISABLE_PLUGIN_AUTOLOAD = '1'
+          $env:PYTHONNOUSERSITE = '1'
+          $env:PYTHONPATH = (Join-Path $PWD 'src') + [IO.Path]::PathSeparator + $PWD
+          $report = Join-Path $env:RUNNER_TEMP ('readiness-profile-' + [guid]::NewGuid().ToString('N') + '.xml')
+          & .venv/Scripts/python.exe -m pytest tests/ux/test_gui_readiness.py::test_first_controller_start_and_capture_costs --no-cov -p pytestqt.plugin -p pytest_cov.plugin -p _hypothesis_pytestplugin -p no:randomly -p scripts.gui_readiness_profile -vv --capture=tee-sys "--junitxml=$report" "--basetemp=$report.tmp"
+          $testExit = $LASTEXITCODE
+          if ($testExit -notin @(0, 1)) { exit $testExit }
+          if (-not (Test-Path -LiteralPath $report)) { throw 'Diagnostic JUnit receipt missing.' }
+          [xml]$junit = Get-Content -LiteralPath $report -Raw
+          $failures = @($junit.SelectNodes('//failure')).Count
+          if (@($junit.SelectNodes('//testcase')).Count -ne 1 -or
+              @($junit.SelectNodes('//skipped | //error')).Count -ne 0 -or
+              ($testExit -eq 0 -and $failures -ne 0) -or ($testExit -eq 1 -and $failures -ne 1)) {
+            throw 'Diagnosis must execute one non-skipped case with consistent status.'
+          }
+          Write-Output 'Inclusive phases overlap and instrumentation adds overhead. The 300ms assertion is unchanged; green is non-reproduction, not a fix or native acceptance. Timeout cleanup is UNKNOWN; VM disposal is containment.'
+          exit $testExit
