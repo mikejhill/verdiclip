@@ -23,6 +23,8 @@ hookimpl = HookimplMarker("pytest")
 TARGET = "tests/ux/test_gui_readiness.py::test_first_controller_start_and_capture_costs"
 MAX_RECORDS = 128
 MAX_ERRORS = 8
+MAX_DISPATCH_ANCHORS = 2  # The unchanged selector has first and warm captures.
+MAX_OFFSET_NS = 120_000_000_000  # Same upper bound as the hosted diagnostic step.
 
 
 @dataclass(frozen=True)
@@ -48,6 +50,7 @@ class Trace:
     dispatch_depth: int = 0
     active: bool = True
     truncated: bool = False
+    dispatch_anchors: dict[int, int] = field(default_factory=dict)
 
     def error(self, label: str) -> None:
         """Keep fixed labels only, never exception messages/arguments/paths."""
@@ -77,6 +80,11 @@ class Trace:
             try:
                 try:
                     start = self.clocks()
+                    if patch.dispatch:
+                        if len(self.dispatch_anchors) < MAX_DISPATCH_ANCHORS:
+                            self.dispatch_anchors[ordinal] = start[0]
+                        else:
+                            self.error("dispatch_anchor_limit")
                 except Exception:  # noqa: BLE001 - diagnostic clocks cannot change product behavior
                     self.error("start_clock")
                 result = original(*args, **kwargs)
@@ -114,6 +122,7 @@ class Trace:
             if len(self.records) >= MAX_RECORDS:
                 self.truncated = True
                 return
+            start_offset, end_offset = self.offsets(ordinal, start[0], end[0])
             self.records.append(
                 {
                     "phase": label,
@@ -121,12 +130,26 @@ class Trace:
                     "within_dispatch": within_dispatch,
                     "completed": completed,
                     "wall_ms": (end[0] - start[0]) / 1_000_000,
+                    "wall_start_offset_ms": start_offset,
+                    "wall_end_offset_ms": end_offset,
                     "process_cpu_ms": (end[1] - start[1]) / 1_000_000,
                     "thread_cpu_ms": (end[2] - start[2]) / 1_000_000,
                 }
             )
         except Exception:  # noqa: BLE001 - preserve the original method outcome
             self.error("end_clock_or_record")
+
+    def offsets(
+        self, ordinal: int, start: int, end: int
+    ) -> tuple[float | None, float | None]:
+        """Return only bounded offsets from this dispatch, never raw clock uptime."""
+        anchor = self.dispatch_anchors.get(ordinal)
+        if anchor is None:
+            return None, None  # Pre-dispatch setup, or an already-failed anchor.
+        if not 0 <= start - anchor <= end - anchor <= MAX_OFFSET_NS:
+            self.error("dispatch_offset_out_of_bounds")
+            return None, None
+        return (start - anchor) / 1_000_000, (end - anchor) / 1_000_000
 
 
 class PatchSet:

@@ -14,6 +14,8 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from scripts.gui_readiness_profile import (
+    MAX_DISPATCH_ANCHORS,
+    MAX_OFFSET_NS,
     MAX_RECORDS,
     TARGET,
     Patch,
@@ -43,6 +45,12 @@ class PureProfilerTests(unittest.TestCase):
         """Use deterministic clocks without native work."""
         clock = Clock()
         return Trace(wall=clock, process=clock, thread=clock)
+
+    def number(self, record: dict[str, object], key: str) -> float:
+        """Require a concrete numeric fake-clock field before comparison."""
+        value = record[key]
+        assert isinstance(value, (int, float))
+        return float(value)
 
     def test_forward_result_arguments_and_exception_identity(self) -> None:
         """Timing must not change the original operation's behavior."""
@@ -97,6 +105,71 @@ class PureProfilerTests(unittest.TestCase):
             [True, True, False, True, True],
         )
         self.assertEqual(trace.dispatch_depth, 0)
+        first_show, first_dispatch, after_dispatch, warm_show, warm_dispatch = (
+            trace.records
+        )
+        self.assertEqual(first_dispatch["wall_start_offset_ms"], 0)
+        self.assertEqual(warm_dispatch["wall_start_offset_ms"], 0)
+        self.assertGreater(self.number(first_show, "wall_start_offset_ms"), 0)
+        self.assertLess(
+            self.number(first_show, "wall_end_offset_ms"),
+            self.number(first_dispatch, "wall_end_offset_ms"),
+        )
+        self.assertGreater(
+            self.number(after_dispatch, "wall_start_offset_ms"),
+            self.number(first_dispatch, "wall_end_offset_ms"),
+        )
+        self.assertGreater(self.number(warm_show, "wall_start_offset_ms"), 0)
+        self.assertLess(
+            self.number(warm_show, "wall_end_offset_ms"),
+            self.number(warm_dispatch, "wall_end_offset_ms"),
+        )
+
+    def test_show_event_offsets_split_before_callback_and_after_callback(self) -> None:
+        """Nested timing identifies gaps without any new event or native probe."""
+        clock = Clock()
+        trace = Trace(wall=clock, process=clock, thread=clock)
+        callback = trace.wrap(Patch(object, "unused", "editor_show_event"), lambda: 1)
+        show = trace.wrap(Patch(object, "unused", "editor_show"), callback)
+        dispatch = trace.wrap(
+            Patch(object, "unused", "hotkey_dispatch", dispatch=True), show
+        )
+        output = StringIO()
+        with redirect_stdout(output):
+            dispatch()
+        self.assertEqual(output.getvalue(), "")
+        self.assertEqual(clock.value, 18)  # Three phases, start/end, three clocks.
+        event_record, show_record, dispatch_record = trace.records
+        before = self.number(event_record, "wall_start_offset_ms") - self.number(
+            show_record, "wall_start_offset_ms"
+        )
+        after = self.number(show_record, "wall_end_offset_ms") - self.number(
+            event_record, "wall_end_offset_ms"
+        )
+        self.assertGreater(before, 0)
+        self.assertGreater(after, 0)
+        self.assertAlmostEqual(
+            before + self.number(event_record, "wall_ms") + after,
+            self.number(show_record, "wall_ms"),
+        )
+        self.assertEqual(dispatch_record["wall_start_offset_ms"], 0)
+
+    def test_offset_anchor_limit_and_range_are_bounded(self) -> None:
+        """Missing/oversized anchors retain no absolute uptime and fail diagnostics."""
+        trace = self.trace()
+        self.assertEqual(trace.offsets(0, 100, 200), (None, None))
+        dispatch = trace.wrap(
+            Patch(object, "unused", "hotkey_dispatch", dispatch=True), lambda: 1
+        )
+        for _ in range(MAX_DISPATCH_ANCHORS + 1):
+            self.assertEqual(dispatch(), 1)
+        self.assertEqual(len(trace.dispatch_anchors), MAX_DISPATCH_ANCHORS)
+        self.assertIn("dispatch_anchor_limit", trace.errors)
+        anchor = trace.dispatch_anchors[1]
+        self.assertEqual(
+            trace.offsets(1, anchor, anchor + MAX_OFFSET_NS + 1), (None, None)
+        )
+        self.assertIn("dispatch_offset_out_of_bounds", trace.errors)
 
     def test_partial_install_and_inherited_descriptor_restore(self) -> None:
         """Rollback deletes only owned shadow attributes and preserves originals."""
