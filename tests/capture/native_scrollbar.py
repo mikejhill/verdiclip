@@ -152,6 +152,21 @@ class ScrollbarCase:
 
     def prepare(self) -> None:
         """Expose owned content and popup before asking the existing driver to bind."""
+        # Retirement itself needs only an owned Qt popup, not WPF or UIA startup.
+        self.menu.addAction("Inert owned item")
+        self.menu.popup(QPoint(64, 64))
+        self.qtbot.waitUntil(self.menu.isVisible)
+        app = QApplication.instance()
+        assert isinstance(app, QApplication)
+        self.snapshot = StrictFixtureSnapshot(app, (self.menu,))
+        self.popup_trace = PopupFailureTrace(self.menu, lambda: "retirement_probe")
+        self.journal.owned_handles = (int(self.menu.winId()),)
+        self.check_passive_retirement()
+        self.snapshot.close()
+        self.menu.removeEventFilter(self.popup_trace)
+        self.menu.close()
+        self.snapshot = None
+        self.popup_trace = None
         self.peer.start()
         self.qtbot.waitUntil(self.peer.poll, timeout=10000)
         rectangle = self.peer.state["physical_rectangle"]
@@ -163,7 +178,6 @@ class ScrollbarCase:
         assert 0 < width <= 384
         assert height == 1120
         self.image = fixture_image(width, height)
-        self.menu.addAction("Inert owned item")
         self.menu.popup(QPoint(int(rectangle["x"]) + width + 80, int(rectangle["y"])))
         self.qtbot.waitUntil(self.menu.isVisible)
         assert self.menu.devicePixelRatioF() == 1, "100% scale required"
@@ -181,7 +195,6 @@ class ScrollbarCase:
         self.journal.owned_handles = (self.peer.handle, int(self.menu.winId()))
         self.journal.binding_handle = self.peer.handle
         self.journal.prepare_binding(self.target())
-        self.check_passive_retirement()
 
     def check_passive_retirement(self) -> None:
         """Isolate ordinary owned tooltip retirement before hooks, input or UIA."""

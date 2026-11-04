@@ -8,6 +8,8 @@ from typing import BinaryIO, cast
 
 import pytest
 from PySide6.QtGui import QImage
+from PySide6.QtWidgets import QApplication, QMenu
+from pytestqt.qtbot import QtBot
 from tests.capture.native_scrollbar import ScrollbarCase, fixture_image, verify_pixels
 from tests.capture.production_matrix import (
     InputProfile,
@@ -324,3 +326,33 @@ def test_idle_helper_is_not_retirement() -> None:
         ),
     )
     assert not ScrollbarCase.retired(case)
+
+
+def test_retirement_failure_precedes_any_provider_start(
+    qapp: QApplication, qtbot: QtBot
+) -> None:
+    """A failed local surface check must not launch the unrelated WPF provider."""
+    assert QApplication.instance() is qapp
+    starts: list[bool] = []
+
+    def failed_probe() -> None:
+        raise AssertionError("retirement failed")
+
+    case = SimpleNamespace(
+        menu=QMenu(),
+        qtbot=qtbot,
+        journal=SimpleNamespace(owned_handles=()),
+        peer=SimpleNamespace(start=lambda: starts.append(True)),
+        check_passive_retirement=failed_probe,
+    )
+    try:
+        with pytest.raises(AssertionError, match="retirement failed"):
+            ScrollbarCase.prepare(cast(ScrollbarCase, case))
+        assert not starts
+    finally:
+        if hasattr(case, "snapshot"):
+            case.snapshot.close()
+        if hasattr(case, "popup_trace"):
+            case.menu.removeEventFilter(case.popup_trace)
+        case.menu.close()
+        case.menu.deleteLater()
