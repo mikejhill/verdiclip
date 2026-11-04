@@ -16,6 +16,7 @@ from tests.capture.native_scrollbar import (
     ScrollbarCase,
     discovery_metadata,
     fixture_image,
+    guard_owned_backend,
     menu_physical_rect,
     verify_pixels,
 )
@@ -29,6 +30,7 @@ from tests.capture.test_scroll_core import Documents
 from tests.capture.test_scroll_uia_protocol import Payload
 
 from verdiclip.capture.models import ScreenGeometry
+from verdiclip.capture.scroll.native_backend import UiaFrameBackend
 from verdiclip.capture.scroll.uia_messages import UiaRequest
 from verdiclip.capture.scroll.uia_protocol import UiaDiscovery
 from verdiclip.geometry import Point, Rect
@@ -534,3 +536,32 @@ def test_retirement_failure_precedes_any_provider_start(
             case.menu.removeEventFilter(case.popup_trace)
         case.menu.close()
         case.menu.deleteLater()
+
+
+def test_fixture_interference_cannot_recover_for_restore() -> None:
+    """The actual production safety method retains a transient fixture failure."""
+    backend = cast(
+        UiaFrameBackend,
+        SimpleNamespace(
+            _reference=SimpleNamespace(window_handle=42),
+            _options=SimpleNamespace(input_unchanged=lambda: True),
+            _cancelled=False,
+            _interfered=False,
+        ),
+    )
+    for safe in (True, False, True):
+        result = guard_owned_backend(
+            backend,
+            expected_handle=42,
+            fixture_safe=safe,
+            production_safe=UiaFrameBackend._safe,
+        )
+        assert result is (safe and not backend._interfered)
+    assert backend._interfered
+    with pytest.raises(AssertionError, match="not owned"):
+        guard_owned_backend(
+            backend,
+            expected_handle=43,
+            fixture_safe=True,
+            production_safe=lambda _: pytest.fail("Foreign target reached product"),
+        )

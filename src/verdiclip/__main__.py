@@ -30,6 +30,7 @@ from verdiclip.platform.shortcuts import (
 )
 from verdiclip.platform.startup import StartupRegistration, WinRegRunKey
 from verdiclip.platform.windows import WindowLocator
+from verdiclip.scrolling import ScrollingStorageError, compose_scrolling
 from verdiclip.settings import SettingsStore
 from verdiclip.shell.controller import AppController, ShellIntegration
 from verdiclip.shell.instance import SingleInstance
@@ -121,6 +122,10 @@ class Application:
                 ),
             )
             lifetime.callback(controller.shutdown)
+            try:
+                compose_scrolling(controller, data_root=store.path.parent)
+            except ScrollingStorageError as error:
+                logger.warning("Scrolling capture unavailable: %s", error)
             # Register both owners before installation: even partial setup must
             # stop its timer and independently restore the process handler.
             lifetime.callback(self._restore_sigint)

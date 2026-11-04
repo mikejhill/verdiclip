@@ -39,19 +39,31 @@ from verdiclip.capture.models import ScreenGeometry
 from verdiclip.capture.overlay import SelectionOverlay
 from verdiclip.capture.reviewed import CaptureCompleteness, CaptureKind
 from verdiclip.capture.scroll.binding import ScrollCaptureBinding
-from verdiclip.capture.scroll.native_backend import (
-    NativeBackendOptions,
-    UiaFrameBackend,
-)
+from verdiclip.capture.scroll.native_backend import UiaFrameBackend
 from verdiclip.capture.scroll.targets import SemanticTargets
-from verdiclip.capture.scroll.uia_adapter import UiaAdapter
 from verdiclip.capture.scroll.uia_messages import UiaAction, UiaRequest
-from verdiclip.capture.scroll.uia_process import UiaProcess
-from verdiclip.capture.scroll.uia_protocol import UiaDiscovery, UiaReference
+from verdiclip.capture.scroll.uia_protocol import UiaDiscovery
 from verdiclip.capture.scroll.workflow import ScrollProgressPanel
 from verdiclip.geometry import Point, Rect
 from verdiclip.platform.windows import WindowLocator
+from verdiclip.scrolling import compose_scrolling
 from verdiclip.settings import CaptureSettings, Settings
+
+
+def guard_owned_backend(
+    backend: UiaFrameBackend,
+    *,
+    expected_handle: int,
+    fixture_safe: bool,
+    production_safe: Callable[[UiaFrameBackend], bool],
+) -> bool:
+    """Additional fixture restrictions retain the product's permanent stop latch."""
+    assert backend._reference.window_handle == expected_handle, (
+        "UIA target is not owned"
+    )
+    if not fixture_safe:
+        backend._interfered = True
+    return production_safe(backend)
 
 
 def record_operation(events: list[dict[str, object]], name: str, phase: str) -> None:
@@ -196,7 +208,22 @@ class ScrollbarCase:
         self.menu = QMenu("Owned scrollbar test popup")
         request.addfinalizer(self.close_owned_windows)
         self.operation_trace: list[dict[str, object]] = []
-        self.process = UiaProcess(qualified=True, use_local_pipe=True)
+        workflow = compose_scrolling(self.app.controller, data_root=directory)
+        assert workflow is not None, "Production scrolling is unavailable"
+        self.workflow = workflow
+        self.adapter = self.workflow._adapter
+        self.process = self.adapter._process
+        production_safe = UiaFrameBackend._safe
+
+        def owned_safe(backend: UiaFrameBackend) -> bool:
+            return guard_owned_backend(
+                backend,
+                expected_handle=self.peer.handle,
+                fixture_safe=self.safe(),
+                production_safe=production_safe,
+            )
+
+        patch.setattr(UiaFrameBackend, "_safe", owned_safe)
         original_start = self.process.start
 
         def start(action: UiaAction, payload: dict[str, object]) -> UiaRequest:
@@ -227,7 +254,6 @@ class ScrollbarCase:
                 ScrollCaptureBinding.start_confirmed,
             ),
         )
-        self.adapter = UiaAdapter(process=self.process)
         self.discoveries: list[UiaDiscovery] = []
         self.provider_preflight: dict[str, object] = {}
         self._provider_probe_request: UiaRequest | None = None
@@ -248,20 +274,6 @@ class ScrollbarCase:
         self.image = QImage()
         self.errors: list[str] = []
         self.app.controller.capture.failed.connect(self.errors.append)
-        self.workflow = self.app.controller.configure_scrolling(
-            self.adapter, self.backend, directory / "spool"
-        )
-
-    def backend(self, reference: UiaReference, adapter: UiaAdapter) -> UiaFrameBackend:
-        """Use production provider and pixels; fail if popup ownership changes."""
-        assert reference.window_handle == self.peer.handle, "UIA target is not owned"
-        return UiaFrameBackend(
-            reference,
-            adapter,
-            options=NativeBackendOptions(
-                preservation_qualified=True, input_unchanged=self.safe
-            ),
-        )
 
     def safe(self) -> bool:
         """Native movement never outlives its lease or unchanged fixture owners."""
