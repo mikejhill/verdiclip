@@ -358,3 +358,39 @@ def test_retirement_logging_failure_cannot_hide_stopped(
     assert not worker.active
     assert platform.closed
     assert not platform.installed
+
+
+@pytest.mark.parametrize("cancel_before_hook_up", [False, True])
+def test_raw_release_cannot_disown_consumed_legacy_press(
+    *,
+    cancel_before_hook_up: bool,
+) -> None:
+    """Raw/legacy duplicate delivery cannot leak the up of a swallowed down."""
+    platform = ReplayInputPlatform()
+    worker = ReplayRun.make(platform)
+    platform.mouse(0x201, platform.anchor)
+    platform.raw(
+        RawPointer(Point(0, 0), MoveMode.RELATIVE_DELTA, ((0x202, 0),), wheel=False)
+    )
+    if cancel_before_hook_up:
+        platform.actions.put(worker.release)
+    platform.mouse(0x202, platform.anchor)
+    platform.actions.put(worker.release)
+    ReplayRun.complete(worker)
+    assert platform.results == [1, 1]
+    assert not platform.forwarded
+    assert worker.cleaned
+    assert platform.closed
+    assert not worker.failure
+
+
+def test_unowned_injected_release_still_passes_through() -> None:
+    """Independent native pair accounting must not swallow an unowned up."""
+    platform = ReplayInputPlatform()
+    worker = ReplayRun.make(platform)
+    platform.mouse(0x202, platform.anchor)
+    platform.actions.put(worker.release)
+    ReplayRun.complete(worker)
+    assert platform.results == [99]
+    assert platform.forwarded == [0x202]
+    assert worker.cleaned

@@ -297,9 +297,11 @@ class CaptureInputWorker:
             if message in {CaptureInputPolicy.X_DOWN, CaptureInputPolicy.X_UP}
             else 0
         )
+        owned_release = False
         if message in CaptureInputPolicy.BUTTON_DOWN:
             self._legacy_buttons.add((message, button))
         elif message in CaptureInputPolicy.BUTTON_UP:
+            owned_release = (message - 1, button) in self._legacy_buttons
             self._legacy_buttons.discard((message - 1, button))
         if api.foreground() != self.foreground:
             self._invalidate("Capture foreground changed")
@@ -317,7 +319,10 @@ class CaptureInputWorker:
             else self._policy.pointer.point,
             button=button,
         )
-        return self._publish(decision) or api.forward(code, message, address)
+        # Raw Input may already have completed the semantic pair. Native hook
+        # ownership still owes consumption of the release of its swallowed down.
+        consumed = self._publish(decision)
+        return consumed or int(owned_release) or api.forward(code, message, address)
 
     def _raw_pointer(self, event: RawPointer) -> None:
         """Hardware semantics come from its raw flags, never inferred hook flags."""
