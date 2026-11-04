@@ -120,7 +120,10 @@ def test_cleanup_continues_after_journal_failure(tmp_path: Path) -> None:
             adapter=SimpleNamespace(cancel=lambda: calls.append("adapter")),
             qtbot=SimpleNamespace(waitUntil=lambda predicate, **_: predicate()),
             retired=lambda: True,
-            snapshot=SimpleNamespace(close=lambda: calls.append("snapshot")),
+            popup_trace=None,
+            snapshot=SimpleNamespace(
+                close=lambda: calls.append("snapshot"), transitions=[]
+            ),
             close_owned_windows=lambda: calls.append("windows"),
             source=SimpleNamespace(close=lambda: calls.append("source")),
             directory=tmp_path,
