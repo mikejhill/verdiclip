@@ -11,6 +11,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
+from time import monotonic
 from typing import override
 from uuid import uuid4
 
@@ -274,6 +275,9 @@ class ObservedWin32Platform(Win32InputPlatform):
         self.foregrounds: list[int] = []
         self.last_foreground = 0
         self.desktop_unsafe = False
+        self.mouse_outcomes: list[dict[str, int | float]] = []
+        self.foreground_times: list[float] = []
+        self.forwarded_messages: list[int] = []
 
     @override
     def foreground(self) -> int:
@@ -282,6 +286,7 @@ class ObservedWin32Platform(Win32InputPlatform):
         self.last_foreground = handle
         if len(self.foregrounds) < 16 and self.foregrounds[-1:] != [handle]:
             self.foregrounds.append(handle)
+            self.foreground_times.append(monotonic())
         return handle
 
     @override
@@ -290,6 +295,13 @@ class ObservedWin32Platform(Win32InputPlatform):
         safe = super().desktop_safe()
         self.desktop_unsafe |= not safe
         return safe
+
+    @override
+    def forward(self, code: int, message: int, address: int) -> int:
+        """Observe actual forwarding, preserving the exact native return value."""
+        if len(self.forwarded_messages) < 32:
+            self.forwarded_messages.append(message)
+        return super().forward(code, message, address)
 
     @override
     def install(
@@ -309,7 +321,12 @@ class ObservedWin32Platform(Win32InputPlatform):
                 self.left_down += message == 0x201
                 self.left_up += message == 0x202
                 self.mouse_moves += message == 0x200
-            return mouse(code, message, address)
+            result = mouse(code, message, address)
+            if code == 0 and len(self.mouse_outcomes) < 32:
+                self.mouse_outcomes.append(
+                    {"message": message, "result": result, "time": monotonic()}
+                )
+            return result
 
         def observed_raw(event: RawPointer) -> None:
             self.raw_packets += 1
@@ -421,6 +438,9 @@ class ProductionBrokerDriver:
             "workers": len(self.workers),
             "foreground_transitions": [p.foregrounds for p in self.platforms],
             "last_foregrounds": [p.last_foreground for p in self.platforms],
+            "foreground_times": [p.foreground_times for p in self.platforms],
+            "mouse_outcomes": [p.mouse_outcomes for p in self.platforms],
+            "forwarded_messages": [p.forwarded_messages for p in self.platforms],
             "desktop_unsafe_observed": any(p.desktop_unsafe for p in self.platforms),
             "cleanup_errors": self.cleanup_errors(),
             "input_generated_by_harness": False,

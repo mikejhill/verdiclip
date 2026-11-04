@@ -7,11 +7,13 @@ import ctypes.wintypes as w
 import json
 import os
 import time
+import traceback
+from collections.abc import Callable
 from pathlib import Path
-from typing import cast
+from typing import cast, override
 
 import pytest
-from PySide6.QtCore import QPoint
+from PySide6.QtCore import QEvent, QObject, QPoint
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication, QMenu
 from pytestqt.qtbot import QtBot
@@ -42,6 +44,38 @@ from verdiclip.capture.scroll.uia_protocol import UiaDiscovery, UiaReference
 from verdiclip.geometry import Rect
 from verdiclip.platform.windows import WindowLocator
 from verdiclip.settings import CaptureSettings, Settings
+
+
+class PopupFailureTrace(QObject):
+    """Retain only the first owned popup loss, never user content or stack locals."""
+
+    def __init__(self, menu: QMenu, phase: Callable[[], str]) -> None:
+        super().__init__()
+        self.menu, self.phase = menu, phase
+        self.first: dict[str, object] = {}
+        menu.installEventFilter(self)
+
+    @override
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if (
+            watched is self.menu
+            and not self.first
+            and event.type() in {QEvent.Type.Close, QEvent.Type.Hide}
+        ):
+            self.first = {
+                "event": event.type().name,
+                "phase": self.phase(),
+                "time": time.monotonic(),
+                "stack": [
+                    {
+                        "file": Path(frame.filename).name,
+                        "line": frame.lineno,
+                        "function": frame.name,
+                    }
+                    for frame in traceback.extract_stack(limit=16)
+                ],
+            }
+        return False
 
 
 class ScrollbarCase:
@@ -86,6 +120,7 @@ class ScrollbarCase:
         self.hosted_input: HostedFixtureClick | None = None
         if os.environ.get("VERDICLIP_HOSTED_SCROLLBAR") == "1":
             self.hosted_input = HostedFixtureClick(self.peer, self.journal)
+        self.popup_trace: PopupFailureTrace | None = None
         self.image = QImage()
         self.errors: list[str] = []
         self.app.controller.capture.failed.connect(self.errors.append)
@@ -137,6 +172,9 @@ class ScrollbarCase:
         app = QApplication.instance()
         assert isinstance(app, QApplication)
         self.snapshot = StrictFixtureSnapshot(app, (self.menu,))
+        self.popup_trace = PopupFailureTrace(
+            self.menu, lambda: str(self.workflow.state)
+        )
         self.journal.owned_handles = (self.peer.handle, int(self.menu.winId()))
         self.journal.binding_handle = self.peer.handle
         self.journal.prepare_binding(self.target())
@@ -212,6 +250,18 @@ class ScrollbarCase:
     def close(self) -> None:
         """Retire input before touching only declared owned test windows."""
         failures: list[str] = []
+        popup_loss: dict[str, object] = {}
+        transitions: list[dict[str, str]] = []
+        try:
+            popup_loss = dict(self.popup_trace.first) if self.popup_trace else {}
+            transitions = list(self.snapshot.transitions) if self.snapshot else []
+        except RuntimeError as error:
+            failures.append(f"Popup observation unavailable: {error}")
+        try:
+            if self.popup_trace is not None:
+                self.menu.removeEventFilter(self.popup_trace)
+        except RuntimeError as error:
+            failures.append(f"Popup observer detach failed: {error}")
         visible_owned = []
         try:
             visible_owned = [
@@ -254,6 +304,8 @@ class ScrollbarCase:
                     "errors": self.errors,
                     "cleanup_errors": failures,
                     "visible_test_windows_before_cleanup": visible_owned,
+                    "first_popup_loss": popup_loss,
+                    "popup_transitions_before_cleanup": transitions,
                     "declared_owned_handles": self.journal.owned_handles,
                     "retired": self.retired(),
                     "input": dict(

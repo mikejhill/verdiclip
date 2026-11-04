@@ -10,12 +10,13 @@ from types import SimpleNamespace
 from typing import Never, cast
 
 import pytest
-from PySide6.QtCore import QObject
+from PySide6.QtCore import QEvent, QObject
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication, QMenu, QWidget
 from pytestqt.qtbot import QtBot
 from tests.capture.input_fixture import ReplayInputPlatform
 from tests.capture.menu_peer import MenuPeer, decode_menu_state
+from tests.capture.native_scrollbar import PopupFailureTrace, ScrollbarCase
 from tests.capture.preservation_harness import (
     CaptureHarness,
     HarnessBudgets,
@@ -516,3 +517,87 @@ def test_foreign_cleanup_write_error_is_retained_after_child_exit() -> None:
         peer.close()
     assert isinstance(error.value.__cause__, OSError)
     assert closed == [True]
+
+
+def test_forward_observer_preserves_result_and_bounds_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Receipt collection cannot swallow forwarded input or grow indefinitely."""
+    monkeypatch.setattr(Win32InputPlatform, "__init__", lambda _self: None)
+    calls = []
+
+    def forward(_self: object, code: int, message: int, address: int) -> int:
+        calls.append((code, message, address))
+        return 17
+
+    monkeypatch.setattr(Win32InputPlatform, "forward", forward)
+    platform = ObservedWin32Platform()
+    for index in range(40):
+        assert platform.forward(0, index, 99) == 17
+    assert calls == [(0, index, 99) for index in range(40)]
+    assert platform.forwarded_messages == list(range(32))
+
+
+def test_popup_failure_trace_keeps_first_event_without_content(
+    qapp: QApplication,
+) -> None:
+    """First failure remains available without UI text or stack source lines."""
+    assert QApplication.instance() is qapp
+
+    menu = QMenu("Private label must not appear")
+    trace = PopupFailureTrace(menu, lambda: "capturing")
+    try:
+        assert not trace.eventFilter(menu, QEvent(QEvent.Type.Close))
+        first = dict(trace.first)
+        assert not trace.eventFilter(menu, QEvent(QEvent.Type.Hide))
+        assert trace.first == first
+        assert first["event"] == "Close"
+        assert first["phase"] == "capturing"
+        assert "Private label" not in str(first)
+        assert isinstance(first["stack"], list)
+        assert len(first["stack"]) <= 16
+    finally:
+        menu.removeEventFilter(trace)
+        menu.deleteLater()
+
+
+def test_popup_observer_detach_failure_cannot_skip_retirement(
+    qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A deleted popup is failed evidence, never permission to abandon hooks."""
+    assert QApplication.instance() is qapp
+    calls: list[str] = []
+
+    def broken_detach(_trace: object) -> None:
+        raise RuntimeError("wrapped menu deleted")
+
+    case = SimpleNamespace()
+    case.popup_trace = SimpleNamespace(first={})
+    case.snapshot = None
+    case.menu = SimpleNamespace(removeEventFilter=broken_detach)
+    case.journal = SimpleNamespace(
+        retire=lambda: calls.append("journal"), owned_handles=()
+    )
+    case.app = SimpleNamespace(
+        controller=SimpleNamespace(
+            capture=SimpleNamespace(cancel=lambda: calls.append("capture"))
+        )
+    )
+    case.adapter = SimpleNamespace(cancel=lambda: calls.append("adapter"))
+    case.qtbot = SimpleNamespace(
+        waitUntil=lambda *_args, **_kwargs: calls.append("wait")
+    )
+    case.source = SimpleNamespace(close=lambda: calls.append("source"))
+    case.directory = tmp_path
+    case.driver = SimpleNamespace(receipt=dict)
+    case.passed = False
+    case.errors = []
+    case.hosted_input = None
+    case.discoveries = []
+    monkeypatch.setattr(case, "retired", lambda: True, raising=False)
+    monkeypatch.setattr(
+        case, "close_owned_windows", lambda: calls.append("windows"), raising=False
+    )
+    with pytest.raises(AssertionError, match="observer detach failed"):
+        ScrollbarCase.close(cast(ScrollbarCase, case))
+    assert calls == ["journal", "capture", "adapter", "wait", "windows", "source"]
