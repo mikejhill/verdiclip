@@ -5,6 +5,8 @@ from __future__ import annotations
 import ctypes
 import ctypes.wintypes as w
 import json
+import os
+import time
 from pathlib import Path
 from typing import cast
 
@@ -13,6 +15,7 @@ from PySide6.QtCore import QPoint
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication, QMenu
 from pytestqt.qtbot import QtBot
+from tests.capture.hosted_fixture_input import HostedFixtureClick
 from tests.capture.production_matrix import (
     DriverJournal,
     InputProfile,
@@ -42,7 +45,7 @@ from verdiclip.settings import CaptureSettings, Settings
 
 
 class ScrollbarCase:
-    """Never generate input; require supported binding and actual native receipts."""
+    """External driver locally; explicit owned-input driver on disposable CI only."""
 
     def __init__(
         self,
@@ -52,6 +55,7 @@ class ScrollbarCase:
         directory: Path,
     ) -> None:
         self.qtbot, self.directory = qtbot, directory
+        self.input_deadline = time.monotonic() + 50
         self.driver = ProductionBrokerDriver(InputProfile.INJECTED, max_seconds=40)
         patch.setattr("verdiclip.capture.service.make_input_broker", self.driver.broker)
         self.source = RealDesktop()
@@ -76,7 +80,12 @@ class ScrollbarCase:
         self.journal = DriverJournal(
             directory,
             MatrixCase("qt-scrollbar-popup", "scrollbar-click", InputProfile.INJECTED),
+            input_generated_by_harness=os.environ.get("VERDICLIP_HOSTED_SCROLLBAR")
+            == "1",
         )
+        self.hosted_input: HostedFixtureClick | None = None
+        if os.environ.get("VERDICLIP_HOSTED_SCROLLBAR") == "1":
+            self.hosted_input = HostedFixtureClick(self.peer, self.journal)
         self.image = QImage()
         self.errors: list[str] = []
         self.app.controller.capture.failed.connect(self.errors.append)
@@ -140,6 +149,8 @@ class ScrollbarCase:
     def run(self) -> None:
         """No replay events or direct Start/Use calls may satisfy this case."""
         target = self.target()
+        if self.hosted_input is not None:
+            self.hosted_input.bind(target)
         self.qtbot.waitUntil(lambda: self.journal.binding_ready(target), timeout=20000)
         assert self.snapshot is not None
         assert not self.snapshot.errors()
@@ -155,6 +166,17 @@ class ScrollbarCase:
         )
         assert not self.errors
         self.journal.request("scrollbar-click", target)
+        if self.hosted_input is not None:
+            assert self.safe()
+            assert len(self.driver.workers) == 1
+            worker = self.driver.workers[0]
+            self.hosted_input.click(
+                target,
+                expires_at=self.input_deadline,
+                lease_valid=lambda: (
+                    self.safe() and self.driver.workers == [worker] and worker.active
+                ),
+            )
         self.qtbot.waitUntil(
             lambda: bool(self.app.controller.workspace.documents) or bool(self.errors),
             timeout=30000,
@@ -217,7 +239,10 @@ class ScrollbarCase:
                     "errors": self.errors,
                     "cleanup_errors": failures,
                     "retired": self.retired(),
-                    "input": self.driver.receipt(),
+                    "input": dict(
+                        self.driver.receipt(),
+                        input_generated_by_harness=self.hosted_input is not None,
+                    ),
                     "entry": "AppController.capture_scrolling; no global hotkey claim",
                     "semantic_hits": [
                         [node.kind.value for node in item.nodes]

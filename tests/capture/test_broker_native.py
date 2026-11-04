@@ -18,6 +18,7 @@ from PySide6.QtGui import QGuiApplication, QImage
 from PySide6.QtWidgets import QApplication, QMenu, QWidget
 from pytestqt.qtbot import QtBot
 from tests.capture.desktop import DesktopSession
+from tests.capture.hosted_fixture_input import require_hosted
 from tests.capture.menu_peer import MenuPeer
 from tests.capture.native_scrollbar import ScrollbarCase
 from tests.capture.preservation_harness import HarnessBudgets, PreservationSnapshot
@@ -49,6 +50,8 @@ def require_broker_handoff(request: pytest.FixtureRequest) -> None:
     """Fail/skip before creating a fixture host, child or input worker."""
     if not request.config.getoption("--native-broker-handoff"):
         pytest.skip("Production broker matrix requires explicit exclusive handoff")
+    if os.environ.get("VERDICLIP_HOSTED_SCROLLBAR") == "1":
+        require_hosted(os.environ)
     head = os.environ.get("VERDICLIP_QUALIFICATION_HEAD", "")
     if len(head) != 40 or any(c not in "0123456789abcdef" for c in head):
         pytest.fail("Run through the provenance-recording native matrix script")

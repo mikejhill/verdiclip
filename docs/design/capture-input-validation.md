@@ -281,3 +281,37 @@ No unchanged laptop retry is ready. Existing hosted Windows Qt presentation
 jobs and the separate owned-window capability canary do not provide this case's
 external guarded input driver. Native click ingress, semantic hit classification,
 popup preservation and full-panel fidelity together remain acceptance gates.
+
+### Disposable hosted input lane (manual opt-in)
+
+`CI` has an optional `hosted_scrollbar` workflow-dispatch input, false by default.
+It selects a standard `windows-2025` x64 VM, Qt 6.12, read-only repository contents,
+no persisted checkout credentials, no cache and no artifact upload. The source SHA
+must match the workflow's exact commit. Ordinary PR/push jobs cannot enable native
+input. No new runner, display driver, RDP session, privilege change or trust change
+is involved.
+
+This lane uses native `EnumWindows` plus the existing fixture's PID, nonce title,
+visibility, immutable snapshots, foreground ownership and point ownership. It is
+separate from the local supported Computer Use binding: it must never be used to
+work around a missing or denied window on a user's desktop. Environment checks
+are safeguards, not independent machine authentication; the workflow's isolated
+hosted-job placement is the execution boundary.
+
+After binding, the test starts the real broker and rechecks the exact live worker,
+original case deadline and popup state immediately before one `SendInput` batch:
+move, left-down, left-up. It does not activate a window or retry a click. A partial
+batch is a failure; only a known inserted down receives a matching release attempt,
+and uncertain release remains an explicit failure. Windows UIPI restrictions are
+retained. Native hook receipts, actual UIA ancestry, pixel equality and cleanup
+are still required; the acknowledgement alone cannot pass the case.
+
+The input and payload layouts follow Microsoft's [SendInput documentation][sendinput]
+and [INPUT structure][input-structure]. These are synthetic native events, not
+physical RawInput or hardware parity. The existing 90-second case supervisor and
+five-minute job timeout remain independent bounds. No hosted execution result is
+claimed by the offline/mock checks. Dispatch this lane only as a reviewed,
+explicit isolated qualification run; no laptop session is needed.
+
+[sendinput]: https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput
+[input-structure]: https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-input

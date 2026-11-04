@@ -94,8 +94,15 @@ def qualification_plan() -> dict[str, object]:
 class DriverJournal:
     """Publish instructions; a file acknowledgement can never produce a pass."""
 
-    def __init__(self, directory: Path, case: MatrixCase) -> None:
+    def __init__(
+        self,
+        directory: Path,
+        case: MatrixCase,
+        *,
+        input_generated_by_harness: bool = False,
+    ) -> None:
         self.directory, self.case = directory, case
+        self.input_generated_by_harness = input_generated_by_harness
         self.requests: list[dict[str, object]] = []
         self.owned_handles: tuple[int, ...] = ()
         self.binding_handle = 0
@@ -130,7 +137,7 @@ class DriverJournal:
             "binding_hwnd": self.binding_handle,
             "owned_hwnds": list(self.owned_handles),
             "physical_rectangle": asdict(area.rounded()),
-            "input_generated_by_harness": False,
+            "input_generated_by_harness": self.input_generated_by_harness,
         }
         self.directory.mkdir(parents=True, exist_ok=True)
         (self.directory / "driver-bind-request.json").write_text(
@@ -239,7 +246,7 @@ class DriverJournal:
                 if outcome == "scrollbar-click"
                 else "left drag top-left to bottom-right"
             ),
-            "input_generated_by_harness": False,
+            "input_generated_by_harness": self.input_generated_by_harness,
             "owned_hwnds": self.owned_handles,
             "target_guard": "listed test-owned handles only; stop on driver refusal",
         }

@@ -104,6 +104,7 @@ def test_cleanup_continues_after_journal_failure(tmp_path: Path) -> None:
             passed=True,
             errors=[],
             discoveries=[],
+            hosted_input=None,
             driver=SimpleNamespace(receipt=dict),
         ),
     )

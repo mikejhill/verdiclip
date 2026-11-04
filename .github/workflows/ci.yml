@@ -6,6 +6,11 @@ on:
     branches: [main]
   merge_group:
   workflow_dispatch:
+    inputs:
+      hosted_scrollbar:
+        description: One owned native scrollbar interaction on disposable Windows only
+        type: boolean
+        default: false
   workflow_call:
 
 permissions:
@@ -21,6 +26,43 @@ env:
   PYTHONUTF8: "1"
 
 jobs:
+  hosted-scrollbar:
+    name: Owned scrollbar interaction (native injected input)
+    if: github.event_name == 'workflow_dispatch' && inputs.hosted_scrollbar && github.repository == 'mikejhill/verdiclip'
+    runs-on: windows-2025
+    timeout-minutes: 5
+    cache-mode: none
+    permissions:
+      contents: read
+    env:
+      VERDICLIP_HOSTED_SCROLLBAR: '1'
+      VERDICLIP_HOSTED_SOURCE: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: '3.13'
+          enable-cache: false
+      - run: uv sync --locked
+      - name: Select the explicit current Qt runtime
+        run: uv pip install "pyside6-essentials==6.12.0" "shiboken6==6.12.0"
+      - name: Verify source and execute one bounded owned interaction
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          $head = (& git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $head -cne $env:VERDICLIP_HOSTED_SOURCE) { throw 'Source mismatch' }
+          ./scripts/test_capture_broker_native.ps1 -ScrollbarOnly -ExecuteAfterHandoff -PythonPaths "$PWD/.venv/Scripts/python.exe"
+      - name: Retain textual qualification results in the job log
+        if: always()
+        shell: pwsh
+        run: |
+          Get-ChildItem -Path .test-tmp/native-broker-* -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -in @('stdout.log', 'stderr.log', 'scrollbar-native.json', 'fixture-retired.json') } |
+            ForEach-Object { "RECEIPT=$($_.Name)"; Get-Content -LiteralPath $_.FullName }
+
   portable-baseline:
     name: Portable baseline (Linux, offscreen)
     runs-on: ubuntu-latest
