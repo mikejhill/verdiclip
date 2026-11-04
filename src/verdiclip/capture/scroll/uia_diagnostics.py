@@ -43,6 +43,7 @@ class WorkerTrace:
         b"VERDICLIP_UIA_PHASE=script_entered": "script_entered",
         b"VERDICLIP_UIA_PHASE=pipe_connected": "helper_pipe_connected",
         b"VERDICLIP_UIA_PHASE=runtime_ready": "runtime_ready",
+        b"VERDICLIP_UIA_PHASE=native_process_verified": "native_process_verified",
         b"VERDICLIP_UIA_PHASE=nofocus_constructing": "nofocus_constructing",
         b"VERDICLIP_UIA_PHASE=nofocus_constructed": "nofocus_constructed",
         b"VERDICLIP_UIA_PHASE=nofocus_policy": "nofocus_policy",

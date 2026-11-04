@@ -1,6 +1,6 @@
 # Bounded JSON-line operations in one warm MTA with a finite parent-owned lease.
 # No clicks, InvokePattern, activation, policy changes, or input injection.
-param([Parameter(Mandatory=$true)][string]$PipeName)
+param([Parameter(Mandatory=$true)][string]$PipeName, [switch]$NativeOnly)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 [Console]::Error.WriteLine('VERDICLIP_UIA_PHASE=script_entered')
@@ -32,11 +32,16 @@ function Test-SamePhysicalBounds {
     return $true
 }
 try {
-    Add-Type -AssemblyName UIAutomationClient
-    Add-Type -AssemblyName UIAutomationTypes
-    Add-Type -AssemblyName WindowsBase
-    Add-Type -AssemblyName System.Drawing
+    if (-not $NativeOnly) {
+        Add-Type -AssemblyName UIAutomationClient
+        Add-Type -AssemblyName UIAutomationTypes
+        Add-Type -AssemblyName WindowsBase
+        Add-Type -AssemblyName System.Drawing
+    } else {
+        . (Join-Path $PSScriptRoot "uia_native_request.ps1")
+    }
     Add-Type -Path @((Join-Path $PSScriptRoot "uia_nofocus_interop.cs"), (Join-Path $PSScriptRoot "uia_nofocus.cs"), (Join-Path $PSScriptRoot "uia_desktop.cs"))
+    if ($NativeOnly) { [VerdiClip.Automation.NoFocusScroll]::RequireNativeOnlyProcess() }
 
 } catch {
     $writer.WriteLine((@{ request_id=''; ok=$false; error='worker_startup_unavailable' } | ConvertTo-Json -Compress))
@@ -56,6 +61,14 @@ try {
     if ($request.action -notin @('inspect', 'observe', 'sample', 'step', 'restore')) {
         throw 'unsupported_action'
     }
+    if ($NativeOnly) {
+        [VerdiClip.Automation.NoFocusScroll]::RequireNativeOnlyProcess()
+        [Console]::Error.WriteLine('VERDICLIP_UIA_PHASE=native_process_verified')
+        $result = Invoke-NativeScrollRequest $request
+        $writer.WriteLine((@{ request_id=$requestId; ok=$true; result=$result } | ConvertTo-Json -Depth 12 -Compress))
+        continue
+    }
+    if ($request.action -in @('step', 'restore')) { throw 'native_process_required' }
     $dpiContext = [CaptureDesktop]::SetThreadDpiAwarenessContext([IntPtr]::new(-4))
     if ($dpiContext -eq [IntPtr]::Zero) { throw 'physical_pixel_context_unavailable' }
     if (-not [CaptureDesktop]::Interactive()) { throw 'interactive_desktop_unavailable' }
@@ -154,29 +167,6 @@ try {
         $position = [double]$pattern.Current.VerticalScrollPercent
         $view = [double]$pattern.Current.VerticalViewSize
         if ([double]::IsNaN($position) -or [double]::IsNaN($view) -or $position -lt 0 -or $position -gt 100 -or $view -le 0 -or $view -ge 100) { throw 'unsupported_scroll_metrics' }
-        if ($request.action -in @('step', 'restore')) {
-            if ($payload.confirmed -isnot [bool] -or -not $payload.confirmed -or -not (Test-OwnedScrollMetrics $position $view $reference)) { throw 'scroll_interference_or_unconfirmed' }
-            if ($request.action -eq 'restore') {
-                $destination = [double]$payload.restore_percent
-                if ($destination -lt 0 -or $destination -gt 100 -or [double]::IsNaN($destination)) { throw 'invalid_restore_position' }
-            } else {
-                # Half a reported viewport is a proposal, never measured displacement.
-                $destination = [Math]::Min(100, $position + (50 * $view / (100 - $view)))
-            }
-            # Mutation must use a pattern acquired from the SAME no-focus native client.
-            # Setting a separate client's policy does not change this managed pattern.
-            # Native Resolve revalidates target identity, ancestry, bounds and metrics.
-            # Keep the last viewport guard Win32-only: do not mix managed UIA
-            # objects into the newly configured native client mutation interval.
-            $permitMutation = [Func[bool]] {
-                return [CaptureDesktop]::Interactive() -and
-                    [CaptureDesktop]::IsWindowVisible($handle) -and -not [CaptureDesktop]::IsIconic($handle) -and
-                    [CaptureDesktop]::Unoccluded($handle, [int]$area[0], [int]$area[1], [int]$area[2], [int]$area[3])
-            }
-            [VerdiClip.Automation.NoFocusScroll]::SetPercent(
-                $handle.ToInt64(), $process.Id, $started, $rootRuntime,
-                [string]$reference.runtime_id, [double[]]$bounds, $position, $view, $destination, [int[]]$area, $permitMutation)
-        }
         $updated = Get-Reference $element $pattern
         $result = @{ reference=$updated; at_end=($updated.vertical_percent -ge 100) }
         if ($request.action -eq 'sample') {

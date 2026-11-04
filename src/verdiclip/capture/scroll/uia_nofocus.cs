@@ -82,8 +82,12 @@ public static class NoFocusScroll {
         Phase.Mark("nofocus_moved");
     }
     public static void ExecuteOwned(IScrollClient client, ScrollRequest request, Func<bool> permitMutation) {
+        UseOwned(client, () => { Execute(client, request, permitMutation); return 0; });
+    }
+    public static T UseOwned<T>(IScrollClient client, Func<T> operation) {
+        T result = default(T);
         Exception operationFailure = null;
-        try { Execute(client, request, permitMutation); }
+        try { result = operation(); }
         catch (Exception error) { operationFailure = error; }
         try { client.Dispose(); }
         catch (Exception cleanupFailure) {
@@ -91,6 +95,7 @@ public static class NoFocusScroll {
             throw;
         }
         if (operationFailure != null) ExceptionDispatchInfo.Capture(operationFailure).Throw();
+        return result;
     }
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
     public static void RunOnMta(Action operation) {
@@ -129,20 +134,46 @@ public static class NoFocusScroll {
         return CaptureDesktop.Interactive() && CaptureDesktop.IsWindowVisible(handle) &&
             !CaptureDesktop.IsIconic(handle) && CaptureDesktop.Unoccluded(handle,area[0],area[1],area[2],area[3]);
     }
-    public static void SetPercent(long handle, int pid, long ticks, string rootRuntime, string runtime,
-        double[] bounds, double position, double viewSize, double destination, int[] viewport, Func<bool> permitMutation) {
-        // PowerShell runs only this preflight on its own runspace thread.
-        Require(permitMutation != null && permitMutation());
-        Require(bounds != null && viewport != null);
-        IntPtr foreground = GetForegroundWindow();
-        var request = new ScrollRequest { Handle=handle, ProcessId=pid, StartedTicks=ticks,
-            RootRuntime=rootRuntime, Runtime=runtime, Bounds=(double[])bounds.Clone(),
-            Position=position, ViewSize=viewSize, Destination=destination };
-        var area = (int[])viewport.Clone();
-        RunOnMta(() => WithPhysicalPixels(
-            () => ExecuteOwned(new NativeScrollClient(foreground), request, () => PermitViewport(request, area)),
-            CaptureDesktop.SetThreadDpiAwarenessContext));
+    public static void RequireNativeOnlyProcess() {
+        foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies()) {
+            string name = assembly.GetName().Name;
+            if (name == "UIAutomationClient" || name == "UIAutomationTypes")
+                throw new InvalidOperationException("managed_uia_in_native_process");
+        }
     }
+    public static ScrollTarget Snapshot(ScrollTarget target) {
+        return new ScrollTarget { Handle=target.Handle, ProcessId=target.ProcessId,
+            StartedTicks=target.StartedTicks, RootRuntime=target.RootRuntime, Runtime=target.Runtime,
+            Bounds=(double[])target.Bounds.Clone(), Position=target.Position, ViewSize=target.ViewSize,
+            Enabled=target.Enabled, Offscreen=target.Offscreen, Scrollable=target.Scrollable };
+    }
+    public static ScrollTarget Mutate(long handle, int pid, long ticks, string runtime,
+        double[] bounds, double position, double viewSize, double destination, int[] viewport) {
+        RequireNativeOnlyProcess();
+        Require(bounds != null && viewport != null);
+        var request = new ScrollRequest { Handle=handle, ProcessId=pid, StartedTicks=ticks,
+            Runtime=runtime, Bounds=(double[])bounds.Clone(), Position=position,
+            ViewSize=viewSize, Destination=destination };
+        var area = (int[])viewport.Clone();
+        IntPtr foreground = GetForegroundWindow();
+        ScrollTarget result = null;
+        RunOnMta(() => WithPhysicalPixels(() => {
+            var client = new NativeScrollClient(foreground);
+            result = UseOwned(client, () => {
+                RequireNativeOnlyProcess();
+                client.AutoSetFocus = false;
+                Require(!client.AutoSetFocus);
+                request.RootRuntime = client.ReadRootRuntime(request);
+                Execute(client, request, () => PermitViewport(request, area));
+                ScrollTarget updated = client.Resolve(request);
+                Require(!client.AutoSetFocus);
+                RequireNativeOnlyProcess();
+                return Snapshot(updated);
+            });
+        }, CaptureDesktop.SetThreadDpiAwarenessContext));
+        return result;
+    }
+
 }
 internal sealed class NativeScrollClient : IScrollClient, IDisposable {
     private readonly List<object> owned = new List<object>();
@@ -188,6 +219,22 @@ internal sealed class NativeScrollClient : IScrollClient, IDisposable {
         return new double[] { Math.Ceiling(raw[0]), Math.Ceiling(raw[1]),
             Math.Floor(raw[0]+raw[2])-Math.Ceiling(raw[0]), Math.Floor(raw[1]+raw[3])-Math.Ceiling(raw[1]) };
     }
+    public string ReadRootRuntime(ScrollRequest request) {
+        foreground.EnsureUnchanged();
+        IntPtr handle = new IntPtr(request.Handle);
+        uint owner; GetWindowThreadProcessId(handle, out owner);
+        if (request.Handle == 0 || owner != request.ProcessId)
+            throw new InvalidOperationException("native_scroll_window_changed");
+        using (var process = Process.GetProcessById(request.ProcessId)) {
+            if (process.StartTime.ToUniversalTime().Ticks != request.StartedTicks)
+                throw new InvalidOperationException("native_scroll_generation_changed");
+        }
+        IElement root; automation.ElementFromHandle(handle, out root); Own(root);
+        if ((int)Property(root,30002) != request.ProcessId)
+            throw new InvalidOperationException("native_scroll_root_changed");
+        foreground.EnsureUnchanged();
+        return Runtime(root);
+    }
     public ScrollTarget Resolve(ScrollRequest request) {
         foreground.EnsureUnchanged();
         IntPtr handle = new IntPtr(request.Handle);
@@ -232,6 +279,7 @@ internal sealed class NativeScrollClient : IScrollClient, IDisposable {
                 throw new InvalidOperationException("native_scroll_precondition_changed");
         }
         foreground.EnsureUnchanged();
+        NoFocusScroll.RequireNativeOnlyProcess();
         Phase.Mark("nofocus_moving");
         target.Pattern.SetScrollPercent(-1, destination);
         Phase.Mark("nofocus_call_returned");

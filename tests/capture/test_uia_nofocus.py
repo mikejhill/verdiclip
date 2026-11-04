@@ -43,7 +43,7 @@ def test_nofocus_policy_with_compiled_fake_client(tmp_path: Path) -> None:
         ],
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert result.stdout.strip() == "61"
+    assert result.stdout.strip() == "65"
 
 
 def test_mutation_uses_packaged_same_client_no_focus_implementation() -> None:
@@ -51,7 +51,10 @@ def test_mutation_uses_packaged_same_client_no_focus_implementation() -> None:
     folder = Path(uia_process.__file__).parent
     helper = (folder / "uia_helper.ps1").read_text()
     assert "$pattern.SetScrollPercent" not in helper
-    assert "[VerdiClip.Automation.NoFocusScroll]::SetPercent(" in helper
+    assert "native_process_required" in helper
+    assert "Invoke-NativeScrollRequest $request" in helper
+    native = (folder / "uia_native_request.ps1").read_text()
+    assert "[VerdiClip.Automation.NoFocusScroll]::Mutate(" in native
     for name in ("uia_nofocus_interop.cs", "uia_nofocus.cs", "uia_desktop.cs"):
         assert (folder / name).is_file()
         assert name in helper
@@ -102,32 +105,8 @@ def test_actual_provider_render_callback_activates_only_once(tmp_path: Path) -> 
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Installed Windows PowerShell")
-def test_actual_mutation_guard_uses_only_win32_checks(tmp_path: Path) -> None:
-    """Actual delegate executes with fake OS checks and no managed UIA objects."""
-    script = tmp_path / "guard-policy.ps1"
-    script.write_text(
-        "param([string]$Helper)\n"
-        "$ErrorActionPreference='Stop';Set-StrictMode -Version Latest\n"
-        "Add-Type -TypeDefinition @'\n"
-        "using System; public static class CaptureDesktop {\n"
-        "public static int Reject;\n"
-        "public static bool Interactive(){return Reject!=1;}\n"
-        "public static bool IsWindowVisible(IntPtr h){return Reject!=2;}\n"
-        "public static bool IsIconic(IntPtr h){return Reject==3;}\n"
-        "public static bool Unoccluded(IntPtr h,int x,int y,int w,int z)"
-        "{return Reject!=4 && h.ToInt64()==17 && x==-20 && y==30 "
-        "&& w==100 && z==80;} }\n'@\n"
-        "$source=[IO.File]::ReadAllText($Helper)\n"
-        "$pattern='(?s)\\$permitMutation = \\[Func\\[bool\\]\\] \\{(.*?)\\}'\n"
-        "$match=[regex]::Match($source,$pattern)\n"
-        "if(-not $match.Success){throw 'delegate missing'}\n"
-        "$handle=[IntPtr]17;$area=@(-20,30,100,80)\n"
-        "$callback=[Func[bool]][scriptblock]::Create($match.Groups[1].Value)\n"
-        "foreach($reject in 0..4){[CaptureDesktop]::Reject=$reject;"
-        "if($callback.Invoke() -ne ($reject -eq 0)){throw 'guard mismatch'}}\n"
-        "[Console]::WriteLine('five-guard-cases')\n",
-        encoding="utf-8",
-    )
+def test_actual_native_request_conversion_refuses_unsafe_inputs() -> None:
+    """Execute production conversion against a fake mutator, without desktop UIA."""
     host = (
         Path(os.environ["SYSTEMROOT"])
         / "System32/WindowsPowerShell/v1.0/powershell.exe"
@@ -138,10 +117,10 @@ def test_actual_mutation_guard_uses_only_win32_checks(tmp_path: Path) -> None:
             "-NoProfile",
             "-NonInteractive",
             "-File",
-            str(script),
-            "-Helper",
-            str(Path(uia_process.__file__).with_name("uia_helper.ps1")),
+            str(Path(__file__).with_name("uia_native_request_fake.ps1")),
+            "-Source",
+            str(Path(uia_process.__file__).with_name("uia_native_request.ps1")),
         ]
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert result.stdout.strip() == "five-guard-cases"
+    assert result.stdout.strip() == "native-request-policy-passed"

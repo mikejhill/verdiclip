@@ -472,6 +472,11 @@ class ScrollbarCase:
                         if self.process.diagnostics is not None
                         else None
                     ),
+                    "provider_worker_diagnostics": {
+                        mode: asdict(trace)
+                        for mode, trace in self.process.diagnostics_for_workers.items()
+                    },
+                    "provider_workers_after_cleanup": self.process.worker_pids,
                     "popup_transitions_before_cleanup": transitions,
                     "declared_owned_handles": self.journal.owned_handles,
                     "retired": self.retired(),

@@ -126,7 +126,9 @@ def test_cleanup_continues_after_journal_failure(tmp_path: Path) -> None:
             retirement_probe={},
             operation_trace=[],
             fixture_readiness={},
-            process=SimpleNamespace(diagnostics=None),
+            process=SimpleNamespace(
+                diagnostics=None, diagnostics_for_workers={}, worker_pids=()
+            ),
             snapshot=SimpleNamespace(
                 close=lambda: calls.append("snapshot"), transitions=[]
             ),

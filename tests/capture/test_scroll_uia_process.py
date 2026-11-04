@@ -337,6 +337,51 @@ def test_warm_worker_reuses_pid_and_cancellation_ends_scope(
     client.deleteLater()
 
 
+def test_isolated_mutation_uses_distinct_children_and_retires_both(
+    qtbot: QtBot, helper: Path
+) -> None:
+    """Real protocol processes prove separation and cleanup without desktop APIs."""
+    command = (sys.executable, str(helper), "success")
+    client = UiaProcess(
+        helper_command=command,
+        native_helper_command=command,
+        qualified=True,
+        use_local_pipe=False,
+    )
+    cleanup: list[tuple[int, ...]] = []
+    client.register_scope_cleanup(lambda: cleanup.append(client.worker_pids))
+    try:
+        with qtbot.waitSignal(client.completed, timeout=reply_observer_ms()):
+            client.start(UiaAction.INSPECT, {})
+        managed = client.worker_pid
+        with qtbot.waitSignal(client.completed, timeout=reply_observer_ms()):
+            client.start(UiaAction.STEP, {})
+        native = client.worker_pid
+        assert managed is not None
+        assert native is not None
+        assert managed != native
+        assert set(client.worker_pids) == {managed, native}
+        with qtbot.waitSignal(client.completed, timeout=reply_observer_ms()):
+            client.start(UiaAction.OBSERVE, {})
+        assert client.worker_pid == managed
+        assert cleanup == []
+        with qtbot.waitSignal(client.scope_closed, timeout=reply_observer_ms()):
+            client.cancel()
+        assert not client.busy
+        assert client.worker_pid is None
+        assert client.worker_pids == ()
+        assert cleanup == [()]
+        assert set(client.diagnostics_for_workers) == {"managed", "native"}
+        assert all(
+            trace.cleanup == "confirmed"
+            for trace in client.diagnostics_for_workers.values()
+        )
+    finally:
+        client.cancel()
+        qtbot.waitUntil(lambda: not client.busy, timeout=reply_observer_ms())
+        client.deleteLater()
+
+
 def test_warm_worker_idle_expiry_releases_child_and_allows_fresh_start(
     qtbot: QtBot, helper: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

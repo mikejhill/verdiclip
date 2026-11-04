@@ -1,4 +1,4 @@
-// Pure policy tests. Never construct NativeScrollClient or invoke SetPercent.
+// Pure policy tests. Never construct NativeScrollClient or invoke Mutate.
 using System;
 using System.Collections.Generic;
 using System.Threading;
@@ -112,6 +112,17 @@ public static class NoFocusPolicyTests {
         int dpiCalls=0;
         try { NoFocusScroll.WithPhysicalPixels(()=>{throw threadFailure;},value=>++dpiCalls==1?new IntPtr(7):IntPtr.Zero); throw new Exception("dpi failures lost"); }
         catch(AggregateException error) { if(error.InnerExceptions[0]!=threadFailure || dpiCalls!=2) throw; } count++;
+        var snapshotClient=Client();
+        int snapshot=NoFocusScroll.UseOwned(snapshotClient,()=>42);
+        if(snapshot!=42 || snapshotClient.Disposals!=1) throw new Exception("snapshot ownership"); count++;
+        var sourceTarget=Client().Target;
+        var copiedTarget=NoFocusScroll.Snapshot(sourceTarget);
+        if(copiedTarget==sourceTarget || copiedTarget.Bounds==sourceTarget.Bounds || copiedTarget.Pattern!=null || copiedTarget.Runtime!=sourceTarget.Runtime || copiedTarget.Position!=sourceTarget.Position) throw new Exception("snapshot retained live data"); count++;
+        NoFocusScroll.RequireNativeOnlyProcess(); count++;
+        var assemblyName=new System.Reflection.AssemblyName("UIAutomationClient");
+        AppDomain.CurrentDomain.DefineDynamicAssembly(assemblyName,System.Reflection.Emit.AssemblyBuilderAccess.Run);
+        try { NoFocusScroll.RequireNativeOnlyProcess(); throw new Exception("managed process admitted"); }
+        catch(InvalidOperationException) {} count++;
         return count;
     }
 }
