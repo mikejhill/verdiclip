@@ -43,6 +43,13 @@ class WorkerTrace:
         b"VERDICLIP_UIA_PHASE=script_entered": "script_entered",
         b"VERDICLIP_UIA_PHASE=pipe_connected": "helper_pipe_connected",
         b"VERDICLIP_UIA_PHASE=runtime_ready": "runtime_ready",
+        b"VERDICLIP_UIA_PHASE=nofocus_constructing": "nofocus_constructing",
+        b"VERDICLIP_UIA_PHASE=nofocus_constructed": "nofocus_constructed",
+        b"VERDICLIP_UIA_PHASE=nofocus_policy": "nofocus_policy",
+        b"VERDICLIP_UIA_PHASE=nofocus_resolved": "nofocus_resolved",
+        b"VERDICLIP_UIA_PHASE=nofocus_guarded": "nofocus_guarded",
+        b"VERDICLIP_UIA_PHASE=nofocus_moving": "nofocus_moving",
+        b"VERDICLIP_UIA_PHASE=nofocus_moved": "nofocus_moved",
     }
 
     def __init__(self, clock: Callable[[], float]) -> None:

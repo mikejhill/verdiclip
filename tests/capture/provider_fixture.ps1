@@ -51,7 +51,7 @@ $image.Stretch = 'None'; $image.HorizontalAlignment = 'Left'
 [Windows.Media.RenderOptions]::SetBitmapScalingMode($image, 'NearestNeighbor')
 $viewer.Content = $image; $stack.Children.Add($viewer) | Out-Null
 $window.Content = $stack
-$sequence = 0; $closed = $false; $ready = $false; $maximumOffset = 0.0; $endSeen = $false
+$sequence = 0; $closed = $false; $ready = $false; $renderObserved = $false; $maximumOffset = 0.0; $endSeen = $false
 $lastCommand = 0; $pendingCommand = $null
 function Write-FixtureState {
     if (-not $ready -or -not $window.IsLoaded -or $closed) { return }
@@ -111,9 +111,15 @@ $timer.Add_Tick({
     Write-FixtureState
 })
 $window.Add_ContentRendered({
-    Write-Output ('FIXTURE_PHASE=content-rendered utc=' + [DateTime]::UtcNow.ToString('o'))
     # One ordinary owned-window activation; never force foreground or send input.
-    if ($ready) { return } # Later renders cannot reactivate an established fixture.
+    if ($script:ready) {
+        if (-not $script:renderObserved) {
+            [Console]::Error.WriteLine('FIXTURE_PHASE=repeat-render-ignored')
+            $script:renderObserved = $true
+        }
+        return
+    } # Later renders cannot reactivate an established fixture.
+    [Console]::Error.WriteLine('FIXTURE_PHASE=initial-activation utc=' + [DateTime]::UtcNow.ToString('o'))
     $null = $window.Activate()
     $script:ready = $true
     Write-FixtureState

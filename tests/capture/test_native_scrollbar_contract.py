@@ -125,6 +125,7 @@ def test_cleanup_continues_after_journal_failure(tmp_path: Path) -> None:
             popup_trace=None,
             retirement_probe={},
             operation_trace=[],
+            process=SimpleNamespace(diagnostics=None),
             snapshot=SimpleNamespace(
                 close=lambda: calls.append("snapshot"), transitions=[]
             ),
@@ -248,7 +249,7 @@ def test_provider_stop_timer_does_not_wait_for_render_event() -> None:
     assert "if ($null -ne $timer) { $timer.Stop() }" in script
     assert "if (-not $ready -or -not $window.IsLoaded -or $closed) { return }" in script
     rendered = script.split("$window.Add_ContentRendered({", 1)[1].split("})", 1)[0]
-    assert rendered.index("if ($ready)") < rendered.index("$window.Activate()")
+    assert rendered.index("if ($script:ready)") < rendered.index("$window.Activate()")
     assert rendered.index("$window.Activate()") < rendered.index(
         "$script:ready = $true"
     )

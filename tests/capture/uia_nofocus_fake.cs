@@ -75,6 +75,14 @@ public static class NoFocusPolicyTests {
         var both=Client(); both.FailResolve=true; both.FailDispose=true;
         try { NoFocusScroll.ExecuteOwned(both,Request(),()=>true); throw new Exception("double failure swallowed"); }
         catch(AggregateException error) { if(error.InnerExceptions.Count!=2 || error.InnerExceptions[0]!=both.Failure || error.InnerExceptions[1]!=both.CleanupFailure || both.Disposals!=1) throw; } count++;
+        IntPtr active = new IntPtr(17);
+        var foreground = new ForegroundGuard(()=>active);
+        foreground.EnsureUnchanged(); count++;
+        active = new IntPtr(18); // A constructor/resolution must not adopt this new baseline.
+        try { foreground.EnsureUnchanged(); throw new Exception("foreground was rebased"); }
+        catch(InvalidOperationException) {} count++;
+        try { new ForegroundGuard(()=>IntPtr.Zero); throw new Exception("zero foreground accepted"); }
+        catch(InvalidOperationException) {} count++;
         return count;
     }
 }

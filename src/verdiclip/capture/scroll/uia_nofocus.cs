@@ -2,9 +2,22 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Runtime.ExceptionServices;
 namespace VerdiClip.Automation {
+public sealed class ForegroundGuard {
+    private readonly Func<IntPtr> read;
+    private readonly IntPtr original;
+    public ForegroundGuard(Func<IntPtr> reader) {
+        read = reader;
+        original = read();
+        if (original == IntPtr.Zero) throw new InvalidOperationException("native_scroll_foreground_unavailable");
+    }
+    public void EnsureUnchanged() {
+        if (read() != original) throw new InvalidOperationException("native_scroll_foreground_changed");
+    }
+}
 public sealed class ScrollRequest {
     public long Handle, StartedTicks;
     public int ProcessId;
@@ -26,6 +39,13 @@ public interface IScrollClient : IDisposable {
     ScrollTarget Resolve(ScrollRequest request);
     void Move(ScrollTarget target, double destination);
 }
+internal static class Phase {
+    internal static void Mark(string phase) {
+        try { Console.Error.WriteLine("VERDICLIP_UIA_PHASE=" + phase); }
+        catch (IOException) { /* Optional diagnostics must not alter an operation. */ }
+        catch (ObjectDisposedException) { /* The parent may already be retiring. */ }
+    }
+}
 public static class NoFocusScroll {
     private static bool Finite(double value) { return !Double.IsNaN(value) && !Double.IsInfinity(value); }
     private static void Require(bool valid) { if (!valid) throw new InvalidOperationException("native_scroll_identity_or_policy_changed"); }
@@ -41,7 +61,9 @@ public static class NoFocusScroll {
         Require(Finite(request.ViewSize) && request.ViewSize > 0 && request.ViewSize < 100);
         client.AutoSetFocus = false;
         Require(!client.AutoSetFocus);
+        Phase.Mark("nofocus_policy");
         ScrollTarget target = client.Resolve(request);
+        Phase.Mark("nofocus_resolved");
         Require(target != null && target.Handle == request.Handle && target.ProcessId == request.ProcessId);
         Require(target.StartedTicks == request.StartedTicks && target.RootRuntime == request.RootRuntime && target.Runtime == request.Runtime);
         Require(target.Bounds != null && target.Bounds.Length == 4);
@@ -51,7 +73,9 @@ public static class NoFocusScroll {
         Require(Finite(target.ViewSize) && target.ViewSize > 0 && target.ViewSize < 100 && Math.Abs(target.ViewSize-request.ViewSize) <= 0.001);
         Require(!client.AutoSetFocus); // Do not mutate if this client no longer honors the policy.
         Require(permitMutation()); // Repeat the original full-area occlusion/identity guard after resolution.
+        Phase.Mark("nofocus_guarded");
         client.Move(target, request.Destination);
+        Phase.Mark("nofocus_moved");
     }
     public static void ExecuteOwned(IScrollClient client, ScrollRequest request, Func<bool> permitMutation) {
         Exception operationFailure = null;
@@ -74,13 +98,19 @@ public static class NoFocusScroll {
 internal sealed class NativeScrollClient : IScrollClient, IDisposable {
     private readonly List<object> owned = new List<object>();
     private readonly IAutomation2 automation;
-    private IntPtr foreground;
+    private readonly ForegroundGuard foreground;
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);
     public NativeScrollClient() {
+        foreground = new ForegroundGuard(GetForegroundWindow);
         var type = Type.GetTypeFromCLSID(new Guid("e22ad333-b25f-460c-83d0-0581107395c9"), true); // CUIAutomation8
+        Phase.Mark("nofocus_constructing");
         object instance = Activator.CreateInstance(type);
-        try { automation = (IAutomation2)instance; owned.Add(instance); }
+        try {
+            automation = (IAutomation2)instance; owned.Add(instance);
+            foreground.EnsureUnchanged();
+            Phase.Mark("nofocus_constructed");
+        }
         catch (Exception primary) {
             try { if (instance != null && Marshal.IsComObject(instance)) Marshal.ReleaseComObject(instance); }
             catch (Exception cleanup) { throw new AggregateException("native_scroll_construction_and_cleanup_failed", primary, cleanup); }
@@ -88,8 +118,8 @@ internal sealed class NativeScrollClient : IScrollClient, IDisposable {
         }
     }
     public bool AutoSetFocus {
-        get { int enabled; automation.get_AutoSetFocus(out enabled); return enabled != 0; }
-        set { automation.put_AutoSetFocus(value ? 1 : 0); }
+        get { int enabled; automation.get_AutoSetFocus(out enabled); foreground.EnsureUnchanged(); return enabled != 0; }
+        set { foreground.EnsureUnchanged(); automation.put_AutoSetFocus(value ? 1 : 0); foreground.EnsureUnchanged(); }
     }
     private T Own<T>(T value) where T : class {
         if (value == null) throw new InvalidOperationException("native_scroll_interface_unavailable");
@@ -110,8 +140,7 @@ internal sealed class NativeScrollClient : IScrollClient, IDisposable {
             Math.Floor(raw[0]+raw[2])-Math.Ceiling(raw[0]), Math.Floor(raw[1]+raw[3])-Math.Ceiling(raw[1]) };
     }
     public ScrollTarget Resolve(ScrollRequest request) {
-        foreground = GetForegroundWindow();
-        if (foreground == IntPtr.Zero) throw new InvalidOperationException("native_scroll_foreground_unavailable");
+        foreground.EnsureUnchanged();
         IntPtr handle = new IntPtr(request.Handle);
         uint owner; GetWindowThreadProcessId(handle, out owner);
         if (owner != request.ProcessId) throw new InvalidOperationException("native_scroll_window_changed");
@@ -150,11 +179,13 @@ internal sealed class NativeScrollClient : IScrollClient, IDisposable {
     public void Move(ScrollTarget target, double destination) {
         uint owner; GetWindowThreadProcessId(new IntPtr(target.Handle), out owner);
         using (var process = Process.GetProcessById(target.ProcessId)) {
-            if (owner != target.ProcessId || process.StartTime.ToUniversalTime().Ticks != target.StartedTicks || GetForegroundWindow() != foreground)
+            if (owner != target.ProcessId || process.StartTime.ToUniversalTime().Ticks != target.StartedTicks)
                 throw new InvalidOperationException("native_scroll_precondition_changed");
         }
+        foreground.EnsureUnchanged();
+        Phase.Mark("nofocus_moving");
         target.Pattern.SetScrollPercent(-1, destination);
-        if (GetForegroundWindow() != foreground) throw new InvalidOperationException("native_scroll_provider_changed_foreground");
+        foreground.EnsureUnchanged();
     }
     public void Dispose() {
         var failures = new List<Exception>();

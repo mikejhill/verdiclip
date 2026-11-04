@@ -9,6 +9,7 @@ import os
 import time
 import traceback
 from collections.abc import Callable
+from dataclasses import asdict
 from pathlib import Path
 from typing import cast, override
 
@@ -451,6 +452,11 @@ class ScrollbarCase:
                     "first_popup_loss": popup_loss,
                     "passive_retirement_probe": self.retirement_probe,
                     "operation_trace": self.operation_trace,
+                    "provider_diagnostics": (
+                        asdict(self.process.diagnostics)
+                        if self.process.diagnostics is not None
+                        else None
+                    ),
                     "popup_transitions_before_cleanup": transitions,
                     "declared_owned_handles": self.journal.owned_handles,
                     "retired": self.retired(),
