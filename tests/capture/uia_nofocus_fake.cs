@@ -1,6 +1,7 @@
 // Pure policy tests. Never construct NativeScrollClient or invoke SetPercent.
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using VerdiClip.Automation;
 public static class NoFocusPolicyTests {
     sealed class Fake : IScrollClient {
@@ -86,6 +87,41 @@ public static class NoFocusPolicyTests {
         catch(InvalidOperationException) {} count++;
         try { new ForegroundGuard(()=>IntPtr.Zero); throw new Exception("zero foreground accepted"); }
         catch(InvalidOperationException) {} count++;
+        int caller = Thread.CurrentThread.ManagedThreadId;
+        int worker = caller; ApartmentState apartment = ApartmentState.Unknown;
+        NoFocusScroll.RunOnMta(() => { worker=Thread.CurrentThread.ManagedThreadId; apartment=Thread.CurrentThread.GetApartmentState(); });
+        if(worker==caller || apartment!=ApartmentState.MTA) throw new Exception("not a separate MTA"); count++;
+        var threadFailure = new InvalidOperationException("thread operation");
+        try { NoFocusScroll.RunOnMta(() => { throw threadFailure; }); throw new Exception("thread failure swallowed"); }
+        catch(InvalidOperationException error) { if(error!=threadFailure) throw; } count++;
+        var ownedThread = Client();
+        NoFocusScroll.RunOnMta(() => NoFocusScroll.ExecuteOwned(ownedThread,Request(),()=>true));
+        if(ownedThread.Moves!=1 || ownedThread.Disposals!=1) throw new Exception("thread ownership"); count++;
+        for(int reject=0;reject<=4;reject++) {
+            CaptureDesktop.Reject=reject;
+            if(NoFocusScroll.PermitViewport(Request(),new int[]{-200,40,100,80}) != (reject==0)) throw new Exception("native viewport guard"); count++;
+        }
+        CaptureDesktop.Reject=0;
+        if(NoFocusScroll.PermitViewport(Request(),new int[]{-201,40,100,80})) throw new Exception("outside viewport"); count++;
+        var contexts=new List<IntPtr>();
+        NoFocusScroll.WithPhysicalPixels(()=>contexts.Add(new IntPtr(99)),value=>{contexts.Add(value);return new IntPtr(7);});
+        if(contexts.Count!=3 || contexts[0].ToInt64()!=-4 || contexts[1].ToInt64()!=99 || contexts[2].ToInt64()!=7) throw new Exception("dpi ordering"); count++;
+        bool ran=false;
+        try { NoFocusScroll.WithPhysicalPixels(()=>ran=true,value=>IntPtr.Zero); throw new Exception("dpi admission"); }
+        catch(InvalidOperationException) { if(ran) throw; } count++;
+        int dpiCalls=0;
+        try { NoFocusScroll.WithPhysicalPixels(()=>{throw threadFailure;},value=>++dpiCalls==1?new IntPtr(7):IntPtr.Zero); throw new Exception("dpi failures lost"); }
+        catch(AggregateException error) { if(error.InnerExceptions[0]!=threadFailure || dpiCalls!=2) throw; } count++;
         return count;
     }
+}
+
+// Production policy compiled against pure OS fakes: no user32 call is made here.
+public static class CaptureDesktop {
+    public static int Reject;
+    public static bool Interactive() { return Reject!=1; }
+    public static bool IsWindowVisible(IntPtr window) { return Reject!=2; }
+    public static bool IsIconic(IntPtr window) { return Reject==3; }
+    public static bool Unoccluded(IntPtr window,int x,int y,int width,int height) { return Reject!=4; }
+    public static IntPtr SetThreadDpiAwarenessContext(IntPtr context) { throw new Exception("not called by pure tests"); }
 }

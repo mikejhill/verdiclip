@@ -3,16 +3,19 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Threading;
 using System.Runtime.InteropServices;
 using System.Runtime.ExceptionServices;
 namespace VerdiClip.Automation {
 public sealed class ForegroundGuard {
     private readonly Func<IntPtr> read;
     private readonly IntPtr original;
-    public ForegroundGuard(Func<IntPtr> reader) {
+    public ForegroundGuard(Func<IntPtr> reader) : this(reader, reader()) {}
+    public ForegroundGuard(Func<IntPtr> reader, IntPtr expected) {
         read = reader;
-        original = read();
+        original = expected;
         if (original == IntPtr.Zero) throw new InvalidOperationException("native_scroll_foreground_unavailable");
+        EnsureUnchanged();
     }
     public void EnsureUnchanged() {
         if (read() != original) throw new InvalidOperationException("native_scroll_foreground_changed");
@@ -89,11 +92,56 @@ public static class NoFocusScroll {
         }
         if (operationFailure != null) ExceptionDispatchInfo.Capture(operationFailure).Throw();
     }
-    public static void SetPercent(long handle, int processId, long startedTicks,
-        string rootRuntime, string runtime, double[] bounds, double position, double viewSize, double destination, Func<bool> permitMutation) {
-        var request = new ScrollRequest { Handle=handle, ProcessId=processId, StartedTicks=startedTicks,
-            RootRuntime=rootRuntime, Runtime=runtime, Bounds=bounds, Position=position, ViewSize=viewSize, Destination=destination };
-        ExecuteOwned(new NativeScrollClient(), request, permitMutation);
+    [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+    public static void RunOnMta(Action operation) {
+        Exception failure = null;
+        var thread = new Thread(() => {
+            try { operation(); }
+            catch (Exception error) { failure = error; }
+        });
+        thread.IsBackground = true;
+        thread.SetApartmentState(ApartmentState.MTA);
+        thread.Start();
+        // The unchanged parent operation deadline kills this helper on a hang.
+        thread.Join();
+        if (failure != null) ExceptionDispatchInfo.Capture(failure).Throw();
+    }
+    public static void WithPhysicalPixels(Action operation, Func<IntPtr, IntPtr> setContext) {
+        IntPtr prior = setContext(new IntPtr(-4));
+        if (prior == IntPtr.Zero) throw new InvalidOperationException("physical_pixel_context_unavailable");
+        Exception failure = null;
+        try { operation(); } catch (Exception error) { failure = error; }
+        try {
+            if (setContext(prior) == IntPtr.Zero) throw new InvalidOperationException("physical_pixel_context_restore_failed");
+        } catch (Exception cleanup) {
+            if (failure != null) throw new AggregateException("operation_and_dpi_cleanup_failed", failure, cleanup);
+            throw;
+        }
+        if (failure != null) ExceptionDispatchInfo.Capture(failure).Throw();
+    }
+    public static bool PermitViewport(ScrollRequest request, int[] area) {
+        if (area == null || area.Length != 4 || area[2] <= 0 || area[3] <= 0 ||
+            (long)area[2]*area[3] > 16000000 || request.Bounds == null || request.Bounds.Length != 4 ||
+            area[0] < request.Bounds[0] || area[1] < request.Bounds[1] ||
+            (long)area[0]+area[2] > request.Bounds[0]+request.Bounds[2] ||
+            (long)area[1]+area[3] > request.Bounds[1]+request.Bounds[3]) return false;
+        IntPtr handle = new IntPtr(request.Handle);
+        return CaptureDesktop.Interactive() && CaptureDesktop.IsWindowVisible(handle) &&
+            !CaptureDesktop.IsIconic(handle) && CaptureDesktop.Unoccluded(handle,area[0],area[1],area[2],area[3]);
+    }
+    public static void SetPercent(long handle, int pid, long ticks, string rootRuntime, string runtime,
+        double[] bounds, double position, double viewSize, double destination, int[] viewport, Func<bool> permitMutation) {
+        // PowerShell runs only this preflight on its own runspace thread.
+        Require(permitMutation != null && permitMutation());
+        Require(bounds != null && viewport != null);
+        IntPtr foreground = GetForegroundWindow();
+        var request = new ScrollRequest { Handle=handle, ProcessId=pid, StartedTicks=ticks,
+            RootRuntime=rootRuntime, Runtime=runtime, Bounds=(double[])bounds.Clone(),
+            Position=position, ViewSize=viewSize, Destination=destination };
+        var area = (int[])viewport.Clone();
+        RunOnMta(() => WithPhysicalPixels(
+            () => ExecuteOwned(new NativeScrollClient(foreground), request, () => PermitViewport(request, area)),
+            CaptureDesktop.SetThreadDpiAwarenessContext));
     }
 }
 internal sealed class NativeScrollClient : IScrollClient, IDisposable {
@@ -102,8 +150,8 @@ internal sealed class NativeScrollClient : IScrollClient, IDisposable {
     private readonly ForegroundGuard foreground;
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);
-    public NativeScrollClient() {
-        foreground = new ForegroundGuard(GetForegroundWindow);
+    public NativeScrollClient(IntPtr expectedForeground) {
+        foreground = new ForegroundGuard(GetForegroundWindow, expectedForeground);
         var type = Type.GetTypeFromCLSID(new Guid("e22ad333-b25f-460c-83d0-0581107395c9"), true); // CUIAutomation8
         Phase.Mark("nofocus_constructing");
         object instance = Activator.CreateInstance(type);
