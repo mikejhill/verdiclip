@@ -14,7 +14,7 @@ from tests.capture.production_matrix import (
     ProductionBrokerDriver,
     native_action_errors,
 )
-from tests.capture.scroll_peer import ScrollPeer
+from tests.capture.scroll_peer import ScrollPeer, provider_pixels
 from tests.capture.test_scroll_core import Documents
 
 
@@ -198,6 +198,79 @@ def test_wpf_pixel_oracle_has_all_rows_and_known_corner_channels() -> None:
             (y * 17 + x * 11) % 251,
             255,
         )
+
+
+def test_prepared_provider_pixels_match_independent_full_image_oracle() -> None:
+    """Removing runtime compilation must preserve every synthetic pixel."""
+    pixels = provider_pixels()
+    assert len(pixels) == 384 * 1120 * 4
+    image = QImage(pixels, 384, 1120, QImage.Format.Format_RGB32)
+    verify_pixels(image, fixture_image(384, 1120))
+
+
+def test_forced_provider_cleanup_is_sticky_without_second_wait(tmp_path: Path) -> None:
+    """Repeated finalizers retain the real failure instead of missing-receipt noise."""
+    calls: list[str] = []
+
+    def wait(*, timeout: int) -> None:
+        calls.append(f"wait:{timeout}")
+        if timeout == 5:
+            raise subprocess.TimeoutExpired("owned fixture", timeout)
+
+    peer = ScrollPeer(tmp_path)
+    peer.process = cast(
+        "subprocess.Popen[bytes]",
+        SimpleNamespace(wait=wait, kill=lambda: calls.append("kill")),
+    )
+    for _ in range(2):
+        with pytest.raises(AssertionError, match="forced termination"):
+            peer.close()
+    assert calls == ["wait:5", "kill", "wait:2"]
+
+
+def test_provider_stop_timer_does_not_wait_for_render_event() -> None:
+    """Partial startup has a cooperative stop path before readiness publication."""
+    script = Path(__file__).with_name("provider_fixture.ps1").read_text()
+    assert "Add-Type -TypeDefinition" not in script
+    assert script.index("$timer.Start()") < script.index("$window.ShowDialog()")
+    assert script.index("try {") < script.index("Add-Type -AssemblyName")
+    assert "if ($null -ne $timer) { $timer.Stop() }" in script
+
+
+@pytest.mark.parametrize("failure", ["kill", "wait"])
+def test_uncertain_forced_exit_is_verified_on_later_cleanup(
+    tmp_path: Path, failure: str
+) -> None:
+    """An unsuccessful termination attempt cannot discard owned-child tracking."""
+    calls: list[str] = []
+    short_waits = 0
+
+    def wait(*, timeout: int) -> None:
+        nonlocal short_waits
+        calls.append(f"wait:{timeout}")
+        if timeout == 5:
+            raise subprocess.TimeoutExpired("owned fixture", timeout)
+        short_waits += 1
+        if failure == "wait" and short_waits == 1:
+            raise subprocess.TimeoutExpired("owned fixture", timeout)
+
+    def kill() -> None:
+        calls.append("kill")
+        if failure == "kill":
+            raise PermissionError("termination denied")
+
+    peer = ScrollPeer(tmp_path)
+    peer.process = cast(
+        "subprocess.Popen[bytes]", SimpleNamespace(wait=wait, kill=kill)
+    )
+    with pytest.raises((PermissionError, subprocess.TimeoutExpired)):
+        peer.close()
+    assert not peer._exit_confirmed
+    with pytest.raises(AssertionError, match="forced termination"):
+        peer.close()
+    assert peer._exit_confirmed
+    assert calls.count("kill") == 1
+    assert calls[-1] == "wait:2"
 
 
 def test_provider_stop_write_failure_still_retires_child(

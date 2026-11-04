@@ -22,10 +22,16 @@ class ScrollPeer:
         self.process: subprocess.Popen[bytes] | None = None
         self.state: dict[str, object] = {}
         self.identity: tuple[object, ...] | None = None
+        self._forced = False
+        self._exit_confirmed = False
+        self._closed = False
 
     def start(self) -> None:
         """Called only inside the existing native-handoff test gate."""
         self.directory.mkdir(parents=True)
+        # Prepare deterministic data before the native startup clock. The WPF
+        # child must not compile C# merely to populate a synthetic bitmap.
+        (self.directory / "fixture-pixels.bgr32").write_bytes(provider_pixels())
         executable = (
             Path(os.environ["SYSTEMROOT"])
             / "System32/WindowsPowerShell/v1.0/powershell.exe"
@@ -108,6 +114,13 @@ class ScrollPeer:
         """Stop and verify only this child; forced exit never counts as clean."""
         if self.process is None:
             return
+        if self._forced:
+            if not self._exit_confirmed:
+                self.process.wait(timeout=2)
+                self._exit_confirmed = True
+            raise AssertionError("Owned provider required forced termination")
+        if self._closed:
+            return
         failure: OSError | None = None
         try:
             (self.directory / "fixture-stop.json").write_text("{}", encoding="utf-8")
@@ -116,13 +129,33 @@ class ScrollPeer:
         try:
             self.process.wait(timeout=5)
         except subprocess.TimeoutExpired:
+            self._forced = True
             self.process.kill()
             self.process.wait(timeout=2)
+            self._exit_confirmed = True
             raise AssertionError(
                 "Owned provider required forced termination"
             ) from failure
         if failure is not None:
             raise failure
+        self._exit_confirmed = True
         receipt = json.loads((self.directory / "fixture-retired.json").read_text())
         assert receipt == {"nonce": self.nonce, "pid": self.process.pid, "closed": True}
         assert self.process.returncode == 0
+        self._closed = True
+
+
+def provider_pixels() -> bytes:
+    """Generate fixed WPF Bgr32 input independently of the RGBA output oracle."""
+    pixels = bytearray()
+    for y in range(1120):
+        for x in range(384):
+            pixels.extend(
+                (
+                    (y * 17 + x * 11) % 251,
+                    (y * 31 + x * 7 + y // 251) % 253,
+                    (y * 43 + x * 19 + y // 127) % 255,
+                    255,
+                )
+            )
+    return bytes(pixels)

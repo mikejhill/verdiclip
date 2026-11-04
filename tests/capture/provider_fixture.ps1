@@ -7,10 +7,14 @@ param(
 $ErrorActionPreference = 'Stop'
 if (-not $ExecuteAfterHandoff) { throw 'Fixture requires explicit desktop handoff; no UI was created.' }
 # Loaded only in the separately owned STA child after authorization.
-Add-Type -AssemblyName PresentationFramework,PresentationCore,WindowsBase
-Write-Output ('FIXTURE_PHASE=assemblies-loaded utc=' + [DateTime]::UtcNow.ToString('o'))
+$clock = [Diagnostics.Stopwatch]::StartNew()
+$window = $null; $timer = $null; $closed = $false
 $fixtureDirectory = [IO.Path]::GetFullPath($Directory)
 if (-not [IO.Directory]::Exists($fixtureDirectory)) { throw 'Runner must create private case directory.' }
+try {
+Add-Type -AssemblyName PresentationFramework,PresentationCore,WindowsBase
+Write-Output ('FIXTURE_PHASE=assemblies-loaded utc=' + [DateTime]::UtcNow.ToString('o'))
+if ([IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) { return }
 $fixtureProcess = Get-Process -Id $PID
 $startedTicks = $fixtureProcess.StartTime.ToUniversalTime().Ticks
 $window = New-Object Windows.Window
@@ -31,23 +35,10 @@ $viewer.CanContentScroll = $false
 [Windows.Automation.AutomationProperties]::SetAutomationId($viewer, 'VerdiClipQualificationScrollViewer')
 $pixelWidth = 384
 $pixelHeight = if ($Case -eq 'end') { 1120 } else { 8000 }
-# Pure managed generation avoids millions of interpreted PowerShell iterations.
-Add-Type -TypeDefinition @'
-public static class QualificationPixels {
-    public static byte[] Make(int width, int height) {
-        var pixels = new byte[checked(width * height * 4)];
-        for (int y = 0; y < height; y++) for (int x = 0; x < width; x++) {
-            int i = (y * width + x) * 4;
-            pixels[i] = (byte)((y * 17 + x * 11) % 251);
-            pixels[i+1] = (byte)((y * 31 + x * 7 + y / 251) % 253);
-            pixels[i+2] = (byte)((y * 43 + x * 19 + y / 127) % 255);
-            pixels[i+3] = 255;
-        }
-        return pixels;
-    }
-}
-'@
-$pixels = [QualificationPixels]::Make($pixelWidth, $pixelHeight)
+# Input is prepared before native launch; no CodeDOM/compiler cold-start here.
+$pixels = [IO.File]::ReadAllBytes((Join-Path $fixtureDirectory 'fixture-pixels.bgr32'))
+if ($pixels.Length -ne ($pixelWidth * $pixelHeight * 4)) { throw 'Invalid synthetic bitmap length' }
+if ([IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) { return }
 $bitmap = [Windows.Media.Imaging.BitmapSource]::Create($pixelWidth,$pixelHeight,96,96,[Windows.Media.PixelFormats]::Bgr32,$null,$pixels,($pixelWidth*4))
 $bitmap.Freeze()
 $image = New-Object Windows.Controls.Image
@@ -58,7 +49,6 @@ $viewer.Content = $image; $stack.Children.Add($viewer) | Out-Null
 $window.Content = $stack
 $sequence = 0; $closed = $false; $maximumOffset = 0.0; $endSeen = $false
 $lastCommand = 0; $pendingCommand = $null
-$clock = [Diagnostics.Stopwatch]::StartNew()
 function Write-FixtureState {
     if (-not $window.IsLoaded -or $closed) { return }
     $handle = (New-Object Windows.Interop.WindowInteropHelper($window)).Handle.ToInt64()
@@ -120,13 +110,17 @@ $window.Add_ContentRendered({
     Write-Output ('FIXTURE_PHASE=content-rendered utc=' + [DateTime]::UtcNow.ToString('o'))
     # One ordinary owned-window activation; never force foreground or send input.
     $null = $window.Activate()
-    Write-FixtureState; $timer.Start()
+    Write-FixtureState
 })
 $viewer.Add_ScrollChanged({ Write-FixtureState })
 $window.Add_Closed({ $script:closed=$true; $timer.Stop() })
 Write-Output ('FIXTURE_PHASE=before-show utc=' + [DateTime]::UtcNow.ToString('o'))
-try { $window.ShowDialog() | Out-Null }
+$timer.Start() # Cancellation does not depend on ContentRendered firing.
+if ([IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) { return }
+$window.ShowDialog() | Out-Null
+}
 finally {
-    $timer.Stop()
+    if ($null -ne $timer) { $timer.Stop() }
+    if ($null -ne $window -and $window.IsVisible) { $window.Close() }
     [IO.File]::WriteAllText((Join-Path $fixtureDirectory 'fixture-retired.json'),(@{nonce=$Nonce;pid=$PID;closed=$true} | ConvertTo-Json))
 }
