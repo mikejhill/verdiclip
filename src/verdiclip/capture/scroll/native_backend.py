@@ -76,6 +76,7 @@ class UiaFrameBackend(ScrollBackend):
         self._finish_id: int | None = None
         self._restore_requested = False
         self._restoring = False
+        self._seeking_top = False
         self._restored = False
         self._finish_note = ""
         adapter.observed.connect(self._observed)
@@ -187,6 +188,7 @@ class UiaFrameBackend(ScrollBackend):
             and had_origin
             and isinstance(context, int)
             and not self._restoring
+            and not self._seeking_top
         ):
             self._interfered = True
         safe = self._safe()
@@ -208,14 +210,47 @@ class UiaFrameBackend(ScrollBackend):
         elif self._finish_id is not None:
             self._begin_restore()
         elif isinstance(context, int):
-            self.verified.emit(
-                TargetVerification(context, self._target, safe_to_scroll=safe)
-            )
+            self._verified_position(context, safe=safe, had_origin=had_origin)
         elif safe:
             self.moved.emit(context)
         else:
             self._interfered = True
             self.failed.emit(context, "The selected area changed during scrolling.")
+
+    def _verified_position(
+        self, request_id: int, *, safe: bool, had_origin: bool
+    ) -> None:
+        """The first baseline requires top-position proof, not only provider success."""
+        if self._target is None:
+            return
+        if self._seeking_top:
+            self._seeking_top = False
+            safe = safe and self._reference.vertical_percent <= self.POSITION_EPSILON
+        elif (
+            not had_origin
+            and safe
+            and self._reference.vertical_percent > self.POSITION_EPSILON
+        ):
+            self._seek_top(request_id)
+            return
+        self.verified.emit(
+            TargetVerification(request_id, self._target, safe_to_scroll=safe)
+        )
+
+    def _seek_top(self, request_id: int) -> None:
+        """Keep the original position and require a verified top before sampling."""
+        if self._target is None:
+            return
+        self._seeking_top = True
+        self._context = request_id
+        try:
+            self._request = self._adapter.restore(
+                self._reference, 0, confirmed=True, viewport=self._target.viewport
+            )
+        except CaptureError as error:
+            self._seeking_top = False
+            self._context = None
+            self.failed.emit(request_id, str(error))
 
     def _sampled(self, request: UiaRequest, sample: UiaSample) -> None:
         """Open only a validated caller-owned PNG after the helper closed its handle."""

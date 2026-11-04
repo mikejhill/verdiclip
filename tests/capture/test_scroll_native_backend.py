@@ -33,7 +33,7 @@ from verdiclip.geometry import Rect
 class NativeFixture:
     """A finite 96-row fictional document, with no desktop or input API calls."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, initial_percent: int = 0) -> None:
         self.source = Documents.image(width=96, height=96)
         source_path = path / "fictional-source.png"
         assert self.source.save(str(source_path))
@@ -44,6 +44,7 @@ class NativeFixture:
         self.trace = path / "peer-trace.txt"
         raw = Payload.reference()
         raw["view_size"] = 50
+        raw["vertical_percent"] = initial_percent
         self.reference = UiaReference.decode(raw)
         self.guard = True
         helper = path / "pixel_peer.py"
@@ -51,7 +52,7 @@ class NativeFixture:
             "import json,sys\n"
             "from pathlib import Path\n"
             "from PySide6.QtGui import QImage\n"
-            "source=QImage(sys.argv[1]); position=0\n"
+            "source=QImage(sys.argv[1]); position=int(sys.argv[4])\n"
             "print(json.dumps({'ready':True,'protocol':1}),flush=True)\n"
             "for line in sys.stdin:\n"
             " request=json.loads(line); payload=request['payload']\n"
@@ -66,7 +67,8 @@ class NativeFixture:
             "  print(json.dumps(failure),flush=True); continue\n"
             " if action=='step': position=min(100,position+50)\n"
             " if mode=='extent_drift' and action=='step': reference['view_size']=49\n"
-            " if action=='restore': position=payload['restore_percent']\n"
+            " if action=='restore' and mode!='ignore_seek':\n"
+            "  position=payload['restore_percent']\n"
             " if mode=='sample_drift' and action=='sample' and position>0:\n"
             "  position+=1\n"
             " reference['vertical_percent']=position\n"
@@ -89,6 +91,7 @@ class NativeFixture:
                 str(source_path),
                 str(self.mode),
                 str(self.trace),
+                str(initial_percent),
             ),
             qualified=True,
         )
@@ -314,3 +317,97 @@ def test_bad_pixel_file_fails_cleanly_without_false_capture(
     qtbot.waitUntil(lambda: not native.process.busy)
     assert session.state is ScrollState.IDLE
     assert not list(native.frames.iterdir())
+
+
+@pytest.mark.parametrize("initial_percent", [25, 100])
+def test_full_height_capture_seeks_top_before_pixels_and_restores_origin(
+    qtbot: QtBot, tmp_path: Path, initial_percent: int
+) -> None:
+    """Real backend, subprocess protocol and stitcher include rows above selection."""
+    fixture = NativeFixture(tmp_path, initial_percent=initial_percent)
+    session = ScrollSession(tmp_path)
+    binding = ScrollCaptureBinding(
+        session, fixture.backend, options=BindingOptions(interval_ms=5)
+    )
+    try:
+        with qtbot.waitSignal(binding.review_ready, timeout=8000):
+            assert binding.start_confirmed(fixture.target)
+        capture = session.accept()
+        assert capture.image == fixture.source
+        actions = fixture.trace.read_text().splitlines()
+        assert actions[:2] == ["observe", "restore"]
+        if initial_percent != 100:
+            assert actions[-1] == "restore"
+        assert fixture.backend._reference.vertical_percent == initial_percent
+        assert not list(fixture.frames.iterdir())
+        assert fixture.process.worker_pid is None
+    finally:
+        fixture.backend.cancel()
+        qtbot.waitUntil(lambda: not fixture.process.busy)
+        session.close()
+        binding.deleteLater()
+        fixture.backend.deleteLater()
+        fixture.adapter.deleteLater()
+        fixture.process.deleteLater()
+
+
+def test_provider_refusing_top_cannot_publish_truncated_complete_capture(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """A successful transport response is insufficient without top-position proof."""
+    fixture = NativeFixture(tmp_path, initial_percent=25)
+    fixture.mode.write_text("ignore_seek", encoding="utf-8")
+    session = ScrollSession(tmp_path)
+    binding = ScrollCaptureBinding(session, fixture.backend)
+    try:
+        with qtbot.waitSignal(binding.failed, timeout=8000):
+            assert binding.start_confirmed(fixture.target)
+        assert session.result is None
+        assert "sample" not in fixture.trace.read_text().splitlines()
+    finally:
+        fixture.backend.cancel()
+        qtbot.waitUntil(lambda: not fixture.process.busy)
+        session.close()
+        binding.deleteLater()
+        fixture.backend.deleteLater()
+        fixture.adapter.deleteLater()
+        fixture.process.deleteLater()
+
+
+@pytest.mark.parametrize("action", ["stop", "cancel"])
+def test_interruption_during_initial_seek_never_delivers_late_pixels(
+    qtbot: QtBot, tmp_path: Path, action: str
+) -> None:
+    """No committed rows exist yet, so Stop and Cancel both retire acquisition."""
+    fixture = NativeFixture(tmp_path, initial_percent=25)
+    session = ScrollSession(tmp_path)
+    binding = ScrollCaptureBinding(session, fixture.backend)
+    acted: list[bool] = []
+
+    def interrupt(request: UiaRequest, _observation: object) -> None:
+        if request.action is UiaAction.OBSERVE and not acted:
+            acted.append(True)
+            assert fixture.backend._seeking_top
+            if action == "stop":
+                binding.stop()
+            else:
+                binding.cancel()
+
+    fixture.adapter.observed.connect(interrupt)
+    try:
+        with qtbot.waitSignal(binding.cancelled, timeout=8000):
+            assert binding.start_confirmed(fixture.target)
+        qtbot.waitUntil(lambda: not fixture.process.busy)
+        assert acted == [True]
+        assert session.result is None
+        assert "sample" not in fixture.trace.read_text().splitlines()
+        assert not list(fixture.frames.iterdir())
+        assert fixture.process.worker_pid is None
+    finally:
+        fixture.backend.cancel()
+        qtbot.waitUntil(lambda: not fixture.process.busy)
+        session.close()
+        binding.deleteLater()
+        fixture.backend.deleteLater()
+        fixture.adapter.deleteLater()
+        fixture.process.deleteLater()

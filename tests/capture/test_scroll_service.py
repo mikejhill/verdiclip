@@ -65,7 +65,7 @@ def click_control(broker: ReplayInputBroker, panel: CapturePanel, label: str) ->
 def test_scrollbar_click_runs_full_service_flow_without_dismissing_existing_popup(
     qtbot: QtBot, qapp: QApplication, tmp_path: Path
 ) -> None:
-    """One ordinary click proposes scrolling; explicit Use waits for input cleanup."""
+    """A scrollbar click captures the full panel and waits for input cleanup."""
     scene = ExistingScene("popup", qapp)
     broker = ReplayInputBroker(qapp)
     service = CaptureService(FakeDesktop(), SnapshotWindows(), input_broker=broker)
@@ -80,23 +80,20 @@ def test_scrollbar_click_runs_full_service_flow_without_dismissing_existing_popu
         assert fixture.workflow.state is WorkflowState.DISCOVERING
         assert not screenshots
         fixture.adapter.deliver(EntryFixture.discovery())
-        target = fixture.workflow.panel
-        assert isinstance(target, ScrollTargetPanel)
         assert not service.overlays
         scene.assert_preserved()
-        click_control(broker, target, "Start")
-        qtbot.waitUntil(
-            lambda: fixture.workflow.state is WorkflowState.REVIEW, timeout=5000
-        )
-        review = fixture.workflow.panel
-        assert isinstance(review, ScrollReviewPanel)
-        scene.assert_preserved()
         broker.defer_cleanup = True
-        click_control(broker, review, "whole")
+        qtbot.waitUntil(
+            lambda: fixture.workflow.state is WorkflowState.DELIVERING, timeout=5000
+        )
+        scene.assert_preserved()
         assert service.is_selecting
         assert not fixture.captures
         broker.acknowledge_cleanup()
         assert len(fixture.captures) == 1
+        assert fixture.captures[0].image == fixture.backends[0].source.copy(
+            0, 0, 90, 96
+        )
         assert not service.is_selecting
         assert not screenshots
         scene.assert_preserved()
@@ -145,10 +142,13 @@ class ServiceWorkflow:
 
     def review(self, qtbot: QtBot) -> ScrollReviewPanel:
         """Reach a review using only semantic events and the existing frame fixture."""
-        self.service.capture_region()
+        self.service.capture_scrolling()
         qtbot.waitUntil(lambda: bool(self.service.overlays))
-        feed_click(self.broker, Point(92, 10))
-        self.fixture.adapter.deliver(EntryFixture.discovery())
+        self.service.overlays[0].region_chosen.emit(Rect(0, 0, 90, 48))
+        discovery = EntryFixture.discovery()
+        self.fixture.adapter.deliver(
+            replace(discovery, hit_identity=discovery.nodes[1].identity)
+        )
         panel = self.fixture.workflow.panel
         assert isinstance(panel, ScrollTargetPanel)
         click_control(self.broker, panel, "Start")
@@ -316,7 +316,7 @@ def test_explicit_region_without_a_window_reports_failure_without_discovery(
         ("unknown-private-value", "input became unavailable"),
     ],
 )
-def test_scroll_interruption_keeps_reason_and_retires_confirmation(
+def test_scroll_interruption_keeps_reason_and_retires_automatic_capture(
     qtbot: QtBot,
     qapp: QApplication,
     tmp_path: Path,
@@ -332,7 +332,7 @@ def test_scroll_interruption_keeps_reason_and_retires_confirmation(
         qtbot.waitUntil(lambda: bool(run.service.overlays))
         feed_click(run.broker, Point(92, 10))
         run.fixture.adapter.deliver(EntryFixture.discovery())
-        assert run.fixture.workflow.state is WorkflowState.CONFIRMING
+        assert run.fixture.workflow.state is WorkflowState.CAPTURING
         run.broker.feed(SelectionInput(InputKind.CANCEL, Point(92, 10), reason))
         qtbot.waitUntil(lambda: not run.service.is_selecting)
         assert len(failures) == 1

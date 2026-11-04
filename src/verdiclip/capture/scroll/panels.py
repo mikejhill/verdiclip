@@ -233,7 +233,7 @@ class ScrollReviewPanel(CapturePanel):
         self._height.valueChanged.connect(self._render)
         self._whole = QPushButton("Use &whole capture")
         self._range = QPushButton("Use &selected rows")
-        self._whole.clicked.connect(self._accept_whole)
+        self._whole.clicked.connect(self.accept_whole)
         self._range.clicked.connect(self._accept_range)
         self._close_button = QPushButton("&Discard capture")
         self._close_button.clicked.connect(self.close)
@@ -288,7 +288,7 @@ class ScrollReviewPanel(CapturePanel):
         )
         self._preview.setPixmap(QPixmap.fromImage(thumbnail))
 
-    def _accept_whole(self) -> None:
+    def accept_whole(self) -> None:
         """Full materialization may refuse safely, leaving bounded review usable."""
         self._deliver(selected=False)
 

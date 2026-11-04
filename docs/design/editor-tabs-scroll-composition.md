@@ -99,6 +99,32 @@ and retains presentation leases after partial attachment. Recovery presentation
 uses the same passive/deferred policy as capture admission. Duplicate document or
 view identities cannot overwrite retained work.
 
+## Scrollbar capture interaction
+
+Selecting a verified vertical scrollbar during capture is the start instruction
+for its nearest supported scroll container. No additional Start or Use button is
+required on the successful path. The provider records the original position,
+seeks the top, and verifies that position before sampling. Stable overlapping
+pixels and repeated provider end evidence determine completion; metrics alone
+never substitute for stitched pixels. A successful capture restores the original
+position when safe and passes through the existing input-cleanup acknowledgement
+before ordinary nonactivating document/output delivery.
+
+Stop retains a partial result for review; Escape cancels. Provider interruption,
+uncertain end, resource limits, restoration warnings, image materialization
+failure and delivery failure never become silent automatic success. Retained
+review is shown for recovery. Explicit dragged-area/hidden-scrollbar selection
+keeps the existing target/ROI confirmation. Controls are placed outside captured pixels. If a directly selected panel fills
+the display, capture runs without an occluding control window: Enter stops and
+reviews the retained rows, Escape cancels. The advanced ROI path still explains
+its control-space constraint before starting.
+
+Replay product tests cover the action/selection/binding/stitching/delivery path,
+including existing popup and modal preservation. A JSON-only synthetic provider
+exercises the production backend starting midway and at the end, exact image
+rows, top-position rejection, cancellation and worker/file cleanup. These tests
+do not qualify third-party Windows UIA providers or physical input.
+
 ## Reproducible evidence and limits
 
 The primary repository tab profile includes composed scrolling and delivery

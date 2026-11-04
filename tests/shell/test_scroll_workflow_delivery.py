@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
@@ -27,7 +28,7 @@ from verdiclip.capture.scroll.workflow import ScrollWorkflow, WorkflowState
 from verdiclip.editor.close_prompt import CloseChoice, ClosePrompt
 from verdiclip.editor.contracts import EditorOptions
 from verdiclip.exceptions import DeliveryError
-from verdiclip.geometry import Point
+from verdiclip.geometry import Point, Rect
 from verdiclip.output.delivery import ImageDelivery
 from verdiclip.settings import CaptureSettings, Settings
 
@@ -57,21 +58,33 @@ class Combined:
         self.backends.append(value)
         return value
 
-    def review(self, *, explicit: bool, context: str) -> ScrollReviewPanel:
+    def review(
+        self, *, explicit: bool, context: str, automatic: bool = False
+    ) -> ScrollReviewPanel:
         """Use semantic broker events through selection, consent and acquisition."""
         self.scene = ExistingScene(context, cast(QApplication, QApplication.instance()))
-        if explicit:
+        if explicit or not automatic:
             self.app.controller.capture_scrolling()
         else:
             self.app.press_hotkey("region")
         self.qtbot.waitUntil(lambda: bool(self.app.controller.capture.overlays))
-        feed_click(self.broker, Point(92, 10))
+        discovery = EntryFixture.discovery()
+        if automatic:
+            self.broker.defer_cleanup = True
+            feed_click(self.broker, Point(92, 10))
+        else:
+            self.app.controller.capture.overlays[0].region_chosen.emit(
+                Rect(0, 0, 90, 48)
+            )
+            discovery = replace(discovery, hit_identity=discovery.nodes[1].identity)
         assert self.workflow.state is WorkflowState.DISCOVERING
-        self.adapter.deliver(EntryFixture.discovery())
-        target = self.workflow.panel
-        assert isinstance(target, ScrollTargetPanel)
-        click_control(self.broker, target, "Start")
-        self.qtbot.waitUntil(lambda: self.workflow.state is WorkflowState.REVIEW)
+        self.adapter.deliver(discovery)
+        if not automatic:
+            target = self.workflow.panel
+            assert isinstance(target, ScrollTargetPanel)
+            click_control(self.broker, target, "Start")
+        expected = WorkflowState.DELIVERING if automatic else WorkflowState.REVIEW
+        self.qtbot.waitUntil(lambda: self.workflow.state is expected)
         panel = self.workflow.panel
         assert isinstance(panel, ScrollReviewPanel)
         self.qtbot.addWidget(panel)
@@ -120,9 +133,7 @@ def test_scrolling_delivery_waits_for_cleanup_and_admits_an_ordinary_tab(
     combined: Combined, context: str, *, explicit: bool
 ) -> None:
     """No document or original-context change precedes the cleanup receipt."""
-    review = combined.review(explicit=explicit, context=context)
-    combined.broker.defer_cleanup = True
-    click_control(combined.broker, review, "whole")
+    review = combined.review(explicit=explicit, context=context, automatic=True)
     assert combined.workflow.state is WorkflowState.DELIVERING
     assert not combined.app.controller.workspace.documents
     assert combined.app.controller.pending_deliveries == ()
@@ -134,7 +145,7 @@ def test_scrolling_delivery_waits_for_cleanup_and_admits_an_ordinary_tab(
     assert record.provenance is not None
     assert record.provenance.source_kind is CaptureKind.SCROLLING
     assert not record.session.history.is_delivered
-    assert review.isVisible()
+    assert not review.isVisible()
     assert combined.app.controller.editors[0].action("capture_scrolling").isEnabled()
     combined.scene.assert_preserved()
 

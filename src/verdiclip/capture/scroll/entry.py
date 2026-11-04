@@ -42,6 +42,7 @@ class ScrollOffer:
     candidates: tuple[TargetCandidate, ...]
     references: tuple[UiaReference, ...]
     viewports: tuple[Rect, ...]
+    scrollbar_selected: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,6 +140,11 @@ class ScrollEntry(QObject):
             candidates,
             tuple(references[choice.identity] for choice in candidates),
             tuple(self._viewport(choice.bounds, discovery) for choice in candidates),
+            any(
+                node.identity == discovery.hit_identity
+                and node.kind is NodeKind.VERTICAL_SCROLLBAR
+                for node in discovery.nodes
+            ),
         )
         self._state = EntryState.OFFER
         self.offered.emit(self._offer)

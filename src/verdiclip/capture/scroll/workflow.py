@@ -17,7 +17,7 @@ from verdiclip.capture.reviewed import ReviewedCapture
 from verdiclip.capture.scroll.backend import ScrollBackend
 from verdiclip.capture.scroll.binding import ScrollCaptureBinding
 from verdiclip.capture.scroll.entry import ConfirmedScroll, ScrollEntry, ScrollOffer
-from verdiclip.capture.scroll.models import ScrollTarget
+from verdiclip.capture.scroll.models import ScrollTarget, StopReason
 from verdiclip.capture.scroll.panels import ScrollReviewPanel, ScrollTargetPanel
 from verdiclip.capture.scroll.session import ScrollSession
 from verdiclip.capture.scroll.uia_adapter import UiaAdapter
@@ -280,7 +280,12 @@ class ScrollWorkflow(QObject):
             return
         self.controls_mode.emit(self.has_work)
         if self._owns_phase(WorkflowState.CONFIRMING, panel=panel):
-            panel.show()
+            if offer.scrollbar_selected and self._roi is None:
+                self._start(
+                    ScrollTarget(candidates[0].identity, offer.title, viewports[0])
+                )
+            else:
+                panel.show()
 
     def _start(self, target: ScrollTarget) -> None:
         offer = self._offer
@@ -292,12 +297,18 @@ class ScrollWorkflow(QObject):
         ):
             return
         progress = ScrollProgressPanel()
-        if not position_outside_capture(progress, target.viewport, self._screens):
+        visible_progress = position_outside_capture(
+            progress, target.viewport, self._screens
+        )
+        if not visible_progress:
             progress.dismiss()
-            panel.confirmation_failed(
-                "Leave space for capture controls or choose a smaller content area."
-            )
-            return
+            progress.deleteLater()
+            if not (offer.scrollbar_selected and self._roi is None):
+                panel.confirmation_failed(
+                    "Leave space for capture controls or choose a smaller content area."
+                )
+                panel.show()
+                return
         index = next(
             (
                 index
@@ -306,9 +317,10 @@ class ScrollWorkflow(QObject):
             ),
             -1,
         )
-        self._replace_panel(progress)
-        progress.stop_requested.connect(self.stop)
-        progress.capture_closed.connect(self.cancel)
+        self._replace_panel(progress if visible_progress else None)
+        if visible_progress:
+            progress.stop_requested.connect(self.stop)
+            progress.capture_closed.connect(self.cancel)
         if not self._entry.start(index, target.viewport, consent=True):
             self._fail("The selected content area is no longer available.")
 
@@ -353,12 +365,13 @@ class ScrollWorkflow(QObject):
             self._binding.stop()
 
     def _review(self, session: ScrollSession, message: str) -> None:
+        epoch = self._epoch
         if self._state is not WorkflowState.CAPTURING:
             return
         try:
             panel = self._review_factory(session)
             if (
-                not self._owns_phase(WorkflowState.CAPTURING)
+                not self._owns_phase(WorkflowState.CAPTURING, epoch=epoch)
                 or session is not self._session
             ):
                 panel.discard_capture()
@@ -374,12 +387,28 @@ class ScrollWorkflow(QObject):
         panel.capture_accept_requested.connect(self._review_accepted)
         panel.capture_closed.connect(self._review_closed)
         self._set_state(WorkflowState.REVIEW)
-        if not self._owns_phase(WorkflowState.REVIEW, panel=panel):
+        active = self._input_active()
+        if not self._owns_phase(WorkflowState.REVIEW, panel=panel, epoch=epoch):
             return
+        if (
+            not message
+            and self._offer is not None
+            and self._offer.scrollbar_selected
+            and self._roi is None
+            and session.result is not None
+            and session.result.stop_reason is StopReason.REPORTED_END
+            and active
+        ):
+            panel.accept_whole()
+            if not self._owns_phase(WorkflowState.REVIEW, panel=panel, epoch=epoch):
+                return
         if message:
             panel.capture_input_paused(message)
         panel.show()
-        if not self._input_active():
+        active = self._input_active()
+        if not self._owns_phase(WorkflowState.REVIEW, panel=panel, epoch=epoch):
+            return
+        if not active:
             self._pause_review("Input paused.")
 
     def _accept(self, capture: ReviewedCapture) -> None:
@@ -436,11 +465,14 @@ class ScrollWorkflow(QObject):
 
     def _pause_review(self, message: str) -> None:
         if isinstance(self._panel, ScrollReviewPanel):
+            panel = self._panel
             self._panel.capture_input_paused(
                 message + " Choose Capture scrolling area from the VerdiClip tray "
                 "menu to resume this review."
             )
             self._set_state(WorkflowState.PAUSED)
+            if self._owns_phase(WorkflowState.PAUSED, panel=panel):
+                panel.show()
 
     def resume_review(self) -> None:
         """Resume the same pixels only after a fresh explicit input lease is ready."""
@@ -452,6 +484,12 @@ class ScrollWorkflow(QObject):
 
     def receive_input(self, event: SelectionInput) -> None:
         """Route to the currently owned surface; discovery consumes no extra actions."""
+        if self._state is WorkflowState.CAPTURING and self._panel is None:
+            if event.kind is InputKind.CANCEL:
+                self.cancel()
+            elif event.kind is InputKind.ENTER:
+                self.stop()
+            return
         if self._panel is not None and self._state in {
             WorkflowState.CONFIRMING,
             WorkflowState.CAPTURING,

@@ -18,6 +18,7 @@ from tests.capture.test_scroll_uia_protocol import Payload
 from verdiclip.capture.input_policy import InputKind, SelectionInput
 from verdiclip.capture.models import ScreenGeometry
 from verdiclip.capture.reviewed import ReviewedCapture
+from verdiclip.capture.scroll.acquisition import WorkKind
 from verdiclip.capture.scroll.panels import ScrollReviewPanel, ScrollTargetPanel
 from verdiclip.capture.scroll.session import ScrollSession
 from verdiclip.capture.scroll.uia_adapter import UiaAdapter
@@ -98,7 +99,7 @@ class WorkflowFixture:
             Point(92, 10),
             (self.SCREEN,),
             explicit=explicit,
-            viewport=viewport,
+            viewport=viewport if viewport is not None else Rect(0, 0, 90, 48),
         )
         assert started
         self.adapter.deliver(EntryFixture.discovery())
@@ -271,7 +272,11 @@ def test_transferred_review_close_does_not_cancel_a_new_capture(
         fixture.adapter.scope_closed.emit()
         fixture.active = True
         started = fixture.workflow.begin(
-            fixture.WINDOW, Point(92, 10), (fixture.SCREEN,), explicit=True
+            fixture.WINDOW,
+            Point(92, 10),
+            (fixture.SCREEN,),
+            explicit=True,
+            viewport=Rect(0, 0, 90, 48),
         )
         assert started
         review.close()
@@ -343,7 +348,11 @@ def test_broken_discovery_refuses_retry_without_stuck_checking(
     fixture = WorkflowFixture(tmp_path)
     try:
         fixture.workflow.begin(
-            fixture.WINDOW, Point(92, 10), (fixture.SCREEN,), explicit=True
+            fixture.WINDOW,
+            Point(92, 10),
+            (fixture.SCREEN,),
+            explicit=True,
+            viewport=Rect(0, 0, 90, 48),
         )
         fixture.adapter.defer_cleanup = True
         fixture.workflow.cancel()
@@ -354,7 +363,11 @@ def test_broken_discovery_refuses_retry_without_stuck_checking(
         fixture.adapter.defer_cleanup = False
         previous = len(fixture.adapter.requests)
         started = fixture.workflow.begin(
-            fixture.WINDOW, Point(92, 10), (fixture.SCREEN,), explicit=True
+            fixture.WINDOW,
+            Point(92, 10),
+            (fixture.SCREEN,),
+            explicit=True,
+            viewport=Rect(0, 0, 90, 48),
         )
         assert not started
         assert fixture.workflow.state is WorkflowState.IDLE
@@ -404,7 +417,11 @@ def test_busy_entry_cannot_replace_existing_work(
             fixture.offer()
         previous = len(fixture.adapter.requests)
         started = fixture.workflow.begin(
-            fixture.WINDOW, Point(92, 10), (fixture.SCREEN,), explicit=True
+            fixture.WINDOW,
+            Point(92, 10),
+            (fixture.SCREEN,),
+            explicit=True,
+            viewport=Rect(0, 0, 90, 48),
         )
         assert not started
         assert len(fixture.adapter.requests) == previous
@@ -435,7 +452,11 @@ def test_observer_cancellation_prevents_late_confirmation_ui(
 
             fixture.workflow.work_changed.connect(cancel_at_boundary)
         fixture.workflow.begin(
-            fixture.WINDOW, Point(92, 10), (fixture.SCREEN,), explicit=True
+            fixture.WINDOW,
+            Point(92, 10),
+            (fixture.SCREEN,),
+            explicit=True,
+            viewport=Rect(0, 0, 90, 48),
         )
         if fixture.adapter.requests:
             fixture.adapter.deliver(EntryFixture.discovery())
@@ -556,5 +577,161 @@ def test_negative_input_cleanup_keeps_unpublished_review(
         assert fixture.workflow.paused_review
         assert fixture.workflow.panel is panel
         assert not fixture.attempts
+    finally:
+        fixture.close()
+
+
+@pytest.mark.parametrize("failure", ["delivery", "cleanup"])
+def test_automatic_delivery_failure_exposes_retained_review(
+    qtbot: QtBot, tmp_path: Path, failure: str
+) -> None:
+    """The implicit success path must not leave failed output in an invisible panel."""
+    fixture = WorkflowFixture(tmp_path)
+    try:
+        fixture.fail_delivery = failure == "delivery"
+        assert fixture.workflow.begin(
+            fixture.WINDOW, Point(92, 10), (fixture.SCREEN,), explicit=True
+        )
+        fixture.adapter.deliver(EntryFixture.discovery())
+        qtbot.waitUntil(
+            lambda: fixture.workflow.state is WorkflowState.DELIVERING, timeout=5000
+        )
+        assert not fixture.captures
+        fixture.active = False
+        fixture.workflow.input_closed(cleaned=failure != "cleanup", message="")
+        assert fixture.workflow.state is WorkflowState.PAUSED
+        assert fixture.workflow.panel is not None
+        assert fixture.workflow.panel.isVisible()
+        assert not fixture.captures
+        assert len(fixture.sessions) == 1
+    finally:
+        fixture.close()
+
+
+def test_scrollbar_stop_retains_partial_review_without_automatic_delivery(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """Stop after committed rows is not a complete result and never auto-publishes."""
+    fixture = WorkflowFixture(tmp_path)
+    try:
+        assert fixture.workflow.begin(
+            fixture.WINDOW, Point(92, 10), (fixture.SCREEN,), explicit=True
+        )
+        fixture.adapter.deliver(EntryFixture.discovery())
+        backend = fixture.backends[0]
+        backend.interrupt_kind = WorkKind.SCROLL
+        backend.interrupt = fixture.workflow.stop
+        qtbot.waitUntil(
+            lambda: fixture.workflow.state is WorkflowState.REVIEW, timeout=5000
+        )
+        assert not fixture.releases
+        assert not fixture.captures
+        assert fixture.workflow.panel is not None
+        assert fixture.workflow.panel.isVisible()
+        assert fixture.sessions[0].result is not None
+        assert fixture.sessions[0].result.stop_reason.value == "stopped_by_user"
+    finally:
+        fixture.close()
+
+
+def test_autoaccept_reentrant_replacement_does_not_reshow_old_review(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """Cleanup callbacks may synchronously replace work, even with the same state."""
+    fixture = WorkflowFixture(tmp_path)
+    replaced: list[bool] = []
+
+    def replace_after_cleanup() -> None:
+        fixture.workflow.release_requested.disconnect(replace_after_cleanup)
+        fixture.workflow.input_closed(cleaned=True, message="")
+        fixture.adapter.scope_closed.emit()
+        replacement = fixture.offer()
+        start = next(
+            item
+            for item in replacement.findChildren(QPushButton)
+            if "Start" in item.text()
+        )
+        click(replacement, start)
+        qtbot.waitUntil(
+            lambda: fixture.workflow.state is WorkflowState.REVIEW, timeout=5000
+        )
+        replaced.append(True)
+
+    fixture.workflow.release_requested.connect(replace_after_cleanup)
+    try:
+        assert fixture.workflow.begin(
+            fixture.WINDOW, Point(92, 10), (fixture.SCREEN,), explicit=True
+        )
+        fixture.adapter.deliver(EntryFixture.discovery())
+        qtbot.waitUntil(lambda: bool(replaced), timeout=5000)
+        assert len(fixture.captures) == 1
+        assert not fixture.panels[0].isVisible()
+        assert fixture.workflow.panel is not fixture.panels[0]
+    finally:
+        fixture.close()
+
+
+def test_automatic_materialization_failure_keeps_bounded_review(
+    qtbot: QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A complete but oversized image stays reviewable instead of losing rows."""
+    fixture = WorkflowFixture(tmp_path)
+
+    def refuse(_session: ScrollSession, **_options: object) -> ReviewedCapture:
+        raise CaptureError("Fixture image exceeds materialization budget")
+
+    monkeypatch.setattr(ScrollSession, "accept", refuse)
+    try:
+        assert fixture.workflow.begin(
+            fixture.WINDOW, Point(92, 10), (fixture.SCREEN,), explicit=True
+        )
+        fixture.adapter.deliver(EntryFixture.discovery())
+        qtbot.waitUntil(lambda: bool(fixture.panels), timeout=5000)
+        assert fixture.workflow.state is WorkflowState.REVIEW
+        assert fixture.panels[0].isVisible()
+        assert not fixture.releases
+        assert not fixture.captures
+        assert fixture.sessions[0].result is not None
+    finally:
+        fixture.close()
+
+
+@pytest.mark.parametrize("interrupt", [None, InputKind.ENTER, InputKind.CANCEL])
+def test_full_display_scrollbar_capture_needs_no_occluding_controls(
+    qtbot: QtBot, tmp_path: Path, interrupt: InputKind | None
+) -> None:
+    """A full-display pane still captures automatically; Enter stops, Escape cancels."""
+    fixture = WorkflowFixture(tmp_path)
+    screen = ScreenGeometry("tiny", Rect(0, 0, 96, 48), Rect(0, 0, 96, 48), 1)
+    try:
+        assert fixture.workflow.begin(
+            fixture.WINDOW, Point(92, 10), (screen,), explicit=True
+        )
+        fixture.adapter.deliver(EntryFixture.discovery())
+        assert fixture.workflow.state is WorkflowState.CAPTURING
+        assert fixture.workflow.panel is None
+        if interrupt is not None:
+            backend = fixture.backends[0]
+            backend.interrupt_kind = WorkKind.SCROLL
+            backend.interrupt = lambda: fixture.workflow.receive_input(
+                SelectionInput(interrupt, Point(92, 10))
+            )
+        expected = (
+            WorkflowState.IDLE
+            if interrupt is InputKind.CANCEL
+            else WorkflowState.REVIEW
+            if interrupt is InputKind.ENTER
+            else WorkflowState.DELIVERING
+        )
+        qtbot.waitUntil(lambda: fixture.workflow.state is expected, timeout=5000)
+        assert not fixture.captures
+        if interrupt is None:
+            fixture.workflow.input_closed(cleaned=True, message="")
+            assert len(fixture.captures) == 1
+            assert fixture.captures[0].image == fixture.backends[0].source.copy(
+                0, 0, 90, 96
+            )
+        else:
+            assert not fixture.releases or interrupt is InputKind.CANCEL
     finally:
         fixture.close()
