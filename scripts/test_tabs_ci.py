@@ -37,6 +37,7 @@ TESTS = (
     "tests/platform/test_tab_synthetic_topology.py",
     "tests/output/test_delivery.py",
     "tests/output/test_atomic_save.py",
+    "tests/shell/test_editor_smoke.py",
     "tests/shell/test_reviewed_delivery.py",
     "tests/shell/test_scroll_review_delivery.py",
     "tests/shell/test_passive_capture_delivery.py",

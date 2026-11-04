@@ -3,12 +3,22 @@
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from typing import override
 
 import pytest
-from PySide6.QtGui import QImage
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QImage, QImageWriter
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication, QMessageBox
+from pytestqt.qtbot import QtBot
+from tests.editor.test_tab_bar import mouse_move
+from tests.editor.test_workspace import add_rectangle
 
 from verdiclip import editor_smoke, verification
+from verdiclip.document.annotations import RectangleShape
+from verdiclip.document.commands import AddAnnotations
+from verdiclip.editor.close_prompt import CloseChoice, ClosePrompt
+from verdiclip.geometry import Rect
 from verdiclip.settings import SettingsStore
 from verdiclip.verification import PreviewProfile
 
@@ -193,3 +203,118 @@ def test_launch_lifetime_uses_only_private_editor_and_retires_ipc(
                 window.set_confirm_close(confirm=False)
                 window.close()
             smoke.workspace.parking.deleteLater()
+
+
+@pytest.mark.parametrize("failed_save", [False, True])
+def test_smoke_checklist_retains_edits_through_cancel_and_save_close(  # noqa: PLR0915 - one user journey preserves state across every transition
+    qtbot: QtBot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    failed_save: bool,
+) -> None:
+    """Automate the accepted smoke journey, including failed-save recovery."""
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda _parent, _title, message: warnings.append(message),
+    )
+    smoke = editor_smoke.EditorSmoke(PreviewProfile(tmp_path, COMMIT))
+    smoke.open_synthetic()
+    owner = smoke.workspace
+    host = owner.windows[0]
+    page, neighbor = host.pages
+    try:
+        host.activate_page(page)
+        add_rectangle(page)
+        page.canvas.set_zoom(1.75)
+        edited = host.flattened()
+        selection = page.record.session.selection.ids
+        host.activate_page(neighbor)
+        host.activate_page(page)
+        assert host.flattened() == edited
+        host.tab_bar.moveTab(0, 1)
+        assert host.pages == (neighbor, page)
+        assert owner.move(host, page)
+        detached = owner.host_of(page.record.identifier)
+        assert detached is not None
+        assert detached is not host
+        assert detached.flattened() == edited
+        assert owner.move(detached, page, host, 0)
+        assert host.pages == (page, neighbor)
+        assert owner.windows == (host,)
+        host.activate_page(page)
+        assert host.canvas.zoom == 1.75
+        assert page.record.session.selection.ids == selection
+        assert host.flattened() == edited
+        host.action("undo").trigger()
+        assert not page.record.session.document.annotations
+        host.action("redo").trigger()
+        assert host.flattened() == edited
+
+        bar = host.tab_bar
+        cancelled: list[bool] = []
+        bar.drag_cancelled.connect(lambda: cancelled.append(True))
+        QTest.mousePress(bar, Qt.MouseButton.LeftButton, pos=bar.tabRect(0).center())
+        mouse_move(bar, 40)
+        QTest.keyClick(bar, Qt.Key.Key_Escape)
+        qtbot.wait(0)
+        assert cancelled == [True]
+        assert host.pages == (page, neighbor)
+        assert len(owner.documents) == 2
+        assert host.flattened() == edited
+
+        assert host.save()
+        saved = page.record.saved_path
+        assert saved is not None
+        assert saved.parent == tmp_path / "output"
+        assert QImage(str(saved)).convertToFormat(edited.format()) == edited
+        saved_bytes = saved.read_bytes()
+        page.record.session.history.execute(
+            AddAnnotations(
+                [RectangleShape(rect=Rect(220, 180, 90, 70))], "Distinct edit"
+            )
+        )
+        newer = host.flattened()
+        assert newer != edited
+        assert len(page.record.session.document.annotations) == 2
+        monkeypatch.setattr(ClosePrompt, "ask", lambda *_: CloseChoice.CANCEL)
+        assert not host.close_tab(0)
+        assert host.pages == (page, neighbor)
+        assert not page.record.session.history.is_delivered
+        assert host.flattened() == newer
+        monkeypatch.setattr(ClosePrompt, "ask", lambda *_: CloseChoice.SAVE)
+        if failed_save:
+
+            class FailingWriter(QImageWriter):
+                @override
+                def write(self, image: QImage) -> bool:
+                    """Fail real atomic encoding after writing temporary bytes."""
+                    del image
+                    self.device().write(b"partial")
+                    return False
+
+            with monkeypatch.context() as patch:
+                patch.setattr("verdiclip.output.delivery.QImageWriter", FailingWriter)
+                assert not host.close_tab(0)
+            assert saved.read_bytes() == saved_bytes
+            assert host.pages == (page, neighbor)
+            assert not page.record.session.history.is_delivered
+            assert host.flattened() == newer
+        assert len(warnings) == int(failed_save)
+        if warnings:
+            assert "Could not save" in warnings[0]
+        assert host.close_tab(0)
+        assert host.pages == (neighbor,)
+        assert len(owner.documents) == 1
+        assert QImage(str(saved)).convertToFormat(newer.format()) == newer
+        assert host.close_tab()
+        assert not owner.documents
+        assert not owner.windows
+    finally:
+        for window in owner.windows:
+            window.set_confirm_close(confirm=False)
+        owner.close_all()
+        owner.parking.deleteLater()
+        qtbot.wait(0)
