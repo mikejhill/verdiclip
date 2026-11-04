@@ -13,9 +13,9 @@ from pathlib import Path
 from typing import cast, override
 
 import pytest
-from PySide6.QtCore import QEvent, QObject, QPoint, Qt
+from PySide6.QtCore import QEvent, QObject, QPoint
 from PySide6.QtGui import QImage
-from PySide6.QtWidgets import QApplication, QMenu, QWidget
+from PySide6.QtWidgets import QApplication, QMenu
 from pytestqt.qtbot import QtBot
 from shiboken6 import isValid
 from tests.capture.hosted_fixture_input import HostedFixtureClick
@@ -33,7 +33,9 @@ from tests.capture.scroll_peer import ScrollPeer
 from tests.capture.test_capture_native import RealDesktop
 from tests.ux.test_app_journeys import App, AppFactory, make_app
 
-from verdiclip.capture.presentation import PASSIVE_WINDOW_FLAGS
+from verdiclip.capture.grabber import FrozenScreen
+from verdiclip.capture.models import ScreenGeometry
+from verdiclip.capture.overlay import SelectionOverlay
 from verdiclip.capture.reviewed import CaptureCompleteness, CaptureKind
 from verdiclip.capture.scroll.native_backend import (
     NativeBackendOptions,
@@ -204,10 +206,20 @@ class ScrollbarCase:
         before = int(api.GetForegroundWindow() or 0)
         self.retirement_probe = {"stage": "before_show", "foreground_before": before}
         assert not fixture_foreground_errors(before, self.journal.owned_handles)
-        panel = QWidget(None, PASSIVE_WINDOW_FLAGS)
-        panel.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
-        panel.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-        panel.setGeometry(self.menu.x() + self.menu.width() + 20, self.menu.y(), 40, 40)
+        screen = self.menu.screen()
+        geometry = ScreenGeometry.from_screen(screen)
+        width, height = int(geometry.physical.width), int(geometry.physical.height)
+        assert 0 < width * height <= 16_000_000, "Synthetic overlay pixel budget"
+        pixels = QImage(width, height, QImage.Format.Format_RGB32)
+        pixels.fill(0xFF404040)
+        panel = SelectionOverlay(
+            geometry,
+            screen,
+            FrozenScreen(pixels, geometry.physical),
+            (),
+            show_magnifier=False,
+            external_input=True,
+        )
         try:
             panel.show()
             self.qtbot.waitUntil(lambda: panel.windowHandle().isExposed(), timeout=2000)
@@ -216,7 +228,7 @@ class ScrollbarCase:
             assert shown == before, "Passive show changed native foreground"
             assert not self.snapshot.errors(), "Passive show changed the popup"
             self.retirement_probe["stage"] = "closing"
-            panel.close()
+            panel.dismiss()
             self.qtbot.waitUntil(lambda: not isValid(panel), timeout=2000)
             QApplication.processEvents()
             errors = self.snapshot.errors()
@@ -231,7 +243,7 @@ class ScrollbarCase:
             assert not errors, "Passive retirement changed the popup"
         finally:
             if isValid(panel):
-                panel.close()
+                panel.dismiss()
                 self.qtbot.waitUntil(lambda: not isValid(panel), timeout=2000)
 
     def target(self) -> Rect:

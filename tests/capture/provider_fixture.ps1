@@ -17,22 +17,25 @@ Write-Output ('FIXTURE_PHASE=assemblies-loaded utc=' + [DateTime]::UtcNow.ToStri
 if ([IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) { return }
 $fixtureProcess = Get-Process -Id $PID
 $startedTicks = $fixtureProcess.StartTime.ToUniversalTime().Ticks
-$window = New-Object Windows.Window
+Write-Output ('FIXTURE_PHASE=before-window utc=' + [DateTime]::UtcNow.ToString('o'))
+$window = [Windows.Window]::new()
+Write-Output ('FIXTURE_PHASE=window-created utc=' + [DateTime]::UtcNow.ToString('o'))
 $window.Title = "VerdiClip synthetic scroll fixture $Nonce"
 $window.Width = 480; $window.Height = 420
 $window.WindowStartupLocation = 'CenterScreen'
 $window.ResizeMode = 'NoResize'
 $window.UseLayoutRounding = $true
-$stack = New-Object Windows.Controls.StackPanel
-$banner = New-Object Windows.Controls.TextBlock
+$stack = [Windows.Controls.StackPanel]::new()
+$banner = [Windows.Controls.TextBlock]::new()
 $banner.Text = "SYNTHETIC ONLY - $Case - $($Nonce.Substring(0,8))"
 $banner.Margin = '12'; $stack.Children.Add($banner) | Out-Null
-$viewer = New-Object Windows.Controls.ScrollViewer
+$viewer = [Windows.Controls.ScrollViewer]::new()
 $viewer.Width = 400; $viewer.Height = 280
 $viewer.HorizontalScrollBarVisibility = 'Disabled'
 $viewer.VerticalScrollBarVisibility = 'Visible'
 $viewer.CanContentScroll = $false
 [Windows.Automation.AutomationProperties]::SetAutomationId($viewer, 'VerdiClipQualificationScrollViewer')
+Write-Output ('FIXTURE_PHASE=controls-created utc=' + [DateTime]::UtcNow.ToString('o'))
 $pixelWidth = 384
 $pixelHeight = if ($Case -eq 'end') { 1120 } else { 8000 }
 # Input is prepared before native launch; no CodeDOM/compiler cold-start here.
@@ -41,7 +44,8 @@ if ($pixels.Length -ne ($pixelWidth * $pixelHeight * 4)) { throw 'Invalid synthe
 if ([IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) { return }
 $bitmap = [Windows.Media.Imaging.BitmapSource]::Create($pixelWidth,$pixelHeight,96,96,[Windows.Media.PixelFormats]::Bgr32,$null,$pixels,($pixelWidth*4))
 $bitmap.Freeze()
-$image = New-Object Windows.Controls.Image
+Write-Output ('FIXTURE_PHASE=bitmap-created utc=' + [DateTime]::UtcNow.ToString('o'))
+$image = [Windows.Controls.Image]::new()
 $image.Source = $bitmap; $image.Width = $pixelWidth; $image.Height = $pixelHeight
 $image.Stretch = 'None'; $image.HorizontalAlignment = 'Left'
 [Windows.Media.RenderOptions]::SetBitmapScalingMode($image, 'NearestNeighbor')
@@ -51,12 +55,12 @@ $sequence = 0; $closed = $false; $ready = $false; $maximumOffset = 0.0; $endSeen
 $lastCommand = 0; $pendingCommand = $null
 function Write-FixtureState {
     if (-not $ready -or -not $window.IsLoaded -or $closed) { return }
-    $handle = (New-Object Windows.Interop.WindowInteropHelper($window)).Handle.ToInt64()
-    $point = $viewer.PointToScreen((New-Object Windows.Point(0,0)))
-    $bottom = $viewer.PointToScreen((New-Object Windows.Point([Math]::Min($pixelWidth,$viewer.ViewportWidth),$viewer.ViewportHeight)))
+    $handle = ([Windows.Interop.WindowInteropHelper]::new($window)).Handle.ToInt64()
+    $point = $viewer.PointToScreen(([Windows.Point]::new(0,0)))
+    $bottom = $viewer.PointToScreen(([Windows.Point]::new([Math]::Min($pixelWidth,$viewer.ViewportWidth),$viewer.ViewportHeight)))
     $bar = $viewer.Template.FindName('PART_VerticalScrollBar', $viewer)
     if ($null -eq $bar -or -not $bar.IsVisible) { throw 'Owned vertical scrollbar unavailable' }
-    $barPoint = $bar.PointToScreen((New-Object Windows.Point(($bar.ActualWidth/2),($bar.ActualHeight/2))))
+    $barPoint = $bar.PointToScreen(([Windows.Point]::new(($bar.ActualWidth/2),($bar.ActualHeight/2))))
     $script:sequence++
     $script:maximumOffset = [Math]::Max($maximumOffset, $viewer.VerticalOffset)
     if ($viewer.ScrollableHeight -gt 0 -and $viewer.VerticalOffset -ge ($viewer.ScrollableHeight - 0.01)) { $script:endSeen = $true }
@@ -76,7 +80,7 @@ function Write-FixtureState {
     $target = Join-Path $fixtureDirectory ('fixture-state-{0:D6}.json' -f $sequence)
     [IO.File]::Move($temporary,$target)
 }
-$timer = New-Object Windows.Threading.DispatcherTimer
+$timer = [Windows.Threading.DispatcherTimer]::new()
 $timer.Interval = [TimeSpan]::FromMilliseconds(100)
 $timer.Add_Tick({
     if ($clock.Elapsed.TotalSeconds -ge 90 -or [IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) {
