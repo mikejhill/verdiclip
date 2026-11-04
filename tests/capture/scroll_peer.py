@@ -16,7 +16,10 @@ from verdiclip.geometry import Rect
 class ScrollPeer:
     """Own one explicit child; never send pointer or keyboard input."""
 
-    def __init__(self, directory: Path) -> None:
+    def __init__(self, directory: Path, *, provider: str = "wpf") -> None:
+        if provider not in {"wpf", "winforms"}:
+            raise ValueError("Unknown owned scrolling provider")
+        self.provider = provider
         self.directory = directory
         self.nonce = uuid4().hex
         self.process: subprocess.Popen[bytes] | None = None
@@ -47,7 +50,13 @@ class ScrollPeer:
                     "-NonInteractive",
                     "-STA",
                     "-File",
-                    str(Path(__file__).with_name("provider_fixture.ps1")),
+                    str(
+                        Path(__file__).with_name(
+                            "provider_fixture.ps1"
+                            if self.provider == "wpf"
+                            else "provider_winforms_fixture.ps1"
+                        )
+                    ),
                     "-Directory",
                     str(self.directory),
                     "-Nonce",

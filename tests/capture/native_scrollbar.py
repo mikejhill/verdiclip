@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import cast, override
 
 import pytest
-from PySide6.QtCore import QEvent, QObject, QPoint
+from PySide6.QtCore import QEvent, QObject, QPoint, qVersion
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication, QMenu
 from pytestqt.qtbot import QtBot
@@ -49,7 +49,7 @@ from verdiclip.capture.scroll.uia_messages import UiaAction, UiaRequest
 from verdiclip.capture.scroll.uia_process import UiaProcess
 from verdiclip.capture.scroll.uia_protocol import UiaDiscovery, UiaReference
 from verdiclip.capture.scroll.workflow import ScrollProgressPanel
-from verdiclip.geometry import Rect
+from verdiclip.geometry import Point, Rect
 from verdiclip.platform.windows import WindowLocator
 from verdiclip.settings import CaptureSettings, Settings
 
@@ -85,6 +85,19 @@ def observe_operation[**P, R](
         return result
 
     return cast("Callable[P, R]", observed)
+
+
+def menu_physical_rect(geometry: ScreenGeometry, logical: Rect) -> Rect:
+    """Compare an owned Qt popup with the provider's physical viewport."""
+    start = geometry.to_physical(
+        Point(logical.x - geometry.logical.x, logical.y - geometry.logical.y)
+    )
+    return Rect(
+        start.x,
+        start.y,
+        logical.width * geometry.scale,
+        logical.height * geometry.scale,
+    )
 
 
 class PopupFailureTrace(QObject):
@@ -142,7 +155,18 @@ class ScrollbarCase:
             screens=self.source,
             windows=WindowLocator(),
         )
-        self.peer = ScrollPeer(directory / "provider")
+        self.provider = (
+            os.environ.get("VERDICLIP_NATIVE_PROVIDER", "wpf")
+            if os.environ.get("VERDICLIP_HOSTED_SCROLLBAR") == "1"
+            else "wpf"
+        )
+        self.provider_profile: dict[str, object] = {
+            "provider": self.provider,
+            "qt": qVersion(),
+            "qt_process_scale": None,
+            "physical_mixed_dpi_proved": False,
+        }
+        self.peer = ScrollPeer(directory / "provider", provider=self.provider)
         self.menu = QMenu("Owned scrollbar test popup")
         request.addfinalizer(self.close_owned_windows)
         self.operation_trace: list[dict[str, object]] = []
@@ -262,13 +286,27 @@ class ScrollbarCase:
         assert 0 < width <= 384
         assert height == 1120
         self.image = fixture_image(width, height)
-        self.menu.popup(QPoint(int(rectangle["x"]) + width + 80, int(rectangle["y"])))
+        geometry = ScreenGeometry.from_screen(self.menu.screen())
+        anchor = geometry.to_local(
+            Point(int(rectangle["x"]) + width + 80, int(rectangle["y"]))
+        )
+        self.menu.popup(
+            QPoint(
+                round(geometry.logical.x + anchor.x),
+                round(geometry.logical.y + anchor.y),
+            )
+        )
         self.qtbot.waitUntil(self.menu.isVisible)
-        assert self.menu.devicePixelRatioF() == 1, "100% scale required"
+        self.check_provider_profile()
         menu_rect = self.menu.frameGeometry()
         viewport = Rect(**rectangle)
         assert not viewport.intersects(
-            Rect(menu_rect.x(), menu_rect.y(), menu_rect.width(), menu_rect.height())
+            menu_physical_rect(
+                geometry,
+                Rect(
+                    menu_rect.x(), menu_rect.y(), menu_rect.width(), menu_rect.height()
+                ),
+            )
         )
         app = QApplication.instance()
         assert isinstance(app, QApplication)
@@ -280,6 +318,18 @@ class ScrollbarCase:
         self.journal.binding_handle = self.peer.handle
         self.journal.prepare_binding(self.target())
         self.check_passive_retirement()
+
+    def check_provider_profile(self) -> None:
+        """Require the selected Qt runtime and process scale without changing OS DPI."""
+        expected_scale = float(os.environ.get("VERDICLIP_EXPECTED_QT_SCALE", "1"))
+        assert expected_scale in {1, 1.5, 2}, "Unreviewed Qt process scale"
+        assert self.menu.devicePixelRatioF() == expected_scale, (
+            "Qt process scale mismatch"
+        )
+        self.provider_profile["qt_process_scale"] = self.menu.devicePixelRatioF()
+        expected_qt = os.environ.get("VERDICLIP_EXPECTED_QT")
+        if expected_qt is not None:
+            assert qVersion() == expected_qt, "Qt runtime mismatch"
 
     def check_passive_retirement(self) -> None:
         """Isolate ordinary owned tooltip retirement before hooks, input or UIA."""
@@ -472,6 +522,7 @@ class ScrollbarCase:
                         if self.process.diagnostics is not None
                         else None
                     ),
+                    "provider_profile": self.provider_profile,
                     "provider_worker_diagnostics": {
                         mode: asdict(trace)
                         for mode, trace in self.process.diagnostics_for_workers.items()

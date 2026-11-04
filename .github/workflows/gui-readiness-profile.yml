@@ -18,7 +18,7 @@ jobs:
   diagnose:
     cache-mode: none
     if: github.repository == 'mikejhill/verdiclip'
-    name: Qt ${{ matrix.qt }} / first instrumented GUI process
+    name: Qt ${{ matrix.qt }} / five instrumented fresh processes
     runs-on: windows-latest
     timeout-minutes: 10
     strategy:
@@ -62,11 +62,12 @@ jobs:
             throw 'Diagnostic checkout identity mismatch.'
           }
           Write-Output "GUI_READINESS_PROFILE_SOURCE=$actual"
-      - name: First GUI benchmark process with bounded inclusive phase clocks
+      - name: Up to five instrumented processes, with the first GUI process first
         timeout-minutes: 2
         shell: pwsh
         run: |
           $PSNativeCommandUseErrorActionPreference = $false
+          $ErrorActionPreference = 'Stop'
           foreach ($name in @([Environment]::GetEnvironmentVariables().Keys)) {
             if ($name.StartsWith('PYTEST_', [StringComparison]::OrdinalIgnoreCase)) {
               [Environment]::SetEnvironmentVariable($name, $null, 'Process')
@@ -78,17 +79,39 @@ jobs:
           $env:PYTEST_DISABLE_PLUGIN_AUTOLOAD = '1'
           $env:PYTHONNOUSERSITE = '1'
           $env:PYTHONPATH = (Join-Path $PWD 'src') + [IO.Path]::PathSeparator + $PWD
-          $report = Join-Path $env:RUNNER_TEMP ('readiness-profile-' + [guid]::NewGuid().ToString('N') + '.xml')
-          & .venv/Scripts/python.exe -m pytest tests/ux/test_gui_readiness.py::test_first_controller_start_and_capture_costs --no-cov -p pytestqt.plugin -p pytest_cov.plugin -p _hypothesis_pytestplugin -p no:randomly -p scripts.gui_readiness_profile -vv --capture=tee-sys "--junitxml=$report" "--basetemp=$report.tmp"
-          $testExit = $LASTEXITCODE
-          if ($testExit -notin @(0, 1)) { exit $testExit }
-          if (-not (Test-Path -LiteralPath $report)) { throw 'Diagnostic JUnit receipt missing.' }
-          [xml]$junit = Get-Content -LiteralPath $report -Raw
-          $failures = @($junit.SelectNodes('//failure')).Count
-          if (@($junit.SelectNodes('//testcase')).Count -ne 1 -or
-              @($junit.SelectNodes('//skipped | //error')).Count -ne 0 -or
-              ($testExit -eq 0 -and $failures -ne 0) -or ($testExit -eq 1 -and $failures -ne 1)) {
-            throw 'Diagnosis must execute one non-skipped case with consistent status.'
+          $aggregate = 0
+          foreach ($trial in 1..5) {
+            $env:VERDICLIP_GUI_PROFILE_TRIAL = [string]$trial
+            Write-Output "GUI_READINESS_PROFILE_TRIAL=$trial/5; fresh-process-same-VM-not-cold-OS"
+            $report = Join-Path $env:RUNNER_TEMP ('readiness-profile-' + [guid]::NewGuid().ToString('N') + '.xml')
+            $log = "$report.log"
+            & .venv/Scripts/python.exe -m pytest tests/ux/test_gui_readiness.py::test_first_controller_start_and_capture_costs --no-cov -p pytestqt.plugin -p pytest_cov.plugin -p _hypothesis_pytestplugin -p no:randomly -p scripts.gui_readiness_profile -vv --capture=tee-sys "--junitxml=$report" "--basetemp=$report.tmp" 2>&1 | Tee-Object -FilePath $log
+            $testExit = $LASTEXITCODE
+            Write-Output "GUI_READINESS_PROFILE_TRIAL_EXIT=$trial/$testExit"
+            if ($testExit -notin @(0, 1)) { exit $testExit }
+            if (-not (Test-Path -LiteralPath $report)) { throw 'Diagnostic JUnit receipt missing.' }
+            [xml]$junit = Get-Content -LiteralPath $report -Raw
+            $failures = @($junit.SelectNodes('//failure')).Count
+            if (@($junit.SelectNodes('//testcase')).Count -ne 1 -or
+                @($junit.SelectNodes('//skipped | //error')).Count -ne 0 -or
+                ($testExit -eq 0 -and $failures -ne 0) -or ($testExit -eq 1 -and $failures -ne 1)) {
+              throw 'Diagnosis must execute one non-skipped case with consistent status.'
+            }
+            $profiles = @(Get-Content -LiteralPath $log | ForEach-Object {
+              if ($_ -match 'GUI_READINESS_PROFILE=(\{.*\})$') { $Matches[1] | ConvertFrom-Json }
+            })
+            if ($profiles.Count -eq 0) { throw 'Diagnostic profile receipt missing.' }
+            foreach ($profile in $profiles) {
+              if ($profile.source_sha -cne $env:VERDICLIP_BENCHMARK_SOURCE_SHA -or
+                  $profile.qt_expected -cne $env:VERDICLIP_EXPECTED_QT -or
+                  $profile.trial -cne ([string]$trial) -or $profile.truncated -ne $false -or
+                  $profile.PSObject.Properties.Name -notcontains 'errors' -or
+                  @($profile.errors).Count -ne 0 -or $null -eq $profile.records -or
+                  @($profile.records).Count -eq 0) {
+                throw 'Broken, truncated or mismatched profiling is an infrastructure failure.'
+              }
+            }
+            if ($testExit -eq 1) { $aggregate = 1 }
           }
           Write-Output 'Inclusive phases overlap and instrumentation adds overhead. The 300ms assertion is unchanged; green is non-reproduction, not a fix or native acceptance. Timeout cleanup is UNKNOWN; VM disposal is containment.'
-          exit $testExit
+          exit $aggregate

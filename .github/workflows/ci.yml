@@ -27,15 +27,28 @@ env:
 
 jobs:
   hosted-scrollbar:
-    name: Owned scrollbar interaction (native injected input)
+    name: Owned scrollbar / ${{ matrix.provider }} / Qt ${{ matrix.qt }} / scale ${{ matrix.scale }}
     if: github.event_name == 'workflow_dispatch' && inputs.hosted_scrollbar && github.repository == 'mikejhill/verdiclip'
     runs-on: windows-2025
     timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {provider: wpf, qt: '6.11.2', scale: '1'}
+          - {provider: wpf, qt: '6.12.0', scale: '1'}
+          - {provider: wpf, qt: '6.12.0', scale: '1.5'}
+          - {provider: wpf, qt: '6.12.0', scale: '2'}
+          - {provider: winforms, qt: '6.12.0', scale: '1'}
     cache-mode: none
     permissions:
       contents: read
     env:
       VERDICLIP_HOSTED_SCROLLBAR: '1'
+      VERDICLIP_NATIVE_PROVIDER: ${{ matrix.provider }}
+      VERDICLIP_EXPECTED_QT: ${{ matrix.qt }}
+      VERDICLIP_EXPECTED_QT_SCALE: ${{ matrix.scale }}
+      QT_SCALE_FACTOR: ${{ matrix.scale }}
       VERDICLIP_HOSTED_SOURCE: ${{ github.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -46,8 +59,9 @@ jobs:
           python-version: '3.13'
           enable-cache: false
       - run: uv sync --locked
-      - name: Select the explicit current Qt runtime
-        run: uv pip install "pyside6-essentials==6.12.0" "shiboken6==6.12.0"
+      - name: Select the explicit isolated Qt runtime
+        shell: pwsh
+        run: uv pip install "pyside6-essentials==$env:VERDICLIP_EXPECTED_QT" "shiboken6==$env:VERDICLIP_EXPECTED_QT"
       - name: Verify source and execute one bounded owned interaction
         timeout-minutes: 2
         shell: pwsh

@@ -10,7 +10,12 @@ import pytest
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication, QMenu
 from pytestqt.qtbot import QtBot
-from tests.capture.native_scrollbar import ScrollbarCase, fixture_image, verify_pixels
+from tests.capture.native_scrollbar import (
+    ScrollbarCase,
+    fixture_image,
+    menu_physical_rect,
+    verify_pixels,
+)
 from tests.capture.production_matrix import (
     InputProfile,
     ProductionBrokerDriver,
@@ -18,6 +23,38 @@ from tests.capture.production_matrix import (
 )
 from tests.capture.scroll_peer import ScrollPeer, provider_pixels
 from tests.capture.test_scroll_core import Documents
+
+from verdiclip.capture.models import ScreenGeometry
+from verdiclip.geometry import Rect
+
+
+@pytest.mark.parametrize(
+    ("scale", "logical", "expected"),
+    [
+        (1, Rect(-1800, 50, 100, 20), Rect(-1800, 50, 100, 20)),
+        (1.5, Rect(-1200, 50, 100, 20), Rect(-1800, 75, 150, 30)),
+        (2, Rect(-900, 50, 100, 20), Rect(-1800, 100, 200, 40)),
+    ],
+)
+def test_popup_overlap_uses_physical_coordinates(
+    scale: float, logical: Rect, expected: Rect
+) -> None:
+    """Scaled Qt coordinates cannot falsely certify a clear physical viewport."""
+    geometry = ScreenGeometry(
+        name="synthetic-negative-origin",
+        logical=Rect(-1920 / scale, 0, 1920 / scale, 1080 / scale),
+        physical=Rect(-1920, 0, 1920, 1080),
+        scale=scale,
+    )
+    assert menu_physical_rect(geometry, logical) == expected
+
+
+def test_unknown_owned_provider_is_rejected_before_start(tmp_path: Path) -> None:
+    """Profile selection cannot become an arbitrary fixture command or path."""
+    directory = tmp_path / "not-created"
+    with pytest.raises(ValueError, match="Unknown owned"):
+        ScrollPeer(directory, provider="../foreign")
+    assert not directory.exists()
 
 
 def test_provider_start_retains_child_diagnostics(
@@ -126,6 +163,7 @@ def test_cleanup_continues_after_journal_failure(tmp_path: Path) -> None:
             retirement_probe={},
             operation_trace=[],
             fixture_readiness={},
+            provider_profile={},
             process=SimpleNamespace(
                 diagnostics=None, diagnostics_for_workers={}, worker_pids=()
             ),

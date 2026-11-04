@@ -24,6 +24,17 @@ def test_cache_mode_is_restricted_to_owned_manual_job() -> None:
     assert "enable-cache: false" in native
     assert "actions/cache" not in native
     assert "upload-artifact" not in native
+    for profile in (
+        "{provider: wpf, qt: '6.11.2', scale: '1'}",
+        "{provider: wpf, qt: '6.12.0', scale: '1'}",
+        "{provider: wpf, qt: '6.12.0', scale: '1.5'}",
+        "{provider: wpf, qt: '6.12.0', scale: '2'}",
+        "{provider: winforms, qt: '6.12.0', scale: '1'}",
+    ):
+        assert profile in native
+    assert "QT_SCALE_FACTOR: ${{ matrix.scale }}" in native
+    assert "VERDICLIP_NATIVE_PROVIDER: ${{ matrix.provider }}" in native
+    assert "fail-fast: false" in native
 
 
 def test_parser_exception_matches_only_documented_unknown_job_key() -> None:
