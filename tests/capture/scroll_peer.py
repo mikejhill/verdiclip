@@ -84,6 +84,7 @@ class ScrollPeer:
             or value["sequence"] != int(match[1])
             or not value["visible"]
             or value["closed"]
+            or value.get("activation_complete") is not True
         ):
             raise ValueError("Fixture snapshot ownership changed")
         identity = (value["pid"], value["started_ticks"], value["hwnd"])

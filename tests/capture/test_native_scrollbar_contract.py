@@ -139,7 +139,9 @@ def test_cleanup_continues_after_journal_failure(tmp_path: Path) -> None:
     assert receipt["cleanup_errors"] == ["journal denied"]
 
 
-@pytest.mark.parametrize("change", ["nonce", "pid", "sequence", "visible", "closed"])
+@pytest.mark.parametrize(
+    "change", ["nonce", "pid", "sequence", "visible", "closed", "activation_complete"]
+)
 def test_provider_snapshot_rejects_changed_owner(tmp_path: Path, change: str) -> None:
     """A visible-looking stale/foreign fixture cannot authorize input."""
     peer = ScrollPeer(tmp_path)
@@ -152,6 +154,7 @@ def test_provider_snapshot_rejects_changed_owner(tmp_path: Path, change: str) ->
         "sequence": 1,
         "visible": True,
         "closed": False,
+        "activation_complete": True,
         "started_ticks": 456,
         "hwnd": 789,
     }
@@ -161,6 +164,7 @@ def test_provider_snapshot_rejects_changed_owner(tmp_path: Path, change: str) ->
         "sequence": 2,
         "visible": False,
         "closed": True,
+        "activation_complete": False,
     }[change]
     (tmp_path / "fixture-state-000001.json").write_text(json.dumps(value))
     with pytest.raises(ValueError, match="ownership"):
@@ -235,6 +239,15 @@ def test_provider_stop_timer_does_not_wait_for_render_event() -> None:
     assert script.index("$timer.Start()") < script.index("$window.ShowDialog()")
     assert script.index("try {") < script.index("Add-Type -AssemblyName")
     assert "if ($null -ne $timer) { $timer.Stop() }" in script
+    assert "if (-not $ready -or -not $window.IsLoaded -or $closed) { return }" in script
+    rendered = script.split("$window.Add_ContentRendered({", 1)[1].split("})", 1)[0]
+    assert rendered.index("if ($ready)") < rendered.index("$window.Activate()")
+    assert rendered.index("$window.Activate()") < rendered.index(
+        "$script:ready = $true"
+    )
+    assert rendered.index("$script:ready = $true") < rendered.index(
+        "Write-FixtureState"
+    )
 
 
 @pytest.mark.parametrize("failure", ["kill", "wait"])

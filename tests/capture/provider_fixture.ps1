@@ -47,10 +47,10 @@ $image.Stretch = 'None'; $image.HorizontalAlignment = 'Left'
 [Windows.Media.RenderOptions]::SetBitmapScalingMode($image, 'NearestNeighbor')
 $viewer.Content = $image; $stack.Children.Add($viewer) | Out-Null
 $window.Content = $stack
-$sequence = 0; $closed = $false; $maximumOffset = 0.0; $endSeen = $false
+$sequence = 0; $closed = $false; $ready = $false; $maximumOffset = 0.0; $endSeen = $false
 $lastCommand = 0; $pendingCommand = $null
 function Write-FixtureState {
-    if (-not $window.IsLoaded -or $closed) { return }
+    if (-not $ready -or -not $window.IsLoaded -or $closed) { return }
     $handle = (New-Object Windows.Interop.WindowInteropHelper($window)).Handle.ToInt64()
     $point = $viewer.PointToScreen((New-Object Windows.Point(0,0)))
     $bottom = $viewer.PointToScreen((New-Object Windows.Point([Math]::Min($pixelWidth,$viewer.ViewportWidth),$viewer.ViewportHeight)))
@@ -62,7 +62,7 @@ function Write-FixtureState {
     if ($viewer.ScrollableHeight -gt 0 -and $viewer.VerticalOffset -ge ($viewer.ScrollableHeight - 0.01)) { $script:endSeen = $true }
     $state = @{
         nonce=$Nonce; pid=$PID; hwnd=$handle; started_ticks=$startedTicks
-        sequence=$sequence; visible=[bool]$window.IsVisible; closed=$closed
+        sequence=$sequence; visible=[bool]$window.IsVisible; closed=$closed; activation_complete=$ready
         offset=$viewer.VerticalOffset; scrollable_height=$viewer.ScrollableHeight
         maximum_offset=$maximumOffset; end_seen=$endSeen
         viewport_height=$viewer.ViewportHeight; content_rows=$pixelHeight
@@ -109,7 +109,9 @@ $timer.Add_Tick({
 $window.Add_ContentRendered({
     Write-Output ('FIXTURE_PHASE=content-rendered utc=' + [DateTime]::UtcNow.ToString('o'))
     # One ordinary owned-window activation; never force foreground or send input.
+    if ($ready) { return } # Later renders cannot reactivate an established fixture.
     $null = $window.Activate()
+    $script:ready = $true
     Write-FixtureState
 })
 $viewer.Add_ScrollChanged({ Write-FixtureState })
