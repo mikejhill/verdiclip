@@ -62,11 +62,12 @@ function Write-FocusPhase([string]$phase) {
     $methods = @([Diagnostics.StackTrace]::new().GetFrames() | ForEach-Object {
         $method = $_.GetMethod()
         $type = $method.DeclaringType.FullName
-        if ($type -like 'System.Windows.*' -or $type -like 'MS.Internal.*') {
+        if (($type -like 'System.Windows.*' -or $type -like 'MS.Internal.*') -and
+            ($type -like '*Automation*' -or $method.Name -match 'Focus|Activat')) {
             $type + '.' + $method.Name
         }
     } | Select-Object -First 12)
-    [Console]::Error.WriteLine('FIXTURE_FOCUS=' + $phase + ' methods=' + ($methods -join ','))
+    [Console]::Error.WriteLine('FIXTURE_FOCUS=' + $phase + ' elapsed_ms=' + $clock.ElapsedMilliseconds + ' methods=' + ($methods -join ','))
     } catch { } # Optional evidence never changes fixture behavior.
 }
 $window.Add_Activated({ Write-FocusPhase 'activated' })
