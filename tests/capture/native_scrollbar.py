@@ -130,6 +130,7 @@ class ScrollbarCase:
         directory: Path,
     ) -> None:
         self.qtbot, self.directory = qtbot, directory
+        self.fixture_readiness: dict[str, object] = {}
         self.input_deadline = time.monotonic() + 50
         self.driver = ProductionBrokerDriver(InputProfile.INJECTED, max_seconds=40)
         patch.setattr("verdiclip.capture.service.make_input_broker", self.driver.broker)
@@ -237,8 +238,21 @@ class ScrollbarCase:
         self.menu.close()
         self.snapshot = None
         self.popup_trace = None
-        self.peer.start()
-        self.qtbot.waitUntil(self.peer.poll, timeout=10000)
+        started = time.monotonic()
+        try:
+            self.peer.start()
+            remaining_ms = int((20 - (time.monotonic() - started)) * 1000)
+            assert remaining_ms > 0, "Fixture startup exhausted preparation budget"
+            # Fixture-only allocation inside unchanged outer/input deadlines.
+            # Slow cold WPF construction is not a passing product latency result.
+            self.qtbot.waitUntil(self.peer.poll, timeout=remaining_ms)
+        finally:
+            elapsed = time.monotonic() - started
+            self.fixture_readiness = {
+                "elapsed_ms": round(elapsed * 1000),
+                "exceeded_previous_10s": elapsed > 10,
+                "fixture_budget_ms": 20000,
+            }
         rectangle = self.peer.state["physical_rectangle"]
         assert isinstance(rectangle, dict)
         width, height = int(rectangle["width"]), self.peer.integer("content_rows")
@@ -452,6 +466,7 @@ class ScrollbarCase:
                     "first_popup_loss": popup_loss,
                     "passive_retirement_probe": self.retirement_probe,
                     "operation_trace": self.operation_trace,
+                    "fixture_readiness": self.fixture_readiness,
                     "provider_diagnostics": (
                         asdict(self.process.diagnostics)
                         if self.process.diagnostics is not None
