@@ -1,7 +1,9 @@
 """Offline checks of the combined native case's evidence; no desktop operations."""
 
+import ctypes
 import json
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import BinaryIO, cast
@@ -12,6 +14,7 @@ from PySide6.QtWidgets import QApplication, QMenu
 from pytestqt.qtbot import QtBot
 from tests.capture.native_scrollbar import (
     ScrollbarCase,
+    discovery_metadata,
     fixture_image,
     menu_physical_rect,
     verify_pixels,
@@ -23,9 +26,141 @@ from tests.capture.production_matrix import (
 )
 from tests.capture.scroll_peer import ScrollPeer, provider_pixels
 from tests.capture.test_scroll_core import Documents
+from tests.capture.test_scroll_uia_protocol import Payload
 
 from verdiclip.capture.models import ScreenGeometry
-from verdiclip.geometry import Rect
+from verdiclip.capture.scroll.uia_messages import UiaRequest
+from verdiclip.capture.scroll.uia_protocol import UiaDiscovery
+from verdiclip.geometry import Point, Rect
+
+
+class FunctionPort:
+    """Fake ctypes callable supporting signature attributes, no OS invocation."""
+
+    def __init__(self, call: Callable[..., object]) -> None:
+        self.call = call
+
+    def __call__(self, *args: object) -> object:
+        """Forward only to the supplied deterministic fake."""
+        return self.call(*args)
+
+
+def test_provider_metadata_is_bounded_and_omits_runtime_identifiers() -> None:
+    """Owned shape evidence preserves references without exporting opaque IDs."""
+    discovery = UiaDiscovery.decode(Payload.discovery(Payload.nodes()))
+    metadata = discovery_metadata(discovery)
+    assert [node["kind"] for node in metadata] == [
+        "vertical_scrollbar",
+        "content",
+        "window",
+    ]
+    assert metadata[1]["vertically_scrollable"] is True
+    assert metadata[1]["bounds"] == [0, 0, 96, 48]
+    assert metadata[1]["reference"] == {"vertical_percent": 0, "view_size": 20}
+    assert metadata[0]["reference"] is None
+    assert "runtime" not in json.dumps(metadata)
+    assert Payload.WINDOW not in json.dumps(metadata)
+
+
+@pytest.mark.parametrize("outcome", ["complete", "failed", "foreign", "wrong-point"])
+def test_provider_center_probe_cannot_satisfy_actual_click_discovery(
+    monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    """Actual probe method uses fake OS/adapter ports and never sends input."""
+    request = object()
+    discovery = UiaDiscovery.decode(Payload.discovery(Payload.nodes()))
+    if outcome == "foreign":
+        discovery = UiaDiscovery(
+            "foreign", discovery.hit_identity, discovery.nodes, discovery.references
+        )
+    callbacks: list[object] = []
+    inspected: list[tuple[int, Point]] = []
+
+    class SignalPort:
+        def connect(self, callback: object) -> None:
+            callbacks.append(callback)
+
+        def disconnect(self, callback: object) -> None:
+            callbacks.remove(callback)
+
+    def pid_query(_handle: int, pointer: object) -> int:
+        ctypes.cast(
+            cast("ctypes.c_void_p", pointer), ctypes.POINTER(ctypes.c_ulong)
+        ).contents.value = 2
+        return 1
+
+    api = SimpleNamespace(
+        WindowFromPoint=FunctionPort(
+            lambda _point: 99 if outcome == "wrong-point" else 7
+        ),
+        GetWindowThreadProcessId=FunctionPort(pid_query),
+        GetAncestor=FunctionPort(lambda _handle, _flag: 1),
+    )
+    monkeypatch.setattr(
+        "tests.capture.native_scrollbar.ctypes.WinDLL",
+        lambda *_args, **_kwargs: api,
+        raising=False,
+    )
+    monkeypatch.setattr("tests.capture.native_scrollbar.time.monotonic", lambda: 10)
+
+    def inspect(handle: int, point: Point) -> object:
+        inspected.append((handle, point))
+        return request
+
+    case = SimpleNamespace(
+        peer=SimpleNamespace(
+            poll=lambda: True,
+            handle=1,
+            integer=lambda key: {
+                "list_handle": 7,
+                "pid": 2,
+                "started_ticks": Payload.TICKS,
+            }[key],
+            target=lambda: Rect(90, 0, 6, 48),
+        ),
+        snapshot=SimpleNamespace(errors=list),
+        adapter=SimpleNamespace(inspect=inspect, failed=SignalPort()),
+        input_deadline=50,
+        discoveries=[],
+        _provider_probe_request=None,
+        provider_preflight={},
+    )
+
+    def wait(predicate: object, **options: object) -> None:
+        assert options["timeout"] == 11000
+        if outcome == "failed":
+            cast("Callable[..., object]", callbacks[0])(
+                request, "private provider message"
+            )
+        else:
+            ScrollbarCase.record_discovery(
+                cast(ScrollbarCase, case), cast("UiaRequest", request), discovery
+            )
+        assert cast("Callable[[], bool]", predicate)()
+
+    case.qtbot = SimpleNamespace(waitUntil=wait)
+    if outcome == "complete":
+        ScrollbarCase.diagnose_provider(cast(ScrollbarCase, case), Rect(0, 0, 96, 48))
+        assert case.provider_preflight["state"] == "complete"
+        assert inspected == [(1, Point(48, 24))]
+    else:
+        with pytest.raises(AssertionError, match=r"ListBox|inspection failed"):
+            ScrollbarCase.diagnose_provider(
+                cast(ScrollbarCase, case), Rect(0, 0, 96, 48)
+            )
+    assert case.discoveries == []
+    assert callbacks == []
+    assert "private provider message" not in json.dumps(case.provider_preflight)
+    if outcome != "wrong-point":
+        # Even late delivery of the center response stays diagnostic-only.
+        ScrollbarCase.record_discovery(
+            cast(ScrollbarCase, case), cast("UiaRequest", request), discovery
+        )
+        assert case.discoveries == []
+        ScrollbarCase.record_discovery(
+            cast(ScrollbarCase, case), cast("UiaRequest", object()), discovery
+        )
+        assert case.discoveries == [discovery]
 
 
 @pytest.mark.parametrize(

@@ -335,6 +335,21 @@ jobs:
           uv pip install --python .smoke $wheel
           & .smoke/Scripts/verdiclip.exe --version
           & .smoke/Scripts/python.exe -c "import verdiclip; assert verdiclip.VERSION != '0.0.0+unknown'"
+      - name: Verify installed scrolling helper bytes without executing them
+        shell: pwsh
+        run: |
+          @'
+          from pathlib import Path
+          import verdiclip
+          source = Path('src/verdiclip/capture/scroll').resolve()
+          installed = Path(verdiclip.__file__).resolve().parent / 'capture' / 'scroll'
+          assert installed != source, 'Verification must inspect the installed wheel'
+          for name in ('uia_helper.ps1', 'uia_native_request.ps1', 'uia_desktop.cs',
+                       'uia_nofocus.cs', 'uia_nofocus_interop.cs'):
+              assert (installed / name).read_bytes() == (source / name).read_bytes(), name
+          print('Installed native helper assets match reviewed source; no helper executed')
+          '@ | & .smoke/Scripts/python.exe -
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist

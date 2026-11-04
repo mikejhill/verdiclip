@@ -315,3 +315,54 @@ explicit isolated qualification run; no laptop session is needed.
 
 [sendinput]: https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput
 [input-structure]: https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-input
+
+
+## November 4 hosted qualification update
+
+This section supersedes the earlier “prepared, not qualified” status for the
+explicit profiles below; older failure receipts remain historical evidence.
+
+At `9a74ce62c40f5fb0f2c7a2265190c36d7f11bd05`, the existing owned WPF
+scrollbar interaction passed twice on separate disposable Windows runners in
+[run 41931477841](https://github.com/mikejhill/verdiclip/actions/runs/41931477841).
+Moving native UIA mutation to a fresh process, with the same-client
+`AutoSetFocus=false` check and no managed UIA assemblies, preserved the popup.
+This implicates mixed-process UIA state in the earlier failure; it does not
+establish the internal Windows cause.
+
+At `fa04cc0debb16af5b4136d4475b9278ec771e3a7`,
+[run 41933749329](https://github.com/mikejhill/verdiclip/actions/runs/41933749329)
+passed WPF at Qt 6.11.2/scale 1 and Qt 6.12.0/scales 1, 1.5 and 2. Each case
+used the real scrollbar click, automatic full-height capture, every-pixel oracle,
+existing-popup identity/visibility assertions and confirmed process cleanup.
+Scaling here means Qt process scaling on a 96-DPI, single-monitor provider VM.
+It is not physical mixed-DPI, multi-monitor, hardware-input or arbitrary-provider
+qualification.
+
+The WinForms LISTBOX profile in that run failed with “No supported scroll area
+was found at this point.” Its discovered chain was `other, window`; there was no
+provider mutation, popup loss or cleanup error. This does not yet distinguish
+missing provider capability from hit/ancestry behavior. The overall native matrix
+is therefore red and WinForms capture is not qualified. Do not convert this
+result into a pass by removing its assertions.
+
+The normal application entry point still does not compose scrolling services.
+Release also requires normal-entry composition, packaged helper availability,
+and bounded retirement of active and idle provider workers at application exit.
+Passing the owned interaction alone does not resolve those delivery gates.
+
+### Performance evidence remains separate
+
+[Run 41933734288](https://github.com/mikejhill/verdiclip/actions/runs/41933734288)
+executed five fresh processes on each of Qt 6.11.2 and 6.12.0. All ten retained the
+300 ms first-capture assertion: measured post-readiness capture times were
+65.1–127.8 ms. First-process controller startup was 201.7/231.1 ms respectively,
+measured separately; imports and QApplication construction are outside these
+intervals. Later trials share the VM's OS caches and are not cold-OS samples.
+
+Historical 410–1716 ms failures are not erased by this success. The retained
+410 ms sample spent 322 ms in `editor.show` with about 47 ms CPU; its missing
+phase offsets prevent attributing that delay to a specific native operation.
+The expanded profiler now retains those offsets and treats any threshold failure
+as a failed run even if later trials pass. The historical outlier cause remains
+unresolved; green reruns are non-reproduction, not a demonstrated repair.

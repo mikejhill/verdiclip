@@ -57,7 +57,8 @@ def compose_preview_scrolling(
             options=NativeBackendOptions(
                 preservation_qualified=True,
                 input_unchanged=lambda: controller.capture.input_active,
-                frame_parent=spool,
+                # The helper admits frame PNGs only below the system TEMP root.
+                # Retained strip storage has a separate, bundle-owned lifetime.
             ),
         )
 

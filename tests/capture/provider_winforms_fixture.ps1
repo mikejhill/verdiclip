@@ -91,7 +91,7 @@ public static class FixtureListGeometry {
         $script:sequence++
         if ($sequence -gt 10000) { throw 'Fixture snapshot budget exceeded' }
         $state = @{
-            nonce=$Nonce;pid=$PID;hwnd=$window.Handle.ToInt64();started_ticks=$startedTicks
+            nonce=$Nonce;pid=$PID;hwnd=$window.Handle.ToInt64();started_ticks=$startedTicks;list_handle=$viewer.Handle.ToInt64()
             sequence=$sequence;visible=[bool]$window.Visible;closed=$false;activation_complete=$ready
             offset=$offset;scrollable_height=840;maximum_offset=$maximumOffset;end_seen=$endSeen
             viewport_height=280;content_rows=1120

@@ -87,6 +87,32 @@ def observe_operation[**P, R](
     return cast("Callable[P, R]", observed)
 
 
+def discovery_metadata(discovery: UiaDiscovery) -> list[dict[str, object]]:
+    """Bounded owned-provider shape only, without names or runtime identifiers."""
+    references = {reference.identity: reference for reference in discovery.references}
+    return [
+        {
+            "kind": node.kind.value,
+            "bounds": [
+                node.bounds.x,
+                node.bounds.y,
+                node.bounds.width,
+                node.bounds.height,
+            ],
+            "vertically_scrollable": node.vertically_scrollable,
+            "reference": (
+                {
+                    "vertical_percent": references[node.identity].vertical_percent,
+                    "view_size": references[node.identity].view_size,
+                }
+                if node.identity in references
+                else None
+            ),
+        }
+        for node in discovery.nodes[:32]
+    ]
+
+
 def menu_physical_rect(geometry: ScreenGeometry, logical: Rect) -> Rect:
     """Compare an owned Qt popup with the provider's physical viewport."""
     start = geometry.to_physical(
@@ -203,9 +229,9 @@ class ScrollbarCase:
         )
         self.adapter = UiaAdapter(process=self.process)
         self.discoveries: list[UiaDiscovery] = []
-        self.adapter.discovered.connect(
-            lambda _request, discovery: self.discoveries.append(discovery)
-        )
+        self.provider_preflight: dict[str, object] = {}
+        self._provider_probe_request: UiaRequest | None = None
+        self.adapter.discovered.connect(self.record_discovery)
         self.passed = False
         self.snapshot: StrictFixtureSnapshot | None = None
         self.journal = DriverJournal(
@@ -318,6 +344,95 @@ class ScrollbarCase:
         self.journal.binding_handle = self.peer.handle
         self.journal.prepare_binding(self.target())
         self.check_passive_retirement()
+        if self.peer.provider == "winforms":
+            self.diagnose_provider(viewport)
+
+    def record_discovery(self, request: UiaRequest, discovery: UiaDiscovery) -> None:
+        """Pre-click inspection can never satisfy the actual scrollbar oracle."""
+        if request is self._provider_probe_request:
+            expected = ":".join(
+                str(value)
+                for value in (
+                    self.peer.handle,
+                    self.peer.integer("pid"),
+                    self.peer.integer("started_ticks"),
+                )
+            )
+            self.provider_preflight.update(
+                state="complete"
+                if discovery.window_identity == expected
+                else "foreign",
+                window_matches_fixture=discovery.window_identity == expected,
+                nodes=discovery_metadata(discovery),
+            )
+            return
+        self.discoveries.append(discovery)
+
+    def diagnose_provider(self, viewport: Rect) -> None:
+        """One read-only center query, inside original case/input deadlines."""
+        assert self.peer.poll(), "Owned provider state unavailable"
+        assert self.snapshot is not None
+        assert not self.snapshot.errors()
+        point = viewport.center
+        api = ctypes.WinDLL("user32", use_last_error=True)
+        api.WindowFromPoint.argtypes = [w.POINT]
+        api.WindowFromPoint.restype = w.HWND
+        api.GetWindowThreadProcessId.argtypes = [w.HWND, ctypes.POINTER(w.DWORD)]
+        api.GetWindowThreadProcessId.restype = w.DWORD
+        api.GetAncestor.argtypes = [w.HWND, w.UINT]
+        api.GetAncestor.restype = w.HWND
+        list_handle = self.peer.integer("list_handle")
+        pid = w.DWORD()
+        api.GetWindowThreadProcessId(list_handle, ctypes.byref(pid))
+        owners = {
+            name: int(
+                api.WindowFromPoint(w.POINT(round(location.x), round(location.y))) or 0
+            )
+            for name, location in (
+                ("center", point),
+                ("scrollbar", self.peer.target().center),
+            )
+        }
+        self.provider_preflight = {
+            "state": "admitting",
+            "point": [point.x, point.y],
+            "list_handle": list_handle,
+            "point_owners": owners,
+        }
+        assert pid.value == self.peer.integer("pid"), (
+            "Owned ListBox generation unavailable"
+        )
+        assert int(api.GetAncestor(list_handle, 2) or 0) == self.peer.handle, (
+            "Owned ListBox generation unavailable"
+        )
+        assert all(owner == list_handle for owner in owners.values()), (
+            "Fixture point does not hit its ListBox"
+        )
+        remaining_ms = int((self.input_deadline - time.monotonic()) * 1000)
+        assert remaining_ms > 0, (
+            "Provider diagnosis exhausted original case input budget"
+        )
+
+        def failed(request: UiaRequest, _message: str) -> None:
+            if request is self._provider_probe_request:
+                self.provider_preflight["state"] = "failed"
+
+        self.adapter.failed.connect(failed)
+        try:
+            self.provider_preflight["state"] = "waiting"
+            self._provider_probe_request = self.adapter.inspect(self.peer.handle, point)
+            self.qtbot.waitUntil(
+                lambda: self.provider_preflight["state"] != "waiting",
+                timeout=min(11000, remaining_ms),
+            )
+            assert self.provider_preflight["state"] == "complete", (
+                "Owned provider center inspection failed"
+            )
+            assert not self.snapshot.errors(), "Provider inspection changed the popup"
+        finally:
+            self.adapter.failed.disconnect(failed)
+            # Retain this one identity so even a late diagnostic response can
+            # never enter the actual-click discovery list.
 
     def check_provider_profile(self) -> None:
         """Require the selected Qt runtime and process scale without changing OS DPI."""
@@ -523,6 +638,10 @@ class ScrollbarCase:
                         else None
                     ),
                     "provider_profile": self.provider_profile,
+                    "provider_preflight": getattr(self, "provider_preflight", {}),
+                    "scrollbar_discoveries": [
+                        discovery_metadata(item) for item in self.discoveries[:4]
+                    ],
                     "provider_worker_diagnostics": {
                         mode: asdict(trace)
                         for mode, trace in self.process.diagnostics_for_workers.items()

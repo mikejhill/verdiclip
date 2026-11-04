@@ -12,6 +12,7 @@ from tests.capture.test_scroll_uia_protocol import Payload
 from tests.ux.test_capture_journeys import FakeDesktop, FakeWindows
 
 from verdiclip.capture.scroll.native_backend import UiaFrameBackend
+from verdiclip.capture.scroll.pixels import FrameFiles
 from verdiclip.capture.scroll.uia_adapter import UiaAdapter
 from verdiclip.capture.scroll.uia_protocol import UiaReference
 from verdiclip.capture.service import CaptureService
@@ -87,7 +88,30 @@ def test_composition_owns_backend_spool_and_live_input_predicate(
         try:
             assert isinstance(backend, UiaFrameBackend)
             assert backend.unavailable_reason is None
-            assert backend._options.frame_parent == tmp_path / "spool"
+            assert backend._options.frame_parent is None
+            # Exercise the real destination allocator against a synthetic TEMP
+            # root, without a helper, desktop access, or pixel capture.
+            temp_root = tmp_path / "system-temp"
+            temp_root.mkdir()
+            monkeypatch.setattr(
+                "verdiclip.capture.scroll.pixels.tempfile.gettempdir",
+                lambda: str(temp_root),
+            )
+            files = FrameFiles(
+                max_pixels=16_000_000, parent=backend._options.frame_parent
+            )
+            try:
+                destination = files.destination(
+                    UiaReference.decode(Payload.reference()).bounds
+                )
+                assert destination.path.name == "frame.png"
+                assert destination.path.parent.parent == temp_root.resolve()
+                assert destination.path.parent.name.startswith("verdiclip-frame-")
+                assert not destination.path.exists()
+                assert not destination.path.is_relative_to(tmp_path / "spool")
+            finally:
+                files.close()
+            assert not destination.path.parent.exists()
             guard = backend._options.input_unchanged
             assert guard is not None
             assert not guard()
