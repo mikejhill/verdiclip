@@ -73,6 +73,7 @@ public static class NoFocusScroll {
         Require(Finite(target.ViewSize) && target.ViewSize > 0 && target.ViewSize < 100 && Math.Abs(target.ViewSize-request.ViewSize) <= 0.001);
         Require(!client.AutoSetFocus); // Do not mutate if this client no longer honors the policy.
         Require(permitMutation()); // Repeat the original full-area occlusion/identity guard after resolution.
+        Require(!client.AutoSetFocus); // The delegate must not change this client policy.
         Phase.Mark("nofocus_guarded");
         client.Move(target, request.Destination);
         Phase.Mark("nofocus_moved");
@@ -185,6 +186,7 @@ internal sealed class NativeScrollClient : IScrollClient, IDisposable {
         foreground.EnsureUnchanged();
         Phase.Mark("nofocus_moving");
         target.Pattern.SetScrollPercent(-1, destination);
+        Phase.Mark("nofocus_call_returned");
         foreground.EnsureUnchanged();
     }
     public void Dispose() {

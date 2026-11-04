@@ -35,7 +35,7 @@ public static class NoFocusPolicyTests {
     public static int Run() {
         int count=0;
         var good=Client(); NoFocusScroll.Execute(good,Request(),()=>true); count++;
-        if(String.Join(",",good.Calls)!="disable-focus,read-policy,resolve,read-policy,move") throw new Exception("wrong client ordering");
+        if(String.Join(",",good.Calls)!="disable-focus,read-policy,resolve,read-policy,read-policy,move") throw new Exception("wrong client ordering");
         var ignore=Client();ignore.IgnoreDisable=true;Reject(ignore,Request());count++;
         if(ignore.Calls.Contains("resolve")) throw new Exception("resolved before no-focus verification");
         var drift=Client();drift.DriftPolicy=true;Reject(drift,Request());count++;
@@ -64,6 +64,9 @@ public static class NoFocusPolicyTests {
         var refused=Client();
         try { NoFocusScroll.Execute(refused,Request(),()=>false); throw new Exception("guard refusal ignored"); }
         catch(InvalidOperationException) { if(refused.Moves!=0) throw; } count++;
+        var changedByGuard=Client();
+        try { NoFocusScroll.Execute(changedByGuard,Request(),()=>{ changedByGuard.IgnoreDisable=true; return true; }); throw new Exception("post-guard policy drift accepted"); }
+        catch(InvalidOperationException) { if(changedByGuard.Moves!=0) throw; } count++;
         var owned=Client(); NoFocusScroll.ExecuteOwned(owned,Request(),()=>true);
         if(owned.Disposals!=1 || owned.Moves!=1) throw new Exception("owned success leaked"); count++;
         var primary=Client(); primary.FailResolve=true;

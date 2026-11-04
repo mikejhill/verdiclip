@@ -50,6 +50,7 @@ class WorkerTrace:
         b"VERDICLIP_UIA_PHASE=nofocus_guarded": "nofocus_guarded",
         b"VERDICLIP_UIA_PHASE=nofocus_moving": "nofocus_moving",
         b"VERDICLIP_UIA_PHASE=nofocus_moved": "nofocus_moved",
+        b"VERDICLIP_UIA_PHASE=nofocus_call_returned": "nofocus_call_returned",
     }
 
     def __init__(self, clock: Callable[[], float]) -> None:

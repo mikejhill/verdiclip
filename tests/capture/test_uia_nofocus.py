@@ -43,7 +43,7 @@ def test_nofocus_policy_with_compiled_fake_client(tmp_path: Path) -> None:
         ],
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert result.stdout.strip() == "48"
+    assert result.stdout.strip() == "49"
 
 
 def test_mutation_uses_packaged_same_client_no_focus_implementation() -> None:
