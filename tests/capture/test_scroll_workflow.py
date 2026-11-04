@@ -589,6 +589,7 @@ def test_native_scrollbar_part_automatically_captures_and_delivers(
     qtbot: QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Automatic capture must not create/dispose an unused native popup owner."""
+
     def forbidden(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("Automatic capture constructed confirmation UI")
 
