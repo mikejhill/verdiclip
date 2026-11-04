@@ -519,3 +519,17 @@ def test_pending_manual_save_works_even_when_automatic_naming_is_broken(
     assert app.controller._close_editors()
     assert destination.is_file()
     assert app.controller.pending_deliveries == ()
+
+
+def test_successful_reviewed_delivery_clears_retained_capture_failure(
+    factory: AppFactory,
+    sample_image: QImage,
+) -> None:
+    """A successful scrolling retry clears status without a captured signal."""
+    app = factory(Settings())
+    app.controller.tray.set_capture_error("Input was unavailable")
+    assert app.controller.tray.action("capture_error").isVisible()
+    result = capture(sample_image)
+    app.controller.deliver_reviewed_capture(result)
+    assert result.capture_id in app.controller._completed_deliveries
+    assert not app.controller.tray.action("capture_error").isVisible()

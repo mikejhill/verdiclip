@@ -169,6 +169,7 @@ class AppController(QObject):
             updater.checked.connect(self._on_update_checked)
             updater.check_failed.connect(self._on_update_check_failed)
         self._capture.captured.connect(self._on_captured)
+        self._capture.failed.connect(self._tray.set_capture_error)
         self._capture.failed.connect(
             lambda message: self._notify("Capture failed", message, warning=True)
         )
@@ -429,6 +430,7 @@ class AppController(QObject):
             self._pending_deliveries.pop(attempt.capture.capture_id)
             self._completed_deliveries.add(attempt.capture.capture_id)
             self._scroll_reviews.acknowledge_delivery(attempt.capture.capture_id)
+            self._tray.set_capture_error("")
         if done:
             hint = "\nClick to open the folder." if attempt.saved is not None else ""
             # Keep a failed attempt's retry action rather than replacing it.

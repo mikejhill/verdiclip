@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
 from PySide6.QtWidgets import QApplication, QPushButton
 from pytestqt.qtbot import QtBot
 from tests.capture.input_fixture import ReplayInputBroker
@@ -178,9 +179,12 @@ def test_spontaneous_service_lease_end_pauses_then_resumes_same_review(
         frames = run.desktop.frames
         run.broker.interrupt("Fixture input deadline")
         assert run.fixture.workflow.paused_review
+        assert "Capture scrolling area" in review._status.text()
+        assert "tray menu" in review._status.text()
+        assert "shortcut" not in review._status.text()
         assert review.isVisible()
         assert not run.fixture.captures
-        run.service.capture_region()
+        run.service.capture_scrolling()
         qtbot.waitUntil(lambda: run.fixture.workflow.state is WorkflowState.REVIEW)
         assert run.broker.starts == 2
         assert run.desktop.frames == frames
@@ -294,5 +298,49 @@ def test_explicit_region_without_a_window_reports_failure_without_discovery(
         assert "No supported window" in failures[0]
         assert not run.fixture.adapter.requests
         assert not run.service.is_selecting
+    finally:
+        run.close()
+
+
+@pytest.mark.parametrize(
+    ("reason", "detail"),
+    [
+        ("wheel-interference", "mouse wheel"),
+        ("keyboard-interference", "another key"),
+        ("unsupported-pointer-source", "pointer input is unsupported"),
+        ("Capture foreground changed", "foreground window changed"),
+        (
+            "This pointer source is unavailable for capture",
+            "pointer data did not arrive",
+        ),
+        ("unknown-private-value", "input became unavailable"),
+    ],
+)
+def test_scroll_interruption_keeps_reason_and_retires_confirmation(
+    qtbot: QtBot,
+    qapp: QApplication,
+    tmp_path: Path,
+    reason: str,
+    detail: str,
+) -> None:
+    """Real selection/confirmation cancellation cannot collapse to a generic no-op."""
+    run = ServiceWorkflow(qapp, tmp_path)
+    failures: list[str] = []
+    run.service.failed.connect(failures.append)
+    try:
+        run.service.capture_scrolling()
+        qtbot.waitUntil(lambda: bool(run.service.overlays))
+        feed_click(run.broker, Point(92, 10))
+        run.fixture.adapter.deliver(EntryFixture.discovery())
+        assert run.fixture.workflow.state is WorkflowState.CONFIRMING
+        run.broker.feed(SelectionInput(InputKind.CANCEL, Point(92, 10), reason))
+        qtbot.waitUntil(lambda: not run.service.is_selecting)
+        assert len(failures) == 1
+        assert detail in failures[0]
+        assert "unknown-private-value" not in failures[0]
+        assert not run.service.overlays
+        assert not run.broker.busy
+        assert not run.fixture.captures
+        assert run.fixture.workflow.state is WorkflowState.IDLE
     finally:
         run.close()

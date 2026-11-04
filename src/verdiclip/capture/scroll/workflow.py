@@ -380,9 +380,7 @@ class ScrollWorkflow(QObject):
             panel.capture_input_paused(message)
         panel.show()
         if not self._input_active():
-            self._pause_review(
-                "Input paused. Press the capture shortcut to resume review."
-            )
+            self._pause_review("Input paused.")
 
     def _accept(self, capture: ReviewedCapture) -> None:
         if self._state is not WorkflowState.REVIEW:
@@ -414,9 +412,7 @@ class ScrollWorkflow(QObject):
                 panel.release_capture_delivery(capture.capture_id)
                 self._accepted = None
                 if panel.delivery_retry_needed:
-                    self._pause_review(
-                        "Delivery failed. Press the capture shortcut to resume retry."
-                    )
+                    self._pause_review("Delivery failed.")
                 else:
                     panel.complete_capture_input()
                     self._panel = self._session = None  # review owner retains both
@@ -428,9 +424,7 @@ class ScrollWorkflow(QObject):
                 )
             return True
         if self._state is WorkflowState.REVIEW:
-            self._pause_review(
-                message or "Input paused. Press the capture shortcut to resume review."
-            )
+            self._pause_review(message or "Input paused.")
             return True
         if self._state is WorkflowState.CAPTURING:
             self.stop()
@@ -442,7 +436,10 @@ class ScrollWorkflow(QObject):
 
     def _pause_review(self, message: str) -> None:
         if isinstance(self._panel, ScrollReviewPanel):
-            self._panel.capture_input_paused(message)
+            self._panel.capture_input_paused(
+                message + " Choose Capture scrolling area from the VerdiClip tray "
+                "menu to resume this review."
+            )
             self._set_state(WorkflowState.PAUSED)
 
     def resume_review(self) -> None:

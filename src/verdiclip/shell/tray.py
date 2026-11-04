@@ -50,6 +50,7 @@ class TrayIcon(QSystemTrayIcon):
         self._update_label = CHECK_UPDATES_LABEL
         self._update_checking = False
         self._scrolling_available = False
+        self._capture_error = ""
         self._click = QTimer(self)
         self._click.setSingleShot(True)
         self._click.timeout.connect(self._on_click)
@@ -84,6 +85,14 @@ class TrayIcon(QSystemTrayIcon):
         if action is not None:
             action.setEnabled(available)
 
+    def set_capture_error(self, message: str) -> None:
+        """Keep failure discoverable when Windows suppresses notification balloons."""
+        self._capture_error = " ".join(message.split())[:240]
+        action = self._actions.get("capture_error")
+        if action is not None:
+            action.setText("Capture failed: " + self._capture_error.replace("&", "&&"))
+            action.setVisible(bool(self._capture_error))
+
     def rebuild_menu(self, hotkey_labels: Mapping[str, str]) -> None:
         """Rebuild the menu, showing each capture's hotkey (UX-TRY-03)."""
         c = self._commands
@@ -115,6 +124,10 @@ class TrayIcon(QSystemTrayIcon):
             ("about", f"About {APP_NAME}", c.about),
             ("exit", "Exit", c.exit),
         ]
+        status = self._menu.addAction("")
+        status.setEnabled(False)
+        self._actions["capture_error"] = status
+        self.set_capture_error(self._capture_error)
         for entry in entries:
             if entry is None:
                 self._menu.addSeparator()

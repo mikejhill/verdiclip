@@ -168,7 +168,12 @@ class CaptureInputWorker:
             except (OSError, PlatformError, CaptureError) as error:
                 self.failure = "Capture input cleanup failed"
                 logger.warning("Capture input cleanup failed: %s", error)
-            self.stopped.set()
+            try:
+                logger.info(
+                    "Capture input worker retired; cleanup_confirmed=%s", self.cleaned
+                )
+            finally:
+                self.stopped.set()
 
     def _serve(self) -> None:
         started = self._clock()
@@ -179,6 +184,7 @@ class CaptureInputWorker:
             raise CaptureError("Capture input is unavailable on the current desktop")
         if not api.recipient_safe(self.foreground):
             raise CaptureError("Capture cannot safely own input for this application")
+        logger.info("Capture input eligibility admitted; acquiring owned input")
         api.install(self._mouse_callback, self._key_callback, self._raw_pointer)
         held = api.keys_held()
         self._policy.prime_keys(held)
@@ -192,6 +198,7 @@ class CaptureInputWorker:
                 "Release selection keys and mouse buttons before capture"
             )
         self.ready.set()
+        logger.info("Capture input ready")
         while self._continue(started) and api.pump():
             pass
         if not self._release.is_set():

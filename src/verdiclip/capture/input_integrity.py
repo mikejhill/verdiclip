@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes as w
+import logging
 from typing import Final
+
+logger = logging.getLogger(__name__)
 
 MAX_SID_AUTHORITIES: Final = 15
 
@@ -75,18 +78,26 @@ class InputIntegrityGuard:
         self._security.GetSidSubAuthority.argtypes = [w.LPVOID, w.DWORD]
         self._security.GetSidSubAuthority.restype = ctypes.POINTER(w.DWORD)
 
+    @staticmethod
+    def _reject(reason: str) -> bool:
+        """Log a bounded reason only; never titles, paths, handles or token values."""
+        logger.warning("Capture input eligibility rejected: %s", reason)
+        return False
+
     def permits(self, foreground: int) -> bool:
         """Re-read all current GUI recipients and reject unknown or higher integrity."""
         if not foreground:
-            return False
+            return self._reject("missing-foreground")
         info = GuiThreadInfo()
         info.size = ctypes.sizeof(info)
         if not self._user.GetGUIThreadInfo(0, ctypes.byref(info)):
-            return False
+            return self._reject("gui-recipients-unavailable")
         pointer = self._pointer_recipient(info)
         own = self._level(self._kernel.GetCurrentProcess())
-        if own is None or not pointer:
-            return False
+        if own is None:
+            return self._reject("own-integrity-unavailable")
+        if not pointer:
+            return self._reject("pointer-recipient-unavailable-or-transparent")
         recipients = {
             foreground,
             int(info.active or 0),
@@ -97,7 +108,7 @@ class InputIntegrityGuard:
         } - {0}
         processes = self._processes(recipients)
         if processes is None:
-            return False
+            return self._reject("recipient-process-unavailable")
         return all(self._permitted_process(process_id, own) for process_id in processes)
 
     def _pointer_recipient(self, info: GuiThreadInfo) -> int:
@@ -138,12 +149,18 @@ class InputIntegrityGuard:
     def _permitted_process(self, process_id: int, own: int) -> bool:
         process = self._kernel.OpenProcess(0x1000, 0, process_id)
         if not process:
-            return False
+            return self._reject("recipient-process-access-unavailable")
         try:
             level = self._level(process)
         finally:
             closed = bool(self._kernel.CloseHandle(process))
-        return closed and level is not None and level <= own
+        if not closed:
+            return self._reject("recipient-handle-cleanup-failed")
+        if level is None:
+            return self._reject("recipient-integrity-unavailable")
+        if level > own:
+            return self._reject("recipient-higher-integrity")
+        return True
 
     def _level(self, process: int) -> int | None:
         token = w.HANDLE()

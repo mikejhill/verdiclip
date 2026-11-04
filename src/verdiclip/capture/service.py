@@ -309,8 +309,8 @@ class CaptureService(QObject):
                 "right-button",
             }:
                 self._end(
-                    error="Capture input changed. "
-                    "Captured rows are retained where possible."
+                    error=self._input_interruption(event.reason)
+                    + " Captured rows are retained where possible."
                 )
             else:
                 self._workflow.receive_input(event)
@@ -319,9 +319,7 @@ class CaptureService(QObject):
             if event.reason in {"escape", "right-button", "keyboard-interference"}:
                 self.cancel()
             else:
-                self._end(
-                    error="Capture input changed or became unavailable. Try again."
-                )
+                self._end(error=self._input_interruption(event.reason))
             return
         overlay = next(
             (
@@ -335,6 +333,39 @@ class CaptureService(QObject):
             overlay = self._overlays[0]
         if overlay is not None:
             overlay.receive_input(event)
+
+    @staticmethod
+    def _input_interruption(reason: str) -> str:
+        """Keep cancellation actionable without exposing arbitrary event payloads."""
+        messages = {
+            "wheel-interference": "Capture stopped because the mouse wheel was used.",
+            "keyboard-interference": "Capture stopped because another key was pressed.",
+            "unsupported-pointer-source": (
+                "Capture stopped because this pointer input is unsupported."
+            ),
+            "unsupported-pointer-action": (
+                "Capture stopped because this mouse action is unsupported."
+            ),
+            "Capture foreground changed": (
+                "Capture stopped because the foreground window changed."
+            ),
+            "Capture foreground or desktop changed": (
+                "Capture stopped because the foreground window or desktop changed."
+            ),
+            "Capture selection reached its time limit": (
+                "Capture stopped because its selection time limit was reached."
+            ),
+            "Capture stopped because its UI stopped responding": (
+                "Capture stopped because its UI stopped responding."
+            ),
+            "This pointer source is unavailable for capture": (
+                "Capture stopped because pointer data did not arrive in time."
+            ),
+            "Capture input recipient is no longer supported": (
+                "Capture stopped because the input recipient became unsupported."
+            ),
+        }
+        return messages.get(reason, "Capture input became unavailable. Try again.")
 
     def _capture_fullscreen(self) -> None:
         screen = (

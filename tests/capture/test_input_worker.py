@@ -337,3 +337,24 @@ def test_controls_navigation_and_release_latch_are_independent_of_gui_polling() 
     worker.set_controls_mode(enabled=False)
     assert worker.cleaned
     assert not platform.forwarded
+
+
+def test_retirement_logging_failure_cannot_hide_stopped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed diagnostic sink cannot turn completed cleanup into stuck input."""
+    platform = ReplayInputPlatform()
+    platform.recipient_supported = False
+    worker = ReplayRun.make(platform)
+
+    def broken_log(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("diagnostic sink failed")
+
+    monkeypatch.setattr("verdiclip.capture.input_worker.logger.info", broken_log)
+    with pytest.raises(RuntimeError, match="diagnostic sink failed"):
+        worker._run()
+    assert worker.cleaned
+    assert worker.stopped.is_set()
+    assert not worker.active
+    assert platform.closed
+    assert not platform.installed

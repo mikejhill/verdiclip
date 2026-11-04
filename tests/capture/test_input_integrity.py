@@ -205,3 +205,29 @@ def test_unknown_recipient_or_failed_handle_cleanup_refuses_ownership(
     assert not any(
         name in dll.calls for name in ("SetTokenInformation", "AdjustTokenPrivileges")
     )
+
+
+@pytest.mark.parametrize(
+    ("failure", "reason"),
+    [
+        ("higher", "recipient-higher-integrity"),
+        ("transparent", "pointer-recipient-unavailable-or-transparent"),
+        ("process", "recipient-process-access-unavailable"),
+    ],
+)
+def test_rejection_logs_only_bounded_reason(
+    guard: tuple[InputIntegrityGuard, IntegrityDllFixture],
+    caplog: pytest.LogCaptureFixture,
+    failure: str,
+    reason: str,
+) -> None:
+    """Different safety failures remain denied but become diagnosable without PII."""
+    api, dll = guard
+    if failure == "higher":
+        dll.hit = 2
+    elif failure == "transparent":
+        dll.handlers["GetWindowLongW"] = lambda *_args: 0x20
+    else:
+        dll.fail = "OpenProcess"
+    assert not api.permits(1)
+    assert caplog.messages == ["Capture input eligibility rejected: " + reason]
