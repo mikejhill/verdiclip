@@ -11,10 +11,11 @@ from textwrap import indent
 from types import SimpleNamespace
 
 import pytest
-from PySide6.QtCore import QCoreApplication, QObject
+from PySide6.QtCore import QCoreApplication, QEvent, QObject
 from pytestqt.qtbot import QtBot
 
 from verdiclip.capture.scroll import uia_process
+from verdiclip.capture.scroll.uia_pipe import UiaPipe
 from verdiclip.capture.scroll.uia_process import UiaAction, UiaProcess
 from verdiclip.capture.scroll.uia_worker import UiaWorkerLease
 from verdiclip.exceptions import CaptureError
@@ -474,4 +475,111 @@ def test_missing_native_prerequisites_fail_without_creating_worker(
         with pytest.raises(CaptureError, match=r"requires Windows|unavailable"):
             client.start(UiaAction.INSPECT, {})
     assert client.worker_pid is None
+    client.deleteLater()
+
+
+def test_pipe_admission_failure_retires_endpoint_and_scope(
+    qtbot: QtBot, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Failed listen never launches a child or leaves capture resources reserved."""
+    endpoints: list[UiaPipe] = []
+    retired: list[UiaPipe] = []
+    cleaned: list[bool] = []
+    original_close = UiaPipe.close
+
+    def reject(pipe: UiaPipe) -> None:
+        endpoints.append(pipe)
+        raise CaptureError("fixture listen rejection")
+
+    def close(pipe: UiaPipe) -> None:
+        retired.append(pipe)
+        original_close(pipe)
+
+    def no_child(_lease: UiaWorkerLease) -> None:
+        pytest.fail("Admission failure must not create a process")
+
+    monkeypatch.setattr(UiaPipe, "listen", reject)
+    monkeypatch.setattr(UiaPipe, "close", close)
+    monkeypatch.setattr(UiaWorkerLease, "_new_process", no_child)
+    client = UiaProcess(helper_command=("unused",), qualified=True, use_local_pipe=True)
+    client.register_scope_cleanup(lambda: cleaned.append(True))
+    with pytest.raises(CaptureError, match="fixture listen rejection"):
+        client.start(UiaAction.INSPECT, {})
+    assert len(endpoints) == 1
+    assert retired == endpoints
+    assert cleaned == [True]
+    assert not client.busy
+    assert client.worker_pid is None
+    client.cancel()
+    assert cleaned == [True]
+    with qtbot.waitSignal(endpoints[0].destroyed):
+        pass
+    client.deleteLater()
+
+
+@pytest.mark.usefixtures("qapp")
+@pytest.mark.parametrize("before_destroyed_signal", [False, True])
+def test_unexpected_process_destruction_keeps_cleanup_unconfirmed(
+    *, before_destroyed_signal: bool
+) -> None:
+    """A late finish callback cannot touch a deleted wrapper or claim child exit."""
+    lease = UiaWorkerLease()
+    cleaned: list[bool] = []
+    failures: list[str] = []
+    lease.register_cleanup(lambda: cleaned.append(True))
+    lease.cleanup_failed.connect(failures.append)
+    process = lease._new_process()
+    if before_destroyed_signal:
+        process.destroyed.disconnect()
+    process.deleteLater()
+    QCoreApplication.sendPostedEvents(process, QEvent.Type.DeferredDelete)
+    lease._finished(process)
+    lease.cancel()
+    assert lease.busy
+    assert lease.worker_pid is None
+    assert lease.diagnostics.cleanup == "unconfirmed"
+    assert len(failures) == 1
+    assert cleaned == []
+    lease.deleteLater()
+
+
+@pytest.mark.usefixtures("qapp")
+def test_pipe_admission_and_cleanup_failures_are_both_retained(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cleanup exception cannot hide admission failure or skip independent cleanup."""
+    admission = CaptureError("fixture admission")
+    cleanup = RuntimeError("fixture close")
+    cleaned: list[bool] = []
+    endpoints: list[UiaPipe] = []
+    original_close = UiaPipe.close
+
+    def reject(pipe: UiaPipe) -> None:
+        endpoints.append(pipe)
+        raise admission
+
+    def fail_close(_pipe: UiaPipe) -> None:
+        raise cleanup
+
+    monkeypatch.setattr(UiaPipe, "listen", reject)
+    monkeypatch.setattr(UiaPipe, "close", fail_close)
+    client = UiaProcess(helper_command=("unused",), qualified=True, use_local_pipe=True)
+    client.register_scope_cleanup(lambda: cleaned.append(True))
+    closed: list[bool] = []
+    client.scope_closed.connect(lambda: closed.append(True))
+    with pytest.raises(CaptureError, match="cleanup is unconfirmed") as error:
+        client.start(UiaAction.INSPECT, {})
+    cause = error.value.__cause__
+    assert isinstance(cause, ExceptionGroup)
+    assert cause.exceptions == (admission, cleanup)
+    assert closed == []
+    assert cleaned == [True]
+    assert client.busy
+    assert client.diagnostics is not None
+    assert client.diagnostics.cleanup == "unconfirmed"
+    client.cancel()
+    assert client.diagnostics.cleanup == "unconfirmed"
+    assert client.worker_pid is None
+    # Test-only endpoint was never listening; retire the fake failure's object.
+    original_close(endpoints[0])
     client.deleteLater()

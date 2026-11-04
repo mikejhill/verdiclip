@@ -53,6 +53,24 @@ $viewer.Content = $image; $stack.Children.Add($viewer) | Out-Null
 $window.Content = $stack
 $sequence = 0; $closed = $false; $ready = $false; $renderObserved = $false; $maximumOffset = 0.0; $endSeen = $false
 $lastCommand = 0; $pendingCommand = $null
+# Bounded owned-fixture evidence only; no window titles, values or source paths.
+$focusEvents = 0
+function Write-FocusPhase([string]$phase) {
+    if ($script:focusEvents -ge 4) { return }
+    $script:focusEvents++
+    try {
+    $methods = @([Diagnostics.StackTrace]::new().GetFrames() | ForEach-Object {
+        $method = $_.GetMethod()
+        $type = $method.DeclaringType.FullName
+        if ($type -like 'System.Windows.*' -or $type -like 'MS.Internal.*') {
+            $type + '.' + $method.Name
+        }
+    } | Select-Object -First 12)
+    [Console]::Error.WriteLine('FIXTURE_FOCUS=' + $phase + ' methods=' + ($methods -join ','))
+    } catch { } # Optional evidence never changes fixture behavior.
+}
+$window.Add_Activated({ Write-FocusPhase 'activated' })
+$viewer.Add_GotKeyboardFocus({ Write-FocusPhase 'viewer-focus' })
 function Write-FixtureState {
     if (-not $ready -or -not $window.IsLoaded -or $closed) { return }
     $handle = ([Windows.Interop.WindowInteropHelper]::new($window)).Handle.ToInt64()

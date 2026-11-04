@@ -9,6 +9,7 @@ from math import ceil
 from time import monotonic
 
 from PySide6.QtCore import QCoreApplication, QObject, QProcess, Qt, QTimer, Signal
+from shiboken6 import isValid
 
 from verdiclip.capture.scroll.uia_diagnostics import WorkerDiagnostics, WorkerTrace
 from verdiclip.capture.scroll.uia_messages import UiaRequest
@@ -45,6 +46,7 @@ class UiaWorkerLease(QObject):
         self._pending: UiaRequest | None = None
         self._closing = False
         self._released = False
+        self._ownership_lost = False
         self._ready = False
         self._request_sent = False
         self._trace = WorkerTrace(monotonic)
@@ -113,7 +115,24 @@ class UiaWorkerLease(QObject):
         first = self._process is None
         if first and use_local_pipe:
             pipe = UiaPipe(self)
-            pipe.listen()
+            try:
+                pipe.listen()
+            except CaptureError as admission:
+                try:
+                    pipe.close()
+                except (RuntimeError, OSError) as cleanup:
+                    self._pipe = pipe
+                    self._ownership_lost = True
+                    self._closing = True
+                    self._close_scope()
+                    self._cleanup_state = "unconfirmed"
+                    message = "Private UI Automation transport cleanup is unconfirmed"
+                    self.cleanup_failed.emit(message)
+                    raise CaptureError(message) from ExceptionGroup(
+                        "Transport admission and cleanup failed", [admission, cleanup]
+                    )
+                self._close_scope()
+                raise
             self._pipe = pipe
             pipe.connected.connect(lambda: self._pipe_connected(pipe))
             pipe.received.connect(lambda data: self._pipe_read(pipe, data))
@@ -157,6 +176,7 @@ class UiaWorkerLease(QObject):
         process.readyReadStandardError.connect(lambda: self._drain_error(process))
         process.errorOccurred.connect(lambda error: self._error(process, error))
         process.finished.connect(lambda _code, _status: self._finished(process))
+        process.destroyed.connect(lambda: self._process_destroyed(process))
         self._lifetime.start(self.LIFETIME_MS)
         return process
 
@@ -304,9 +324,36 @@ class UiaWorkerLease(QObject):
             self._fail("UI Automation helper could not start")
             self._dispose(process)
 
+    def _process_destroyed(self, process: QProcess) -> None:
+        """Unexpected wrapper loss cannot prove termination of the owned child."""
+        if not isValid(self) or process is not self._process:
+            return
+        self._process = None
+        self._ownership_lost = True
+        self._closing = True
+        request, self._pending = self._pending, None
+        for timer in (
+            self._deadline,
+            self._idle,
+            self._lifetime,
+            self._cleanup_deadline,
+        ):
+            if isValid(timer):
+                timer.stop()
+        self._cleanup_state = "unconfirmed"
+        self._trace.mark("process_ownership_lost")
+        message = "UI Automation worker ownership was lost; cleanup is unconfirmed"
+        self.cleanup_failed.emit(message)
+        if request is not None:
+            self.failed.emit(request, message)
+        self.busy_changed.emit(self.busy)
+
     def _finished(self, process: QProcess) -> None:
         """An unexpected EOF cannot silently complete an outstanding operation."""
         if process is not self._process:
+            return
+        if not isValid(process):
+            self._process_destroyed(process)
             return
         self._trace.mark("process_finished")
         if self._pending is not None:
@@ -362,6 +409,8 @@ class UiaWorkerLease(QObject):
 
     def _fail(self, message: str) -> None:
         """Invalidate before callbacks and terminate only this lease's child."""
+        if self._ownership_lost:
+            return
         request, self._pending = self._pending, None
         self._stop_deadline()
         self._idle.stop()
@@ -405,8 +454,11 @@ class UiaWorkerLease(QObject):
         """Break retirement cycles before releasing child or lease ownership."""
         if process is not self._process:
             return
-        process.setParent(QCoreApplication.instance())
+        if not isValid(process):
+            self._process_destroyed(process)
+            return
         self._process = None
+        process.setParent(QCoreApplication.instance())
         self._ready = False
         self._closing = False
         self._stop_deadline()
@@ -434,7 +486,7 @@ class UiaWorkerLease(QObject):
         if not self._scope_open:
             return
         self._scope_open = False
-        self._cleanup_state = "confirmed"
+        self._cleanup_state = "unconfirmed" if self._ownership_lost else "confirmed"
         callbacks, self._cleanup = self._cleanup, []
         for cleanup in callbacks:
             try:
@@ -444,7 +496,8 @@ class UiaWorkerLease(QObject):
                 self._cleanup_state = "callback_failed"
                 self.cleanup_failed.emit(str(error))
         self._trace.mark("scope_closed")
-        self.scope_closed.emit()
+        if not self._ownership_lost:
+            self.scope_closed.emit()
 
     @staticmethod
     def _run_cleanup(cleanup: Callable[[], None]) -> None:
@@ -466,5 +519,5 @@ class UiaWorkerLease(QObject):
         """A disappearing facade leaves a retained lease until its child is gone."""
         self._released = True
         self.cancel()
-        if self._process is None:
+        if self._process is None and not self._ownership_lost:
             self.deleteLater()
