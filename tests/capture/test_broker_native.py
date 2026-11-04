@@ -19,6 +19,7 @@ from PySide6.QtWidgets import QApplication, QMenu, QWidget
 from pytestqt.qtbot import QtBot
 from tests.capture.desktop import DesktopSession
 from tests.capture.menu_peer import MenuPeer
+from tests.capture.native_scrollbar import ScrollbarCase
 from tests.capture.preservation_harness import HarnessBudgets, PreservationSnapshot
 from tests.capture.production_matrix import (
     CASES,
@@ -426,3 +427,19 @@ def test_production_broker_preserves_declared_owners(
         ):
             peer.close()
         source.close()
+
+
+@pytest.mark.native_desktop
+def test_native_scrollbar_selection_preserves_popup(
+    qtbot: QtBot,
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Click ingress must reach real UIA and automatic delivery with popup intact."""
+    case = ScrollbarCase(qtbot, request, monkeypatch, tmp_path)
+    try:
+        case.prepare()
+        case.run()
+    finally:
+        case.close()

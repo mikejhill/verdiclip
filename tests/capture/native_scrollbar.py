@@ -1,0 +1,277 @@
+"""One native product case using the existing driver journal and preservation checks."""
+
+from __future__ import annotations
+
+import ctypes
+import ctypes.wintypes as w
+import json
+from pathlib import Path
+from typing import cast
+
+import pytest
+from PySide6.QtCore import QPoint
+from PySide6.QtGui import QImage
+from PySide6.QtWidgets import QApplication, QMenu
+from pytestqt.qtbot import QtBot
+from tests.capture.production_matrix import (
+    DriverJournal,
+    InputProfile,
+    MatrixCase,
+    ProductionBrokerDriver,
+    StrictFixtureSnapshot,
+    cleanup_confirmed,
+    fixture_foreground_errors,
+    native_action_errors,
+)
+from tests.capture.scroll_peer import ScrollPeer
+from tests.capture.test_capture_native import RealDesktop
+from tests.ux.test_app_journeys import App, AppFactory, make_app
+
+from verdiclip.capture.reviewed import CaptureCompleteness, CaptureKind
+from verdiclip.capture.scroll.native_backend import (
+    NativeBackendOptions,
+    UiaFrameBackend,
+)
+from verdiclip.capture.scroll.targets import NodeKind
+from verdiclip.capture.scroll.uia_adapter import UiaAdapter
+from verdiclip.capture.scroll.uia_process import UiaProcess
+from verdiclip.capture.scroll.uia_protocol import UiaDiscovery, UiaReference
+from verdiclip.geometry import Rect
+from verdiclip.platform.windows import WindowLocator
+from verdiclip.settings import CaptureSettings, Settings
+
+
+class ScrollbarCase:
+    """Never generate input; require supported binding and actual native receipts."""
+
+    def __init__(
+        self,
+        qtbot: QtBot,
+        request: pytest.FixtureRequest,
+        patch: pytest.MonkeyPatch,
+        directory: Path,
+    ) -> None:
+        self.qtbot, self.directory = qtbot, directory
+        self.driver = ProductionBrokerDriver(InputProfile.INJECTED, max_seconds=40)
+        patch.setattr("verdiclip.capture.service.make_input_broker", self.driver.broker)
+        self.source = RealDesktop()
+        request.addfinalizer(self.source.close)
+        factory = cast(AppFactory, request.getfixturevalue(make_app.__name__))
+        self.app: App = factory(
+            Settings(capture=CaptureSettings(open_editor=True)),
+            screens=self.source,
+            windows=WindowLocator(),
+        )
+        self.peer = ScrollPeer(directory / "provider")
+        self.menu = QMenu("Owned scrollbar test popup")
+        request.addfinalizer(self.close_owned_windows)
+        self.process = UiaProcess(qualified=True, use_local_pipe=True)
+        self.adapter = UiaAdapter(process=self.process)
+        self.discoveries: list[UiaDiscovery] = []
+        self.adapter.discovered.connect(
+            lambda _request, discovery: self.discoveries.append(discovery)
+        )
+        self.passed = False
+        self.snapshot: StrictFixtureSnapshot | None = None
+        self.journal = DriverJournal(
+            directory,
+            MatrixCase("qt-scrollbar-popup", "scrollbar-click", InputProfile.INJECTED),
+        )
+        self.image = QImage()
+        self.errors: list[str] = []
+        self.app.controller.capture.failed.connect(self.errors.append)
+        self.workflow = self.app.controller.configure_scrolling(
+            self.adapter, self.backend, directory / "spool"
+        )
+
+    def backend(self, reference: UiaReference, adapter: UiaAdapter) -> UiaFrameBackend:
+        """Use production provider and pixels; fail if popup ownership changes."""
+        assert reference.window_handle == self.peer.handle, "UIA target is not owned"
+        return UiaFrameBackend(
+            reference,
+            adapter,
+            options=NativeBackendOptions(
+                preservation_qualified=True, input_unchanged=self.safe
+            ),
+        )
+
+    def safe(self) -> bool:
+        """Native movement never outlives its lease or unchanged fixture owners."""
+        return (
+            self.app.controller.capture.input_active
+            and self.snapshot is not None
+            and not self.snapshot.errors()
+        )
+
+    def prepare(self) -> None:
+        """Expose owned content and popup before asking the existing driver to bind."""
+        self.peer.start()
+        self.qtbot.waitUntil(self.peer.poll, timeout=10000)
+        rectangle = self.peer.state["physical_rectangle"]
+        assert isinstance(rectangle, dict)
+        width, height = int(rectangle["width"]), self.peer.integer("content_rows")
+        assert int(rectangle["height"]) == self.peer.state["viewport_height"], (
+            "100% scale required"
+        )
+        assert 0 < width <= 384
+        assert height == 1120
+        self.image = fixture_image(width, height)
+        self.menu.addAction("Inert owned item")
+        self.menu.popup(QPoint(int(rectangle["x"]) + width + 80, int(rectangle["y"])))
+        self.qtbot.waitUntil(self.menu.isVisible)
+        assert self.menu.devicePixelRatioF() == 1, "100% scale required"
+        menu_rect = self.menu.frameGeometry()
+        viewport = Rect(**rectangle)
+        assert not viewport.intersects(
+            Rect(menu_rect.x(), menu_rect.y(), menu_rect.width(), menu_rect.height())
+        )
+        app = QApplication.instance()
+        assert isinstance(app, QApplication)
+        self.snapshot = StrictFixtureSnapshot(app, (self.menu,))
+        self.journal.owned_handles = (self.peer.handle, int(self.menu.winId()))
+        self.journal.binding_handle = self.peer.handle
+        self.journal.prepare_binding(self.target())
+
+    def target(self) -> Rect:
+        """Restrict the actual click to the owned native scrollbar center."""
+        self.peer.poll()
+        return self.peer.target()
+
+    def run(self) -> None:
+        """No replay events or direct Start/Use calls may satisfy this case."""
+        target = self.target()
+        self.qtbot.waitUntil(lambda: self.journal.binding_ready(target), timeout=20000)
+        assert self.snapshot is not None
+        assert not self.snapshot.errors()
+        api = ctypes.WinDLL("user32", use_last_error=True)
+        api.GetForegroundWindow.restype = w.HWND
+        assert not fixture_foreground_errors(
+            int(api.GetForegroundWindow() or 0), self.journal.owned_handles
+        )
+        self.app.controller.capture_scrolling()
+        self.qtbot.waitUntil(
+            lambda: self.app.controller.capture.input_active or bool(self.errors),
+            timeout=5000,
+        )
+        assert not self.errors
+        self.journal.request("scrollbar-click", target)
+        self.qtbot.waitUntil(
+            lambda: bool(self.app.controller.workspace.documents) or bool(self.errors),
+            timeout=30000,
+        )
+        assert not self.errors
+        self.qtbot.waitUntil(self.retired, timeout=5000)
+        records = self.app.controller.workspace.documents
+        assert len(records) == 1
+        record = records[0]
+        assert record.provenance is not None
+        assert record.provenance.source_kind is CaptureKind.SCROLLING
+        assert record.provenance.completeness is CaptureCompleteness.COMPLETE
+        assert self.discoveries, "No native UIA discovery received"
+        assert self.discoveries[0].nodes[0].kind is NodeKind.VERTICAL_SCROLLBAR
+        assert self.discoveries[0].references, "Provider has no verified ScrollPattern"
+        verify_pixels(record.session.document.image, self.image)
+        assert not native_action_errors(self.driver, "scrollbar-click")
+        assert not self.snapshot.errors()
+        assert cleanup_confirmed(
+            self.driver, selecting=self.app.controller.capture.is_selecting
+        )
+        assert self.peer.poll()
+        assert self.peer.state["end_seen"] is True
+        assert self.peer.state["offset"] == 0
+        self.passed = True
+
+    def close(self) -> None:
+        """Retire input before touching only declared owned test windows."""
+        failures: list[str] = []
+        for operation in (
+            self.journal.retire,
+            self.app.controller.capture.cancel,
+            self.adapter.cancel,
+        ):
+            try:
+                operation()
+            except (OSError, RuntimeError, AssertionError) as error:
+                failures.append(str(error))
+        try:
+            self.qtbot.waitUntil(
+                self.retired,
+                timeout=10000,
+            )
+        except AssertionError as error:
+            failures.append(str(error))
+        for operation in (
+            self.snapshot.close if self.snapshot is not None else lambda: None,
+            self.close_owned_windows,
+            self.source.close,
+        ):
+            try:
+                operation()
+            except (OSError, RuntimeError, AssertionError) as error:
+                failures.append(str(error))
+        self.directory.mkdir(parents=True, exist_ok=True)
+        (self.directory / "scrollbar-native.json").write_text(
+            json.dumps(
+                {
+                    "passed": self.passed and not failures and self.retired(),
+                    "errors": self.errors,
+                    "cleanup_errors": failures,
+                    "retired": self.retired(),
+                    "input": self.driver.receipt(),
+                    "entry": "AppController.capture_scrolling; no global hotkey claim",
+                    "semantic_hits": [
+                        [node.kind.value for node in item.nodes]
+                        for item in self.discoveries
+                    ],
+                    "scope": "native scrollbar interaction; no physical RawInput claim",
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        assert not failures, failures
+        assert self.retired(), "Native resources did not retire"
+
+    def retired(self) -> bool:
+        """Never hide a fixture while capture or provider resources remain active."""
+        return cleanup_confirmed(
+            self.driver, selecting=self.app.controller.capture.is_selecting
+        ) and (
+            not hasattr(self, "adapter")
+            or (not self.adapter.busy and self.process.worker_pid is None)
+        )
+
+    def close_owned_windows(self) -> None:
+        """Also cover partial construction; unsafe retirement remains a failure."""
+        if self.retired():
+            try:
+                self.menu.close()
+            finally:
+                self.peer.close()
+
+
+def verify_pixels(actual: QImage, expected: QImage) -> None:
+    """Reject cropping, repeated rows, or any changed channel, including alpha."""
+    assert actual.size() == expected.size(), "Captured full-panel dimensions differ"
+    assert actual.convertToFormat(
+        QImage.Format.Format_RGBA8888
+    ) == expected.convertToFormat(QImage.Format.Format_RGBA8888), (
+        "Captured full-panel pixels differ"
+    )
+
+
+def fixture_image(width: int, height: int) -> QImage:
+    """Match the existing WPF synthetic bitmap, including first and last rows."""
+    pixels = bytearray(width * height * 4)
+    for y in range(height):
+        for x in range(width):
+            offset = (y * width + x) * 4
+            pixels[offset : offset + 4] = bytes(
+                (
+                    (y * 43 + x * 19 + y // 127) % 255,
+                    (y * 31 + x * 7 + y // 251) % 253,
+                    (y * 17 + x * 11) % 251,
+                    255,
+                )
+            )
+    return QImage(pixels, width, height, QImage.Format.Format_RGBA8888).copy()

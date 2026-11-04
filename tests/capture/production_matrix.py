@@ -205,7 +205,11 @@ class DriverJournal:
 
     def request(self, outcome: str, area: Rect) -> None:
         """Only a live capture terminal signal can complete this instruction."""
-        if outcome != self.case.outcome or outcome not in {"drag", "escape"}:
+        if outcome != self.case.outcome or outcome not in {
+            "drag",
+            "escape",
+            "scrollbar-click",
+        }:
             raise ValueError("Driver request does not match its declared case")
         if (
             self.requests
@@ -230,7 +234,11 @@ class DriverJournal:
             "physical_rectangle": asdict(area),
             "required": "Escape press/release"
             if outcome == "escape"
-            else "left drag top-left to bottom-right",
+            else (
+                "move to rectangle center; left press/release without dragging"
+                if outcome == "scrollbar-click"
+                else "left drag top-left to bottom-right"
+            ),
             "input_generated_by_harness": False,
             "owned_hwnds": self.owned_handles,
             "target_guard": "listed test-owned handles only; stop on driver refusal",
@@ -305,7 +313,11 @@ class ProductionBrokerDriver:
         profile: InputProfile,
         *,
         platform_factory: Callable[[], InputPlatform] | None = None,
+        max_seconds: float = 12,
     ) -> None:
+        if not 0 < max_seconds <= 40:
+            raise ValueError("Native fixture lease must be bounded to 40 seconds")
+        self.max_seconds = max_seconds
         self.profile, self.platform_factory = profile, platform_factory
         self.workers: list[CaptureInputWorker] = []
         self.platforms: list[ObservedWin32Platform] = []
@@ -332,7 +344,7 @@ class ProductionBrokerDriver:
             initial,
             bounds,
             options=InputWorkerOptions(
-                max_seconds=12,
+                max_seconds=self.max_seconds,
                 injected_move_mode=(
                     MoveMode.ABSOLUTE if self.profile is InputProfile.INJECTED else None
                 ),
@@ -416,7 +428,13 @@ def native_action_errors(
 ) -> list[str]:
     """Installation alone does not establish that the requested input occurred."""
     platforms = driver.platforms[start:]
-    if outcome == "escape":
+    if outcome == "scrollbar-click":
+        observed = (
+            sum(p.left_down for p in platforms) == 1
+            and sum(p.left_up for p in platforms) == 1
+            and sum(p.mouse_moves for p in platforms) > 0
+        )
+    elif outcome == "escape":
         observed = any(p.escape_down > 0 and p.escape_up > 0 for p in platforms)
     else:
         observed = any(

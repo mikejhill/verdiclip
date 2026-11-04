@@ -2,12 +2,19 @@ param(
     [string[]]$PythonPaths = @(),
     [switch]$ExecuteAfterHandoff,
     [switch]$PhysicalObservation,
-    [switch]$DeliveryOnly
+    [switch]$DeliveryOnly,
+    [switch]$ScrollbarOnly
 )
 $ErrorActionPreference = 'Stop'
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+if ($ScrollbarOnly -and ($DeliveryOnly -or $PhysicalObservation)) { throw 'Scrollbar qualification is a separate single-runtime window.' }
 if ($DeliveryOnly -and $PhysicalObservation) { throw 'Delivery and physical-input lanes are separate windows.' }
 if (-not $ExecuteAfterHandoff) {
+    if ($ScrollbarOnly) {
+        Write-Output 'PLAN ONLY: one native scrollbar click with an owned popup, UIA full-panel capture and pixel comparison. Single Qt runtime, 90 seconds including cleanup.'
+        Write-Output 'Requires supported external driver binding and one guarded click; this script generates no input. No clipboard or installed settings changes. 100% scaling required for exact pixels.'
+        return
+    }
     if ($DeliveryOnly) {
         Write-Output 'PLAN ONLY: reserve 2 minutes of native UI for three synthetic-only delivery cases on each Qt runtime. No screenshot, input, clipboard copy, or real registration.'
         Write-Output 'Private synthetic PNGs, real editor presentation and owned tray notification requests are exercised. Balloon visibility and physical notification clicks are not certified.'
@@ -24,6 +31,7 @@ if (-not $ExecuteAfterHandoff) {
     return
 }
 if ($PythonPaths.Count -eq 0) { throw 'Pass -PythonPaths for the isolated verified Qt runtimes; no interpreter is selected implicitly.' }
+if ($ScrollbarOnly -and $PythonPaths.Count -ne 1) { throw 'Pass exactly one Qt runtime for the bounded scrollbar case.' }
 $sourceHead = (& git -C $repoRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $sourceHead -notmatch '^[a-f0-9]{40}$') { throw 'Cannot establish source provenance.' }
 $sourceChanges = & git -C $repoRoot status --porcelain
@@ -38,11 +46,17 @@ if ($PhysicalObservation) {
     $cases = @('qt-menu-physical-raw-pointer-drag-x1', 'win32-menu-physical-raw-pointer-drag-x1')
 }
 if ($DeliveryOnly) { $cases = @('popup-save-present', 'modal-provider-error', 'popup-write-retry') }
+if ($ScrollbarOnly) { $cases = @('qt-scrollbar-popup') }
 $directory = Join-Path $repoRoot ('.test-tmp/native-broker-' + [Guid]::NewGuid().ToString('N'))
 [IO.Directory]::CreateDirectory($directory) | Out-Null
 $overall = [Diagnostics.Stopwatch]::StartNew()
 $limit = if ($PhysicalObservation -or $DeliveryOnly) { 120 } else { 480 }
 $caseLimit = if ($DeliveryOnly) { 20 } else { 40 }
+if ($ScrollbarOnly) { $limit = 75; $caseLimit = 65 } # Reserve 15s for termination/log retirement inside 90s.
+function Get-CleanupWaitMilliseconds {
+    if (-not $ScrollbarOnly) { return 5000 }
+    return [int][Math]::Max(0, [Math]::Min(5000, (90 - $overall.Elapsed.TotalSeconds) * 1000))
+}
 foreach ($python in $PythonPaths) {
     $pythonPath = if ([IO.Path]::IsPathRooted($python)) { [IO.Path]::GetFullPath($python) } else { [IO.Path]::GetFullPath((Join-Path $repoRoot $python)) }
     if (-not (Test-Path -LiteralPath $pythonPath -PathType Leaf)) { throw 'An explicit qualification interpreter does not exist.' }
@@ -62,6 +76,7 @@ foreach ($python in $PythonPaths) {
         $info.Environment['VERDICLIP_QUALIFICATION_HEAD'] = $sourceHead
         $info.Environment['VERDICLIP_QUALIFICATION_DIRTY'] = $sourceDirty
         $selector = if ($DeliveryOnly) { 'tests/shell/test_delivery_native.py::test_native_synthetic_delivery[' + $case + ']' } else { 'tests/capture/test_broker_native.py::test_production_broker_preserves_declared_owners[' + $case + ']' }
+        if ($ScrollbarOnly) { $selector = 'tests/capture/test_broker_native.py::test_native_scrollbar_selection_preserves_popup' }
         $handoffFlag = if ($DeliveryOnly) { '--native-delivery-handoff' } else { '--native-broker-handoff' }
         $arguments = @('-m', 'pytest', $selector,
             $handoffFlag, '--require-interactive-capture', '-s', '--no-cov',
@@ -82,19 +97,20 @@ foreach ($python in $PythonPaths) {
             $remaining = [Math]::Min($caseLimit, $limit - $overall.Elapsed.TotalSeconds)
             if ($remaining -le 0 -or -not $process.WaitForExit([int]($remaining * 1000))) {
                 $process.Kill($true)
-                $process.WaitForExit(5000) | Out-Null
+                $process.WaitForExit((Get-CleanupWaitMilliseconds)) | Out-Null
                 throw 'Owned native case timed out; its process tree was terminated. This is a FAILED qualification.'
             }
             if ($process.ExitCode -ne 0) { throw "Native case failed with exit $($process.ExitCode); evidence retained at $caseDirectory" }
         } finally {
-            if ($started -and -not $process.HasExited) { $process.Kill($true); $process.WaitForExit(5000) | Out-Null }
-            if ($null -ne $stdout -and $stdout.Wait(5000)) {
+            try {
+            if ($started -and -not $process.HasExited) { $process.Kill($true); $process.WaitForExit((Get-CleanupWaitMilliseconds)) | Out-Null }
+            if ($null -ne $stdout -and $stdout.Wait((Get-CleanupWaitMilliseconds))) {
                 [IO.File]::WriteAllText((Join-Path $caseDirectory 'stdout.log'), $stdout.GetAwaiter().GetResult())
             }
-            if ($null -ne $stderr -and $stderr.Wait(5000)) {
+            if ($null -ne $stderr -and $stderr.Wait((Get-CleanupWaitMilliseconds))) {
                 [IO.File]::WriteAllText((Join-Path $caseDirectory 'stderr.log'), $stderr.GetAwaiter().GetResult())
             }
-            $process.Dispose()
+            } finally { $process.Dispose() }
         }
     }
 }

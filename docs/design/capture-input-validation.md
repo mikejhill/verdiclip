@@ -239,3 +239,45 @@ phase evidence is required to attribute such a recurrence; a green rerun alone
 does not establish that the historical hosted failure is resolved.
 
 [qt-timer-accuracy]: https://doc.qt.io/qt-6/qtimer.html#accuracy-and-timer-resolution
+
+## Combined scrollbar interaction case (prepared, not qualified)
+
+The native broker matrix now includes one opt-in scrollbar case:
+
+```powershell
+./scripts/test_capture_broker_native.ps1 -ScrollbarOnly -ExecuteAfterHandoff `
+  -PythonPaths '<explicit isolated Qt 6.12 Python executable>'
+```
+
+It reuses the owned WPF scrolling fixture and existing broker driver journal.
+The external supported driver must discover and bind that exact window before
+capture can start, then provide one guarded click at its real scrollbar. The
+script does not generate input or automatically acknowledge driver binding.
+The case checks native input receipts, the actual semantic scrollbar hit,
+automatic complete delivery, every RGBA pixel, retained popup identity and
+visibility, restored scroll offset, and broker/UIA/fixture retirement. It does
+not qualify physical RawInput, global hotkeys, arbitrary providers or mixed DPI.
+The exact-pixel fixture requires 100% scaling. Only the test composition enables
+the native provider; product readiness flags and installed settings are unchanged.
+
+Offline validation: 127 tests passed, with nine native cases skipped; lint,
+formatting, type checks, PowerShell parsing and cleanup-wait clipping passed.
+Independent review addressed partial-cleanup failures and incompatible lease
+budgets. The acquisition lease is bounded to 40 seconds, the owned case process
+to 65 seconds, and supervisor cleanup waits to the original 90-second cutoff.
+Timeout, forced termination and uncertain cleanup remain failures.
+
+The November 4 native attempt failed after 25.52 seconds at the 20-second
+supported-driver binding deadline. The fixture published 183 immutable visible
+snapshots with unchanged process/window identity. Supported window discovery did
+not return it; no binding acknowledgement, broker worker, input or capture
+occurred. Fixture exit and cleanup were confirmed. Discovery call timestamps
+were not retained, so filtering versus discovery timing is unproven. Do not
+infer product acceptance or bypass discovery using the fixture's reported HWND.
+
+The available desktop input API activates its selected window before input;
+its compatibility with retaining an existing popup also needs verification.
+No unchanged laptop retry is ready. Existing hosted Windows Qt presentation
+jobs and the separate owned-window capability canary do not provide this case's
+external guarded input driver. Native click ingress, semantic hit classification,
+popup preservation and full-panel fidelity together remain acceptance gates.
