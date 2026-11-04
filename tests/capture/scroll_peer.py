@@ -30,26 +30,30 @@ class ScrollPeer:
             Path(os.environ["SYSTEMROOT"])
             / "System32/WindowsPowerShell/v1.0/powershell.exe"
         )
-        self.process = subprocess.Popen(  # noqa: S603 - fixed owned script, no shell
-            [
-                str(executable),
-                "-NoProfile",
-                "-NonInteractive",
-                "-STA",
-                "-File",
-                str(Path(__file__).with_name("provider_fixture.ps1")),
-                "-Directory",
-                str(self.directory),
-                "-Nonce",
-                self.nonce,
-                "-Case",
-                "end",
-                "-ExecuteAfterHandoff",
-            ],
-            creationflags=subprocess.CREATE_NO_WINDOW,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        with (
+            (self.directory / "fixture-stdout.log").open("wb") as stdout,
+            (self.directory / "fixture-stderr.log").open("wb") as stderr,
+        ):
+            self.process = subprocess.Popen(  # noqa: S603 - fixed owned script, no shell
+                [
+                    str(executable),
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-STA",
+                    "-File",
+                    str(Path(__file__).with_name("provider_fixture.ps1")),
+                    "-Directory",
+                    str(self.directory),
+                    "-Nonce",
+                    self.nonce,
+                    "-Case",
+                    "end",
+                    "-ExecuteAfterHandoff",
+                ],
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                stdout=stdout,
+                stderr=stderr,
+            )
 
     def poll(self) -> bool:
         """Accept only a fresh immutable snapshot from the exact owned process."""

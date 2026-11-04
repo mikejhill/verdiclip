@@ -8,6 +8,7 @@ $ErrorActionPreference = 'Stop'
 if (-not $ExecuteAfterHandoff) { throw 'Fixture requires explicit desktop handoff; no UI was created.' }
 # Loaded only in the separately owned STA child after authorization.
 Add-Type -AssemblyName PresentationFramework,PresentationCore,WindowsBase
+Write-Output ('FIXTURE_PHASE=assemblies-loaded utc=' + [DateTime]::UtcNow.ToString('o'))
 $fixtureDirectory = [IO.Path]::GetFullPath($Directory)
 if (-not [IO.Directory]::Exists($fixtureDirectory)) { throw 'Runner must create private case directory.' }
 $fixtureProcess = Get-Process -Id $PID
@@ -116,12 +117,14 @@ $timer.Add_Tick({
     Write-FixtureState
 })
 $window.Add_ContentRendered({
+    Write-Output ('FIXTURE_PHASE=content-rendered utc=' + [DateTime]::UtcNow.ToString('o'))
     # One ordinary owned-window activation; never force foreground or send input.
     $null = $window.Activate()
     Write-FixtureState; $timer.Start()
 })
 $viewer.Add_ScrollChanged({ Write-FixtureState })
 $window.Add_Closed({ $script:closed=$true; $timer.Stop() })
+Write-Output ('FIXTURE_PHASE=before-show utc=' + [DateTime]::UtcNow.ToString('o'))
 try { $window.ShowDialog() | Out-Null }
 finally {
     $timer.Stop()

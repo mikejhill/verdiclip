@@ -4,7 +4,7 @@ import json
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import BinaryIO, cast
 
 import pytest
 from PySide6.QtGui import QImage
@@ -16,6 +16,29 @@ from tests.capture.production_matrix import (
 )
 from tests.capture.scroll_peer import ScrollPeer
 from tests.capture.test_scroll_core import Documents
+
+
+def test_provider_start_retains_child_diagnostics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cold-start failures remain observable without launching a native child."""
+    handles: list[BinaryIO] = []
+
+    def launch(_arguments: list[str], **options: object) -> object:
+        for key, message in (("stdout", b"phase=ready"), ("stderr", b"fixture error")):
+            stream = cast(BinaryIO, options[key])
+            handles.append(stream)
+            stream.write(message)
+        return SimpleNamespace(pid=123)
+
+    monkeypatch.setenv("SYSTEMROOT", str(tmp_path))
+    monkeypatch.setattr(subprocess, "CREATE_NO_WINDOW", 0, raising=False)
+    monkeypatch.setattr(subprocess, "Popen", launch)
+    peer = ScrollPeer(tmp_path / "provider")
+    peer.start()
+    assert (peer.directory / "fixture-stdout.log").read_bytes() == b"phase=ready"
+    assert (peer.directory / "fixture-stderr.log").read_bytes() == b"fixture error"
+    assert all(stream.closed for stream in handles)
 
 
 @pytest.mark.parametrize("change", ["crop", "pixel", "alpha", "repeat"])
