@@ -36,6 +36,7 @@ try {
     Add-Type -AssemblyName UIAutomationTypes
     Add-Type -AssemblyName WindowsBase
     Add-Type -AssemblyName System.Drawing
+    Add-Type -Path @((Join-Path $PSScriptRoot "uia_nofocus_interop.cs"), (Join-Path $PSScriptRoot "uia_nofocus.cs"))
     Add-Type -TypeDefinition @'
 using System;
 using System.Text;
@@ -202,7 +203,21 @@ try {
                 # Half a reported viewport is a proposal, never measured displacement.
                 $destination = [Math]::Min(100, $position + (50 * $view / (100 - $view)))
             }
-            $pattern.SetScrollPercent([System.Windows.Automation.ScrollPattern]::NoScroll, $destination)
+            # Mutation must use a pattern acquired from the SAME no-focus native client.
+            # Setting a separate client's policy does not change this managed pattern.
+            $permitMutation = [Func[bool]] {
+                return [CaptureDesktop]::Interactive() -and
+                    [CaptureDesktop]::IsWindowVisible($handle) -and -not [CaptureDesktop]::IsIconic($handle) -and
+                    ($element.GetRuntimeId() -join '.') -eq $reference.runtime_id -and
+                    $element.Current.ProcessId -eq $process.Id -and
+                    $element.Current.IsEnabled -and -not $element.Current.IsOffscreen -and
+                    (Test-SamePhysicalBounds (Get-Bounds $element) $bounds) -and
+                    (Test-OwnedScrollMetrics $pattern.Current.VerticalScrollPercent $pattern.Current.VerticalViewSize $reference) -and
+                    [CaptureDesktop]::Unoccluded($handle, [int]$area[0], [int]$area[1], [int]$area[2], [int]$area[3])
+            }
+            [VerdiClip.Automation.NoFocusScroll]::SetPercent(
+                $handle.ToInt64(), $process.Id, $started, $rootRuntime,
+                [string]$reference.runtime_id, [double[]]$bounds, $position, $view, $destination, $permitMutation)
         }
         $updated = Get-Reference $element $pattern
         $result = @{ reference=$updated; at_end=($updated.vertical_percent -ge 100) }
