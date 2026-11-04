@@ -271,6 +271,25 @@ class ObservedWin32Platform(Win32InputPlatform):
         self.escape_down = self.escape_up = 0
         self.left_down = self.left_up = self.mouse_moves = 0
         self.installed = self.closed = False
+        self.foregrounds: list[int] = []
+        self.last_foreground = 0
+        self.desktop_unsafe = False
+
+    @override
+    def foreground(self) -> int:
+        """Record bounded handle transitions from the unchanged native query."""
+        handle = super().foreground()
+        self.last_foreground = handle
+        if len(self.foregrounds) < 16 and self.foregrounds[-1:] != [handle]:
+            self.foregrounds.append(handle)
+        return handle
+
+    @override
+    def desktop_safe(self) -> bool:
+        """Observe the existing guard result without additional access queries."""
+        safe = super().desktop_safe()
+        self.desktop_unsafe |= not safe
+        return safe
 
     @override
     def install(
@@ -400,6 +419,9 @@ class ProductionBrokerDriver:
             "raw_pointer_packets_observed": sum(p.raw_packets for p in self.platforms),
             "keyboard_packets_observed": sum(p.key_packets for p in self.platforms),
             "workers": len(self.workers),
+            "foreground_transitions": [p.foregrounds for p in self.platforms],
+            "last_foregrounds": [p.last_foreground for p in self.platforms],
+            "desktop_unsafe_observed": any(p.desktop_unsafe for p in self.platforms),
             "cleanup_errors": self.cleanup_errors(),
             "input_generated_by_harness": False,
         }

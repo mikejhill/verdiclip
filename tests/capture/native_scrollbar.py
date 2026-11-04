@@ -212,6 +212,15 @@ class ScrollbarCase:
     def close(self) -> None:
         """Retire input before touching only declared owned test windows."""
         failures: list[str] = []
+        visible_owned = []
+        try:
+            visible_owned = [
+                {"handle": int(widget.effectiveWinId()), "type": type(widget).__name__}
+                for widget in QApplication.topLevelWidgets()
+                if widget.isVisible()
+            ]
+        except RuntimeError as error:
+            failures.append(str(error))
         for operation in (
             self.journal.retire,
             self.app.controller.capture.cancel,
@@ -244,6 +253,8 @@ class ScrollbarCase:
                     "passed": self.passed and not failures and self.retired(),
                     "errors": self.errors,
                     "cleanup_errors": failures,
+                    "visible_test_windows_before_cleanup": visible_owned,
+                    "declared_owned_handles": self.journal.owned_handles,
                     "retired": self.retired(),
                     "input": dict(
                         self.driver.receipt(),

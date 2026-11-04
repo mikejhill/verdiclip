@@ -111,7 +111,7 @@ def test_cleanup_continues_after_journal_failure(tmp_path: Path) -> None:
     case = cast(
         ScrollbarCase,
         SimpleNamespace(
-            journal=SimpleNamespace(retire=fail),
+            journal=SimpleNamespace(retire=fail, owned_handles=()),
             app=SimpleNamespace(
                 controller=SimpleNamespace(
                     capture=SimpleNamespace(cancel=lambda: calls.append("capture"))

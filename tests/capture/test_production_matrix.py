@@ -41,6 +41,7 @@ from tests.ux.test_app_journeys import (
     make_app as make_app,  # noqa: PLC0414 - pytest fixture re-export
 )
 
+from verdiclip.capture.input_native import Win32InputPlatform
 from verdiclip.capture.models import Capture, CaptureMode
 from verdiclip.exceptions import CaptureError
 from verdiclip.geometry import Point, Rect
@@ -355,6 +356,24 @@ def test_idle_facade_does_not_authorize_foreign_teardown() -> None:
     worker.cleaned = True
     assert cleanup_confirmed(driver, selecting=False)
     assert not cleanup_confirmed(driver, selecting=True)
+
+
+def test_native_observation_keeps_guard_results_and_bounds_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Observation neither substitutes native answers nor grows without bounds."""
+    monkeypatch.setattr(Win32InputPlatform, "__init__", lambda _self: None)
+    values = iter(range(30))
+    monkeypatch.setattr(Win32InputPlatform, "foreground", lambda _self: next(values))
+    monkeypatch.setattr(Win32InputPlatform, "desktop_safe", lambda _self: False)
+    platform = ObservedWin32Platform()
+    assert [platform.foreground() for _ in range(30)] == list(range(30))
+    assert platform.foregrounds == list(range(16))
+    assert platform.last_foreground == 29
+    assert not platform.desktop_safe()
+    monkeypatch.setattr(Win32InputPlatform, "desktop_safe", lambda _self: True)
+    assert platform.desktop_safe()
+    assert platform.desktop_unsafe
 
 
 def test_native_action_receipt_is_scoped_to_current_run() -> None:
