@@ -10,7 +10,6 @@ from PySide6.QtCore import QObject, Signal
 
 from verdiclip.capture.scroll.models import ScrollTarget
 from verdiclip.capture.scroll.targets import (
-    NodeKind,
     SemanticTargets,
     TargetCandidate,
     TargetIntent,
@@ -134,33 +133,27 @@ class ScrollEntry(QObject):
         if hint.intent is not TargetIntent.SCROLL_CANDIDATE or not candidates:
             self._decline("No supported scroll area was found at this point.")
             return
+        scrollbar = resolver.scrollbar_at(
+            discovery.hit_identity, self._point, discovery.window_identity
+        )
         self._offer = ScrollOffer(
             self._title,
             self._point,
             candidates,
             tuple(references[choice.identity] for choice in candidates),
-            tuple(self._viewport(choice.bounds, discovery) for choice in candidates),
-            any(
-                node.identity == discovery.hit_identity
-                and node.kind is NodeKind.VERTICAL_SCROLLBAR
-                for node in discovery.nodes
+            tuple(
+                self._viewport(choice.bounds, scrollbar.bounds if scrollbar else None)
+                for choice in candidates
             ),
+            scrollbar is not None,
         )
         self._state = EntryState.OFFER
         self.offered.emit(self._offer)
 
     @staticmethod
-    def _viewport(bounds: Rect, discovery: UiaDiscovery) -> Rect:
+    def _viewport(bounds: Rect, bar: Rect | None) -> Rect:
         """Exclude only a verified semantic scrollbar covering an exact edge."""
-        hit = next(
-            node for node in discovery.nodes if node.identity == discovery.hit_identity
-        )
-        bar = hit.bounds
-        if (
-            hit.kind is NodeKind.VERTICAL_SCROLLBAR
-            and bar.y <= bounds.y
-            and bar.bottom >= bounds.bottom
-        ):
+        if bar is not None and bar.y <= bounds.y and bar.bottom >= bounds.bottom:
             if bar.right == bounds.right and bounds.x < bar.x < bounds.right:
                 return Rect(bounds.x, bounds.y, bar.x - bounds.x, bounds.height)
             if bar.x == bounds.x and bounds.x < bar.right < bounds.right:

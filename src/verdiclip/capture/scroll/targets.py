@@ -68,8 +68,8 @@ class SemanticTargets:
 
     def normal_click(self, hit: str, point: Point, window: str) -> TargetHint:
         """Propose scrolling only for a verified semantic scrollbar hit."""
-        node = self._hit(hit, point, window)
-        if node is None or node.kind is not NodeKind.VERTICAL_SCROLLBAR:
+        node = self.scrollbar_at(hit, point, window)
+        if node is None:
             return TargetHint(TargetIntent.WINDOW)
         candidates = self._ancestors(node, window)
         return (
@@ -78,9 +78,24 @@ class SemanticTargets:
             else TargetHint(TargetIntent.WINDOW)
         )
 
+    def scrollbar_at(self, hit: str, point: Point, window: str) -> SemanticNode | None:
+        """Accept native scrollbar parts only through their verified ancestry."""
+        node = self._hit(hit, point, window)
+        visited: set[str] = set()
+        for _depth in range(self.MAX_ANCESTORS):
+            if node is None or node.identity in visited:
+                return None
+            visited.add(node.identity)
+            if node.kind is NodeKind.VERTICAL_SCROLLBAR:
+                return node if self._ancestors(node, window) else None
+            if node.kind is not NodeKind.OTHER or node.parent_identity is None:
+                return None
+            node = self._hit(node.parent_identity, point, window)
+        return None
+
     def explicit_mode(self, hit: str, point: Point, window: str) -> TargetHint:
         """Offer hidden-bar containers or fall back to an explicit manual area."""
-        node = self._hit(hit, point, window)
+        node = self.scrollbar_at(hit, point, window) or self._hit(hit, point, window)
         candidates = () if node is None else self._ancestors(node, window)
         return (
             TargetHint(TargetIntent.SCROLL_CANDIDATE, candidates)

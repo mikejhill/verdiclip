@@ -35,7 +35,7 @@ from verdiclip.capture.scroll.native_backend import (
     NativeBackendOptions,
     UiaFrameBackend,
 )
-from verdiclip.capture.scroll.targets import NodeKind
+from verdiclip.capture.scroll.targets import SemanticTargets
 from verdiclip.capture.scroll.uia_adapter import UiaAdapter
 from verdiclip.capture.scroll.uia_process import UiaProcess
 from verdiclip.capture.scroll.uia_protocol import UiaDiscovery, UiaReference
@@ -190,7 +190,13 @@ class ScrollbarCase:
         assert record.provenance.source_kind is CaptureKind.SCROLLING
         assert record.provenance.completeness is CaptureCompleteness.COMPLETE
         assert self.discoveries, "No native UIA discovery received"
-        assert self.discoveries[0].nodes[0].kind is NodeKind.VERTICAL_SCROLLBAR
+        discovery = self.discoveries[0]
+        assert (
+            SemanticTargets(discovery.nodes).scrollbar_at(
+                discovery.hit_identity, target.center, discovery.window_identity
+            )
+            is not None
+        ), "Native hit is not a verified scrollbar or its child"
         assert self.discoveries[0].references, "Provider has no verified ScrollPattern"
         verify_pixels(record.session.document.image, self.image)
         assert not native_action_errors(self.driver, "scrollbar-click")

@@ -12,7 +12,11 @@ from pytestqt.qtbot import QtBot
 from shiboken6 import isValid
 from tests.capture.test_capture_interaction import click
 from tests.capture.test_scroll_binding import FixtureBackend
-from tests.capture.test_scroll_entry import DiscoveryFixture, EntryFixture
+from tests.capture.test_scroll_entry import (
+    DiscoveryFixture,
+    EntryFixture,
+    scrollbar_child_discovery,
+)
 from tests.capture.test_scroll_uia_protocol import Payload
 
 from verdiclip.capture.input_policy import InputKind, SelectionInput
@@ -577,6 +581,26 @@ def test_negative_input_cleanup_keeps_unpublished_review(
         assert fixture.workflow.paused_review
         assert fixture.workflow.panel is panel
         assert not fixture.attempts
+    finally:
+        fixture.close()
+
+
+def test_native_scrollbar_part_automatically_captures_and_delivers(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """Realistic UIA child ancestry needs no second confirmation or Start click."""
+    fixture = WorkflowFixture(tmp_path)
+    try:
+        assert fixture.workflow.begin(
+            fixture.WINDOW, Point(92, 10), (fixture.SCREEN,), explicit=True
+        )
+        fixture.adapter.deliver(scrollbar_child_discovery())
+        qtbot.waitUntil(lambda: fixture.workflow.state is WorkflowState.DELIVERING)
+        assert not fixture.captures
+        fixture.active = False
+        fixture.workflow.input_closed(cleaned=True, message="")
+        assert len(fixture.captures) == 1
+        assert fixture.workflow.state is WorkflowState.IDLE
     finally:
         fixture.close()
 

@@ -14,6 +14,7 @@ from verdiclip.capture.scroll.entry import (
     ScrollEntry,
     ScrollOffer,
 )
+from verdiclip.capture.scroll.targets import NodeKind, SemanticTargets
 from verdiclip.capture.scroll.uia_adapter import UiaAdapter
 from verdiclip.capture.scroll.uia_messages import UiaAction, UiaRequest
 from verdiclip.capture.scroll.uia_protocol import UiaDiscovery
@@ -93,6 +94,80 @@ class EntryFixture:
             explicit=explicit,
             expected_window_identity=Payload.WINDOW,
         )
+
+
+def scrollbar_child_discovery() -> UiaDiscovery:
+    """Match the native WPF track-button -> scrollbar -> viewport chain."""
+    original = EntryFixture.discovery()
+    bar = original.nodes[0]
+    child = replace(
+        bar,
+        identity=bar.identity + "/part",
+        kind=NodeKind.OTHER,
+        bounds=Rect(90, 5, 6, 20),
+        parent_identity=bar.identity,
+    )
+    return replace(
+        original, hit_identity=child.identity, nodes=(child, *original.nodes)
+    )
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+@pytest.mark.parametrize("child_scrollable", [False, True])
+def test_native_scrollbar_child_selects_full_content_viewport(
+    *, explicit: bool, child_scrollable: bool
+) -> None:
+    """Selecting a thumb/track part has the same intent and crop as its scrollbar."""
+    fixture = EntryFixture()
+    assert fixture.begin(explicit=explicit)
+    discovery = scrollbar_child_discovery()
+    if child_scrollable:
+        reference = replace(
+            discovery.references[0], runtime_id="part", bounds=Rect(90, 5, 6, 20)
+        )
+        child = replace(
+            discovery.nodes[0], identity=reference.identity, vertically_scrollable=True
+        )
+        discovery = replace(
+            discovery,
+            hit_identity=child.identity,
+            nodes=(child, *discovery.nodes[1:]),
+            references=(reference, *discovery.references),
+        )
+    fixture.adapter.deliver(discovery)
+    assert len(fixture.offers) == 1
+    assert fixture.offers[0].scrollbar_selected
+    assert fixture.offers[0].viewports == (Rect(0, 0, 90, 48),)
+    assert (
+        fixture.offers[0].candidates[0].identity
+        == EntryFixture.discovery().references[0].identity
+    )
+
+
+@pytest.mark.parametrize(
+    "invalid", ["foreign", "outside", "cycle", "content", "missing"]
+)
+def test_scrollbar_child_cannot_borrow_unrelated_or_invalid_ancestry(
+    invalid: str,
+) -> None:
+    """No role guessing or unrelated-node scan can grant automatic scroll intent."""
+    discovery = scrollbar_child_discovery()
+    child, bar, *rest = discovery.nodes
+    if invalid == "foreign":
+        bar = replace(bar, window_identity="foreign")
+    elif invalid == "outside":
+        bar = replace(bar, bounds=Rect(190, 0, 6, 48))
+    elif invalid == "cycle":
+        bar = replace(bar, parent_identity=child.identity)
+    elif invalid == "content":
+        child = replace(child, kind=NodeKind.CONTENT)
+    else:
+        child = replace(child, parent_identity="missing")
+    resolver = SemanticTargets((child, bar, *rest))
+    assert (
+        resolver.scrollbar_at(child.identity, Point(92, 10), discovery.window_identity)
+        is None
+    )
 
 
 def test_scrollbar_proposes_then_requires_explicit_valid_start() -> None:
