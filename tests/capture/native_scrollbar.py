@@ -83,7 +83,7 @@ def observe_operation[**P, R](
         mark("returned")
         return result
 
-    return cast(Callable[P, R], observed)
+    return cast("Callable[P, R]", observed)
 
 
 class PopupFailureTrace(QObject):
