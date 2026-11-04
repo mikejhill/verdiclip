@@ -573,6 +573,7 @@ def test_popup_observer_detach_failure_cannot_skip_retirement(
 
     case = SimpleNamespace()
     case.popup_trace = SimpleNamespace(first={})
+    case.retirement_probe = {}
     case.snapshot = None
     case.menu = SimpleNamespace(removeEventFilter=broken_detach)
     case.journal = SimpleNamespace(

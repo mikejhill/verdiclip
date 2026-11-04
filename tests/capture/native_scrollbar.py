@@ -13,10 +13,11 @@ from pathlib import Path
 from typing import cast, override
 
 import pytest
-from PySide6.QtCore import QEvent, QObject, QPoint
+from PySide6.QtCore import QEvent, QObject, QPoint, Qt
 from PySide6.QtGui import QImage
-from PySide6.QtWidgets import QApplication, QMenu
+from PySide6.QtWidgets import QApplication, QMenu, QWidget
 from pytestqt.qtbot import QtBot
+from shiboken6 import isValid
 from tests.capture.hosted_fixture_input import HostedFixtureClick
 from tests.capture.production_matrix import (
     DriverJournal,
@@ -32,6 +33,7 @@ from tests.capture.scroll_peer import ScrollPeer
 from tests.capture.test_capture_native import RealDesktop
 from tests.ux.test_app_journeys import App, AppFactory, make_app
 
+from verdiclip.capture.presentation import PASSIVE_WINDOW_FLAGS
 from verdiclip.capture.reviewed import CaptureCompleteness, CaptureKind
 from verdiclip.capture.scroll.native_backend import (
     NativeBackendOptions,
@@ -120,6 +122,7 @@ class ScrollbarCase:
         self.hosted_input: HostedFixtureClick | None = None
         if os.environ.get("VERDICLIP_HOSTED_SCROLLBAR") == "1":
             self.hosted_input = HostedFixtureClick(self.peer, self.journal)
+        self.retirement_probe: dict[str, object] = {}
         self.popup_trace: PopupFailureTrace | None = None
         self.image = QImage()
         self.errors: list[str] = []
@@ -178,6 +181,45 @@ class ScrollbarCase:
         self.journal.owned_handles = (self.peer.handle, int(self.menu.winId()))
         self.journal.binding_handle = self.peer.handle
         self.journal.prepare_binding(self.target())
+        self.check_passive_retirement()
+
+    def check_passive_retirement(self) -> None:
+        """Isolate ordinary owned tooltip retirement before hooks, input or UIA."""
+        assert self.snapshot is not None
+        api = ctypes.WinDLL("user32", use_last_error=True)
+        api.GetForegroundWindow.restype = w.HWND
+        before = int(api.GetForegroundWindow() or 0)
+        self.retirement_probe = {"stage": "before_show", "foreground_before": before}
+        assert not fixture_foreground_errors(before, self.journal.owned_handles)
+        panel = QWidget(None, PASSIVE_WINDOW_FLAGS)
+        panel.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        panel.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        panel.setGeometry(self.menu.x() + self.menu.width() + 20, self.menu.y(), 40, 40)
+        try:
+            panel.show()
+            self.qtbot.waitUntil(lambda: panel.windowHandle().isExposed(), timeout=2000)
+            shown = int(api.GetForegroundWindow() or 0)
+            self.retirement_probe.update(stage="shown", foreground_shown=shown)
+            assert shown == before, "Passive show changed native foreground"
+            assert not self.snapshot.errors(), "Passive show changed the popup"
+            self.retirement_probe["stage"] = "closing"
+            panel.close()
+            self.qtbot.waitUntil(lambda: not isValid(panel), timeout=2000)
+            QApplication.processEvents()
+            errors = self.snapshot.errors()
+            after = int(api.GetForegroundWindow() or 0)
+            self.retirement_probe.update(
+                stage="retired",
+                retired=not isValid(panel),
+                errors=errors,
+                foreground_after=after,
+            )
+            assert after == before, "Passive retirement changed native foreground"
+            assert not errors, "Passive retirement changed the popup"
+        finally:
+            if isValid(panel):
+                panel.close()
+                self.qtbot.waitUntil(lambda: not isValid(panel), timeout=2000)
 
     def target(self) -> Rect:
         """Restrict the actual click to the owned native scrollbar center."""
@@ -305,6 +347,7 @@ class ScrollbarCase:
                     "cleanup_errors": failures,
                     "visible_test_windows_before_cleanup": visible_owned,
                     "first_popup_loss": popup_loss,
+                    "passive_retirement_probe": self.retirement_probe,
                     "popup_transitions_before_cleanup": transitions,
                     "declared_owned_handles": self.journal.owned_handles,
                     "retired": self.retired(),
