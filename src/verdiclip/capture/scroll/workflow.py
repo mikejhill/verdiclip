@@ -266,25 +266,32 @@ class ScrollWorkflow(QObject):
         if not candidates:
             self._fail("Choose a content area inside one supported scroll container.")
             return
-        panel = ScrollTargetPanel(
-            offer.title, candidates, external_input=True, suggested_viewports=viewports
-        )
-        panel.confirmed.connect(self._start)
-        panel.cancelled.connect(self.cancel)
+        epoch = self._epoch
+        automatic = offer.scrollbar_selected and self._roi is None
+        panel = None
+        if not automatic:
+            panel = ScrollTargetPanel(
+                offer.title,
+                candidates,
+                external_input=True,
+                suggested_viewports=viewports,
+            )
+            panel.confirmed.connect(self._start)
+            panel.cancelled.connect(self.cancel)
         self._replace_panel(panel)
         self._set_state(WorkflowState.CONFIRMING)
-        if not self._owns_phase(WorkflowState.CONFIRMING, panel=panel):
+        if not self._owns_phase(WorkflowState.CONFIRMING, epoch=epoch, panel=panel):
             return
         self.takeover.emit()
-        if not self._owns_phase(WorkflowState.CONFIRMING, panel=panel):
+        if not self._owns_phase(WorkflowState.CONFIRMING, epoch=epoch, panel=panel):
             return
         self.controls_mode.emit(self.has_work)
-        if self._owns_phase(WorkflowState.CONFIRMING, panel=panel):
-            if offer.scrollbar_selected and self._roi is None:
+        if self._owns_phase(WorkflowState.CONFIRMING, epoch=epoch, panel=panel):
+            if automatic:
                 self._start(
                     ScrollTarget(candidates[0].identity, offer.title, viewports[0])
                 )
-            else:
+            elif panel is not None:
                 panel.show()
 
     def _start(self, target: ScrollTarget) -> None:
@@ -293,7 +300,10 @@ class ScrollWorkflow(QObject):
         if (
             self._state is not WorkflowState.CONFIRMING
             or offer is None
-            or not isinstance(panel, ScrollTargetPanel)
+            or not (
+                isinstance(panel, ScrollTargetPanel)
+                or (panel is None and offer.scrollbar_selected and self._roi is None)
+            )
         ):
             return
         progress = ScrollProgressPanel()
@@ -303,7 +313,7 @@ class ScrollWorkflow(QObject):
         if not visible_progress:
             progress.dismiss()
             progress.deleteLater()
-            if not (offer.scrollbar_selected and self._roi is None):
+            if isinstance(panel, ScrollTargetPanel):
                 panel.confirmation_failed(
                     "Leave space for capture controls or choose a smaller content area."
                 )

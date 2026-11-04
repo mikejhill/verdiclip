@@ -586,9 +586,13 @@ def test_negative_input_cleanup_keeps_unpublished_review(
 
 
 def test_native_scrollbar_part_automatically_captures_and_delivers(
-    qtbot: QtBot, tmp_path: Path
+    qtbot: QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Realistic UIA child ancestry needs no second confirmation or Start click."""
+    """Automatic capture must not create/dispose an unused native popup owner."""
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("Automatic capture constructed confirmation UI")
+
+    monkeypatch.setattr(ScrollTargetPanel, "__init__", forbidden)
     fixture = WorkflowFixture(tmp_path)
     try:
         assert fixture.workflow.begin(
@@ -757,5 +761,24 @@ def test_full_display_scrollbar_capture_needs_no_occluding_controls(
             )
         else:
             assert not fixture.releases or interrupt is InputKind.CANCEL
+    finally:
+        fixture.close()
+
+
+@pytest.mark.parametrize("signal", ["takeover", "controls_mode"])
+def test_automatic_offer_cancelled_during_callbacks_never_starts(
+    tmp_path: Path, signal: str
+) -> None:
+    """No confirmation-widget identity is needed to reject a retired epoch."""
+    fixture = WorkflowFixture(tmp_path)
+    try:
+        getattr(fixture.workflow, signal).connect(lambda *_: fixture.workflow.cancel())
+        assert fixture.workflow.begin(
+            fixture.WINDOW, Point(92, 10), (fixture.SCREEN,), explicit=True
+        )
+        fixture.adapter.deliver(scrollbar_child_discovery())
+        assert not fixture.backends
+        assert not fixture.captures
+        assert fixture.workflow.state is not WorkflowState.CAPTURING
     finally:
         fixture.close()
