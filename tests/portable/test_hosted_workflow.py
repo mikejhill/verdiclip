@@ -30,7 +30,10 @@ def test_parser_exception_matches_only_documented_unknown_job_key() -> None:
     """Different keys, sections and other diagnostics remain failures."""
     config = (ROOT / ".github/actionlint.yaml").read_text(encoding="utf-8")
     assert "  .github/workflows/ci.yml:\n" in config
-    assert config.count("      - '") == 1
+    assert "  .github/workflows/gui-readiness-profile.yml:\n" in config
+    assert config.count("      - '") == 2
+    patterns = [part.split("'\n", 1)[0] for part in config.split("      - '")[1:]]
+    assert len(set(patterns)) == 1
     pattern = config.split("      - '", 1)[1].split("'\n", 1)[0]
     keys = (
         "concurrency",
@@ -66,3 +69,17 @@ def test_parser_exception_matches_only_documented_unknown_job_key() -> None:
         'invalid value "writee" for cache-mode',
     ):
         assert not re.search(pattern, changed)
+
+
+def test_profile_cache_restriction_has_no_upload_or_cache_actions() -> None:
+    """The extra parser exception covers only the bounded diagnostic job."""
+    workflow = (ROOT / ".github/workflows/gui-readiness-profile.yml").read_text()
+    assert workflow.count("cache-mode:") == 1
+    assert "  diagnose:\n    cache-mode: none\n" in workflow
+    assert "  contents: read\n" in workflow
+    assert "    timeout-minutes: 10\n" in workflow
+    assert "        timeout-minutes: 2\n" in workflow
+    assert "persist-credentials: false" in workflow
+    assert "enable-cache: false" in workflow
+    assert "actions/cache" not in workflow
+    assert "upload-artifact" not in workflow
