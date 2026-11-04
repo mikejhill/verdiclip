@@ -59,9 +59,12 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          Get-ChildItem -Path .test-tmp/native-broker-* -Recurse -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -in @('stdout.log', 'stderr.log', 'scrollbar-native.json', 'fixture-retired.json') } |
+          $receipts = @(Get-ChildItem -LiteralPath .test-tmp -Directory -Filter 'native-broker-*' -ErrorAction Stop |
+            ForEach-Object { Get-ChildItem -LiteralPath $_.FullName -Recurse -File } |
+            Where-Object { $_.Name -in @('stdout.log', 'stderr.log', 'scrollbar-native.json', 'fixture-retired.json') })
+          $receipts |
             ForEach-Object { "RECEIPT=$($_.Name)"; Get-Content -LiteralPath $_.FullName }
+          if (-not ($receipts | Where-Object Name -eq 'stdout.log')) { throw 'Native test stdout receipt missing' }
 
   portable-baseline:
     name: Portable baseline (Linux, offscreen)
