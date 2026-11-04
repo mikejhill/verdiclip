@@ -226,6 +226,10 @@ class ScrollbarCase:
             show_magnifier=False,
             external_input=True,
         )
+
+        def retired() -> bool:
+            return not isValid(panel)
+
         try:
             panel.show()
             self.qtbot.waitUntil(lambda: panel.windowHandle().isExposed(), timeout=2000)
@@ -235,7 +239,7 @@ class ScrollbarCase:
             assert not self.snapshot.errors(), "Passive show changed the popup"
             self.retirement_probe["stage"] = "closing"
             panel.dismiss()
-            self.qtbot.waitUntil(lambda: not isValid(panel), timeout=2000)
+            self.qtbot.waitUntil(retired, timeout=2000)
             QApplication.processEvents()
             errors = self.snapshot.errors()
             after = int(api.GetForegroundWindow() or 0)
@@ -250,7 +254,7 @@ class ScrollbarCase:
         finally:
             if isValid(panel):
                 panel.dismiss()
-                self.qtbot.waitUntil(lambda: not isValid(panel), timeout=2000)
+                self.qtbot.waitUntil(retired, timeout=2000)
 
     def target(self) -> Rect:
         """Restrict the actual click to the owned native scrollbar center."""
