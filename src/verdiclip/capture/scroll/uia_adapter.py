@@ -205,3 +205,8 @@ class UiaAdapter(QObject):
     def register_scope_cleanup(self, cleanup: Callable[[], None]) -> None:
         """Clean private pixel files only after the helper has terminated."""
         self._process.register_scope_cleanup(cleanup)
+
+    def shutdown(self, *, timeout_ms: int = 2000) -> None:
+        """Invalidate replies before bounded retirement of the owned process lanes."""
+        self._request = self._expected = self._destination = None
+        self._process.shutdown(timeout_ms=timeout_ms)

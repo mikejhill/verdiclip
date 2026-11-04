@@ -25,6 +25,7 @@ from verdiclip.capture.scroll.uia_protocol import UiaReference
 from verdiclip.exceptions import CaptureError
 from verdiclip.geometry import Point, Rect
 from verdiclip.platform.windows import WindowInfo
+from verdiclip.startup_lifetime import StartupLifetime
 
 type BackendFactory = Callable[[UiaReference, UiaAdapter], ScrollBackend]
 type ReviewFactory = Callable[[ScrollSession], ScrollReviewPanel]
@@ -561,6 +562,16 @@ class ScrollWorkflow(QObject):
         self._set_state(WorkflowState.CLOSING)
         self._cleanup_complete()
         return self._state is WorkflowState.IDLE
+
+    def shutdown(self, *, timeout_ms: int = 2000) -> None:
+        """Retire warm helpers even when this workflow is already idle."""
+        with StartupLifetime() as lifetime:
+            lifetime.callback(self._adapter.shutdown, timeout_ms=timeout_ms)
+            self.cancel()
+        if self._state is WorkflowState.CLOSING:
+            self._cleanup_complete()
+        if self.has_work:
+            raise CaptureError("Scrolling shutdown cleanup is unconfirmed")
 
     def _fallback(self) -> None:
         window = self._window

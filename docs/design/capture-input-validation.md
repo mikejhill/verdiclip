@@ -366,3 +366,14 @@ phase offsets prevent attributing that delay to a specific native operation.
 The expanded profiler now retains those offsets and treats any threshold failure
 as a failed run even if later trials pass. The historical outlier cause remains
 unresolved; green reruns are non-reproduction, not a demonstrated repair.
+
+At `32c819d2a275a1a5daf87f124b8ca97bbbd5d553`, the same four WPF profiles
+passed again in [run 41935494848](https://github.com/mikejhill/verdiclip/actions/runs/41935494848).
+The added WinForms read-only comparison verified that both scrollbar and viewport
+center belonged to the exact ListBox HWND/PID/root. Both returned the ListBox's
+401 by 280 physical bounds with no usable vertically scrollable reference, then
+the owned top-level window. This rules out an unrelated hit in this fixture;
+it does not distinguish an absent ScrollPattern from one reporting non-scrollable,
+or establish a limitation of every WinForms version. The actual capture remains
+rejected, with unchanged popup and confirmed cleanup. No fallback input or
+unsupported provider mutation was attempted.

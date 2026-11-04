@@ -106,6 +106,7 @@ def helper(tmp_path: Path) -> Path:
     code = (
         "import json,sys,time\n"
         "mode=sys.argv[1]\n"
+        "if mode=='startup_hang': time.sleep(30)\n"
         "ready={'ready':True,'protocol':0 if mode=='unsupported_ready' else 1}\n"
         "print('not-json' if mode=='bad_ready' else json.dumps(ready),flush=True)\n"
         "request=json.load(sys.stdin)\n"
@@ -379,6 +380,67 @@ def test_isolated_mutation_uses_distinct_children_and_retires_both(
     finally:
         client.cancel()
         qtbot.waitUntil(lambda: not client.busy, timeout=reply_observer_ms())
+        client.deleteLater()
+
+
+@pytest.mark.parametrize("native_mode", ["success", "hang", "startup_hang"])
+def test_shutdown_retires_both_protocol_children_without_an_event_loop_wait(
+    qtbot: QtBot, helper: Path, tmp_path: Path, native_mode: str
+) -> None:
+    """Synchronous shutdown covers warm, active and pre-handshake child ownership."""
+    client = UiaProcess(
+        helper_command=(sys.executable, str(helper), "success"),
+        native_helper_command=(sys.executable, str(helper), native_mode),
+        qualified=True,
+        use_local_pipe=False,
+    )
+    private = tmp_path / "owned-frame"
+    private.write_bytes(b"synthetic")
+    cleanup: list[tuple[int, ...]] = []
+
+    def retire() -> None:
+        cleanup.append(client.worker_pids)
+        private.unlink()
+
+    client.register_scope_cleanup(retire)
+    try:
+        with qtbot.waitSignal(client.completed, timeout=reply_observer_ms()):
+            client.start(UiaAction.INSPECT, {})
+        if native_mode == "success":
+            with qtbot.waitSignal(client.completed, timeout=reply_observer_ms()):
+                client.start(UiaAction.STEP, {})
+            assert not client.busy  # Both children are warm, not outstanding work.
+        else:
+            client.start(UiaAction.STEP, {})
+            qtbot.waitUntil(
+                lambda: (
+                    len(client.worker_pids) == 2
+                    and client.diagnostics_for_workers["native"].process_state
+                    == "Running"
+                    and (
+                        native_mode == "startup_hang"
+                        or client.diagnostics_for_workers["native"].request_sent
+                    )
+                ),
+                timeout=reply_observer_ms(),
+            )
+        assert len(set(client.worker_pids)) == 2
+        assert cleanup == []
+        client.shutdown()
+        # No qtbot wait/processEvents after shutdown: it must retire synchronously.
+        assert client.worker_pid is None
+        assert client.worker_pids == ()
+        assert not client.busy
+        assert cleanup == [()]
+        assert not private.exists()
+        assert all(
+            trace.cleanup == "confirmed"
+            for trace in client.diagnostics_for_workers.values()
+        )
+        with pytest.raises(CaptureError, match="shut down"):
+            client.start(UiaAction.INSPECT, {})
+    finally:
+        client.shutdown()
         client.deleteLater()
 
 

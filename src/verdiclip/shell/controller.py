@@ -65,6 +65,7 @@ from verdiclip.shell.scroll_review import ScrollReviews
 from verdiclip.shell.settings_dialog import HOTKEY_FIELDS, SettingsDialog
 from verdiclip.shell.theme import ThemeManager
 from verdiclip.shell.tray import CHECK_UPDATES_LABEL, TrayCommands, TrayIcon
+from verdiclip.startup_lifetime import StartupLifetime
 from verdiclip.update.service import Updater
 
 logger = logging.getLogger(__name__)
@@ -258,10 +259,13 @@ class AppController(QObject):
             self._update_status.hide()
             self._update_status.deleteLater()
             self._update_status = None
-        self._capture.cancel()
-        self._workspace.cancel_drag()
-        self._hotkeys.close()
-        self._tray.hide()
+        with StartupLifetime() as lifetime:
+            lifetime.callback(self._tray.hide)
+            lifetime.callback(self._hotkeys.close)
+            lifetime.callback(self._workspace.cancel_drag)
+            if self._scroll_workflow is not None:
+                lifetime.callback(self._scroll_workflow.shutdown)
+            lifetime.callback(self._capture.cancel)
 
     def handle_forwarded(self, arguments: list[str]) -> None:
         """Act on arguments sent by a second launch."""

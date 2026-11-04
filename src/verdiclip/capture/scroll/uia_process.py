@@ -8,6 +8,7 @@ import sys
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
+from time import monotonic
 from uuid import uuid4
 
 from PySide6.QtCore import QCoreApplication, QObject, Signal
@@ -210,19 +211,26 @@ class _IsolatedScope(QObject):
         self._closing = True
         self._open = False
         callbacks, self._cleanup = self._cleanup, []
+        controls: list[BaseException] = []
         for callback in callbacks:
             try:
                 UiaWorkerLease._run_cleanup(callback)
-            except (CaptureError, OSError) as error:
+            except BaseException as error:  # noqa: BLE001 - defer controls until every private cleanup is attempted
                 self._broken = True
                 self._failure_cleanup = "callback_failed"
                 self._failed_cleanup.append(callback)
+                if not isinstance(error, Exception):
+                    controls.append(error)
                 self.cleanup_failed.emit(str(error))
         self._closing = False
         self._finishing = False
         if not self._broken:
             self.scope_closed.emit()
         self.busy_changed.emit(self.busy)
+        if len(controls) == 1:
+            raise controls[0]
+        if controls:
+            raise BaseExceptionGroup("Capture cleanup controls", controls)
         if self._released and not self._broken:
             self.deleteLater()
 
@@ -264,6 +272,37 @@ class _IsolatedScope(QObject):
             self._retire_lease(lease, release=True)
         if not self._open and not self._broken:
             self.deleteLater()
+
+    def shutdown(self, *, timeout_ms: int) -> None:
+        """Share one finite wait budget across both already-owned children."""
+        deadline = monotonic() + timeout_ms / 1000
+        self._released = True
+        errors: list[BaseException] = []
+        try:
+            self.cancel()
+        except BaseException as error:  # noqa: BLE001 - defer controls until both owned lanes are attempted
+            errors.append(error)
+        for lease in tuple(self._leases.values()):
+            if not isValid(lease):
+                if lease not in self._retired:
+                    errors.append(CaptureError("Worker ownership was lost"))
+                continue
+            try:
+                lease.shutdown(timeout_ms=max(0, int((deadline - monotonic()) * 1000)))
+            except BaseException as error:  # noqa: BLE001 - independently attempt the other owned lane
+                errors.append(error)
+        if errors or self.busy or self.worker_pids:
+            self._broken = True
+            self._failure_cleanup = "unconfirmed"
+            if any(not isinstance(error, Exception) for error in errors):
+                if len(errors) == 1:
+                    raise errors[0]
+                raise BaseExceptionGroup("Owned worker shutdown failures", errors)
+            raise CaptureError("UI Automation shutdown cleanup is unconfirmed") from (
+                BaseExceptionGroup("Owned worker shutdown failures", errors)
+                if errors
+                else None
+            )
 
 
 class UiaProcess(QObject):
@@ -307,6 +346,7 @@ class UiaProcess(QObject):
         )
         self._lease: UiaWorkerLease | None = None
         self._scope: _IsolatedScope | None = None
+        self._shutdown = False
 
     @property
     def busy(self) -> bool:
@@ -350,6 +390,8 @@ class UiaProcess(QObject):
         """Reserve one request before asynchronous startup/provider callbacks."""
         if self.busy:
             raise CaptureError("The UI Automation helper is still busy")
+        if self._shutdown:
+            raise CaptureError("UI Automation is shut down")
         if not self._qualified:
             raise CaptureError(
                 "Scrolling capture is unavailable until native preservation is verified"
@@ -451,3 +493,13 @@ class UiaProcess(QObject):
             self._scope.cancel()
         elif self._lease is not None:
             self._lease.cancel()
+
+    def shutdown(self, *, timeout_ms: int = UiaWorkerLease.CLEANUP_MS) -> None:
+        """Permanently stop admission and retire existing helpers only."""
+        if timeout_ms < 0:
+            raise ValueError("Shutdown timeout cannot be negative")
+        self._shutdown = True
+        if self._isolated and self._scope is not None:
+            self._scope.shutdown(timeout_ms=timeout_ms)
+        elif self._lease is not None:
+            self._lease.shutdown(timeout_ms=timeout_ms)
