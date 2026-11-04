@@ -205,14 +205,12 @@ try {
             }
             # Mutation must use a pattern acquired from the SAME no-focus native client.
             # Setting a separate client's policy does not change this managed pattern.
+            # Native Resolve revalidates target identity, ancestry, bounds and metrics.
+            # Keep the last viewport guard Win32-only: do not mix managed UIA
+            # objects into the newly configured native client mutation interval.
             $permitMutation = [Func[bool]] {
                 return [CaptureDesktop]::Interactive() -and
                     [CaptureDesktop]::IsWindowVisible($handle) -and -not [CaptureDesktop]::IsIconic($handle) -and
-                    ($element.GetRuntimeId() -join '.') -eq $reference.runtime_id -and
-                    $element.Current.ProcessId -eq $process.Id -and
-                    $element.Current.IsEnabled -and -not $element.Current.IsOffscreen -and
-                    (Test-SamePhysicalBounds (Get-Bounds $element) $bounds) -and
-                    (Test-OwnedScrollMetrics $pattern.Current.VerticalScrollPercent $pattern.Current.VerticalViewSize $reference) -and
                     [CaptureDesktop]::Unoccluded($handle, [int]$area[0], [int]$area[1], [int]$area[2], [int]$area[3])
             }
             [VerdiClip.Automation.NoFocusScroll]::SetPercent(
