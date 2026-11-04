@@ -6,6 +6,8 @@ from __future__ import annotations
 import inspect
 import sys
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -235,6 +237,15 @@ class PureProfilerTests(unittest.TestCase):
         session.exitstatus = 2
         plugin.pytest_sessionfinish(session)
         self.assertEqual(session.exitstatus, 2)
+
+    def test_default_emitter_is_an_unbound_instance_callable(self) -> None:
+        """The real default receives only its packet, never an implicit profiler."""
+        output = StringIO()
+        with redirect_stdout(output):
+            Profiler().emitter({"fixture": "safe"})
+        self.assertEqual(
+            output.getvalue(), 'GUI_READINESS_PROFILE={"fixture": "safe"}\n'
+        )
 
     def test_local_guard_refuses_before_any_qt_import(self) -> None:
         """Pure test environments cannot activate the optional hosted loader."""

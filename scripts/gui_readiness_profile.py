@@ -240,7 +240,6 @@ class PluginManager(Protocol):
 
     def register(self, plugin: object, name: str) -> object:
         """Register the diagnostic instance without inventory or application work."""
-        ...
 
 
 class Config(Protocol):
@@ -262,8 +261,10 @@ class Profiler:
     """One unchanged benchmark case; no selection, readiness or threshold changes."""
 
     trace: Trace = field(default_factory=Trace)
-    loader: Callable[[], tuple[Patch, ...]] = hosted_patches
-    emitter: Callable[[dict[str, object]], None] = emit
+    loader: Callable[[], tuple[Patch, ...]] = field(
+        default_factory=lambda: hosted_patches
+    )
+    emitter: Callable[[dict[str, object]], None] = field(default_factory=lambda: emit)
     seen: bool = False
 
     @hookimpl
