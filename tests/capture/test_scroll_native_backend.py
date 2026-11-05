@@ -10,6 +10,7 @@ import pytest
 from pytestqt.qtbot import QtBot
 from tests.capture.test_scroll_core import Documents
 from tests.capture.test_scroll_uia_protocol import Payload
+from tests.capture.uia_test_cleanup import wait_idle
 
 from verdiclip.capture.scroll.acquisition import AcquisitionWork, WorkKind
 from verdiclip.capture.scroll.binding import (
@@ -116,7 +117,7 @@ def native(qtbot: QtBot, tmp_path: Path) -> Iterator[NativeFixture]:
     fixture = NativeFixture(tmp_path)
     yield fixture
     fixture.backend.cancel()
-    qtbot.waitUntil(lambda: not fixture.process.busy)
+    wait_idle(qtbot, fixture.process)
     fixture.backend.deleteLater()
     fixture.adapter.deleteLater()
     fixture.process.deleteLater()
@@ -343,7 +344,7 @@ def test_full_height_capture_seeks_top_before_pixels_and_restores_origin(
         assert fixture.process.worker_pid is None
     finally:
         fixture.backend.cancel()
-        qtbot.waitUntil(lambda: not fixture.process.busy)
+        wait_idle(qtbot, fixture.process)
         session.close()
         binding.deleteLater()
         fixture.backend.deleteLater()
@@ -366,7 +367,7 @@ def test_provider_refusing_top_cannot_publish_truncated_complete_capture(
         assert "sample" not in fixture.trace.read_text().splitlines()
     finally:
         fixture.backend.cancel()
-        qtbot.waitUntil(lambda: not fixture.process.busy)
+        wait_idle(qtbot, fixture.process)
         session.close()
         binding.deleteLater()
         fixture.backend.deleteLater()
@@ -397,7 +398,7 @@ def test_interruption_during_initial_seek_never_delivers_late_pixels(
     try:
         with qtbot.waitSignal(binding.cancelled, timeout=8000):
             assert binding.start_confirmed(fixture.target)
-        qtbot.waitUntil(lambda: not fixture.process.busy)
+        wait_idle(qtbot, fixture.process)
         assert acted == [True]
         assert session.result is None
         assert "sample" not in fixture.trace.read_text().splitlines()
@@ -405,7 +406,7 @@ def test_interruption_during_initial_seek_never_delivers_late_pixels(
         assert fixture.process.worker_pid is None
     finally:
         fixture.backend.cancel()
-        qtbot.waitUntil(lambda: not fixture.process.busy)
+        wait_idle(qtbot, fixture.process)
         session.close()
         binding.deleteLater()
         fixture.backend.deleteLater()

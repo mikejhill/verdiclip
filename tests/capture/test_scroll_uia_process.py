@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 from PySide6.QtCore import QCoreApplication, QEvent, QObject
 from pytestqt.qtbot import QtBot
+from tests.capture.uia_test_cleanup import wait_idle
 
 from verdiclip.capture.scroll import uia_process
 from verdiclip.capture.scroll.uia_pipe import UiaPipe
@@ -180,7 +181,7 @@ def test_invalid_response_fails_once_and_allows_retry(
     client.failed.connect(lambda _request, message: failures.append(message))
     with qtbot.waitSignal(client.failed, timeout=reply_observer_ms()):
         client.start(UiaAction.INSPECT, {})
-    qtbot.waitUntil(lambda: not client.busy)
+    wait_idle(qtbot, client)
     assert len(failures) == 1
     assert not successes
     client.deleteLater()
@@ -198,7 +199,7 @@ def test_silent_provider_deadline_kills_only_owned_child(
     with qtbot.waitSignal(client.failed, timeout=reply_observer_ms()) as failed:
         client.start(UiaAction.OBSERVE, {})
     assert "timed out" in failed.args[1]
-    qtbot.waitUntil(lambda: not client.busy)
+    wait_idle(qtbot, client)
     client.deleteLater()
 
 
@@ -216,7 +217,7 @@ def test_cancel_rejects_callbacks_and_pending_request(
         client.start(UiaAction.STEP, {})
     client.cancel()
     client.cancel()
-    qtbot.waitUntil(lambda: not client.busy)
+    wait_idle(qtbot, client)
     assert len(failures) == 1
     assert "cancelled" in failures[0]
     client.deleteLater()
@@ -229,7 +230,7 @@ def test_missing_executable_does_not_leak_busy_state(
     client = UiaProcess(helper_command=(str(tmp_path / "missing.exe"),), qualified=True)
     with qtbot.waitSignal(client.failed, timeout=reply_observer_ms()):
         client.start(UiaAction.INSPECT, {})
-    qtbot.waitUntil(lambda: not client.busy)
+    wait_idle(qtbot, client)
     client.deleteLater()
 
 
@@ -333,7 +334,7 @@ def test_warm_worker_reuses_pid_and_cancellation_ends_scope(
         client.start(UiaAction.OBSERVE, {})
     assert client.worker_pid == first_pid
     client.cancel()
-    qtbot.waitUntil(lambda: not client.busy)
+    wait_idle(qtbot, client)
     assert client.worker_pid is None
     client.deleteLater()
 
@@ -379,7 +380,7 @@ def test_isolated_mutation_uses_distinct_children_and_retires_both(
         )
     finally:
         client.cancel()
-        qtbot.waitUntil(lambda: not client.busy, timeout=reply_observer_ms())
+        wait_idle(qtbot, client, timeout=reply_observer_ms())
         client.deleteLater()
 
 
@@ -459,7 +460,7 @@ def test_warm_worker_idle_expiry_releases_child_and_allows_fresh_start(
     with qtbot.waitSignal(client.completed, timeout=reply_observer_ms()):
         client.start(UiaAction.OBSERVE, {})
     client.cancel()
-    qtbot.waitUntil(lambda: not client.busy)
+    wait_idle(qtbot, client)
     client.deleteLater()
 
 
@@ -495,7 +496,7 @@ def test_worker_absolute_lifetime_interrupts_a_silent_request(
     with qtbot.waitSignal(client.failed, timeout=reply_observer_ms()) as failed:
         client.start(UiaAction.OBSERVE, {})
     assert "lifetime limit" in failed.args[1]
-    qtbot.waitUntil(lambda: not client.busy)
+    wait_idle(qtbot, client)
     assert client.worker_pid is None
     client.deleteLater()
 
@@ -512,7 +513,7 @@ def test_first_operation_has_its_own_deadline_after_ready(
     with qtbot.waitSignal(client.failed, timeout=reply_observer_ms()) as failed:
         client.start(UiaAction.STEP, {})
     assert "operation timed out" in failed.args[1]
-    qtbot.waitUntil(lambda: not client.busy)
+    wait_idle(qtbot, client)
     client.deleteLater()
 
 
@@ -543,7 +544,7 @@ def test_cleanup_callback_failure_cannot_strand_other_resources(
         client.start(UiaAction.INSPECT, {})
     with qtbot.waitSignal(client.scope_closed):
         client.cancel()
-    qtbot.waitUntil(lambda: not client.busy)
+    wait_idle(qtbot, client)
     assert cleaned == ["second resource"]
     assert len(failures) == 1
     assert error_type.__name__ in failures[0]
@@ -562,7 +563,7 @@ def test_bad_startup_handshake_cannot_dispatch_an_operation(
     with qtbot.waitSignal(client.failed, timeout=reply_observer_ms()) as failed:
         client.start(UiaAction.INSPECT, {})
     assert "startup" in failed.args[1] or "protocol" in failed.args[1]
-    qtbot.waitUntil(lambda: not client.busy)
+    wait_idle(qtbot, client)
     assert client.worker_pid is None
     client.deleteLater()
 

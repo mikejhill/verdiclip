@@ -11,6 +11,7 @@ import pytest
 from PySide6.QtCore import QByteArray, QObject, QProcess, QSignalBlocker
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from pytestqt.qtbot import QtBot
+from tests.capture.uia_test_cleanup import wait_idle
 
 from verdiclip.capture.scroll import uia_worker
 from verdiclip.capture.scroll.uia_pipe import UiaPipe
@@ -146,7 +147,7 @@ def rig(qtbot: QtBot, monkeypatch: pytest.MonkeyPatch) -> Iterator[Rig]:
         client.cancel()
         if client.busy:
             process.finish()
-        qtbot.waitUntil(lambda: not client.busy)
+        wait_idle(qtbot, client)
         client.deleteLater()
 
 
@@ -290,7 +291,7 @@ def test_due_startup_drains_the_actual_private_pipe(
         assert "pipe_accepted" in {stamp.stage for stamp in diagnostics.events}
     finally:
         client.cancel()
-        qtbot.waitUntil(lambda: not client.busy)
+        wait_idle(qtbot, client)
         peer.abort()
         peer.deleteLater()
         client.deleteLater()
@@ -354,7 +355,7 @@ def test_due_startup_accepts_an_already_pending_pipe_connection(
             assert peer.readAll().data() == request.encoded + b"\n"
     finally:
         client.cancel()
-        qtbot.waitUntil(lambda: not client.busy)
+        wait_idle(qtbot, client)
         peer.abort()
         peer.deleteLater()
         client.deleteLater()
