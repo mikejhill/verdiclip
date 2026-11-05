@@ -21,6 +21,7 @@ import functools
 import importlib
 import inspect
 import json
+import os
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -98,3 +99,57 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     durations = json.loads(STATS.read_text(encoding="utf-8")).get("duration_by_test")
     if isinstance(durations, dict):
         items.sort(key=lambda item: float(durations.get(item.nodeid, 0.0)))
+
+
+STATS_FAILURES: Final = (
+    Path(os.environ.get("GITHUB_WORKSPACE", ".")) / "mutation-stats-failures.jsonl"
+)
+FAILURE_LIMIT: Final = 65536
+_stats_receipt_ready = False
+
+
+def retain_stats_failure(report: pytest.TestReport | pytest.CollectReport) -> None:
+    """Keep child failure evidence that mutmut's parent output buffer cannot see."""
+    if os.environ.get("MUTANT_UNDER_TEST") != "stats" or not _stats_receipt_ready:
+        return
+    try:
+        if not report.failed:
+            return
+        record = {
+            "nodeid": report.nodeid[:1024],
+            "when": getattr(report, "when", "collect"),
+            "failure": report.longreprtext[:8192],
+            "source_sha": os.environ.get("GITHUB_SHA"),
+            "run_id": os.environ.get("GITHUB_RUN_ID"),
+            "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+        }
+        line = json.dumps(record, ensure_ascii=False) + "\n"
+        size = STATS_FAILURES.stat().st_size if STATS_FAILURES.exists() else 0
+        if size + len(line.encode("utf-8")) > FAILURE_LIMIT:
+            return
+        with STATS_FAILURES.open("a", encoding="utf-8") as stream:
+            stream.write(line)
+    except Exception:  # noqa: BLE001 - optional diagnostics preserve original outcome
+        return
+
+
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    """Retain only failed reports in the real statistics context."""
+    retain_stats_failure(report)
+
+
+def pytest_collectreport(report: pytest.CollectReport) -> None:
+    """Retain collection failures as well as executed-test failures."""
+    retain_stats_failure(report)
+
+
+def pytest_sessionstart() -> None:
+    """A resumed same-commit run must not publish an earlier failure as current."""
+    global _stats_receipt_ready  # noqa: PLW0603 - per-process pytest session state
+    _stats_receipt_ready = False
+    if os.environ.get("MUTANT_UNDER_TEST") == "stats":
+        try:
+            STATS_FAILURES.write_text("", encoding="utf-8")
+        except OSError:
+            return
+        _stats_receipt_ready = True
