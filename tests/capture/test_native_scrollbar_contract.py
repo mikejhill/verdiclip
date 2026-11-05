@@ -36,6 +36,69 @@ from verdiclip.capture.scroll.uia_protocol import UiaDiscovery
 from verdiclip.geometry import Point, Rect
 
 
+@pytest.mark.parametrize(
+    "fault",
+    [
+        None,
+        "message",
+        "output",
+        "discovery",
+        "reference",
+        "popup",
+        "input",
+        "step",
+        "saturated",
+        "offset",
+        "end",
+    ],
+)
+def test_unsupported_fixture_requires_safe_refusal(
+    qtbot: QtBot, monkeypatch: pytest.MonkeyPatch, fault: str | None
+) -> None:
+    """An error alone cannot turn an unsupported native profile green."""
+    case = SimpleNamespace(
+        errors=["No supported scroll area was found at this point."],
+        qtbot=qtbot,
+        retired=lambda: True,
+        app=SimpleNamespace(
+            controller=SimpleNamespace(workspace=SimpleNamespace(documents=[]))
+        ),
+        discoveries=[SimpleNamespace(references=())],
+        snapshot=SimpleNamespace(errors=list),
+        driver=object(),
+        operation_trace=[],
+        peer=SimpleNamespace(poll=lambda: True, state={"offset": 0, "end_seen": False}),
+        passed=False,
+    )
+    monkeypatch.setattr(
+        "tests.capture.native_scrollbar.native_action_errors",
+        lambda *_: ["incomplete click"] if fault == "input" else [],
+    )
+    if fault == "message":
+        case.errors = ["Unexpected helper crash"]
+    elif fault == "output":
+        case.app.controller.workspace.documents.append(object())
+    elif fault == "discovery":
+        case.discoveries = []
+    elif fault == "reference":
+        case.discoveries[0].references = (object(),)
+    elif fault == "popup":
+        case.snapshot.errors = lambda: ["hidden"]
+    elif fault == "step":
+        case.operation_trace.append({"operation": "uia.step"})
+    elif fault == "saturated":
+        case.operation_trace = [{"operation": "uia.inspect"}] * 128
+    elif fault in {"offset", "end"}:
+        case.peer.state["offset" if fault == "offset" else "end_seen"] = 1
+    if fault is None:
+        ScrollbarCase.verify_unsupported(cast(ScrollbarCase, case))
+        assert case.passed
+    else:
+        with pytest.raises(AssertionError):
+            ScrollbarCase.verify_unsupported(cast(ScrollbarCase, case))
+        assert not case.passed
+
+
 class FunctionPort:
     """Fake ctypes callable supporting signature attributes, no OS invocation."""
 

@@ -618,6 +618,9 @@ class ScrollbarCase:
             lambda: bool(self.app.controller.workspace.documents) or bool(self.errors),
             timeout=30000,
         )
+        if self.provider == "winforms":
+            self.verify_unsupported()
+            return
         assert not self.errors
         self.qtbot.waitUntil(self.retired, timeout=5000)
         records = self.app.controller.workspace.documents
@@ -644,6 +647,27 @@ class ScrollbarCase:
         assert self.peer.poll()
         assert self.peer.state["end_seen"] is True
         assert self.peer.state["offset"] == 0
+        self.passed = True
+
+    def verify_unsupported(self) -> None:
+        """This exact ListBox fixture must refuse safely, not claim capture support."""
+        assert self.errors == ["No supported scroll area was found at this point."]
+        self.qtbot.waitUntil(self.retired, timeout=5000)
+        assert not self.app.controller.workspace.documents, "Refusal delivered output"
+        assert self.discoveries, "Refusal must follow actual provider discovery"
+        assert all(not item.references for item in self.discoveries)
+        assert self.snapshot is not None
+        assert not self.snapshot.errors(), "Refusal dismissed or changed the popup"
+        assert not native_action_errors(self.driver, "scrollbar-click")
+        assert len(self.operation_trace) < 128, "Refusal trace is incomplete"
+        assert not any(
+            item["operation"]
+            in {"uia.step", "uia.restore", "uia.sample", "strips.append"}
+            for item in self.operation_trace
+        ), "Unsupported provider must not mutate, capture or spool"
+        assert self.peer.poll()
+        assert self.peer.state["offset"] == 0
+        assert self.peer.state["end_seen"] is False
         self.passed = True
 
     def close(self) -> None:
@@ -718,6 +742,11 @@ class ScrollbarCase:
                         else None
                     ),
                     "provider_profile": self.provider_profile,
+                    "expected_result": (
+                        "safe refusal of this unsupported WinForms ListBox fixture"
+                        if self.provider_profile.get("provider") == "winforms"
+                        else "complete pixel-exact capture"
+                    ),
                     "provider_preflight": getattr(self, "provider_preflight", {}),
                     "scrollbar_discoveries": [
                         discovery_metadata(item) for item in self.discoveries[:4]
