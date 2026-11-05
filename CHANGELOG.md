@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.13.0](https://github.com/mikejhill/verdiclip/compare/v0.12.1...v0.13.0) (2026-11-05)
+
+
+### Features
+
+* add tabbed editor and guarded capture integration ([#62](https://github.com/mikejhill/verdiclip/issues/62)) ([5e858de](https://github.com/mikejhill/verdiclip/commit/5e858de17c8908b1d2828dbb169931587ed5d9fb))
+
+
+### Bug Fixes
+
+* prepare GUI resources before capture admission ([#78](https://github.com/mikejhill/verdiclip/issues/78)) ([5942159](https://github.com/mikejhill/verdiclip/commit/594215905b6f1010bcccfa8179a3921f699a0551))
+* preserve staged mutation test inputs ([#76](https://github.com/mikejhill/verdiclip/issues/76)) ([5fe14b2](https://github.com/mikejhill/verdiclip/commit/5fe14b25b651c02caea31786e44e9508595e4e19))
+* retain IPC clients through deferred deletion ([#72](https://github.com/mikejhill/verdiclip/issues/72)) ([f3066d3](https://github.com/mikejhill/verdiclip/commit/f3066d3cf458a4d8f72a4b679a22c72cc922d191))
+
+
+### Documentation
+
+* use theme-aware transparent README wordmark ([#66](https://github.com/mikejhill/verdiclip/issues/66)) ([4d1dc51](https://github.com/mikejhill/verdiclip/commit/4d1dc512f393f5fc5cc2d3db5b1a03b8386efc41))
+
 ## [0.12.1](https://github.com/mikejhill/verdiclip/compare/v0.12.0...v0.12.1) (2026-10-25)
 
 
