@@ -85,7 +85,7 @@ def test_actual_xperf_columns_use_ready_target_not_emitter() -> None:
             "EndHeader",
             "CSwitch, 100, SECRET, 7, OTHER, 8, Waiting, Executive",
             "ReadyThread, 105, SECRET, 7, OTHER, 8, 0",
-            "ReadyThread, 110, SECRET, 8, OTHER, 7, 0",
+            "ReadyThread, 110, SECRET, 8, OTHER, 7, SymbolicPriorityBoost",
         ],
         7,
     )

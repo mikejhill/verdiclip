@@ -22,8 +22,6 @@ FIELDS = frozenset(
         "oldthreadwaitreason",
         "tthreadid",
         "threadid",
-        "adjustreason",
-        "adjustincrement",
     }
 )
 
