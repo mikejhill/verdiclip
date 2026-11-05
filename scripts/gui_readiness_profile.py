@@ -199,6 +199,7 @@ def hosted_patches() -> tuple[Patch, ...]:
     from PySide6.QtWidgets import QFontComboBox, QSpinBox  # noqa: PLC0415
     from tests.ux.test_app_journeys import App, FakeDesktop  # noqa: PLC0415
 
+    from verdiclip.editor.canvas import CanvasView  # noqa: PLC0415
     from verdiclip.editor.page import DocumentPage  # noqa: PLC0415
     from verdiclip.editor.style_bar import StyleBar  # noqa: PLC0415
     from verdiclip.editor.window import EditorWindow  # noqa: PLC0415
@@ -213,6 +214,8 @@ def hosted_patches() -> tuple[Patch, ...]:
         Patch(Workspace, "open_document", "workspace_open_document"),
         Patch(Workspace, "_present_host", "workspace_present_host"),
         Patch(EditorWindow, "__init__", "editor_init"),
+        Patch(EditorWindow, "_apply_chrome", "editor_apply_chrome"),
+        Patch(CanvasView, "_update_scrollbars", "canvas_update_scrollbars"),
         Patch(StyleBar, "__init__", "style_bar_init"),
         Patch(QSpinBox, "__init__", "spin_box_init"),
         Patch(QFontComboBox, "__init__", "font_combo_init"),
