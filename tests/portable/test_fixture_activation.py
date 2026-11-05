@@ -17,13 +17,14 @@ def test_fixture_activation_decision(case: str) -> None:
         Path(__file__).resolve().parents[1] / "capture/provider_fixture.ps1"
     ).read_text()
     function = source.split("function Confirm-FixtureActivation", 1)[1].split(
-        "function Write-FixtureState", 1
+        "\nfunction ", 1
     )[0]
     script = (
         "function Confirm-FixtureActivation"
         + function
         + r"""
 $ErrorActionPreference = 'Stop'
+[Console]::Error.WriteLine('ACTIVATION_PHASE=script-started')
 $owner = [pscustomobject]@{ IsActive = ($case -eq 'active'); Calls = 0; Case = $case }
 $owner | Add-Member ScriptMethod Activate {
     $this.Calls++
@@ -32,7 +33,9 @@ $owner | Add-Member ScriptMethod Activate {
     return $false
 }
 $failed = $false
+[Console]::Error.WriteLine('ACTIVATION_PHASE=before-decision')
 try { Confirm-FixtureActivation $owner } catch { $failed = $true }
+[Console]::Error.WriteLine('ACTIVATION_PHASE=after-decision')
 if ($case -eq 'active') {
     if ($owner.Calls -ne 0 -or $failed) { throw 'Redundant activation' }
 } elseif ($case -eq 'inactive') {
@@ -43,20 +46,24 @@ if ($case -eq 'active') {
 """
     )
     # case is a closed parametrization, never external PowerShell text.
-    result = subprocess.run(  # noqa: S603 - reviewed repository function, closed fake cases
-        [
-            executable,
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            f"$case = '{case}'\n" + script,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=10,
-        check=False,
-    )
+    command = [
+        executable,
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        f"$case = '{case}'\n" + script,
+    ]
+    try:
+        result = subprocess.run(  # noqa: S603 - repository function, closed fake cases
+            command, capture_output=True, text=True, timeout=10, check=False
+        )
+    except subprocess.TimeoutExpired as error:
+        pytest.fail(
+            f"Pure activation case {case} exceeded unchanged 10s deadline; "
+            f"last phase evidence: {error.stderr!r}",
+            pytrace=False,
+        )
     assert result.returncode == 0, result.stderr
 
 
