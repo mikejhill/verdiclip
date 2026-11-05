@@ -71,6 +71,8 @@ try {
         continue
     }
     if ($request.action -in @('step', 'restore')) { throw 'native_process_required' }
+    if ($request.action -eq 'inspect') { [Console]::Error.WriteLine('VERDICLIP_UIA_PHASE=inspect_desktop') }
+    # Fixed begin-phase markers only; no provider values, extra calls or waits.
     $dpiContext = [CaptureDesktop]::SetThreadDpiAwarenessContext([IntPtr]::new(-4))
     if ($dpiContext -eq [IntPtr]::Zero) { throw 'physical_pixel_context_unavailable' }
     if (-not [CaptureDesktop]::Interactive()) { throw 'interactive_desktop_unavailable' }
@@ -79,14 +81,18 @@ try {
     if ($handle -eq [IntPtr]::Zero -or -not [CaptureDesktop]::IsWindowVisible($handle) -or [CaptureDesktop]::IsIconic($handle)) {
         throw 'target_unavailable'
     }
+    if ($request.action -eq 'inspect') { [Console]::Error.WriteLine('VERDICLIP_UIA_PHASE=inspect_root') }
     $root = [System.Windows.Automation.AutomationElement]::FromHandle($handle)
+    if ($request.action -eq 'inspect') { [Console]::Error.WriteLine('VERDICLIP_UIA_PHASE=inspect_process') }
     $process = Get-Process -Id $root.Current.ProcessId
     $started = $process.StartTime.ToUniversalTime().Ticks
     $windowId = '{0}:{1}:{2}' -f $handle.ToInt64(), $process.Id, $started
+    if ($request.action -eq 'inspect') { [Console]::Error.WriteLine('VERDICLIP_UIA_PHASE=inspect_root_runtime') }
     $rootRuntime = ($root.GetRuntimeId() -join '.')
     $walker = [System.Windows.Automation.TreeWalker]::RawViewWalker
 
     function Get-Bounds($element) {
+        if ($request.action -eq 'inspect') { [Console]::Error.WriteLine('VERDICLIP_UIA_PHASE=inspect_bounds') }
         $bounds = $element.Current.BoundingRectangle
         if ($bounds.IsEmpty -or [double]::IsInfinity($bounds.Width) -or [double]::IsNaN($bounds.Width)) { throw 'invalid_geometry' }
         # Insets exclude fractional pixels outside a provider's physical bounds.
@@ -96,7 +102,9 @@ try {
     }
     function Get-Scroll($element) {
         $pattern = $null
+        if ($request.action -eq 'inspect') { [Console]::Error.WriteLine('VERDICLIP_UIA_PHASE=inspect_pattern') }
         if ($element.TryGetCurrentPattern([System.Windows.Automation.ScrollPattern]::Pattern, [ref]$pattern)) {
+            if ($request.action -eq 'inspect') { [Console]::Error.WriteLine('VERDICLIP_UIA_PHASE=inspect_scrollable') }
             if ($pattern.Current.VerticallyScrollable) { return $pattern }
         }
         return $null
@@ -111,12 +119,15 @@ try {
         }
     }
     function Find-Ancestors($point) {
+        if ($request.action -eq 'inspect') { [Console]::Error.WriteLine('VERDICLIP_UIA_PHASE=inspect_hit') }
         $element = [System.Windows.Automation.AutomationElement]::FromPoint($point)
         $chain = [System.Collections.Generic.List[object]]::new()
         for ($depth = 0; $depth -lt 32 -and $null -ne $element; $depth++) {
+            if ($request.action -eq 'inspect') { [Console]::Error.WriteLine('VERDICLIP_UIA_PHASE=inspect_ancestor_identity') }
             if ($element.Current.ProcessId -ne $process.Id) { throw 'cross_process_target' }
             $chain.Add($element)
             if (($element.GetRuntimeId() -join '.') -eq $rootRuntime) { return ,$chain }
+            if ($request.action -eq 'inspect') { [Console]::Error.WriteLine('VERDICLIP_UIA_PHASE=inspect_parent') }
             $element = $walker.GetParent($element)
         }
         throw 'ancestry_unverified'
@@ -127,17 +138,21 @@ try {
         $nodes = @()
         for ($index = 0; $index -lt $chain.Count; $index++) {
             $element = $chain[$index]
+            if ($request.action -eq 'inspect') { [Console]::Error.WriteLine('VERDICLIP_UIA_PHASE=inspect_node_identity') }
             $runtime = ($element.GetRuntimeId() -join '.')
             $identity = $windowId + '/' + $runtime
             $parent = if ($index + 1 -lt $chain.Count) { $windowId + '/' + ($chain[$index + 1].GetRuntimeId() -join '.') } else { $null }
             $pattern = Get-Scroll $element
+            if ($request.action -eq 'inspect') { [Console]::Error.WriteLine('VERDICLIP_UIA_PHASE=inspect_control') }
             $kind = 'other'
             if ($runtime -eq $rootRuntime) { $kind = 'window' }
             elseif ($null -ne $pattern) { $kind = 'content' }
             elseif ($element.Current.ControlType -eq [System.Windows.Automation.ControlType]::ScrollBar -and $element.Current.Orientation -eq [System.Windows.Automation.OrientationType]::Vertical) { $kind = 'vertical_scrollbar' }
+            if ($request.action -eq 'inspect') { [Console]::Error.WriteLine('VERDICLIP_UIA_PHASE=inspect_reference') }
             $reference = if ($null -ne $pattern) { Get-Reference $element $pattern } else { $null }
             $nodes += @{ identity=$identity; window_identity=$windowId; kind=$kind; bounds=(Get-Bounds $element); parent_identity=$parent; vertically_scrollable=($null -ne $pattern); reference=$reference }
         }
+        if ($request.action -eq 'inspect') { [Console]::Error.WriteLine('VERDICLIP_UIA_PHASE=inspect_complete') }
         $result = @{ nodes=$nodes; hit_identity=$nodes[0].identity; window_identity=$windowId }
     } else {
         $reference = $payload.reference

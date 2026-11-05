@@ -99,11 +99,12 @@ def test_hidden_cursor_never_changes_unknown_magnification_state(
     fixture.run()
     assert fixture.calls == []
     assert fixture.result["visibility_verdict"] == "inconclusive-hidden-baseline"
+    assert fixture.result["presentation_verified"] is False
     assert fixture.result["cleanup_confirmed"] is True
 
 
 @pytest.mark.parametrize("effective", [False, True])
-def test_visible_baseline_proves_transition_separately_from_cleanup(
+def test_visible_baseline_records_logical_transition_separately_from_cleanup(
     monkeypatch: pytest.MonkeyPatch, *, effective: bool
 ) -> None:
     """Exercise the observed outcome without a native DLL or input side effect."""
@@ -118,8 +119,11 @@ def test_visible_baseline_proves_transition_separately_from_cleanup(
         ("uninitialize", 0),
     ]
     assert fixture.result["visibility_verdict"] == (
-        "visible-hidden-restored" if effective else "ineffective"
+        "logical-visible-hidden-restored"
+        if effective
+        else "logical-visibility-unchanged"
     )
+    assert fixture.result["presentation_verified"] is False
     assert fixture.result["cleanup_confirmed"] is True
     assert fixture.result["during_preserved"] is True
     assert fixture.result["after_preserved"] is True
@@ -236,11 +240,12 @@ def test_owned_popup_baseline_balances_its_shape_and_count(
         expected = (
             "inconclusive-no-owned-mouse-capture"
             if not owned
-            else "visible-hidden-restored"
+            else "logical-visible-hidden-restored"
             if becomes_visible
             else "inconclusive-hidden-baseline"
         )
         assert result["visibility_verdict"] == expected
+        assert result["presentation_verified"] is False
     assert count == initial_count
     assert cursor == 456
     assert calls == (

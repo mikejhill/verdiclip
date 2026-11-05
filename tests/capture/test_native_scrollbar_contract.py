@@ -171,11 +171,12 @@ def test_worker_cursor_probe_balances_visibility_even_when_observation_fails(
         expected = (
             "inconclusive-hidden-baseline"
             if not initially_visible
-            else "visible-hidden-restored"
+            else "logical-visible-hidden-restored"
             if hides
-            else "ineffective"
+            else "logical-visibility-unchanged"
         )
         assert receipt["visibility_verdict"] == expected
+    assert receipt["presentation_verified"] is False
     assert calls == [0, 1]
     assert count == 0
     assert len(workers) == 1

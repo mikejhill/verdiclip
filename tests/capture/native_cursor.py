@@ -55,7 +55,11 @@ def probe_magnification_cursor(
         or os.environ.get("VERDICLIP_HOSTED_SCROLLBAR") != "1"
     ):
         raise RuntimeError("Cursor probe requires the disposable hosted fixture")
-    result.update(cleanup_confirmed=False, visibility_verdict="incomplete")
+    result.update(
+        cleanup_confirmed=False,
+        visibility_verdict="incomplete",
+        presentation_verified=False,
+    )
     api = ctypes.WinDLL("user32", use_last_error=True)
     api.GetCursorInfo.argtypes = [ctypes.POINTER(CursorInfo)]
     api.GetCursorInfo.restype = w.BOOL
@@ -125,7 +129,9 @@ def probe_magnification_cursor(
     assert result["during_preserved"], "Cursor probe changed the fixture or cursor"
     assert result["hide_succeeded"], "Cursor suppression API refused the experiment"
     result["visibility_verdict"] = (
-        "visible-hidden-restored" if not during.flags & 1 else "ineffective"
+        "logical-visible-hidden-restored"
+        if not during.flags & 1
+        else "logical-visibility-unchanged"
     )
 
 
@@ -143,7 +149,11 @@ def probe_owned_cursor_baseline(
         or os.environ.get("VERDICLIP_HOSTED_SCROLLBAR") != "1"
     ):
         raise RuntimeError("Cursor probe requires the disposable hosted fixture")
-    result.update(cleanup_confirmed=False, visibility_verdict="incomplete")
+    result.update(
+        cleanup_confirmed=False,
+        visibility_verdict="incomplete",
+        presentation_verified=False,
+    )
     api = ctypes.WinDLL("user32", use_last_error=True)
     api.GetCursorInfo.argtypes = [ctypes.POINTER(CursorInfo)]
     api.GetCursorInfo.restype = w.BOOL

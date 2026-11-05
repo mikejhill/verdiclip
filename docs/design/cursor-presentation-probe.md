@@ -12,8 +12,9 @@ Microsoft documents [cursor shape and visibility](https://learn.microsoft.com/en
 as input-thread state. The passive input-transparent selection surface leaves
 mouse ownership in the underlying application. A balanced `ShowCursor` call on
 an unrelated broker thread does not establish that its visible cursor was hidden.
-The worker receipt now separates cleanup from visible-hidden-restored, ineffective,
-and inconclusive-hidden-baseline outcomes.
+The worker receipt separates cleanup from `logical-visible-hidden-restored`,
+`logical-visibility-unchanged`, and `inconclusive-hidden-baseline` outcomes.
+Both probes explicitly report `presentation_verified: false`.
 
 ## Single hosted mouse preparation
 
@@ -55,7 +56,8 @@ its visibility count exactly once. Both changes are restored in `finally`, with
 an exact count check and a global state comparison. Within this balanced baseline
 experiment no input is injected, cursor position changed, capture acquired, input
 queue attached, or persistent preference changed. Without owned capture, or if
-one increment is insufficient, the result is inconclusive, not a pass. No unbounded show/hide loop is permitted.
+one increment is insufficient, the result is inconclusive, not a pass. No
+unbounded show/hide loop is permitted.
 
 Only an observed visible baseline may enter the Magnification experiment. It
 initializes the API, attempts one hide, observes the result, and restores visibility
@@ -70,11 +72,18 @@ cleanup prevents the fixture from reporting safe retirement.
 
 Portable fault-injection tests validate call ordering, bounded counts, refusal,
 failure cleanup, receipt classification and preservation assertions. They are not
-native cursor qualification. A hosted run must report an observed visible-hidden-
-restored transition and all preservation/cleanup checks before this candidate has
-any positive native evidence. If native capture ownership is unavailable, a new
-owned fixture arrangement is needed; forcing unrelated cursor state is not a
-fallback.
+native cursor qualification. These probes measure logical `GetCursorInfo` flags,
+API return values and preservation, not rendered cursor presentation. Neither a
+successful API return nor changed flags proves that a rendered cursor disappeared.
+Conversely, unchanged flags do not prove the Magnification presentation operation
+was ineffective: no documented contract here establishes that its compositor
+presentation must change `GetCursorInfo` flags.
+
+Production qualification requires an independent presentation oracle showing the
+rendered cursor before hiding, absent during capture, and restored afterward,
+alongside all preservation and cleanup checks. These tests do not supply that
+oracle. If native capture ownership is unavailable, a new owned fixture arrangement
+is needed; forcing unrelated cursor state is not a fallback.
 
 Even a positive result does not justify production integration: interaction with
 accessibility software, concurrent global visibility changes, process failure,

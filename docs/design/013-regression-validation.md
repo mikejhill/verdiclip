@@ -50,6 +50,40 @@ A direct QLocalServer listener probe failed in the same environment. That run is
 not a passing aggregate; the successful hosted profiles above supply the primary
 cross-platform evidence.
 
+## Follow-up checkpoint with a visible logical baseline
+
+At source `066fb5e78afc12689f6eb98a615ca127d3b7f0fb`, the single guarded hosted
+preparation MOVE changed logical cursor flags from 2 to 1 while preserving the
+owned popup. All four WPF profiles completed scrolling and repeated captures.
+The Magnification hide call returned success, but the global cursor metadata
+remained logically showing. There is no documented equivalence between that flag
+and Magnification's final rendered result; presentation remains unverified.
+Later receipt labels explicitly distinguish logical state from rendered proof.
+
+[CI](https://github.com/mikejhill/verdiclip/actions/runs/42048061021) was **red**:
+the WinForms profile's first provider-center inspect exhausted the unchanged
+3-second operation budget. Startup had completed and the request was sent at
+652 ms; operation timeout was recorded at 3,652 ms and owned-child termination
+at 3,662 ms. Popup preservation and cleanup were confirmed. No cursor experiment
+or broker interception began in that failed case. Do not substitute the previous
+WinForms pass or a later retry for this failed outcome.
+
+Windows Python 3.13 and 3.14 each passed 2,801 portable tests at 95.59% coverage;
+Linux passed 2,738 tests. Both capture-contract and simulated-tab profiles,
+builds, lint, types, CodeQL and uninstrumented readiness/repeatability passed.
+CodeQL again reported no new alerts in changed code. These successes do not
+make the aggregate CI result green.
+
+The [instrumented cold-path diagnosis](https://github.com/mikejhill/verdiclip/actions/runs/42048061037)
+was also **red**: scheduler analysis correctly refused incomplete state attribution.
+The new phase names were accepted. First Qt 6.12 dispatch measured 278.0028 ms,
+including 0.0193 ms unclassified scheduler time; editor show measured 220.1705 ms
+and included 196.9847 ms classified waiting, with 0.0039 ms unknown. The later
+instrumented editor-show spans were approximately 16.65–17.72 ms. This localizes
+one slow interval, not its cause. Preserve unknown intervals and strict analysis
+refusal rather than renaming labels, discarding outcomes or treating waiting as
+proof of a specific OS operation.
+
 ## Retained failures and open release gates
 
 ### Visible cursor
@@ -61,9 +95,12 @@ visibility-count adjustment did not clear that state. Cleanup was confirmed, but
 both experiments were **inconclusive**, not successful cursor suppression.
 
 The [cursor experiment](cursor-presentation-probe.md) has no production integration.
-A meaningful observed visible-hidden-restored transition and a safe production
-restoration design remain required. An experimental API's successful return alone
-is insufficient.
+Independent proof of rendered cursor presentation before hiding, absence during
+capture, and restoration afterward, plus a safe production restoration design,
+remain required. Experimental API returns and logical `GetCursorInfo` flags alone
+do not provide that proof. Unchanged logical flags do not establish that the
+Magnification presentation operation was ineffective; current probes explicitly
+report `presentation_verified: false`.
 
 ### WPF startup stall
 

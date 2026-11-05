@@ -112,6 +112,7 @@ def probe_worker_cursor_visibility(
         raise RuntimeError("Cursor probe requires the disposable hosted fixture")
     result["cleanup_confirmed"] = False
     result["visibility_verdict"] = "incomplete"
+    result["presentation_verified"] = False
 
     class CursorInfo(ctypes.Structure):
         _fields_ = (
@@ -167,9 +168,9 @@ def probe_worker_cursor_visibility(
     result["visibility_verdict"] = (
         "inconclusive-hidden-baseline"
         if not result["before"]
-        else "visible-hidden-restored"
+        else "logical-visible-hidden-restored"
         if not result["during"]
-        else "ineffective"
+        else "logical-visibility-unchanged"
     )
 
 

@@ -7,7 +7,12 @@ from types import SimpleNamespace
 from typing import TextIO
 
 import pytest
-from scripts.scheduler_phase_summary import aggregate, main, verify_independent_decoder
+from scripts.scheduler_phase_summary import (
+    aggregate,
+    main,
+    scheduler_segments,
+    verify_independent_decoder,
+)
 
 
 def evidence() -> tuple[list[list[str]], dict[str, object]]:
@@ -31,15 +36,23 @@ def evidence() -> tuple[list[list[str]], dict[str, object]]:
     return rows, phases
 
 
-def test_exact_phase_clipping_distinguishes_waiting_from_ready_and_scheduled() -> None:
+@pytest.mark.parametrize(
+    "phase_name", ["editor_show", "hotkey_message_handler", "capture_pending_callback"]
+)
+def test_exact_phase_clipping_distinguishes_waiting_from_ready_and_scheduled(
+    phase_name: str,
+) -> None:
     """Whole-process delays outside the measured phase cannot pollute its totals."""
-    report = aggregate(*evidence())
+    rows, phases = evidence()
+    phases["intervals"] = [[phase_name, 1, 10_000_000, 90_000_000]]
+    report = aggregate(rows, phases)
+    assert report["analysis_complete"] is True
     assert report["alignment_endpoint_rounding_bound_ns"] == 1_000_001
     assert report["event_loss_checked"] is True
     assert report["thread_lifetime_checked"] is True
     assert report["phases"] == [
         {
-            "phase": "editor_show",
+            "phase": phase_name,
             "capture_ordinal": 1,
             "wall_ms": 80.0,
             "scheduled_ms": 20.0,
@@ -49,6 +62,24 @@ def test_exact_phase_clipping_distinguishes_waiting_from_ready_and_scheduled() -
             "state_complete": True,
         }
     ]
+    assert report["causal_claim"] is False
+
+
+@pytest.mark.parametrize(
+    "phase_name", ["hotkey_message_handler", "capture_pending_callback"]
+)
+def test_new_phase_labels_do_not_hide_unknown_scheduler_time(phase_name: str) -> None:
+    """Valid phase labels cannot make incomplete scheduling evidence complete."""
+    rows, phases = evidence()
+    phases["intervals"] = [[phase_name, 1, 10_000_000, 90_000_000]]
+    rows[2][4] = "99"
+    report = aggregate(rows, phases)
+    assert report["analysis_complete"] is False
+    entries = report["phases"]
+    assert isinstance(entries, list)
+    assert entries[0]["phase"] == phase_name
+    assert entries[0]["unknown_ms"] == 40
+    assert entries[0]["state_complete"] is False
     assert report["causal_claim"] is False
 
 
@@ -200,3 +231,95 @@ def test_post_exit_switch_is_excluded_from_proven_identity_interval() -> None:
     assert report["outside_lifetime_events_excluded"] == 1
     assert report["phases"] == baseline["phases"]
     assert report["thread_lifetime_checked"] is True
+
+
+@pytest.mark.parametrize(
+    ("cause", "duration"),
+    [
+        ("initial_lifetime", 20.0),
+        ("same_timestamp_group", 40.0),
+        ("ready_while_scheduled", 40.0),
+        ("unsupported_old_state", 40.0),
+    ],
+)
+def test_unknown_reason_counts_preserve_incomplete_phase_result(
+    cause: str, duration: float
+) -> None:
+    """Each fixed reason retains unknown time and cannot qualify an incomplete phase."""
+    rows, phases = evidence()
+    if cause == "initial_lifetime":
+        rows.pop(1)
+    elif cause == "same_timestamp_group":
+        rows.insert(3, ["S", "20", "20", "30", "1"])
+    elif cause == "ready_while_scheduled":
+        rows[2] = ["R", "20", "20"]
+    else:
+        rows[2][4] = "99"
+    report = aggregate(rows, phases)
+    assert report["analysis_complete"] is False
+    reasons = report["thread_lifetime_unknown_state_reasons"]
+    assert isinstance(reasons, list)
+    assert len(reasons) == 4
+    reason = next(row for row in reasons if row["reason"] == cause)
+    assert reason["entry_count"] == 1
+    assert reason["unknown_ms"] == duration
+    segments, _ = scheduler_segments(rows, 20, 0, 100)
+    unknown_ticks = sum(
+        right - left for left, right, state in segments if state == "unknown"
+    )
+    assert sum(row["unknown_ms"] for row in reasons) == unknown_ticks
+    assert all(set(row) == {"reason", "entry_count", "unknown_ms"} for row in reasons)
+    assert report["causal_claim"] is False
+
+
+def test_unknown_reason_duration_is_lifetime_not_overlapping_phase_sum() -> None:
+    """Repeated/overlapping phases never multiply unknown-duration diagnostics."""
+    rows, phases = evidence()
+    phases["intervals"] = [
+        ["editor_show", 1, 10_000_000, 90_000_000],
+        ["hotkey_dispatch", 1, 10_000_000, 90_000_000],
+    ]
+    report = aggregate(rows, phases)
+    assert report["analysis_complete"] is True
+    assert report["thread_lifetime_unknown_state_reasons"] == [
+        {"reason": "initial_lifetime", "entry_count": 1, "unknown_ms": 1.0},
+        {"reason": "same_timestamp_group", "entry_count": 0, "unknown_ms": 0.0},
+        {"reason": "ready_while_scheduled", "entry_count": 0, "unknown_ms": 0.0},
+        {"reason": "unsupported_old_state", "entry_count": 0, "unknown_ms": 0.0},
+    ]
+
+
+def test_zero_duration_unknown_entry_does_not_fabricate_time() -> None:
+    """An immediate birth-time switch resolves the initial unknown at zero cost."""
+    rows, phases = evidence()
+    rows[1][1] = "0"
+    report = aggregate(rows, phases)
+    assert report["analysis_complete"] is True
+    reasons = report["thread_lifetime_unknown_state_reasons"]
+    assert isinstance(reasons, list)
+    assert reasons[0] == {
+        "reason": "initial_lifetime",
+        "entry_count": 1,
+        "unknown_ms": 0.0,
+    }
+    assert sum(row["unknown_ms"] for row in reasons) == 0
+    assert report["phases"] == aggregate(*evidence())["phases"]
+
+
+def test_unknown_renewal_conserves_duration_and_excludes_outside_lifetime() -> None:
+    """Repeated unsupported states count entries without overlapping their intervals."""
+    rows, phases = evidence()
+    rows[2][4] = "99"
+    rows.insert(3, ["S", "30", "30", "20", "99"])
+    rows.insert(-1, ["S", "101", "30", "20", "99"])
+    report = aggregate(rows, phases)
+    reasons = report["thread_lifetime_unknown_state_reasons"]
+    assert isinstance(reasons, list)
+    assert reasons[3] == {
+        "reason": "unsupported_old_state",
+        "entry_count": 2,
+        "unknown_ms": 40.0,
+    }
+    assert sum(row["unknown_ms"] for row in reasons) == 41.0
+    assert report["outside_lifetime_events_excluded"] == 1
+    assert report["analysis_complete"] is False

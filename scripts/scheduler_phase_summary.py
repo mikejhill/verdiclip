@@ -24,6 +24,12 @@ SWITCH_FIELDS = 5
 PHASE_FIELDS = 4
 MAX_DECODER_DIAGNOSTICS = 2
 DECODER_DIAGNOSTIC_FIELDS = 6
+UNKNOWN_REASONS = (
+    "initial_lifetime",
+    "same_timestamp_group",
+    "ready_while_scheduled",
+    "unsupported_old_state",
+)
 
 
 def aggregate(rows: list[list[str]], phases: dict[str, object]) -> dict[str, object]:
@@ -64,7 +70,7 @@ def aggregate(rows: list[list[str]], phases: dict[str, object]) -> dict[str, obj
         or starts[0] >= ends[0]
     ):
         raise ValueError("thread lifetime or reuse")
-    segments = scheduler_segments(rows, tid, starts[0], ends[0])
+    segments, unknown_reasons = scheduler_segments(rows, tid, starts[0], ends[0])
     intervals = phases["intervals"]
     if not isinstance(intervals, list) or not 1 <= len(intervals) <= MAX_PHASES:
         raise ValueError("phase budget")
@@ -87,6 +93,14 @@ def aggregate(rows: list[list[str]], phases: dict[str, object]) -> dict[str, obj
         "alignment_endpoint_rounding_bound_ns": (1_000_000_000 + frequency - 1)
         // frequency
         + 1,
+        "thread_lifetime_unknown_state_reasons": [
+            {
+                "reason": reason,
+                "entry_count": counts[0],
+                "unknown_ms": counts[1] * 1000 / frequency,
+            }
+            for reason, counts in unknown_reasons.items()
+        ],
         "analysis_complete": all(entry["state_complete"] for entry in output),
         "phase_count": len(output),
         "phases": output,
@@ -116,10 +130,27 @@ def next_state(row: list[str], tid: int, state: str) -> str:
     return state
 
 
+def unknown_state_reason(transitions: list[list[str]]) -> str:
+    """Label an already-unknown result without interpreting or changing its state."""
+    if len(transitions) != 1:
+        return "same_timestamp_group"
+    if transitions[0][0] == "R":
+        return "ready_while_scheduled"
+    return "unsupported_old_state"
+
+
 def scheduler_segments(
     rows: list[list[str]], tid: int, start: int, end: int
-) -> list[tuple[int, int, str]]:
-    """Convert complete switch/ready events into non-overlapping state intervals."""
+) -> tuple[list[tuple[int, int, str]], dict[str, list[int]]]:
+    """Keep state intervals unchanged; count fixed causes across the owned lifetime.
+
+    Counts include each entry/renewal, even one lasting zero ticks. Durations
+    cover disjoint lifetime segments, never the overlapping measured phases.
+    A tied group has precedence over its individual rows' possible reasons.
+    """
+    reasons = {reason: [0, 0] for reason in UNKNOWN_REASONS}
+    reason = "initial_lifetime"
+    reasons[reason][0] = 1
     last, state = start, "unknown"
     previous_stamp: int | None = None
     segments: list[tuple[int, int, str]] = []
@@ -135,14 +166,21 @@ def scheduler_segments(
             raise ValueError("event time inversion")
         if stamp > last:
             segments.append((last, stamp, state))
+            if state == "unknown":
+                reasons[reason][1] += stamp - last
         # ETW does not establish cross-CPU ordering for tied timestamps.
         # Validate every row, but do not guess the resulting state for a tie.
         decoded = [next_state(row, tid, state) for row in transitions]
         state = decoded[0] if len(decoded) == 1 else "unknown"
+        if state == "unknown":
+            reason = unknown_state_reason(transitions)
+            reasons[reason][0] += 1
         last = stamp
     if last < end:
         segments.append((last, end, state))
-    return segments
+        if state == "unknown":
+            reasons[reason][1] += end - last
+    return segments, reasons
 
 
 def phase_totals(
