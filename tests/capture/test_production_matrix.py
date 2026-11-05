@@ -639,7 +639,9 @@ def test_operation_observation_preserves_values_and_exception_identity() -> None
         "entered",
         "raised",
     ]
-    assert all(set(event) == {"operation", "phase", "time"} for event in events)
+    assert all(
+        set(event) == {"operation", "phase", "time", "thread_cpu"} for event in events
+    )
 
 
 def test_operation_observation_budget_does_not_skip_operations() -> None:
@@ -653,15 +655,17 @@ def test_operation_observation_budget_does_not_skip_operations() -> None:
     assert len(events) == 128
 
 
+@pytest.mark.parametrize("clock", ["monotonic", "thread_time"])
 def test_operation_clock_failure_preserves_product_execution(
     monkeypatch: pytest.MonkeyPatch,
+    clock: str,
 ) -> None:
     """Optional trace collection never replaces a product value or failure."""
 
     def broken_clock() -> float:
         raise OSError("diagnostic clock unavailable")
 
-    monkeypatch.setattr("tests.capture.native_scrollbar.time.monotonic", broken_clock)
+    monkeypatch.setattr(f"tests.capture.native_scrollbar.time.{clock}", broken_clock)
     events: list[dict[str, object]] = []
     token = object()
     assert observe_operation(events, "value", lambda: token)() is token

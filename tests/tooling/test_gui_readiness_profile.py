@@ -46,6 +46,31 @@ class PureProfilerTests(unittest.TestCase):
         clock = Clock()
         return Trace(wall=clock, process=clock, thread=clock)
 
+    def test_event_selection_preserves_original_delivery(self) -> None:
+        """Observe only named events, forwarding unrelated/invalid events once."""
+        trace = self.trace()
+        calls = []
+        token = object()
+
+        def original(owner: object, event: object) -> object:
+            calls.append((owner, event))
+            return token
+
+        wrapped = trace.wrap(
+            Patch(object, "event", "unused", event_types=((17, "show"),)), original
+        )
+        owner = object()
+        events = [
+            SimpleNamespace(type=lambda: 17),
+            SimpleNamespace(type=lambda: 99),
+            object(),
+        ]
+        for event in events:
+            self.assertIs(wrapped(owner, event), token)
+        self.assertEqual(calls, [(owner, event) for event in events])
+        self.assertEqual([r["phase"] for r in trace.records], ["show"])
+        self.assertEqual(trace.errors, ["event_type"])
+
     def number(self, record: dict[str, object], key: str) -> float:
         """Require a concrete numeric fake-clock field before comparison."""
         value = record[key]

@@ -38,8 +38,11 @@ from verdiclip.capture.grabber import FrozenScreen
 from verdiclip.capture.models import ScreenGeometry
 from verdiclip.capture.overlay import SelectionOverlay
 from verdiclip.capture.reviewed import CaptureCompleteness, CaptureKind
+from verdiclip.capture.scroll.acquisition import ScrollAcquisition
 from verdiclip.capture.scroll.binding import ScrollCaptureBinding
 from verdiclip.capture.scroll.native_backend import UiaFrameBackend
+from verdiclip.capture.scroll.pixels import FrameFiles
+from verdiclip.capture.scroll.storage import StripStore
 from verdiclip.capture.scroll.targets import SemanticTargets
 from verdiclip.capture.scroll.uia_messages import UiaAction, UiaRequest
 from verdiclip.capture.scroll.uia_protocol import UiaDiscovery
@@ -70,7 +73,14 @@ def record_operation(events: list[dict[str, object]], name: str, phase: str) -> 
     """A diagnostic clock/buffer failure must never change the product call."""
     try:
         if len(events) < 128:
-            events.append({"operation": name, "phase": phase, "time": time.monotonic()})
+            events.append(
+                {
+                    "operation": name,
+                    "phase": phase,
+                    "time": time.monotonic(),
+                    "thread_cpu": time.thread_time(),
+                }
+            )
     except (OSError, RuntimeError, MemoryError):
         # Optional trace loss must not prevent or replace the product operation.
         return
@@ -238,6 +248,18 @@ class ScrollbarCase:
 
         patch.setattr(self.process, "start", start)
         self.process.completed.connect(completed)
+        # Observe existing synchronous work only. No event pumping, warm-up,
+        # heartbeat changes or additional native calls are introduced.
+        for owner, method, label in (
+            (FrameFiles, "consume", "pixels.consume"),
+            (ScrollAcquisition, "complete_sample", "acquisition.complete_sample"),
+            (StripStore, "append", "strips.append"),
+        ):
+            patch.setattr(
+                owner,
+                method,
+                observe_operation(self.operation_trace, label, getattr(owner, method)),
+            )
         patch.setattr(
             ScrollProgressPanel,
             "show",
@@ -643,6 +665,7 @@ class ScrollbarCase:
                     "first_popup_loss": popup_loss,
                     "passive_retirement_probe": self.retirement_probe,
                     "operation_trace": self.operation_trace,
+                    "operation_trace_at_capacity": len(self.operation_trace) >= 128,
                     "fixture_readiness": self.fixture_readiness,
                     "provider_diagnostics": (
                         asdict(self.process.diagnostics)
