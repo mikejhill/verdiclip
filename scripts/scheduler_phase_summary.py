@@ -78,6 +78,11 @@ def aggregate(rows: list[list[str]], phases: dict[str, object]) -> dict[str, obj
         "buffers_lost": 0,
         "thread_lifetime_checked": True,
         "thread_reuse_rejected": True,
+        "outside_lifetime_events_excluded": sum(
+            1
+            for row in rows
+            if row and row[0] in {"S", "R"} and not starts[0] <= int(row[1]) <= ends[0]
+        ),
         "clock": "raw QPC aligned to Python perf_counter_ns",
         "alignment_endpoint_rounding_bound_ns": (1_000_000_000 + frequency - 1)
         // frequency
@@ -116,12 +121,18 @@ def scheduler_segments(
 ) -> list[tuple[int, int, str]]:
     """Convert complete switch/ready events into non-overlapping state intervals."""
     last, state = start, "unknown"
+    previous_stamp: int | None = None
     segments: list[tuple[int, int, str]] = []
     candidate = (row for row in rows if row and row[0] in {"S", "R"})
     for stamp, group in groupby(candidate, key=lambda row: int(row[1])):
         transitions = list(group)
-        if not start <= stamp <= end or stamp < last:
-            raise ValueError("event outside lifetime or time inversion")
+        if previous_stamp is not None and stamp < previous_stamp:
+            raise ValueError("event time inversion")
+        previous_stamp = stamp
+        if not start <= stamp <= end:
+            continue  # Outside the proven identity interval: never attribute it.
+        if stamp < last:
+            raise ValueError("event time inversion")
         if stamp > last:
             segments.append((last, stamp, state))
         # ETW does not establish cross-CPU ordering for tied timestamps.
@@ -272,7 +283,7 @@ if __name__ == "__main__":
             "trace loss or clock",
             "thread lifetime or reuse",
             "phase budget",
-            "event outside lifetime or time inversion",
+            "event time inversion",
             "ready identity",
             "switch schema",
             "switch identity",

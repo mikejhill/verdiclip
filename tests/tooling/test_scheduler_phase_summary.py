@@ -189,3 +189,14 @@ def test_native_fields_must_agree_with_independent_xperf(*, corrupt: bool) -> No
             verify_independent_decoder(raw, exported, 20)
     else:
         verify_independent_decoder(raw, exported, 20)
+
+
+def test_post_exit_switch_is_excluded_from_proven_identity_interval() -> None:
+    """An observed teardown transition after ThreadEnd cannot extend phase ownership."""
+    rows, phases = evidence()
+    rows.insert(-1, ["S", "101", "30", "20", "4"])
+    report = aggregate(rows, phases)
+    baseline = aggregate(*evidence())
+    assert report["outside_lifetime_events_excluded"] == 1
+    assert report["phases"] == baseline["phases"]
+    assert report["thread_lifetime_checked"] is True
