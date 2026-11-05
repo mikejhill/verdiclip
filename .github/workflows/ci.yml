@@ -6,11 +6,6 @@ on:
     branches: [main]
   merge_group:
   workflow_dispatch:
-    inputs:
-      hosted_scrollbar:
-        description: One owned native scrollbar interaction on disposable Windows only
-        type: boolean
-        default: false
   workflow_call:
 
 permissions:
@@ -28,7 +23,10 @@ env:
 jobs:
   hosted-scrollbar:
     name: Owned scrollbar / ${{ matrix.provider }} / Qt ${{ matrix.qt }} / scale ${{ matrix.scale }}
-    if: github.event_name == 'workflow_dispatch' && inputs.hosted_scrollbar && github.repository == 'mikejhill/verdiclip'
+    # Conservative coverage: every CI invocation, including documentation changes.
+    # No path-based skip can accidentally omit a product/helper/workflow dependency.
+    # The native input adapter separately verifies this disposable runner identity.
+    if: github.repository == 'mikejhill/verdiclip'
     runs-on: windows-2025
     timeout-minutes: 5
     strategy:
@@ -437,7 +435,7 @@ jobs:
   ci-passed:
     name: CI passed
     if: always()
-    needs: [portable-baseline, lint, typecheck, test, capture-contracts, tabs-contracts, ux-gallery, build, audit, workflows]
+    needs: [hosted-scrollbar, portable-baseline, lint, typecheck, test, capture-contracts, tabs-contracts, ux-gallery, build, audit, workflows]
     runs-on: ubuntu-latest
     steps:
       - name: Require every job to succeed

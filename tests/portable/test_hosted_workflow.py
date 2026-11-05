@@ -1,4 +1,4 @@
-"""Keep the manual native lane isolated despite an older workflow parser."""
+"""Keep required native verification isolated despite an older workflow parser."""
 
 import re
 from pathlib import Path
@@ -6,7 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_cache_mode_is_restricted_to_owned_manual_job() -> None:
+def test_cache_mode_is_restricted_to_owned_native_job() -> None:
     """No other cache-mode field can silently acquire the parser exception."""
     workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     native = workflow.split("  hosted-scrollbar:\n", 1)[1].split(
@@ -14,9 +14,10 @@ def test_cache_mode_is_restricted_to_owned_manual_job() -> None:
     )[0]
     assert workflow.count("cache-mode:") == 1
     assert "    cache-mode: none\n" in native
-    assert (
-        "github.event_name == 'workflow_dispatch' && inputs.hosted_scrollbar" in native
-    )
+    assert "    if: github.repository == 'mikejhill/verdiclip'\n" in native
+    assert "inputs.hosted_scrollbar" not in workflow
+    assert "VERDICLIP_HOSTED_SOURCE: ${{ github.sha }}" in native
+    assert "$head -cne $env:VERDICLIP_HOSTED_SOURCE" in native
     assert "    runs-on: windows-2025\n" in native
     assert "    timeout-minutes: 5\n" in native
     assert "    permissions:\n      contents: read\n" in native
@@ -35,6 +36,24 @@ def test_cache_mode_is_restricted_to_owned_manual_job() -> None:
     assert "QT_SCALE_FACTOR: ${{ matrix.scale }}" in native
     assert "VERDICLIP_NATIVE_PROVIDER: ${{ matrix.provider }}" in native
     assert "fail-fast: false" in native
+
+
+def test_native_matrix_is_automatic_and_required_without_skip_escape() -> None:
+    """Relevant changes cannot bypass native verification through trigger filters."""
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    triggers = workflow.split("on:\n", 1)[1].split("\npermissions:", 1)[0]
+    for event in ("pull_request", "merge_group", "workflow_dispatch", "workflow_call"):
+        assert f"  {event}:\n" in triggers
+    assert "  push:\n    branches: [main]\n" in triggers
+    assert "paths" not in triggers
+    aggregate = workflow.split("  ci-passed:\n", 1)[1]
+    assert "    if: always()\n" in aggregate
+    dependencies = aggregate.split("    needs: [", 1)[1].split("]", 1)[0].split(", ")
+    assert "hosted-scrollbar" in dependencies
+    assert "RESULTS: ${{ join(needs.*.result, ' ') }}" in aggregate
+    assert 'if [ "$result" != "success" ]; then' in aggregate
+    assert "exit 1" in aggregate
+    assert "continue-on-error" not in workflow
 
 
 def test_parser_exception_matches_only_documented_unknown_job_key() -> None:

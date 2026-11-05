@@ -282,13 +282,21 @@ jobs and the separate owned-window capability canary do not provide this case's
 external guarded input driver. Native click ingress, semantic hit classification,
 popup preservation and full-panel fidelity together remain acceptance gates.
 
-### Disposable hosted input lane (manual opt-in)
+### Disposable hosted input lane (required automatic verification)
 
-`CI` has an optional `hosted_scrollbar` workflow-dispatch input, false by default.
-It selects a standard `windows-2025` x64 VM, Qt 6.12, read-only repository contents,
+`CI` runs the existing native matrix on every PR, main push, merge-group event,
+manual dispatch and reusable invocation in this repository. This deliberately
+includes documentation-only changes rather than risking an incomplete path filter.
+The former manual opt-in input is removed. `CI passed` depends on the matrix and
+requires success: failure, cancellation or an unexpected skip cannot pass. A
+foreign repository is refused by both the job and native adapter; its skipped
+matrix cannot produce a green aggregate.
+
+It selects standard `windows-2025` x64 VMs, Qt 6.11.2/6.12.0, read-only repository contents,
 no persisted checkout credentials, no cache and no artifact upload. The source SHA
-must match the workflow's exact commit. Ordinary PR/push jobs cannot enable native
-input. No new runner, display driver, RDP session, privilege change or trust change
+must match the workflow's exact commit. Native input runs only inside this bounded
+owned-fixture job, never on the user's desktop. No new runner, display driver,
+RDP session, privilege change or trust change
 is involved.
 
 This lane uses native `EnumWindows` plus the existing fixture's PID, nonce title,
