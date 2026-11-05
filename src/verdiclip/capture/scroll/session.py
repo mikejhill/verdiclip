@@ -158,8 +158,9 @@ class ScrollSession:
 
     def _commit_synchronously(self, request: AppendRequest) -> None:
         """Keep model callers on the same staging and admission algorithm."""
-        receipt = StripStore.stage(request)
+        receipt = StripStore.cleanup_receipt(request)
         try:
+            receipt = StripStore.stage(request)
             self.complete_storage(receipt)
         except BaseException:
             self.abandon_storage()

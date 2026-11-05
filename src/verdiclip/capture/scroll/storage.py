@@ -60,6 +60,7 @@ class AppendRequest:
     parent: Path
     limits: ScrollLimits
     writer: StripWriter
+    directory: SpoolDirectory
     top: int
     used_bytes: int
     estimate: int
@@ -103,7 +104,8 @@ class StagedAppend:
     height: int
     directory: SpoolDirectory
     strips: tuple[StoredStrip, ...] = ()
-    error: BaseException | None = None
+    error: CaptureError | None = None
+    complete: bool = False
 
     def close(self) -> None:
         """Release only the directory owned by this transaction."""
@@ -150,8 +152,9 @@ class StripStore:
     def append(self, image: QImage) -> None:
         """Commit every bounded tile or leave the prior manifest unchanged."""
         request = self.prepare(image)
-        receipt = self.stage(request)
+        receipt = self.cleanup_receipt(request)
         try:
+            receipt = self.stage(request)
             self.admit(receipt)
         except BaseException:
             self.abandon()
@@ -191,6 +194,7 @@ class StripStore:
             self._parent,
             self._limits,
             self._writer,
+            SpoolDirectory(self._parent),
             self._height,
             self._bytes,
             estimate,
@@ -198,13 +202,26 @@ class StripStore:
         self._pending = request
         return request
 
+    @staticmethod
+    def cleanup_receipt(request: AppendRequest) -> StagedAppend:
+        """Retain the exact directory before any fallible staging operation."""
+        return StagedAppend(
+            request.token,
+            request.generation,
+            request.top,
+            request.used_bytes,
+            request.image.width(),
+            request.image.height(),
+            request.directory,
+        )
+
     @classmethod
     def stage(cls, request: AppendRequest) -> StagedAppend:
         """Stage in an isolated directory; never mutate the store or its prefix."""
         image = request.image
-        owner = SpoolDirectory(request.parent)
+        owner = request.directory
         strips: tuple[StoredStrip, ...] = ()
-        failure: BaseException | None = None
+        failure: CaptureError | None = None
         try:
             request.parent.mkdir(parents=True, exist_ok=True)
             owner.temporary = tempfile.TemporaryDirectory(
@@ -217,8 +234,6 @@ class StripStore:
             failure = error
         except Exception as error:  # noqa: BLE001 - return directory ownership even on writer bugs
             failure = CaptureError(f"Could not commit capture pixels: {error}")
-        except BaseException as error:  # noqa: BLE001 - caller propagates controls after owning cleanup
-            failure = error
         return StagedAppend(
             request.token,
             request.generation,
@@ -229,6 +244,7 @@ class StripStore:
             owner,
             strips,
             failure,
+            complete=failure is None,
         )
 
     def admit(self, receipt: StagedAppend) -> None:
@@ -238,6 +254,7 @@ class StripStore:
             self._closed
             or pending is None
             or receipt.token is not pending.token
+            or receipt.directory is not pending.directory
             or receipt.generation != self._generation
             or receipt.top != self._height
             or receipt.used_bytes != self._bytes
@@ -247,6 +264,8 @@ class StripStore:
             raise CaptureError("Capture storage receipt is stale")
         if receipt.error is not None:
             raise receipt.error
+        if not receipt.complete:
+            raise CaptureError("Capture storage staging is incomplete")
         size = sum(strip.size_bytes for strip in receipt.strips)
         if (
             receipt.width * (self._height + receipt.height) > self._limits.max_pixels

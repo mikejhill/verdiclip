@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from time import monotonic
 
 from verdiclip.capture.scroll.storage import AppendRequest, StagedAppend, StripStore
@@ -95,35 +95,27 @@ class StorageJob:
         return StorageReceipt(remaining=tuple(remaining), error="; ".join(errors))
 
     def _run(self) -> None:
-        """Always return a receipt, including unexpected worker failures."""
+        """Publish cleanup evidence without suppressing unexpected worker controls."""
         try:
             self._work()
-        except BaseException as error:  # noqa: BLE001 - never strand cleanup owners
+        finally:
             with self._lock:
-                self._receipt = StorageReceipt(
-                    remaining=self._owned + self._cleanup,
-                    error="Capture storage worker failed: "
-                    + (str(error) or type(error).__name__),
-                )
+                if self._receipt is None:
+                    self._receipt = StorageReceipt(
+                        remaining=self._owned + self._cleanup,
+                        error="Capture storage worker did not complete",
+                    )
                 self._cleanup = ()
                 self._done.set()
-        finally:
-            self._request = None
-            self._owned = ()
+                self._request = None
+                self._owned = ()
 
     def _work(self) -> None:
-        staged = StripStore.stage(self._request) if self._request is not None else None
-        if (
-            staged is not None
-            and staged.error is not None
-            and not isinstance(staged.error, CaptureError)
-        ):
-            staged = replace(
-                staged,
-                error=CaptureError(
-                    f"Capture storage worker interrupted: {type(staged.error).__name__}"
-                ),
-            )
+        request = self._request
+        self._owned = (
+            (StripStore.cleanup_receipt(request),) if request is not None else ()
+        )
+        staged = StripStore.stage(request) if request is not None else None
         self._request = None  # Never retain every full viewport after admission.
         with self._lock:
             if staged is not None and not self._discard:

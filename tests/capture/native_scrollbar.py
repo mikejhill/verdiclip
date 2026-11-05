@@ -10,7 +10,7 @@ import threading
 import time
 import traceback
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import cast, override
 
@@ -98,6 +98,53 @@ class OperationTiming:
     clock_failures: int = 0
     max_wall_seconds: float = 0.0
     max_thread_cpu_seconds: float = 0.0
+    active_calls: int = 0
+    other_thread_calls: int = 0
+    _owner_thread: int = field(default_factory=threading.get_ident, repr=False)
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def begin(self) -> tuple[float, float] | None:
+        """Count each real invocation even when optional clocks are unavailable."""
+        with self._lock:
+            self.calls += 1
+            self.active_calls += 1
+            self.other_thread_calls += threading.get_ident() != self._owner_thread
+        try:
+            return time.monotonic(), time.thread_time()
+        except (OSError, RuntimeError, MemoryError):
+            with self._lock:
+                self.clock_failures += 1
+            return None
+
+    def finish(self, start: tuple[float, float] | None) -> None:
+        """Publish a bounded duration without replacing the operation's outcome."""
+        if start is not None:
+            try:
+                wall = time.monotonic() - start[0]
+                cpu = time.thread_time() - start[1]
+                with self._lock:
+                    self.max_wall_seconds = max(self.max_wall_seconds, wall)
+                    self.max_thread_cpu_seconds = max(self.max_thread_cpu_seconds, cpu)
+                    self.timed_calls += 1
+            except (OSError, RuntimeError, MemoryError):
+                with self._lock:
+                    self.clock_failures += 1
+        with self._lock:
+            self.active_calls -= 1
+
+    def snapshot(self) -> dict[str, int | float]:
+        """Read coherent counters even if failed cleanup leaves a worker active."""
+        with self._lock:
+            return {
+                "calls": self.calls,
+                "timed_calls": self.timed_calls,
+                "raised": self.raised,
+                "clock_failures": self.clock_failures,
+                "max_wall_seconds": self.max_wall_seconds,
+                "max_thread_cpu_seconds": self.max_thread_cpu_seconds,
+                "active_calls": self.active_calls,
+                "other_thread_calls": self.other_thread_calls,
+            }
 
 
 def probe_worker_cursor_visibility(
@@ -175,7 +222,7 @@ def probe_worker_cursor_visibility(
 
 
 def observe_operation[**P, R](
-    events: list[dict[str, object]],
+    events: list[dict[str, object]] | None,
     name: str,
     operation: Callable[P, R],
     *,
@@ -184,42 +231,74 @@ def observe_operation[**P, R](
     """Observe existing calls only; preserve values/exceptions and bound metadata."""
 
     def mark(phase: str) -> None:
-        record_operation(events, name, phase)
+        if events is not None:
+            record_operation(events, name, phase)
 
     callable_operation = cast(Callable[..., object], operation)
 
     def observed(*args: object, **kwargs: object) -> object:
-        start = None
-        if timing is not None:
-            timing.calls += 1
-            try:
-                start = time.monotonic(), time.thread_time()
-            except (OSError, RuntimeError, MemoryError):
-                timing.clock_failures += 1
+        start = timing.begin() if timing is not None else None
         mark("entered")
         try:
             result = callable_operation(*args, **kwargs)
         except BaseException:
             if timing is not None:
-                timing.raised += 1
+                with timing._lock:
+                    timing.raised += 1
             mark("raised")
             raise
         finally:
-            if timing is not None and start is not None:
-                try:
-                    wall = time.monotonic() - start[0]
-                    cpu = time.thread_time() - start[1]
-                    timing.max_wall_seconds = max(timing.max_wall_seconds, wall)
-                    timing.max_thread_cpu_seconds = max(
-                        timing.max_thread_cpu_seconds, cpu
-                    )
-                    timing.timed_calls += 1
-                except (OSError, RuntimeError, MemoryError):
-                    timing.clock_failures += 1
+            if timing is not None:
+                timing.finish(start)
         mark("returned")
         return result
 
     return cast("Callable[P, R]", observed)
+
+
+def observe_storage_operations(
+    patch: pytest.MonkeyPatch,
+) -> dict[str, OperationTiming]:
+    """Time actual storage calls without writing worker events to the GUI trace."""
+    timings: dict[str, OperationTiming] = {}
+    for method in ("prepare", "admit"):
+        label = f"strips.{method}"
+        timing = timings[label] = OperationTiming()
+        patch.setattr(
+            StripStore,
+            method,
+            observe_operation(None, label, getattr(StripStore, method), timing=timing),
+        )
+    label = "strips.stage"
+    timing = timings[label] = OperationTiming()
+    descriptor = vars(StripStore)["stage"]
+    assert isinstance(descriptor, classmethod)
+    patch.setattr(
+        StripStore,
+        "stage",
+        classmethod(observe_operation(None, label, descriptor.__func__, timing=timing)),
+    )
+    return timings
+
+
+def verify_deferred_storage(timings: dict[str, OperationTiming]) -> None:
+    """A completed native capture must prove staging stayed off the GUI thread."""
+    snapshots = {
+        method: timings[f"strips.{method}"].snapshot()
+        for method in ("prepare", "stage", "admit")
+    }
+    assert all(item["calls"] > 0 for item in snapshots.values()), (
+        "Completed capture did not observe every storage phase"
+    )
+    assert snapshots["stage"]["other_thread_calls"] == snapshots["stage"]["calls"], (
+        "Pixel staging ran on the GUI thread"
+    )
+    assert all(
+        snapshots[method]["other_thread_calls"] == 0 for method in ("prepare", "admit")
+    ), "Storage metadata left the GUI thread"
+    assert all(item["active_calls"] == 0 for item in snapshots.values()), (
+        "Capture cleanup left a storage call active"
+    )
 
 
 def discovery_metadata(discovery: UiaDiscovery) -> list[dict[str, object]]:
@@ -331,7 +410,7 @@ class ScrollbarCase:
         self.menu = QMenu("Owned scrollbar test popup")
         request.addfinalizer(self.close_owned_windows)
         self.operation_trace: list[dict[str, object]] = []
-        self.operation_timings: dict[str, OperationTiming] = {}
+        self.operation_timings = observe_storage_operations(patch)
         workflow = compose_scrolling(self.app.controller, data_root=directory)
         assert workflow is not None, "Production scrolling is unavailable"
         self.workflow = workflow
@@ -362,12 +441,12 @@ class ScrollbarCase:
 
         patch.setattr(self.process, "start", start)
         self.process.completed.connect(completed)
-        # Observe existing synchronous work only. No event pumping, warm-up,
-        # heartbeat changes or additional native calls are introduced.
+        # Observe existing calls only. No event pumping, warm-up, heartbeat
+        # changes or additional native calls are introduced. Storage uses only
+        # synchronized counters, never cross-thread/per-strip trace entries.
         for owner, method, label in (
             (FrameFiles, "consume", "pixels.consume"),
             (ScrollAcquisition, "complete_sample", "acquisition.complete_sample"),
-            (StripStore, "append", "strips.append"),
         ):
             timing = self.operation_timings[label] = OperationTiming()
             patch.setattr(
@@ -770,6 +849,7 @@ class ScrollbarCase:
         ), "Native hit is not a verified scrollbar or its child"
         assert self.discoveries[0].references, "Provider has no verified ScrollPattern"
         verify_pixels(record.session.document.image, self.image)
+        verify_deferred_storage(self.operation_timings)
         assert not native_action_errors(self.driver, "scrollbar-click")
         assert not self.snapshot.errors()
         assert cleanup_confirmed(
@@ -835,10 +915,13 @@ class ScrollbarCase:
         assert not native_action_errors(self.driver, "scrollbar-click")
         assert len(self.operation_trace) < 128, "Refusal trace is incomplete"
         assert not any(
-            item["operation"]
-            in {"uia.step", "uia.restore", "uia.sample", "strips.append"}
+            item["operation"] in {"uia.step", "uia.restore", "uia.sample"}
             for item in self.operation_trace
-        ), "Unsupported provider must not mutate, capture or spool"
+        ), "Unsupported provider must not mutate or capture"
+        assert all(
+            self.operation_timings[label].snapshot()["calls"] == 0
+            for label in ("strips.prepare", "strips.stage", "strips.admit")
+        ), "Unsupported provider must not prepare, stage or admit pixels"
         assert self.peer.poll()
         assert self.peer.state["offset"] == 0
         assert self.peer.state["end_seen"] is False
@@ -906,7 +989,7 @@ class ScrollbarCase:
                     "operation_trace": self.operation_trace,
                     "operation_trace_at_capacity": len(self.operation_trace) >= 128,
                     "operation_timings": {
-                        label: asdict(timing)
+                        label: timing.snapshot()
                         for label, timing in self.operation_timings.items()
                     },
                     "fixture_readiness": self.fixture_readiness,

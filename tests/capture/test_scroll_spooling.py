@@ -36,6 +36,42 @@ from verdiclip.capture.scroll.workflow import WorkflowState
 from verdiclip.exceptions import CaptureError
 
 
+class StorageControl(BaseException):
+    """An application-specific control must escape without losing pixel ownership."""
+
+
+def storage_controls() -> tuple[BaseException, ...]:
+    """Exercise controls beyond the built-in interrupt and process-exit types."""
+    return (
+        SystemExit(3),
+        KeyboardInterrupt(),
+        GeneratorExit(),
+        StorageControl(),
+        BaseExceptionGroup("storage controls", [StorageControl(), KeyboardInterrupt()]),
+    )
+
+
+def wait_for_job(job: StorageJob, seconds: float = 5) -> None:
+    """Always wait for the exact worker before asserting its terminal evidence."""
+    completed = job.wait(seconds)
+    assert completed
+
+
+def wait_for_event(event: threading.Event, seconds: float) -> None:
+    """Test synchronization must run even when Python assertions are disabled."""
+    completed = event.wait(seconds)
+    assert completed
+
+
+def assert_job_not_retired(job: StorageJob) -> None:
+    """A live worker cannot expose even an internally finalized receipt."""
+    assert not job.done
+    completed = job.wait(0)
+    assert not completed
+    with pytest.raises(CaptureError, match="not finished"):
+        job.take()
+
+
 class BlockedWriter(PngStripWriter):
     """Hold one actual PNG write until the test explicitly releases it."""
 
@@ -86,7 +122,8 @@ class BlockedCapture:
 
     def start(self, qtbot: QtBot) -> None:
         """Wait until the actual worker is held inside its selected write."""
-        assert self.binding.start_confirmed(self.backend.TARGET)
+        started = self.binding.start_confirmed(self.backend.TARGET)
+        assert started
         qtbot.waitUntil(self.writer.entered.is_set)
 
     def close(self, qtbot: QtBot) -> None:
@@ -120,7 +157,8 @@ def test_blocked_baseline_keeps_gui_responsive_and_stop_cancels(
         assert capture.session.state is ScrollState.CANCELLED
         assert capture.binding.storage_pending
         assert not capture.reviews
-        assert not capture.binding.start_confirmed(capture.backend.TARGET)
+        started = capture.binding.start_confirmed(capture.backend.TARGET)
+        assert not started
         capture.writer.release.set()
         qtbot.waitUntil(lambda: not capture.binding.storage_pending)
         assert not capture.reviews
@@ -194,7 +232,8 @@ def test_finished_receipt_delivered_after_deadline_is_not_admitted(
     assert request is not None
     receipt = StripStore.stage(request)
     try:
-        assert not run.driver.complete_storage(receipt, now=1)
+        admitted = run.driver.complete_storage(receipt, now=1)
+        assert not admitted
         assert run.driver.state is AcquisitionState.FAILED
         assert run.driver.stop_reason is StopReason.LIMIT
         assert run.session.state is ScrollState.IDLE
@@ -256,9 +295,11 @@ def test_failed_rollback_retains_owners_for_explicit_retry(
             qtbot.waitUntil(lambda: bool(capture.binding.storage_error))
             assert capture.binding.storage_pending
             assert len(attempts) == 1
-            assert not capture.binding.start_confirmed(capture.backend.TARGET)
+            started = capture.binding.start_confirmed(capture.backend.TARGET)
+            assert not started
         assert StagedAppend.close is actual_close
-        assert capture.binding.retry_storage_cleanup()
+        retried = capture.binding.retry_storage_cleanup()
+        assert retried
         qtbot.waitUntil(lambda: not capture.binding.storage_pending)
         assert not list(tmp_path.iterdir())
     finally:
@@ -281,7 +322,7 @@ def test_shutdown_does_not_wait_indefinitely_or_need_gui_for_late_cleanup(
     capture.binding.deleteLater()
     qtbot.wait(1)
     capture.writer.release.set()
-    assert job.wait(5)
+    wait_for_job(job)
     receipt = job.take()
     assert not receipt.remaining
     assert not receipt.error
@@ -355,6 +396,9 @@ def test_stop_rollback_failure_retry_retains_the_original_prefix(
     def fail_close(_receipt: StagedAppend) -> None:
         raise CaptureError("Injected stale transaction lock")
 
+    def idle() -> bool:
+        return fixture.workflow.state is WorkflowState.IDLE
+
     try:
         fixture.workflow.stop()
         with monkeypatch.context() as patch:
@@ -364,10 +408,12 @@ def test_stop_rollback_failure_retry_retains_the_original_prefix(
                 lambda: fixture.workflow.state is WorkflowState.CLEANUP_FAILED
             )
             assert fixture.releases == [True]
-            assert fixture.workflow.input_closed(cleaned=True, message="")
+            handled = fixture.workflow.input_closed(cleaned=True, message="")
+            assert handled
             assert fixture.workflow.state is WorkflowState.CLEANUP_FAILED
             assert not fixture.panels
-        assert not fixture.workflow.retry_cleanup()
+        completed = fixture.workflow.retry_cleanup()
+        assert not completed
         qtbot.waitUntil(lambda: fixture.workflow.state is WorkflowState.REVIEW)
         assert len(fixture.sessions) == 1
         accepted = fixture.sessions[0].accept()
@@ -377,7 +423,7 @@ def test_stop_rollback_failure_retry_retains_the_original_prefix(
     finally:
         writer.release.set()
         fixture.workflow.cancel()
-        qtbot.waitUntil(lambda: fixture.workflow.state is WorkflowState.IDLE)
+        qtbot.waitUntil(idle)
         fixture.close()
 
 
@@ -455,7 +501,8 @@ def test_cleanup_worker_returns_nonempty_failure_without_automatic_retry(
             qtbot.wait(30)
             assert attempts == [True]
             assert capture.binding.storage_pending
-        assert capture.binding.retry_storage_cleanup()
+        retried = capture.binding.retry_storage_cleanup()
+        assert retried
         qtbot.waitUntil(lambda: not capture.binding.storage_pending)
     finally:
         capture.close(qtbot)
@@ -470,7 +517,8 @@ def test_cleanup_thread_start_failure_retains_files_for_retry(
     capture = BlockedCapture(tmp_path)
     capture.writer.release.set()
     try:
-        assert capture.binding.start_confirmed(capture.backend.TARGET)
+        started = capture.binding.start_confirmed(capture.backend.TARGET)
+        assert started
         qtbot.waitUntil(lambda: bool(capture.reviews))
 
         def fail_start(_thread: threading.Thread) -> None:
@@ -482,7 +530,8 @@ def test_cleanup_thread_start_failure_retains_files_for_retry(
             assert capture.binding.storage_pending
             assert "start capture cleanup" in capture.binding.storage_error
             assert list(tmp_path.iterdir())
-        assert capture.binding.retry_storage_cleanup()
+        retried = capture.binding.retry_storage_cleanup()
+        assert retried
         qtbot.waitUntil(lambda: not capture.binding.storage_pending)
         assert not list(tmp_path.iterdir())
     finally:
@@ -503,7 +552,8 @@ def test_staging_thread_start_failure_is_terminal_without_a_false_baseline(
     try:
         with monkeypatch.context() as patch:
             patch.setattr(threading.Thread, "start", fail_start)
-            assert capture.binding.start_confirmed(capture.backend.TARGET)
+            started = capture.binding.start_confirmed(capture.backend.TARGET)
+            assert started
             qtbot.waitUntil(lambda: bool(capture.failures))
         assert capture.binding.state is BindingState.FAILED
         assert not capture.binding.storage_pending
@@ -513,7 +563,7 @@ def test_staging_thread_start_failure_is_terminal_without_a_false_baseline(
         capture.close(qtbot)
 
 
-@pytest.mark.parametrize("control", [SystemExit(3), KeyboardInterrupt()])
+@pytest.mark.parametrize("control", storage_controls())
 def test_worker_control_keeps_exact_directory_for_failed_cleanup_retry(
     qtbot: QtBot,
     tmp_path: Path,
@@ -528,15 +578,23 @@ def test_worker_control_keeps_exact_directory_for_failed_cleanup_retry(
             super().write(image, path)
             raise control
 
+    escaped: list[BaseException] = []
+    monkeypatch.setattr(
+        threading, "excepthook", lambda args: escaped.append(args.exc_value)
+    )
     store = StripStore(tmp_path, ScrollLimits(), writer=InterruptedWriter())
     request = store.prepare(Documents.image(height=48))
     job = StorageJob(request)
     job.start()
-    assert job.wait(5)
-    receipt = job.take().staged
-    assert receipt is not None
-    assert isinstance(receipt.error, CaptureError)
-    assert "interrupted" in str(receipt.error)
+    wait_for_job(job)
+    outcome = job.take()
+    assert escaped == [control]
+    assert escaped[0] is control
+    assert outcome.staged is None
+    assert "did not complete" in outcome.error
+    assert len(outcome.remaining) == 1
+    receipt = outcome.remaining[0]
+    assert receipt.directory is request.directory
 
     def fail_cleanup(_temporary: tempfile.TemporaryDirectory[str]) -> None:
         raise PermissionError("Injected cleanup lock")
@@ -551,8 +609,9 @@ def test_worker_control_keeps_exact_directory_for_failed_cleanup_retry(
         assert failed.error
     retry = StorageJob(cleanup=failed.remaining)
     retry.start()
-    assert retry.wait(5)
-    assert not retry.take().remaining
+    wait_for_job(retry)
+    retired = retry.take()
+    assert not retired.remaining
     store.close()
     assert not list(tmp_path.iterdir())
 
@@ -572,7 +631,7 @@ def test_worker_confinement_failure_retains_exact_owner(
         patch.setattr(Path, "resolve", fail_resolve)
         job = StorageJob(cleanup=(staged,))
         job.start()
-        assert job.wait(5)
+        wait_for_job(job)
         receipt = job.take()
         assert receipt.remaining == (staged,)
         assert receipt.error
@@ -596,12 +655,13 @@ def test_start_then_control_keeps_the_live_worker_owned_for_shutdown(
     capture.binding._clock = lambda: clock[0]
     for _ in range(2):
         work = driver.sample(now=clock[0])
-        assert driver.complete_sample(
+        completed = driver.complete_sample(
             work,
             capture.backend.source.copy(0, 0, 96, 48),
             target=target,
             now=clock[0],
         )
+        assert completed
         clock[0] += 0.1
     work = driver.sample(now=clock[0])
     capture.binding._pending = work
@@ -623,7 +683,7 @@ def test_start_then_control_keeps_the_live_worker_owned_for_shutdown(
             assert caught.value is control
         job = capture.binding._storage_job
         assert job is not None
-        assert capture.writer.entered.wait(1)
+        wait_for_event(capture.writer.entered, 1)
         with pytest.raises(CaptureError, match="unconfirmed"):
             capture.binding.shutdown_storage(timeout_ms=10)
         assert capture.binding._storage_job is job
@@ -653,7 +713,8 @@ def test_cancel_cleanup_failure_keeps_retry_available_after_input_receipt(
     try:
         fixture.workflow.cancel()
         if input_closed_first:
-            assert fixture.workflow.input_closed(cleaned=True, message="")
+            handled = fixture.workflow.input_closed(cleaned=True, message="")
+            assert handled
         with monkeypatch.context() as patch:
             patch.setattr(StagedAppend, "close", fail_close)
             writer.release.set()
@@ -661,9 +722,11 @@ def test_cancel_cleanup_failure_keeps_retry_available_after_input_receipt(
                 lambda: fixture.workflow.state is WorkflowState.CLEANUP_FAILED
             )
             if not input_closed_first:
-                assert fixture.workflow.input_closed(cleaned=True, message="")
+                handled = fixture.workflow.input_closed(cleaned=True, message="")
+                assert handled
             assert fixture.workflow.state is WorkflowState.CLEANUP_FAILED
-        assert not fixture.workflow.retry_cleanup()
+        completed = fixture.workflow.retry_cleanup()
+        assert not completed
         qtbot.waitUntil(lambda: fixture.workflow.state is WorkflowState.IDLE)
         assert not list(tmp_path.iterdir())
     finally:
@@ -687,7 +750,8 @@ def test_deferred_storage_failure_preserves_only_verified_prefix(
     if prefix:
         first = run.driver.storage_request
         assert first is not None
-        assert run.driver.complete_storage(StripStore.stage(first), now=run.now)
+        admitted = run.driver.complete_storage(StripStore.stage(first), now=run.now)
+        assert admitted
         run.move()
         run.settle(24)
     request = run.driver.storage_request
@@ -697,12 +761,14 @@ def test_deferred_storage_failure_preserves_only_verified_prefix(
         error=ScrollLimitError("quota") if limit else CaptureError("encoder"),
     )
     try:
-        assert not run.driver.complete_storage(receipt, now=run.now)
+        admitted = run.driver.complete_storage(receipt, now=run.now)
+        assert not admitted
         assert run.driver.stop_reason is (
             StopReason.LIMIT if limit else StopReason.ERROR
         )
         if prefix:
-            assert run.session.accept().image.height() == 48
+            accepted = run.session.accept()
+            assert accepted.image.height() == 48
         else:
             assert run.driver.state is AcquisitionState.FAILED
     finally:
@@ -745,13 +811,16 @@ def test_worker_api_requires_one_operation_and_one_finished_receipt(
         with pytest.raises(ValueError, match="simultaneously"):
             StorageJob(request, cleanup=(staged,))
         job = StorageJob(cleanup=(staged,))
-        assert not job.wait(0)
+        completed = job.wait(0)
+        assert not completed
         with pytest.raises(CaptureError, match="not finished"):
             job.take()
         job.start()
-        assert job.wait(5)
-        assert not job.discard()
-        assert not job.take().error
+        wait_for_job(job)
+        discarded = job.discard()
+        assert not discarded
+        receipt = job.take()
+        assert not receipt.error
         with pytest.raises(CaptureError, match="not finished"):
             job.take()
     finally:
@@ -767,16 +836,26 @@ def test_unexpected_staging_boundary_failure_always_finishes(
     store = StripStore(tmp_path, ScrollLimits())
     request = store.prepare(Documents.image(height=48))
 
+    failure = RuntimeError("Injected stage boundary failure")
+    escaped: list[BaseException] = []
+    monkeypatch.setattr(
+        threading, "excepthook", lambda args: escaped.append(args.exc_value)
+    )
+
     def fail_stage(_request: object) -> StagedAppend:
-        raise RuntimeError("Injected stage boundary failure")
+        raise failure
 
     monkeypatch.setattr(StripStore, "stage", fail_stage)
     job = StorageJob(request)
     job.start()
-    assert job.wait(5)
+    wait_for_job(job)
     receipt = job.take()
-    assert "stage boundary failure" in receipt.error
-    assert not receipt.remaining
+    assert escaped == [failure]
+    assert escaped[0] is failure
+    assert "did not complete" in receipt.error
+    assert len(receipt.remaining) == 1
+    assert receipt.remaining[0].directory is request.directory
+    receipt.remaining[0].close()
     store.close()
 
 
@@ -795,24 +874,25 @@ def test_cancellation_can_transfer_more_cleanup_while_worker_is_retiring(
     def block_first(receipt: StagedAppend) -> None:
         if receipt is first:
             entered.set()
-            assert release.wait(5)
+            wait_for_event(release, 5)
         actual_close(receipt)
 
     monkeypatch.setattr(StagedAppend, "close", block_first)
     job = StorageJob(cleanup=(first,))
     job.start()
     try:
-        assert entered.wait(1)
-        assert job.discard((second,))
+        wait_for_event(entered, 1)
+        discarded = job.discard((second,))
+        assert discarded
         release.set()
-        assert job.wait(5)
+        wait_for_job(job)
         receipt = job.take()
         assert not receipt.error
         assert not receipt.remaining
         assert not list(tmp_path.iterdir())
     finally:
         release.set()
-        assert job.wait(5)
+        wait_for_job(job)
         first.close()
         second.close()
         store.close()
@@ -829,7 +909,7 @@ def test_uncertain_start_wait_uses_remainder_until_actual_thread_exit(
 
     def delayed_tail() -> None:
         original_work()
-        assert release.wait(2)
+        wait_for_event(release, 2)
         tail_finished.set()
 
     monkeypatch.setattr(job, "_work", delayed_tail)
@@ -838,11 +918,157 @@ def test_uncertain_start_wait_uses_remainder_until_actual_thread_exit(
     start.start()
     finish.start()
     try:
-        assert job.wait(1)
+        wait_for_job(job, 1)
         assert tail_finished.is_set()
-        assert not job.take().error
+        receipt = job.take()
+        assert not receipt.error
     finally:
         release.set()
         start.join(1)
         finish.join(1)
-        assert job.wait(1)
+        wait_for_job(job, 1)
+
+
+@pytest.mark.parametrize("control_index", range(5))
+@pytest.mark.parametrize("api", ["store", "session"])
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_synchronous_controls_propagate_with_retryable_directory_ownership(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    control_index: int,
+    api: str,
+    *,
+    cleanup_fails: bool,
+) -> None:
+    """Every control escapes unchanged, including after a failed cleanup attempt."""
+    control = storage_controls()[control_index]
+
+    class InterruptedWriter(PngStripWriter):
+        @override
+        def write(self, image: QImage, path: Path) -> None:
+            super().write(image, path)
+            raise control
+
+    image = Documents.image(height=48)
+    if api == "store":
+        store = StripStore(tmp_path, ScrollLimits(), writer=InterruptedWriter())
+
+        def stage() -> None:
+            store.append(image)
+
+        close = store.close
+    else:
+        session = ScrollSession(tmp_path, writer=InterruptedWriter())
+
+        def stage() -> None:
+            session.start(
+                FixtureBackend.TARGET, image, now=0, taken_at=datetime.now(UTC)
+            )
+
+        close = session.close
+
+    def fail_cleanup(_temporary: tempfile.TemporaryDirectory[str]) -> None:
+        raise PermissionError("Injected cleanup lock")
+
+    try:
+        with monkeypatch.context() as patch:
+            if cleanup_fails:
+                patch.setattr(tempfile.TemporaryDirectory, "cleanup", fail_cleanup)
+            with pytest.raises(type(control)) as caught:
+                stage()
+            assert caught.value is control
+            if cleanup_fails:
+                assert isinstance(control.__cause__, CaptureError)
+                assert list(tmp_path.iterdir())
+            else:
+                assert not list(tmp_path.iterdir())
+    finally:
+        close()
+    assert not list(tmp_path.iterdir())
+
+
+def test_unfinished_cleanup_receipt_cannot_admit_unwritten_pixels(
+    tmp_path: Path,
+) -> None:
+    """Pre-I/O ownership is not evidence that any tile was successfully staged."""
+    store = StripStore(tmp_path, ScrollLimits())
+    image = Documents.image(height=48)
+    request = store.prepare(image)
+    try:
+        with pytest.raises(CaptureError, match="incomplete"):
+            store.admit(StripStore.cleanup_receipt(request))
+        assert store.height == 0
+        assert not list(tmp_path.iterdir())
+        store.admit(StripStore.stage(request))
+        assert store.materialize() == image
+    finally:
+        store.close()
+
+
+def test_control_during_cancel_transfer_retains_staged_and_committed_owners(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Final worker retirement preserves both owners and waits for the control hook."""
+    entered, release = threading.Event(), threading.Event()
+    hook_entered, hook_release = threading.Event(), threading.Event()
+    escaped: list[BaseException] = []
+    control = StorageControl()
+
+    class InterruptedWriter(PngStripWriter):
+        writes = 0
+
+        @override
+        def write(self, image: QImage, path: Path) -> None:
+            super().write(image, path)
+            self.writes += 1
+            if self.writes == 2:
+                entered.set()
+                wait_for_event(release, 5)
+                raise control
+
+    def observe_control(args: threading.ExceptHookArgs) -> None:
+        assert isinstance(args.exc_value, BaseException)
+        escaped.append(args.exc_value)
+        hook_entered.set()
+        wait_for_event(hook_release, 5)
+
+    monkeypatch.setattr(threading, "excepthook", observe_control)
+    store = StripStore(tmp_path, ScrollLimits(), writer=InterruptedWriter())
+    store.append(Documents.image(height=48))
+    request = store.prepare(Documents.image(height=48))
+    job = StorageJob(request)
+    job.start()
+    committed: tuple[StagedAppend, ...] = ()
+    try:
+        wait_for_event(entered, 1)
+        committed = store.release()
+        assert len(committed) == 1
+        accepted = job.discard(committed)
+        assert accepted
+        release.set()
+        wait_for_event(hook_entered, 1)
+        assert_job_not_retired(job)
+        hook_release.set()
+        wait_for_job(job)
+        terminal = job.take()
+        assert escaped == [control]
+        assert escaped[0] is control
+        assert len(terminal.remaining) == 2
+        assert terminal.remaining[0].directory is request.directory
+        assert terminal.remaining[1] is committed[0]
+        retry = StorageJob(cleanup=terminal.remaining)
+        retry.start()
+        wait_for_job(retry)
+        retired = retry.take()
+        assert not retired.remaining
+        assert not retired.error
+        assert not list(tmp_path.iterdir())
+    finally:
+        release.set()
+        hook_release.set()
+        wait_for_job(job)
+        request.directory.close()
+        for receipt in committed:
+            receipt.close()
+        store.close()

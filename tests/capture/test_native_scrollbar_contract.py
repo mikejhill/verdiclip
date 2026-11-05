@@ -16,6 +16,7 @@ from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication, QMenu
 from pytestqt.qtbot import QtBot
 from tests.capture.native_scrollbar import (
+    OperationTiming,
     ScrollbarCase,
     discovery_metadata,
     fixture_image,
@@ -72,6 +73,10 @@ def test_unsupported_fixture_requires_safe_refusal(
         snapshot=SimpleNamespace(errors=list),
         driver=object(),
         operation_trace=[],
+        operation_timings={
+            f"strips.{method}": OperationTiming()
+            for method in ("prepare", "stage", "admit")
+        },
         peer=SimpleNamespace(poll=lambda: True, state={"offset": 0, "end_seen": False}),
         passed=False,
     )
@@ -460,7 +465,7 @@ def test_cleanup_continues_after_journal_failure(tmp_path: Path) -> None:
             popup_trace=None,
             retirement_probe={},
             operation_trace=[],
-            operation_timings={},
+            operation_timings={"strips.stage": OperationTiming(calls=1)},
             fixture_readiness={},
             provider_profile={},
             process=SimpleNamespace(
@@ -485,6 +490,10 @@ def test_cleanup_continues_after_journal_failure(tmp_path: Path) -> None:
     receipt = json.loads((tmp_path / "scrollbar-native.json").read_text())
     assert receipt["passed"] is False
     assert receipt["cleanup_errors"] == ["journal denied"]
+    assert (
+        receipt["operation_timings"]["strips.stage"]
+        == OperationTiming(calls=1).snapshot()
+    )
 
 
 @pytest.mark.parametrize(

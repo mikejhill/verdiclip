@@ -35,6 +35,10 @@ def test_storage_wait_keeps_capture_controls_responsive(
     timer = QTimer()
     timer.setInterval(1)
     timer.timeout.connect(lambda: beats.append(True))
+
+    def idle() -> bool:
+        return fixture.workflow.state is WorkflowState.IDLE
+
     try:
         timer.start()
         qtbot.waitUntil(lambda: len(beats) >= 10)
@@ -71,5 +75,5 @@ def test_storage_wait_keeps_capture_controls_responsive(
         timer.stop()
         writer.release.set()
         fixture.workflow.cancel()
-        qtbot.waitUntil(lambda: fixture.workflow.state is WorkflowState.IDLE)
+        qtbot.waitUntil(idle)
         fixture.close()

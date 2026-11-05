@@ -254,6 +254,91 @@ The unused-import cause of alert 203 is corrected without suppression by using
 subprocess.Popen[bytes] as the actual runtime cast type. Its final exact-head
 CodeQL result and review-thread status still require verification.
 
+## Hosted asynchronous-storage checkpoint d8ca4e4
+
+[CI at `d8ca4e41c608ead19f6e9e9c94a3804031fb889a`](https://github.com/mikejhill/verdiclip/actions/runs/42066469622)
+remained red for two separate failures:
+
+- [WPF Qt 6.12 / 2x](https://github.com/mikejhill/verdiclip/actions/runs/42066469622/job/127381798491)
+  exhausted the unchanged 20-second fixture readiness budget at 20,009 ms before
+  capture started. Window construction took approximately 7.427 seconds and
+  control setup 4.686 seconds. No pixel-read marker followed; a cancellation
+  check immediately after control setup can explain that omission. The provider
+  retired normally with a matching closed receipt and no cleanup errors. No
+  broker or storage operation ran. These are undifferentiated wall intervals,
+  not proof of CPU work, disk waits or scheduler delay.
+- [Python 3.13](https://github.com/mikejhill/verdiclip/actions/runs/42066469622/job/127381798731)
+  passed 2,877 tests but failed annotated 4K flatten/copy at 847.7311 ms against
+  the unchanged 250 ms budget. Python 3.14 passed all 2,878 tests. Both had
+  95.69% aggregate coverage, 10 skips and 35 native deselections. The measured
+  renderer, flattened-image and delivery paths and budget fixture are unchanged
+  from main. That observation does not explain or invalidate the failure.
+
+Linux passed 2,809 tests plus 3 subtests, with 79 skips and 35 native deselections.
+Both capture-contract and simulated-tab profiles passed. Three WPF profiles and
+WinForms unsupported-provider refusal passed, including two subsequent selected
+captures. At Qt 6.12 / 1.5x, all 27 sample completions stayed below 5.736 ms in
+this run. The old synchronous append timer recorded zero calls because deferred
+staging uses another path; it does not measure worker-side storage latency. The
+native observer requires updating to cover actual preparation, staging and
+admission, including refusal counters, without expanding trace limits.
+
+Build, static checks, uninstrumented readiness and five-process repeatability
+passed. The Windows gallery artifact matched its published SHA-256 digest;
+native light/dark capture settings and editor images were reviewed for readable
+labels and layout. Cold-path diagnosis remained red: Qt 6.12 retained unknown
+scheduler state, while the Qt 6.11 reader compiler exceeded its existing one-minute
+preparation limit before any trace. Neither result supports a causal claim.
+
+Alert 203 was substantively fixed and its thread auto-resolved, but the successful
+CodeQL workflow again was not a clean result. Exact-head check `127382229823`
+reported six new findings: two assert side effects, two cleanup lambdas lexically
+inside finally, and two direct BaseException handlers. These require substantive
+correction and exact-head verification; no suppression or security-setting change
+is justified. The review threads remain release and merge blockers.
+
+## Reviewed control-propagation and native-observer correction
+
+The six findings at the asynchronous-storage checkpoint are addressed without
+suppression. Side-effecting test actions occur outside assertions and teardown
+predicates are defined before finally. Prepared requests own their exact directory
+before staging I/O. Synchronous callers retain incomplete cleanup receipts before
+staging; worker finalization publishes terminal cleanup evidence in finally.
+SystemExit, KeyboardInterrupt, GeneratorExit, custom controls and BaseExceptionGroup
+propagate unchanged while failed cleanup owners remain retryable. An incomplete
+receipt cannot admit unwritten pixels. Cancellation transfer and terminal receipt
+publication remain serialized under the same lock, and consumption still requires
+actual thread retirement.
+
+The focused repair suite passed 241 tests plus 3 subtests at 93.35% scoped combined
+coverage, with 100% line/branch coverage in the worker module. Independent review
+passed 333 tests plus 3 subtests on unchanged hashes, with no remaining actionable
+finding. Final published CodeQL and review-thread closure remain required.
+
+The native harness now observes actual preparation, staging and admission using
+synchronized constant-space counters without additional trace events. Refusal
+requires zero actual storage calls. Successful capture requires positive staging
+exclusively off the GUI thread, GUI-only preparation/admission and no active call
+after cleanup. Descriptor behavior, optional clock failure and a deliberately
+synchronous negative case are tested. Related checks passed 245 tests; independent
+review passed 118 focused tests on unchanged hashes. The existing trace cap and
+all product deadlines remain unchanged.
+
+The original single annotated 4K flatten/copy operation now records bounded phase
+wall/GUI-CPU evidence, runtime, seed and worker counts. The complete 250 ms total
+includes instrumentation and metadata collection; no repeat, subtraction or new
+warm-up was added. Unavailable CPU clocks report null. Seven helper tests and all
+three existing budget tests passed locally. This diagnostic does not explain or
+replace the retained 847.7311 ms Windows failure.
+
+On the complete frozen local candidate, 2,869 tests plus 3 subtests passed with
+120 platform/qualification skips and 92.16% aggregate coverage. The same nine
+private-IPC setup failures remained; this run is not green. A direct source-line
+comparison to main found 542/553 changed executable lines covered (98.01%); hosted
+diff-cover remains authoritative. Whole-repository format, Ruff and strict ty
+passed. The final Windows/native matrix and exact-head security checks remain
+required before merge or release.
+
 ## Retained failures and open release gates
 
 ### Visible cursor
