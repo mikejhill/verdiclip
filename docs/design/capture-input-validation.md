@@ -415,3 +415,50 @@ The separate first-show problem remains open: uninstrumented captures reproduced
 1090 ms inside `show`, mostly before the Python `showEvent` callback. A later
 virtual-event profiling override caused teardown access violations and was
 removed; those runs remain invalid. No timing threshold or heartbeat was relaxed.
+
+## Opt-in physical scrollbar qualification
+
+The physical scrollbar harness is prepared separately from the default hosted
+injected lane. It is **not** a cursor-presentation fix or installed-build result.
+Do not run it on a user's desktop without an explicit exclusive handoff.
+
+Plan only (no native resources or input):
+
+```powershell
+./scripts/test_capture_broker_native.ps1 -PhysicalScrollbar
+```
+
+After independent review, run only from the clean, pinned harness commit, passing
+one explicit isolated runtime and the full reviewed commit as
+`-ExpectedHarnessHead`, with `-PhysicalScrollbar -ExecuteAfterHandoff`. The launcher
+uses an isolated `-I -B` bootstrap before pytest/product imports. It rejects dirty
+or moved trees, unexpected harness changes and ignored files in `src`, `scripts`
+or `tests`, plus ignored code reachable from the repository import root
+(including bytecode/extensions). Start from a fresh clean checkout,
+not one with caches from earlier tests. Every product/dependency file must remain
+identical to production base `5a5983275dfbd7e7243bd329ca3d859faca024c2`; only the
+explicit eight-file harness/documentation scope may differ. Actual loaded product
+module paths are checked before native resources exist. Receipts identify the
+production base and separate harness head. The supplied interpreter and its
+installed pytest/Qt/dependencies remain a trusted, separately verified runtime;
+this lane does not download, rebuild, replace or certify an installed wheel.
+
+The case retains the owned-target nonce binding before arming, then requests one
+physical movement to the scrollbar and left press/release only at `input-now`.
+Physical mode cannot be combined with hosted input, the physical drag matrix or
+delivery flags. It selects the unchanged production PHYSICAL route and requires
+one non-injected hook pair plus the actual Raw Input left-button pair. Any
+injected packet, unsupported eligibility, absent raw delivery, missing pair or
+unconfirmed cleanup fails rather than falling back to injected input. Product
+matching-report (250 ms), GUI-heartbeat (1 s), case, input and cleanup deadlines
+are unchanged. The full-panel pixel oracle, popup/content identity checks, two
+subsequent selected captures and provider/input cleanup remain mandatory.
+
+No cursor visibility probe is dispatched in this mode. The operator may observe
+cursor presentation during the single click; receipts always leave cursor
+presentation unqualified. No readiness/preview flag, global hotkey registration,
+startup/association/updater setting, installed application or normal user state
+is changed. Output/logs, temporary settings and spool stay within the test's
+unique `.test-tmp` case directory. A failed run is evidence of refusal, not a
+passing qualification. Native execution and the exceptional manual observation
+remain outstanding until explicitly authorized and actually completed.

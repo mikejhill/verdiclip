@@ -19,9 +19,16 @@ from PySide6.QtCore import QEvent, QObject, QPoint, qVersion
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication, QMenu
 from pytestqt.qtbot import QtBot
+from scripts.physical_scrollbar_qualification import SourceProvenance
 from shiboken6 import isValid
 from tests.capture.hosted_fixture_input import CursorPreparation, HostedFixtureClick
 from tests.capture.native_cursor import probe_owned_cursor_baseline
+from tests.capture.physical_scrollbar import (
+    PhysicalScrollbarDriver,
+    physical_input_errors,
+    scrollbar_input_receipt,
+    scrollbar_profile,
+)
 from tests.capture.production_matrix import (
     DriverJournal,
     InputProfile,
@@ -385,7 +392,7 @@ class ScrollbarCase:
         self.qtbot, self.directory = qtbot, directory
         self.fixture_readiness: dict[str, object] = {}
         self.input_deadline = time.monotonic() + 50
-        self.driver = ProductionBrokerDriver(InputProfile.INJECTED, max_seconds=40)
+        self.initialize_input(request)
         patch.setattr("verdiclip.capture.service.make_input_broker", self.driver.broker)
         self.source = RealDesktop()
         request.addfinalizer(self.source.close)
@@ -481,7 +488,7 @@ class ScrollbarCase:
         self.snapshot: StrictFixtureSnapshot | None = None
         self.journal = DriverJournal(
             directory,
-            MatrixCase("qt-scrollbar-popup", "scrollbar-click", InputProfile.INJECTED),
+            MatrixCase("qt-scrollbar-popup", "scrollbar-click", self.profile),
             input_generated_by_harness=os.environ.get("VERDICLIP_HOSTED_SCROLLBAR")
             == "1",
         )
@@ -493,6 +500,25 @@ class ScrollbarCase:
         self.image = QImage()
         self.errors: list[str] = []
         self.app.controller.capture.failed.connect(self.errors.append)
+
+    def initialize_input(self, request: pytest.FixtureRequest) -> None:
+        """Select and admit the physical route before constructing any resources."""
+        self.profile = scrollbar_profile(
+            physical=request.config.getoption("--native-scrollbar-physical"),
+            drag=request.config.getoption("--native-broker-physical"),
+            hosted=os.environ.get("VERDICLIP_HOSTED_SCROLLBAR") == "1",
+            delivery=request.config.getoption("--native-delivery-handoff"),
+        )
+        self.source_provenance: SourceProvenance | None = None
+        if self.profile is InputProfile.PHYSICAL:
+            provenance = request.getfixturevalue("require_broker_handoff")
+            assert isinstance(provenance, SourceProvenance)
+            self.source_provenance = provenance
+        self.driver = (
+            PhysicalScrollbarDriver()
+            if self.profile is InputProfile.PHYSICAL
+            else ProductionBrokerDriver(InputProfile.INJECTED, max_seconds=40)
+        )
 
     def safe(self) -> bool:
         """Native movement never outlives its lease or unchanged fixture owners."""
@@ -794,7 +820,12 @@ class ScrollbarCase:
 
     def run(self) -> None:
         """No replay events or direct Start/Use calls may satisfy this case."""
-        self.probe_cursor()
+        if self.profile is InputProfile.PHYSICAL:
+            assert self.hosted_input is None, (
+                "Physical mode cannot dispatch hosted input"
+            )
+        else:
+            self.probe_cursor()
         target = self.target()
         if self.hosted_input is not None:
             self.hosted_input.bind(target)
@@ -859,6 +890,8 @@ class ScrollbarCase:
         assert self.peer.state["end_seen"] is True
         assert self.peer.state["offset"] == 0
         self.verify_repeated_window_capture()
+        if self.profile is InputProfile.PHYSICAL:
+            assert not physical_input_errors(self.driver)
         self.passed = True
 
     def verify_repeated_window_capture(self) -> None:
@@ -976,6 +1009,22 @@ class ScrollbarCase:
                 operation()
             except (OSError, RuntimeError, AssertionError) as error:
                 failures.append(str(error))
+        physical = (
+            getattr(self, "profile", InputProfile.INJECTED) is InputProfile.PHYSICAL
+        )
+        qualified = (
+            physical
+            and self.passed
+            and not failures
+            and self.retired()
+            and not physical_input_errors(self.driver)
+        )
+        input_receipt = scrollbar_input_receipt(
+            self.driver,
+            physical=physical,
+            qualified=qualified,
+            generated=self.hosted_input is not None,
+        )
         self.directory.mkdir(parents=True, exist_ok=True)
         (self.directory / "scrollbar-native.json").write_text(
             json.dumps(
@@ -1030,16 +1079,24 @@ class ScrollbarCase:
                     "popup_transitions_before_cleanup": transitions,
                     "declared_owned_handles": self.journal.owned_handles,
                     "retired": self.retired(),
-                    "input": dict(
-                        self.driver.receipt(),
-                        input_generated_by_harness=self.hosted_input is not None,
-                    ),
+                    "input": input_receipt,
                     "entry": "AppController.capture_scrolling; no global hotkey claim",
                     "semantic_hits": [
                         [node.kind.value for node in item.nodes]
                         for item in self.discoveries
                     ],
-                    "scope": "native scrollbar interaction; no physical RawInput claim",
+                    "scope": (
+                        "physical scrollbar RawInput; cursor presentation unqualified"
+                        if physical
+                        else "native scrollbar interaction; no physical RawInput claim"
+                    ),
+                    "physical_raw_input_qualified": qualified,
+                    "cursor_presentation_verified": False,
+                    "physical_provenance": (
+                        self.source_provenance.receipt()
+                        if physical and self.source_provenance is not None
+                        else None
+                    ),
                 },
                 indent=2,
             ),
