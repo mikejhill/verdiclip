@@ -29,6 +29,7 @@ from tests.capture.production_matrix import (
     ProductionBrokerDriver,
     StrictFixtureSnapshot,
     cleanup_confirmed,
+    cursor_lease_errors,
     fixture_foreground_errors,
     native_action_errors,
 )
@@ -858,6 +859,8 @@ class ScrollbarCase:
         assert self.peer.poll()
         assert self.peer.state["end_seen"] is True
         assert self.peer.state["offset"] == 0
+        if self.hosted_input is not None:
+            assert not cursor_lease_errors(self.driver)
         self.verify_repeated_window_capture()
         self.passed = True
 

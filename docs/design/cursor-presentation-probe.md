@@ -59,14 +59,15 @@ queue attached, or persistent preference changed. Without owned capture, or if
 one increment is insufficient, the result is inconclusive, not a pass. No
 unbounded show/hide loop is permitted.
 
-Only an observed visible baseline may enter the Magnification experiment. It
+Only a logically showing baseline may enter the Magnification experiment. It
 initializes the API, attempts one hide, observes the result, and restores visibility
 and uninitializes in nested cleanup paths, including on observation failure. The
 receipt contains flags and null/non-null handle class only; native handles,
 coordinates and foreground identities are compared transiently, not serialized.
 Popup preservation is checked during and after the experiment. Baseline restoration
-also checks the original flags, handle, coordinates and foreground. Unconfirmed
-cleanup prevents the fixture from reporting safe retirement.
+also checks the original flags, handle, coordinates and foreground. Those checks
+cannot recover the unknown original Magnification visibility state. Unconfirmed
+API cleanup prevents the fixture from reporting safe retirement.
 
 ## Limits and next evidence
 
@@ -84,6 +85,12 @@ rendered cursor before hiding, absent during capture, and restored afterward,
 alongside all preservation and cleanup checks. These tests do not supply that
 oracle. If native capture ownership is unavailable, a new owned fixture arrangement
 is needed; forcing unrelated cursor state is not a fallback.
+
+CURSOR_SHOWING cannot establish that Magnification visibility was enabled before
+this experiment: the retained native observations show logical visibility can
+remain unchanged by the hide operation. Consequently its explicit show is not a
+general guarantee of restoring a different magnification client's prior state.
+The isolated [production candidate](cursor-lease-candidate.md) retains this limit.
 
 Even a positive result does not justify production integration: interaction with
 accessibility software, concurrent global visibility changes, process failure,

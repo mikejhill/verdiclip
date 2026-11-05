@@ -42,10 +42,11 @@ class CursorState:
 def probe_magnification_cursor(
     result: dict[str, object], preserved: Callable[[], bool]
 ) -> None:
-    """Try one hide/show only when the original system cursor is visibly shown.
+    """Try one hide/show when logical cursor flags permit this hosted experiment.
 
-    MagShowSystemCursor is global and not reference-counted. A hidden baseline
-    does not reveal its underlying state, so it cannot safely be forced visible.
+    MagShowSystemCursor is global and not reference-counted. Even showing flags
+    do not reveal its underlying state. This disposable-only experiment explicitly
+    shows again; it cannot establish exact prior-state restoration for other clients.
     The outer owned-case process supervisor bounds native calls independently.
     No shape substitution, cursor movement, input attachment or device change.
     """
@@ -102,8 +103,8 @@ def probe_magnification_cursor(
         raise AssertionError("Cursor magnification initialization failed")
     try:
         try:
-            # Once attempted, restore even if the API reports failure: its
-            # original global state is known only because the baseline is visible.
+            # Once attempted, show again even if the API reports failure.
+            # This is not proof of restoring the unknown previous global state.
             result["hide_succeeded"] = bool(magnification.MagShowSystemCursor(0))
             during = state()
             result["during"] = during.metadata()

@@ -8,6 +8,7 @@ from collections.abc import Callable
 from typing import cast
 
 from verdiclip.capture.input_raw import RawInputDevice, RawMouseMessage
+from verdiclip.platform.cursor import CursorInfo
 
 
 class DllFunction:
@@ -39,6 +40,7 @@ class InputDllFixture:
         self.packet.header.size = ctypes.sizeof(self.packet)
         self.messages: list[w.MSG] = []
         self.peek_flood = False
+        self.cursor_visibility: list[bool] = []
         self.handlers: dict[str, Callable[..., object]] = {
             "GetRegisteredRawInputDevices": self._registered,
             "RegisterRawInputDevices": self._register,
@@ -50,6 +52,8 @@ class InputDllFixture:
             "GetSystemMetrics": self._metrics,
             "GetAsyncKeyState": self._key_state,
             "GetPhysicalCursorPos": self._cursor,
+            "GetCursorInfo": self._cursor_info,
+            "MagShowSystemCursor": self._cursor_visibility,
             "GetUserObjectInformationW": self._desktop,
             "SetWindowsHookExW": self._hook,
         }
@@ -139,6 +143,19 @@ class InputDllFixture:
     def _cursor(*args: object) -> int:
         point = ctypes.cast(InputDllFixture._address(args[0]), ctypes.POINTER(w.POINT))
         point.contents.x, point.contents.y = 100, 200
+        return 1
+
+    @staticmethod
+    def _cursor_info(*args: object) -> int:
+        info = ctypes.cast(
+            InputDllFixture._address(args[0]), ctypes.POINTER(CursorInfo)
+        ).contents
+        info.flags = 1
+        info.cursor = 123
+        return 1
+
+    def _cursor_visibility(self, *args: object) -> int:
+        self.cursor_visibility.append(bool(args[0]))
         return 1
 
     @staticmethod

@@ -43,6 +43,10 @@ def test_native_adapter_registers_only_own_raw_receiver_and_retires_every_resour
     api.install(lambda *_args: 0, lambda *_args: 0, lambda _event: None)
     assert dll.registrations == [(1, 2, 0x100, 1234)]
     assert dll.hook_calls == 2
+    assert dll.cursor_visibility == [False]
+    assert dll.calls.index("MagInitialize") > max(
+        index for index, name in enumerate(dll.calls) if name == "SetWindowsHookExW"
+    )
     assert api.desktop_safe()
     assert api.cursor() == Point(100, 200)
     assert not api.buttons_held()
@@ -56,6 +60,8 @@ def test_native_adapter_registers_only_own_raw_receiver_and_retires_every_resour
     assert dll.registrations == []
     assert dll.window == 0
     assert dll.calls.count("UnhookWindowsHookEx") == 2
+    assert dll.cursor_visibility == [False, True]
+    assert dll.calls.index("MagUninitialize") < dll.calls.index("UnhookWindowsHookEx")
 
 
 def test_existing_registration_is_never_overwritten(
@@ -253,3 +259,64 @@ def test_raw_cleanup_failure_requires_safe_retry(
     dll.fail = ""
     cleaned = api.close()
     assert cleaned
+
+
+@pytest.mark.parametrize(
+    "failure", ["GetCursorInfo", "MagInitialize", "MagShowSystemCursor"]
+)
+def test_cursor_setup_failure_still_retires_installed_input(
+    native: tuple[Win32InputPlatform, InputDllFixture], failure: str
+) -> None:
+    """Cursor setup shares the worker's existing partial-acquisition cleanup."""
+    api, dll = native
+    dll.fail = failure
+    with pytest.raises(PlatformError):
+        api.install(lambda *_args: 0, lambda *_args: 0, lambda _event: None)
+    assert dll.hook_calls == 2
+    dll.fail = ""
+    cleaned = api.close()
+    assert cleaned
+    assert not dll.registrations
+    assert dll.window == 0
+    assert dll.calls.count("UnhookWindowsHookEx") == 2
+    assert dll.cursor_visibility == ([True] if failure == "MagShowSystemCursor" else [])
+
+
+@pytest.mark.parametrize("failure", ["MagShowSystemCursor", "MagUninitialize"])
+def test_cursor_teardown_failure_does_not_skip_input_cleanup(
+    native: tuple[Win32InputPlatform, InputDllFixture], failure: str
+) -> None:
+    """No failed cursor receipt can be reported as safe hook/raw retirement."""
+    api, dll = native
+    api.install(lambda *_args: 0, lambda *_args: 0, lambda _event: None)
+    dll.fail = failure
+    cleaned = api.close()
+    assert not cleaned
+    assert not dll.registrations
+    assert dll.window == 0
+    assert dll.calls.count("UnhookWindowsHookEx") == 2
+    assert "MagUninitialize" in dll.calls
+    dll.fail = ""
+    cleaned = api.close()
+    assert not cleaned
+
+
+def test_cursor_restore_exception_still_retires_hooks_and_raw_receiver(
+    native: tuple[Win32InputPlatform, InputDllFixture],
+) -> None:
+    """An exception remains visible while the independent teardown still runs."""
+    api, dll = native
+    api.install(lambda *_args: 0, lambda *_args: 0, lambda _event: None)
+
+    def broken_restore(*_args: object) -> int:
+        raise OSError("Fixture cursor restore failed")
+
+    dll.handlers["MagShowSystemCursor"] = broken_restore
+    with pytest.raises(OSError, match="cursor restore"):
+        api.close()
+    assert not dll.registrations
+    assert dll.window == 0
+    assert dll.calls.count("UnhookWindowsHookEx") == 2
+    assert "MagUninitialize" in dll.calls
+    cleaned = api.close()
+    assert not cleaned
