@@ -3,7 +3,7 @@
 import json
 
 import pytest
-from scripts.scheduler_trace_summary import schema_summary, summarize
+from scripts.scheduler_trace_summary import numeric_fields, schema_summary, summarize
 
 HEADER = [
     "BeginHeader",
@@ -109,3 +109,12 @@ def test_emitter_only_ready_schema_cannot_prove_target_identity() -> None:
             ],
             7,
         )
+
+
+def test_numeric_failure_reports_field_not_private_payload() -> None:
+    """Invalid trace values never leak into the diagnostic reason."""
+    with pytest.raises(
+        ValueError, match=r"^Non-numeric scheduler field oldthreadstate$"
+    ) as error:
+        numeric_fields({"oldthreadstate": "PRIVATE_CONTENT"})
+    assert "PRIVATE_CONTENT" not in str(error.value)

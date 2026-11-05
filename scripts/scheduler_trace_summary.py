@@ -30,6 +30,18 @@ FIELDS = frozenset(
 MAX_EVENTS = 1000
 
 
+def numeric_fields(values: dict[str, str]) -> dict[str, float]:
+    """Reject unknown numeric formats without echoing raw field contents."""
+    numeric: dict[str, float] = {}
+    for name, value in values.items():
+        if name in FIELDS:
+            try:
+                numeric[name] = float(value.strip())
+            except ValueError:
+                raise ValueError("Non-numeric scheduler field " + name) from None
+    return numeric
+
+
 def numeric_event(
     kind: str, row: list[str], names: list[str] | None, thread_id: int
 ) -> dict[str, float] | None:
@@ -72,9 +84,7 @@ def numeric_event(
         raise ValueError("Missing scheduler thread identity")
     if thread_id not in ids:
         return None
-    numeric = {
-        name: float(value.strip()) for name, value in values.items() if name in FIELDS
-    }
+    numeric = numeric_fields(values)
     if not all(math.isfinite(value) for value in numeric.values()):
         raise ValueError("Invalid scheduler numeric field")
     if "timestamp" not in numeric:
@@ -175,9 +185,19 @@ def main() -> None:
 if __name__ == "__main__":
     try:
         main()
-    except (ValueError, OSError, csv.Error):
+    except (ValueError, OSError, csv.Error) as error:
         # Do not echo raw exporter fields, paths or a traceback into public logs.
-        sys.stdout.write(
-            "GUI_SCHEDULER_TRACE=unavailable; input/schema/identity validation failed\n"
-        )
+        known = {
+            "Unrecognized scheduler event schema",
+            "Missing scheduler thread identity",
+            "Invalid scheduler numeric field",
+            "Missing scheduler timestamp",
+            "No owned GUI-thread scheduler events",
+            "Trace export exceeds diagnostic input budget",
+            "Missing exact first-trial identity",
+            "Invalid owned GUI thread identity",
+            *("Non-numeric scheduler field " + name for name in FIELDS),
+        }
+        reason = str(error) if str(error) in known else type(error).__name__
+        sys.stdout.write("GUI_SCHEDULER_TRACE=unavailable; reason=" + reason + "\n")
         raise SystemExit(2) from None
