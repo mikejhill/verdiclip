@@ -67,17 +67,28 @@ def test_actual_provider_render_callback_activates_only_once(tmp_path: Path) -> 
     script.write_text(
         "param([string]$Fixture)\n"
         "$ErrorActionPreference='Stop'\n"
+        "$clock=[Diagnostics.Stopwatch]::StartNew()\n"
+        "function Write-RenderPhase([string]$Phase) {\n"
+        "[Console]::Error.WriteLine(('render-phase={0};elapsed-ms={1}' "
+        "-f $Phase,$clock.ElapsedMilliseconds))\n"
+        "}\n"
+        "Write-RenderPhase 'entry'\n"
         "$source=[IO.File]::ReadAllText($Fixture)\n"
+        "Write-RenderPhase 'source-read'\n"
         "$pattern='(?s)\\$window\\.Add_ContentRendered\\(\\{(.*?)\\}\\)'\n"
         "$match=[regex]::Match($source,$pattern)\n"
         "if(-not $match.Success){throw 'callback not found'}\n"
+        "Write-RenderPhase 'callback-extracted'\n"
         "$script:ready=$false;$script:renderObserved=$false;$script:activations=0;$script:states=0\n"
         "$window=[pscustomobject]@{}\n"
         "$window|Add-Member ScriptMethod Activate "
         "{$script:activations++;return $true}\n"
         "function Write-FixtureState {$script:states++}\n"
         "$callback=[Action][scriptblock]::Create($match.Groups[1].Value)\n"
-        "$callback.Invoke();$callback.Invoke();$callback.Invoke()\n"
+        "Write-RenderPhase 'callback-bound'\n"
+        "$callback.Invoke();Write-RenderPhase 'first-returned'\n"
+        "$callback.Invoke();Write-RenderPhase 'second-returned'\n"
+        "$callback.Invoke();Write-RenderPhase 'third-returned'\n"
         "if($script:activations -ne 1 -or $script:states -ne 1 "
         "-or -not $script:ready){throw 'repeat activation'}\n"
         "[Console]::WriteLine('one-activation')\n",
@@ -102,6 +113,20 @@ def test_actual_provider_render_callback_activates_only_once(tmp_path: Path) -> 
     assert result.stdout.strip() == "one-activation"
     assert result.stderr.count("FIXTURE_PHASE=initial-activation") == 1
     assert result.stderr.count("FIXTURE_PHASE=repeat-render-ignored") == 1
+    phases = [
+        line.split(";", 1)[0].removeprefix("render-phase=")
+        for line in result.stderr.splitlines()
+        if line.startswith("render-phase=")
+    ]
+    assert phases == [
+        "entry",
+        "source-read",
+        "callback-extracted",
+        "callback-bound",
+        "first-returned",
+        "second-returned",
+        "third-returned",
+    ]
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Installed Windows PowerShell")

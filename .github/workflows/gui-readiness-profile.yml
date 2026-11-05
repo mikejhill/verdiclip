@@ -37,6 +37,11 @@ jobs:
       VERDICLIP_BENCHMARK_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       VERDICLIP_GUI_PROFILE: '1'
       VERDICLIP_GUI_PROFILE_TRIAL: '1'
+      # Qt's own lifecycle trace avoids replacing Shiboken virtual methods.
+      # Owned synthetic editor only; diagnostic I/O adds overhead and is not
+      # evidence of the uninstrumented latency gate passing or failing.
+      QT_LOGGING_RULES: 'qt.widgets.showhide.debug=true;qt.widgets.window.debug=true'
+      QT_MESSAGE_PATTERN: 'QT_LIFECYCLE %{time process} %{category}: %{message}'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
