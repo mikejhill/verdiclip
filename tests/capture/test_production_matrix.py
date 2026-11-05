@@ -343,7 +343,7 @@ def test_post_terminal_menu_receipt_requires_correlated_request() -> None:
     """A recent queued pre-terminal observation cannot establish final state."""
     peer = MenuPeer()
     peer.owner = 42
-    peer.process = cast("subprocess.Popen[str]", SimpleNamespace(poll=lambda: None))
+    peer.process = cast(subprocess.Popen[str], SimpleNamespace(poll=lambda: None))
     peer._sequence = 8
     peer.state = decode_menu_state(menu_reply(sequence=7), "scope", 100)
     assert not peer.acknowledged(8)
@@ -489,7 +489,7 @@ def test_strict_fixture_snapshot_detects_focus_and_menu_action_changes(
 def test_exited_peer_cannot_reuse_cached_open_state() -> None:
     """A dead child cannot acknowledge a request that was never sent."""
     peer = MenuPeer()
-    peer.process = cast("subprocess.Popen[str]", SimpleNamespace(poll=lambda: 0))
+    peer.process = cast(subprocess.Popen[str], SimpleNamespace(poll=lambda: 0))
     peer.owner = 42
     peer._sequence = 7
     peer.state = decode_menu_state(menu_reply(sequence=7), "scope", 100)
@@ -517,7 +517,7 @@ def test_foreign_cleanup_write_error_is_retained_after_child_exit() -> None:
         returncode=0,
     )
     peer = MenuPeer()
-    peer.process = cast("subprocess.Popen[str]", child)
+    peer.process = cast(subprocess.Popen[str], child)
     with pytest.raises(OSError, match="cleanup request failed") as error:
         peer.close()
     assert isinstance(error.value.__cause__, OSError)

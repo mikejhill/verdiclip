@@ -49,7 +49,7 @@ def method(path: str, owner: str, name: str, **ports: object) -> Callable[..., N
         module = importlib.import_module(
             "verdiclip." + path.removesuffix(".py").replace("/", ".")
         )
-        actual = cast("FunctionType", getattr(getattr(module, owner), name))
+        actual = cast(FunctionType, getattr(getattr(module, owner), name))
 
         def invoke(*args: object, **kwargs: object) -> None:
             with patch.dict(actual.__globals__, namespace):

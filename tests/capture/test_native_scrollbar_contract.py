@@ -199,7 +199,7 @@ def test_provider_center_probe_cannot_satisfy_actual_click_discovery(
             )
         else:
             ScrollbarCase.record_discovery(
-                cast(ScrollbarCase, case), cast("UiaRequest", request), discovery
+                cast(ScrollbarCase, case), cast(UiaRequest, request), discovery
             )
         assert cast("Callable[[], bool]", predicate)()
 
@@ -219,11 +219,11 @@ def test_provider_center_probe_cannot_satisfy_actual_click_discovery(
     if outcome != "wrong-point":
         # Even late delivery of the center response stays diagnostic-only.
         ScrollbarCase.record_discovery(
-            cast(ScrollbarCase, case), cast("UiaRequest", request), discovery
+            cast(ScrollbarCase, case), cast(UiaRequest, request), discovery
         )
         assert case.discoveries == []
         ScrollbarCase.record_discovery(
-            cast(ScrollbarCase, case), cast("UiaRequest", object()), discovery
+            cast(ScrollbarCase, case), cast(UiaRequest, object()), discovery
         )
         assert case.discoveries == [discovery]
 

@@ -78,10 +78,14 @@ def test_actual_xperf_columns_use_ready_target_not_emitter() -> None:
     result = summarize(
         [
             "BeginHeader",
-            "CSwitch, TimeStamp, New Process Name ( PID), New TID, "
-            "Old Process Name ( PID), Old TID, OldState, Wait Reason",
-            "ReadyThread, TimeStamp, Process Name ( PID), ThreadID, "
-            "Rdy Process Name ( PID), Rdy TID, AdjustReason",
+            (
+                "CSwitch, TimeStamp, New Process Name ( PID), New TID, "
+                "Old Process Name ( PID), Old TID, OldState, Wait Reason"
+            ),
+            (
+                "ReadyThread, TimeStamp, Process Name ( PID), ThreadID, "
+                "Rdy Process Name ( PID), Rdy TID, AdjustReason"
+            ),
             "EndHeader",
             "CSwitch, 100, SECRET, 7, OTHER, 8, Waiting, Executive",
             "ReadyThread, 105, SECRET, 7, OTHER, 8, 0",
