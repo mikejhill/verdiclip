@@ -7,6 +7,7 @@
     </SystemCollector>
     <SystemProvider Id="SchedulerProvider">
       <Keywords>
+        <Keyword Value="ProcessThread"/>
         <Keyword Value="CSwitch"/>
         <Keyword Value="ReadyThread"/>
       </Keywords>

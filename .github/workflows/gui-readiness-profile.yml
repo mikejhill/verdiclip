@@ -7,6 +7,8 @@ on:
       - 'scripts/gui_readiness_profile.py'
       - 'scripts/gui_waits.wprp'
       - 'scripts/scheduler_trace_summary.py'
+      - 'scripts/scheduler_phase_summary.py'
+      - 'scripts/read_scheduler_etl.cpp'
       - 'tests/tooling/test_gui_readiness_profile.py'
 
 permissions:
@@ -98,6 +100,23 @@ jobs:
             throw 'Diagnostic checkout identity mismatch.'
           }
           Write-Output "GUI_READINESS_PROFILE_SOURCE=$actual"
+      - name: Compile repository-owned finalized-ETL reader
+        timeout-minutes: 1
+        shell: pwsh
+        run: |
+          $locator = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $signature = Get-AuthenticodeSignature -LiteralPath $locator
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') { throw 'Compiler locator is not verified Microsoft software' }
+          $installation = & $locator -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or -not $installation -or @($installation).Count -ne 1) { throw 'Existing compiler unavailable' }
+          $setup = Join-Path $installation 'VC/Auxiliary/Build/vcvars64.bat'
+          $reader = Join-Path $env:RUNNER_TEMP 'VerdiClip-read-scheduler.exe'
+          $object = Join-Path $env:RUNNER_TEMP 'VerdiClip-read-scheduler.obj'
+          if ((Test-Path -LiteralPath $reader) -or (Test-Path -LiteralPath $object)) { throw 'Reader output already exists' }
+          'VERDICLIP_READER_OWNED=1' >> $env:GITHUB_ENV
+          $command = '"' + $setup + '" >nul && cl /nologo /W4 /WX /EHsc /std:c++17 scripts\read_scheduler_etl.cpp /Fe:"' + $reader + '" /Fo:"' + $object + '" /link advapi32.lib tdh.lib'
+          & $env:ComSpec /d /s /c $command
+          if ($LASTEXITCODE -ne 0) { throw 'ETL reader compilation failed' }
       - name: Up to five instrumented processes, with the first GUI process first
         timeout-minutes: 2
         shell: pwsh
@@ -126,6 +145,8 @@ jobs:
           $owner = 'VerdiClip-' + [guid]::NewGuid().ToString('N')
           $trace = Join-Path $env:RUNNER_TEMP ($owner + '.etl')
           $csv = Join-Path $env:RUNNER_TEMP ($owner + '.csv')
+          $phases = Join-Path $env:RUNNER_TEMP ($owner + '.phases.json')
+          $scheduler = Join-Path $env:RUNNER_TEMP ($owner + '.scheduler.csv')
           & $wpr -profiles "$PWD/scripts/gui_waits.wprp"
           if ($LASTEXITCODE -ne 0) { throw 'Scheduler profile validation failed' }
           "VERDICLIP_TRACE_OWNER=$owner" >> $env:GITHUB_ENV
@@ -136,6 +157,7 @@ jobs:
             $report = Join-Path $env:RUNNER_TEMP ('readiness-profile-' + [guid]::NewGuid().ToString('N') + '.xml')
             $log = "$report.log"
             if ($trial -eq 1) {
+              $env:VERDICLIP_GUI_PHASE_FILE = $phases
               & $wpr -start "$PWD/scripts/gui_waits.wprp!VerdiClipWaits" -instancename $owner
               if ($LASTEXITCODE -ne 0) { throw 'Named scheduler trace admission failed' }
             }
@@ -147,14 +169,14 @@ jobs:
                 & $wpr -stop $trace -skipPdbGen -instancename $owner
                 if ($LASTEXITCODE -ne 0) { throw 'Named trace stop failed; cleanup remains required' }
                 'VERDICLIP_TRACE_STOPPED=1' >> $env:GITHUB_ENV
+                Remove-Item Env:VERDICLIP_GUI_PHASE_FILE
               }
             }
             if ($trial -eq 1) {
-              & $xperf -i $trace -o $csv -a dumper
-              if ($LASTEXITCODE -ne 0) { throw 'Scheduler export failed' }
-              & .venv/Scripts/python.exe scripts/scheduler_trace_summary.py $csv $log
+              $reader = Join-Path $env:RUNNER_TEMP 'VerdiClip-read-scheduler.exe'
+              & .venv/Scripts/python.exe scripts/scheduler_phase_summary.py $reader $trace $phases $scheduler
               if ($LASTEXITCODE -ne 0) {
-                Write-Output 'Owned scheduler analysis unavailable; no causal claim; retaining failure and continuing untraced controls'
+                Write-Output 'Phase scheduler analysis unavailable; no causal claim; retaining failure and continuing untraced controls'
                 $aggregate = 1
               }
             }
@@ -191,17 +213,30 @@ jobs:
         timeout-minutes: 1
         shell: pwsh
         run: |
-          $owner = $env:VERDICLIP_TRACE_OWNER
-          if (-not $owner) { Write-Output 'TRACE_CLEANUP=no recording attempted'; exit 0 }
-          if ($owner -notmatch '^VerdiClip-[a-f0-9]{32}$') { throw 'Trace ownership invalid' }
           $uncertain = @()
+          if ($env:VERDICLIP_READER_OWNED -eq '1') {
+            foreach ($name in @('VerdiClip-read-scheduler.exe', 'VerdiClip-read-scheduler.obj')) {
+              try {
+                $path = Join-Path $env:RUNNER_TEMP $name
+                if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -ErrorAction Stop }
+                if (Test-Path -LiteralPath $path) { throw 'Reader output still exists' }
+              } catch { $uncertain += 'reader output removal unverified' }
+            }
+          }
+          $owner = $env:VERDICLIP_TRACE_OWNER
+          if (-not $owner) {
+            if ($uncertain.Count) { throw ($uncertain -join '; ') }
+            Write-Output 'TRACE_CLEANUP=no recording attempted; owned reader outputs absent'
+            exit 0
+          }
+          if ($owner -notmatch '^VerdiClip-[a-f0-9]{32}$') { throw 'Trace ownership invalid' }
           try {
             if ($env:VERDICLIP_TRACE_STOPPED -ne '1') {
               & "$env:SystemRoot/System32/wpr.exe" -cancel -instancename $owner
               if ($LASTEXITCODE -ne 0) { throw 'Named trace retirement is unverified' }
             }
           } catch { $uncertain += 'recording retirement unverified' }
-          foreach ($suffix in @('.etl', '.csv')) {
+          foreach ($suffix in @('.etl', '.csv', '.phases.json', '.scheduler.csv')) {
             try {
               $path = Join-Path $env:RUNNER_TEMP ($owner + $suffix)
               if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -ErrorAction Stop }

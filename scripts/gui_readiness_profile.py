@@ -16,6 +16,7 @@ import time
 from collections.abc import Callable, Generator, Sequence
 from dataclasses import dataclass, field
 from functools import wraps
+from pathlib import Path
 from typing import Protocol
 
 from pluggy import HookimplMarker
@@ -47,6 +48,7 @@ class Trace:
     thread: Callable[[], int] = time.thread_time_ns
     records: list[dict[str, object]] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    private_intervals: list[tuple[str, int, int, int]] = field(default_factory=list)
     ordinal: int = 0
     dispatch_depth: int = 0
     active: bool = True
@@ -124,6 +126,7 @@ class Trace:
                 self.truncated = True
                 return
             start_offset, end_offset = self.offsets(ordinal, start[0], end[0])
+            self.private_intervals.append((label, ordinal, start[0], end[0]))
             self.records.append(
                 {
                     "phase": label,
@@ -283,6 +286,35 @@ def emit(packet: dict[str, object]) -> None:
     sys.stdout.flush()
 
 
+def write_private_phases(trace: Trace) -> None:
+    """Write raw QPC-aligned phases only to a unique private runner sidecar."""
+    destination = os.environ.get("VERDICLIP_GUI_PHASE_FILE")
+    if destination is None:
+        return
+    path = Path(destination).resolve()
+    root = Path(os.environ["RUNNER_TEMP"]).resolve()
+    if (
+        path.parent != root
+        or re.fullmatch(r"VerdiClip-[a-f0-9]{32}\.phases\.json", path.name) is None
+    ):
+        raise ValueError("Private phase destination invalid")
+    clock = time.get_clock_info("perf_counter")
+    if clock.implementation != "QueryPerformanceCounter()" or not clock.monotonic:
+        raise ValueError("Private phase clock is not Windows QPC")
+    with path.open("x", encoding="utf-8") as stream:
+        json.dump(
+            {
+                "pid": os.getpid(),
+                "tid": threading.get_native_id(),
+                "source_sha": os.environ["VERDICLIP_BENCHMARK_SOURCE_SHA"],
+                "intervals": trace.private_intervals,
+                "errors": trace.errors,
+                "truncated": trace.truncated,
+            },
+            stream,
+        )
+
+
 @dataclass(eq=False)
 class Profiler:
     """One unchanged benchmark case; no selection, readiness or threshold changes."""
@@ -318,6 +350,7 @@ class Profiler:
         finally:
             patches.close()
             try:
+                write_private_phases(self.trace)
                 self.emitter(
                     {
                         "source_sha": os.environ.get("VERDICLIP_BENCHMARK_SOURCE_SHA"),

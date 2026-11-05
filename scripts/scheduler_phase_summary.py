@@ -1,0 +1,232 @@
+"""Bounded private ETL aggregation; no raw events or absolute clocks are public."""
+
+from __future__ import annotations
+
+import csv
+import json
+import os
+import re
+import subprocess
+import sys
+from itertools import groupby
+from pathlib import Path
+
+MAX_ROWS = 2_000_000
+HEADER_FIELDS = 9
+THREAD_END = 2
+LIFETIME_EVENTS = 2
+MAX_PHASES = 128
+READY_FIELDS = 3
+SWITCH_FIELDS = 5
+PHASE_FIELDS = 4
+
+
+def aggregate(rows: list[list[str]], phases: dict[str, object]) -> dict[str, object]:
+    """Require finalized zero-loss QPC evidence and one exact thread lifetime."""
+    pid, tid = phases["pid"], phases["tid"]
+    if type(pid) is not int or type(tid) is not int or pid <= 0 or tid <= 0:
+        raise ValueError("identity")
+    if phases.get("errors") or phases.get("truncated"):
+        raise ValueError("phase completeness")
+    headers = [row for row in rows if row and row[0] == "H"]
+    if len(headers) != 1 or len(headers[0]) != HEADER_FIELDS or rows[-1] != headers[0]:
+        raise ValueError("trace finalization")
+    clock, frequency, lost, buffers, callback_lost, result, closed, count = map(
+        int, headers[0][1:]
+    )
+    if (
+        clock != 1
+        or frequency <= 0
+        or any((lost, buffers, callback_lost, result, closed))
+        or count > MAX_ROWS
+    ):
+        raise ValueError("trace loss or clock")
+    life = [tuple(map(int, row[1:])) for row in rows if row and row[0] == "L"]
+    starts = [
+        stamp
+        for stamp, opcode, owner, thread in life
+        if opcode == 1 and owner == pid and thread == tid
+    ]
+    ends = [
+        stamp
+        for stamp, opcode, owner, thread in life
+        if opcode == THREAD_END and owner == pid and thread == tid
+    ]
+    if (
+        len(life) != LIFETIME_EVENTS
+        or len(starts) != 1
+        or len(ends) != 1
+        or starts[0] >= ends[0]
+    ):
+        raise ValueError("thread lifetime or reuse")
+    segments = scheduler_segments(rows, tid, starts[0], ends[0])
+    intervals = phases["intervals"]
+    if not isinstance(intervals, list) or not 1 <= len(intervals) <= MAX_PHASES:
+        raise ValueError("phase budget")
+    output = [
+        phase_totals(item, frequency, segments, starts[0], ends[0])
+        for item in intervals
+    ]
+    return {
+        "event_loss_checked": True,
+        "events_lost": 0,
+        "buffers_lost": 0,
+        "thread_lifetime_checked": True,
+        "thread_reuse_rejected": True,
+        "clock": "raw QPC aligned to Python perf_counter_ns",
+        "alignment_endpoint_rounding_bound_ns": (1_000_000_000 + frequency - 1)
+        // frequency
+        + 1,
+        "analysis_complete": all(entry["state_complete"] for entry in output),
+        "phase_count": len(output),
+        "phases": output,
+        "causal_claim": False,
+        "scheduled_time_is_not_exclusive_application_cpu": True,
+    }
+
+
+def next_state(row: list[str], tid: int, state: str) -> str:
+    """Decode only owned switch/ready state transitions."""
+    if row[0] == "R":
+        if len(row) != READY_FIELDS or int(row[2]) != tid:
+            raise ValueError("ready identity")
+        state = "ready" if state != "scheduled" else "unknown"
+    else:
+        if len(row) != SWITCH_FIELDS:
+            raise ValueError("switch schema")
+        new, old, old_state = map(int, row[2:])
+        if tid not in (new, old):
+            raise ValueError("switch identity")
+        if old == tid:
+            state = {1: "ready", 3: "ready", 7: "ready", 5: "waiting"}.get(
+                old_state, "unknown"
+            )
+        if new == tid:
+            state = "scheduled"
+    return state
+
+
+def scheduler_segments(
+    rows: list[list[str]], tid: int, start: int, end: int
+) -> list[tuple[int, int, str]]:
+    """Convert complete switch/ready events into non-overlapping state intervals."""
+    last, state = start, "unknown"
+    segments: list[tuple[int, int, str]] = []
+    candidate = (row for row in rows if row and row[0] in {"S", "R"})
+    for stamp, group in groupby(candidate, key=lambda row: int(row[1])):
+        transitions = list(group)
+        if not start <= stamp <= end or stamp < last:
+            raise ValueError("event outside lifetime or time inversion")
+        if stamp > last:
+            segments.append((last, stamp, state))
+        # ETW does not establish cross-CPU ordering for tied timestamps.
+        # Validate every row, but do not guess the resulting state for a tie.
+        decoded = [next_state(row, tid, state) for row in transitions]
+        state = decoded[0] if len(decoded) == 1 else "unknown"
+        last = stamp
+    if last < end:
+        segments.append((last, end, state))
+    return segments
+
+
+def phase_totals(
+    item: object,
+    frequency: int,
+    segments: list[tuple[int, int, str]],
+    birth: int,
+    death: int,
+) -> dict[str, object]:
+    """Clip all scheduler intervals to one exact measured phase without truncation."""
+    if not isinstance(item, (list, tuple)) or len(item) != PHASE_FIELDS:
+        raise ValueError("phase schema")
+    name, ordinal, begin_ns, end_ns = item
+    if not isinstance(name, str) or re.fullmatch(r"[a-z_]{1,64}", name) is None:
+        raise ValueError("phase name")
+    if any(type(value) is not int for value in (ordinal, begin_ns, end_ns)):
+        raise ValueError("phase clock")
+    begin, end = (
+        begin_ns * frequency // 1_000_000_000,
+        end_ns * frequency // 1_000_000_000,
+    )
+    if not birth <= begin <= end <= death:
+        raise ValueError("phase outside lifetime")
+    totals = dict.fromkeys(("scheduled", "waiting", "ready", "unknown"), 0)
+    for left, right, state in segments:
+        overlap = max(0, min(end, right) - max(begin, left))
+        totals[state] += overlap
+    if sum(totals.values()) != end - begin:
+        raise ValueError("incomplete phase coverage")
+    return {
+        "phase": name,
+        "capture_ordinal": ordinal,
+        "wall_ms": (end_ns - begin_ns) / 1_000_000,
+        **{key + "_ms": value * 1000 / frequency for key, value in totals.items()},
+        "state_complete": totals["unknown"] == 0,
+    }
+
+
+def main() -> None:
+    """Run only the repository-built file reader on a private finalized ETL."""
+    reader, etl, phase_path, raw = map(Path, sys.argv[1:])
+    if phase_path.stat().st_size > 1024 * 1024:
+        raise ValueError("phase file budget")
+    phases = json.loads(phase_path.read_text(encoding="utf-8"))
+    if phases.get("source_sha") != os.environ["VERDICLIP_BENCHMARK_SOURCE_SHA"]:
+        raise ValueError("source identity")
+    with raw.open("x", encoding="utf-8") as stream:
+        result = subprocess.run(  # noqa: S603 - explicit reviewed reader path, numeric identity, no shell
+            [str(reader), str(etl), str(phases["pid"]), str(phases["tid"])],
+            stdout=stream,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+            check=False,
+        )
+    sys.stdout.write("GUI_PHASE_READER_EXIT=" + str(result.returncode) + "\n")
+    if result.returncode != 0 or raw.stat().st_size > 256 * 1024 * 1024:
+        raise ValueError("native reader failed or budget exceeded")
+    rows = list(csv.reader(raw.read_text(encoding="utf-8").splitlines()))
+    if len(rows) > MAX_ROWS:
+        raise ValueError("event budget")
+    report = aggregate(rows, phases)
+    sys.stdout.write("GUI_PHASE_SCHEDULER=" + json.dumps(report, sort_keys=True) + "\n")
+    if not report["analysis_complete"]:
+        raise ValueError("unknown phase state")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (
+        ValueError,
+        OSError,
+        KeyError,
+        TypeError,
+        subprocess.TimeoutExpired,
+    ) as error:
+        known = {
+            "identity",
+            "phase completeness",
+            "trace finalization",
+            "trace loss or clock",
+            "thread lifetime or reuse",
+            "phase budget",
+            "event outside lifetime or time inversion",
+            "ready identity",
+            "switch schema",
+            "switch identity",
+            "phase schema",
+            "phase name",
+            "phase clock",
+            "phase outside lifetime",
+            "incomplete phase coverage",
+            "phase file budget",
+            "source identity",
+            "native reader failed or budget exceeded",
+            "event budget",
+            "unknown phase state",
+        }
+        reason = str(error) if str(error) in known else type(error).__name__
+        sys.stdout.write(
+            "GUI_PHASE_SCHEDULER=unavailable; reason=" + reason + "; no causal claim\n"
+        )
+        raise SystemExit(2) from None
