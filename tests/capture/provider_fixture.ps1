@@ -72,6 +72,14 @@ function Write-FocusPhase([string]$phase) {
 }
 $window.Add_Activated({ Write-FocusPhase 'activated' })
 $viewer.Add_GotKeyboardFocus({ Write-FocusPhase 'viewer-focus' })
+function Confirm-FixtureActivation([object]$owner) {
+    # ShowDialog normally activates this owned window already. Do not enter a
+    # second native activation transaction from ContentRendered unnecessarily.
+    if (-not $owner.IsActive) {
+        if (-not $owner.Activate()) { throw 'Owned fixture activation refused' }
+    }
+    if (-not $owner.IsActive) { throw 'Owned fixture activation incomplete' }
+}
 function Write-FixtureState {
     if (-not $ready -or -not $window.IsLoaded -or $closed) { return }
     $handle = ([Windows.Interop.WindowInteropHelper]::new($window)).Handle.ToInt64()
@@ -139,9 +147,11 @@ $window.Add_ContentRendered({
         return
     } # Later renders cannot reactivate an established fixture.
     [Console]::Error.WriteLine('FIXTURE_PHASE=initial-activation utc=' + [DateTime]::UtcNow.ToString('o'))
-    $null = $window.Activate()
+    Confirm-FixtureActivation $window
+    [Console]::Error.WriteLine('FIXTURE_PHASE=activation-complete utc=' + [DateTime]::UtcNow.ToString('o'))
     $script:ready = $true
     Write-FixtureState
+    [Console]::Error.WriteLine('FIXTURE_PHASE=initial-snapshot-written utc=' + [DateTime]::UtcNow.ToString('o'))
 })
 $viewer.Add_ScrollChanged({ Write-FixtureState })
 $window.Add_Closed({ $script:closed=$true; $timer.Stop() })
