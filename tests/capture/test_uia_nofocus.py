@@ -62,7 +62,7 @@ def test_mutation_uses_packaged_same_client_no_focus_implementation() -> None:
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Installed Windows PowerShell")
 def test_actual_provider_render_callback_activates_only_once(tmp_path: Path) -> None:
-    """Invoke the actual callback three times with fakes; never create WPF UI."""
+    """Cancellation cannot claim publication; repeated renders never reactivate."""
     fixture = Path(__file__).with_name("provider_fixture.ps1").read_text()
     activation = (
         "function Confirm-FixtureActivation"
@@ -81,20 +81,51 @@ def test_actual_provider_render_callback_activates_only_once(tmp_path: Path) -> 
         "}\n"
         "Write-RenderPhase 'entry'\n"
         "$source=[IO.File]::ReadAllText($Fixture)\n"
+        "$fixtureDirectory=[IO.Path]::GetDirectoryName($PSCommandPath)\n"
         "Write-RenderPhase 'source-read'\n"
         "$pattern='(?s)\\$window\\.Add_ContentRendered\\(\\{(.*?)\\}\\)'\n"
         "$match=[regex]::Match($source,$pattern)\n"
         "if(-not $match.Success){throw 'callback not found'}\n"
         "Write-RenderPhase 'callback-extracted'\n"
         "$script:ready=$false;$script:renderObserved=$false;$script:activations=0;$script:states=0\n"
-        "$window=[pscustomobject]@{IsActive=$false}\n"
+        "$script:stopDuringActivation=$false\n"
+        "$window=[pscustomobject]@{IsActive=$false;IsLoaded=$true}\n"
         "$window|Add-Member ScriptMethod Activate "
-        "{$script:activations++;$this.IsActive=$true;return $true}\n"
-        + activation
-        + "\n"
-        "function Write-FixtureState {$script:states++}\n"
+        "{$script:activations++;$this.IsActive=$true;"
+        "if($script:stopDuringActivation){[IO.File]::WriteAllText($stopPath,'{}')};"
+        "return $true}\n" + activation + "\n"
+        "$tokens=$null;$errors=$null\n"
+        "$ast=[Management.Automation.Language.Parser]::ParseFile("
+        "$Fixture,[ref]$tokens,[ref]$errors)\n"
+        "if($errors.Count){throw 'Fixture syntax failed'}\n"
+        "$stateFunction=$ast.Find({param($node) "
+        "$node -is [Management.Automation.Language.FunctionDefinitionAst] "
+        "-and $node.Name -eq 'Write-FixtureState'},$true)\n"
+        "if($null -eq $stateFunction){throw 'Snapshot function missing'}\n"
+        ". ([scriptblock]::Create($stateFunction.Extent.Text))\n"
+        "$actualWriteFixtureState=${function:Write-FixtureState}\n"
+        "function Write-FixtureState {\n"
+        "$script:states++\n"
+        "if($script:stopDuringActivation){& $actualWriteFixtureState;return}\n"
+        "$script:snapshotTraceComplete=$true\n"
+        "}\n"
         "$callback=[Action][scriptblock]::Create($match.Groups[1].Value)\n"
         "Write-RenderPhase 'callback-bound'\n"
+        "$stopPath=Join-Path $fixtureDirectory 'fixture-stop.json'\n"
+        "[IO.File]::WriteAllText($stopPath,'{}')\n"
+        "$callback.Invoke()\n"
+        "if($script:activations -ne 0 -or $script:states -ne 0 "
+        "-or $script:ready){throw 'Cancelled render activated or published'}\n"
+        "[IO.File]::Delete($stopPath)\n"
+        "Write-RenderPhase 'cancelled-returned'\n"
+        "$script:stopDuringActivation=$true;$closed=$false\n"
+        "$callback.Invoke()\n"
+        "if($script:activations -ne 1 -or $script:states -ne 1 "
+        "-or $script:snapshotTraceComplete){throw 'Late cancellation published'}\n"
+        "Write-RenderPhase 'late-cancel-returned'\n"
+        "[IO.File]::Delete($stopPath)\n"
+        "$script:stopDuringActivation=$false;$script:ready=$false\n"
+        "$script:activations=0;$script:states=0;$window.IsActive=$false\n"
         "$callback.Invoke();Write-RenderPhase 'first-returned'\n"
         "$callback.Invoke();Write-RenderPhase 'second-returned'\n"
         "$callback.Invoke();Write-RenderPhase 'third-returned'\n"
@@ -120,8 +151,13 @@ def test_actual_provider_render_callback_activates_only_once(tmp_path: Path) -> 
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stdout.strip() == "one-activation"
-    assert result.stderr.count("FIXTURE_PHASE=initial-activation") == 1
+    assert result.stderr.count("FIXTURE_PHASE=initial-activation") == 2
     assert result.stderr.count("FIXTURE_PHASE=repeat-render-ignored") == 1
+    assert result.stderr.count("FIXTURE_PHASE=initial-snapshot-written") == 1
+    assert (
+        "FIXTURE_PHASE=initial-snapshot-written"
+        not in result.stderr.split("render-phase=late-cancel-returned", 1)[0]
+    )
     phases = [
         line.split(";", 1)[0].removeprefix("render-phase=")
         for line in result.stderr.splitlines()
@@ -132,6 +168,8 @@ def test_actual_provider_render_callback_activates_only_once(tmp_path: Path) -> 
         "source-read",
         "callback-extracted",
         "callback-bound",
+        "cancelled-returned",
+        "late-cancel-returned",
         "first-returned",
         "second-returned",
         "third-returned",

@@ -6,6 +6,67 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 if (-not $ExecuteAfterHandoff) { throw 'Fixture requires explicit desktop handoff; no UI was created.' }
+# Fixed owned frames contain only a validated nonce, booleans and finite numbers.
+# Do not load a general JSON serializer on the WPF dispatcher or during retirement.
+function ConvertTo-FixtureJsonValue([object]$value, [string]$kind) {
+    if ($kind -eq 'nonce') {
+        if ($value -isnot [string] -or $value -cnotmatch '\A[a-f0-9]{32}\z') { throw 'Invalid fixture nonce' }
+        return '"' + $value + '"'
+    }
+    if ($kind -eq 'boolean') {
+        if ($value -isnot [bool]) { throw 'Invalid fixture boolean' }
+        return $value.ToString().ToLowerInvariant()
+    }
+    if ($kind -ne 'integer' -and $kind -ne 'number') { throw 'Invalid fixture field kind' }
+    if ($value -is [int] -or $value -is [long]) {
+        return $value.ToString([Globalization.CultureInfo]::InvariantCulture)
+    }
+    if ($kind -eq 'number' -and $value -is [double]) {
+        if ([double]::IsNaN($value) -or [double]::IsInfinity($value)) { throw 'Nonfinite fixture number' }
+        $text = $value.ToString('R', [Globalization.CultureInfo]::InvariantCulture)
+        # Preserve JSON floating-point values even when the value is integral.
+        if ($text.IndexOf('.') -lt 0 -and $text.IndexOf('E') -lt 0 -and $text.IndexOf('e') -lt 0) { $text += '.0' }
+        return $text
+    }
+    throw 'Invalid fixture number'
+}
+function ConvertTo-FixtureStateJson([hashtable]$state) {
+    if ($state.physical_rectangle -isnot [hashtable]) { throw 'Invalid fixture rectangle' }
+    $fields = @(
+        '"nonce":' + (ConvertTo-FixtureJsonValue $state.nonce 'nonce')
+        '"pid":' + (ConvertTo-FixtureJsonValue $state.pid 'integer')
+        '"hwnd":' + (ConvertTo-FixtureJsonValue $state.hwnd 'integer')
+        '"started_ticks":' + (ConvertTo-FixtureJsonValue $state.started_ticks 'integer')
+        '"sequence":' + (ConvertTo-FixtureJsonValue $state.sequence 'integer')
+        '"visible":' + (ConvertTo-FixtureJsonValue $state.visible 'boolean')
+        '"closed":' + (ConvertTo-FixtureJsonValue $state.closed 'boolean')
+        '"activation_complete":' + (ConvertTo-FixtureJsonValue $state.activation_complete 'boolean')
+        '"offset":' + (ConvertTo-FixtureJsonValue $state.offset 'number')
+        '"scrollable_height":' + (ConvertTo-FixtureJsonValue $state.scrollable_height 'number')
+        '"maximum_offset":' + (ConvertTo-FixtureJsonValue $state.maximum_offset 'number')
+        '"end_seen":' + (ConvertTo-FixtureJsonValue $state.end_seen 'boolean')
+        '"viewport_height":' + (ConvertTo-FixtureJsonValue $state.viewport_height 'number')
+        '"content_rows":' + (ConvertTo-FixtureJsonValue $state.content_rows 'integer')
+        '"scrollbar_x":' + (ConvertTo-FixtureJsonValue $state.scrollbar_x 'integer')
+        '"scrollbar_y":' + (ConvertTo-FixtureJsonValue $state.scrollbar_y 'integer')
+        '"physical_rectangle":{' +
+            '"x":' + (ConvertTo-FixtureJsonValue $state.physical_rectangle.x 'integer') +
+            ',"y":' + (ConvertTo-FixtureJsonValue $state.physical_rectangle.y 'integer') +
+            ',"width":' + (ConvertTo-FixtureJsonValue $state.physical_rectangle.width 'integer') +
+            ',"height":' + (ConvertTo-FixtureJsonValue $state.physical_rectangle.height 'integer') + '}'
+    )
+    return '{' + ($fields -join ',') + '}'
+}
+function ConvertTo-FixtureAckJson([hashtable]$ack) {
+    return '{"nonce":' + (ConvertTo-FixtureJsonValue $ack.nonce 'nonce') +
+        ',"sequence":' + (ConvertTo-FixtureJsonValue $ack.sequence 'integer') +
+        ',"offset":' + (ConvertTo-FixtureJsonValue $ack.offset 'number') + '}'
+}
+function ConvertTo-FixtureRetiredJson([hashtable]$receipt) {
+    return '{"nonce":' + (ConvertTo-FixtureJsonValue $receipt.nonce 'nonce') +
+        ',"pid":' + (ConvertTo-FixtureJsonValue $receipt.pid 'integer') +
+        ',"closed":' + (ConvertTo-FixtureJsonValue $receipt.closed 'boolean') + '}'
+}
 # Loaded only in the separately owned STA child after authorization.
 $clock = [Diagnostics.Stopwatch]::StartNew()
 $window = $null; $timer = $null; $closed = $false
@@ -101,6 +162,7 @@ function Write-SnapshotPhase([string]$phase) {
 $script:snapshotTraceComplete = $false
 function Write-FixtureState {
     if (-not $ready -or -not $window.IsLoaded -or $closed) { return }
+    if ([IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) { return }
     Write-SnapshotPhase 'geometry-start'
     $handle = ([Windows.Interop.WindowInteropHelper]::new($window)).Handle.ToInt64()
     $point = $viewer.PointToScreen(([Windows.Point]::new(0,0)))
@@ -122,12 +184,13 @@ function Write-FixtureState {
             width=[int][Math]::Floor($bottom.X-$point.X);height=[int][Math]::Floor($bottom.Y-$point.Y)}
     }
     Write-SnapshotPhase 'state-built'
-    $json = $state | ConvertTo-Json -Depth 5
+    $json = ConvertTo-FixtureStateJson $state
     Write-SnapshotPhase 'serialized'
     $temporary = Join-Path $fixtureDirectory 'fixture-state.partial'
     [IO.File]::WriteAllText($temporary,$json)
     if ($sequence -gt 10000) { throw 'Fixture snapshot budget exceeded' }
     $target = Join-Path $fixtureDirectory ('fixture-state-{0:D6}.json' -f $sequence)
+    if ([IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) { return }
     [IO.File]::Move($temporary,$target)
     Write-SnapshotPhase 'published'
     $script:snapshotTraceComplete = $true
@@ -155,7 +218,7 @@ $timer.Add_Tick({
         $ackTemporary=Join-Path $fixtureDirectory 'fixture-command-ack.partial'
         $ackPath=Join-Path $fixtureDirectory 'fixture-command-ack.json'
         [IO.File]::WriteAllText($ackTemporary,
-            (@{nonce=$Nonce;sequence=$pendingCommand.sequence;offset=$viewer.VerticalOffset} | ConvertTo-Json))
+            (ConvertTo-FixtureAckJson @{nonce=$Nonce;sequence=$pendingCommand.sequence;offset=$viewer.VerticalOffset}))
         if ([IO.File]::Exists($ackPath)) { [IO.File]::Replace($ackTemporary,$ackPath,[NullString]::Value) }
         else { [IO.File]::Move($ackTemporary,$ackPath) }
         $script:pendingCommand = $null
@@ -163,6 +226,7 @@ $timer.Add_Tick({
     Write-FixtureState
 })
 $window.Add_ContentRendered({
+    if ([IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) { return }
     # One ordinary owned-window activation; never force foreground or send input.
     if ($script:ready) {
         if (-not $script:renderObserved) {
@@ -176,7 +240,9 @@ $window.Add_ContentRendered({
     [Console]::Error.WriteLine('FIXTURE_PHASE=activation-complete utc=' + [DateTime]::UtcNow.ToString('o'))
     $script:ready = $true
     Write-FixtureState
-    [Console]::Error.WriteLine('FIXTURE_PHASE=initial-snapshot-written utc=' + [DateTime]::UtcNow.ToString('o'))
+    if ($script:snapshotTraceComplete) {
+        [Console]::Error.WriteLine('FIXTURE_PHASE=initial-snapshot-written utc=' + [DateTime]::UtcNow.ToString('o'))
+    }
 })
 $viewer.Add_ScrollChanged({ Write-FixtureState })
 $window.Add_Closed({ $script:closed=$true; $timer.Stop() })
@@ -188,5 +254,5 @@ $window.ShowDialog() | Out-Null
 finally {
     if ($null -ne $timer) { $timer.Stop() }
     if ($null -ne $window -and $window.IsVisible) { $window.Close() }
-    [IO.File]::WriteAllText((Join-Path $fixtureDirectory 'fixture-retired.json'),(@{nonce=$Nonce;pid=$PID;closed=$true} | ConvertTo-Json))
+    [IO.File]::WriteAllText((Join-Path $fixtureDirectory 'fixture-retired.json'),(ConvertTo-FixtureRetiredJson @{nonce=$Nonce;pid=$PID;closed=$true}))
 }

@@ -115,6 +115,57 @@ and the WinForms provider preflight, still before binding and broker interceptio
 This prevents the experiment's MOVE from altering that existing preflight scene.
 It does not establish the earlier timeout's cause or remove its record.
 
+## Checkpoint 308fca0
+
+[CI at `308fca0d9cac85d36fda6267d43ed80049cd7434`](https://github.com/mikejhill/verdiclip/actions/runs/42054619943)
+remained red for two distinct WPF cases:
+
+- [Qt 6.12 / 2x](https://github.com/mikejhill/verdiclip/actions/runs/42054619943/job/127339504819)
+  completed provider discovery and three samples, then `strips.append` took
+  1.017245 seconds of wall time with no recorded increase in thread CPU time.
+  The independent input worker correctly ended interception when the unchanged
+  one-second GUI heartbeat expired. Popup preservation and cleanup were confirmed.
+  This identifies a synchronous storage interval, not which disk, encoder or
+  scheduling operation caused its delay.
+- [Qt 6.11.2 / 1x](https://github.com/mikejhill/verdiclip/actions/runs/42054619943/job/127339505052)
+  exhausted the unchanged 20-second fixture readiness budget and required forced
+  retirement. Its first snapshot reached `state-built` at 15,539 ms but never
+  reported `serialized` or `published`. The general JSON serializer was the next
+  operation on the owned WPF dispatcher. This differs from the earlier failures
+  before `pixels-read` or during bitmap preparation; it does not establish one
+  common cause.
+
+WinForms provider preflight and Linux activation passed this run, as did the other
+three native profiles, portable Windows suites, build and static gates. Those
+passes neither establish the earlier failures' causes nor make aggregate CI green.
+Uninstrumented readiness and repeatability passed. Both
+[scheduler diagnostics](https://github.com/mikejhill/verdiclip/actions/runs/42054619573)
+retained unknown-state intervals and correctly refused complete analysis; no
+causal or latency-regression conclusion follows. Exact-head CodeQL check
+`127339985774` reported no new changed-code alerts and zero annotations, and inline
+review threads were empty. Cursor presentation and physical input remain separate
+open qualifications.
+
+## Subsequent WPF fixture repair
+
+The owned WPF fixture now formats only its fixed state, command acknowledgement
+and retirement schemas with invariant numeric formatting. It no longer invokes
+the general JSON serializer on the dispatcher or during retirement. Strict nonce,
+boolean and finite-number validation preserves wire types and 64-bit identities.
+Cancellation is checked before activation, snapshot geometry and atomic readiness
+publication. The publication-success marker is emitted only after a frame was
+actually published; suppressed publication can leave only private partial staging.
+
+The focused local checks passed 77 tests with 9 Windows-dependent skips. New probes
+execute the actual PowerShell functions and callback guards, verify adversarial
+values and comma-decimal cultures, and parse the result through the existing peer.
+Those Windows probes and the full native lifecycle still require hosted validation.
+Independent review found no remaining serializer/protocol issue after correcting
+the misleading publication marker. Readiness and cleanup deadlines, failure on
+forced retirement, dependencies and cursor behavior remain unchanged. Removing
+unnecessary serializer work does not establish a common cause for the retained
+controls, bitmap and serialization stalls.
+
 ## Retained failures and open release gates
 
 ### Visible cursor
