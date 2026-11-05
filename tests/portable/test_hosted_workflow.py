@@ -61,7 +61,7 @@ def test_parser_exception_matches_only_documented_unknown_job_key() -> None:
     config = (ROOT / ".github/actionlint.yaml").read_text(encoding="utf-8")
     assert "  .github/workflows/ci.yml:\n" in config
     assert "  .github/workflows/gui-readiness-profile.yml:\n" in config
-    assert config.count("      - '") == 2
+    assert config.count("      - '") == 3
     patterns = [part.split("'\n", 1)[0] for part in config.split("      - '")[1:]]
     assert len(set(patterns)) == 1
     pattern = config.split("      - '", 1)[1].split("'\n", 1)[0]
@@ -113,3 +113,23 @@ def test_profile_cache_restriction_has_no_upload_or_cache_actions() -> None:
     assert "enable-cache: false" in workflow
     assert "actions/cache" not in workflow
     assert "upload-artifact" not in workflow
+
+
+def test_cache_audit_is_read_only_and_exact_snapshot_only() -> None:
+    """Retained cache evidence is restored as data, never saved or executed."""
+    workflow = (ROOT / ".github/workflows/mutation-cache-audit.yml").read_text()
+    assert workflow.count("cache-mode:") == 1
+    assert "    cache-mode: read\n" in workflow
+    assert "  contents: read\n" in workflow
+    assert "    timeout-minutes: 8\n" in workflow
+    assert "persist-credentials: false" in workflow
+    assert "fail-on-cache-miss: true" in workflow
+    assert "test \"$EXACT_HIT\" = 'true'" in workflow
+    assert "python-version: '3.13.18'" in workflow
+    assert "restore-keys:" not in workflow
+    assert "actions/cache/save" not in workflow
+    assert (
+        "uv run --no-project --python 3.13.18 python "
+        "-m scripts.mutation_cache_audit mutants"
+        in workflow
+    )
