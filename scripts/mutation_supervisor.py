@@ -83,7 +83,7 @@ def supervise(command: list[str], seconds: float) -> int:
     seconds = execution_budget(seconds)
     proof: dict[str, Any] = {"identity": identity(), "quiescent": False}
     write_proof(proof)
-    interrupted = []
+    interrupted: list[int] = []
     result = 1
 
     def stop(signum: int, _frame: object) -> None:
@@ -93,30 +93,32 @@ def supervise(command: list[str], seconds: float) -> int:
         result = 128 + interrupted[0]
 
     previous = {s: signal.signal(s, stop) for s in (signal.SIGINT, signal.SIGTERM)}
-    child = None
     try:
-        child = subprocess.Popen(  # noqa: S603 - trusted workflow argv; no shell
+        child: subprocess.Popen[bytes] = subprocess.Popen(  # noqa: S603 - trusted workflow argv; no shell
             command, start_new_session=True
         )
-        proof["process_group"] = child.pid
-        write_proof(proof)
-        deadline = time.monotonic() + seconds
-        while child.poll() is None and not interrupted and time.monotonic() < deadline:
-            time.sleep(0.1)
-        result = child.returncode if child.returncode is not None else 124
-        if interrupted:
-            result = 128 + interrupted[0]
-    finally:
         try:
-            if child is not None:
-                proof["quiescent"] = retire(child)
+            proof["process_group"] = child.pid
+            write_proof(proof)
+            deadline = time.monotonic() + seconds
+            while (
+                child.poll() is None and not interrupted and time.monotonic() < deadline
+            ):
+                time.sleep(0.1)
+            result = child.returncode if child.returncode is not None else 124
+            if interrupted:
+                result = 128 + interrupted[0]
+        finally:
+            proof["quiescent"] = retire(child)
             if interrupted:
                 result = 128 + interrupted[0]
             proof["exit_code"] = result
             write_proof(proof)
-        finally:
-            for signum, handler in previous.items():
-                signal.signal(signum, handler)
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+    if not isinstance(result, int):
+        raise TypeError("Invalid child exit status")
     return result if proof["quiescent"] else 1
 
 
