@@ -21,6 +21,7 @@ from PySide6.QtWidgets import QApplication, QMenu
 from pytestqt.qtbot import QtBot
 from shiboken6 import isValid
 from tests.capture.hosted_fixture_input import HostedFixtureClick
+from tests.capture.native_cursor import probe_owned_cursor_baseline
 from tests.capture.production_matrix import (
     DriverJournal,
     InputProfile,
@@ -110,6 +111,7 @@ def probe_worker_cursor_visibility(
     ):
         raise RuntimeError("Cursor probe requires the disposable hosted fixture")
     result["cleanup_confirmed"] = False
+    result["visibility_verdict"] = "incomplete"
 
     class CursorInfo(ctypes.Structure):
         _fields_ = (
@@ -159,6 +161,16 @@ def probe_worker_cursor_visibility(
     result["after"] = visible()
     assert result["after"] == result["before"], "Cursor visibility was not restored"
     result["cleanup_confirmed"] = True
+    # Balanced cleanup is not proof of suppression: ShowCursor changes only
+    # its calling input queue, while passive overlays leave another queue owning
+    # the mouse. An already-hidden baseline cannot exercise that distinction.
+    result["visibility_verdict"] = (
+        "inconclusive-hidden-baseline"
+        if not result["before"]
+        else "visible-hidden-restored"
+        if not result["during"]
+        else "ineffective"
+    )
 
 
 def observe_operation[**P, R](
@@ -488,6 +500,13 @@ class ScrollbarCase:
 
     def record_discovery(self, request: UiaRequest, discovery: UiaDiscovery) -> None:
         """Pre-click inspection can never satisfy the actual scrollbar oracle."""
+        if not getattr(self, "discovery_startup_diagnostics", None):
+            # Preserve the first bounded lifetime snapshot before warm-frame
+            # traffic replaces startup stamps in the rolling diagnostic buffer.
+            self.discovery_startup_diagnostics = {
+                mode: asdict(trace)
+                for mode, trace in self.process.diagnostics_for_workers.items()
+            }
         if request is self._provider_probe_request:
             expected = ":".join(
                 str(value)
@@ -645,6 +664,7 @@ class ScrollbarCase:
     def probe_cursor(self) -> None:
         """Keep this diagnostic out of local desktop handoffs."""
         self.cursor_probe: dict[str, object] = {}
+        self.magnification_cursor_probe: dict[str, object] = {}
         self.cursor_workers: list[threading.Thread] = []
         if self.hosted_input is not None:
             assert self.snapshot is not None
@@ -652,6 +672,12 @@ class ScrollbarCase:
             assert not self.snapshot.errors()
             probe_worker_cursor_visibility(self.cursor_probe, self.cursor_workers)
             assert not self.snapshot.errors(), "Cursor probe changed the popup"
+            snapshot = self.snapshot
+            probe_owned_cursor_baseline(
+                self.magnification_cursor_probe,
+                int(self.menu.winId()),
+                lambda: not snapshot.errors(),
+            )
 
     def target(self) -> Rect:
         """Restrict the actual click to the owned native scrollbar center."""
@@ -862,6 +888,9 @@ class ScrollbarCase:
                     ),
                     "provider_profile": self.provider_profile,
                     "worker_cursor_probe": getattr(self, "cursor_probe", {}),
+                    "magnification_cursor_probe": getattr(
+                        self, "magnification_cursor_probe", {}
+                    ),
                     "subsequent_active_window_captures": getattr(
                         self, "repeated_window_captures", 0
                     ),
@@ -877,6 +906,9 @@ class ScrollbarCase:
                     "scrollbar_discoveries": [
                         discovery_metadata(item) for item in self.discoveries[:4]
                     ],
+                    "discovery_startup_diagnostics": getattr(
+                        self, "discovery_startup_diagnostics", {}
+                    ),
                     "provider_worker_diagnostics": {
                         mode: asdict(trace)
                         for mode, trace in self.process.diagnostics_for_workers.items()
@@ -909,6 +941,9 @@ class ScrollbarCase:
             return False
         probe = getattr(self, "cursor_probe", {})
         if probe and probe.get("cleanup_confirmed") is not True:
+            return False
+        magnification = getattr(self, "magnification_cursor_probe", {})
+        if magnification and magnification.get("cleanup_confirmed") is not True:
             return False
         return cleanup_confirmed(
             self.driver, selecting=self.app.controller.capture.is_selecting

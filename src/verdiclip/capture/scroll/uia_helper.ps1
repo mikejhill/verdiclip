@@ -37,11 +37,13 @@ try {
         Add-Type -AssemblyName UIAutomationTypes
         Add-Type -AssemblyName WindowsBase
         Add-Type -AssemblyName System.Drawing
+        # Discovery needs desktop checks, not the scrolling-operation COM client.
+        Add-Type -Path (Join-Path $PSScriptRoot "uia_desktop.cs")
     } else {
         . (Join-Path $PSScriptRoot "uia_native_request.ps1")
+        Add-Type -Path @((Join-Path $PSScriptRoot "uia_nofocus_interop.cs"), (Join-Path $PSScriptRoot "uia_nofocus.cs"), (Join-Path $PSScriptRoot "uia_desktop.cs"))
+        [VerdiClip.Automation.NoFocusScroll]::RequireNativeOnlyProcess()
     }
-    Add-Type -Path @((Join-Path $PSScriptRoot "uia_nofocus_interop.cs"), (Join-Path $PSScriptRoot "uia_nofocus.cs"), (Join-Path $PSScriptRoot "uia_desktop.cs"))
-    if ($NativeOnly) { [VerdiClip.Automation.NoFocusScroll]::RequireNativeOnlyProcess() }
 
 } catch {
     $writer.WriteLine((@{ request_id=''; ok=$false; error='worker_startup_unavailable' } | ConvertTo-Json -Compress))

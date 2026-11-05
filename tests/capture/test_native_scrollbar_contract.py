@@ -34,7 +34,8 @@ from tests.capture.test_scroll_uia_protocol import Payload
 
 from verdiclip.capture.models import ScreenGeometry
 from verdiclip.capture.scroll.native_backend import UiaFrameBackend
-from verdiclip.capture.scroll.uia_messages import UiaRequest
+from verdiclip.capture.scroll.uia_diagnostics import WorkerDiagnostics, WorkerStamp
+from verdiclip.capture.scroll.uia_messages import UiaAction, UiaRequest
 from verdiclip.capture.scroll.uia_protocol import UiaDiscovery
 from verdiclip.geometry import Point, Rect
 
@@ -113,10 +114,15 @@ class FunctionPort:
         return self.call(*args)
 
 
+@pytest.mark.parametrize("initially_visible", [True, False])
 @pytest.mark.parametrize("hides", [True, False])
 @pytest.mark.parametrize("read_failure", [True, False])
 def test_worker_cursor_probe_balances_visibility_even_when_observation_fails(
-    monkeypatch: pytest.MonkeyPatch, *, hides: bool, read_failure: bool
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    initially_visible: bool,
+    hides: bool,
+    read_failure: bool,
 ) -> None:
     """No actual DLL loads; a failed read still releases and joins the worker."""
     for name, value in (
@@ -141,7 +147,7 @@ def test_worker_cursor_probe_balances_visibility_even_when_observation_fails(
         if read_failure and reads == 2:
             raise OSError("Fixture cursor read failed")
         words = ctypes.cast(cast(ctypes.c_void_p, address), ctypes.POINTER(w.DWORD))
-        words[1] = int(not (hides and count < 0))
+        words[1] = int(initially_visible and not (hides and count < 0))
         return 1
 
     api = SimpleNamespace(
@@ -154,12 +160,21 @@ def test_worker_cursor_probe_balances_visibility_even_when_observation_fails(
         with pytest.raises(OSError, match="Fixture cursor read failed"):
             probe_worker_cursor_visibility(receipt, workers)
         assert receipt["cleanup_confirmed"] is False
+        assert receipt["visibility_verdict"] == "incomplete"
     else:
         probe_worker_cursor_visibility(receipt, workers)
-        assert receipt["before"] is True
-        assert receipt["during"] is not hides
-        assert receipt["after"] is True
+        assert receipt["before"] is initially_visible
+        assert receipt["during"] is (initially_visible and not hides)
+        assert receipt["after"] is initially_visible
         assert receipt["cleanup_confirmed"] is True
+        expected = (
+            "inconclusive-hidden-baseline"
+            if not initially_visible
+            else "visible-hidden-restored"
+            if hides
+            else "ineffective"
+        )
+        assert receipt["visibility_verdict"] == expected
     assert calls == [0, 1]
     assert count == 0
     assert len(workers) == 1
@@ -265,6 +280,7 @@ def test_provider_center_probe_cannot_satisfy_actual_click_discovery(
         ),
         snapshot=SimpleNamespace(errors=list),
         adapter=SimpleNamespace(inspect=inspect, failed=SignalPort()),
+        process=SimpleNamespace(diagnostics_for_workers={}),
         input_deadline=50,
         discoveries=[],
         _provider_probe_request=None,
@@ -711,3 +727,46 @@ def test_fixture_interference_cannot_recover_for_restore() -> None:
             fixture_safe=True,
             production_safe=lambda _: pytest.fail("Foreign target reached product"),
         )
+
+
+@pytest.mark.parametrize("preflight", [False, True])
+def test_first_discovery_retains_startup_before_rolling_trace_changes(
+    *, preflight: bool
+) -> None:
+    """Keep one immutable bounded snapshot, not the later warm-frame tail."""
+    first = WorkerDiagnostics(
+        phase="idle",
+        process_state="Running",
+        cleanup="pending",
+        request_sent=True,
+        events=(WorkerStamp("runtime_ready", 120),),
+        dropped_events=0,
+        stdout_bytes=0,
+        stderr_bytes=40,
+        pipe_bytes=100,
+        max_deadline_lateness_ms=0,
+    )
+    process = SimpleNamespace(diagnostics_for_workers={"managed": first})
+    request = UiaRequest("fixture", UiaAction.INSPECT, b"{}")
+    discovery = UiaDiscovery.decode(Payload.discovery(Payload.nodes()))
+    case = SimpleNamespace(
+        discovery_startup_diagnostics={},
+        process=process,
+        _provider_probe_request=request if preflight else None,
+        peer=SimpleNamespace(
+            handle=1, integer=lambda name: 2 if name == "pid" else Payload.TICKS
+        ),
+        provider_preflight={},
+        discoveries=[],
+    )
+    ScrollbarCase.record_discovery(cast(ScrollbarCase, case), request, discovery)
+    assert case.discovery_startup_diagnostics["managed"]["events"] == (
+        {"stage": "runtime_ready", "elapsed_ms": 120},
+    )
+    process.diagnostics_for_workers.clear()
+    ScrollbarCase.record_discovery(cast(ScrollbarCase, case), request, discovery)
+    assert case.discovery_startup_diagnostics["managed"]["events"] == (
+        {"stage": "runtime_ready", "elapsed_ms": 120},
+    )
+    assert case.provider_preflight.get("state") == ("complete" if preflight else None)
+    assert len(case.discoveries) == (0 if preflight else 2)
