@@ -17,6 +17,7 @@ from pytestqt.qtbot import QtBot
 from tests.capture.input_fixture import ReplayInputPlatform
 from tests.capture.menu_peer import MenuPeer, decode_menu_state
 from tests.capture.native_scrollbar import (
+    OperationTiming,
     PopupFailureTrace,
     ScrollbarCase,
     observe_operation,
@@ -579,6 +580,7 @@ def test_popup_observer_detach_failure_cannot_skip_retirement(
     case.popup_trace = SimpleNamespace(first={})
     case.retirement_probe = {}
     case.operation_trace = []
+    case.operation_timings = {}
     case.fixture_readiness = {}
     case.provider_profile = {}
     case.process = SimpleNamespace(
@@ -653,6 +655,83 @@ def test_operation_observation_budget_does_not_skip_operations() -> None:
         observed(index)
     assert calls == list(range(200))
     assert len(events) == 128
+
+
+def test_whole_run_timing_retains_late_stall_and_raised_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A late watchdog-sized stall must survive the short event trace filling."""
+    clock = [0.0, 0.0]
+    monkeypatch.setattr(
+        "tests.capture.native_scrollbar.time.monotonic", lambda: clock[0]
+    )
+    monkeypatch.setattr(
+        "tests.capture.native_scrollbar.time.thread_time", lambda: clock[1]
+    )
+    events: list[dict[str, object]] = []
+    timing = OperationTiming()
+    error = RuntimeError("late operation failed")
+
+    def operation(*, fail: bool = False) -> None:
+        clock[0] += 1.25 if fail else 0.01
+        clock[1] += 0.25 if fail else 0.001
+        if fail:
+            raise error
+
+    observed = observe_operation(events, "pixels.consume", operation, timing=timing)
+    for _ in range(100):
+        observed()
+    assert len(events) == 128
+    with pytest.raises(RuntimeError) as caught:
+        observed(fail=True)
+    assert caught.value is error
+    assert timing.calls == timing.timed_calls == 101
+    assert timing.raised == 1
+    assert timing.clock_failures == 0
+    assert timing.max_wall_seconds == pytest.approx(1.25)
+    assert timing.max_thread_cpu_seconds == pytest.approx(0.25)
+    assert len(events) == 128
+
+
+def test_whole_run_timing_clock_failure_is_explicit_without_masking_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unavailable clocks leave incomplete evidence, never a substituted result."""
+
+    def unavailable() -> float:
+        raise OSError("clock unavailable")
+
+    monkeypatch.setattr("tests.capture.native_scrollbar.time.monotonic", unavailable)
+    timing = OperationTiming()
+    token = object()
+    assert (
+        observe_operation([], "pixels.consume", lambda: token, timing=timing)() is token
+    )
+    assert timing.calls == timing.clock_failures == 1
+    assert timing.timed_calls == 0
+
+
+def test_end_clock_memory_failure_cannot_replace_product_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Even failed timing after a product failure preserves the original error."""
+    error = RuntimeError("original product error")
+    timing = OperationTiming()
+
+    def unavailable() -> float:
+        raise MemoryError("diagnostic allocation")
+
+    def operation() -> None:
+        monkeypatch.setattr(
+            "tests.capture.native_scrollbar.time.monotonic", unavailable
+        )
+        raise error
+
+    with pytest.raises(RuntimeError) as caught:
+        observe_operation([], "pixels.consume", operation, timing=timing)()
+    assert caught.value is error
+    assert timing.calls == timing.raised == timing.clock_failures == 1
+    assert timing.timed_calls == 0
 
 
 @pytest.mark.parametrize("clock", ["monotonic", "thread_time"])

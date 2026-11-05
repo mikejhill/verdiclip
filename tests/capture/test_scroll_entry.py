@@ -253,6 +253,29 @@ def test_cancel_waits_for_scope_cleanup_and_drops_late_discovery() -> None:
     assert fixture.entry.state is EntryState.IDLE
 
 
+def test_unsupported_target_reports_exact_error_after_retirement_and_can_retry() -> (
+    None
+):
+    """An absent scroll pattern cannot silently succeed or strand input ownership."""
+    fixture = EntryFixture()
+    assert fixture.begin(explicit=True)
+    fixture.adapter.defer_cleanup = True
+    fixture.adapter.deliver(replace(fixture.discovery(), references=()))
+    assert fixture.entry.state is EntryState.CLOSING
+    assert not fixture.failures
+    assert not fixture.offers
+    assert not fixture.confirmed
+    assert not fixture.begin(explicit=True)
+    fixture.adapter.pending = False
+    fixture.adapter.scope_closed.emit()
+    assert fixture.entry.state is EntryState.IDLE
+    assert fixture.failures == ["No supported scroll area was found at this point."]
+    fixture.adapter.defer_cleanup = False
+    assert fixture.begin(explicit=True)
+    fixture.entry.cancel()
+    assert fixture.entry.state is EntryState.IDLE
+
+
 def test_cleanup_failure_retains_retry_barrier() -> None:
     """A failed provider cleanup cannot silently authorize another helper."""
     fixture = EntryFixture()

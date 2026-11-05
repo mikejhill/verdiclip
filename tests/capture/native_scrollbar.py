@@ -9,7 +9,7 @@ import os
 import time
 import traceback
 from collections.abc import Callable
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import cast, override
 
@@ -86,8 +86,24 @@ def record_operation(events: list[dict[str, object]], name: str, phase: str) -> 
         return
 
 
+@dataclass
+class OperationTiming:
+    """Constant-space whole-run spans, including calls after trace saturation."""
+
+    calls: int = 0
+    timed_calls: int = 0
+    raised: int = 0
+    clock_failures: int = 0
+    max_wall_seconds: float = 0.0
+    max_thread_cpu_seconds: float = 0.0
+
+
 def observe_operation[**P, R](
-    events: list[dict[str, object]], name: str, operation: Callable[P, R]
+    events: list[dict[str, object]],
+    name: str,
+    operation: Callable[P, R],
+    *,
+    timing: OperationTiming | None = None,
 ) -> Callable[P, R]:
     """Observe existing calls only; preserve values/exceptions and bound metadata."""
 
@@ -97,12 +113,33 @@ def observe_operation[**P, R](
     callable_operation = cast(Callable[..., object], operation)
 
     def observed(*args: object, **kwargs: object) -> object:
+        start = None
+        if timing is not None:
+            timing.calls += 1
+            try:
+                start = time.monotonic(), time.thread_time()
+            except (OSError, RuntimeError, MemoryError):
+                timing.clock_failures += 1
         mark("entered")
         try:
             result = callable_operation(*args, **kwargs)
         except BaseException:
+            if timing is not None:
+                timing.raised += 1
             mark("raised")
             raise
+        finally:
+            if timing is not None and start is not None:
+                try:
+                    wall = time.monotonic() - start[0]
+                    cpu = time.thread_time() - start[1]
+                    timing.max_wall_seconds = max(timing.max_wall_seconds, wall)
+                    timing.max_thread_cpu_seconds = max(
+                        timing.max_thread_cpu_seconds, cpu
+                    )
+                    timing.timed_calls += 1
+                except (OSError, RuntimeError, MemoryError):
+                    timing.clock_failures += 1
         mark("returned")
         return result
 
@@ -218,6 +255,7 @@ class ScrollbarCase:
         self.menu = QMenu("Owned scrollbar test popup")
         request.addfinalizer(self.close_owned_windows)
         self.operation_trace: list[dict[str, object]] = []
+        self.operation_timings: dict[str, OperationTiming] = {}
         workflow = compose_scrolling(self.app.controller, data_root=directory)
         assert workflow is not None, "Production scrolling is unavailable"
         self.workflow = workflow
@@ -255,10 +293,13 @@ class ScrollbarCase:
             (ScrollAcquisition, "complete_sample", "acquisition.complete_sample"),
             (StripStore, "append", "strips.append"),
         ):
+            timing = self.operation_timings[label] = OperationTiming()
             patch.setattr(
                 owner,
                 method,
-                observe_operation(self.operation_trace, label, getattr(owner, method)),
+                observe_operation(
+                    self.operation_trace, label, getattr(owner, method), timing=timing
+                ),
             )
         patch.setattr(
             ScrollProgressPanel,
@@ -666,6 +707,10 @@ class ScrollbarCase:
                     "passive_retirement_probe": self.retirement_probe,
                     "operation_trace": self.operation_trace,
                     "operation_trace_at_capacity": len(self.operation_trace) >= 128,
+                    "operation_timings": {
+                        label: asdict(timing)
+                        for label, timing in self.operation_timings.items()
+                    },
                     "fixture_readiness": self.fixture_readiness,
                     "provider_diagnostics": (
                         asdict(self.process.diagnostics)

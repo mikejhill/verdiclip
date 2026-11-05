@@ -299,6 +299,7 @@ def test_cleanup_continues_after_journal_failure(tmp_path: Path) -> None:
             popup_trace=None,
             retirement_probe={},
             operation_trace=[],
+            operation_timings={},
             fixture_readiness={},
             provider_profile={},
             process=SimpleNamespace(
