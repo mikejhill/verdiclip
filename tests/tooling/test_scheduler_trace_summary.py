@@ -71,3 +71,41 @@ def test_schema_diagnostics_exclude_all_payload_rows_and_unrelated_headers() -> 
     headers = result["scheduler_headers"]
     assert isinstance(headers, dict)
     assert headers["CSwitch"][1] == "TimeStamp"
+
+
+def test_actual_xperf_columns_use_ready_target_not_emitter() -> None:
+    """Real exporter names distinguish the readying thread from its target."""
+    result = summarize(
+        [
+            "BeginHeader",
+            "CSwitch, TimeStamp, New Process Name ( PID), New TID, "
+            "Old Process Name ( PID), Old TID, OldState, Wait Reason",
+            "ReadyThread, TimeStamp, Process Name ( PID), ThreadID, "
+            "Rdy Process Name ( PID), Rdy TID, AdjustReason",
+            "EndHeader",
+            "CSwitch, 100, SECRET, 7, OTHER, 8, Waiting, Executive",
+            "ReadyThread, 105, SECRET, 7, OTHER, 8, 0",
+            "ReadyThread, 110, SECRET, 8, OTHER, 7, 0",
+        ],
+        7,
+    )
+    assert result["matched_events"] == 2
+    events = result["events"]
+    assert isinstance(events, list)
+    assert events[0]["oldthreadstate"] == 5
+    assert events[1]["tthreadid"] == 7
+    assert "SECRET" not in json.dumps(result)
+
+
+def test_emitter_only_ready_schema_cannot_prove_target_identity() -> None:
+    """Missing Rdy TID must not silently use the emitter ThreadID."""
+    with pytest.raises(ValueError, match="scheduler thread identity"):
+        summarize(
+            [
+                "BeginHeader",
+                "ReadyThread, TimeStamp, ThreadID",
+                "EndHeader",
+                "ReadyThread, 100, 7",
+            ],
+            7,
+        )

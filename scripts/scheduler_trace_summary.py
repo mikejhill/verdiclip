@@ -37,10 +37,35 @@ def numeric_event(
     if names is None or len(row) != len(names):
         raise ValueError("Unrecognized scheduler event schema")
     values = dict(zip(names, row, strict=True))
+    aliases = {
+        "newtid": "newthreadid",
+        "oldtid": "oldthreadid",
+        "oldstate": "oldthreadstate",
+        "rdytid": "tthreadid",
+    }
+    for source, target in aliases.items():
+        if source in values:
+            values[target] = values.pop(source)
+    # Xperf's ThreadID is the readying thread; Rdy TID is the target.
+    if kind == "ReadyThread" and "tthreadid" in values:
+        values.pop("threadid", None)
+    states = {
+        "Initialized": 0,
+        "Ready": 1,
+        "Running": 2,
+        "Standby": 3,
+        "Terminated": 4,
+        "Waiting": 5,
+        "Wait": 5,
+        "Transition": 6,
+        "DeferredReady": 7,
+        "GateWaitObsolete": 8,
+    }
+    state = values.get("oldthreadstate", "").strip()
+    if state in states:
+        values["oldthreadstate"] = str(states[state])
     identifiers = (
-        ("newthreadid", "oldthreadid")
-        if kind == "CSwitch"
-        else ("tthreadid", "threadid")
+        ("newthreadid", "oldthreadid") if kind == "CSwitch" else ("tthreadid",)
     )
     ids = [int(values[name].strip()) for name in identifiers if name in values]
     if not ids:
