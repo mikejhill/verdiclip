@@ -43,6 +43,35 @@ jobs:
       QT_LOGGING_RULES: 'qt.widgets.showhide.debug=true;qt.widgets.window.debug=true'
       QT_MESSAGE_PATTERN: 'QT_LIFECYCLE %{time process} %{category}: %{message}'
     steps:
+      - name: Inventory installed Windows tracing tools (read-only)
+        timeout-minutes: 1
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($name in @('wpr.exe', 'xperf.exe', 'wpaexporter.exe', 'tracerpt.exe')) {
+            $tool = Get-Command $name -CommandType Application -ErrorAction SilentlyContinue
+            if ($null -eq $tool) {
+              Write-Output "TRACE_TOOL=$name;available=false"
+              continue
+            }
+            $signature = Get-AuthenticodeSignature -LiteralPath $tool.Source
+            Write-Output "TRACE_TOOL=$name;available=true;signature=$($signature.Status);path=$($tool.Source)"
+          }
+          $wpr = Get-Command wpr.exe -CommandType Application -ErrorAction SilentlyContinue
+          if ($null -ne $wpr) {
+            $signature = Get-AuthenticodeSignature -LiteralPath $wpr.Source
+            if ($signature.Status -ne 'Valid' -or
+                $signature.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
+              throw 'Installed WPR identity is not verified Microsoft software'
+            }
+            & $wpr.Source -profiles
+            if ($LASTEXITCODE -ne 0) { throw 'WPR profile inventory failed' }
+          }
+          $kit = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Windows Performance Toolkit'
+          foreach ($name in @('wpr.exe', 'xperf.exe', 'wpaexporter.exe')) {
+            $path = Join-Path $kit $name
+            Write-Output "TRACE_KIT_TOOL=$name;available=$(Test-Path -LiteralPath $path -PathType Leaf)"
+          }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
