@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import random
 import shutil
 import tempfile
 from pathlib import Path
@@ -15,6 +16,48 @@ from tests.capture.test_scroll_core import Documents
 from verdiclip.capture.scroll.models import ScrollLimitError, ScrollLimits
 from verdiclip.capture.scroll.storage import PngStripWriter, StripStore
 from verdiclip.exceptions import CaptureError
+
+
+def test_spool_png_uses_fast_compression_without_raw_file_expansion(
+    tmp_path: Path,
+) -> None:
+    """Verify the real encoder's fast deflate hint and useful flat-area compression."""
+    image = QImage(1024, 512, QImage.Format.Format_RGBA8888)
+    image.fill(0xFFFFFFFF)
+    path = tmp_path / "tile.png"
+    PngStripWriter().write(image, path)
+    data = path.read_bytes()
+    assert len(data) < image.sizeInBytes() // 16
+    assert QImage(str(path)).convertToFormat(image.format()) == image
+    offset = 8  # PNG signature; inspect the first actual IDAT zlib stream.
+    while offset < len(data):
+        length = int.from_bytes(data[offset : offset + 4], "big")
+        if data[offset + 4 : offset + 8] == b"IDAT":
+            # RFC1950 FLEVEL=0: fastest compressor, not the default balanced level.
+            assert data[offset + 9] >> 6 == 0
+            break
+        offset += length + 12
+    else:
+        pytest.fail("PNG has no image stream")
+
+
+def test_fast_spool_preserves_every_rgba_byte_across_tile_boundaries(
+    tmp_path: Path,
+) -> None:
+    """Low compression must retain transparent/noisy pixels and multiple tile seams."""
+    width, height = 257, 1057
+    pixels = random.Random(329).randbytes(width * height * 4)  # noqa: S311 - synthetic pixels, not secrets
+    source = QImage(
+        pixels, width, height, width * 4, QImage.Format.Format_RGBA8888
+    ).copy()
+    store = StripStore(tmp_path, ScrollLimits())
+    try:
+        store.append(source)
+        actual = store.materialize().convertToFormat(source.format())
+        assert bytes(actual.constBits()) == pixels
+        assert len(store.strips) == 3
+    finally:
+        store.close()
 
 
 class InterruptedWriter(PngStripWriter):

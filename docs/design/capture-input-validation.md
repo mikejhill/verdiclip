@@ -346,10 +346,10 @@ missing provider capability from hit/ancestry behavior. The overall native matri
 is therefore red and WinForms capture is not qualified. Do not convert this
 result into a pass by removing its assertions.
 
-The normal application entry point still does not compose scrolling services.
-Release also requires normal-entry composition, packaged helper availability,
-and bounded retirement of active and idle provider workers at application exit.
-Passing the owned interaction alone does not resolve those delivery gates.
+Normal-entry composition, packaged helper verification, and explicit retirement
+of active and idle provider workers were subsequently implemented and tested by
+`ff62bd903b28e669d5b2dec511d4fbe6393fcfcb`. Release remains held for the
+responsiveness/performance failures and final acceptance described below.
 
 ### Performance evidence remains separate
 
@@ -377,3 +377,33 @@ it does not distinguish an absent ScrollPattern from one reporting non-scrollabl
 or establish a limitation of every WinForms version. The actual capture remains
 rejected, with unchanged popup and confirmed cleanup. No fallback input or
 unsupported provider mutation was attempted.
+
+### November 5: responsiveness investigation and temporary PNG cost
+
+The `a096861` 2x Qt-scale WPF case stopped on the unchanged one-second UI
+heartbeat watchdog. Popup preservation and worker retirement passed, but capture
+failed. Bounded spans added to the existing case cover frame consumption,
+settled-frame processing and strip append. Subsequent passing 2x runs measured
+initial strip writes at 18-66 ms. Trace saturation is explicit; these samples
+do not establish the cause of the earlier stall or qualification of physical DPI.
+
+A controlled local synthetic-image benchmark (QImage/QImageWriter only, no
+QApplication, desktop or input) used identical 2048x512 RGBA pixels and alternating
+encoder settings. Three noisy-strip samples took 227-230 ms with default PNG
+encoding and 45-46 ms with Qt compression 20. Flat/text samples took 21-24 ms
+by default and 15-25 ms with the low-compression setting. Flat/text files grew
+from 5-7 KB to 19-22 KB; noisy files in this fixture shrank from 3.27 MB to 1.67 MB.
+These are workload/runtime-specific measurements, not a universal latency claim.
+
+Temporary strips now use that fast lossless setting; final export is unchanged.
+Actual-byte quotas, conservative raw-pixel estimates, free-space checks and atomic
+rollback remain intact. Regression tests inspect real encoded output, verify every
+RGBA byte across three tiles, and reject both the previous balanced encoder and
+uncompressed-file expansion. Faster compression reduces demonstrated GUI-thread
+work but does not make filesystem latency bounded or prove the watchdog fixed.
+
+The separate first-show problem remains open: uninstrumented captures reproduced
+626 ms on Qt 6.11.2 and 469 ms on Qt 6.12.0. One 1178 ms instrumented sample spent
+1090 ms inside `show`, mostly before the Python `showEvent` callback. A later
+virtual-event profiling override caused teardown access violations and was
+removed; those runs remain invalid. No timing threshold or heartbeat was relaxed.

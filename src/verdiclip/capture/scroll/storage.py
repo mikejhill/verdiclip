@@ -32,6 +32,9 @@ class PngStripWriter:
     def write(self, image: QImage, path: Path) -> None:
         """Surface encoder errors instead of committing an incomplete strip."""
         writer = QImageWriter(str(path), b"png")
+        # Transient spool files favor fast lossless encoding, not export size.
+        # Keep actual-byte quotas and the conservative raw-pixel estimate below.
+        writer.setCompression(20)
         if not writer.write(image):
             raise CaptureError(
                 f"Could not store capture pixels: {writer.errorString()}"
