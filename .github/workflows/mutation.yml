@@ -163,6 +163,7 @@ jobs:
           name: mutation-results-${{ github.run_attempt }}
           path: |
             mutation-cache-context.json
+            mutation-stats-failures.jsonl
             mutation-result.json
             mutation-results.txt
             mutmut.log
