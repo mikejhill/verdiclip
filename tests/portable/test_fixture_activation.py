@@ -43,6 +43,7 @@ if ($case -eq 'active') {
         throw 'Activation failed'
     }
 } elseif (-not $failed -or $owner.Calls -ne 1) { throw 'Unsafe admission' }
+[Console]::Error.WriteLine('ACTIVATION_PHASE=assertions-complete')
 """
     )
     # case is a closed parametrization, never external PowerShell text.

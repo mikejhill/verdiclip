@@ -775,11 +775,15 @@ def test_first_discovery_retains_startup_before_rolling_trace_changes(
 
 
 @pytest.mark.parametrize("hosted", [False, True])
-def test_cursor_preparation_precedes_binding_only_on_hosted_fixture(
+@pytest.mark.parametrize("provider", ["wpf", "winforms"])
+@pytest.mark.parametrize("preflight_failure", [False, True])
+def test_provider_preflight_precedes_hosted_cursor_preparation_and_binding(
     *,
     hosted: bool,
+    provider: str,
+    preflight_failure: bool,
 ) -> None:
-    """Local desktops never receive the preparation event or event pump."""
+    """Preflight failure blocks preparation; local desktops never receive input."""
     order: list[str] = []
     target = Rect(10, 20, 4, 8)
     journal = Mock()
@@ -789,7 +793,17 @@ def test_cursor_preparation_precedes_binding_only_on_hosted_fixture(
         hosted_input.prepare_cursor.side_effect = lambda *_args, **_kwargs: (
             order.append("move")
         )
+
+    def preflight(viewport: Rect) -> None:
+        assert viewport == target
+        order.append("preflight")
+        if preflight_failure:
+            raise RuntimeError("Provider preflight failed")
+
     case = SimpleNamespace(
+        peer=SimpleNamespace(provider=provider),
+        check_passive_retirement=lambda: order.append("passive"),
+        diagnose_provider=preflight,
         hosted_input=hosted_input,
         journal=journal,
         target=lambda: target,
@@ -801,8 +815,21 @@ def test_cursor_preparation_precedes_binding_only_on_hosted_fixture(
         driver=SimpleNamespace(workers=[]),
         input_deadline=123.0,
     )
-    ScrollbarCase.prepare_driver_binding(cast(ScrollbarCase, case))
-    assert order == (["move", "binding"] if hosted else ["binding"])
+    case.prepare_driver_binding = lambda: ScrollbarCase.prepare_driver_binding(
+        cast(ScrollbarCase, case)
+    )
+    if provider == "winforms" and preflight_failure:
+        with pytest.raises(RuntimeError, match="Provider preflight failed"):
+            ScrollbarCase.finish_provider_preparation(cast(ScrollbarCase, case), target)
+        assert order == ["passive", "preflight"]
+        journal.prepare_binding.assert_not_called()
+        if hosted_input is not None:
+            hosted_input.prepare_cursor.assert_not_called()
+        return
+    ScrollbarCase.finish_provider_preparation(cast(ScrollbarCase, case), target)
+    expected = ["passive"] + (["preflight"] if provider == "winforms" else [])
+    expected += ["move", "binding"] if hosted else ["binding"]
+    assert order == expected
     if hosted_input is not None:
         scope = hosted_input.prepare_cursor.call_args.kwargs["scope"]
         assert scope.expires_at == 123.0

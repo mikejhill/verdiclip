@@ -494,10 +494,14 @@ class ScrollbarCase:
         )
         self.journal.owned_handles = (self.peer.handle, int(self.menu.winId()))
         self.journal.binding_handle = self.peer.handle
-        self.prepare_driver_binding()
+        self.finish_provider_preparation(viewport)
+
+    def finish_provider_preparation(self, viewport: Rect) -> None:
+        """Keep optional cursor input after passive and provider preflight checks."""
         self.check_passive_retirement()
         if self.peer.provider == "winforms":
             self.diagnose_provider(viewport)
+        self.prepare_driver_binding()
 
     def record_discovery(self, request: UiaRequest, discovery: UiaDiscovery) -> None:
         """Pre-click inspection can never satisfy the actual scrollbar oracle."""

@@ -84,6 +84,37 @@ one slow interval, not its cause. Preserve unknown intervals and strict analysis
 refusal rather than renaming labels, discarding outcomes or treating waiting as
 proof of a specific OS operation.
 
+## Diagnostic checkpoint 1a60ee8
+
+[CI at `1a60ee8eca0538288891a6d177e0d609280ec86c`](https://github.com/mikejhill/verdiclip/actions/runs/42051568790)
+remained red. Windows Python 3.13/3.14 each passed 2,833 tests at 95.59% coverage,
+and CodeQL reported no new changed-code alerts; no review threads were present.
+The retained failures are distinct:
+
+- WinForms inspect reached `inspect_root` at 1,664 ms but never reached
+  `inspect_process`; the 3-second operation budget expired at 4,176 ms. Thus the
+  last started operation was `AutomationElement.FromHandle`, including its runtime
+  binding, not later ancestry or ScrollPattern queries. Cleanup was confirmed.
+- WPF Qt 6.12 scale 1 exhausted the existing 20-second fixture preparation budget
+  after `controls-created`, before `pixels-read`. Forced retirement remains a
+  cleanup failure, not confirmed ordinary shutdown. Other WPF profiles passed.
+- Linux passed 2,764 tests but the pure fake activation case exceeded its unchanged
+  10-second PowerShell subprocess budget. Its `after-decision` marker proves the
+  extracted function returned; it does not distinguish the subsequent assertions
+  from engine shutdown or process completion. The aggregate is not a pass.
+
+The cold-path scheduler diagnostic on Qt 6.11 correctly remained incomplete. Its
+new fixed categories recorded unknown time from tied timestamps, ready-while-
+scheduled observations and unsupported old states; none was reclassified away.
+The Qt 6.12 diagnostic compiler step exceeded its existing one-minute allocation
+before any scheduler recording began. No causal interpretation or successful
+latency qualification follows from either failure.
+
+Optional cursor preparation is subsequently sequenced after passive retirement
+and the WinForms provider preflight, still before binding and broker interception.
+This prevents the experiment's MOVE from altering that existing preflight scene.
+It does not establish the earlier timeout's cause or remove its record.
+
 ## Retained failures and open release gates
 
 ### Visible cursor
