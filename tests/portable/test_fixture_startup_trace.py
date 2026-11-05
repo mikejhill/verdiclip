@@ -202,12 +202,37 @@ def test_workflow_is_explicit_isolated_and_cleans_before_publication() -> None:
         "$code = Invoke-PrivateTool $wpr @('-start'"
     )
     assert runner.index("$removed = Remove-OwnedRawFiles") < runner.index(
-        "if (Test-PublicationGate $retired $removed $analysis)"
+        "if (Test-PublicationGate $retired ($removed -and $locatorRemoved) $analysis)"
     )
     assert "@('-cancel', '-instancename', $State.owner)" in runner
     assert workflow.index("Diagnose one unchanged") < workflow.index(
         "Test pure Windows"
     )
+
+
+def test_recovery_identity_stays_private_and_native_walk_never_recurses_links() -> None:
+    """Lifecycle proof is public, but recovery identities and targets are not."""
+    runner = (ROOT / "scripts/test_fixture_startup_diagnostics.ps1").read_text()
+    assert "VERDICLIP_FIXTURE_RUN_ID" not in runner
+    assert "Write-PrivateLocator $state $temporaryRoot" in runner
+    assert runner.index("Write-PrivateLocator $state $temporaryRoot") < runner.index(
+        "$state.trace_attempted = $true"
+    )
+    assert "verdiclip-fixture-startup-locator.json" in runner
+    verdict = runner.split("function Read-NativeVerdict", 1)[1].split("\nfunction ", 1)[
+        0
+    ]
+    assert "Get-OwnedNativeTree" in verdict
+    assert "Assert-OrdinaryTree" not in verdict
+    assert "-Recurse" not in verdict
+    removal = runner.split("function Remove-OwnedNativeTree", 1)[1].split(
+        "\nfunction ", 1
+    )[0]
+    assert "[IO.Directory]::Delete($current.FullName, $false)" in removal
+    assert "[IO.File]::Delete($current.FullName)" in removal
+    assert "-Recurse" not in removal
+    assert "'SymbolicLink'" in removal
+    assert "Remove-PrivateLocator $temporaryRoot $owner" in runner
 
 
 PROBE = r"""
@@ -312,6 +337,24 @@ RUNNER_PROBE = r"""
 param([string]$Runner, [string]$Directory, [string]$Case)
 $ErrorActionPreference = 'Stop'
 . $Runner -FunctionsOnly
+if ($Case -eq 'public_values') {
+    $env:GITHUB_ENV = Join-Path $Directory 'synthetic-job-env'
+    Set-JobValue 'VERDICLIP_FIXTURE_NATIVE_EXIT' '0'
+    $before = [IO.File]::ReadAllText($env:GITHUB_ENV)
+    foreach ($bad in @(
+        @('VERDICLIP_FIXTURE_RUN_ID', ('VerdiClip-' + ('b' * 32))),
+        @('VERDICLIP_FIXTURE_NATIVE_EXIT', $Directory),
+        @('VERDICLIP_FIXTURE_TRACE_RETIRED', 'false')
+    )) {
+        $refused = $false
+        try { Set-JobValue $bad[0] $bad[1] } catch { $refused = $true }
+        if (-not $refused -or
+            [IO.File]::ReadAllText($env:GITHUB_ENV) -cne $before) {
+            throw 'Private or malformed job value escaped'
+        }
+    }
+    return
+}
 $script:repoRoot = Join-Path $Directory 'repo'
 $null = [IO.Directory]::CreateDirectory($script:repoRoot)
 $root = Join-Path $Directory 'private'
@@ -448,6 +491,7 @@ if ($Case -eq 'delete_recovery') {
         "live_writer",
         "delete_recovery",
         "owner_schema",
+        "public_values",
     ],
 )
 def test_actual_runner_cleanup_and_publication_guards(
@@ -459,6 +503,309 @@ def test_actual_runner_cleanup_and_publication_guards(
         pytest.skip("Installed pwsh required for the runner's pure mocks")
     script = tmp_path / "runner-probe.ps1"
     script.write_text(RUNNER_PROBE)
+    result = run_policy_probe(
+        [
+            executable,
+            "-NoProfile",
+            "-NonInteractive",
+            "-File",
+            str(script),
+            "-Runner",
+            str(ROOT / "scripts/test_fixture_startup_diagnostics.ps1"),
+            "-Directory",
+            str(tmp_path),
+            "-Case",
+            case,
+        ]
+    )
+    assert result.returncode == 0, result.stderr
+
+
+NATIVE_TREE_PROBE = r"""
+param([string]$Runner, [string]$Directory, [string]$Case)
+$ErrorActionPreference = 'Stop'
+. $Runner -FunctionsOnly
+$script:repoRoot = Join-Path $Directory 'repo'
+$native = Join-Path $script:repoRoot (
+    '.test-tmp/native-broker-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
+$outside = Join-Path $Directory 'outside'
+if ($Case -in @('root_link', 'junction')) {
+    $refused = $false
+    try { $null = Get-OwnedNativeTree $native } catch { $refused = $true }
+    if (-not $refused) { throw 'Ambiguous native root or junction admitted' }
+    $refused = $false
+    try { Remove-OwnedNativeTree $native } catch { $refused = $true }
+    if (-not $refused) { throw 'Ambiguous native cleanup admitted' }
+    if (-not [IO.File]::Exists((Join-Path $outside 'sentinel'))) {
+        throw 'Foreign junction target modified'
+    }
+    return
+}
+$tree = Get-OwnedNativeTree $native
+$receipts = @($tree.files | Where-Object { $_.Name -ceq 'scrollbar-native.json' })
+if ($receipts.Count -ne 1) {
+    throw 'Receipt discovery followed or duplicated a symlink'
+}
+$state = [pscustomobject]@{
+    native_directories=@('native-broker-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
+    native_cleanup='unknown'; native_fixture_forced='unknown'
+    native_attempted=$true; native_before=@(); native_ownership_uncertain=$false
+    trace_retired=$true
+}
+Read-NativeVerdict $state
+if ($state.native_cleanup -cne 'confirmed' -or
+    $state.native_fixture_forced -cne 'false') { throw 'Ordinary receipt unavailable' }
+if ($Case -eq 'real_pytest') {
+    # Exercise the actual verdict-to-cleanup path, not just the walker helper.
+    function Set-JobValue([string]$Name, [string]$Value) { }
+    $private = Join-Path $Directory 'private'
+    $null = [IO.Directory]::CreateDirectory($private)
+    if (-not (Remove-OwnedRawFiles $state $private $true)) {
+        throw 'Native receipt-to-cleanup path failed'
+    }
+    if ([IO.Directory]::Exists($private)) { throw 'Raw trace root survived' }
+} else { Remove-OwnedNativeTree $native }
+if ([IO.Directory]::Exists($native)) { throw 'Native raw files survived' }
+if ($Case -eq 'foreign_link' -and
+    [IO.File]::ReadAllText((Join-Path $outside 'sentinel')) -cne 'preserved') {
+    throw 'Foreign symlink target modified'
+}
+"""
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Actual Windows reparse semantics")
+@pytest.mark.parametrize(
+    "case", ["pytest_current", "real_pytest", "foreign_link", "root_link", "junction"]
+)
+def test_actual_windows_native_tree_never_follows_links(
+    tmp_path: Path, case: str
+) -> None:
+    """Exercise real Windows links, not mocked reparse flags or unlink outcomes."""
+    executable = shutil.which("pwsh")
+    if executable is None:
+        pytest.skip("Installed pwsh required for owned native tree tests")
+    native = tmp_path / "repo/.test-tmp" / ("native-broker-" + NONCE)
+    ordinary = native / "case/temp/test_native0"
+    ordinary.mkdir(parents=True)
+    if case != "real_pytest":
+        (ordinary / "scrollbar-native.json").write_text(
+            json.dumps({"cleanup_errors": [], "retired": True})
+        )
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "sentinel").write_text("preserved")
+    (outside / "scrollbar-native.json").write_text("must never be read")
+    if case == "real_pytest":
+        probe = tmp_path / "test_owned_receipt.py"
+        probe.write_text(
+            "def test_owned_receipt(tmp_path):\n"
+            "    (tmp_path / 'scrollbar-native.json').write_text(\n"
+            '        \'{"cleanup_errors": [], "retired": true}\')\n'
+        )
+        config = tmp_path / "pytest.ini"
+        config.write_text("[pytest]\n")
+        environment = os.environ.copy()
+        environment.pop("PYTEST_ADDOPTS", None)
+        environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+        generated = subprocess.run(  # noqa: S603 - one fixed pure test in owned temp tree
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-c",
+                str(config),
+                str(probe),
+                "--basetemp",
+                str(native / "case/temp"),
+                "-p",
+                "no:cacheprovider",
+                "-q",
+            ],
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        assert generated.returncode == 0, generated.stderr
+        aliases = list((native / "case/temp").glob("*current"))
+        assert len(aliases) == 1
+        assert aliases[0].is_symlink()
+    elif case == "pytest_current":
+        ordinary.with_name("test_nativecurrent").symlink_to(
+            ordinary, target_is_directory=True
+        )
+    elif case == "foreign_link":
+        (native / "foreign").symlink_to(outside, target_is_directory=True)
+    elif case == "root_link":
+        shutil.rmtree(native)
+        native.symlink_to(outside, target_is_directory=True)
+    else:
+        command = Path(os.environ["SYSTEMROOT"]) / "System32/cmd.exe"
+        created = subprocess.run(  # noqa: S603 - create a disposable test junction only
+            [
+                str(command),
+                "/d",
+                "/c",
+                "mklink",
+                "/J",
+                str(native / "junction"),
+                str(outside),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        assert created.returncode == 0, created.stderr
+    script = tmp_path / "native-tree-probe.ps1"
+    script.write_text(NATIVE_TREE_PROBE)
+    result = run_policy_probe(
+        [
+            executable,
+            "-NoProfile",
+            "-NonInteractive",
+            "-File",
+            str(script),
+            "-Runner",
+            str(ROOT / "scripts/test_fixture_startup_diagnostics.ps1"),
+            "-Directory",
+            str(tmp_path),
+            "-Case",
+            case,
+        ]
+    )
+    assert result.returncode == 0, result.stderr
+    assert (outside / "sentinel").read_text() == "preserved"
+    if case in {"root_link", "junction"}:
+        assert native.exists()
+    else:
+        assert not native.exists()
+
+
+LOCATOR_PROBE = r"""
+param([string]$Runner, [string]$Directory, [string]$Case)
+$ErrorActionPreference = 'Stop'
+. $Runner -FunctionsOnly
+$script:repoRoot = Join-Path $Directory 'repo'
+$null = [IO.Directory]::CreateDirectory($script:repoRoot)
+$env:RUNNER_TEMP = $Directory
+$env:GITHUB_REPOSITORY = 'mikejhill/verdiclip'
+$env:GITHUB_RUN_ID = '123456'
+$env:GITHUB_RUN_ATTEMPT = '1'
+$env:GITHUB_JOB = 'diagnose'
+$env:VERDICLIP_BENCHMARK_SOURCE_SHA = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+$env:VERDICLIP_FIXTURE_REPAIR_BASE = '5a5983275dfbd7e7243bd329ca3d859faca024c2'
+$owner = 'VerdiClip-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+$root = Join-Path $Directory $owner
+$state = [pscustomobject]@{
+    owner=$owner; source_sha=$env:VERDICLIP_BENCHMARK_SOURCE_SHA
+    repair_base_sha=$env:VERDICLIP_FIXTURE_REPAIR_BASE
+    private_root=$root; repo_root=$script:repoRoot
+}
+$script:publicValues = [Collections.Generic.List[string]]::new()
+function Set-JobValue([string]$Name, [string]$Value) {
+    $script:publicValues.Add($Name + '=' + $Value)
+}
+Write-PrivateLocator $state $Directory
+$locator = Get-PrivateLocatorPath $Directory
+$before = [IO.File]::ReadAllText($locator)
+if (($script:publicValues -join ',').Contains($owner) -or
+    ($script:publicValues -join ',').Contains($Directory)) {
+    throw 'Private locator escaped into public environment'
+}
+if ($Case -eq 'exclusive') {
+    $refused = $false
+    try { Write-PrivateLocator $state $Directory } catch { $refused = $true }
+    if (-not $refused -or [IO.File]::ReadAllText($locator) -cne $before) {
+        throw 'Existing locator overwritten'
+    }
+    return
+}
+if ($Case -eq 'wrong_owner_remove') {
+    $refused = $false
+    try { Remove-PrivateLocator $Directory ('VerdiClip-' + ('c' * 32)) }
+    catch { $refused = $true }
+    if (-not $refused -or [IO.File]::ReadAllText($locator) -cne $before) {
+        throw 'Foreign locator removal admitted'
+    }
+    return
+}
+if ($Case -in @('unproved_cleanup', 'raw_present')) {
+    if ($Case -eq 'raw_present') {
+        $null = [IO.Directory]::CreateDirectory($root)
+        [IO.File]::WriteAllText((Join-Path $root 'raw'), 'private')
+        $env:VERDICLIP_FIXTURE_TRACE_RETIRED = '1'
+        $env:VERDICLIP_FIXTURE_READY_TO_REMOVE = '1'
+    } else {
+        $env:VERDICLIP_FIXTURE_TRACE_RETIRED = '0'
+        $env:VERDICLIP_FIXTURE_READY_TO_REMOVE = '0'
+    }
+    $refused = $false
+    try { Remove-PrivateLocator $Directory $owner } catch { $refused = $true }
+    if (-not $refused -or [IO.File]::ReadAllText($locator) -cne $before) {
+        throw 'Recovery locator removed before cleanup proof'
+    }
+    return
+}
+if ($Case -eq 'context') { $env:GITHUB_RUN_ATTEMPT = '2' }
+if ($Case -eq 'partial') { [IO.File]::WriteAllText($locator, '{') }
+if ($Case -eq 'missing') { [IO.File]::Delete($locator) }
+if ($Case -in @('source', 'path')) {
+    $value = $before | ConvertFrom-Json
+    if ($Case -eq 'source') { $value.source_sha = 'c' * 40 }
+    else { $value.private_root = Join-Path $Directory 'unowned' }
+    [IO.File]::WriteAllText($locator, ($value | ConvertTo-Json -Depth 4))
+}
+if ($Case -eq 'linked') {
+    $foreign = Join-Path $Directory 'foreign-locator'
+    [IO.File]::Move($locator, $foreign)
+    $null = New-Item -ItemType SymbolicLink -Path $locator -Target $foreign
+}
+if ($Case -ne 'valid') {
+    $refused = $false
+    try { $null = Read-PrivateLocator $Directory } catch { $refused = $true }
+    if (-not $refused) { throw 'Invalid private locator admitted' }
+    return
+}
+$value = Read-PrivateLocator $Directory
+if ($value.owner -cne $owner -or $value.private_root -cne $root) {
+    throw 'Private locator identity changed'
+}
+$env:VERDICLIP_FIXTURE_TRACE_RETIRED = '1'
+$env:VERDICLIP_FIXTURE_READY_TO_REMOVE = '1'
+Remove-PrivateLocator $Directory $owner
+if ([IO.File]::Exists($locator)) { throw 'Private locator deletion unverified' }
+if ($script:publicValues -cnotcontains 'VERDICLIP_FIXTURE_LIFECYCLE=2') {
+    throw 'Cleanup completion was not recorded'
+}
+"""
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Actual Windows private locator")
+@pytest.mark.parametrize(
+    "case",
+    [
+        "valid",
+        "exclusive",
+        "wrong_owner_remove",
+        "unproved_cleanup",
+        "raw_present",
+        "context",
+        "partial",
+        "missing",
+        "source",
+        "path",
+        "linked",
+    ],
+)
+def test_actual_windows_private_recovery_locator(tmp_path: Path, case: str) -> None:
+    """The fallback reads only its exclusive private locator and exact run context."""
+    executable = shutil.which("pwsh")
+    if executable is None:
+        pytest.skip("Installed pwsh required for private locator tests")
+    script = tmp_path / "locator-probe.ps1"
+    script.write_text(LOCATOR_PROBE)
     result = run_policy_probe(
         [
             executable,

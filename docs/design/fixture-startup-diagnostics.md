@@ -16,9 +16,12 @@ native interaction.
 
 The event base must still be exactly
 `5a5983275dfbd7e7243bd329ca3d859faca024c2`. An advanced base fails before setup
-or the native run. The complete base-to-head delta is restricted to the nine
-reviewed diagnostic workflow, runner, documentation, fixture-sidecar and test
-files. Product source, dependencies, native wrapper, reader, profile and scheduler
+or the native run. The complete base-to-head delta is restricted to the eleven
+reviewed diagnostic workflow, runner, documentation, fixture-sidecar, linter
+compatibility and test files. The only actionlint configuration change copies
+the existing exact `cache-mode` compatibility exception to this workflow's path;
+it does not broaden the error pattern or suppress other workflow checks.
+Product source, dependencies, native wrapper, reader, profile and scheduler
 reducers must match the pinned repair base. Every bounded report identifies both
 the executed immutable head and that repair base. The runner never substitutes
 GitHub's generated integration commit for the executed source identity.
@@ -45,10 +48,26 @@ start attempt **before** WPR is started. A failed or interrupted start therefore
 still requires retirement. Stop and cancellation always include `-instancename`;
 global cancellation and adoption of an existing recording are forbidden.
 
+Before creating that directory, the runner exclusively reserves the fixed
+private file `RUNNER_TEMP/verdiclip-fixture-startup-locator.json`. Its bounded,
+exact schema binds the random owner, head, repair base, private root, checkout,
+temporary root, repository, run ID, attempt and job. Fallback derives this fixed
+path and verifies the current context, every ancestor and the recorded root;
+it never searches for similarly named directories. The owner and path are not
+persisted in `GITHUB_ENV`, which Actions echoes into later step logs. Only fixed
+numeric lifecycle flags and bounded native outcome fields cross that boundary.
+A missing or partial locator after reservation is unknown, not successful cleanup.
+
 An exclusive `.test-tmp` lock and a strict before/after snapshot identify the
 single new `native-broker-<GUID>` directory created by this isolated invocation.
 Existing directories are never claimed. More than one new directory is
-ambiguous and blocks deletion and publication. Cleanup rejects reparse points.
+ambiguous and blocks deletion and publication. Native-tree traversal never
+follows reparse entries. Receipt reads skip child symbolic links, including
+pytest's `*current` aliases. Cleanup validates the complete no-follow tree, then
+unlinks only exact Windows `SymbolicLink` entries with nonrecursive deletion;
+their targets are never read or modified. Ordinary files and directories are
+deleted bottom-up without recursive deletion. A linked native root, junction,
+unknown reparse type or changed entry still blocks cleanup and publication.
 An interrupted wrapper can be terminated only using its recorded PID and exact
 creation time. Missing/reused identity is unknown, not a reason to kill a process
 with a similar name.
@@ -84,14 +103,22 @@ The PowerShell runner reads the bounded aggregate into memory, then requires:
    recording, including any uncertain start.
 2. Verified deletion of its native output directory and all private trace,
    export, scheduler, marker, owner, analysis, compiler, and tool-output files.
+3. Verified retirement of the owned lock and deletion of the private locator.
 
-Only after both does it print the bounded aggregate. Raw ETL, CSV, process
+Only after all three does it print the bounded aggregate. The locator remains
+available if the main step is interrupted between raw-tree and lock cleanup;
+it is deleted last, before any aggregate is printed. Raw ETL, CSV, process
 identifiers, handles, nonces, absolute clocks, fixture receipts, native logs, and
 tool errors are never printed or uploaded. No artifact-upload step exists.
 Failure to prove retirement or cleanup withholds analysis. An `always()` step
 uses only the recorded ownership to attempt cleanup after interruption; it does
 not rerun the target or publish a pending aggregate. Disposal of a hosted VM is
 containment, not proof of successful cleanup.
+
+Failure reporting uses a closed stage/reason vocabulary, such as `native_tree`,
+`trace_retirement`, `raw_removal` or `locator_cleanup`. It never includes the
+original exception, path, process identity or owner. Evidence failures retain
+their failure stage rather than being mislabeled by a later successful cleanup.
 
 The original wrapper exit code is retained separately and reproduced in an
 `always()` native-result step, alongside fixed forced/cleanup classifications.
@@ -112,3 +139,25 @@ has run against its exact final head.
 Actual Windows PowerShell helper and runner-mock tests run only after the single
 native invocation and its cleanup, so the tests cannot prewarm the Windows
 PowerShell fixture process. Their outcome is separate from the native outcome.
+Additional real Windows probes cover pytest-style `*current` aliases, a foreign
+symlink target protected by a sentinel, linked-root and junction refusal, and
+the private locator's ownership and cleanup gates.
+
+## First run and correction
+
+The first diagnostic head, `a55fb313ed4ad0e0ffa7d8e8ee9277645ecb991d`, ran in
+[run 42077662538, job 127422065892](https://github.com/mikejhill/verdiclip/actions/runs/42077662538/job/127422065892).
+The native wrapper exited 0 without forced termination, and 105 actual Windows
+probes passed. The main diagnostic and fallback cleanup steps failed. Trace
+retirement was recorded, raw cleanup was not proved, and no aggregate was
+published. That run remains a failed diagnostic after this correction.
+
+The original source rejected every reparse entry while reading the whole native
+tree. Pytest creates `*current` symbolic-link aliases in its base directory, so
+that path can throw before reading the native verdict and set the sticky
+ownership-uncertain flag that blocks cleanup. This is a source-proven mechanism
+matching the observed classification, not recovery of the private historical
+exception or proof that it was the sole cause. The correction narrows link
+handling without weakening owned-root, junction, trace-retirement or publication
+checks. It also replaces the echoed ownership environment value with the private
+locator. No later run's result is implied by these changes.

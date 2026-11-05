@@ -53,6 +53,7 @@ jobs:
           & git merge-base --is-ancestor $base HEAD
           if ($LASTEXITCODE -ne 0) { throw 'Diagnostic head does not descend from the pinned repair base.' }
           $allowed = @(
+            '.github/actionlint.yaml',
             '.github/workflows/fixture-startup-diagnostic.yml',
             'scripts/test_fixture_startup_diagnostics.ps1',
             'docs/design/fixture-startup-diagnostics.md',
@@ -61,7 +62,8 @@ jobs:
             'tests/capture/provider_fixture.ps1',
             'tests/capture/scroll_peer.py',
             'tests/tooling/test_fixture_startup_summary.py',
-            'tests/portable/test_fixture_startup_trace.py'
+            'tests/portable/test_fixture_startup_trace.py',
+            'tests/portable/test_hosted_workflow.py'
           )
           $changed = @(& git diff --no-renames --name-only $base HEAD --)
           if ($LASTEXITCODE -ne 0 -or $changed.Count -ne $allowed.Count -or
