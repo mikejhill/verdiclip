@@ -15,6 +15,7 @@ from pytestqt.wait_signal import SignalBlocker
 from tests.ux.conftest import Stopwatch
 
 from verdiclip.capture.grabber import FrozenScreen
+from verdiclip.capture.input_policy import InputKind, SelectionInput
 from verdiclip.capture.models import Capture, CaptureMode, ScreenGeometry
 from verdiclip.capture.overlay import SelectionOverlay, SharedSelection
 from verdiclip.capture.service import CaptureService
@@ -744,3 +745,21 @@ class TestSpanningWindows:
         QTest.mouseMove(left, QPoint(50, 250))
         assert right.grab().toImage().pixelColor(50, 100) != undimmed
         monitors.close()
+
+
+def test_virtual_crosshair_remains_visible_without_moving_the_os_anchor(
+    service: CaptureService, qtbot: QtBot
+) -> None:
+    """UX-CAP-17: retain the visible selection guide, not native hiding proof."""
+    service.capture_region()
+    qtbot.waitUntil(lambda: bool(service.overlays))
+    overlay = service.overlays[0]
+    anchor = QCursor.pos()
+    point = overlay.screen_geometry.to_physical(Point(180, 160))
+    overlay.receive_input(SelectionInput(InputKind.MOVE, point))
+    qtbot.waitUntil(lambda: overlay.shared.pointer == point)
+    shown = overlay.grab().toImage()
+    assert shown.pixelColor(180, 20) != shown.pixelColor(200, 20)
+    assert QCursor.pos() == anchor
+    service.cancel()
+    qtbot.waitUntil(lambda: not service.is_selecting)

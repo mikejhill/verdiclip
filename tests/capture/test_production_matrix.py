@@ -36,6 +36,7 @@ from tests.capture.production_matrix import (
     ProductionBrokerDriver,
     StrictFixtureSnapshot,
     cleanup_confirmed,
+    cursor_lease_errors,
     fixture_foreground_errors,
     native_action_errors,
     qualification_plan,
@@ -51,6 +52,7 @@ from verdiclip.capture.input_native import Win32InputPlatform
 from verdiclip.capture.models import Capture, CaptureMode
 from verdiclip.exceptions import CaptureError
 from verdiclip.geometry import Point, Rect
+from verdiclip.platform.cursor import CursorVisibilityLease
 from verdiclip.settings import CaptureSettings, Settings
 
 
@@ -775,3 +777,40 @@ def test_operation_observer_preserves_method_binding(
     owner, value = Owner(), object()
     assert owner.method(value) == (owner, value)
     assert [event["phase"] for event in events] == ["entered", "returned"]
+
+
+@pytest.mark.parametrize("attempted", [False, True])
+@pytest.mark.parametrize("installed", [False, True])
+@pytest.mark.parametrize("closed", [False, True])
+def test_cursor_receipt_requires_actual_production_hide_and_cleanup(
+    monkeypatch: pytest.MonkeyPatch, *, attempted: bool, installed: bool, closed: bool
+) -> None:
+    """Neither a diagnostic probe nor a skipped lease satisfies native evidence."""
+    monkeypatch.setattr(Win32InputPlatform, "__init__", lambda _self: None)
+    platform = ObservedWin32Platform()
+    platform._cursor_visibility = cast(
+        CursorVisibilityLease, SimpleNamespace(suppression_attempted=attempted)
+    )
+    platform.installed, platform.closed = installed, closed
+    driver = ProductionBrokerDriver(InputProfile.INJECTED)
+    driver.platforms.append(platform)
+    receipt = platform.cursor_receipt()
+    assert receipt == {
+        "suppression_attempted": attempted,
+        "suppression_returned_success": attempted and installed,
+        "restoration_and_uninitialize_returned_success": attempted and closed,
+        "presentation_verified": False,
+        "previous_global_state_known": False,
+    }
+    assert driver.receipt()["cursor_leases"] == [receipt]
+    assert bool(cursor_lease_errors(driver)) is not (attempted and installed and closed)
+
+
+def test_absent_or_portable_cursor_lease_cannot_qualify_native_suppression() -> None:
+    """A fake platform remains explicitly separate even if its tests pass."""
+    driver = ProductionBrokerDriver(InputProfile.INJECTED)
+    assert cursor_lease_errors(driver) == ["No native cursor lease observed"]
+    replay = ProductionBrokerDriver(
+        InputProfile.INJECTED, platform_factory=ReplayInputPlatform
+    )
+    assert cursor_lease_errors(replay) == ["No native cursor lease observed"]

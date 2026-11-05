@@ -16,6 +16,7 @@ from verdiclip.capture.input_raw import (
 )
 from verdiclip.exceptions import PlatformError
 from verdiclip.geometry import Point
+from verdiclip.platform.cursor import CursorVisibilityLease
 
 HookCallback = Callable[[int, int, int], int]
 INVALID_HOOK_HANDLE: Final = 1404
@@ -153,6 +154,7 @@ class Win32InputPlatform:
         self._hooks: list[int] = []
         self._callbacks: list[object] = []
         self._timer = 0
+        self._cursor_visibility = CursorVisibilityLease()
 
     def foreground(self) -> int:
         """Read without SetForegroundWindow or thread-input attachment."""
@@ -222,6 +224,7 @@ class Win32InputPlatform:
             if not handle:
                 raise ctypes.WinError(ctypes.get_last_error())
             self._hooks.append(int(handle))
+        self._cursor_visibility.acquire()
 
     def pump(self) -> bool:
         """Use the documented installer-thread hook/message-loop relationship."""
@@ -249,7 +252,15 @@ class Win32InputPlatform:
         return int(self._api.CallNextHookEx(None, code, message, address))
 
     def close(self) -> bool:
-        """Retire on the installer thread after all of its callbacks returned."""
+        """Restore the cursor and retire input before acknowledging any cleanup."""
+        try:
+            cursor_cleaned = self._cursor_visibility.close()
+        finally:
+            input_cleaned = self._close_input()
+        return cursor_cleaned and input_cleaned
+
+    def _close_input(self) -> bool:
+        """Retire on the installer thread even if cursor teardown raised."""
         failed = [
             handle
             for handle in self._hooks

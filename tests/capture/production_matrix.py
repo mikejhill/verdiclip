@@ -343,6 +343,17 @@ class ObservedWin32Platform(Win32InputPlatform):
             self.closed = True
         return result
 
+    def cursor_receipt(self) -> dict[str, bool]:
+        """Report the production lease path without claiming compositor proof."""
+        attempted = self._cursor_visibility.suppression_attempted
+        return {
+            "suppression_attempted": attempted,
+            "suppression_returned_success": attempted and self.installed,
+            "restoration_and_uninitialize_returned_success": attempted and self.closed,
+            "presentation_verified": False,
+            "previous_global_state_known": False,
+        }
+
 
 class ProductionBrokerDriver:
     """Use the real broker/worker and Win32 boundary unless explicitly injected.
@@ -427,6 +438,7 @@ class ProductionBrokerDriver:
             "native_hooks": self.native
             and bool(self.platforms)
             and all(p.installed for p in self.platforms),
+            "cursor_leases": [p.cursor_receipt() for p in self.platforms],
             "native_platform_cleanup": self.native
             and bool(self.platforms)
             and all(p.closed for p in self.platforms),
@@ -445,6 +457,22 @@ class ProductionBrokerDriver:
             "cleanup_errors": self.cleanup_errors(),
             "input_generated_by_harness": False,
         }
+
+
+def cursor_lease_errors(driver: ProductionBrokerDriver) -> list[str]:
+    """A hidden-baseline skip cannot qualify the production suppression route."""
+    if not driver.native or not driver.platforms:
+        return ["No native cursor lease observed"]
+    return [
+        "Production cursor suppression/restoration was not exercised successfully"
+        for platform in driver.platforms
+        if not (
+            platform.cursor_receipt()["suppression_returned_success"]
+            and platform.cursor_receipt()[
+                "restoration_and_uninitialize_returned_success"
+            ]
+        )
+    ]
 
 
 class MemoryCaptureSink:
