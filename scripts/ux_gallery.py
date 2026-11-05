@@ -41,6 +41,7 @@ from verdiclip.document.document import Document
 from verdiclip.document.style import HIGHLIGHT_YELLOW, RED, WHITE, Color, Style
 from verdiclip.document.transform import Rotate
 from verdiclip.editor.close_prompt import CloseChoice, ClosePrompt
+from verdiclip.editor.factory import create_editor_window
 from verdiclip.editor.resize_dialog import ResizeDialog
 from verdiclip.editor.session import EditorSession, ToolId
 from verdiclip.editor.window import EditorWindow
@@ -141,7 +142,7 @@ class Gallery:
             rect=Rect(484, 292, 183, 22), style=Style(fill=HIGHLIGHT_YELLOW)
         )
         session.history.execute(AddAnnotations([mark, box, arrow, *steps], "Sample"))
-        window = EditorWindow(session, ImageDelivery(self._settings.output))
+        window = create_editor_window(session, ImageDelivery(self._settings.output))
         window.resize(1000, 640)
         window.activate_tool(tool)
         if select:

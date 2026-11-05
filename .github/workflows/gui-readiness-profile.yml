@@ -1,0 +1,260 @@
+name: GUI readiness cold-path diagnosis
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/gui-readiness-profile.yml'
+      - 'scripts/gui_readiness_profile.py'
+      - 'scripts/gui_waits.wprp'
+      - 'scripts/scheduler_trace_summary.py'
+      - 'scripts/scheduler_phase_summary.py'
+      - 'scripts/read_scheduler_etl.cpp'
+      - 'scripts/scheduler_payload.hpp'
+      - 'tests/tooling/test_scheduler_payload.cpp'
+      - 'tests/tooling/test_gui_readiness_profile.py'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gui-readiness-profile-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    cache-mode: none
+    if: github.repository == 'mikejhill/verdiclip'
+    name: Qt ${{ matrix.qt }} / five instrumented fresh processes
+    runs-on: windows-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        qt: ['6.11.2', '6.12.0']
+    env:
+      UV_LOCKED: '1'
+      PYTHONUTF8: '1'
+      PYTHONUNBUFFERED: '1'
+      QT_QPA_PLATFORM: windows
+      VERDICLIP_EXPECTED_QT: ${{ matrix.qt }}
+      VERDICLIP_EXPECTED_QPA: windows
+      VERDICLIP_GUI_READINESS_QUALIFICATION: '1'
+      VERDICLIP_BENCHMARK_ROLE: hosted
+      VERDICLIP_BENCHMARK_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      VERDICLIP_GUI_PROFILE: '1'
+      VERDICLIP_GUI_PROFILE_TRIAL: '1'
+      # Qt's own lifecycle trace avoids replacing Shiboken virtual methods.
+      # Owned synthetic editor only; diagnostic I/O adds overhead and is not
+      # evidence of the uninstrumented latency gate passing or failing.
+      QT_LOGGING_RULES: 'qt.widgets.showhide.debug=true;qt.widgets.window.debug=true'
+      QT_MESSAGE_PATTERN: 'QT_LIFECYCLE %{time process} %{category}: %{message}'
+    steps:
+      - name: Inventory installed Windows tracing tools (read-only)
+        timeout-minutes: 1
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($name in @('wpr.exe', 'xperf.exe', 'wpaexporter.exe', 'tracerpt.exe')) {
+            $tool = Get-Command $name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($null -eq $tool) {
+              Write-Output "TRACE_TOOL=$name;available=false"
+              continue
+            }
+            $signature = Get-AuthenticodeSignature -LiteralPath $tool.Source
+            Write-Output "TRACE_TOOL=$name;available=true;signature=$($signature.Status);path=$($tool.Source)"
+          }
+          $wpr = Get-Command (Join-Path $env:SystemRoot 'System32\wpr.exe') -CommandType Application -ErrorAction SilentlyContinue
+          if ($null -ne $wpr) {
+            $signature = Get-AuthenticodeSignature -LiteralPath $wpr.Source
+            if ($signature.Status -ne 'Valid' -or
+                $signature.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
+              throw 'Installed WPR identity is not verified Microsoft software'
+            }
+            & $wpr.Source -profiles
+            if ($LASTEXITCODE -ne 0) { throw 'WPR profile inventory failed' }
+          }
+          $kit = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Windows Performance Toolkit'
+          foreach ($name in @('wpr.exe', 'xperf.exe', 'wpaexporter.exe')) {
+            $path = Join-Path $kit $name
+            Write-Output "TRACE_KIT_TOOL=$name;available=$(Test-Path -LiteralPath $path -PathType Leaf)"
+          }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: '3.13.16'
+          enable-cache: false
+      - run: uv sync --locked
+      - name: Select explicit isolated Qt compatibility runtime
+        shell: pwsh
+        run: uv pip install --python .venv "pyside6-essentials==$env:VERDICLIP_EXPECTED_QT" "shiboken6==$env:VERDICLIP_EXPECTED_QT"
+      - name: Verify hosted Windows and immutable checked-out source
+        shell: pwsh
+        run: |
+          if (-not $IsWindows -or $env:RUNNER_OS -cne 'Windows' -or
+              $env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_ENVIRONMENT -cne 'github-hosted') {
+            throw 'Diagnosis requires standard disposable GitHub-hosted Windows.'
+          }
+          $actual = (& git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $actual -cne $env:VERDICLIP_BENCHMARK_SOURCE_SHA) {
+            throw 'Diagnostic checkout identity mismatch.'
+          }
+          Write-Output "GUI_READINESS_PROFILE_SOURCE=$actual"
+      - name: Compile repository-owned finalized-ETL reader
+        timeout-minutes: 1
+        shell: pwsh
+        run: |
+          $locator = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $signature = Get-AuthenticodeSignature -LiteralPath $locator
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') { throw 'Compiler locator is not verified Microsoft software' }
+          $installation = & $locator -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or -not $installation -or @($installation).Count -ne 1) { throw 'Existing compiler unavailable' }
+          $setup = Join-Path $installation 'VC/Auxiliary/Build/vcvars64.bat'
+          $reader = Join-Path $env:RUNNER_TEMP 'VerdiClip-read-scheduler.exe'
+          $object = Join-Path $env:RUNNER_TEMP 'VerdiClip-read-scheduler.obj'
+          $unit = Join-Path $env:RUNNER_TEMP 'VerdiClip-test-scheduler.exe'
+          $unitObject = Join-Path $env:RUNNER_TEMP 'VerdiClip-test-scheduler.obj'
+          foreach ($path in @($reader, $object, $unit, $unitObject)) {
+            if (Test-Path -LiteralPath $path) { throw 'Reader output already exists' }
+          }
+          'VERDICLIP_READER_OWNED=1' >> $env:GITHUB_ENV
+          $command = '"' + $setup + '" >nul && cl /nologo /W4 /WX /EHsc /std:c++17 scripts\read_scheduler_etl.cpp /Fe:"' + $reader + '" /Fo:"' + $object + '" /link advapi32.lib tdh.lib'
+          & $env:ComSpec /d /s /c $command
+          if ($LASTEXITCODE -ne 0) { throw 'ETL reader compilation failed' }
+          $command = '"' + $setup + '" >nul && cl /nologo /W4 /WX /EHsc /std:c++17 /I scripts tests\tooling\test_scheduler_payload.cpp /Fe:"' + $unit + '" /Fo:"' + $unitObject + '"'
+          & $env:ComSpec /d /s /c $command
+          if ($LASTEXITCODE -ne 0) { throw 'Pure decoder test compilation failed' }
+          & $unit
+          if ($LASTEXITCODE -ne 0) { throw 'Pure decoder tests failed' }
+      - name: Up to five instrumented processes, with the first GUI process first
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $ErrorActionPreference = 'Stop'
+          foreach ($name in @([Environment]::GetEnvironmentVariables().Keys)) {
+            if ($name.StartsWith('PYTEST_', [StringComparison]::OrdinalIgnoreCase)) {
+              [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+            }
+          }
+          foreach ($name in @('PYTHONHOME', 'PYTHONSTARTUP', 'PYTHONINSPECT')) {
+            [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+          }
+          $env:PYTEST_DISABLE_PLUGIN_AUTOLOAD = '1'
+          $env:PYTHONNOUSERSITE = '1'
+          $env:PYTHONPATH = (Join-Path $PWD 'src') + [IO.Path]::PathSeparator + $PWD
+          $wpr = Join-Path $env:SystemRoot 'System32\wpr.exe'
+          $xperf = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Windows Performance Toolkit\xperf.exe'
+          foreach ($tool in @($wpr, $xperf)) {
+            $signature = Get-AuthenticodeSignature -LiteralPath $tool
+            if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
+              throw 'Trace tool is not verified Microsoft software'
+            }
+          }
+          $owner = 'VerdiClip-' + [guid]::NewGuid().ToString('N')
+          $trace = Join-Path $env:RUNNER_TEMP ($owner + '.etl')
+          $csv = Join-Path $env:RUNNER_TEMP ($owner + '.csv')
+          $phases = Join-Path $env:RUNNER_TEMP ($owner + '.phases.json')
+          $scheduler = Join-Path $env:RUNNER_TEMP ($owner + '.scheduler.csv')
+          & $wpr -profiles "$PWD/scripts/gui_waits.wprp"
+          if ($LASTEXITCODE -ne 0) { throw 'Scheduler profile validation failed' }
+          "VERDICLIP_TRACE_OWNER=$owner" >> $env:GITHUB_ENV
+          $aggregate = 0
+          foreach ($trial in 1..5) {
+            $env:VERDICLIP_GUI_PROFILE_TRIAL = [string]$trial
+            Write-Output "GUI_READINESS_PROFILE_TRIAL=$trial/5; fresh-process-same-VM-not-cold-OS"
+            $report = Join-Path $env:RUNNER_TEMP ('readiness-profile-' + [guid]::NewGuid().ToString('N') + '.xml')
+            $log = "$report.log"
+            if ($trial -eq 1) {
+              $env:VERDICLIP_GUI_PHASE_FILE = $phases
+              & $wpr -start "$PWD/scripts/gui_waits.wprp!VerdiClipWaits" -instancename $owner
+              if ($LASTEXITCODE -ne 0) { throw 'Named scheduler trace admission failed' }
+            }
+            try {
+              & .venv/Scripts/python.exe -m pytest tests/ux/test_gui_readiness.py::test_first_controller_start_and_capture_costs --no-cov -p pytestqt.plugin -p pytest_cov.plugin -p _hypothesis_pytestplugin -p no:randomly -p scripts.gui_readiness_profile -vv --capture=tee-sys "--junitxml=$report" "--basetemp=$report.tmp" 2>&1 | Tee-Object -FilePath $log
+              $testExit = $LASTEXITCODE
+            } finally {
+              if ($trial -eq 1) {
+                & $wpr -stop $trace -skipPdbGen -instancename $owner
+                if ($LASTEXITCODE -ne 0) { throw 'Named trace stop failed; cleanup remains required' }
+                'VERDICLIP_TRACE_STOPPED=1' >> $env:GITHUB_ENV
+                Remove-Item Env:VERDICLIP_GUI_PHASE_FILE
+              }
+            }
+            if ($trial -eq 1) {
+              $reader = Join-Path $env:RUNNER_TEMP 'VerdiClip-read-scheduler.exe'
+              & $xperf -i $trace -o $csv -a dumper
+              if ($LASTEXITCODE -ne 0) { throw 'Independent scheduler decode failed' }
+              & .venv/Scripts/python.exe scripts/scheduler_phase_summary.py $reader $trace $phases $scheduler $csv
+              if ($LASTEXITCODE -ne 0) {
+                Write-Output 'Phase scheduler analysis unavailable; no causal claim; retaining failure and continuing untraced controls'
+                $aggregate = 1
+              }
+            }
+            Write-Output "GUI_READINESS_PROFILE_TRIAL_EXIT=$trial/$testExit"
+            if ($testExit -notin @(0, 1)) { exit $testExit }
+            if (-not (Test-Path -LiteralPath $report)) { throw 'Diagnostic JUnit receipt missing.' }
+            [xml]$junit = Get-Content -LiteralPath $report -Raw
+            $failures = @($junit.SelectNodes('//failure')).Count
+            if (@($junit.SelectNodes('//testcase')).Count -ne 1 -or
+                @($junit.SelectNodes('//skipped | //error')).Count -ne 0 -or
+                ($testExit -eq 0 -and $failures -ne 0) -or ($testExit -eq 1 -and $failures -ne 1)) {
+              throw 'Diagnosis must execute one non-skipped case with consistent status.'
+            }
+            $profiles = @(Get-Content -LiteralPath $log | ForEach-Object {
+              if ($_ -match 'GUI_READINESS_PROFILE=(\{.*\})$') { $Matches[1] | ConvertFrom-Json }
+            })
+            if ($profiles.Count -eq 0) { throw 'Diagnostic profile receipt missing.' }
+            foreach ($profile in $profiles) {
+              if ($profile.source_sha -cne $env:VERDICLIP_BENCHMARK_SOURCE_SHA -or
+                  $profile.qt_expected -cne $env:VERDICLIP_EXPECTED_QT -or
+                  $profile.trial -cne ([string]$trial) -or $profile.truncated -ne $false -or
+                  $profile.PSObject.Properties.Name -notcontains 'errors' -or
+                  @($profile.errors).Count -ne 0 -or $null -eq $profile.records -or
+                  @($profile.records).Count -eq 0) {
+                throw 'Broken, truncated or mismatched profiling is an infrastructure failure.'
+              }
+            }
+            if ($testExit -eq 1) { $aggregate = 1 }
+          }
+          Write-Output 'Inclusive phases overlap and instrumentation adds overhead. The 300ms assertion is unchanged; green is non-reproduction, not a fix or native acceptance. Timeout cleanup is UNKNOWN; VM disposal is containment.'
+          exit $aggregate
+      - name: Retire only the owned recording and private raw trace files
+        if: always()
+        timeout-minutes: 1
+        shell: pwsh
+        run: |
+          $uncertain = @()
+          if ($env:VERDICLIP_READER_OWNED -eq '1') {
+            foreach ($name in @('VerdiClip-read-scheduler.exe', 'VerdiClip-read-scheduler.obj', 'VerdiClip-test-scheduler.exe', 'VerdiClip-test-scheduler.obj')) {
+              try {
+                $path = Join-Path $env:RUNNER_TEMP $name
+                if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -ErrorAction Stop }
+                if (Test-Path -LiteralPath $path) { throw 'Reader output still exists' }
+              } catch { $uncertain += 'reader output removal unverified' }
+            }
+          }
+          $owner = $env:VERDICLIP_TRACE_OWNER
+          if (-not $owner) {
+            if ($uncertain.Count) { throw ($uncertain -join '; ') }
+            Write-Output 'TRACE_CLEANUP=no recording attempted; owned reader outputs absent'
+            exit 0
+          }
+          if ($owner -notmatch '^VerdiClip-[a-f0-9]{32}$') { throw 'Trace ownership invalid' }
+          try {
+            if ($env:VERDICLIP_TRACE_STOPPED -ne '1') {
+              & "$env:SystemRoot/System32/wpr.exe" -cancel -instancename $owner
+              if ($LASTEXITCODE -ne 0) { throw 'Named trace retirement is unverified' }
+            }
+          } catch { $uncertain += 'recording retirement unverified' }
+          foreach ($suffix in @('.etl', '.csv', '.phases.json', '.scheduler.csv')) {
+            try {
+              $path = Join-Path $env:RUNNER_TEMP ($owner + $suffix)
+              if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -ErrorAction Stop }
+              if (Test-Path -LiteralPath $path) { throw 'Private raw trace still exists' }
+            } catch { $uncertain += "private $suffix removal unverified" }
+          }
+          if ($uncertain.Count) { throw ($uncertain -join '; ') }
+          Write-Output 'TRACE_CLEANUP=owned recording stopped; private raw files absent'

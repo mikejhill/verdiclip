@@ -60,6 +60,7 @@ def test_requires_windows() -> None:
 
 
 @windows_only
+@pytest.mark.native_hooks
 class TestLowLevelKeyboardHook:
     """The real hook installs, delivers keys and swallows them."""
 

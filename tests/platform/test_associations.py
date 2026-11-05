@@ -217,6 +217,7 @@ class TestFileAssociations:
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="needs the Windows registry")
+@pytest.mark.native_registry
 class TestWinRegAssociations:
     """The winreg backend against a throwaway key."""
 

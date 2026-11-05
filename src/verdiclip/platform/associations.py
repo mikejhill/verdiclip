@@ -21,6 +21,16 @@ from verdiclip import APP_NAME
 from verdiclip.exceptions import PlatformError
 from verdiclip.platform.launcher import LaunchCommand, is_other_install
 
+__all__ = [
+    "DEFAULT_APPS_URI",
+    "EXTENSIONS",
+    "PROG_ID",
+    "AssociationBackend",
+    "FileAssociations",
+    "RegistryValue",
+    "WinRegAssociations",
+]
+
 logger = logging.getLogger(__name__)
 
 PROG_ID: Final = "VerdiClip.Image"

@@ -256,6 +256,8 @@ class TestPlan:
             pytest.skip("needs git")
         install = Installation(InstallKind.CHECKOUT, "0.10.0", PYTHON, tmp_path)
         real = checkout_planner()[0]
+        # Workspace-local basetemp must not discover the enclosing real checkout.
+        (tmp_path / ".git").write_text("gitdir: missing-fixture-git-directory\n")
 
         with pytest.raises(UpdateError, match="Could not read the checkout"):
             real.plan(install, "0.11.0", RELAUNCH)

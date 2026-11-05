@@ -23,7 +23,8 @@ separate series and must never be pooled with Windows QPA. Verify actual runtime
 Qt, PySide and QPA values rather than relying on environment labels.
 
 Use the same selector and arguments on both machines: one selected case per
-fresh pytest process, `--no-cov -p no:randomly --capture=tee-sys`, with a separate
+fresh pytest process, `--no-cov -p pytestqt.plugin -p pytest_cov.plugin -p _hypothesis_pytestplugin
+-p no:randomly -vv --capture=tee-sys`, with unique `--basetemp` and a separate
 JUnit receipt per trial. Use the same synthetic image dimensions, fake desktop
 and OS integration backends, annotation defaults, output mode and readiness
 configuration. Do not substitute real screen capture, input, hotkeys or hooks.
@@ -55,8 +56,17 @@ PowerShell command with a unique `$report` path supplied by the coordinator:
 $selector = 'tests/ux/test_gui_readiness.py::' +
   'test_first_controller_start_and_capture_costs'
 & .venv/Scripts/python.exe -m pytest $selector `
-  --no-cov -p no:randomly -vv --capture=tee-sys "--junitxml=$report"
+  --no-cov -p pytestqt.plugin -p pytest_cov.plugin -p _hypothesis_pytestplugin `
+  -p no:randomly -vv --capture=tee-sys "--junitxml=$report" "--basetemp=$report.tmp"
 ```
+
+Before each child, remove inherited `PYTEST_*`, `PYTHONHOME`, `PYTHONSTARTUP`
+and `PYTHONINSPECT` overrides; set `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`,
+`PYTHONNOUSERSITE=1` and `PYTHONPATH` to the exact checkout's `src` and root.
+The named pytest-qt, coverage and Hypothesis plugins are the explicit shared
+profile. Prior automatic-plugin-loading timing receipts remain a separate
+configuration, even when application trees match. Do not pool those measurements
+with this profile.
 
 The optional `VERDICLIP_BENCHMARK_HARDWARE_JSON`, when supplied, must contain
 exactly seven fields: `os_version`, `cpu_models`, `logical_processors`,
@@ -100,7 +110,12 @@ each profile. Label the scope `5-fresh-processes-same-VM-not-cold-OS` and retain
 every trial's raw metrics, outcome and ordinal, including failures and aborted
 trials. Do not discard outliers, rerun until green or select the best sample.
 Five samples describe this bounded series; they do not establish a population
-tail-latency guarantee. Report hosted and local series separately with their
+tail-latency guarantee. The local owner stops on its first failed or uncertain
+trial for safe control return; record remaining trials and profiles as unattempted.
+That truncated failed series is not a complete five-trial distribution, even
+though the per-trial measurement profile matches the hosted series. Hosted
+assertion failures may continue with a sticky failed aggregate; neither route
+replaces failed observations with later passes. Report hosted and local series separately with their
 environment differences.
 
 Compare matching screen geometry, DPR/scaling and synthetic image dimensions

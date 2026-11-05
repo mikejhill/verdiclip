@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from PySide6.QtGui import QColor, QGuiApplication, QImage
+from PySide6.QtGui import QColor, QGuiApplication, QImage, QImageReader
 from PySide6.QtPrintSupport import QPrinter
 from PySide6.QtWidgets import QApplication
 
@@ -36,6 +36,14 @@ class TestImageDelivery:
         assert saved == path
         assert not loaded.isNull()
         assert loaded.size() == image.size()
+        assert (
+            QImageReader(str(saved)).format().data()
+            == {
+                "png": b"png",
+                "jpg": b"jpeg",
+                "bmp": b"bmp",
+            }[extension]
+        )
         if extension == "png":
             assert loaded.pixelColor(5, 5).alpha() == 0
         else:

@@ -83,6 +83,7 @@ class TestFrozenScreen:
 class TestMssScreenSource:
     """Physical screen source lifecycle."""
 
+    @pytest.mark.native_desktop
     @pytest.mark.skipif(
         sys.platform != "win32", reason="Real screen capture requires Windows"
     )

@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Iterator
-from pathlib import Path
+from dataclasses import replace
 from typing import override
 
 import pytest
 from PySide6.QtCore import QEvent, QObject, QPoint, Qt
-from PySide6.QtGui import QCloseEvent, QGuiApplication
-from PySide6.QtTest import QTest
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -20,12 +18,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from pytestqt.qtbot import QtBot
+from tests.capture.input_fixture import ReplayInputBroker
 from tests.ux.test_capture_journeys import FakeDesktop, FakeWindow, FakeWindows
 
 from verdiclip.capture.grabber import FrozenScreen
-from verdiclip.capture.models import Capture, CaptureMode
-from verdiclip.capture.service import CaptureService
-from verdiclip.geometry import Rect
+from verdiclip.capture.input_policy import InputKind, SelectionInput
+from verdiclip.capture.models import Capture
+from verdiclip.capture.service import CaptureService, read_display_snapshot
+from verdiclip.exceptions import CaptureError
+from verdiclip.geometry import Point, Rect
 from verdiclip.settings import Settings
 from verdiclip.shell.settings_dialog import SettingsDialog
 
@@ -71,536 +72,479 @@ class InputTrace(QObject):
         return "none" if obj is None else obj.metaObject().className()
 
 
-def test_capture_takes_input_ownership_from_popup(
-    qtbot: QtBot,
-    qapp: QApplication,
-    tmp_path: Path,
-) -> None:
-    """UX-G-10: a visible selection cannot leave another popup owning input."""
-    service = CaptureService(FakeDesktop(), FakeWindows())
-    menu = QMenu()
-    menu.addAction("Capture region", service.capture_region)
-    trace = InputTrace()
-    qapp.installEventFilter(trace)
-    try:
-        menu.popup(QPoint(80, 80))
-        qtbot.waitUntil(menu.isVisible)
-        assert QApplication.activePopupWidget() is menu
-        service.capture_region()
-        qtbot.waitUntil(lambda: bool(service.overlays))
-        overlay = service.overlays[0]
-        state = {
-            "overlay_visible": overlay.isVisible(),
-            "popup": InputTrace.name(QApplication.activePopupWidget()),
-            "focus_window": InputTrace.name(QGuiApplication.focusWindow()),
-            "events": trace.events,
-        }
-        # QWindow input follows Qt's native event routing, unlike QWidget.sendEvent.
-        QTest.keyClick(overlay.windowHandle(), Qt.Key.Key_Escape)
-        qapp.processEvents()
-        state["selecting_after_escape"] = service.is_selecting
-        (tmp_path / "popup-input-trace.json").write_text(json.dumps(state, indent=2))
-        assert not service.is_selecting, json.dumps(state, indent=2)
-    finally:
-        service.cancel()
-        menu.close()
-        qapp.removeEventFilter(trace)
+class ExistingWindowTrace(QObject):
+    """Observe only windows that existed before this explicit capture."""
+
+    def __init__(self, windows: tuple[QWidget, ...]) -> None:
+        super().__init__()
+        self.windows = windows
+        self.changes: list[str] = []
+
+    @override
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if any(watched is window for window in self.windows) and event.type() in {
+            QEvent.Type.Hide,
+            QEvent.Type.Close,
+        }:
+            self.changes.append(event.type().name)
+        return False
 
 
-def test_closing_selection_ends_session_and_allows_retry(qtbot: QtBot) -> None:
-    """UX-G-10: closing a capture window must terminate its owner session."""
-    desktop = FakeDesktop()
-    service = CaptureService(desktop, FakeWindows())
-    cancelled: list[bool] = []
-    service.cancelled.connect(lambda: cancelled.append(True))
-    try:
-        service.capture_region()
-        qtbot.waitUntil(lambda: bool(service.overlays))
-        overlay = service.overlays[0]
-        overlay.close()
-        assert not service.is_selecting, "A closed overlay cannot leave capture active"
-        assert cancelled == [True], "Closing a selection reports cancellation once"
-        service.capture_region()
-        qtbot.waitUntil(lambda: bool(service.overlays))
-        assert service.overlays[0] is not overlay, (
-            "The next capture must have fresh input"
+class CaptureContext:
+    """A real service and Qt overlays over explicit fake pixel/input boundaries."""
+
+    def __init__(self, qapp: QApplication) -> None:
+        self.desktop = FakeDesktop()
+        self.broker = ReplayInputBroker(qapp)
+        window = FakeWindow("Example document", Rect(80, 80, 300, 200))
+        self.windows = FakeWindows([window], active=window)
+        self.display_snapshot = read_display_snapshot()
+        self.service = CaptureService(
+            self.desktop,
+            self.windows,
+            input_broker=self.broker,
+            display_snapshot=lambda: self.display_snapshot,
         )
-        assert desktop.frames == 2
-    finally:
-        service.cancel()
-        qtbot.wait(0)
+        self.captures: list[object] = []
+        self.cancellations: list[bool] = []
+        self.failures: list[str] = []
+        self.service.captured.connect(self.captures.append)
+        self.service.cancelled.connect(lambda: self.cancellations.append(True))
+        self.service.failed.connect(self.failures.append)
+
+    def cancel(self) -> None:
+        """Replay cancellation through the same broker/service boundary."""
+        self.broker.feed(SelectionInput(InputKind.CANCEL, Point(120, 120), "escape"))
+
+    def drag(self) -> None:
+        """Replay a complete selection without native input or cursor changes."""
+        for kind, point in (
+            (InputKind.MOVE, Point(80, 80)),
+            (InputKind.PRESS, Point(80, 80)),
+            (InputKind.MOVE, Point(180, 150)),
+            (InputKind.RELEASE, Point(180, 150)),
+        ):
+            self.broker.feed(SelectionInput(kind, point))
 
 
 @pytest.fixture
-def capturing(qtbot: QtBot) -> Iterator[tuple[CaptureService, FakeDesktop]]:
-    """A session whose capture, cancellation and recovery have no shell side effects."""
-    desktop = FakeDesktop()
-    window = FakeWindow("Document", Rect(80, 80, 300, 200))
-    service = CaptureService(desktop, FakeWindows([window], active=window))
-    yield service, desktop
-    service.cancel()
-    qtbot.wait(0)
+def context(qapp: QApplication) -> Iterator[CaptureContext]:
+    """Always retire only resources created by this fixture."""
+    value = CaptureContext(qapp)
+    yield value
+    value.service.cancel()
+    value.broker.acknowledge_cleanup()
+    value.service.deleteLater()
+    value.broker.deleteLater()
+
+
+def test_unavailable_display_refuses_before_input_reservation(
+    context: CaptureContext, qtbot: QtBot, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty topology cannot install input ownership or fabricate a screenshot."""
+    context.display_snapshot = ()
+    monkeypatch.setattr(QGuiApplication, "screens", list)
+    context.service.capture_region()
+    qtbot.waitUntil(lambda: bool(context.failures))
+    assert "No display" in context.failures[0]
+    assert not context.service.is_selecting
+    assert not context.captures
+
+
+def test_no_cursor_display_refuses_read_only_capture(
+    context: CaptureContext, qtbot: QtBot, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A disconnected last display is an error rather than a null screen access."""
+    monkeypatch.setattr(QGuiApplication, "screenAt", lambda _point: None)
+    monkeypatch.setattr(QGuiApplication, "primaryScreen", lambda: None)
+    context.service.capture_fullscreen()
+    qtbot.waitUntil(lambda: bool(context.failures))
+    assert "No display" in context.failures[0]
+    assert not context.service.is_selecting
+
+
+def test_pixel_acquisition_failure_releases_input_before_error(
+    context: CaptureContext, qtbot: QtBot, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A display read error cannot leave the newly acquired input lease active."""
+
+    def unavailable(_source: FakeDesktop) -> FrozenScreen:
+        raise CaptureError("Fixture pixels unavailable")
+
+    monkeypatch.setattr(FakeDesktop, "freeze", unavailable)
+    context.service.capture_region()
+    qtbot.waitUntil(lambda: bool(context.failures))
+    assert context.failures == ["Fixture pixels unavailable"]
+    assert not context.broker.busy
+    assert not context.service.overlays
+    assert not context.captures
+
+
+def test_invalid_selected_pixels_cannot_deliver_or_stick(
+    context: CaptureContext, qtbot: QtBot
+) -> None:
+    """A stale/outside selection is refused and the same service can retry."""
+    context.service.capture_region()
+    qtbot.waitUntil(lambda: bool(context.service.overlays))
+    context.service.overlays[0].region_chosen.emit(Rect(1_000_000, 1_000_000, 20, 20))
+    assert context.failures
+    assert not context.service.is_selecting
+    assert not context.captures
+    context.service.capture_region()
+    qtbot.waitUntil(lambda: bool(context.service.overlays))
+    context.cancel()
+    assert not context.service.is_selecting
+
+
+@pytest.mark.parametrize("cleaned", [False, True])
+def test_unexpected_input_termination_never_delivers_pending_pixels(
+    context: CaptureContext, qtbot: QtBot, *, cleaned: bool
+) -> None:
+    """Lost ownership is explicit failure, including a negative cleanup receipt."""
+    context.service.capture_region()
+    qtbot.waitUntil(lambda: bool(context.service.overlays))
+    context.broker.closed.emit(cleaned, "Fixture input interrupted")
+    assert context.failures
+    assert not context.captures
+    assert not context.service.overlays
+    if not cleaned:
+        assert "Restart VerdiClip" in context.failures[0]
+
+
+class ExistingScene:
+    """Retain every pre-existing test window and compare its exact ownership state."""
+
+    def __init__(self, kind: str, qapp: QApplication) -> None:
+        self.parent = QWidget()
+        self.parent.show()
+        self.owner: QWidget = self.parent
+        self.windows: list[QWidget] = [self.parent]
+        self.qapp = qapp
+        self._build(kind)
+        self.trace = ExistingWindowTrace(tuple(self.windows))
+        qapp.installEventFilter(self.trace)
+        self.handles = tuple(window.windowHandle() for window in self.windows)
+        self.modality = self.owner.windowModality()
+        self.popup = QApplication.activePopupWidget()
+        self.mouse, self.keyboard = QWidget.mouseGrabber(), QWidget.keyboardGrabber()
+
+    def _build(self, kind: str) -> None:
+        if kind == "main":
+            return
+        if kind in {"popup", "submenu"}:
+            root = QMenu(self.parent)
+            root.addAction("Example document")
+            self.windows.append(root)
+            menu = root.addMenu("Nested example") if kind == "submenu" else root
+            self.owner = menu
+            menu.addAction("Example item")
+            root.popup(QPoint(60, 60))
+            if kind == "submenu":
+                self.windows.append(self.owner)
+                menu.popup(QPoint(160, 60))
+        elif kind == "combo":
+            self._combo()
+        else:
+            self._dialog(kind)
+
+    def _dialog(self, kind: str) -> None:
+        if kind == "about":
+            self.owner = QMessageBox(
+                QMessageBox.Icon.Information, "About", "Example", parent=self.parent
+            )
+        elif kind == "settings":
+            self.owner = SettingsDialog(Settings(), self.parent)
+        else:
+            self.owner = QDialog(self.parent)
+        self.windows.append(self.owner)
+        self.owner.setWindowModality(Qt.WindowModality.ApplicationModal)
+        self.owner.show()
+
+    def _combo(self) -> None:
+        combo = QComboBox()
+        combo.addItems(["Example one", "Example two"])
+        combo.show()
+        combo.showPopup()
+        popup = QApplication.activePopupWidget()
+        assert popup is not None
+        self.owner = popup
+        self.windows.extend((combo, popup))
+
+    def assert_preserved(self) -> None:
+        """Assert no Hide/Close, reconstruction, modality change or grab transfer."""
+        assert not self.trace.changes
+        assert all(window.isVisible() for window in self.windows)
+        assert tuple(window.windowHandle() for window in self.windows) == self.handles
+        assert self.owner.windowModality() == self.modality
+        assert QApplication.activePopupWidget() is self.popup
+        assert QWidget.mouseGrabber() is self.mouse
+        assert QWidget.keyboardGrabber() is self.keyboard
+
+    def close(self) -> None:
+        """Close only fixture windows after capture assertions are complete."""
+        self.qapp.removeEventFilter(self.trace)
+        for window in reversed(self.windows):
+            window.close()
+
+
+@pytest.fixture
+def existing_scene(
+    request: pytest.FixtureRequest, qtbot: QtBot, qapp: QApplication
+) -> Iterator[ExistingScene]:
+    """Window-specific setup is fixture data, never production capture policy."""
+    scene = ExistingScene(str(request.param), qapp)
+    qtbot.waitUntil(scene.owner.isVisible)
+    yield scene
+    scene.close()
+
+
+@pytest.mark.parametrize(
+    "existing_scene",
+    ["main", "about", "settings", "modal", "popup", "submenu", "combo"],
+    indirect=True,
+)
+@pytest.mark.parametrize("outcome", ["escape", "drag"])
+def test_capture_preserves_existing_windows_popups_and_modal_state(
+    qtbot: QtBot, context: CaptureContext, existing_scene: ExistingScene, outcome: str
+) -> None:
+    """The same preservation invariant holds across every pre-existing owner."""
+    context.service.capture_region()
+    qtbot.waitUntil(lambda: bool(context.service.overlays))
+    overlay = context.service.overlays[0]
+    assert overlay.windowFlags() & Qt.WindowType.WindowDoesNotAcceptFocus
+    assert overlay.windowFlags() & Qt.WindowType.WindowTransparentForInput
+    assert overlay.testAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+    if outcome == "escape":
+        context.cancel()
+    else:
+        context.drag()
+    assert not context.service.is_selecting
+    existing_scene.assert_preserved()
+    if outcome == "drag":
+        assert len(context.captures) == 1
+        capture = context.captures[0]
+        assert isinstance(capture, Capture)
+        assert capture.preserve_foreground
+        assert capture.area == Rect(80, 80, 100, 70)
+    else:
+        assert context.cancellations == [True]
+    assert not context.failures
 
 
 @pytest.mark.parametrize(
     "entry",
     ["capture_region", "capture_fullscreen", "capture_active_window", "repeat_last"],
 )
-def test_every_entry_waits_for_popup_handoff(
-    qtbot: QtBot,
-    capturing: tuple[CaptureService, FakeDesktop],
-    entry: str,
+def test_all_capture_entries_leave_visible_menu_unchanged(
+    qtbot: QtBot, qapp: QApplication, context: CaptureContext, entry: str
 ) -> None:
-    """UX-G-10: all capture modes close popup ownership before freezing pixels."""
-    service, desktop = capturing
+    """Queued capture reads preserve the menu instead of using it as a handoff."""
     menu = QMenu()
-    menu.addAction("An ordinary popup")
-    captured: list[object] = []
-    service.captured.connect(captured.append)
+    menu.addAction("Example")
+    menu.popup(QPoint(80, 80))
+    trace = ExistingWindowTrace((menu,))
+    qapp.installEventFilter(trace)
     try:
-        menu.popup(QPoint(80, 80))
-        assert QApplication.activePopupWidget() is menu
-        getattr(service, entry)()
-        assert desktop.frames == 0, "Capture cannot run inside popup/native dispatch"
-        assert not menu.isVisible(), "The transient menu must dismiss through Qt"
-        assert service.is_selecting, (
-            "The pending handoff is part of the capture session"
-        )
-        qtbot.waitUntil(lambda: desktop.frames == 1)
-        assert QApplication.activePopupWidget() is None
+        getattr(context.service, entry)()
+        assert context.desktop.frames == 0
+        assert menu.isVisible()
+        qtbot.waitUntil(lambda: context.desktop.frames == 1)
+        assert not trace.changes
+        assert menu.isVisible()
         if entry in {"capture_region", "repeat_last"}:
-            assert service.overlays, (
-                "A region request must retain its selection session"
-            )
+            context.cancel()
         else:
-            assert len(captured) == 1, "Immediate modes deliver once after the handoff"
-            assert not service.is_selecting
+            assert len(context.captures) == 1
+            assert context.broker.starts == 0
     finally:
+        context.service.cancel()
+        qapp.removeEventFilter(trace)
         menu.close()
 
 
-@pytest.mark.parametrize("kind", ["popup", "submenu", "combo"])
-def test_popup_stack_is_released_without_special_casing_windows(
-    qtbot: QtBot,
-    capturing: tuple[CaptureService, FakeDesktop],
-    kind: str,
+@pytest.mark.parametrize("grab", ["mouse", "keyboard"])
+def test_existing_explicit_grab_is_not_released_or_reassigned(
+    qtbot: QtBot, context: CaptureContext, grab: str
 ) -> None:
-    """UX-G-10: input handoff follows Qt popup ownership, not a tray-window list."""
-    service, _ = capturing
-    parent = QMenu()
-    combo: QComboBox | None = None
-    popup: QWidget
-    if kind == "submenu":
-        popup = parent.addMenu("Submenu")
-        parent.addAction("Root")
-        popup.addAction("Leaf")
-        parent.popup(QPoint(80, 80))
-        popup.popup(QPoint(150, 80))
-    elif kind == "combo":
-        combo = QComboBox()
-        combo.addItems(["One", "Two"])
-        combo.show()
-        combo.showPopup()
-        active_popup = QApplication.activePopupWidget()
-        assert active_popup is not None
-        popup = active_popup
-    else:
-        popup = QWidget(None, Qt.WindowType.Popup)
-        popup.show()
-    try:
-        assert QApplication.activePopupWidget() is popup
-        service.capture_region()
-        qtbot.waitUntil(lambda: bool(service.overlays))
-        assert QApplication.activePopupWidget() is None
-        assert not popup.isVisible()
-        assert not parent.isVisible()
-        QTest.keyClick(service.overlays[0].windowHandle(), Qt.Key.Key_Escape)
-        assert not service.is_selecting
-    finally:
-        popup.close()
-        parent.close()
-        if combo is not None:
-            combo.close()
-
-
-def test_pending_requests_coalesce_and_cancel_without_freezing(
-    qtbot: QtBot,
-    capturing: tuple[CaptureService, FakeDesktop],
-) -> None:
-    """UX-CAP-05: cancelling a queued capture leaves no delayed selection behind."""
-    service, desktop = capturing
-    cancelled: list[bool] = []
-    service.cancelled.connect(lambda: cancelled.append(True))
-    service.capture_region()
-    service.capture_fullscreen()
-    service.capture_active_window()
-    service.repeat_last()
-    assert desktop.frames == 0
-    service.cancel()
-    qtbot.wait(0)
-    assert not service.is_selecting
-    assert service.overlays == ()
-    assert desktop.frames == 0, "Cancelled work must never freeze on a later turn"
-    assert cancelled == [True]
-    service.capture_region()
-    service.capture_region()
-    service.capture_fullscreen()
-    qtbot.waitUntil(lambda: bool(service.overlays))
-    assert desktop.frames == 1, "Repeated requests must share the first selection"
-    original = service.overlays
-    service.capture_region()
-    assert service.overlays == original
-    assert desktop.frames == 1
-
-
-def test_popup_hide_handler_can_cancel_the_pending_capture(
-    qtbot: QtBot,
-    capturing: tuple[CaptureService, FakeDesktop],
-) -> None:
-    """A reentrant dismissal callback cannot resurrect a cancelled request."""
-    service, desktop = capturing
-    menu = QMenu()
-    menu.addAction("Popup")
-    menu.aboutToHide.connect(service.cancel)
-    try:
-        menu.popup(QPoint(80, 80))
-        service.capture_region()
-        qtbot.wait(0)
-        assert desktop.frames == 0
-        assert not service.is_selecting
-    finally:
-        menu.close()
-
-
-@pytest.mark.parametrize("owner", ["keyboard", "mouse"])
-def test_explicit_grab_is_released_at_capture_boundary(
-    qtbot: QtBot,
-    capturing: tuple[CaptureService, FakeDesktop],
-    owner: str,
-) -> None:
-    """UX-G-10: an existing widget grab must not retain selection input."""
-    service, _ = capturing
-    widget = QWidget()
-    widget.show()
-    try:
-        if owner == "keyboard":
-            widget.grabKeyboard()
-            assert QWidget.keyboardGrabber() is widget
-        else:
-            widget.grabMouse()
-            assert QWidget.mouseGrabber() is widget
-        service.capture_region()
-        qtbot.waitUntil(lambda: bool(service.overlays))
-        assert QWidget.mouseGrabber() is not widget
-        assert QWidget.keyboardGrabber() is not widget
-        assert widget.isVisible(), "Releasing a grab must not close the owning window"
-    finally:
-        widget.releaseMouse()
-        widget.releaseKeyboard()
-        widget.close()
-
-
-@pytest.mark.parametrize("kind", ["main", "about", "settings", "modal"])
-def test_modal_and_main_windows_keep_work_while_capture_owns_input(
-    qtbot: QtBot,
-    capturing: tuple[CaptureService, FakeDesktop],
-    kind: str,
-) -> None:
-    """UX-G-10: normal/modal windows survive capture and do not block native routing."""
-    service, _ = capturing
-    parent = QWidget()
-    parent.show()
-    if kind == "main":
-        owner = parent
-    elif kind == "about":
-        owner = QMessageBox(
-            QMessageBox.Icon.Information, "About", "Version", parent=parent
-        )
-    elif kind == "settings":
-        owner = SettingsDialog(Settings(), parent)
-    else:
-        owner = QDialog(parent)
-    if isinstance(owner, QDialog):
-        owner.setWindowModality(Qt.WindowModality.ApplicationModal)
+    """Selection uses an independent stream and leaves the original grab intact."""
+    owner = QWidget()
     owner.show()
     try:
-        service.capture_region()
-        qtbot.waitUntil(lambda: bool(service.overlays))
-        overlay = service.overlays[0]
-        QTest.keyClick(overlay.windowHandle(), Qt.Key.Key_Escape)
-        assert not service.is_selecting
-        assert owner.isVisible(), "Capture must not dismiss documents or modal dialogs"
-    finally:
-        owner.close()
-        parent.close()
-
-
-@pytest.mark.parametrize("kind", ["window", "popup", "keyboard", "mouse"])
-def test_losing_input_cancels_and_next_capture_recovers(
-    qtbot: QtBot,
-    capturing: tuple[CaptureService, FakeDesktop],
-    kind: str,
-) -> None:
-    """UX-CAP-05: a selection losing its input lease cannot remain frozen."""
-    service, desktop = capturing
-    cancelled: list[bool] = []
-    service.cancelled.connect(lambda: cancelled.append(True))
-    other = QWidget(
-        None, Qt.WindowType.Popup if kind == "popup" else Qt.WindowType.Window
-    )
-    try:
-        service.capture_region()
-        qtbot.waitUntil(lambda: bool(service.overlays))
-        QApplication.processEvents()
-        other.show()
-        if kind == "window":
-            other.activateWindow()
-        elif kind == "keyboard":
-            other.grabKeyboard()
-        elif kind == "mouse":
-            other.grabMouse()
-        qtbot.waitUntil(lambda: not service.is_selecting)
-        assert cancelled == [True]
-        assert service.overlays == ()
-        assert other.isVisible(), "Capture cleanup must preserve the new input owner"
-        other.releaseMouse()
-        other.releaseKeyboard()
-        other.close()
-        service.capture_region()
-        qtbot.waitUntil(lambda: bool(service.overlays))
-        assert desktop.frames == 2
-        QTest.keyClick(service.overlays[0].windowHandle(), Qt.Key.Key_Escape)
-        assert cancelled == [True, True]
-    finally:
-        other.releaseMouse()
-        other.releaseKeyboard()
-        other.close()
-
-
-def test_capture_failure_drops_input_lease_and_allows_retry(
-    qtbot: QtBot,
-    capturing: tuple[CaptureService, FakeDesktop],
-) -> None:
-    """UX-G-05: a failing freeze ends pending capture and permits a fresh attempt."""
-    service, desktop = capturing
-    failures: list[str] = []
-    service.failed.connect(failures.append)
-    desktop.fail = True
-    service.capture_region()
-    qtbot.waitUntil(lambda: bool(failures))
-    assert failures == ["screen is locked"]
-    assert not service.is_selecting
-    desktop.fail = False
-    service.capture_region()
-    qtbot.waitUntil(lambda: bool(service.overlays))
-    assert desktop.frames == 1
-
-
-class VetoPopup(QWidget):
-    """A popup whose owner can refuse dismissal until its operation finishes."""
-
-    def __init__(self) -> None:
-        super().__init__(None, Qt.WindowType.Popup)
-        self.allow_close = False
-
-    @override
-    def closeEvent(self, event: QCloseEvent) -> None:
-        """Model a transient interaction that explicitly declines to close."""
-        if self.allow_close:
-            super().closeEvent(event)
-        else:
-            event.ignore()
-
-
-def test_popup_refusing_close_reports_failure_and_allows_retry(
-    qtbot: QtBot,
-    capturing: tuple[CaptureService, FakeDesktop],
-) -> None:
-    """An input owner veto cannot strand capture or be silently forced closed."""
-    service, desktop = capturing
-    failures: list[str] = []
-    service.failed.connect(failures.append)
-    popup = VetoPopup()
-    popup.show()
-    try:
-        service.capture_region()
-        assert failures == ["Close the open popup before capturing"]
-        assert popup.isVisible()
-        assert not service.is_selecting
-        assert desktop.frames == 0
-        popup.allow_close = True
-        popup.close()
-        service.capture_region()
-        qtbot.waitUntil(lambda: bool(service.overlays))
-        assert desktop.frames == 1
-    finally:
-        popup.allow_close = True
-        popup.close()
-
-
-@pytest.mark.parametrize("kind", ["popup", "keyboard", "mouse"])
-def test_input_reacquired_before_queued_start_fails_safely(
-    qtbot: QtBot,
-    capturing: tuple[CaptureService, FakeDesktop],
-    kind: str,
-) -> None:
-    """A new input owner appearing during handoff must not be captured or closed."""
-    service, desktop = capturing
-    failures: list[str] = []
-    service.failed.connect(failures.append)
-    owner = QWidget(
-        None, Qt.WindowType.Popup if kind == "popup" else Qt.WindowType.Window
-    )
-    try:
-        service.capture_region()
-        owner.show()
-        if kind == "keyboard":
-            owner.grabKeyboard()
-        elif kind == "mouse":
+        if grab == "mouse":
             owner.grabMouse()
-        qtbot.waitUntil(lambda: bool(failures))
-        assert failures == ["Another window is holding input; try capturing again"]
-        assert desktop.frames == 0
-        assert not service.is_selecting
+        else:
+            owner.grabKeyboard()
+        mouse, keyboard = QWidget.mouseGrabber(), QWidget.keyboardGrabber()
+        context.service.capture_region()
+        qtbot.waitUntil(lambda: bool(context.service.overlays))
+        context.drag()
+        assert len(context.captures) == 1
+        assert QWidget.mouseGrabber() is mouse
+        assert QWidget.keyboardGrabber() is keyboard
         assert owner.isVisible()
-        owner.releaseKeyboard()
-        owner.releaseMouse()
-        owner.close()
-        service.capture_region()
-        qtbot.waitUntil(lambda: bool(service.overlays))
-        assert desktop.frames == 1
     finally:
-        owner.releaseKeyboard()
         owner.releaseMouse()
+        owner.releaseKeyboard()
         owner.close()
 
 
-def test_application_deactivation_cancels_selection(
-    qtbot: QtBot,
-    qapp: QApplication,
-    capturing: tuple[CaptureService, FakeDesktop],
+def test_delivery_waits_for_cleanup_receipt_and_coalesces_repeated_requests(
+    qtbot: QtBot, context: CaptureContext
 ) -> None:
-    """The platform's application-deactivation event cannot leave a frozen lease."""
-    service, _ = capturing
-    service.capture_region()
-    qtbot.waitUntil(lambda: bool(service.overlays))
+    """No output or second lease can run while the old input is being released."""
+    context.broker.defer_cleanup = True
+    context.service.capture_region()
+    qtbot.waitUntil(lambda: bool(context.service.overlays))
+    context.drag()
+    assert not context.captures
+    assert context.service.is_selecting
+    context.service.capture_region()
+    context.service.capture_fullscreen()
+    assert context.broker.starts == 1
+    context.broker.acknowledge_cleanup()
+    assert len(context.captures) == 1
+    assert not context.service.is_selecting
+    context.service.capture_region()
+    qtbot.waitUntil(lambda: len(context.service.overlays) > 0)
+    context.cancel()
+    context.broker.acknowledge_cleanup()
+    assert context.broker.starts == 2
+
+
+def test_queued_cancel_and_reentrant_freeze_cancel_do_not_resurrect_selection(
+    qtbot: QtBot, context: CaptureContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cancellation reserves a generation before work or cleanup callbacks run."""
+    context.service.capture_region()
+    context.service.cancel()
     QApplication.processEvents()
-    try:
-        QApplication.sendEvent(qapp, QEvent(QEvent.Type.ApplicationDeactivate))
-        qtbot.waitUntil(lambda: not service.is_selecting)
-    finally:
-        QApplication.sendEvent(qapp, QEvent(QEvent.Type.ApplicationActivate))
+    assert context.desktop.frames == 0
+    assert not context.service.overlays
+    original = FakeDesktop.freeze
+
+    def cancel_then_freeze(desktop: FakeDesktop) -> FrozenScreen:
+        if desktop is context.desktop:
+            context.service.cancel()
+        return original(desktop)
+
+    monkeypatch.setattr(FakeDesktop, "freeze", cancel_then_freeze)
+    context.service.capture_region()
+    qtbot.waitUntil(lambda: context.desktop.frames == 1)
+    assert not context.service.is_selecting
+    assert not context.service.overlays
+    assert not context.captures
+    assert context.cancellations == [True, True]
 
 
-def test_reentrant_request_during_freeze_coalesces(
-    qtbot: QtBot,
-    capturing: tuple[CaptureService, FakeDesktop],
-    monkeypatch: pytest.MonkeyPatch,
+def test_failed_freeze_releases_owned_input_and_allows_retry(
+    qtbot: QtBot, context: CaptureContext
 ) -> None:
-    """A callback during preparation cannot queue a second capture behind the first."""
-    service, desktop = capturing
-    freeze = desktop.freeze
-    captured: list[object] = []
-    service.captured.connect(captured.append)
-
-    def prepare(_desktop: FakeDesktop) -> FrozenScreen:
-        """A screen provider that reenters capture while preparing the first frame."""
-        service.capture_fullscreen()
-        return freeze()
-
-    monkeypatch.setattr(FakeDesktop, "freeze", prepare)
-    service.capture_region()
-    qtbot.waitUntil(lambda: bool(service.overlays))
-    QApplication.processEvents()
-    assert desktop.frames == 1, "Preparation is part of the same exclusive session"
-    assert captured == [], "A repeated request cannot capture the visible overlays"
+    """A capture error never dismisses unrelated content or leaves an active lease."""
+    context.desktop.fail = True
+    context.service.capture_region()
+    qtbot.waitUntil(lambda: bool(context.failures))
+    assert not context.service.is_selecting
+    context.desktop.fail = False
+    context.service.capture_region()
+    qtbot.waitUntil(lambda: bool(context.service.overlays))
+    context.cancel()
+    assert not context.service.is_selecting
 
 
-def test_closing_one_overlay_finishes_every_overlay(
-    qtbot: QtBot,
-    capturing: tuple[CaptureService, FakeDesktop],
-    monkeypatch: pytest.MonkeyPatch,
+def test_unexpected_lease_loss_ends_overlays_without_closing_other_windows(
+    qtbot: QtBot, context: CaptureContext
 ) -> None:
-    """A multi-window selection has one terminal state regardless of which closes."""
-    service, _ = capturing
-    screen = QGuiApplication.primaryScreen()
-    monkeypatch.setattr(QGuiApplication, "screens", lambda: [screen, screen])
-    cancelled: list[bool] = []
-    service.cancelled.connect(lambda: cancelled.append(True))
-    service.capture_region()
-    qtbot.waitUntil(lambda: len(service.overlays) == 2)
-    windows = service.overlays
-    windows[1].close()
-    assert not service.is_selecting
-    assert all(not window.isVisible() for window in windows)
-    assert cancelled == [True], (
-        "Sibling close cleanup must not emit duplicate cancellation"
-    )
+    """The native boundary's terminal receipt, not Qt window special cases, cancels."""
+    context.service.capture_region()
+    qtbot.waitUntil(lambda: bool(context.service.overlays))
+    context.broker.release()
+    assert not context.service.is_selecting
+    assert context.failures == ["Capture input was interrupted"]
+    context.service.capture_region()
+    qtbot.waitUntil(lambda: bool(context.service.overlays))
+    context.cancel()
 
 
-@pytest.mark.parametrize("entry", ["capture_region", "capture_fullscreen"])
-def test_cancel_during_preparation_cannot_deliver_or_create_overlays(
-    qtbot: QtBot,
-    capturing: tuple[CaptureService, FakeDesktop],
-    monkeypatch: pytest.MonkeyPatch,
-    entry: str,
+def test_repeat_keeps_clicked_window_when_original_foreground_is_different(
+    qtbot: QtBot, context: CaptureContext
 ) -> None:
-    """A provider callback cancelling preparation must invalidate that result."""
-    service, desktop = capturing
-    freeze = desktop.freeze
-    captured: list[object] = []
-    cancelled: list[bool] = []
-    service.captured.connect(captured.append)
-    service.cancelled.connect(lambda: cancelled.append(True))
-
-    def prepare(_desktop: FakeDesktop) -> FrozenScreen:
-        """Cancel inside preparation, before the frame can be committed."""
-        service.cancel()
-        return freeze()
-
-    monkeypatch.setattr(FakeDesktop, "freeze", prepare)
-    getattr(service, entry)()
-    qtbot.waitUntil(lambda: bool(cancelled))
-    assert not service.is_selecting
-    assert service.overlays == ()
-    assert captured == []
-    assert cancelled == [True]
-    monkeypatch.undo()
-    service.capture_region()
-    qtbot.waitUntil(lambda: bool(service.overlays))
-    assert desktop.frames == 2
+    """Selecting B leaves A foreground, but Repeat retains B's explicit area."""
+    selected = FakeWindow("Selected B", Rect(400, 200, 200, 150))
+    context.windows.windows.insert(0, selected)
+    context.service.capture_region()
+    qtbot.waitUntil(lambda: bool(context.service.overlays))
+    for kind in (InputKind.MOVE, InputKind.PRESS, InputKind.RELEASE):
+        context.broker.feed(SelectionInput(kind, Point(450, 250)))
+    context.service.repeat_last()
+    qtbot.waitUntil(lambda: len(context.captures) == 2)
+    for capture in context.captures:
+        assert isinstance(capture, Capture)
+        assert capture.title == selected.title
+        assert capture.area == selected.bounds
 
 
-def test_cancelled_preparation_preserves_repeat_history(
-    qtbot: QtBot,
-    capturing: tuple[CaptureService, FakeDesktop],
-    monkeypatch: pytest.MonkeyPatch,
+def test_repeat_active_window_follows_current_foreground(
+    qtbot: QtBot, context: CaptureContext
 ) -> None:
-    """Only a delivered capture can replace the region remembered for repeat."""
-    service, desktop = capturing
-    delivered: list[Capture] = []
-    service.captured.connect(delivered.append)
-    service.capture_region()
-    qtbot.waitUntil(lambda: bool(service.overlays))
-    window = service.overlays[0].windowHandle()
-    assert window is not None
-    QTest.mousePress(window, Qt.MouseButton.LeftButton, pos=QPoint(90, 90))
-    QTest.mouseMove(window, QPoint(160, 140))
-    QTest.mouseRelease(window, Qt.MouseButton.LeftButton, pos=QPoint(160, 140))
-    assert delivered[0].area == Rect(90, 90, 70, 50)
-    freeze = desktop.freeze
+    """Active-window repeat remains distinct from an explicitly clicked rectangle."""
+    context.service.capture_active_window()
+    qtbot.waitUntil(lambda: len(context.captures) == 1)
+    other = FakeWindow("New foreground", Rect(400, 200, 200, 150))
+    context.windows.active = other
+    context.service.repeat_last()
+    qtbot.waitUntil(lambda: len(context.captures) == 2)
+    actual = context.captures[-1]
+    assert isinstance(actual, Capture)
+    assert actual.area == other.bounds
+    assert actual.title == other.title
+    assert context.broker.starts == 0
 
-    def cancelled_frame(_desktop: FakeDesktop) -> FrozenScreen:
-        """Cancel a different capture kind before it can change repeat history."""
-        service.cancel()
-        return freeze()
 
-    monkeypatch.setattr(FakeDesktop, "freeze", cancelled_frame)
-    service.capture_fullscreen()
-    qtbot.waitUntil(lambda: desktop.frames == 2)
-    assert len(delivered) == 1
-    monkeypatch.undo()
-    service.repeat_last()
-    qtbot.waitUntil(lambda: len(delivered) == 2)
-    assert delivered[1].mode == CaptureMode.REGION
-    assert delivered[1].area == Rect(90, 90, 70, 50)
+@pytest.mark.parametrize("stage", ["preparation", "freeze", "selection"])
+@pytest.mark.parametrize("change", ["identity", "dpi", "removed"])
+def test_topology_change_invalidates_capture_without_mixing_coordinates(
+    qtbot: QtBot,
+    context: CaptureContext,
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+    change: str,
+) -> None:
+    """Synthetic topology changes use the native display-event contract."""
+
+    def alter() -> None:
+        identity, geometry = context.display_snapshot[0]
+        if change == "identity":
+            context.display_snapshot = ((identity + 1, geometry),)
+        elif change == "dpi":
+            context.display_snapshot = (
+                (identity, replace(geometry, scale=geometry.scale + 0.25)),
+            )
+        else:
+            context.display_snapshot = ()
+
+    if stage == "preparation":
+        context.broker.defer_ready = True
+        context.service.capture_region()
+        QApplication.processEvents()
+        alter()
+        context.broker.ready.emit()
+    elif stage == "freeze":
+        original = FakeDesktop.freeze
+
+        def altered_freeze(desktop: FakeDesktop) -> FrozenScreen:
+            image = original(desktop)
+            alter()
+            return image
+
+        monkeypatch.setattr(FakeDesktop, "freeze", altered_freeze)
+        context.service.capture_region()
+    else:
+        context.service.capture_region()
+        qtbot.waitUntil(lambda: bool(context.service.overlays))
+        alter()
+        context.broker.feed(SelectionInput(InputKind.MOVE, Point(120, 120)))
+    qtbot.waitUntil(lambda: bool(context.failures))
+    assert "display layout changed" in context.failures[0]
+    assert not context.captures
+    assert not context.service.overlays
+    assert not context.service.is_selecting

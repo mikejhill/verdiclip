@@ -14,7 +14,9 @@ class TestScreenGeometry:
     """Physical and logical screen mappings."""
 
     @pytest.mark.parametrize(
-        "scale", [1.0, 1.5, 2.0], ids=["100-percent", "150-percent", "200-percent"]
+        "scale",
+        [1.0, 1.25, 1.5, 2.0],
+        ids=["100-percent", "125-percent", "150-percent", "200-percent"],
     )
     @pytest.mark.parametrize(
         "origin",

@@ -16,7 +16,24 @@ uv run poe check   # Must pass before you open a pull request
 3. **Look at it.** Run `uv run poe ux-snapshots` and `uv run poe ux-gallery` and review the images in both themes.
 4. **Keep the gate green.** `uv run poe check` runs formatting, lint, strict type checking (ty, every rule at error), and tests with ≥ 90% branch coverage. Don't weaken the configuration to get a pass.
 
+Before merging, inspect every PR review thread and CodeQL/code-scanning finding
+against the exact final head. Address each with a substantive fix or an
+evidence-based explanation, then resolve addressed review threads where permitted.
+Unresolved threads or unaddressed findings block merging; a green check alone does
+not replace that review. Recheck after the final push. Do not dismiss findings or
+change repository security/access settings merely to satisfy a gate. Any requested
+user acceptance, including local verification of a qualified VerdiClip build,
+remains a separate merge requirement.
+
 ## Test quality
+
+Tab ownership/transfer/topology, fake hotkey routing and accessibility contracts
+have a reproducible primary CI target: `uv run poe test-tabs-ci`. The two explicit
+Qt runtime jobs require separate scoped line and branch coverage of at least 90%
+and upload source/runtime/seed provenance with JUnit, logs and XML coverage. Native
+laptop checks are supplemental, not required infrastructure. See the
+[tab CI contract](docs/design/editor-tabs-ci-contract.md) for simulation boundaries
+and replay instructions. The whole-app and mutation gates below still apply.
 
 The real desktop smoke test runs automatically on Windows with an unlocked
 session. A positively identified locked or disconnected session skips only

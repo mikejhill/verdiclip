@@ -15,6 +15,7 @@ from PySide6.QtWidgets import QApplication, QLabel, QToolButton
 from pytestqt.qtbot import QtBot
 
 from verdiclip.document.document import Document
+from verdiclip.editor.factory import create_editor_window
 from verdiclip.editor.session import EditorSession
 from verdiclip.editor.window import EditorWindow
 from verdiclip.geometry import Point
@@ -211,7 +212,7 @@ def open_editor(
 
     def factory(image: QImage) -> User:
         session = EditorSession(Document(image), EditorSettings())
-        window = EditorWindow(session, ImageDelivery(output_settings))
+        window = create_editor_window(session, ImageDelivery(output_settings))
         qtbot.addWidget(window)
         window.resize(900, 700)
         window.show()
