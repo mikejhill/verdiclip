@@ -28,17 +28,19 @@ class ScrollPeer:
         self._forced = False
         self._exit_confirmed = False
         self._closed = False
+        self._trace_directory: Path | None = None
 
     def start(self) -> None:
         """Called only inside the existing native-handoff test gate."""
         self.directory.mkdir(parents=True)
-        # Prepare deterministic data before the native startup clock. The WPF
-        # child must not compile C# merely to populate a synthetic bitmap.
+        # Pixel preparation and optional diagnostics remain inside prepare()'s
+        # full 20s readiness clock. No compiler runs in the WPF child.
         (self.directory / "fixture-pixels.bgr32").write_bytes(provider_pixels())
         executable = (
             Path(os.environ["SYSTEMROOT"])
             / "System32/WindowsPowerShell/v1.0/powershell.exe"
         )
+        launch_begin = self._begin_trace()
         with (
             (self.directory / "fixture-stdout.log").open("wb") as stdout,
             (self.directory / "fixture-stderr.log").open("wb") as stderr,
@@ -69,6 +71,60 @@ class ScrollPeer:
                 stdout=stdout,
                 stderr=stderr,
             )
+        if self._trace_directory is not None:
+            try:
+                self._write_trace_receipt(
+                    "owner.json",
+                    {
+                        "source_sha": os.environ.get("VERDICLIP_BENCHMARK_SOURCE_SHA"),
+                        "repair_base_sha": os.environ.get(
+                            "VERDICLIP_FIXTURE_REPAIR_BASE"
+                        ),
+                        "fixture_directory": str(self.directory.resolve()),
+                        "launch_begin_ns": launch_begin,
+                        "launch_end_ns": time.perf_counter_ns(),
+                        "clock": time.get_clock_info("perf_counter").implementation,
+                    },
+                )
+            except (OSError, ValueError, RuntimeError, MemoryError):
+                return
+
+    def _begin_trace(self) -> int:
+        """Even optional clock acquisition failures leave native startup intact."""
+        try:
+            self._trace_directory = fixture_trace_directory(self.provider)
+            if self._trace_directory is not None:
+                return time.perf_counter_ns()
+        except (OSError, ValueError, RuntimeError, MemoryError):
+            self._trace_directory = None
+        return 0
+
+    def _write_trace_receipt(self, name: str, values: dict[str, object]) -> None:
+        """Optional private provenance cannot replace the native test outcome."""
+        if self._trace_directory is None or self.process is None:
+            return
+        try:
+            values.update({"pid": self.process.pid, "nonce": self.nonce})
+            with (self._trace_directory / name).open("x", encoding="ascii") as stream:
+                json.dump(values, stream)
+        except (OSError, ValueError, TypeError, MemoryError):
+            return  # Missing/partial receipts make only diagnosis unavailable.
+
+    def _trace_exit(self) -> None:
+        """Bound the exact child lifetime, including a forced native-test failure."""
+        if self._trace_directory is None or self.process is None:
+            return
+        try:
+            self._write_trace_receipt(
+                "exit.json",
+                {
+                    "exit_ns": time.perf_counter_ns(),
+                    "returncode": self.process.returncode,
+                    "forced": self._forced,
+                },
+            )
+        except (OSError, ValueError, RuntimeError, MemoryError):
+            return
 
     def poll(self) -> bool:
         """Accept only a fresh immutable snapshot from the exact owned process."""
@@ -128,6 +184,7 @@ class ScrollPeer:
             if not self._exit_confirmed:
                 self.process.wait(timeout=2)
                 self._exit_confirmed = True
+                self._trace_exit()
             raise AssertionError("Owned provider required forced termination")
         if self._closed:
             return
@@ -143,16 +200,48 @@ class ScrollPeer:
             self.process.kill()
             self.process.wait(timeout=2)
             self._exit_confirmed = True
+            self._trace_exit()
             raise AssertionError(
                 "Owned provider required forced termination"
             ) from failure
         if failure is not None:
             raise failure
         self._exit_confirmed = True
+        self._trace_exit()
         receipt = json.loads((self.directory / "fixture-retired.json").read_text())
         assert receipt == {"nonce": self.nonce, "pid": self.process.pid, "closed": True}
         assert self.process.returncode == 0
         self._closed = True
+
+
+def fixture_trace_directory(provider: str) -> Path | None:
+    """Admit only the explicit diagnostic runner's exclusive private directory."""
+    value = os.environ.get("VERDICLIP_FIXTURE_TRACE_DIR")
+    if value is None or not value or provider != "wpf":
+        return None
+    try:
+        path = Path(value)
+        root = Path(os.environ["RUNNER_TEMP"])
+        clock = time.get_clock_info("perf_counter")
+        source = os.environ["VERDICLIP_BENCHMARK_SOURCE_SHA"]
+        if (
+            not path.is_absolute()
+            or not path.is_dir()
+            or path.is_symlink()
+            or path.is_junction()
+            or root.is_symlink()
+            or root.is_junction()
+            or path.parent.resolve() != root.resolve()
+            or re.fullmatch(r"VerdiClip-[a-f0-9]{32}", path.name) is None
+            or re.fullmatch(r"[a-f0-9]{40}", source) is None
+            or source != os.environ.get("VERDICLIP_HOSTED_SOURCE")
+            or clock.implementation != "QueryPerformanceCounter()"
+            or not clock.monotonic
+        ):
+            return None
+    except (OSError, ValueError, KeyError):
+        return None
+    return path
 
 
 def provider_pixels() -> bytes:
