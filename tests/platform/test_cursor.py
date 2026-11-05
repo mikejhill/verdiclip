@@ -75,11 +75,13 @@ def test_one_hide_is_restored_once_without_rechecking_logical_flags(
         "initialize",
         "hide",
     ]
-    assert lease.close()
+    cleaned = lease.close()
+    assert cleaned
     assert api.shown
     assert api.calls[-2:] == ["restore", "uninitialize"]
     previous = api.calls.copy()
-    assert lease.close()
+    cleaned = lease.close()
+    assert cleaned
     assert api.calls == previous
 
 
@@ -92,7 +94,8 @@ def test_hidden_suppressed_or_unknown_flags_do_not_change_global_visibility(
     api.flags, api.shown = flags, False
     lease = CursorVisibilityLease()
     lease.acquire()
-    assert lease.close()
+    cleaned = lease.close()
+    assert cleaned
     assert not api.shown
     assert api.calls == ["load:user32", "observe"]
     assert not lease.suppression_attempted
@@ -108,7 +111,8 @@ def test_failed_preparation_does_not_attempt_hide_or_show(
     lease = CursorVisibilityLease()
     with pytest.raises((OSError, PlatformError)):
         lease.acquire()
-    assert lease.close()
+    cleaned = lease.close()
+    assert cleaned
     assert "hide" not in api.calls
     assert "restore" not in api.calls
     assert "uninitialize" not in api.calls
@@ -128,7 +132,8 @@ def test_failed_hide_still_has_an_explicit_restoration_obligation(
     with pytest.raises((OSError, PlatformError)):
         lease.acquire()
     assert not api.shown
-    assert lease.close()
+    cleaned = lease.close()
+    assert cleaned
     assert api.shown
     assert api.calls[-2:] == ["restore", "uninitialize"]
 
@@ -148,11 +153,13 @@ def test_teardown_failures_remain_unconfirmed_and_cannot_be_relabelled_clean(
             lease.close()
     else:
         api.fail = failure
-        assert not lease.close()
+        cleaned = lease.close()
+        assert not cleaned
     assert api.calls[-2:] == ["restore", "uninitialize"]
     previous = api.calls.copy()
     api.fail = api.raise_on = ""
-    assert not lease.close()
+    cleaned = lease.close()
+    assert not cleaned
     assert api.calls == previous
 
 
@@ -166,12 +173,14 @@ def test_closed_or_started_lease_cannot_be_reacquired(
     if started:
         lease.acquire()
     else:
-        assert lease.close()
+        cleaned = lease.close()
+        assert cleaned
     before = api.calls.copy()
     with pytest.raises(PlatformError, match="cannot be reused"):
         lease.acquire()
     assert api.calls == before
-    assert lease.close()
+    cleaned = lease.close()
+    assert cleaned
 
 
 def test_logically_showing_does_not_reveal_another_clients_hidden_state(
@@ -183,7 +192,8 @@ def test_logically_showing_does_not_reveal_another_clients_hidden_state(
     lease = CursorVisibilityLease()
     lease.acquire()
     assert not api.shown
-    assert lease.close()
+    cleaned = lease.close()
+    assert cleaned
     # This is the candidate's known incompatibility, not acceptable preservation.
     # The same logical flags occur with both initially visible and hidden state.
     assert api.flags == 1

@@ -274,7 +274,8 @@ def test_cursor_setup_failure_still_retires_installed_input(
         api.install(lambda *_args: 0, lambda *_args: 0, lambda _event: None)
     assert dll.hook_calls == 2
     dll.fail = ""
-    assert api.close()
+    cleaned = api.close()
+    assert cleaned
     assert not dll.registrations
     assert dll.window == 0
     assert dll.calls.count("UnhookWindowsHookEx") == 2
@@ -289,13 +290,15 @@ def test_cursor_teardown_failure_does_not_skip_input_cleanup(
     api, dll = native
     api.install(lambda *_args: 0, lambda *_args: 0, lambda _event: None)
     dll.fail = failure
-    assert not api.close()
+    cleaned = api.close()
+    assert not cleaned
     assert not dll.registrations
     assert dll.window == 0
     assert dll.calls.count("UnhookWindowsHookEx") == 2
     assert "MagUninitialize" in dll.calls
     dll.fail = ""
-    assert not api.close()
+    cleaned = api.close()
+    assert not cleaned
 
 
 def test_cursor_restore_exception_still_retires_hooks_and_raw_receiver(
@@ -315,4 +318,5 @@ def test_cursor_restore_exception_still_retires_hooks_and_raw_receiver(
     assert dll.window == 0
     assert dll.calls.count("UnhookWindowsHookEx") == 2
     assert "MagUninitialize" in dll.calls
-    assert not api.close()
+    cleaned = api.close()
+    assert not cleaned
