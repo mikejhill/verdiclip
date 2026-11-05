@@ -9,6 +9,3 @@ paths:
   .github/workflows/gui-readiness-profile.yml:
     ignore:
       - '^unexpected key "cache-mode" for "job" section\. expected one of "concurrency", "container", "continue-on-error", "defaults", "env", "environment", "if", "name", "needs", "outputs", "permissions", "runs-on", "secrets", "services", "snapshot", "steps", "strategy", "timeout-minutes", "uses", "with"$'
-  .github/workflows/mutation-cache-audit.yml:
-    ignore:
-      - '^unexpected key "cache-mode" for "job" section\. expected one of "concurrency", "container", "continue-on-error", "defaults", "env", "environment", "if", "name", "needs", "outputs", "permissions", "runs-on", "secrets", "services", "snapshot", "steps", "strategy", "timeout-minutes", "uses", "with"$'

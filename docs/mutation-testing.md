@@ -63,6 +63,26 @@ result upload after that failure. Runner termination or an outage can still
 prevent upload; the independent publisher treats missing evidence as incomplete.
 Postflight rejects candidate or source drift before saving or reporting evidence.
 
+The mutation command runs in its own POSIX process group. Its supervisor stops
+work after at most 130 minutes, or at the job's 140-minute boundary if setup used
+more time, within the unchanged 150-minute job limit. It attempts bounded
+INT/TERM/KILL cleanup of that owned group. Identity verification, result collection
+and cache sealing require an atomic `mutation-quiescence.json` receipt proving
+the group retired for this exact commit, run and attempt. A child failure or
+cancellation remains a failure even when cleanup succeeds. External runner
+termination can interrupt cleanup; absent proof blocks cache saving. These are
+cleanup reserves, not a promise the entire candidate set fits one job.
+
+The retained-cache investigation for run 41969126494 found 16 zero-candidate
+metadata files and one genuinely changed metadata digest per attempt. The hash
+checks correctly rejected the changed files. The second cached snapshot contained
+one more verdict than its structured result, demonstrating why writer retirement
+must precede snapshots. `scripts/mutation_cache_audit.py` can inspect retained
+JSON and ASTs without executing cached code; use the cache-generating Python
+version because AST schemas differ. In pinned mutmut 3.8.0, the forkserver result
+path stores zero candidate durations, so those fields cannot justify runtime
+budget increases. See [the investigation](https://github.com/mikejhill/verdiclip/issues/70#issuecomment-6655510202).
+
 Schema 2 result evidence must carry the qualified current commit/OS/architecture
 context and successful context qualification. The publisher currently admits the
 reviewed Linux/X64 profile only. Legacy schema 1, missing context or mismatched
