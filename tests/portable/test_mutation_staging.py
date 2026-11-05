@@ -26,6 +26,22 @@ def test_configured_staging_preserves_real_workflow_contracts(tmp_path: Path) ->
         else:
             shutil.copy2(source, destination)
     cases = (
+        (
+            "test_hosted_workflow.py",
+            "test_cache_mode_is_restricted_to_owned_native_job",
+        ),
+        (
+            "test_hosted_workflow.py",
+            "test_native_matrix_is_automatic_and_required_without_skip_escape",
+        ),
+        (
+            "test_hosted_workflow.py",
+            "test_parser_exception_matches_only_documented_unknown_job_key",
+        ),
+        (
+            "test_hosted_workflow.py",
+            "test_profile_cache_restriction_has_no_upload_or_cache_actions",
+        ),
         ("test_mutation_cache.py", "test_workflow_has_no_broad_restore_fallback"),
         (
             "test_mutation_deadline.py",
@@ -41,3 +57,6 @@ def test_configured_staging_preserves_real_workflow_contracts(tmp_path: Path) ->
         cast(Callable[[], None], namespace[contract])()
     workflow = Path(".github/workflows/mutation.yml")
     assert (staged / workflow).read_bytes() == (root / workflow).read_bytes()
+
+    parser_config = Path(".github/actionlint.yaml")
+    assert (staged / parser_config).read_bytes() == (root / parser_config).read_bytes()
