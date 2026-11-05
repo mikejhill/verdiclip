@@ -19,6 +19,8 @@ MAX_PHASES = 128
 READY_FIELDS = 3
 SWITCH_FIELDS = 5
 PHASE_FIELDS = 4
+MAX_DECODER_DIAGNOSTICS = 2
+DECODER_DIAGNOSTIC_FIELDS = 6
 
 
 def aggregate(rows: list[list[str]], phases: dict[str, object]) -> dict[str, object]:
@@ -182,9 +184,18 @@ def main() -> None:
             check=False,
         )
     sys.stdout.write("GUI_PHASE_READER_EXIT=" + str(result.returncode) + "\n")
-    if result.returncode != 0 or raw.stat().st_size > 256 * 1024 * 1024:
+    if raw.stat().st_size > 256 * 1024 * 1024:
         raise ValueError("native reader failed or budget exceeded")
     rows = list(csv.reader(raw.read_text(encoding="utf-8").splitlines()))
+    if result.returncode != 0:
+        diagnostics = [list(map(int, row[1:])) for row in rows if row and row[0] == "D"]
+        if len(diagnostics) <= MAX_DECODER_DIAGNOSTICS and all(
+            len(row) == DECODER_DIAGNOSTIC_FIELDS for row in diagnostics
+        ):
+            sys.stdout.write(
+                "GUI_PHASE_DECODER_STATUS=" + json.dumps(diagnostics) + "\n"
+            )
+        raise ValueError("native reader failed or budget exceeded")
     if len(rows) > MAX_ROWS:
         raise ValueError("event budget")
     report = aggregate(rows, phases)

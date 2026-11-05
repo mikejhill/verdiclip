@@ -1,9 +1,13 @@
 """Phase-aligned scheduler aggregation tested without native APIs or desktop use."""
 
+import json
 from copy import deepcopy
+from pathlib import Path
+from types import SimpleNamespace
+from typing import TextIO
 
 import pytest
-from scripts.scheduler_phase_summary import aggregate
+from scripts.scheduler_phase_summary import aggregate, main
 
 
 def evidence() -> tuple[list[list[str]], dict[str, object]]:
@@ -132,3 +136,29 @@ def test_equal_timestamp_migration_never_depends_on_callback_order(
     entries = report["phases"]
     assert isinstance(entries, list)
     assert entries[0]["unknown_ms"] == 40
+
+
+def test_native_decode_failure_exposes_only_fixed_numeric_diagnostics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A mocked reader failure remains failed without echoing paths or raw data."""
+    phase = tmp_path / "phase.json"
+    phase.write_text(json.dumps({"pid": 10, "tid": 20, "source_sha": "a" * 40}))
+    raw = tmp_path / "private.csv"
+    monkeypatch.setenv("VERDICLIP_BENCHMARK_SOURCE_SHA", "a" * 40)
+    monkeypatch.setattr(
+        "sys.argv", ["script", "owned-reader.exe", "private.etl", str(phase), str(raw)]
+    )
+
+    def failed_reader(
+        _args: list[str], *, stdout: TextIO, **_kwargs: object
+    ) -> SimpleNamespace:
+        stdout.write("D,36,4,1,1168,0,4\n")
+        return SimpleNamespace(returncode=13)
+
+    monkeypatch.setattr("scripts.scheduler_phase_summary.subprocess.run", failed_reader)
+    with pytest.raises(ValueError, match="native reader failed"):
+        main()
+    output = capsys.readouterr().out
+    assert "GUI_PHASE_DECODER_STATUS=[[36, 4, 1, 1168, 0, 4]]" in output
+    assert "private" not in output

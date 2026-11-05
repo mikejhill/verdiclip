@@ -17,9 +17,17 @@ static bool property(PEVENT_RECORD event, const wchar_t* name, ULONG& value, ULO
     descriptor.PropertyName = reinterpret_cast<ULONGLONG>(name);
     descriptor.ArrayIndex = ULONG_MAX;
     ULONG actual = 0;
-    if (TdhGetPropertySize(event, 0, nullptr, 1, &descriptor, &actual) != ERROR_SUCCESS || actual != size) return false;
+    ULONG status = TdhGetPropertySize(event, 0, nullptr, 1, &descriptor, &actual);
+    if (status != ERROR_SUCCESS || actual != size) {
+        std::printf("D,%u,%u,1,%u,%u,%u\n", event->EventHeader.EventDescriptor.Opcode,
+            event->EventHeader.EventDescriptor.Version, status, actual, size);
+        return false;
+    }
     value = 0;
-    return TdhGetProperty(event, 0, nullptr, 1, &descriptor, size, reinterpret_cast<PBYTE>(&value)) == ERROR_SUCCESS;
+    status = TdhGetProperty(event, 0, nullptr, 1, &descriptor, size, reinterpret_cast<PBYTE>(&value));
+    if (status != ERROR_SUCCESS) std::printf("D,%u,%u,2,%u,%u,%u\n", event->EventHeader.EventDescriptor.Opcode,
+        event->EventHeader.EventDescriptor.Version, status, actual, size);
+    return status == ERROR_SUCCESS;
 }
 
 static void WINAPI receive(PEVENT_RECORD event) {
