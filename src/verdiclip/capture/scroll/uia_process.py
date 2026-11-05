@@ -18,6 +18,7 @@ from verdiclip.capture.scroll.uia_diagnostics import WorkerDiagnostics
 from verdiclip.capture.scroll.uia_messages import UiaAction, UiaRequest
 from verdiclip.capture.scroll.uia_worker import UiaWorkerLease
 from verdiclip.exceptions import CaptureError
+from verdiclip.startup_lifetime import StartupLifetime
 
 
 class _IsolatedScope(QObject):
@@ -211,26 +212,39 @@ class _IsolatedScope(QObject):
         self._closing = True
         self._open = False
         callbacks, self._cleanup = self._cleanup, []
-        controls: list[BaseException] = []
-        for callback in callbacks:
+        completed: list[bool] = []
+
+        def clean(callback: Callable[[], None]) -> None:
+            succeeded = handled = False
             try:
                 UiaWorkerLease._run_cleanup(callback)
-            except BaseException as error:  # noqa: BLE001 - defer controls until every private cleanup is attempted
+                succeeded = True
+            except (CaptureError, OSError) as error:
+                handled = True
                 self._broken = True
                 self._failure_cleanup = "callback_failed"
-                self._failed_cleanup.append(callback)
-                if not isinstance(error, Exception):
-                    controls.append(error)
                 self.cleanup_failed.emit(str(error))
-        self._closing = False
-        self._finishing = False
-        if not self._broken:
-            self.scope_closed.emit()
-        self.busy_changed.emit(self.busy)
-        if len(controls) == 1:
-            raise controls[0]
-        if controls:
-            raise BaseExceptionGroup("Capture cleanup controls", controls)
+            finally:
+                if not succeeded:
+                    self._broken = True
+                    self._failure_cleanup = "callback_failed"
+                    self._failed_cleanup.append(callback)
+                    if not handled:
+                        self.cleanup_failed.emit(
+                            "Temporary capture cleanup was interrupted"
+                        )
+
+        try:
+            with StartupLifetime() as lifetime:
+                for callback in reversed(callbacks):
+                    lifetime.callback(clean, callback)
+            completed.append(True)
+        finally:
+            self._closing = False
+            self._finishing = False
+            if completed and not self._broken:
+                self.scope_closed.emit()
+            self.busy_changed.emit(self.busy)
         if self._released and not self._broken:
             self.deleteLater()
 
@@ -277,32 +291,27 @@ class _IsolatedScope(QObject):
         """Share one finite wait budget across both already-owned children."""
         deadline = monotonic() + timeout_ms / 1000
         self._released = True
-        errors: list[BaseException] = []
-        try:
-            self.cancel()
-        except BaseException as error:  # noqa: BLE001 - defer controls until both owned lanes are attempted
-            errors.append(error)
-        for lease in tuple(self._leases.values()):
+        completed: list[bool] = []
+
+        def retire(lease: UiaWorkerLease) -> None:
             if not isValid(lease):
                 if lease not in self._retired:
-                    errors.append(CaptureError("Worker ownership was lost"))
-                continue
-            try:
-                lease.shutdown(timeout_ms=max(0, int((deadline - monotonic()) * 1000)))
-            except BaseException as error:  # noqa: BLE001 - independently attempt the other owned lane
-                errors.append(error)
-        if errors or self.busy or self.worker_pids:
-            self._broken = True
-            self._failure_cleanup = "unconfirmed"
-            if any(not isinstance(error, Exception) for error in errors):
-                if len(errors) == 1:
-                    raise errors[0]
-                raise BaseExceptionGroup("Owned worker shutdown failures", errors)
-            raise CaptureError("UI Automation shutdown cleanup is unconfirmed") from (
-                BaseExceptionGroup("Owned worker shutdown failures", errors)
-                if errors
-                else None
-            )
+                    raise CaptureError("Worker ownership was lost")
+                return
+            lease.shutdown(timeout_ms=max(0, int((deadline - monotonic()) * 1000)))
+
+        try:
+            with StartupLifetime() as lifetime:
+                for lease in reversed(tuple(self._leases.values())):
+                    lifetime.callback(retire, lease)
+                self.cancel()
+            if self.busy or self.worker_pids:
+                raise CaptureError("UI Automation shutdown cleanup is unconfirmed")
+            completed.append(True)
+        finally:
+            if not completed:
+                self._broken = True
+                self._failure_cleanup = "unconfirmed"
 
 
 class UiaProcess(QObject):

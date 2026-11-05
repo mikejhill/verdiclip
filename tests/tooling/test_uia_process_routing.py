@@ -47,6 +47,8 @@ def application(*, collected: bool) -> QCoreApplication:
 class FakeLease(QObject):
     """Qt signals/parent lifetime are real; helper requests are in-memory only."""
 
+    CLEANUP_MS = 2000
+
     completed = Signal(object, object)
     failed = Signal(object, str)
     busy_changed = Signal(bool)

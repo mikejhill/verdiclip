@@ -15,6 +15,7 @@ from verdiclip.capture.scroll.uia_diagnostics import WorkerDiagnostics, WorkerTr
 from verdiclip.capture.scroll.uia_messages import UiaRequest
 from verdiclip.capture.scroll.uia_pipe import UiaPipe
 from verdiclip.exceptions import CaptureError
+from verdiclip.startup_lifetime import StartupLifetime
 
 logger = logging.getLogger(__name__)
 
@@ -488,25 +489,37 @@ class UiaWorkerLease(QObject):
         self._scope_open = False
         self._cleanup_state = "unconfirmed" if self._ownership_lost else "confirmed"
         callbacks, self._cleanup = self._cleanup, []
-        controls: list[BaseException] = []
-        for cleanup in callbacks:
+        completed: list[bool] = []
+
+        def clean(cleanup: Callable[[], None]) -> None:
+            succeeded = handled = False
             try:
                 self._run_cleanup(cleanup)
-            except BaseException as error:  # noqa: BLE001 - defer controls until independent file owners are attempted
+                succeeded = True
+            except (CaptureError, OSError) as error:
+                handled = True
                 logger.warning("Capture scope cleanup failed: %s", error)
                 self._cleanup_state = "callback_failed"
-                if not isinstance(error, Exception):
-                    controls.append(error)
+                self.cleanup_failed.emit(str(error))
+            finally:
+                if not succeeded:
+                    self._cleanup_state = "callback_failed"
+                if not succeeded and not handled:
                     self._cleanup.append(cleanup)
                     self._closing = True
-                self.cleanup_failed.emit(str(error))
-        self._trace.mark("scope_closed")
-        if not self._ownership_lost and not controls:
-            self.scope_closed.emit()
-        if len(controls) == 1:
-            raise controls[0]
-        if controls:
-            raise BaseExceptionGroup("Capture cleanup controls", controls)
+                    self.cleanup_failed.emit(
+                        "Temporary capture cleanup was interrupted"
+                    )
+
+        try:
+            with StartupLifetime() as lifetime:
+                for cleanup in reversed(callbacks):
+                    lifetime.callback(clean, cleanup)
+            completed.append(True)
+        finally:
+            self._trace.mark("scope_closed")
+            if completed and not self._ownership_lost:
+                self.scope_closed.emit()
 
     @staticmethod
     def _run_cleanup(cleanup: Callable[[], None]) -> None:
@@ -524,51 +537,57 @@ class UiaWorkerLease(QObject):
         """End the current warm-worker scope without issuing further native work."""
         self._fail("Scrolling capture was cancelled; no further work will be issued")
 
-    def shutdown(self, *, timeout_ms: int = CLEANUP_MS) -> None:  # noqa: C901 - explicit retirement and deferred control propagation
+    def shutdown(self, *, timeout_ms: int = CLEANUP_MS) -> None:
         """Retire this exact child without requiring a running application loop."""
         if timeout_ms < 0:
             raise ValueError("Shutdown timeout cannot be negative")
         deadline = monotonic() + timeout_ms / 1000
-        errors: list[BaseException] = []
-        try:
-            self.cancel()
-        except BaseException as error:  # noqa: BLE001 - defer controls until owned retirement is attempted
-            errors.append(error)
-        process = self._process
-        try:
+        cancelled = False
+        completed: list[bool] = []
+
+        def retire() -> None:
+            process = self._process
             if process is not None and isValid(process):
-                if process.state() is not QProcess.ProcessState.NotRunning:
-                    if errors:
-                        process.kill()
-                    remaining = max(
-                        0, min(timeout_ms, ceil((deadline - monotonic()) * 1000))
-                    )
-                    process.waitForFinished(remaining)
-                if (
-                    process is self._process
-                    and process.state() is QProcess.ProcessState.NotRunning
-                ):
+
+                def wait() -> None:
+                    try:
+                        remaining = max(
+                            0, min(timeout_ms, ceil((deadline - monotonic()) * 1000))
+                        )
+                        process.waitForFinished(remaining)
+                    finally:
+                        if (
+                            process is self._process
+                            and isValid(process)
+                            and process.state() is QProcess.ProcessState.NotRunning
+                        ):
+                            self._dispose(process)
+
+                if process.state() is QProcess.ProcessState.NotRunning:
                     self._dispose(process)
-        except BaseException as error:  # noqa: BLE001 - propagate after preserving failure state
-            errors.append(error)
-        if (
-            errors
-            or self._ownership_lost
-            or self._process is not None
-            or self._scope_open
-            or self._cleanup_state not in {"closed", "confirmed"}
-        ):
-            self._closing = True
-            self._cleanup_state = "unconfirmed"
-            if any(not isinstance(error, Exception) for error in errors):
-                if len(errors) == 1:
-                    raise errors[0]
-                raise BaseExceptionGroup("Worker shutdown failures", errors)
-            raise CaptureError("UI Automation shutdown cleanup is unconfirmed") from (
-                BaseExceptionGroup("Worker shutdown failures", errors)
-                if errors
-                else None
-            )
+                else:
+                    with StartupLifetime() as lifetime:
+                        lifetime.callback(wait)
+                        if not cancelled:
+                            process.kill()
+
+        try:
+            with StartupLifetime() as lifetime:
+                lifetime.callback(retire)
+                self.cancel()
+                cancelled = True
+            if (
+                self._ownership_lost
+                or self._process is not None
+                or self._scope_open
+                or self._cleanup_state not in {"closed", "confirmed"}
+            ):
+                raise CaptureError("UI Automation shutdown cleanup is unconfirmed")
+            completed.append(True)
+        finally:
+            if not completed:
+                self._closing = True
+                self._cleanup_state = "unconfirmed"
 
     def release(self) -> None:
         """A disappearing facade leaves a retained lease until its child is gone."""

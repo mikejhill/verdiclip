@@ -24,6 +24,10 @@ class CaptureError(Exception):
     """Pure exception port."""
 
 
+class CustomControl(BaseException):
+    """An arbitrary control must receive the same independent cleanup semantics."""
+
+
 class State(Enum):
     """Only the QProcess terminal-state distinction is required."""
 
@@ -33,7 +37,14 @@ class State(Enum):
 
 def method(path: str, owner: str, name: str, **ports: object) -> Callable[..., None]:
     """Use imported methods in pytest; standalone mode avoids importing Qt."""
-    namespace = {"CaptureError": CaptureError, "CLEANUP_MS": 2000, **ports}
+    namespace = {
+        "CaptureError": CaptureError,
+        "CLEANUP_MS": 2000,
+        "StartupLifetime": runpy.run_path(
+            str(ROOT / "src/verdiclip/startup_lifetime.py")
+        )["StartupLifetime"],
+        **ports,
+    }
     if __name__ != "__main__":
         module = importlib.import_module(
             "verdiclip." + path.removesuffix(".py").replace("/", ".")
@@ -256,10 +267,11 @@ class ShutdownTests(unittest.TestCase):
     def test_cancellation_exception_still_attempts_each_owned_lane(self) -> None:
         """An earlier cancellation error cannot abandon either child."""
         leases = [SimpleNamespace(shutdown=Mock()), SimpleNamespace(shutdown=Mock())]
+        failure = CaptureError("cancel")
         scope = SimpleNamespace(
             _leases=dict(enumerate(leases)),
             _retired=set(),
-            cancel=Mock(side_effect=CaptureError("cancel")),
+            cancel=Mock(side_effect=failure),
             busy=False,
             worker_pids=(),
         )
@@ -272,7 +284,7 @@ class ShutdownTests(unittest.TestCase):
         )
         with self.assertRaises(CaptureError) as caught:
             shutdown(scope, timeout_ms=9)
-        self.assertIsInstance(caught.exception.__cause__, ExceptionGroup)
+        self.assertIs(caught.exception, failure)
         for lease in leases:
             lease.shutdown.assert_called_once_with(timeout_ms=9)
 
@@ -315,7 +327,12 @@ class ShutdownTests(unittest.TestCase):
         self,
     ) -> None:
         """Process control exceptions propagate only after independent cleanup."""
-        for control in (KeyboardInterrupt(), SystemExit(17)):
+        for control in (
+            KeyboardInterrupt(),
+            SystemExit(17),
+            CustomControl(),
+            BaseExceptionGroup("control group", [KeyboardInterrupt(), CustomControl()]),
+        ):
             first = SimpleNamespace(shutdown=Mock(side_effect=control))
             second = SimpleNamespace(shutdown=Mock())
             scope = SimpleNamespace(
@@ -363,8 +380,12 @@ class ShutdownTests(unittest.TestCase):
 
     def test_scope_cleanup_controls_do_not_skip_second_private_owner(self) -> None:
         """Both callback loops retain failures and propagate original controls."""
-        for aggregate in (False, True):
-            control = KeyboardInterrupt()
+        for aggregate, control in (
+            (False, KeyboardInterrupt()),
+            (True, KeyboardInterrupt()),
+            (False, CustomControl()),
+            (True, CustomControl()),
+        ):
             callback = Mock(side_effect=control)
             second = Mock()
             owner = SimpleNamespace(
@@ -397,7 +418,7 @@ class ShutdownTests(unittest.TestCase):
                 UiaWorkerLease=SimpleNamespace(_run_cleanup=lambda fn: fn()),
                 logger=SimpleNamespace(warning=Mock()),
             )
-            with self.assertRaises(KeyboardInterrupt) as caught:
+            with self.assertRaises(type(control)) as caught:
                 close(owner)
             self.assertIs(caught.exception, control)
             second.assert_called_once()
@@ -405,6 +426,71 @@ class ShutdownTests(unittest.TestCase):
             self.assertEqual(
                 owner._failed_cleanup if aggregate else owner._cleanup, [callback]
             )
+
+    def test_custom_cancel_control_survives_wait_error_and_attempts_disposal(
+        self,
+    ) -> None:
+        """The cleanup stack preserves arbitrary control identity and failure cause."""
+        control = CustomControl()
+        failure = CaptureError("synthetic wait failure")
+        process = SimpleNamespace(
+            state=Mock(side_effect=[State.Running, State.NotRunning]),
+            kill=Mock(),
+            waitForFinished=Mock(side_effect=failure),
+        )
+        worker = SimpleNamespace(
+            _process=process,
+            _scope_open=True,
+            _ownership_lost=False,
+            _cleanup_state="waiting",
+            cancel=Mock(side_effect=control),
+            _dispose=Mock(),
+        )
+        with self.assertRaises(CustomControl) as caught:
+            worker_shutdown()(worker, timeout_ms=10)
+        self.assertIs(caught.exception, control)
+        self.assertIs(control.__cause__, failure)
+        process.kill.assert_called_once()
+        process.waitForFinished.assert_called_once_with(10)
+        worker._dispose.assert_called_once_with(process)
+        self.assertEqual(worker._cleanup_state, "unconfirmed")
+
+    def test_success_inside_handled_exception_is_not_misclassified(self) -> None:
+        """Only this operation's completion flags classify cleanup success."""
+        worker = SimpleNamespace(
+            _process=None,
+            _scope_open=False,
+            _ownership_lost=False,
+            _cleanup_state="closed",
+            cancel=Mock(),
+        )
+        try:
+            Mock(side_effect=ValueError("already handled by caller"))()
+        except ValueError:
+            worker_shutdown()(worker, timeout_ms=1)
+        self.assertEqual(worker._cleanup_state, "closed")
+
+    def test_kill_control_still_attempts_owned_wait_and_terminal_disposal(self) -> None:
+        """A failed termination request cannot skip the independent owned wait."""
+        control = CustomControl()
+        process = SimpleNamespace(
+            state=Mock(side_effect=[State.Running, State.NotRunning]),
+            kill=Mock(side_effect=control),
+            waitForFinished=Mock(return_value=True),
+        )
+        worker = SimpleNamespace(
+            _process=process,
+            _scope_open=True,
+            _ownership_lost=False,
+            _cleanup_state="waiting",
+            cancel=Mock(side_effect=CaptureError("cancel")),
+            _dispose=Mock(),
+        )
+        with self.assertRaises(CustomControl) as caught:
+            worker_shutdown()(worker, timeout_ms=10)
+        self.assertIs(caught.exception, control)
+        process.waitForFinished.assert_called_once_with(10)
+        worker._dispose.assert_called_once_with(process)
 
 
 if __name__ == "__main__":
