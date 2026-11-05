@@ -242,6 +242,16 @@ class EditorWindow(QMainWindow):
         )
 
     @property
+    def accepts_capture(self) -> bool:
+        """Do not commit live typing merely to select an incoming capture."""
+        popup = QApplication.activePopupWidget()
+        return (
+            self.eligible
+            and not (popup is not None and popup in self.findChildren(QWidget))
+            and not any(p.canvas.editors.is_open for p in self.pages)
+        )
+
+    @property
     def _page(self) -> DocumentPage:
         if self._page_ref is None:
             raise RuntimeError("No active document")

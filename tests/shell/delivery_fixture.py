@@ -246,7 +246,8 @@ def _settle_protected(
         assert isinstance(anchor, EditorWindow)
         assert app.controller.editors == (anchor,)
         assert len(anchor.pages) == 2
-        assert anchor.pages[anchor.tab_bar.currentIndex()] is scene.original_page
+        assert anchor.pages[anchor.tab_bar.currentIndex()] is anchor.pages[-1]
+        assert anchor.pages[0] is scene.original_page
         app.controller.capture.failed.emit("Synthetic provider failure")
         assert notifications[-1] == "Capture failed"
     else:

@@ -394,3 +394,20 @@ def test_unowned_injected_release_still_passes_through() -> None:
     assert platform.results == [99]
     assert platform.forwarded == [0x202]
     assert worker.cleaned
+
+
+@pytest.mark.parametrize("raw_seen", [False, True])
+def test_missing_pointer_diagnostic_distinguishes_absent_and_interrupted_stream(
+    caplog: pytest.LogCaptureFixture, *, raw_seen: bool
+) -> None:
+    """Distinguish absent and interrupted streams without logging user input."""
+    platform = ReplayInputPlatform()
+    worker = ReplayRun.make(platform, InputWorkerOptions())
+    if raw_seen:
+        platform.raw(RawPointer(Point(3, 5), MoveMode.RELATIVE_DELTA, (), wheel=False))
+    platform.mouse(0x200, Point(999, 999), injected=False)
+    ReplayRun.complete(worker)
+    assert "pointer source" in worker.failure
+    assert worker.cleaned
+    assert f"hardware_packets=1 raw_reports={int(raw_seen)}" in caplog.text
+    assert "999" not in caplog.text

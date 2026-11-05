@@ -194,6 +194,7 @@ class Workspace(QObject):
         target: window_types.EditorWindow | None = None,
         *,
         new_window: bool = False,
+        select_new: bool = False,
         activate: bool = True,
     ) -> window_types.EditorWindow:
         """Admit producer-independent work without replacing any existing tab."""
@@ -207,11 +208,12 @@ class Workspace(QObject):
                 with host.presentation_policy(activate=should_activate):
                     self._present_host(host, activate=should_activate)
                 return host
-        if target is None or target not in self._windows or not target.eligible:
-            target = next((window for window in self._windows if window.eligible), None)
-        if new_window or target is None:
-            target = EditorWindow(None, delivery, options, workspace=self)
-            target.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+
+        def accepts(host: window_types.EditorWindow) -> bool:
+            return host.accepts_capture if select_new else host.eligible
+
+        if target is None or target not in self._windows or not accepts(target):
+            target = next((window for window in self._windows if accepts(window)), None)
         record = DocumentRecord(
             session,
             delivery,
@@ -219,15 +221,34 @@ class Workspace(QObject):
             options.source_path,
             provenance=options.provenance,
         )
-        with target.presentation_policy(activate=should_activate):
-            if existing is None:
-                target.add_document(record, activate=should_activate)
-            else:
-                target.attach_page(existing, len(target.pages))
-                if should_activate:
-                    target.activate_page(existing)
-            self._present_host(target, activate=should_activate)
+        created_host = new_window or target is None
+        if new_window or target is None:
+            target = EditorWindow(None, delivery, options, workspace=self)
+        try:
+            if created_host:
+                target.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+            with target.presentation_policy(activate=should_activate):
+                if existing is None:
+                    target.add_document(record, activate=should_activate or select_new)
+                else:
+                    target.attach_page(existing, len(target.pages))
+                    if should_activate or select_new:
+                        target.activate_page(existing)
+                self._present_host(target, activate=should_activate)
+        except (RuntimeError, ValueError, MemoryError):
+            # Retire only a newly allocated, still-empty host. A page registered
+            # before an attachment failure remains owned by parking for retry.
+            self._retire_failed_admission(target, created=created_host)
+            raise
         return target
+
+    def _retire_failed_admission(
+        self, target: window_types.EditorWindow, *, created: bool
+    ) -> None:
+        """Never dispose a pre-existing host or a newly admitted document."""
+        if created and not target.pages:
+            self.forget_window(target)
+            target.deleteLater()
 
     def _present_host(
         self, target: window_types.EditorWindow, *, activate: bool

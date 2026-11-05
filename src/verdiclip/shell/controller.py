@@ -50,6 +50,7 @@ from verdiclip.platform.launcher import LaunchCommand, tray_launch
 from verdiclip.platform.shortcuts import Shortcut, ShortcutRegistration
 from verdiclip.platform.startup import StartupRegistration
 from verdiclip.settings import (
+    CaptureDestination,
     CaptureSettings,
     IntegrationSettings,
     OutputSettings,
@@ -513,6 +514,7 @@ class AppController(QObject):
                 delivered=attempt.saved is not None or attempt.copied,
                 target=attempt.target,
                 activate=attempt.activate_editor,
+                new_window=attempt.actions.destination is CaptureDestination.WINDOWS,
             )
             attempt.admitted = True
             self._refresh_capture_delivery(attempt)
@@ -548,7 +550,7 @@ class AppController(QObject):
         )
         return self._open_document(image, options, delivered=delivered)
 
-    def _open_document(
+    def _open_document(  # noqa: PLR0913 - explicit document admission policy
         self,
         image: QImage,
         options: EditorOptions,
@@ -556,6 +558,7 @@ class AppController(QObject):
         delivered: bool,
         target: EditorWindow | None = None,
         activate: bool = True,
+        new_window: bool = False,
     ) -> EditorWindow:
         existing = (
             self._capture_record(options.provenance.capture_id)
@@ -579,6 +582,8 @@ class AppController(QObject):
             options,
             target=target,
             activate=activate,
+            new_window=new_window,
+            select_new=options.provenance is not None,
         )
 
     def _wire_editor(self, editor: EditorWindow) -> None:

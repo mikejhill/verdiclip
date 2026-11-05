@@ -237,7 +237,7 @@ def test_new_capture_window_never_requests_activation_or_dismisses_existing_ui( 
         Qt.WindowState.WindowMaximized,
     ],
 )
-def test_background_tab_does_not_show_restore_or_change_existing_active_document(
+def test_new_capture_selects_tab_without_showing_or_restoring_window(
     factory: AppFactory,
     sample_image: QImage,
     monkeypatch: pytest.MonkeyPatch,
@@ -271,7 +271,8 @@ def test_background_tab_does_not_show_restore_or_change_existing_active_document
             app.controller.deliver_reviewed_capture(capture(sample_image, "Incoming"))
             is host
         )
-        assert host.session is first.record.session
+        assert host.session is host.pages[-1].record.session
+        assert host.pages[0] is first
         assert len(host.pages) == 2
         assert host.windowState() == before
         assert shown == []

@@ -91,6 +91,8 @@ class CaptureInputWorker:
         self._thread: threading.Thread | None = None
         self._api: InputPlatform | None = None
         self._pending_raw: float | None = None
+        self._hardware_packets = 0
+        self._raw_reports = 0
         self._legacy_buttons: set[tuple[int, int]] = set()
         self.foreground = 0
         self.failure = ""
@@ -239,6 +241,11 @@ class CaptureInputWorker:
             self._pending_raw is not None
             and now - self._pending_raw >= self.RAW_TIMEOUT_SECONDS
         ):
+            logger.warning(
+                "Capture pointer delivery expired; hardware_packets=%d raw_reports=%d",
+                self._hardware_packets,
+                self._raw_reports,
+            )
             return "This pointer source is unavailable for capture"
         return ""
 
@@ -306,6 +313,7 @@ class CaptureInputWorker:
         if api.foreground() != self.foreground:
             self._invalidate("Capture foreground changed")
         if not packet.flags & 1:
+            self._hardware_packets += 1
             if self._pending_raw is None:
                 self._pending_raw = self._clock()
             return 1
@@ -327,6 +335,7 @@ class CaptureInputWorker:
     def _raw_pointer(self, event: RawPointer) -> None:
         """Hardware semantics come from its raw flags, never inferred hook flags."""
         self._pending_raw = None
+        self._raw_reports += 1
         point = self._policy.pointer.point
         self._publish(
             self._policy.mouse(

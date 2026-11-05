@@ -103,7 +103,7 @@ def test_explicit_non_mru_host_receives_one_document(
             capture(sample_image), target=requested
         )
         assert result is requested
-        assert requested.pages[requested.tab_bar.currentIndex()] is active
+        assert requested.pages[requested.tab_bar.currentIndex()] is not active
         assert app.controller.workspace.windows[0] is other
     else:
         path = tmp_path / "opened.png"
@@ -176,15 +176,23 @@ def test_initial_save_path_survives_partial_admission_failure(
     )
     original = app.controller._open_document
 
-    def interrupted(
+    def interrupted(  # noqa: PLR0913 - mirrors the admission boundary
         image: QImage,
         options: EditorOptions,
         *,
         delivered: bool,
         target: EditorWindow | None = None,
         activate: bool = True,
+        new_window: bool = False,
     ) -> None:
-        original(image, options, delivered=delivered, target=target, activate=activate)
+        original(
+            image,
+            options,
+            delivered=delivered,
+            target=target,
+            activate=activate,
+            new_window=new_window,
+        )
         raise MemoryError("Presentation callback interrupted admission")
 
     monkeypatch.setattr(app.controller, "_open_document", interrupted)
