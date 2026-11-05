@@ -113,8 +113,15 @@ class TestWindowLocator:
 
     @pytest.mark.parametrize(
         "api",
-        [FakeWindowApi(foreground=0), FakeWindowApi(hidden=frozenset({1}))],
-        ids=["absent", "hidden"],
+        [
+            FakeWindowApi(foreground=0),
+            FakeWindowApi(hidden=frozenset({1})),
+            FakeWindowApi(iconic=frozenset({1})),
+            FakeWindowApi(cloaked=frozenset({1})),
+            FakeWindowApi(bounds={1: Rect(0, 0, 19, 20)}),
+            FakeWindowApi(bounds={1: Rect(0, 0, 20, 19)}),
+        ],
+        ids=["absent", "hidden", "minimized", "cloaked", "narrow", "short"],
     )
     def test_no_foreground(self, api: FakeWindowApi) -> None:
         """Absent or ineligible foreground windows cannot be captured."""
@@ -129,6 +136,16 @@ class TestWindowLocator:
         assert locator.foreground() == WindowInfo(
             2, "Window 2", Rect(-100, -100, 200, 200)
         )
+
+    @pytest.mark.parametrize("title", ["Popup", ""])
+    def test_explicit_foreground_capture_includes_visible_auxiliary_window(
+        self, title: str
+    ) -> None:
+        """A preserved foreground popup is a target, not an absent active window."""
+        locator = WindowLocator(FakeWindowApi(styles={1: 0x80}, titles={1: title}))
+        target = locator.foreground()
+        assert target == WindowInfo(1, title or "Window", Rect(-100, -100, 200, 200))
+        assert 1 not in [window.handle for window in locator.visible_windows()]
 
     @pytest.mark.parametrize("point", [Point(0, 0), Point(-100, -100), Point(100, 100)])
     def test_topmost(self, point: Point) -> None:

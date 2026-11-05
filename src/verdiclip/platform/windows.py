@@ -191,9 +191,9 @@ class WindowLocator:
         self._api = api if api is not None else Win32WindowApi()
 
     def foreground(self) -> WindowInfo | None:
-        """Return the foreground capture target if it passes visibility checks."""
+        """Capture the explicit visible foreground, including a preserved popup."""
         handle = self._api.foreground_handle()
-        return self._window_info(handle) if handle else None
+        return self._window_info(handle, explicit=True) if handle else None
 
     def visible_windows(
         self, *, exclude: frozenset[int] = frozenset()
@@ -208,8 +208,8 @@ class WindowLocator:
                 windows.append(info)
         return windows
 
-    def _window_info(self, handle: int) -> WindowInfo | None:
-        """Reject hidden, untitled, auxiliary, and tiny windows."""
+    def _window_info(self, handle: int, *, explicit: bool = False) -> WindowInfo | None:
+        """Keep auxiliary windows out of discovery, but permit an explicit target."""
         if (
             not self._api.is_visible(handle)
             or self._api.is_iconic(handle)
@@ -217,18 +217,18 @@ class WindowLocator:
         ):
             return None
         style = self._api.ex_style(handle)
-        if style & _WS_EX_TOOLWINDOW and not style & _WS_EX_APPWINDOW:
+        if not explicit and style & _WS_EX_TOOLWINDOW and not style & _WS_EX_APPWINDOW:
             return None
         original_identity = self._api.window_identity(handle)
         title = self._api.title(handle)
-        if not title:
+        if not title and not explicit:
             return None
         bounds = self._api.frame_bounds(handle)
         if bounds.width < _MINIMUM_SIZE or bounds.height < _MINIMUM_SIZE:
             return None
         current_identity = self._api.window_identity(handle)
         identity = current_identity if original_identity == current_identity else None
-        return WindowInfo(handle, title, bounds, window_identity=identity)
+        return WindowInfo(handle, title or "Window", bounds, window_identity=identity)
 
     @staticmethod
     def window_at(point: Point, windows: Sequence[WindowInfo]) -> WindowInfo | None:
