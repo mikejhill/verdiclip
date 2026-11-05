@@ -8,8 +8,11 @@ import os
 import re
 import subprocess
 import sys
+from collections import Counter
 from itertools import groupby
 from pathlib import Path
+
+from scripts.scheduler_trace_summary import numeric_event
 
 MAX_ROWS = 2_000_000
 HEADER_FIELDS = 9
@@ -167,9 +170,51 @@ def phase_totals(
     }
 
 
+def verify_independent_decoder(
+    rows: list[list[str]], lines: list[str], tid: int
+) -> None:
+    """Cross-check every owned switch field and ready count against Microsoft Xperf."""
+    native = Counter(
+        (row[0], *map(int, row[2:])) for row in rows if row and row[0] in {"S", "R"}
+    )
+    decoded: Counter[tuple[object, ...]] = Counter()
+    headers: dict[str, list[str]] = {}
+    in_header = False
+    for index, row in enumerate(csv.reader(lines)):
+        if index > MAX_ROWS:
+            raise ValueError("event budget")
+        if not row:
+            continue
+        kind = row[0].strip()
+        if kind in {"BeginHeader", "EndHeader"}:
+            in_header = kind == "BeginHeader"
+            continue
+        if kind not in {"CSwitch", "ReadyThread"}:
+            continue
+        if in_header:
+            headers[kind] = [re.sub(r"[^a-z0-9]", "", name.lower()) for name in row]
+            continue
+        fields = numeric_event(kind, row, headers.get(kind), tid)
+        if fields is None:
+            continue
+        if kind == "CSwitch":
+            decoded[
+                (
+                    "S",
+                    int(fields["newthreadid"]),
+                    int(fields["oldthreadid"]),
+                    int(fields["oldthreadstate"]),
+                )
+            ] += 1
+        else:
+            decoded[("R", int(fields["tthreadid"]))] += 1
+    if not native or native != decoded:
+        raise ValueError("independent decoder mismatch")
+
+
 def main() -> None:
     """Run only the repository-built file reader on a private finalized ETL."""
-    reader, etl, phase_path, raw = map(Path, sys.argv[1:])
+    reader, etl, phase_path, raw, exported = map(Path, sys.argv[1:])
     if phase_path.stat().st_size > 1024 * 1024:
         raise ValueError("phase file budget")
     phases = json.loads(phase_path.read_text(encoding="utf-8"))
@@ -198,7 +243,13 @@ def main() -> None:
         raise ValueError("native reader failed or budget exceeded")
     if len(rows) > MAX_ROWS:
         raise ValueError("event budget")
+    if exported.stat().st_size > 256 * 1024 * 1024:
+        raise ValueError("event budget")
+    verify_independent_decoder(
+        rows, exported.read_text(encoding="utf-8-sig").splitlines(), phases["tid"]
+    )
     report = aggregate(rows, phases)
+    report["independent_xperf_field_crosscheck"] = True
     sys.stdout.write("GUI_PHASE_SCHEDULER=" + json.dumps(report, sort_keys=True) + "\n")
     if not report["analysis_complete"]:
         raise ValueError("unknown phase state")
@@ -235,6 +286,7 @@ if __name__ == "__main__":
             "native reader failed or budget exceeded",
             "event budget",
             "unknown phase state",
+            "independent decoder mismatch",
         }
         reason = str(error) if str(error) in known else type(error).__name__
         sys.stdout.write(

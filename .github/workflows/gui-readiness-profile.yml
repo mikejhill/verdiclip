@@ -9,6 +9,8 @@ on:
       - 'scripts/scheduler_trace_summary.py'
       - 'scripts/scheduler_phase_summary.py'
       - 'scripts/read_scheduler_etl.cpp'
+      - 'scripts/scheduler_payload.hpp'
+      - 'tests/tooling/test_scheduler_payload.cpp'
       - 'tests/tooling/test_gui_readiness_profile.py'
 
 permissions:
@@ -112,11 +114,20 @@ jobs:
           $setup = Join-Path $installation 'VC/Auxiliary/Build/vcvars64.bat'
           $reader = Join-Path $env:RUNNER_TEMP 'VerdiClip-read-scheduler.exe'
           $object = Join-Path $env:RUNNER_TEMP 'VerdiClip-read-scheduler.obj'
-          if ((Test-Path -LiteralPath $reader) -or (Test-Path -LiteralPath $object)) { throw 'Reader output already exists' }
+          $unit = Join-Path $env:RUNNER_TEMP 'VerdiClip-test-scheduler.exe'
+          $unitObject = Join-Path $env:RUNNER_TEMP 'VerdiClip-test-scheduler.obj'
+          foreach ($path in @($reader, $object, $unit, $unitObject)) {
+            if (Test-Path -LiteralPath $path) { throw 'Reader output already exists' }
+          }
           'VERDICLIP_READER_OWNED=1' >> $env:GITHUB_ENV
           $command = '"' + $setup + '" >nul && cl /nologo /W4 /WX /EHsc /std:c++17 scripts\read_scheduler_etl.cpp /Fe:"' + $reader + '" /Fo:"' + $object + '" /link advapi32.lib tdh.lib'
           & $env:ComSpec /d /s /c $command
           if ($LASTEXITCODE -ne 0) { throw 'ETL reader compilation failed' }
+          $command = '"' + $setup + '" >nul && cl /nologo /W4 /WX /EHsc /std:c++17 /I scripts tests\tooling\test_scheduler_payload.cpp /Fe:"' + $unit + '" /Fo:"' + $unitObject + '"'
+          & $env:ComSpec /d /s /c $command
+          if ($LASTEXITCODE -ne 0) { throw 'Pure decoder test compilation failed' }
+          & $unit
+          if ($LASTEXITCODE -ne 0) { throw 'Pure decoder tests failed' }
       - name: Up to five instrumented processes, with the first GUI process first
         timeout-minutes: 2
         shell: pwsh
@@ -174,7 +185,9 @@ jobs:
             }
             if ($trial -eq 1) {
               $reader = Join-Path $env:RUNNER_TEMP 'VerdiClip-read-scheduler.exe'
-              & .venv/Scripts/python.exe scripts/scheduler_phase_summary.py $reader $trace $phases $scheduler
+              & $xperf -i $trace -o $csv -a dumper
+              if ($LASTEXITCODE -ne 0) { throw 'Independent scheduler decode failed' }
+              & .venv/Scripts/python.exe scripts/scheduler_phase_summary.py $reader $trace $phases $scheduler $csv
               if ($LASTEXITCODE -ne 0) {
                 Write-Output 'Phase scheduler analysis unavailable; no causal claim; retaining failure and continuing untraced controls'
                 $aggregate = 1
@@ -215,7 +228,7 @@ jobs:
         run: |
           $uncertain = @()
           if ($env:VERDICLIP_READER_OWNED -eq '1') {
-            foreach ($name in @('VerdiClip-read-scheduler.exe', 'VerdiClip-read-scheduler.obj')) {
+            foreach ($name in @('VerdiClip-read-scheduler.exe', 'VerdiClip-read-scheduler.obj', 'VerdiClip-test-scheduler.exe', 'VerdiClip-test-scheduler.obj')) {
               try {
                 $path = Join-Path $env:RUNNER_TEMP $name
                 if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -ErrorAction Stop }

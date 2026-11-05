@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from typing import TextIO
 
 import pytest
-from scripts.scheduler_phase_summary import aggregate, main
+from scripts.scheduler_phase_summary import aggregate, main, verify_independent_decoder
 
 
 def evidence() -> tuple[list[list[str]], dict[str, object]]:
@@ -147,7 +147,15 @@ def test_native_decode_failure_exposes_only_fixed_numeric_diagnostics(
     raw = tmp_path / "private.csv"
     monkeypatch.setenv("VERDICLIP_BENCHMARK_SOURCE_SHA", "a" * 40)
     monkeypatch.setattr(
-        "sys.argv", ["script", "owned-reader.exe", "private.etl", str(phase), str(raw)]
+        "sys.argv",
+        [
+            "script",
+            "owned-reader.exe",
+            "private.etl",
+            str(phase),
+            str(raw),
+            "private-xperf.csv",
+        ],
     )
 
     def failed_reader(
@@ -162,3 +170,22 @@ def test_native_decode_failure_exposes_only_fixed_numeric_diagnostics(
     output = capsys.readouterr().out
     assert "GUI_PHASE_DECODER_STATUS=[[36, 4, 1, 1168, 0, 4]]" in output
     assert "private" not in output
+
+
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_native_fields_must_agree_with_independent_xperf(*, corrupt: bool) -> None:
+    """A wrong binary prefix/state offset cannot pass through plausible numbers."""
+    raw = [["S", "12345", "20", "30", "1" if corrupt else "5"], ["R", "12346", "20"]]
+    exported = [
+        "BeginHeader",
+        "CSwitch, TimeStamp, New TID, Old TID, OldState",
+        "ReadyThread, TimeStamp, ThreadID, Rdy TID",
+        "EndHeader",
+        "CSwitch, 1, 20, 30, Waiting",
+        "ReadyThread, 2, 30, 20",
+    ]
+    if corrupt:
+        with pytest.raises(ValueError, match="independent decoder mismatch"):
+            verify_independent_decoder(raw, exported, 20)
+    else:
+        verify_independent_decoder(raw, exported, 20)

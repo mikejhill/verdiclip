@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <climits>
+#include "scheduler_payload.hpp"
 
 static const GUID ThreadProvider = {0x3d6fa8d1,0xfe05,0x11d0,{0x9d,0xda,0x00,0xc0,0x4f,0xd7,0xba,0x7c}};
 static ULONG targetPid, targetTid, maximumLost = 0;
@@ -43,12 +44,15 @@ static void WINAPI receive(PEVENT_RECORD event) {
         if (!property(event, L"ProcessId", second)) { invalid = 12; return; }
         std::printf("L,%lld,%u,%u,%u\n", stamp, event->EventHeader.EventDescriptor.Opcode, second, first);
         break;
-    case 36: // CSwitch, documented Thread_V2_CS​witch event opcode.
-        if (!property(event, L"NewThreadId", first) || !property(event, L"OldThreadId", second)) { invalid = 13; return; }
+    case 36: { // CSwitch v5 has no TDH schema on the observed hosted image.
+        SchedulerSwitch decoded{};
+        if (!decode_scheduler_switch(event->EventHeader.EventDescriptor.Version,
+                event->UserData, event->UserDataLength, decoded)) { invalid = 13; return; }
+        first = decoded.next; second = decoded.previous; state = decoded.state;
         if (first != targetTid && second != targetTid) return;
-        if (!property(event, L"OldThreadState", state, 1)) { invalid = 14; return; }
         std::printf("S,%lld,%u,%u,%u\n", stamp, first, second, state);
         break;
+    }
     case 50: // ReadyThread.
         if (!property(event, L"TThreadId", first)) { invalid = 11; return; }
         if (first == targetTid) std::printf("R,%lld,%u\n", stamp, first);
