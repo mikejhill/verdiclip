@@ -3,7 +3,7 @@
 import json
 
 import pytest
-from scripts.scheduler_trace_summary import summarize
+from scripts.scheduler_trace_summary import schema_summary, summarize
 
 HEADER = [
     "BeginHeader",
@@ -54,3 +54,20 @@ def test_missing_malformed_or_unrelated_evidence_is_rejected(rows: list[str]) ->
     """Missing ownership or schema never becomes a successful empty result."""
     with pytest.raises(ValueError, match="scheduler"):
         summarize(rows, 7)
+
+
+def test_schema_diagnostics_exclude_all_payload_rows_and_unrelated_headers() -> None:
+    """Static scheduler fields can be inspected without printing trace payloads."""
+    result = schema_summary(
+        [
+            *HEADER,
+            "Process, SECRET_PAYLOAD",
+            "CSwitch, SECRET_PAYLOAD",
+            "ReadyThread, 42, 7",
+        ]
+    )
+    assert result["scheduler_row_counts"] == {"CSwitch": 1, "ReadyThread": 1}
+    assert "SECRET" not in json.dumps(result)
+    headers = result["scheduler_headers"]
+    assert isinstance(headers, dict)
+    assert headers["CSwitch"][1] == "TimeStamp"

@@ -99,6 +99,30 @@ def summarize(lines: list[str], thread_id: int) -> dict[str, object]:
     }
 
 
+def schema_summary(lines: list[str]) -> dict[str, object]:
+    """Expose only bounded scheduler column names, never event payloads."""
+    headers: dict[str, list[str]] = {}
+    counts = {"CSwitch": 0, "ReadyThread": 0}
+    in_header = False
+    for row in csv.reader(lines):
+        if not row:
+            continue
+        kind = row[0].strip()
+        if kind in {"BeginHeader", "EndHeader"}:
+            in_header = kind == "BeginHeader"
+        elif kind in counts:
+            if in_header:
+                headers[kind] = [
+                    value.strip()
+                    if re.fullmatch(r"[A-Za-z][A-Za-z0-9 _()]{0,47}", value.strip())
+                    else "REDACTED"
+                    for value in row[:40]
+                ]
+            else:
+                counts[kind] += 1
+    return {"scheduler_headers": headers, "scheduler_row_counts": counts}
+
+
 def main() -> None:
     """Read bounded private inputs and emit only the allowlisted numeric receipt."""
     csv_path, log_path = map(Path, sys.argv[1:])
@@ -107,6 +131,8 @@ def main() -> None:
         or log_path.stat().st_size > 8 * 1024 * 1024
     ):
         raise ValueError("Trace export exceeds diagnostic input budget")
+    lines = csv_path.read_text(encoding="utf-8-sig").splitlines()
+    sys.stdout.write("GUI_SCHEDULER_SCHEMA=" + json.dumps(schema_summary(lines)) + "\n")
     packets = [
         json.JSONDecoder().raw_decode(line.split("GUI_READINESS_PROFILE=", 1)[1])[0]
         for line in log_path.read_text(encoding="utf-8-sig").splitlines()
@@ -117,7 +143,7 @@ def main() -> None:
     thread_id = packets[0].get("native_thread_id")
     if type(thread_id) is not int or thread_id <= 0:
         raise ValueError("Invalid owned GUI thread identity")
-    result = summarize(csv_path.read_text(encoding="utf-8-sig").splitlines(), thread_id)
+    result = summarize(lines, thread_id)
     sys.stdout.write("GUI_SCHEDULER_TRACE=" + json.dumps(result, sort_keys=True) + "\n")
 
 

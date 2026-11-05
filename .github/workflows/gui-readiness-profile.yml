@@ -153,7 +153,10 @@ jobs:
               & $xperf -i $trace -o $csv -a dumper
               if ($LASTEXITCODE -ne 0) { throw 'Scheduler export failed' }
               & .venv/Scripts/python.exe scripts/scheduler_trace_summary.py $csv $log
-              if ($LASTEXITCODE -ne 0) { throw 'Owned scheduler analysis unavailable; no causal claim' }
+              if ($LASTEXITCODE -ne 0) {
+                Write-Output 'Owned scheduler analysis unavailable; no causal claim; retaining failure and continuing untraced controls'
+                $aggregate = 1
+              }
             }
             Write-Output "GUI_READINESS_PROFILE_TRIAL_EXIT=$trial/$testExit"
             if ($testExit -notin @(0, 1)) { exit $testExit }
