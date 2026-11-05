@@ -42,6 +42,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 150
     steps:
+      - name: Reserve bounded shutdown and artifact time
+        run: echo "MUTATION_JOB_DEADLINE=$(( $(date +%s) + 8400 ))" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -61,7 +63,7 @@ jobs:
       - name: Choose compatible verdict cache
         id: cache_plan
         env:
-          CACHE_FINGERPRINT: ${{ hashFiles('uv.lock', 'pyproject.toml', 'tests/**/*.py', '.github/workflows/mutation.yml', 'scripts/mutation_ci.py', 'scripts/mutation_identity.py', 'scripts/mutation_identity_probe.py', 'scripts/mutation-cache-compatibility.json', 'scripts/mutation_cache.py') }}
+          CACHE_FINGERPRINT: ${{ hashFiles('uv.lock', 'pyproject.toml', 'tests/**/*.py', '.github/workflows/mutation.yml', 'scripts/mutation_ci.py', 'scripts/mutation_identity.py', 'scripts/mutation_identity_probe.py', 'scripts/mutation-cache-compatibility.json', 'scripts/mutation_cache.py', 'scripts/mutation_supervisor.py') }}
         run: |
           prefix=$(uv run --no-sync python scripts/mutation_cache.py prefix)
           echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
@@ -93,18 +95,22 @@ jobs:
         id: mutate
         run: |
           # Reuse only verified identical candidate bodies.
-          uv run --group mutation mutmut run --max-children "$(nproc)" > mutmut.log 2>&1 || {
+          uv run --no-sync python -m scripts.mutation_supervisor run -- uv run --no-sync --group mutation mutmut run --max-children "$(nproc)" > mutmut.log 2>&1 || {
             tail -n 200 mutmut.log
             exit 1
           }
           tail -n 3 mutmut.log
+      - name: Verify mutation writer retirement
+        id: quiescence
+        if: always() && steps.mutate.outcome != 'skipped'
+        run: uv run --no-sync python -m scripts.mutation_supervisor verify
       - name: Verify candidate identities
         id: identity
-        if: always() && steps.prepare.outcome == 'success'
+        if: always() && steps.prepare.outcome == 'success' && steps.quiescence.outcome == 'success'
         run: uv run --no-sync --group mutation python scripts/mutation_identity.py verify
       - name: Preserve available verdicts and completion status
         id: verdicts
-        if: always()
+        if: always() && steps.quiescence.outcome == 'success'
         env:
           MUTATION_OUTCOME: ${{ steps.mutate.outcome == 'success' && steps.identity.outcome == 'success' && 'success' || 'failure' }}
           SOURCE_SHA: ${{ github.sha }}
@@ -162,6 +168,7 @@ jobs:
         with:
           name: mutation-results-${{ github.run_attempt }}
           path: |
+            mutation-quiescence.json
             mutation-cache-context.json
             mutation-stats-failures.jsonl
             mutation-result.json
