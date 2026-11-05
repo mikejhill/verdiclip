@@ -15,7 +15,7 @@ import time
 from collections.abc import Callable, Generator, Sequence
 from dataclasses import dataclass, field
 from functools import wraps
-from typing import Protocol, cast
+from typing import Protocol
 
 from pluggy import HookimplMarker
 
@@ -27,13 +27,6 @@ MAX_DISPATCH_ANCHORS = 2  # The unchanged selector has first and warm captures.
 MAX_OFFSET_NS = 120_000_000_000  # Same upper bound as the hosted diagnostic step.
 
 
-class EventKind(Protocol):
-    """Only the numeric event kind; no window inspection or mutation."""
-
-    def type(self) -> int:
-        """Return the existing delivered event's kind."""
-
-
 @dataclass(frozen=True)
 class Patch:
     """One explicit callable descriptor and a fixed anonymous phase label."""
@@ -42,7 +35,6 @@ class Patch:
     attribute: str
     label: str
     dispatch: bool = False
-    event_types: tuple[tuple[int, str], ...] = ()
 
 
 @dataclass
@@ -69,16 +61,6 @@ class Trace:
         """Read Python clocks without GUI/event processing or inventories."""
         return self.wall(), self.process(), self.thread()
 
-    def selected_label(self, patch: Patch, args: tuple[object, ...]) -> str:
-        """Select fixed event names without consuming or creating any event."""
-        if not patch.event_types:
-            return patch.label
-        try:
-            return dict(patch.event_types).get(int(cast(EventKind, args[1]).type()), "")
-        except Exception:  # noqa: BLE001 - diagnostics cannot consume a Qt event
-            self.error("event_type")
-            return ""
-
     def wrap(
         self, patch: Patch, original: Callable[..., object]
     ) -> Callable[..., object]:
@@ -87,9 +69,6 @@ class Trace:
         @wraps(original)
         def measured(*args: object, **kwargs: object) -> object:
             if not self.active:
-                return original(*args, **kwargs)
-            label = self.selected_label(patch, args)
-            if not label:
                 return original(*args, **kwargs)
             if patch.dispatch:
                 self.ordinal += 1
@@ -116,7 +95,7 @@ class Trace:
                     self.dispatch_depth -= 1
                 if start is not None:
                     self.record(
-                        label,
+                        patch.label,
                         start,
                         ordinal,
                         within_dispatch=within_dispatch,
@@ -217,7 +196,6 @@ class PatchSet:
 def hosted_patches() -> tuple[Patch, ...]:
     """Resolve already-collected classes after hosted guards, never construct Qt."""
     require_hosted()
-    from PySide6.QtCore import QEvent  # noqa: PLC0415
     from PySide6.QtWidgets import QFontComboBox, QSpinBox  # noqa: PLC0415
     from tests.ux.test_app_journeys import App, FakeDesktop  # noqa: PLC0415
 
@@ -242,19 +220,6 @@ def hosted_patches() -> tuple[Patch, ...]:
         Patch(DocumentPage, "present", "document_page_present"),
         Patch(EditorWindow, "show", "editor_show"),
         Patch(EditorWindow, "showEvent", "editor_show_event"),
-        Patch(
-            EditorWindow,
-            "event",
-            "editor_event",
-            event_types=tuple(
-                (int(event), label)
-                for event, label in (
-                    (QEvent.Type.Polish, "editor_polish"),
-                    (QEvent.Type.WinIdChange, "editor_native_id_change"),
-                    (QEvent.Type.Show, "editor_show_dispatch"),
-                )
-            ),
-        ),
         Patch(EditorWindow, "raise_", "editor_raise"),
         Patch(EditorWindow, "activateWindow", "editor_activate"),
     )
