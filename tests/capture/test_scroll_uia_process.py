@@ -35,6 +35,12 @@ def test_powershell_warm_pipe_accepts_repeated_variable_length_requests(
     peer = tmp_path / "pipe-peer.ps1"
     peer.write_text(
         "param([string]$PipeName)\n"
+        "$clock=[Diagnostics.Stopwatch]::StartNew()\n"
+        "function Write-Phase([string]$phase) {\n"
+        " try { [IO.File]::AppendAllText((Join-Path $PSScriptRoot 'phases.log'),"
+        "($phase+':'+$clock.ElapsedMilliseconds+[Environment]::NewLine)) } catch {}\n"
+        "}\n"
+        "Write-Phase 'entered'\n"
         "[Console]::Error.WriteLine('VERDICLIP_UIA_PHASE=script_entered')\n"
         "$channel=[IO.Pipes.NamedPipeClientStream]::new('.', $PipeName,"
         "[IO.Pipes.PipeDirection]::InOut)\n"
@@ -45,10 +51,14 @@ def test_powershell_warm_pipe_accepts_repeated_variable_length_requests(
         "$writer.AutoFlush=$true\n"
         "[Console]::Error.WriteLine('VERDICLIP_UIA_PHASE=runtime_ready')\n"
         "$writer.WriteLine((@{ready=$true;protocol=1}|ConvertTo-Json -Compress))\n"
+        "Write-Phase 'waiting'\n"
         "while($null -ne ($line=$reader.ReadLine())) {\n"
+        " Write-Phase 'received'\n"
         " $request=$line|ConvertFrom-Json\n"
+        " Write-Phase 'parsed'\n"
         " $writer.WriteLine((@{request_id=$request.request_id;ok=$true;result=@{}}|"
         "ConvertTo-Json -Compress))\n"
+        " Write-Phase 'replied'\n"
         "}\n",
         encoding="utf-8",
     )
@@ -86,7 +96,12 @@ def test_powershell_warm_pipe_accepts_repeated_variable_length_requests(
                 lambda previous=before: len(replies) > previous or bool(failures),
                 timeout=reply_observer_ms(),
             )
-            assert not failures, (length, failures, client.diagnostics)
+            if failures:
+                try:
+                    phases = (tmp_path / "phases.log").read_text(encoding="utf-8")
+                except OSError as error:
+                    phases = f"phase log unavailable: {type(error).__name__}"
+                pytest.fail(f"{length=}; {failures=}; {client.diagnostics=}; {phases=}")
     finally:
         client.cancel()
         try:

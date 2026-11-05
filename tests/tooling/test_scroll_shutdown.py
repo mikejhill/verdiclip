@@ -52,7 +52,7 @@ def method(path: str, owner: str, name: str, **ports: object) -> Callable[..., N
         actual = cast(FunctionType, getattr(getattr(module, owner), name))
 
         def invoke(*args: object, **kwargs: object) -> None:
-            with patch.dict(actual.__globals__, namespace):
+            with patch.dict(vars(module), namespace):
                 actual(*args, **kwargs)
 
         return invoke
