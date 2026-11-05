@@ -1,0 +1,86 @@
+name: Full scrolling workflow fixtures
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/scroll-workflow-fixture.yml'
+      - 'scripts/scroll_workflow_plan.py'
+      - 'tests/portable/test_scroll_workflow_plan.py'
+      - 'tests/capture/scroll_journey_fixture.py'
+      - 'tests/capture/test_scroll_full_journey.py'
+      - 'src/verdiclip/capture/**'
+      - 'src/verdiclip/shell/controller.py'
+      - 'src/verdiclip/shell/scroll_review.py'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scroll-workflow-fixture-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  journey:
+    name: Qt ${{ matrix.qt }} / ${{ matrix.qpa }} / replay workflow
+    runs-on: windows-latest
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        qt: ['6.11.2', '6.12.0']
+        qpa: [offscreen, windows]
+    env:
+      UV_LOCKED: '1'
+      PYTHONUTF8: '1'
+      QT_QPA_PLATFORM: ${{ matrix.qpa }}
+      EXPECTED_QT: ${{ matrix.qt }}
+      VERDICLIP_SCROLL_FIXTURE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      VERDICLIP_SCROLL_FIXTURE_RECEIPTS: ${{ github.workspace }}/artifacts/scroll-workflow
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: '3.13.16'
+          enable-cache: false
+      - name: Locked dependencies and explicit Qt profile
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          uv sync --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          uv pip install --python .venv "pyside6-essentials==$env:EXPECTED_QT" "shiboken6==$env:EXPECTED_QT"
+          exit $LASTEXITCODE
+      - name: Verify exact owned hosted profile
+        timeout-minutes: 1
+        shell: pwsh
+        run: |
+          if (-not $IsWindows -or $env:RUNNER_ENVIRONMENT -cne 'github-hosted') {
+            throw 'This lane runs only on a disposable standard GitHub Windows job.'
+          }
+          $actual = (& git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $actual -cne $env:VERDICLIP_SCROLL_FIXTURE_SHA) {
+            throw 'Source identity mismatch.'
+          }
+          uv run --no-sync python -c "import os; from PySide6.QtCore import qVersion; assert qVersion()==os.environ['EXPECTED_QT']; print('Real service/widgets/storage/delivery; replay input, synthetic windows/frames/provider. No native input, UIA, physical or topology qualification.')"
+          exit $LASTEXITCODE
+      - name: Pure deadline ownership consent and retry protocol
+        timeout-minutes: 1
+        run: uv run --no-sync python -B tests/portable/test_scroll_workflow_plan.py
+      - name: Full selection confirmation review and delivery fixture
+        timeout-minutes: 3
+        run: >-
+          uv run --no-sync pytest tests/capture/test_scroll_full_journey.py
+          --no-cov -p no:randomly -vv
+          --junitxml=scroll-workflow.xml
+      - name: Retain explicitly synthetic receipts
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: scroll-workflow-qt${{ matrix.qt }}-${{ matrix.qpa }}
+          path: |
+            scroll-workflow.xml
+            artifacts/scroll-workflow/*.json
+          if-no-files-found: error
