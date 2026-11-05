@@ -5,6 +5,8 @@ on:
     paths:
       - '.github/workflows/gui-readiness-profile.yml'
       - 'scripts/gui_readiness_profile.py'
+      - 'scripts/gui_waits.wprp'
+      - 'scripts/scheduler_trace_summary.py'
       - 'tests/tooling/test_gui_readiness_profile.py'
 
 permissions:
@@ -49,7 +51,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           foreach ($name in @('wpr.exe', 'xperf.exe', 'wpaexporter.exe', 'tracerpt.exe')) {
-            $tool = Get-Command $name -CommandType Application -ErrorAction SilentlyContinue
+            $tool = Get-Command $name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
             if ($null -eq $tool) {
               Write-Output "TRACE_TOOL=$name;available=false"
               continue
@@ -57,7 +59,7 @@ jobs:
             $signature = Get-AuthenticodeSignature -LiteralPath $tool.Source
             Write-Output "TRACE_TOOL=$name;available=true;signature=$($signature.Status);path=$($tool.Source)"
           }
-          $wpr = Get-Command wpr.exe -CommandType Application -ErrorAction SilentlyContinue
+          $wpr = Get-Command (Join-Path $env:SystemRoot 'System32\wpr.exe') -CommandType Application -ErrorAction SilentlyContinue
           if ($null -ne $wpr) {
             $signature = Get-AuthenticodeSignature -LiteralPath $wpr.Source
             if ($signature.Status -ne 'Valid' -or
@@ -113,14 +115,46 @@ jobs:
           $env:PYTEST_DISABLE_PLUGIN_AUTOLOAD = '1'
           $env:PYTHONNOUSERSITE = '1'
           $env:PYTHONPATH = (Join-Path $PWD 'src') + [IO.Path]::PathSeparator + $PWD
+          $wpr = Join-Path $env:SystemRoot 'System32\wpr.exe'
+          $xperf = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Windows Performance Toolkit\xperf.exe'
+          foreach ($tool in @($wpr, $xperf)) {
+            $signature = Get-AuthenticodeSignature -LiteralPath $tool
+            if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
+              throw 'Trace tool is not verified Microsoft software'
+            }
+          }
+          $owner = 'VerdiClip-' + [guid]::NewGuid().ToString('N')
+          $trace = Join-Path $env:RUNNER_TEMP ($owner + '.etl')
+          $csv = Join-Path $env:RUNNER_TEMP ($owner + '.csv')
+          & $wpr -profiles "$PWD/scripts/gui_waits.wprp"
+          if ($LASTEXITCODE -ne 0) { throw 'Scheduler profile validation failed' }
+          "VERDICLIP_TRACE_OWNER=$owner" >> $env:GITHUB_ENV
           $aggregate = 0
           foreach ($trial in 1..5) {
             $env:VERDICLIP_GUI_PROFILE_TRIAL = [string]$trial
             Write-Output "GUI_READINESS_PROFILE_TRIAL=$trial/5; fresh-process-same-VM-not-cold-OS"
             $report = Join-Path $env:RUNNER_TEMP ('readiness-profile-' + [guid]::NewGuid().ToString('N') + '.xml')
             $log = "$report.log"
-            & .venv/Scripts/python.exe -m pytest tests/ux/test_gui_readiness.py::test_first_controller_start_and_capture_costs --no-cov -p pytestqt.plugin -p pytest_cov.plugin -p _hypothesis_pytestplugin -p no:randomly -p scripts.gui_readiness_profile -vv --capture=tee-sys "--junitxml=$report" "--basetemp=$report.tmp" 2>&1 | Tee-Object -FilePath $log
-            $testExit = $LASTEXITCODE
+            if ($trial -eq 1) {
+              & $wpr -start "$PWD/scripts/gui_waits.wprp!VerdiClipWaits" -instancename $owner
+              if ($LASTEXITCODE -ne 0) { throw 'Named scheduler trace admission failed' }
+            }
+            try {
+              & .venv/Scripts/python.exe -m pytest tests/ux/test_gui_readiness.py::test_first_controller_start_and_capture_costs --no-cov -p pytestqt.plugin -p pytest_cov.plugin -p _hypothesis_pytestplugin -p no:randomly -p scripts.gui_readiness_profile -vv --capture=tee-sys "--junitxml=$report" "--basetemp=$report.tmp" 2>&1 | Tee-Object -FilePath $log
+              $testExit = $LASTEXITCODE
+            } finally {
+              if ($trial -eq 1) {
+                & $wpr -stop $trace -skipPdbGen -instancename $owner
+                if ($LASTEXITCODE -ne 0) { throw 'Named trace stop failed; cleanup remains required' }
+                'VERDICLIP_TRACE_STOPPED=1' >> $env:GITHUB_ENV
+              }
+            }
+            if ($trial -eq 1) {
+              & $xperf -i $trace -o $csv -a dumper
+              if ($LASTEXITCODE -ne 0) { throw 'Scheduler export failed' }
+              & .venv/Scripts/python.exe scripts/scheduler_trace_summary.py $csv $log
+              if ($LASTEXITCODE -ne 0) { throw 'Owned scheduler analysis unavailable; no causal claim' }
+            }
             Write-Output "GUI_READINESS_PROFILE_TRIAL_EXIT=$trial/$testExit"
             if ($testExit -notin @(0, 1)) { exit $testExit }
             if (-not (Test-Path -LiteralPath $report)) { throw 'Diagnostic JUnit receipt missing.' }
@@ -149,3 +183,27 @@ jobs:
           }
           Write-Output 'Inclusive phases overlap and instrumentation adds overhead. The 300ms assertion is unchanged; green is non-reproduction, not a fix or native acceptance. Timeout cleanup is UNKNOWN; VM disposal is containment.'
           exit $aggregate
+      - name: Retire only the owned recording and private raw trace files
+        if: always()
+        timeout-minutes: 1
+        shell: pwsh
+        run: |
+          $owner = $env:VERDICLIP_TRACE_OWNER
+          if (-not $owner) { Write-Output 'TRACE_CLEANUP=no recording attempted'; exit 0 }
+          if ($owner -notmatch '^VerdiClip-[a-f0-9]{32}$') { throw 'Trace ownership invalid' }
+          $uncertain = @()
+          try {
+            if ($env:VERDICLIP_TRACE_STOPPED -ne '1') {
+              & "$env:SystemRoot/System32/wpr.exe" -cancel -instancename $owner
+              if ($LASTEXITCODE -ne 0) { throw 'Named trace retirement is unverified' }
+            }
+          } catch { $uncertain += 'recording retirement unverified' }
+          foreach ($suffix in @('.etl', '.csv')) {
+            try {
+              $path = Join-Path $env:RUNNER_TEMP ($owner + $suffix)
+              if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -ErrorAction Stop }
+              if (Test-Path -LiteralPath $path) { throw 'Private raw trace still exists' }
+            } catch { $uncertain += "private $suffix removal unverified" }
+          }
+          if ($uncertain.Count) { throw ($uncertain -join '; ') }
+          Write-Output 'TRACE_CLEANUP=owned recording stopped; private raw files absent'

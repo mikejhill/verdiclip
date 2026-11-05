@@ -11,6 +11,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 from collections.abc import Callable, Generator, Sequence
 from dataclasses import dataclass, field
@@ -320,6 +321,8 @@ class Profiler:
                 self.emitter(
                     {
                         "source_sha": os.environ.get("VERDICLIP_BENCHMARK_SOURCE_SHA"),
+                        "pid": os.getpid(),
+                        "native_thread_id": threading.get_native_id(),
                         "qt_expected": os.environ.get("VERDICLIP_EXPECTED_QT"),
                         "trial": os.environ.get("VERDICLIP_GUI_PROFILE_TRIAL"),
                         "selector": TARGET,
