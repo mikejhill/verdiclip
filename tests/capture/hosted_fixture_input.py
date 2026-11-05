@@ -1,4 +1,4 @@
-"""One guarded native click for a disposable GitHub Windows test job only.
+"""Guarded native fixture preparation and click on disposable GitHub Windows only.
 
 Not a Computer Use alternative for user desktops. No activation, access changes,
 UIPI workaround, arbitrary input sequence, or click retry is provided.
@@ -13,8 +13,9 @@ import math
 import os
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 
+from tests.capture.native_cursor import CursorInfo
 from tests.capture.production_matrix import DriverJournal
 from tests.capture.scroll_peer import ScrollPeer
 
@@ -57,6 +58,15 @@ def absolute_point(point: Point, desktop: Rect) -> tuple[int, int]:
     )
 
 
+def absolute_pixel_center(point: Point, desktop: Rect) -> tuple[int, int]:
+    """Choose the middle of a pixel bin, avoiding absolute-input edge rounding."""
+    absolute_point(point, desktop)  # Retain the exact desktop bounds check.
+    return (
+        min(65535, int((point.x - desktop.x + 0.5) * 65536 / desktop.width)),
+        min(65535, int((point.y - desktop.y + 0.5) * 65536 / desktop.height)),
+    )
+
+
 class MouseInput(ctypes.Structure):
     """Documented x64 MOUSEINPUT layout; checked before use."""
 
@@ -82,6 +92,16 @@ class Input(ctypes.Structure):
     _fields_ = [("type", w.DWORD), ("payload", InputPayload)]
 
 
+@dataclass(frozen=True)
+class CursorPreparation:
+    """Original preparation budget and live owned-fixture checks."""
+
+    owned_capture: int
+    preserved: Callable[[], bool]
+    broker_idle: Callable[[], bool]
+    expires_at: float
+
+
 class HostedFixtureClick:
     """Discover exact owned windows, then send one native packet batch."""
 
@@ -89,10 +109,17 @@ class HostedFixtureClick:
         require_hosted(os.environ)
         self.peer, self.journal = peer, journal
         self.sent = False
+        self.preparation_attempted = False
         self.api = ctypes.WinDLL("user32", use_last_error=True)
         self.api.GetWindowThreadProcessId.argtypes = (w.HWND, ctypes.POINTER(w.DWORD))
         self.api.GetWindowThreadProcessId.restype = w.DWORD
         self.api.GetForegroundWindow.restype = w.HWND
+        self.api.GetCapture.argtypes = ()
+        self.api.GetCapture.restype = w.HWND
+        self.api.GetCursorInfo.argtypes = (ctypes.POINTER(CursorInfo),)
+        self.api.GetCursorInfo.restype = w.BOOL
+        self.api.IsChild.argtypes = (w.HWND, w.HWND)
+        self.api.IsChild.restype = w.BOOL
         self.api.IsWindowVisible.argtypes = (w.HWND,)
         self.api.IsWindowVisible.restype = w.BOOL
         self.api.GetWindowTextW.argtypes = (w.HWND, w.LPWSTR, ctypes.c_int)
@@ -149,6 +176,82 @@ class HostedFixtureClick:
         hit = int(self.api.WindowFromPoint(w.POINT(int(point.x), int(point.y))) or 0)
         if self.process_id(hit) not in (os.getpid(), process.pid):
             raise RuntimeError("Click point is covered by a foreign process")
+
+    def prepare_cursor(
+        self,
+        target: Rect,
+        *,
+        scope: CursorPreparation,
+        process_events: Callable[[], None],
+        result: dict[str, object],
+    ) -> None:
+        """One owned-destination MOVE before binding, never a visibility claim."""
+        result.update(outcome="not-inserted", preserved=False)
+        if (
+            self.preparation_attempted
+            or self.sent
+            or self.journal.binding is not None
+            or self.journal.requests
+        ):
+            raise RuntimeError("Cursor preparation is not a fresh pre-binding step")
+        point = Point(int(target.center.x), int(target.center.y))
+        foreground = int(self.api.GetForegroundWindow() or 0)
+
+        def guard() -> None:
+            self.verify(target)
+            hit = int(
+                self.api.WindowFromPoint(w.POINT(int(point.x), int(point.y))) or 0
+            )
+            if not hit or not any(
+                hit == root or self.api.IsChild(root, hit)
+                for root in self.journal.owned_handles
+            ):
+                raise RuntimeError("Cursor destination is not an exact owned tree")
+            if (
+                scope.owned_capture not in self.journal.owned_handles
+                or self.process_id(scope.owned_capture) != os.getpid()
+                or int(self.api.GetCapture() or 0) != scope.owned_capture
+                or int(self.api.GetForegroundWindow() or 0) != foreground
+                or not scope.preserved()
+                or not scope.broker_idle()
+                or self.journal.binding is not None
+                or self.journal.requests
+            ):
+                raise RuntimeError("Cursor preparation ownership or idle state changed")
+            if (
+                not math.isfinite(scope.expires_at)
+                or not 0 < scope.expires_at - time.monotonic() <= 50
+            ):
+                raise RuntimeError("Original cursor preparation deadline expired")
+
+        def observe() -> CursorInfo:
+            info = CursorInfo()
+            info.size = ctypes.sizeof(info)
+            if not self.api.GetCursorInfo(ctypes.byref(info)):
+                raise RuntimeError("Cursor preparation observation failed")
+            return info
+
+        guard()
+        result["before_flags"] = int(observe().flags)
+        desktop = Rect(*(self.api.GetSystemMetrics(i) for i in (76, 77, 78, 79)))
+        x, y = absolute_pixel_center(point, desktop)
+        packets = (Input * 1)(Input(0, InputPayload(MouseInput(x, y, 0, 0xC001, 0, 0))))
+        guard()
+        self.preparation_attempted = True
+        result["outcome"] = "insertion-unconfirmed"
+        inserted = self.api.SendInput(1, packets, ctypes.sizeof(Input))
+        result["inserted"] = int(inserted)
+        if inserted != 1:
+            result["outcome"] = "insertion-refused"
+            raise RuntimeError("Cursor preparation MOVE refused; no retry")
+        result["outcome"] = "inserted-unverified"
+        process_events()
+        guard()
+        after = observe()
+        result["after_flags"] = int(after.flags)
+        if (after.point.x, after.point.y) != (int(point.x), int(point.y)):
+            raise RuntimeError("Cursor preparation did not reach its owned destination")
+        result.update(outcome="inserted-preserved", preserved=True)
 
     def bind(self, target: Rect) -> None:
         """Native discovery supplies this hosted driver's acknowledgement."""

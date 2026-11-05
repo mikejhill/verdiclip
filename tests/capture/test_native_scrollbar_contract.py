@@ -9,6 +9,7 @@ from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import BinaryIO, cast
+from unittest.mock import Mock
 
 import pytest
 from PySide6.QtGui import QImage
@@ -770,3 +771,45 @@ def test_first_discovery_retains_startup_before_rolling_trace_changes(
     )
     assert case.provider_preflight.get("state") == ("complete" if preflight else None)
     assert len(case.discoveries) == (0 if preflight else 2)
+
+
+@pytest.mark.parametrize("hosted", [False, True])
+def test_cursor_preparation_precedes_binding_only_on_hosted_fixture(
+    *,
+    hosted: bool,
+) -> None:
+    """Local desktops never receive the preparation event or event pump."""
+    order: list[str] = []
+    target = Rect(10, 20, 4, 8)
+    journal = Mock()
+    journal.prepare_binding.side_effect = lambda _: order.append("binding")
+    hosted_input = Mock() if hosted else None
+    if hosted_input is not None:
+        hosted_input.prepare_cursor.side_effect = lambda *_args, **_kwargs: (
+            order.append("move")
+        )
+    case = SimpleNamespace(
+        hosted_input=hosted_input,
+        journal=journal,
+        target=lambda: target,
+        snapshot=SimpleNamespace(errors=list),
+        menu=SimpleNamespace(winId=lambda: 43),
+        app=SimpleNamespace(
+            controller=SimpleNamespace(capture=SimpleNamespace(input_active=False))
+        ),
+        driver=SimpleNamespace(workers=[]),
+        input_deadline=123.0,
+    )
+    ScrollbarCase.prepare_driver_binding(cast(ScrollbarCase, case))
+    assert order == (["move", "binding"] if hosted else ["binding"])
+    if hosted_input is not None:
+        scope = hosted_input.prepare_cursor.call_args.kwargs["scope"]
+        assert scope.expires_at == 123.0
+        assert scope.owned_capture == 43
+        assert scope.preserved()
+        assert scope.broker_idle()
+        case.driver.workers.append(object())
+        assert not scope.broker_idle()
+        case.driver.workers.clear()
+        case.app.controller.capture.input_active = True
+        assert not scope.broker_idle()

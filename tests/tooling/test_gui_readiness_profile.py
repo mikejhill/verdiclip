@@ -154,6 +154,52 @@ class PureProfilerTests(unittest.TestCase):
         )
         self.assertEqual(dispatch_record["wall_start_offset_ms"], 0)
 
+    def test_deferred_callback_is_separate_from_message_handler(self) -> None:
+        """Model queued capture and unrelated event work without running Qt."""
+        trace = self.trace()
+        calls: list[str] = []
+        pending = []
+        callback = trace.wrap(
+            Patch(object, "unused", "capture_pending_callback"),
+            lambda: calls.append("capture"),
+        )
+
+        def handle() -> bool:
+            calls.append("message")
+            pending.append(callback)
+            return True
+
+        handler = trace.wrap(Patch(object, "unused", "hotkey_message_handler"), handle)
+
+        def dispatch() -> None:
+            self.assertTrue(handler())
+            self.assertEqual(calls, ["message"])
+            # The real harness drains Qt events only after message dispatch.
+            pending.pop()()
+            calls.append("other-event")
+
+        outer = trace.wrap(
+            Patch(object, "unused", "hotkey_dispatch", dispatch=True), dispatch
+        )
+        outer()
+        self.assertEqual(calls, ["message", "capture", "other-event"])
+        message, capture, total = trace.records
+        self.assertEqual(
+            [r["phase"] for r in trace.records],
+            ["hotkey_message_handler", "capture_pending_callback", "hotkey_dispatch"],
+        )
+        self.assertLess(
+            self.number(message, "wall_end_offset_ms"),
+            self.number(capture, "wall_start_offset_ms"),
+        )
+        self.assertLess(
+            self.number(capture, "wall_end_offset_ms"),
+            self.number(total, "wall_end_offset_ms"),
+        )
+        self.assertTrue(all(r["within_dispatch"] for r in trace.records))
+        self.assertEqual({r["capture_ordinal"] for r in trace.records}, {1})
+        self.assertEqual(trace.errors, [])
+
     def test_offset_anchor_limit_and_range_are_bounded(self) -> None:
         """Missing/oversized anchors retain no absolute uptime and fail diagnostics."""
         trace = self.trace()

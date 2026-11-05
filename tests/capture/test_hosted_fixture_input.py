@@ -2,7 +2,9 @@
 
 import ctypes
 import ctypes.wintypes as w
+import os
 import time
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -10,10 +12,13 @@ from unittest.mock import Mock
 
 import pytest
 from tests.capture.hosted_fixture_input import (
+    CursorPreparation,
     HostedFixtureClick,
+    absolute_pixel_center,
     absolute_point,
     require_hosted,
 )
+from tests.capture.native_cursor import CursorInfo
 from tests.capture.production_matrix import DriverJournal, InputProfile, MatrixCase
 from tests.capture.scroll_peer import ScrollPeer
 
@@ -232,3 +237,218 @@ def test_deadline_or_lease_loss_during_verification_blocks_send(
             expires_at=time.monotonic() + (-1 if case == "expired" else 40),
         )
     cast(Mock, driver.api).SendInput.assert_not_called()
+
+
+@pytest.fixture
+def preparation(driver: HostedFixtureClick) -> HostedFixtureClick:
+    """A popup owns capture before any binding or broker input contract."""
+    driver.journal.binding = None
+    driver.journal.owned_handles = (42, 43)
+    api = cast(Mock, driver.api)
+    api.GetCapture.return_value = 43
+    api.IsChild.return_value = False
+    api.SendInput.return_value = 1
+
+    def process_id(handle: int, pointer: object) -> int:
+        ctypes.cast(
+            cast(ctypes.c_void_p, pointer), ctypes.POINTER(w.DWORD)
+        ).contents.value = os.getpid() if handle == 43 else 123
+        return 1
+
+    def cursor(pointer: object) -> int:
+        info = ctypes.cast(
+            cast(ctypes.c_void_p, pointer), ctypes.POINTER(CursorInfo)
+        ).contents
+        info.flags = 2
+        info.point = w.POINT(3, 4)
+        return 1
+
+    api.GetWindowThreadProcessId.side_effect = process_id
+    api.GetCursorInfo.side_effect = cursor
+    return driver
+
+
+def prepare(driver: HostedFixtureClick, **overrides: object) -> dict[str, object]:
+    """Invoke the production preparation method with no native functions."""
+    result: dict[str, object] = {}
+    driver.prepare_cursor(
+        driver.peer.target(),
+        scope=CursorPreparation(
+            owned_capture=43,
+            preserved=cast(
+                Callable[[], bool], overrides.get("preserved", lambda: True)
+            ),
+            broker_idle=cast(
+                Callable[[], bool], overrides.get("broker_idle", lambda: True)
+            ),
+            expires_at=cast(float, overrides.get("expires_at", time.monotonic() + 40)),
+        ),
+        process_events=cast(
+            Callable[[], None], overrides.get("process_events", Mock())
+        ),
+        result=result,
+    )
+    return result
+
+
+def test_preparation_is_exactly_one_move_without_visibility_claim(
+    preparation: HostedFixtureClick,
+) -> None:
+    """Suppression may remain after insertion; there are no clicks or retries."""
+    pump = Mock()
+    result = prepare(preparation, process_events=pump)
+    count, packets, size = cast(Mock, preparation.api).SendInput.call_args.args
+    assert (count, size) == (1, 40)
+    assert packets[0].type == 0
+    mouse = packets[0].payload.mouse
+    assert (mouse.dx, mouse.dy) == absolute_pixel_center(
+        Point(3, 4), Rect(0, 0, 1920, 1080)
+    )
+    assert (mouse.dwFlags, mouse.mouseData) == (0xC001, 0)
+    assert result == {
+        "outcome": "inserted-preserved",
+        "preserved": True,
+        "before_flags": 2,
+        "after_flags": 2,
+        "inserted": 1,
+    }
+    pump.assert_called_once_with()
+    with pytest.raises(RuntimeError, match="fresh"):
+        prepare(preparation)
+    assert cast(Mock, preparation.api).SendInput.call_count == 1
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "capture",
+        "same_process_unowned_tree",
+        "snapshot",
+        "broker",
+        "binding",
+        "request",
+        "expired",
+        "nonfinite",
+        "too_long",
+        "foreground",
+        "retired",
+        "source",
+    ],
+)
+def test_preparation_guard_prevents_send(
+    preparation: HostedFixtureClick,
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+) -> None:
+    """Every preparation gate is checked before any native input is inserted."""
+    api = cast(Mock, preparation.api)
+    overrides: dict[str, object] = {}
+    if case == "capture":
+        api.GetCapture.return_value = 999
+    elif case == "same_process_unowned_tree":
+        api.WindowFromPoint.return_value = 999
+    elif case == "snapshot":
+        overrides["preserved"] = lambda: False
+    elif case == "broker":
+        overrides["broker_idle"] = lambda: False
+    elif case == "binding":
+        preparation.journal.prepare_binding(preparation.peer.target())
+    elif case == "request":
+        preparation.journal.requests.append({})
+    elif case in {"expired", "nonfinite", "too_long"}:
+        overrides["expires_at"] = {
+            "expired": time.monotonic() - 1,
+            "nonfinite": float("nan"),
+            "too_long": time.monotonic() + 60,
+        }[case]
+    elif case == "foreground":
+        api.GetForegroundWindow.return_value = 999
+    elif case == "retired":
+        preparation.journal.retired = True
+    else:
+        monkeypatch.setenv("VERDICLIP_HOSTED_SOURCE", "b" * 40)
+    with pytest.raises(RuntimeError):
+        prepare(preparation, **overrides)
+    api.SendInput.assert_not_called()
+
+
+@pytest.mark.parametrize("inserted", [0, 2])
+def test_preparation_refusal_is_not_retried(
+    preparation: HostedFixtureClick,
+    inserted: int,
+) -> None:
+    """Even impossible partial/oversized results cannot produce a second MOVE."""
+    api = cast(Mock, preparation.api)
+    api.SendInput.return_value = inserted
+    with pytest.raises(RuntimeError, match="refused"):
+        prepare(preparation)
+    with pytest.raises(RuntimeError, match="fresh"):
+        prepare(preparation)
+    assert api.SendInput.call_count == 1
+
+
+@pytest.mark.parametrize("change", ["capture", "foreground", "position", "snapshot"])
+def test_preparation_rechecks_after_event_processing(
+    preparation: HostedFixtureClick,
+    change: str,
+) -> None:
+    """A delivered MOVE is not accepted after ownership or preservation loss."""
+    api = cast(Mock, preparation.api)
+    valid = [True]
+
+    def pump() -> None:
+        if change == "capture":
+            api.GetCapture.return_value = 999
+        elif change == "foreground":
+            api.GetForegroundWindow.return_value = 999
+        elif change == "position":
+            api.GetCursorInfo.side_effect = None
+            api.GetCursorInfo.return_value = 1
+        else:
+            valid[0] = False
+
+    with pytest.raises(RuntimeError):
+        prepare(preparation, process_events=pump, preserved=lambda: valid[0])
+    assert api.SendInput.call_count == 1
+    with pytest.raises(RuntimeError, match="fresh"):
+        prepare(preparation)
+
+
+@pytest.mark.parametrize("point", [Point(-100, -50), Point(3, 4), Point(1819, 1029)])
+def test_preparation_coordinates_select_pixel_interior(point: Point) -> None:
+    """Normalized coordinates round-trip to the intended physical pixel."""
+    desktop = Rect(-100, -50, 1920, 1080)
+    x, y = absolute_pixel_center(point, desktop)
+    assert (
+        int(x * desktop.width / 65536) + desktop.x,
+        int(y * desktop.height / 65536) + desktop.y,
+    ) == (point.x, point.y)
+
+
+def test_preparation_checks_deadline_after_event_processing(
+    preparation: HostedFixtureClick,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An event-processing pass may not silently extend the original deadline."""
+    now = [100.0]
+    monkeypatch.setattr(time, "monotonic", lambda: now[0])
+
+    def pump() -> None:
+        now[0] = 141.0
+
+    with pytest.raises(RuntimeError, match="deadline"):
+        prepare(preparation, process_events=pump, expires_at=140.0)
+    assert cast(Mock, preparation.api).SendInput.call_count == 1
+
+
+def test_preparation_accepts_verified_owned_child_destination(
+    preparation: HostedFixtureClick,
+) -> None:
+    """A provider child is admitted only by native ancestry, not PID alone."""
+    api = cast(Mock, preparation.api)
+    api.WindowFromPoint.return_value = 44
+    api.IsChild.side_effect = lambda root, child: (root, child) == (42, 44)
+    result = prepare(preparation)
+    assert result["outcome"] == "inserted-preserved"
+    assert api.SendInput.call_count == 1
+    api.IsChild.assert_any_call(42, 44)

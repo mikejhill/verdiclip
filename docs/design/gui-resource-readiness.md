@@ -81,6 +81,21 @@ dispatch; its inclusive phase measurement is a different metric, not an
 additional capture sample or a cause proved by timing alone. Later passes do not
 erase these failures or resolve their variability.
 
+A later uninstrumented Qt 6.12/windows-QPA first capture also failed at
+300.7408 ms on source `eb5b8f48d40180647e06e3f188c80c3c6e838578`
+([Actions run 42033219888, job 127264627627](https://github.com/mikejhill/verdiclip/actions/runs/42033219888/job/127264627627)).
+Its outer factory took 216.0862 ms, nested controller startup 196.1584 ms,
+nested font preparation 189.029 ms, and combined factory-to-visible 516.8272 ms.
+Later fresh processes on that same VM measured 69.7616, 65.8496, 63.7879 and
+64.9115 ms first captures. They do not erase the failure or identify its cause.
+
+The optional phase diagnostic separates synchronous hotkey-message handling from
+`CaptureService._start_pending`, which runs when the fake hotkey harness drains
+Qt events. Both remain inside the existing `hotkey_dispatch` interval. Time
+outside these phases can include event processing and instrumentation overhead;
+it is not proof of a particular OS, paint or scheduling cause. These added
+phases cannot retrospectively attribute an uninstrumented historical failure.
+
 Future comparisons follow the [shared benchmark protocol](gui-benchmark-protocol.md).
 That protocol requires the same immutable checkout, harness and runtime on both
 machines. Local execution additionally requires a fresh authorized handoff and a

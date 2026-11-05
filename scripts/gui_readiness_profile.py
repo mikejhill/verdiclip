@@ -203,15 +203,19 @@ def hosted_patches() -> tuple[Patch, ...]:
     from PySide6.QtWidgets import QFontComboBox, QSpinBox  # noqa: PLC0415
     from tests.ux.test_app_journeys import App, FakeDesktop  # noqa: PLC0415
 
+    from verdiclip.capture.service import CaptureService  # noqa: PLC0415
     from verdiclip.editor.canvas import CanvasView  # noqa: PLC0415
     from verdiclip.editor.page import DocumentPage  # noqa: PLC0415
     from verdiclip.editor.style_bar import StyleBar  # noqa: PLC0415
     from verdiclip.editor.window import EditorWindow  # noqa: PLC0415
     from verdiclip.editor.workspace import Workspace  # noqa: PLC0415
+    from verdiclip.platform.hotkeys import HotkeyService  # noqa: PLC0415
     from verdiclip.shell.controller import AppController  # noqa: PLC0415
 
     return (
         Patch(App, "press_hotkey", "hotkey_dispatch", dispatch=True),
+        Patch(HotkeyService, "handle_hotkey_message", "hotkey_message_handler"),
+        Patch(CaptureService, "_start_pending", "capture_pending_callback"),
         Patch(FakeDesktop, "freeze", "fake_desktop_freeze"),
         Patch(AppController, "_on_captured", "controller_on_captured"),
         Patch(AppController, "_open_document", "controller_open_document"),

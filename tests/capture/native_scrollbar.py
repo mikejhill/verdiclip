@@ -20,7 +20,7 @@ from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication, QMenu
 from pytestqt.qtbot import QtBot
 from shiboken6 import isValid
-from tests.capture.hosted_fixture_input import HostedFixtureClick
+from tests.capture.hosted_fixture_input import CursorPreparation, HostedFixtureClick
 from tests.capture.native_cursor import probe_owned_cursor_baseline
 from tests.capture.production_matrix import (
     DriverJournal,
@@ -493,7 +493,7 @@ class ScrollbarCase:
         )
         self.journal.owned_handles = (self.peer.handle, int(self.menu.winId()))
         self.journal.binding_handle = self.peer.handle
-        self.journal.prepare_binding(self.target())
+        self.prepare_driver_binding()
         self.check_passive_retirement()
         if self.peer.provider == "winforms":
             self.diagnose_provider(viewport)
@@ -660,6 +660,30 @@ class ScrollbarCase:
             if isValid(panel):
                 panel.dismiss()
                 self.qtbot.waitUntil(retired, timeout=2000)
+
+    def prepare_driver_binding(self) -> None:
+        """One hosted preparation MOVE precedes binding and input interception."""
+        self.cursor_preparation: dict[str, object] = {}
+        if self.hosted_input is None:
+            self.journal.prepare_binding(self.target())
+            return
+        snapshot = self.snapshot
+        assert snapshot is not None
+        self.hosted_input.prepare_cursor(
+            self.target(),
+            scope=CursorPreparation(
+                owned_capture=int(self.menu.winId()),
+                preserved=lambda: not snapshot.errors(),
+                broker_idle=lambda: (
+                    not self.app.controller.capture.input_active
+                    and not self.driver.workers
+                ),
+                expires_at=self.input_deadline,
+            ),
+            process_events=QApplication.processEvents,
+            result=self.cursor_preparation,
+        )
+        self.journal.prepare_binding(self.target())
 
     def probe_cursor(self) -> None:
         """Keep this diagnostic out of local desktop handoffs."""
@@ -887,6 +911,7 @@ class ScrollbarCase:
                         else None
                     ),
                     "provider_profile": self.provider_profile,
+                    "cursor_preparation": getattr(self, "cursor_preparation", {}),
                     "worker_cursor_probe": getattr(self, "cursor_probe", {}),
                     "magnification_cursor_probe": getattr(
                         self, "magnification_cursor_probe", {}
