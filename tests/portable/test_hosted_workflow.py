@@ -130,6 +130,5 @@ def test_cache_audit_is_read_only_and_exact_snapshot_only() -> None:
     assert "actions/cache/save" not in workflow
     assert (
         "uv run --no-project --python 3.13.18 python "
-        "-m scripts.mutation_cache_audit mutants"
-        in workflow
+        "-m scripts.mutation_cache_audit mutants" in workflow
     )
