@@ -149,7 +149,7 @@ mutation = [
 # POSIX only (it forks); run it on Linux or WSL with `uv run poe mutate`.
 source_paths = ["src/verdiclip/"]
 # Tooling tests import scripts.* and inspect workflow contracts in staging.
-also_copy = ["scripts/", ".github/workflows/"]
+also_copy = ["scripts/", ".github/"]
 pytest_add_cli_args_test_selection = ["tests/"]
 # tests.mutation_support loads before any test imports verdiclip; see its docstring
 pytest_add_cli_args = [
