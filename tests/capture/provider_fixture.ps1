@@ -80,8 +80,20 @@ function Confirm-FixtureActivation([object]$owner) {
     }
     if (-not $owner.IsActive) { throw 'Owned fixture activation incomplete' }
 }
+function Write-SnapshotPhase([string]$phase) {
+    if ($script:snapshotTraceComplete) { return }
+    # Exact fixed phase names and own-process timings only. No UI content.
+    try {
+    $fixtureProcess.Refresh()
+    [Console]::Error.WriteLine('FIXTURE_SNAPSHOT=' + $phase +
+        ' elapsed_ms=' + $clock.ElapsedMilliseconds +
+        ' cpu_ms=' + [Math]::Round($fixtureProcess.TotalProcessorTime.TotalMilliseconds))
+    } catch { } # Diagnostics never change fixture admission or error propagation.
+}
+$script:snapshotTraceComplete = $false
 function Write-FixtureState {
     if (-not $ready -or -not $window.IsLoaded -or $closed) { return }
+    Write-SnapshotPhase 'geometry-start'
     $handle = ([Windows.Interop.WindowInteropHelper]::new($window)).Handle.ToInt64()
     $point = $viewer.PointToScreen(([Windows.Point]::new(0,0)))
     $bottom = $viewer.PointToScreen(([Windows.Point]::new([Math]::Min($pixelWidth,$viewer.ViewportWidth),$viewer.ViewportHeight)))
@@ -101,11 +113,16 @@ function Write-FixtureState {
         physical_rectangle=@{x=[int][Math]::Ceiling($point.X);y=[int][Math]::Ceiling($point.Y)
             width=[int][Math]::Floor($bottom.X-$point.X);height=[int][Math]::Floor($bottom.Y-$point.Y)}
     }
+    Write-SnapshotPhase 'state-built'
+    $json = $state | ConvertTo-Json -Depth 5
+    Write-SnapshotPhase 'serialized'
     $temporary = Join-Path $fixtureDirectory 'fixture-state.partial'
-    [IO.File]::WriteAllText($temporary,($state | ConvertTo-Json -Depth 5))
+    [IO.File]::WriteAllText($temporary,$json)
     if ($sequence -gt 10000) { throw 'Fixture snapshot budget exceeded' }
     $target = Join-Path $fixtureDirectory ('fixture-state-{0:D6}.json' -f $sequence)
     [IO.File]::Move($temporary,$target)
+    Write-SnapshotPhase 'published'
+    $script:snapshotTraceComplete = $true
 }
 $timer = [Windows.Threading.DispatcherTimer]::new()
 $timer.Interval = [TimeSpan]::FromMilliseconds(100)

@@ -58,3 +58,41 @@ if ($case -eq 'active') {
         check=False,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_snapshot_diagnostics_are_bounded_and_best_effort() -> None:
+    """Timing failures cannot fail admission; retired tracing does no process work."""
+    executable = shutil.which("pwsh") or shutil.which("powershell")
+    if executable is None:
+        pytest.skip("PowerShell is required for the pure decision test")
+    source = (
+        Path(__file__).resolve().parents[1] / "capture/provider_fixture.ps1"
+    ).read_text()
+    function = (
+        "function Write-SnapshotPhase"
+        + source.split("function Write-SnapshotPhase", 1)[1].split(
+            "$script:snapshotTraceComplete = $false", 1
+        )[0]
+    )
+    script = (
+        function
+        + r"""
+$ErrorActionPreference = 'Stop'
+$fixtureProcess = [pscustomobject]@{Calls=0}
+$fixtureProcess | Add-Member ScriptMethod Refresh {$this.Calls++;throw 'test failure'}
+$script:snapshotTraceComplete = $false
+Write-SnapshotPhase 'geometry-start'
+if ($fixtureProcess.Calls -ne 1) { throw 'No attempted diagnostic' }
+$script:snapshotTraceComplete = $true
+Write-SnapshotPhase 'geometry-start'
+if ($fixtureProcess.Calls -ne 1) { throw 'Unbounded diagnostic' }
+"""
+    )
+    result = subprocess.run(  # noqa: S603 - repository function with fake process only
+        [executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr

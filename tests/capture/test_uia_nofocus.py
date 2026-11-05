@@ -63,6 +63,13 @@ def test_mutation_uses_packaged_same_client_no_focus_implementation() -> None:
 @pytest.mark.skipif(sys.platform != "win32", reason="Installed Windows PowerShell")
 def test_actual_provider_render_callback_activates_only_once(tmp_path: Path) -> None:
     """Invoke the actual callback three times with fakes; never create WPF UI."""
+    fixture = Path(__file__).with_name("provider_fixture.ps1").read_text()
+    activation = (
+        "function Confirm-FixtureActivation"
+        + fixture.split("function Confirm-FixtureActivation", 1)[1].split(
+            "function Write-FixtureState", 1
+        )[0]
+    )
     script = tmp_path / "render-policy.ps1"
     script.write_text(
         "param([string]$Fixture)\n"
@@ -80,9 +87,11 @@ def test_actual_provider_render_callback_activates_only_once(tmp_path: Path) -> 
         "if(-not $match.Success){throw 'callback not found'}\n"
         "Write-RenderPhase 'callback-extracted'\n"
         "$script:ready=$false;$script:renderObserved=$false;$script:activations=0;$script:states=0\n"
-        "$window=[pscustomobject]@{}\n"
+        "$window=[pscustomobject]@{IsActive=$false}\n"
         "$window|Add-Member ScriptMethod Activate "
-        "{$script:activations++;return $true}\n"
+        "{$script:activations++;$this.IsActive=$true;return $true}\n"
+        + activation
+        + "\n"
         "function Write-FixtureState {$script:states++}\n"
         "$callback=[Action][scriptblock]::Create($match.Groups[1].Value)\n"
         "Write-RenderPhase 'callback-bound'\n"
