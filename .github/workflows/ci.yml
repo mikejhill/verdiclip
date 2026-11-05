@@ -139,6 +139,7 @@ jobs:
   test:
     name: Tests (Python ${{ matrix.python }})
     runs-on: windows-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -154,8 +155,10 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: uv sync
       - name: Unit, widget, platform, and UX journey tests
+        timeout-minutes: 10
         run: >-
           uv run pytest --cov --cov-report=xml --cov-report=term
+          -o faulthandler_timeout=45
           -m "not native_desktop"
           --junitxml=junit.xml
           --ux-snapshots=docs/ux/snapshots

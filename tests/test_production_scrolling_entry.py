@@ -23,7 +23,6 @@ def test_real_entry_composes_once_before_start_with_retirement_registered(  # no
     mode: str,
 ) -> None:
     """Known storage refusal is graceful; partial attachment/start errors propagate."""
-    del qapp
     calls: list[str] = []
     error = RuntimeError("synthetic operation failure")
 
@@ -75,7 +74,10 @@ def test_real_entry_composes_once_before_start_with_retirement_registered(  # no
         monkeypatch.setattr(entry, name, lambda *_args: object())
     monkeypatch.setattr(entry.Installation, "current", staticmethod(object))
     monkeypatch.setattr(entry.Application, "_install_sigint", lambda *_args: None)
-    monkeypatch.setattr(QApplication, "exec", lambda _self: calls.append("exec") or 0)
+    # Earlier Qt tests can leave an instance attribute that shadows the class.
+    # A class-only patch would then enter the real event loop on ordered CI.
+    monkeypatch.setattr(qapp, "exec", lambda: pytest.fail("Unreplaced event-loop port"))
+    monkeypatch.setattr(qapp, "exec", lambda: calls.append("exec") or 0)
 
     def compose(owner: object, *, data_root: Path) -> None:
         assert owner is controller
@@ -108,3 +110,12 @@ def test_real_entry_composes_once_before_start_with_retirement_registered(  # no
     if mode == "storage":
         assert "Scrolling capture unavailable" in caplog.text
         assert "exec" in calls
+
+
+def test_existing_qapp_exec_port_shadows_class_patch(
+    qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reproduce the ordered-suite failure without ever entering a Qt event loop."""
+    monkeypatch.setattr(qapp, "exec", lambda: 41)
+    monkeypatch.setattr(QApplication, "exec", lambda _self: 42)
+    assert qapp.exec() == 41
