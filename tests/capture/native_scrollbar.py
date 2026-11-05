@@ -322,6 +322,7 @@ class ScrollbarCase:
         self._provider_probe_request: UiaRequest | None = None
         self.adapter.discovered.connect(self.record_discovery)
         self.passed = False
+        self.repeated_window_captures = 0
         self.snapshot: StrictFixtureSnapshot | None = None
         self.journal = DriverJournal(
             directory,
@@ -647,7 +648,50 @@ class ScrollbarCase:
         assert self.peer.poll()
         assert self.peer.state["end_seen"] is True
         assert self.peer.state["offset"] == 0
+        self.verify_repeated_window_capture()
         self.passed = True
+
+    def verify_repeated_window_capture(self) -> None:
+        """Real pixels and window discovery must admit two subsequent selected tabs."""
+        workspace = self.app.controller.workspace
+        assert self.snapshot is not None
+        original = workspace.documents
+        for count in (2, 3):
+            assert self.input_deadline - time.monotonic() >= 5, (
+                "Repeated window capture exhausted the existing case budget"
+            )
+            assert not self.snapshot.errors()
+            assert not self.app.controller.capture.is_selecting
+            self.app.press_hotkey("window")
+            self.qtbot.waitUntil(
+                lambda expected=count: (
+                    len(workspace.documents) == expected or bool(self.errors)
+                ),
+                timeout=5000,
+            )
+            assert time.monotonic() < self.input_deadline, (
+                "Repeated window capture exceeded the existing case budget"
+            )
+            assert not self.errors
+            records = workspace.documents
+            assert len(records) == count
+            newest = records[-1]
+            assert newest.provenance is not None
+            assert newest.provenance.source_kind is CaptureKind.SCREENSHOT
+            assert not newest.session.document.image.isNull()
+            host = workspace.host_of(newest.identifier)
+            assert host is not None
+            assert host.session is newest.session, "New capture is not the selected tab"
+            assert not self.snapshot.errors(), "Repeated capture changed the popup"
+            assert not self.app.controller.capture.is_selecting
+            self.repeated_window_captures += 1
+        assert workspace.documents[0] is original[0]
+        identities = {
+            record.provenance.capture_id
+            for record in workspace.documents
+            if record.provenance is not None
+        }
+        assert len(identities) == 3, "Repeated capture reused an earlier document"
 
     def verify_unsupported(self) -> None:
         """This exact ListBox fixture must refuse safely, not claim capture support."""
@@ -742,6 +786,12 @@ class ScrollbarCase:
                         else None
                     ),
                     "provider_profile": self.provider_profile,
+                    "subsequent_active_window_captures": getattr(
+                        self, "repeated_window_captures", 0
+                    ),
+                    "subsequent_capture_ingress": (
+                        "simulated hotkey callback; real pixels/window lookup"
+                    ),
                     "expected_result": (
                         "safe refusal of this unsupported WinForms ListBox fixture"
                         if self.provider_profile.get("provider") == "winforms"
