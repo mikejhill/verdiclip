@@ -82,7 +82,23 @@ try {
         throw 'target_unavailable'
     }
     if ($request.action -eq 'inspect') { [Console]::Error.WriteLine('VERDICLIP_UIA_PHASE=inspect_root') }
+    # Diagnostic only: both clock reads and emission stay inside the operation budget.
+    # No added UIA initialization, warmup, retry, or provider call.
+    $rootStarted = $null
+    if ($request.action -eq 'inspect') {
+        try { $rootStarted = [Diagnostics.Stopwatch]::GetTimestamp() } catch { }
+    }
     $root = [System.Windows.Automation.AutomationElement]::FromHandle($handle)
+    if ($null -ne $rootStarted) {
+      try {
+        $rootFinished = [Diagnostics.Stopwatch]::GetTimestamp()
+        $rootMicroseconds = [long][Math]::Floor(($rootFinished - $rootStarted) * 1000000.0 / [Diagnostics.Stopwatch]::Frequency)
+        if ($rootMicroseconds -ge 0 -and $rootMicroseconds -le 999999999) {
+            $rootText = $rootMicroseconds.ToString([Globalization.CultureInfo]::InvariantCulture)
+            [Console]::Error.WriteLine(('VERDICLIP_UIA_ROOT_US={0}:{1}' -f $requestId, $rootText))
+        }
+      } catch { } # Missing optional timing must not change the operation outcome.
+    }
     if ($request.action -eq 'inspect') { [Console]::Error.WriteLine('VERDICLIP_UIA_PHASE=inspect_process') }
     $process = Get-Process -Id $root.Current.ProcessId
     $started = $process.StartTime.ToUniversalTime().Ticks

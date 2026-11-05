@@ -89,6 +89,8 @@ class UiaWorkerLease(QObject):
             stderr_bytes=self._trace.stderr_bytes,
             pipe_bytes=self._trace.pipe_bytes,
             max_deadline_lateness_ms=self._trace.max_deadline_lateness_ms,
+            root_duration_us=self._trace.root_duration_us,
+            first_inspect_root_duration_us=self._trace.first_inspect_root_duration_us,
         )
 
     @property
@@ -142,6 +144,7 @@ class UiaWorkerLease(QObject):
         if process is None:
             raise CaptureError("The UI Automation worker is unavailable")
         self._pending = request
+        self._trace.begin_request(request)
         self._request_sent = False
         self._trace.mark("queued")
         self._operation_ms = deadline_ms

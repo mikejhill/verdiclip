@@ -18,9 +18,7 @@ def test_inspect_markers_guard_only_existing_managed_calls() -> None:
         "inspect_desktop": (
             "$dpiContext = [CaptureDesktop]::SetThreadDpiAwarenessContext"
         ),
-        "inspect_root": (
-            "$root = [System.Windows.Automation.AutomationElement]::FromHandle"
-        ),
+        "inspect_root": ("$rootStarted = $null"),
         "inspect_process": "$process = Get-Process -Id $root.Current.ProcessId",
         "inspect_root_runtime": "$rootRuntime = ($root.GetRuntimeId()",
         "inspect_bounds": "$bounds = $element.Current.BoundingRectangle",

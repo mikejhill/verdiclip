@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import re
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import ClassVar
+
+from verdiclip.capture.scroll.uia_messages import UiaAction, UiaRequest
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +33,8 @@ class WorkerDiagnostics:
     stderr_bytes: int
     pipe_bytes: int
     max_deadline_lateness_ms: int
+    root_duration_us: int | None = None
+    first_inspect_root_duration_us: int | None = None
 
 
 class WorkerTrace:
@@ -37,8 +42,11 @@ class WorkerTrace:
 
     MAX_EVENTS = 32
     MAX_ERROR_BYTES = 65_536
+    REQUEST_ID = re.compile(r"[a-f0-9]{32}")
+    ROOT_PREFIX = b"VERDICLIP_UIA_ROOT_US="
+    ROOT_RECORD = re.compile(rb"VERDICLIP_UIA_ROOT_US=([a-f0-9]{32}):([0-9]{1,9})")
+    MAX_ROOT_RECORD = len(ROOT_PREFIX) + 32 + 1 + 9
     LF = ord("\n")
-    CR = ord("\r")
     MARKERS: ClassVar[dict[bytes, str]] = {
         b"VERDICLIP_UIA_PHASE=script_entered": "script_entered",
         b"VERDICLIP_UIA_PHASE=pipe_connected": "helper_pipe_connected",
@@ -77,6 +85,37 @@ class WorkerTrace:
         self.max_deadline_lateness_ms = 0
         self._marker = bytearray()
         self._skip_line = False
+        self._inspect_request: bytes | None = None
+        self.root_duration_us: int | None = None
+        self._first_inspect_request: bytes | None = None
+        self._inspect_seen = False
+        self.first_inspect_root_duration_us: int | None = None
+
+    def begin_request(self, request: UiaRequest) -> None:
+        """Keep one duration for this inspect, never a stale prior operation."""
+        self._inspect_request = (
+            request.identity.encode("ascii")
+            if request.action is UiaAction.INSPECT
+            and self.REQUEST_ID.fullmatch(request.identity) is not None
+            else None
+        )
+        self.root_duration_us = None
+        if request.action is UiaAction.INSPECT and not self._inspect_seen:
+            self._first_inspect_request = self._inspect_request
+            self._inspect_seen = True
+
+    def _root_record(self, record: bytes) -> None:
+        """Accept only the first complete matching record; never export its ID."""
+        match = self.ROOT_RECORD.fullmatch(record)
+        if match is None:
+            return
+        if match[1] == self._inspect_request and self.root_duration_us is None:
+            self.root_duration_us = int(match[2])
+        if (
+            match[1] == self._first_inspect_request
+            and self.first_inspect_root_duration_us is None
+        ):
+            self.first_inspect_root_duration_us = int(match[2])
 
     def mark(self, stage: str) -> None:
         """Callers pass only fixed lifecycle constants, never provider strings."""
@@ -94,14 +133,24 @@ class WorkerTrace:
             return False
         for byte in data:
             if byte == self.LF:
-                stage = self.MARKERS.get(bytes(self._marker))
+                record = bytes(self._marker).removesuffix(b"\r")
+                stage = self.MARKERS.get(record)
                 if stage is not None:
                     self.mark(stage)
+                else:
+                    self._root_record(record)
                 self._marker.clear()
                 self._skip_line = False
-            elif byte != self.CR and not self._skip_line:
+            elif not self._skip_line:
                 self._marker.append(byte)
-                if not any(key.startswith(self._marker) for key in self.MARKERS):
+                root_candidate = (
+                    self.ROOT_PREFIX.startswith(self._marker)
+                    or self._marker.startswith(self.ROOT_PREFIX)
+                ) and len(self._marker) <= self.MAX_ROOT_RECORD + 1
+                if not root_candidate and not any(
+                    key.startswith(self._marker.removesuffix(b"\r"))
+                    for key in self.MARKERS
+                ):
                     self._marker.clear()
                     self._skip_line = True
         return True
