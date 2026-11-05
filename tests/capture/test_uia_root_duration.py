@@ -55,7 +55,7 @@ def test_duration_survives_every_fragment_boundary(ending: bytes) -> None:
         b"1e3",
         b"NaN",
         b"1000000000",
-        b"9" * 70000,
+        pytest.param(b"9" * 70000, id="oversized-70kb"),
         b" 1",
         b"1 ",
         b"1\r2",
@@ -63,10 +63,14 @@ def test_duration_survives_every_fragment_boundary(ending: bytes) -> None:
         b"private-provider-title",
     ],
 )
-def test_invalid_duration_is_not_retained(value: bytes) -> None:
+def test_invalid_duration_is_not_retained(
+    value: bytes, request: pytest.FixtureRequest
+) -> None:
     """No culture-dependent, signed, huge, or injected value enters a snapshot."""
+    # pytest-qt exports the node name in the environment on Windows.
+    assert len(request.node.name) < 128
     trace = WorkerTrace(lambda: 0)
-    trace.begin_request(request())
+    trace.begin_request(UiaRequest(FIRST, UiaAction.INSPECT, b"{}"))
     accepted = trace.error_bytes(record(value))
     assert accepted == (len(record(value)) <= trace.MAX_ERROR_BYTES)
     assert trace.root_duration_us is None
