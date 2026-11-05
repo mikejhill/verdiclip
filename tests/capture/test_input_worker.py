@@ -411,3 +411,45 @@ def test_missing_pointer_diagnostic_distinguishes_absent_and_interrupted_stream(
     assert worker.cleaned
     assert f"hardware_packets=1 raw_reports={int(raw_seen)}" in caplog.text
     assert "999" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "missing", ["none", "before-hook-up", "after-hook-up", "next-pair"]
+)
+def test_raw_release_before_hook_release_does_not_expire_completed_click(
+    missing: str,
+) -> None:
+    """The two input streams may finish a button pair before the hook receipt."""
+    platform = ReplayInputPlatform()
+    worker = ReplayRun.make(platform, InputWorkerOptions())
+    platform.mouse(0x201, platform.anchor, injected=False)
+    platform.raw(
+        RawPointer(Point(0, 0), MoveMode.RELATIVE_DELTA, ((0x201, 0),), wheel=False)
+    )
+    platform.raw(
+        RawPointer(Point(0, 0), MoveMode.RELATIVE_DELTA, ((0x202, 0),), wheel=False)
+    )
+    if missing == "before-hook-up":
+        platform.mouse(0x200, Point(300, 200), injected=False)
+    platform.mouse(0x202, platform.anchor, injected=False)
+    if missing == "after-hook-up":
+        platform.mouse(0x200, Point(300, 200), injected=False)
+    elif missing == "next-pair":
+        platform.mouse(0x201, platform.anchor, injected=False)
+        platform.raw(
+            RawPointer(Point(0, 0), MoveMode.RELATIVE_DELTA, ((0x201, 0),), wheel=False)
+        )
+        platform.mouse(0x202, platform.anchor, injected=False)
+
+    def advance() -> None:
+        platform.time += worker.RAW_TIMEOUT_SECONDS + 0.01
+
+    platform.actions.put(advance)
+    platform.actions.put(worker.release)
+    ReplayRun.complete(worker)
+    assert bool(worker.failure) == (missing != "none")
+    if missing != "none":
+        assert "pointer source" in worker.failure
+    assert worker.cleaned
+    assert not platform.forwarded
+    assert [event.kind for event in worker.drain()].count(InputKind.RELEASE) == 1

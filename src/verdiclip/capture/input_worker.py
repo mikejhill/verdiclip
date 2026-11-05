@@ -94,6 +94,7 @@ class CaptureInputWorker:
         self._hardware_packets = 0
         self._raw_reports = 0
         self._legacy_buttons: set[tuple[int, int]] = set()
+        self._raw_releases: set[tuple[int, int]] = set()
         self.foreground = 0
         self.failure = ""
         self.cleaned = False
@@ -306,6 +307,7 @@ class CaptureInputWorker:
         )
         owned_release = False
         if message in CaptureInputPolicy.BUTTON_DOWN:
+            self._raw_releases.discard((message + 1, button))
             self._legacy_buttons.add((message, button))
         elif message in CaptureInputPolicy.BUTTON_UP:
             owned_release = (message - 1, button) in self._legacy_buttons
@@ -314,6 +316,11 @@ class CaptureInputWorker:
             self._invalidate("Capture foreground changed")
         if not packet.flags & 1:
             self._hardware_packets += 1
+            if owned_release and (message, button) in self._raw_releases:
+                # Semantic Raw Input already completed this owned button pair.
+                # Consume its later hook receipt without expecting a second raw up.
+                self._raw_releases.discard((message, button))
+                return 1
             if self._pending_raw is None:
                 self._pending_raw = self._clock()
             return 1
@@ -346,6 +353,8 @@ class CaptureInputWorker:
             )
         )
         for message, identity in event.buttons:
+            if (message - 1, identity) in self._legacy_buttons:
+                self._raw_releases.add((message, identity))
             self._publish(
                 self._policy.mouse(
                     message,
