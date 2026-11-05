@@ -20,6 +20,7 @@ $startedTicks = $fixtureProcess.StartTime.ToUniversalTime().Ticks
 Write-Output ('FIXTURE_PHASE=before-window utc=' + [DateTime]::UtcNow.ToString('o'))
 $window = [Windows.Window]::new()
 Write-Output ('FIXTURE_PHASE=window-created utc=' + [DateTime]::UtcNow.ToString('o'))
+if ([IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) { return }
 $window.Title = "VerdiClip synthetic scroll fixture $Nonce"
 $window.Width = 480; $window.Height = 420
 $window.WindowStartupLocation = 'CenterScreen'
@@ -36,21 +37,28 @@ $viewer.VerticalScrollBarVisibility = 'Visible'
 $viewer.CanContentScroll = $false
 [Windows.Automation.AutomationProperties]::SetAutomationId($viewer, 'VerdiClipQualificationScrollViewer')
 Write-Output ('FIXTURE_PHASE=controls-created utc=' + [DateTime]::UtcNow.ToString('o'))
+if ([IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) { return }
 $pixelWidth = 384
 $pixelHeight = if ($Case -eq 'end') { 1120 } else { 8000 }
 # Input is prepared before native launch; no CodeDOM/compiler cold-start here.
 $pixels = [IO.File]::ReadAllBytes((Join-Path $fixtureDirectory 'fixture-pixels.bgr32'))
+Write-Output ('FIXTURE_PHASE=pixels-read utc=' + [DateTime]::UtcNow.ToString('o'))
 if ($pixels.Length -ne ($pixelWidth * $pixelHeight * 4)) { throw 'Invalid synthetic bitmap length' }
 if ([IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) { return }
 $bitmap = [Windows.Media.Imaging.BitmapSource]::Create($pixelWidth,$pixelHeight,96,96,[Windows.Media.PixelFormats]::Bgr32,$null,$pixels,($pixelWidth*4))
+Write-Output ('FIXTURE_PHASE=bitmap-copied utc=' + [DateTime]::UtcNow.ToString('o'))
+if ([IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) { return }
 $bitmap.Freeze()
 Write-Output ('FIXTURE_PHASE=bitmap-created utc=' + [DateTime]::UtcNow.ToString('o'))
+if ([IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) { return }
 $image = [Windows.Controls.Image]::new()
 $image.Source = $bitmap; $image.Width = $pixelWidth; $image.Height = $pixelHeight
 $image.Stretch = 'None'; $image.HorizontalAlignment = 'Left'
 [Windows.Media.RenderOptions]::SetBitmapScalingMode($image, 'NearestNeighbor')
 $viewer.Content = $image; $stack.Children.Add($viewer) | Out-Null
 $window.Content = $stack
+Write-Output ('FIXTURE_PHASE=content-assigned utc=' + [DateTime]::UtcNow.ToString('o'))
+if ([IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) { return }
 $sequence = 0; $closed = $false; $ready = $false; $renderObserved = $false; $maximumOffset = 0.0; $endSeen = $false
 $lastCommand = 0; $pendingCommand = $null
 # Bounded owned-fixture evidence only; no window titles, values or source paths.
