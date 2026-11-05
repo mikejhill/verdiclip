@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import ctypes
+import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -544,3 +547,136 @@ def test_ignored_import_shadow_is_refused(name: str) -> None:
 def test_non_importable_evidence_and_explicit_runtime_are_not_source(name: str) -> None:
     """Temporary evidence and the separately trusted interpreter remain usable."""
     assert not provenance.unreviewed_import(name)
+
+
+@pytest.fixture
+def physical_launcher_pwsh() -> str:
+    """Use installed Windows pwsh only; never install a shell or emulate execution."""
+    if sys.platform != "win32":
+        pytest.skip("Physical launcher subprocess contracts require Windows pwsh")
+    executable = shutil.which("pwsh")
+    if executable is None:
+        pytest.skip("Installed pwsh is required for physical launcher contracts")
+    return executable
+
+
+def qualification_output_snapshot(root: Path) -> frozenset[Path]:
+    """Include the output root itself so even an empty case allocation is detected."""
+    output = root / ".test-tmp"
+    if not output.exists():
+        return frozenset[Path]()
+    return frozenset([output, *output.rglob("*")])
+
+
+@pytest.mark.parametrize(
+    ("scenario", "expected"),
+    [
+        ("plan", "PLAN ONLY: one physical scrollbar click"),
+        (
+            "scrollbar-conflict",
+            "Physical scrollbar qualification is a separate single-runtime window.",
+        ),
+        (
+            "drag-conflict",
+            "Physical scrollbar qualification is a separate single-runtime window.",
+        ),
+        (
+            "delivery-conflict",
+            "Physical scrollbar qualification is a separate single-runtime window.",
+        ),
+        (
+            "hosted",
+            "Physical scrollbar mode forbids hosted injection and cursor probes.",
+        ),
+        (
+            "missing-sha",
+            "Pass the exact reviewed physical harness commit; current HEAD must match.",
+        ),
+        (
+            "short-sha",
+            "Pass the exact reviewed physical harness commit; current HEAD must match.",
+        ),
+        (
+            "wrong-sha",
+            "Pass the exact reviewed physical harness commit; current HEAD must match.",
+        ),
+    ],
+)
+def test_pwsh_physical_launcher_plan_and_early_refusals(
+    physical_launcher_pwsh: str, tmp_path: Path, scenario: str, expected: str
+) -> None:
+    """Run real shell branches that cannot reach a capture process or case output."""
+    root = Path(__file__).resolve().parents[2]
+    script = root / "scripts" / "test_capture_broker_native.ps1"
+    sentinel = tmp_path / "never-create-or-run-python.exe"
+    assert not sentinel.exists()
+    arguments = ["-PhysicalScrollbar"]
+    conflicts = {
+        "scrollbar-conflict": "-ScrollbarOnly",
+        "drag-conflict": "-PhysicalObservation",
+        "delivery-conflict": "-DeliveryOnly",
+    }
+    if scenario in conflicts:
+        arguments.append(conflicts[scenario])
+    if scenario.endswith("-sha"):
+        # No legitimate HEAD or interpreter is ever supplied to an execution path.
+        arguments.extend(["-ExecuteAfterHandoff", "-PythonPaths", str(sentinel)])
+        if scenario != "missing-sha":
+            arguments.extend(
+                [
+                    "-ExpectedHarnessHead",
+                    "0" * 40 if scenario == "wrong-sha" else "bad",
+                ]
+            )
+    environment = dict(
+        os.environ, VERDICLIP_HOSTED_SCROLLBAR="1" if scenario == "hosted" else "0"
+    )
+    environment.pop("VERDICLIP_PHYSICAL_SCROLLBAR", None)
+    environment["NO_COLOR"] = "1"
+    before = qualification_output_snapshot(root)
+    script_before = script.read_bytes()
+    status_before = provenance.git(
+        root, "status", "--porcelain", "--untracked-files=all"
+    )
+    diff_before = provenance.git(root, "diff", "--binary", "HEAD")
+    try:
+        result = subprocess.run(  # noqa: S603 -- installed pwsh, fixed script, refusing inputs only
+            [
+                physical_launcher_pwsh,
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-File",
+                str(script),
+                *arguments,
+            ],
+            cwd=root,
+            env=environment,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20,
+            check=False,
+        )
+    finally:
+        assert qualification_output_snapshot(root) == before, (
+            "Launcher created case/output paths"
+        )
+        assert not sentinel.exists()
+        assert script.read_bytes() == script_before
+        assert (
+            provenance.git(root, "status", "--porcelain", "--untracked-files=all")
+            == status_before
+        )
+        assert provenance.git(root, "diff", "--binary", "HEAD") == diff_before
+    combined = result.stdout + result.stderr
+    assert expected in combined
+    assert (result.returncode == 0) is (scenario == "plan")
+    assert "VERDICLIP_NATIVE_" not in combined
+    assert "Matrix completed." not in combined
+    if scenario == "plan":
+        assert "No input is generated." in result.stdout
+        assert "Source qualification only, not installed-wheel proof." in result.stdout
+    else:
+        assert "PLAN ONLY:" not in combined
