@@ -1,8 +1,10 @@
 """Offline checks of the combined native case's evidence; no desktop operations."""
 
 import ctypes
+import ctypes.wintypes as w
 import json
 import subprocess
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,6 +20,7 @@ from tests.capture.native_scrollbar import (
     fixture_image,
     guard_owned_backend,
     menu_physical_rect,
+    probe_worker_cursor_visibility,
     verify_pixels,
 )
 from tests.capture.production_matrix import (
@@ -108,6 +111,83 @@ class FunctionPort:
     def __call__(self, *args: object) -> object:
         """Forward only to the supplied deterministic fake."""
         return self.call(*args)
+
+
+@pytest.mark.parametrize("hides", [True, False])
+@pytest.mark.parametrize("read_failure", [True, False])
+def test_worker_cursor_probe_balances_visibility_even_when_observation_fails(
+    monkeypatch: pytest.MonkeyPatch, *, hides: bool, read_failure: bool
+) -> None:
+    """No actual DLL loads; a failed read still releases and joins the worker."""
+    for name, value in (
+        ("GITHUB_ACTIONS", "true"),
+        ("RUNNER_ENVIRONMENT", "github-hosted"),
+        ("VERDICLIP_HOSTED_SCROLLBAR", "1"),
+    ):
+        monkeypatch.setenv(name, value)
+    calls: list[int] = []
+    reads = 0
+    count = 0
+
+    def show(value: int) -> int:
+        nonlocal count
+        calls.append(value)
+        count += 1 if value else -1
+        return count
+
+    def observe(address: object) -> int:
+        nonlocal reads
+        reads += 1
+        if read_failure and reads == 2:
+            raise OSError("Fixture cursor read failed")
+        words = ctypes.cast(cast(ctypes.c_void_p, address), ctypes.POINTER(w.DWORD))
+        words[1] = int(not (hides and count < 0))
+        return 1
+
+    api = SimpleNamespace(
+        GetCursorInfo=FunctionPort(observe), ShowCursor=FunctionPort(show)
+    )
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: api, raising=False)
+    receipt: dict[str, object] = {}
+    workers: list[threading.Thread] = []
+    if read_failure:
+        with pytest.raises(OSError, match="Fixture cursor read failed"):
+            probe_worker_cursor_visibility(receipt, workers)
+        assert receipt["cleanup_confirmed"] is False
+    else:
+        probe_worker_cursor_visibility(receipt, workers)
+        assert receipt["before"] is True
+        assert receipt["during"] is not hides
+        assert receipt["after"] is True
+        assert receipt["cleanup_confirmed"] is True
+    assert calls == [0, 1]
+    assert count == 0
+    assert len(workers) == 1
+    assert not workers[0].is_alive()
+
+
+def test_worker_cursor_probe_refuses_local_execution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Local app access cannot authorize this disposable-runner experiment."""
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("Local cursor probe attempted a DLL load")
+
+    monkeypatch.setattr(ctypes, "WinDLL", forbidden, raising=False)
+    with pytest.raises(RuntimeError, match="disposable hosted fixture"):
+        probe_worker_cursor_visibility({}, [])
+
+
+@pytest.mark.parametrize("alive", [True, False])
+def test_cursor_probe_uncertainty_blocks_fixture_retirement(*, alive: bool) -> None:
+    """The outer cleanup must not report success while new cursor ownership remains."""
+    case = SimpleNamespace(
+        cursor_workers=[SimpleNamespace(is_alive=lambda: alive)],
+        cursor_probe={"cleanup_confirmed": False},
+    )
+    assert not ScrollbarCase.retired(cast(ScrollbarCase, case))
 
 
 def test_provider_metadata_is_bounded_and_omits_runtime_identifiers() -> None:

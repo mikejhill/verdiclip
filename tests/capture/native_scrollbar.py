@@ -6,6 +6,7 @@ import ctypes
 import ctypes.wintypes as w
 import json
 import os
+import threading
 import time
 import traceback
 from collections.abc import Callable
@@ -96,6 +97,68 @@ class OperationTiming:
     clock_failures: int = 0
     max_wall_seconds: float = 0.0
     max_thread_cpu_seconds: float = 0.0
+
+
+def probe_worker_cursor_visibility(
+    result: dict[str, object], workers: list[threading.Thread]
+) -> None:
+    """Measure one balanced thread-local cursor change on the hosted fixture only."""
+    if (
+        os.environ.get("GITHUB_ACTIONS") != "true"
+        or os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted"
+        or os.environ.get("VERDICLIP_HOSTED_SCROLLBAR") != "1"
+    ):
+        raise RuntimeError("Cursor probe requires the disposable hosted fixture")
+    result["cleanup_confirmed"] = False
+
+    class CursorInfo(ctypes.Structure):
+        _fields_ = (
+            ("size", w.DWORD),
+            ("flags", w.DWORD),
+            ("cursor", w.HANDLE),
+            ("point", w.POINT),
+        )
+
+    api = ctypes.WinDLL("user32", use_last_error=True)
+    api.GetCursorInfo.argtypes = [ctypes.POINTER(CursorInfo)]
+    api.GetCursorInfo.restype = w.BOOL
+    api.ShowCursor.argtypes = [w.BOOL]
+    api.ShowCursor.restype = ctypes.c_int
+
+    def visible() -> bool:
+        info = CursorInfo()
+        info.size = ctypes.sizeof(info)
+        if not api.GetCursorInfo(ctypes.byref(info)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return bool(info.flags & 1)
+
+    ready, release = threading.Event(), threading.Event()
+    result["before"] = visible()
+
+    def worker() -> None:
+        hidden_count = api.ShowCursor(0)
+        try:
+            result["hidden_count"] = hidden_count
+            ready.set()
+            result["released_in_time"] = release.wait(2)
+        finally:
+            result["restored_count"] = api.ShowCursor(1)
+
+    thread = threading.Thread(target=worker, daemon=True)
+    workers.append(thread)
+    thread.start()
+    try:
+        assert ready.wait(1), "Cursor probe did not become ready"
+        result["during"] = visible()
+    finally:
+        release.set()
+        thread.join(1)
+    assert not thread.is_alive(), "Cursor probe cleanup is unconfirmed"
+    assert result["released_in_time"] is True
+    assert result["restored_count"] == cast(int, result["hidden_count"]) + 1
+    result["after"] = visible()
+    assert result["after"] == result["before"], "Cursor visibility was not restored"
+    result["cleanup_confirmed"] = True
 
 
 def observe_operation[**P, R](
@@ -579,6 +642,17 @@ class ScrollbarCase:
                 panel.dismiss()
                 self.qtbot.waitUntil(retired, timeout=2000)
 
+    def probe_cursor(self) -> None:
+        """Keep this diagnostic out of local desktop handoffs."""
+        self.cursor_probe: dict[str, object] = {}
+        self.cursor_workers: list[threading.Thread] = []
+        if self.hosted_input is not None:
+            assert self.snapshot is not None
+            assert self.input_deadline - time.monotonic() >= 3
+            assert not self.snapshot.errors()
+            probe_worker_cursor_visibility(self.cursor_probe, self.cursor_workers)
+            assert not self.snapshot.errors(), "Cursor probe changed the popup"
+
     def target(self) -> Rect:
         """Restrict the actual click to the owned native scrollbar center."""
         self.peer.poll()
@@ -586,6 +660,7 @@ class ScrollbarCase:
 
     def run(self) -> None:
         """No replay events or direct Start/Use calls may satisfy this case."""
+        self.probe_cursor()
         target = self.target()
         if self.hosted_input is not None:
             self.hosted_input.bind(target)
@@ -786,6 +861,7 @@ class ScrollbarCase:
                         else None
                     ),
                     "provider_profile": self.provider_profile,
+                    "worker_cursor_probe": getattr(self, "cursor_probe", {}),
                     "subsequent_active_window_captures": getattr(
                         self, "repeated_window_captures", 0
                     ),
@@ -829,6 +905,11 @@ class ScrollbarCase:
 
     def retired(self) -> bool:
         """Never hide a fixture while capture or provider resources remain active."""
+        if any(worker.is_alive() for worker in getattr(self, "cursor_workers", ())):
+            return False
+        probe = getattr(self, "cursor_probe", {})
+        if probe and probe.get("cleanup_confirmed") is not True:
+            return False
         return cleanup_confirmed(
             self.driver, selecting=self.app.controller.capture.is_selecting
         ) and (
