@@ -4,17 +4,15 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, cast
+from typing import cast
 
 import pytest
 from tests.capture.scroll_peer import ScrollPeer
 from tests.capture.test_scroll_metric_policy import run_policy_probe
-
-if TYPE_CHECKING:
-    import subprocess
 
 FIXTURE = Path(__file__).with_name("provider_fixture.ps1")
 NONCE = "0123456789abcdef0123456789abcdef"
@@ -209,7 +207,7 @@ def test_actual_fixture_frames_are_invariant_safe_and_peer_compatible(
     peer = ScrollPeer(tmp_path)
     peer.nonce = NONCE
     peer.process = cast(
-        "subprocess.Popen[bytes]",
+        subprocess.Popen[bytes],
         SimpleNamespace(
             pid=123, poll=lambda: None, wait=lambda **_: None, returncode=0
         ),

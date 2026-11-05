@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import hashlib
-import logging
 import shutil
 import tempfile
-from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
@@ -15,8 +13,7 @@ from PySide6.QtGui import QImage, QImageWriter
 
 from verdiclip.capture.scroll.models import ScrollLimitError, ScrollLimits
 from verdiclip.exceptions import CaptureError
-
-logger = logging.getLogger(__name__)
+from verdiclip.startup_lifetime import StartupLifetime
 
 
 class StripWriter(Protocol):
@@ -53,8 +50,68 @@ class StoredStrip:
     sha256: str
 
 
+@dataclass(frozen=True, slots=True)
+class AppendRequest:
+    """One immutable reservation; staging cannot mutate its owning store."""
+
+    token: object
+    generation: int
+    image: QImage
+    parent: Path
+    limits: ScrollLimits
+    writer: StripWriter
+    top: int
+    used_bytes: int
+    estimate: int
+
+
+@dataclass(slots=True)
+class SpoolDirectory:
+    """Transferable cleanup ownership, separate from immutable pixel metadata."""
+
+    parent: Path
+    temporary: tempfile.TemporaryDirectory[str] | None = field(default=None, repr=False)
+
+    def close(self) -> None:
+        """Retain the exact directory owner when cleanup needs a retry."""
+        if self.temporary is not None:
+            try:
+                target = Path(self.temporary.name).resolve()
+                if target.parent != self.parent or not target.name.startswith(
+                    "verdiclip-scroll-"
+                ):
+                    raise CaptureError(
+                        "Refusing cleanup outside this capture's storage parent"
+                    )
+                self.temporary.cleanup()
+            except OSError as error:
+                raise CaptureError(
+                    "Could not remove temporary capture storage"
+                ) from error
+            self.temporary = None
+
+
+@dataclass(frozen=True, slots=True)
+class StagedAppend:
+    """Immutable transaction evidence plus its independently retained directory."""
+
+    token: object
+    generation: int
+    top: int
+    used_bytes: int
+    width: int
+    height: int
+    directory: SpoolDirectory
+    strips: tuple[StoredStrip, ...] = ()
+    error: BaseException | None = None
+
+    def close(self) -> None:
+        """Release only the directory owned by this transaction."""
+        self.directory.close()
+
+
 class StripStore:
-    """Own one private temporary folder and an atomic in-memory strip manifest."""
+    """Own private transaction directories and an atomic in-memory strip manifest."""
 
     TILE_ROWS = 512
     FREE_RESERVE = 32 * 1024**2
@@ -66,7 +123,9 @@ class StripStore:
         self._parent = parent.resolve()
         self._limits = limits
         self._writer = writer if writer is not None else PngStripWriter()
-        self._temporary: tempfile.TemporaryDirectory[str] | None = None
+        self._transactions: list[StagedAppend] = []
+        self._pending: AppendRequest | None = None
+        self._generation = 0
         self._strips: tuple[StoredStrip, ...] = ()
         self._width = 0
         self._height = 0
@@ -90,6 +149,26 @@ class StripStore:
 
     def append(self, image: QImage) -> None:
         """Commit every bounded tile or leave the prior manifest unchanged."""
+        request = self.prepare(image)
+        receipt = self.stage(request)
+        try:
+            self.admit(receipt)
+        except BaseException:
+            self.abandon()
+            with StartupLifetime() as lifetime:
+                lifetime.callback(self.discard, receipt)
+                raise
+
+    def discard(self, receipt: StagedAppend) -> None:
+        """Retain synchronous failed cleanup ownership until an explicit retry."""
+        self._transactions.append(receipt)
+        receipt.close()
+        self._transactions.remove(receipt)
+
+    def prepare(self, image: QImage) -> AppendRequest:
+        """Reserve bounded pixels without doing filesystem work on the owner."""
+        if self._pending is not None:
+            raise CaptureError("Capture storage already has an append in flight")
         if self._closed or image.isNull():
             raise CaptureError("Capture storage is closed or pixels are empty")
         if self._width and image.width() != self._width:
@@ -105,21 +184,86 @@ class StripStore:
             or self._bytes + estimate > self._limits.max_disk_bytes
         ):
             raise ScrollLimitError("Capture storage resource limit reached")
-        created: list[Path] = []
+        request = AppendRequest(
+            object(),
+            self._generation,
+            QImage(image),
+            self._parent,
+            self._limits,
+            self._writer,
+            self._height,
+            self._bytes,
+            estimate,
+        )
+        self._pending = request
+        return request
+
+    @classmethod
+    def stage(cls, request: AppendRequest) -> StagedAppend:
+        """Stage in an isolated directory; never mutate the store or its prefix."""
+        image = request.image
+        owner = SpoolDirectory(request.parent)
+        strips: tuple[StoredStrip, ...] = ()
+        failure: BaseException | None = None
         try:
-            directory = self._directory()
-            self._ensure_free(directory, estimate)
-            additions = self._write_tiles(image, directory, created)
-        except ScrollLimitError:
-            self._rollback(created)
-            raise
-        except (OSError, CaptureError) as error:
-            self._rollback(created)
-            raise CaptureError(f"Could not commit capture pixels: {error}") from error
-        self._strips += tuple(additions)
-        self._width = image.width()
-        self._height += image.height()
-        self._bytes += sum(strip.size_bytes for strip in additions)
+            request.parent.mkdir(parents=True, exist_ok=True)
+            owner.temporary = tempfile.TemporaryDirectory(
+                prefix="verdiclip-scroll-", dir=request.parent
+            )
+            directory = Path(owner.temporary.name)
+            cls._ensure_free(directory, request.estimate)
+            strips = tuple(cls._write_tiles(request, directory))
+        except ScrollLimitError as error:
+            failure = error
+        except Exception as error:  # noqa: BLE001 - return directory ownership even on writer bugs
+            failure = CaptureError(f"Could not commit capture pixels: {error}")
+        except BaseException as error:  # noqa: BLE001 - caller propagates controls after owning cleanup
+            failure = error
+        return StagedAppend(
+            request.token,
+            request.generation,
+            request.top,
+            request.used_bytes,
+            image.width(),
+            image.height(),
+            owner,
+            strips,
+            failure,
+        )
+
+    def admit(self, receipt: StagedAppend) -> None:
+        """Atomically admit only the current reservation using metadata alone."""
+        pending = self._pending
+        if (
+            self._closed
+            or pending is None
+            or receipt.token is not pending.token
+            or receipt.generation != self._generation
+            or receipt.top != self._height
+            or receipt.used_bytes != self._bytes
+            or receipt.width != pending.image.width()
+            or receipt.height != pending.image.height()
+        ):
+            raise CaptureError("Capture storage receipt is stale")
+        if receipt.error is not None:
+            raise receipt.error
+        size = sum(strip.size_bytes for strip in receipt.strips)
+        if (
+            receipt.width * (self._height + receipt.height) > self._limits.max_pixels
+            or self._bytes + size > self._limits.max_disk_bytes
+        ):
+            raise ScrollLimitError("Capture storage resource limit reached")
+        self._transactions.append(receipt)
+        self._strips += receipt.strips
+        self._width = receipt.width
+        self._height += receipt.height
+        self._bytes += size
+        self.abandon()
+
+    def abandon(self) -> None:
+        """Invalidate pending admission without touching its worker-owned files."""
+        self._pending = None
+        self._generation += 1
 
     @classmethod
     def _ensure_free(cls, directory: Path, estimate: int) -> None:
@@ -127,42 +271,31 @@ class StripStore:
         if shutil.disk_usage(directory).free < estimate + cls.FREE_RESERVE:
             raise ScrollLimitError("Not enough free disk space for capture")
 
-    def _directory(self) -> Path:
-        """Create an isolated application-owned folder under the explicit parent."""
-        if self._temporary is None:
-            self._parent.mkdir(parents=True, exist_ok=True)
-            self._temporary = tempfile.TemporaryDirectory(
-                prefix="verdiclip-scroll-", dir=self._parent
-            )
-        return Path(self._temporary.name)
-
-    def _write_tiles(
-        self, image: QImage, directory: Path, created: list[Path]
-    ) -> list[StoredStrip]:
+    @classmethod
+    def _write_tiles(cls, request: AppendRequest, directory: Path) -> list[StoredStrip]:
         """Stage tiles within this transaction's pessimistic storage budget."""
+        image = request.image
         additions: list[StoredStrip] = []
-        for top in range(0, image.height(), self.TILE_ROWS):
-            height = min(self.TILE_ROWS, image.height() - top)
-            path = directory / f"{len(self._strips) + len(additions):06d}.png.part"
-            created.append(path)
-            self._writer.write(image.copy(0, top, image.width(), height), path)
+        for top in range(0, image.height(), cls.TILE_ROWS):
+            height = min(cls.TILE_ROWS, image.height() - top)
+            path = directory / f"{len(additions):06d}.png.part"
+            request.writer.write(image.copy(0, top, image.width(), height), path)
             size = path.stat().st_size
             if (
-                self._bytes + sum(s.size_bytes for s in additions) + size
-                > self._limits.max_disk_bytes
+                request.used_bytes + sum(s.size_bytes for s in additions) + size
+                > request.limits.max_disk_bytes
             ):
                 raise ScrollLimitError("Encoded capture exceeds the storage limit")
             final = path.with_suffix("")
             path.replace(final)
-            created[-1] = final
             additions.append(
                 StoredStrip(
                     final,
-                    self._height + top,
+                    request.top + top,
                     image.width(),
                     height,
                     size,
-                    self._digest(final),
+                    cls._digest(final),
                 )
             )
         return additions
@@ -171,15 +304,6 @@ class StripStore:
     def _digest(path: Path) -> str:
         """Read only one bounded encoded tile when verifying integrity."""
         return hashlib.sha256(path.read_bytes()).hexdigest()
-
-    @staticmethod
-    def _rollback(paths: Sequence[Path]) -> None:
-        """Remove only transaction-owned files, retaining any prior prefix."""
-        for path in paths:
-            try:
-                path.unlink(missing_ok=True)
-            except OSError:
-                logger.exception("Could not remove an uncommitted capture tile")
 
     def materialize(self, top: int = 0, height: int | None = None) -> QImage:
         """Assemble a size-checked range without flattening the whole spool."""
@@ -255,21 +379,18 @@ class StripStore:
 
     def close(self) -> None:
         """Idempotently delete only this store's verified private directory."""
-        temporary = self._temporary
-        if temporary is not None:
-            target = Path(temporary.name).resolve()
-            if target.parent != self._parent or not target.name.startswith(
-                "verdiclip-scroll-"
-            ):
-                raise CaptureError(
-                    "Refusing cleanup outside this capture's storage parent"
-                )
-            try:
-                temporary.cleanup()
-            except OSError as error:
-                raise CaptureError(
-                    "Could not remove temporary capture storage"
-                ) from error
-            self._temporary = None
+        self.abandon()
+        for transaction in self._transactions:
+            transaction.close()
+        self._transactions.clear()
         self._strips = ()
         self._closed = True
+
+    def release(self) -> tuple[StagedAppend, ...]:
+        """Transfer cleanup ownership without touching files or leaving live pixels."""
+        self.abandon()
+        transactions = tuple(self._transactions)
+        self._transactions.clear()
+        self._strips = ()
+        self._closed = True
+        return transactions

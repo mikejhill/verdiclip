@@ -6,6 +6,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from time import monotonic
 
 from PySide6.QtCore import QObject, Qt, Signal, Slot
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout
@@ -163,6 +164,8 @@ class ScrollWorkflow(QObject):
         self._accepted: ReviewedCapture | None = None
         self._error = ""
         self._epoch = 0
+        self._released_while_storing = False
+        self._resume_after_storage_cleanup = False
         self._entry.offered.connect(self._offered)
         self._entry.confirmed.connect(self._confirmed)
         self._entry.fallback.connect(self._fallback)
@@ -213,6 +216,8 @@ class ScrollWorkflow(QObject):
         self._window, self._roi, self._screens = window, viewport, tuple(screens)
         self._epoch += 1
         self._review_owned = False
+        self._released_while_storing = False
+        self._resume_after_storage_cleanup = False
         epoch = self._epoch
         self._set_state(WorkflowState.DISCOVERING)
         if not self._owns_phase(WorkflowState.DISCOVERING, epoch=epoch):
@@ -353,10 +358,23 @@ class ScrollWorkflow(QObject):
             self._fail(str(error))
             return
         self._binding = binding
-        binding.status_changed.connect(self._status)
-        binding.review_ready.connect(self._review)
-        binding.failed.connect(self._fail)
-        binding.cancelled.connect(self.cancel)
+        binding.status_changed.connect(
+            self._binding_callback(binding, epoch, self._status)
+        )
+        binding.review_ready.connect(
+            self._binding_callback(binding, epoch, self._review)
+        )
+        binding.failed.connect(self._binding_callback(binding, epoch, self._fail))
+        binding.cancelled.connect(self._binding_callback(binding, epoch, self.cancel))
+        binding.storage_changed.connect(
+            self._binding_callback(binding, epoch, self._cleanup_complete)
+        )
+        binding.storage_failed.connect(
+            self._binding_callback(binding, epoch, self._storage_failed)
+        )
+        binding.input_release_requested.connect(
+            self._binding_callback(binding, epoch, self._release_storing_input)
+        )
         self._set_state(WorkflowState.CAPTURING)
         if not self._owns_phase(WorkflowState.CAPTURING, epoch=epoch):
             return
@@ -365,6 +383,17 @@ class ScrollWorkflow(QObject):
         if not self._owns_phase(WorkflowState.CAPTURING, epoch=epoch):
             return
         binding.start_confirmed(selection.target)
+
+    def _binding_callback[**P](
+        self, binding: ScrollCaptureBinding, epoch: int, callback: Callable[P, None]
+    ) -> Callable[P, None]:
+        """A retired binding cannot act on a synchronously started replacement."""
+
+        def owned(*args: P.args, **kwargs: P.kwargs) -> None:
+            if self._binding is binding and self._epoch == epoch:
+                callback(*args, **kwargs)
+
+        return owned
 
     def _status(self, message: str) -> None:
         if isinstance(self._panel, ScrollProgressPanel):
@@ -441,6 +470,8 @@ class ScrollWorkflow(QObject):
 
     def input_closed(self, *, cleaned: bool, message: str) -> bool:
         """Wait for cleanup before publication; retain review on a finite lease end."""
+        if self._state is WorkflowState.CLEANUP_FAILED:
+            return True
         if self._state is WorkflowState.DELIVERING:
             panel, capture = self._panel, self._accepted
             if (
@@ -514,6 +545,7 @@ class ScrollWorkflow(QObject):
         """Cancel owned resources once, keeping input reserved until helper cleanup."""
         if self._state in {WorkflowState.IDLE, WorkflowState.CLOSING}:
             return
+        self._resume_after_storage_cleanup = False
         self._set_state(WorkflowState.CLOSING)
         epoch = self._epoch
         if isinstance(self._panel, ScrollReviewPanel):
@@ -529,11 +561,42 @@ class ScrollWorkflow(QObject):
             self._cleanup_complete()
 
     def _scope_closed(self) -> None:
+        self._release_storing_input()
         if self._state is WorkflowState.CLOSING:
             self._cleanup_complete()
 
+    def _release_storing_input(self) -> None:
+        """Native cleanup releases hooks even while private disk I/O is draining."""
+        binding = self._binding
+        if (
+            binding is not None
+            and binding.storage_pending
+            and binding.native_finished
+            and not self._adapter.busy
+            and not self._released_while_storing
+        ):
+            self._released_while_storing = True
+            self.release_requested.emit()
+
+    def _storage_failed(self, message: str) -> None:
+        """Retain failed directory owners and prohibit replacement until retry."""
+        self._resume_after_storage_cleanup = self._state is WorkflowState.CAPTURING
+        if self._resume_after_storage_cleanup:
+            self.stop()
+        else:
+            self.cancel()
+        self._set_state(WorkflowState.CLEANUP_FAILED)
+        self._release_storing_input()
+        self.failed.emit(message)
+
     def _cleanup_complete(self) -> None:
         if self._state is not WorkflowState.CLOSING:
+            return
+        if self._adapter.busy:
+            return
+        binding = self._binding
+        if binding is not None and binding.storage_pending:
+            self._release_storing_input()
             return
         if self._session is not None and not self._review_owned:
             try:
@@ -552,20 +615,34 @@ class ScrollWorkflow(QObject):
             return
         if error:
             self.failed.emit(error)
-        else:
+        elif not self._released_while_storing:
             self.release_requested.emit()
 
     def retry_cleanup(self) -> bool:
         """Retry only retained private storage cleanup, never a target action."""
         if self._state is not WorkflowState.CLEANUP_FAILED:
             return False
-        self._set_state(WorkflowState.CLOSING)
+        self._set_state(
+            WorkflowState.CAPTURING
+            if self._resume_after_storage_cleanup
+            else WorkflowState.CLOSING
+        )
+        if self._binding is not None and self._binding.retry_storage_cleanup():
+            return False
         self._cleanup_complete()
         return self._state is WorkflowState.IDLE
 
     def shutdown(self, *, timeout_ms: int = 2000) -> None:
         """Retire warm helpers even when this workflow is already idle."""
+        deadline = monotonic() + max(0, timeout_ms) / 1000
+        binding = self._binding
         with StartupLifetime() as lifetime:
+            if binding is not None:
+                lifetime.callback(
+                    lambda: binding.shutdown_storage(
+                        timeout_ms=max(0, int((deadline - monotonic()) * 1000))
+                    )
+                )
             lifetime.callback(self._adapter.shutdown, timeout_ms=timeout_ms)
             self.cancel()
         if self._state is WorkflowState.CLOSING:

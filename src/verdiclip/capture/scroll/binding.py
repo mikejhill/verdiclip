@@ -23,6 +23,8 @@ from verdiclip.capture.scroll.backend import (
 )
 from verdiclip.capture.scroll.models import ScrollTarget
 from verdiclip.capture.scroll.session import ScrollSession, ScrollState
+from verdiclip.capture.scroll.spooling import StorageJob
+from verdiclip.capture.scroll.storage import StagedAppend
 from verdiclip.exceptions import CaptureError
 
 
@@ -65,6 +67,9 @@ class ScrollCaptureBinding(QObject):
     review_ready = Signal(object, str)  # ScrollSession, restoration/cleanup note
     failed = Signal(str)
     cancelled = Signal()
+    storage_changed = Signal()
+    storage_failed = Signal(str)
+    input_release_requested = Signal()
     PREPARE_MS = 12_000
     VERIFY_MS = 4000
     FINISH_MS = 8000
@@ -82,7 +87,7 @@ class ScrollCaptureBinding(QObject):
         super().__init__(parent)
         settings = options if options is not None else BindingOptions()
         self._session, self._backend, self._clock = session, backend, clock
-        self._driver = ScrollAcquisition(session)
+        self._driver = ScrollAcquisition(session, defer_storage=True)
         self._restore = settings.restore_position
         self._state = BindingState.IDLE
         self._target: ScrollTarget | None = None
@@ -90,6 +95,11 @@ class ScrollCaptureBinding(QObject):
         self._serial = 0
         self._probe = 0
         self._pending: AcquisitionWork | None = None
+        self._storage_job: StorageJob | None = None
+        self._storage_cleanup: tuple[StagedAppend, ...] = ()
+        self._storage_error = ""
+        self._finish_receipt: BackendFinish | None = None
+        self._cancel_announced = False
         self._poll = QTimer(self)
         self._poll.setInterval(settings.interval_ms)
         self._poll.timeout.connect(self._advance)
@@ -106,6 +116,24 @@ class ScrollCaptureBinding(QObject):
     def state(self) -> BindingState:
         """Return stable progress/error/review states for the shell."""
         return self._state
+
+    @property
+    def storage_pending(self) -> bool:
+        """Retain replacement/cleanup ownership until every file operation retires."""
+        return bool(self._storage_job or self._storage_cleanup or self._storage_error)
+
+    @property
+    def storage_error(self) -> str:
+        """Expose retained cleanup failure without pretending its files are gone."""
+        return self._storage_error
+
+    @property
+    def native_finished(self) -> bool:
+        """Input release still requires the workflow's independent helper receipt."""
+        return self._finish_receipt is not None or self._state in {
+            BindingState.CANCELLED,
+            BindingState.FAILED,
+        }
 
     def start_confirmed(self, target: ScrollTarget) -> bool:
         """Explicit Start reserves once; unsupported native builds fail visibly."""
@@ -177,6 +205,7 @@ class ScrollCaptureBinding(QObject):
 
     def _advance(self) -> None:
         """Schedule bounded observations or a fresh safety check, never queue ahead."""
+        self._advance_storage()
         if self._state not in {BindingState.CAPTURING, BindingState.VERIFYING}:
             return
         self._driver.tick(now=self._clock())
@@ -217,7 +246,96 @@ class ScrollCaptureBinding(QObject):
             now=self._clock(),
             at_end=frame.at_end,
         )
+        request = self._driver.storage_request
+        if request is not None:
+            if self.storage_pending:
+                raise CaptureError("Capture storage already has work in flight")
+            job = StorageJob(request)
+            self._storage_job = job
+            try:
+                job.start()
+            except (OSError, RuntimeError) as error:
+                self._storage_job = None
+                self._driver.backend_failed()
+                self._settle_state(f"Could not start capture storage: {error}")
+                return
+            except BaseException:
+                self._driver.backend_failed()
+                self._discard_staging()
+                raise
+            self._poll.start()
         self._settle_state()
+
+    def _advance_storage(self) -> None:
+        """Consume plain worker receipts; admission and lifecycle stay on the GUI."""
+        job = self._storage_job
+        if job is None or not job.done:
+            return
+        receipt = job.take()
+        self._storage_job = None
+        staged = receipt.staged
+        if staged is not None:
+            admitted = (
+                self._state is BindingState.CAPTURING
+                and self._driver.complete_storage(staged, now=self._clock())
+            )
+            if not admitted:
+                self._storage_cleanup += (staged,)
+        self._storage_cleanup += receipt.remaining
+        if receipt.error:
+            self._storage_error = receipt.error
+            self.storage_failed.emit(receipt.error)
+        self._start_cleanup()
+        if not self.storage_pending:
+            if self._state is BindingState.CANCELLED:
+                self._announce_cancel()
+                self.storage_changed.emit()
+            elif (
+                self._state is BindingState.FINISHING
+                and self._finish_receipt is not None
+            ):
+                self._publish_review(self._finish_receipt)
+            elif self._state is BindingState.FAILED:
+                self._poll.stop()
+                self.storage_changed.emit()
+
+    def _start_cleanup(self) -> None:
+        if (
+            self._storage_job is None
+            and self._storage_cleanup
+            and not self._storage_error
+        ):
+            cleanup = self._storage_cleanup
+            job = StorageJob(cleanup=cleanup)
+            self._storage_job = job
+            self._storage_cleanup = ()
+            try:
+                job.start()
+            except (OSError, RuntimeError) as error:
+                self._storage_job = None
+                self._storage_cleanup = cleanup
+                self._storage_error = f"Could not start capture cleanup: {error}"
+                self.storage_failed.emit(self._storage_error)
+                return
+            except BaseException:
+                job.discard()
+                raise
+            self._poll.start()
+
+    def _discard_staging(self) -> None:
+        """Let a blocked job clean itself even if its GUI is later destroyed."""
+        job = self._storage_job
+        if job is not None and job.discard(self._storage_cleanup):
+            self._storage_cleanup = ()
+        self._start_cleanup()
+
+    def retry_storage_cleanup(self) -> bool:
+        """Retry retained private files only; never restart capture or target input."""
+        if not self._storage_error or not self._storage_cleanup:
+            return False
+        self._storage_error = ""
+        self._start_cleanup()
+        return True
 
     def _moved(self, work: AcquisitionWork) -> None:
         """A provider reply permits settling without implying pixel displacement."""
@@ -269,7 +387,9 @@ class ScrollCaptureBinding(QObject):
         }:
             return
         self._pending = None
-        self._poll.stop()
+        self._discard_staging()
+        if not self.storage_pending:
+            self._poll.stop()
         self._serial += 1
         self._probe = self._serial
         self._state = BindingState.FINISHING
@@ -295,6 +415,15 @@ class ScrollCaptureBinding(QObject):
         ):
             return
         self._deadline.stop()
+        self._finish_receipt = result
+        if self.storage_pending:
+            self.input_release_requested.emit()
+            return
+        self._publish_review(result)
+
+    def _publish_review(self, result: BackendFinish) -> None:
+        """No review owner can close pixels while staging or rollback still runs."""
+        self._poll.stop()
         self._state = BindingState.REVIEW
         self.status_changed.emit("Capture stopped. Review the captured rows.")
         if (
@@ -321,7 +450,9 @@ class ScrollCaptureBinding(QObject):
 
     def _fail_without_pixels(self, message: str) -> None:
         """Report failure with no false image, and stop only owned backend work."""
-        self._poll.stop()
+        self._discard_staging()
+        if not self.storage_pending:
+            self._poll.stop()
         self._deadline.stop()
         self._state = BindingState.FAILED
         self._serial += 1
@@ -356,10 +487,31 @@ class ScrollCaptureBinding(QObject):
         self._serial += 1
         self._probe = self._serial
         self._pending = None
-        self._poll.stop()
         self._deadline.stop()
         self._state = BindingState.CANCELLED
+        self._storage_cleanup += self._driver.cancel(defer_cleanup=True)
+        self._discard_staging()
         self._backend.cancel()
-        self._driver.cancel()
         self.status_changed.emit("Scrolling capture cancelled.")
-        self.cancelled.emit()
+        if not self.storage_pending:
+            self._announce_cancel()
+
+    def _announce_cancel(self) -> None:
+        self._poll.stop()
+        if not self._cancel_announced:
+            self._cancel_announced = True
+            self.cancelled.emit()
+
+    def shutdown_storage(self, *, timeout_ms: int) -> None:
+        """Bounded retirement; late worker cleanup needs no Qt callbacks."""
+        deadline = time.monotonic() + max(0, timeout_ms) / 1000
+        self.cancel()
+        while self._storage_job is not None:
+            job = self._storage_job
+            if not job.wait(deadline - time.monotonic()):
+                raise CaptureError("Scrolling storage shutdown cleanup is unconfirmed")
+            self._advance_storage()
+        if self.storage_pending:
+            raise CaptureError(
+                self._storage_error or "Scrolling storage cleanup is unconfirmed"
+            )

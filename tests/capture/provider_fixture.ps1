@@ -67,6 +67,11 @@ function ConvertTo-FixtureRetiredJson([hashtable]$receipt) {
         ',"pid":' + (ConvertTo-FixtureJsonValue $receipt.pid 'integer') +
         ',"closed":' + (ConvertTo-FixtureJsonValue $receipt.closed 'boolean') + '}'
 }
+function Get-FixtureStartedTicks {
+    $ownedProcess = [Diagnostics.Process]::GetCurrentProcess()
+    try { return $ownedProcess.StartTime.ToUniversalTime().Ticks }
+    finally { $ownedProcess.Dispose() }
+}
 # Loaded only in the separately owned STA child after authorization.
 $clock = [Diagnostics.Stopwatch]::StartNew()
 $window = $null; $timer = $null; $closed = $false
@@ -76,8 +81,8 @@ try {
 Add-Type -AssemblyName PresentationFramework,PresentationCore,WindowsBase
 Write-Output ('FIXTURE_PHASE=assemblies-loaded utc=' + [DateTime]::UtcNow.ToString('o'))
 if ([IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) { return }
-$fixtureProcess = Get-Process -Id $PID
-$startedTicks = $fixtureProcess.StartTime.ToUniversalTime().Ticks
+$startedTicks = Get-FixtureStartedTicks
+if ([IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) { return }
 Write-Output ('FIXTURE_PHASE=before-window utc=' + [DateTime]::UtcNow.ToString('o'))
 $window = [Windows.Window]::new()
 Write-Output ('FIXTURE_PHASE=window-created utc=' + [DateTime]::UtcNow.ToString('o'))
@@ -128,15 +133,7 @@ function Write-FocusPhase([string]$phase) {
     if ($script:focusEvents -ge 4) { return }
     $script:focusEvents++
     try {
-    $methods = @([Diagnostics.StackTrace]::new().GetFrames() | ForEach-Object {
-        $method = $_.GetMethod()
-        $type = $method.DeclaringType.FullName
-        if (($type -like 'System.Windows.*' -or $type -like 'MS.Internal.*') -and
-            ($type -like '*Automation*' -or $method.Name -match 'Focus|Activat')) {
-            $type + '.' + $method.Name
-        }
-    } | Select-Object -First 12)
-    [Console]::Error.WriteLine('FIXTURE_FOCUS=' + $phase + ' elapsed_ms=' + $clock.ElapsedMilliseconds + ' methods=' + ($methods -join ','))
+    [Console]::Error.WriteLine('FIXTURE_FOCUS=' + $phase + ' elapsed_ms=' + $clock.ElapsedMilliseconds)
     } catch { } # Optional evidence never changes fixture behavior.
 }
 $window.Add_Activated({ Write-FocusPhase 'activated' })
@@ -151,12 +148,10 @@ function Confirm-FixtureActivation([object]$owner) {
 }
 function Write-SnapshotPhase([string]$phase) {
     if ($script:snapshotTraceComplete) { return }
-    # Exact fixed phase names and own-process timings only. No UI content.
+    # Exact fixed phase names and elapsed timings only. No UI content or CPU queries.
     try {
-    $fixtureProcess.Refresh()
     [Console]::Error.WriteLine('FIXTURE_SNAPSHOT=' + $phase +
-        ' elapsed_ms=' + $clock.ElapsedMilliseconds +
-        ' cpu_ms=' + [Math]::Round($fixtureProcess.TotalProcessorTime.TotalMilliseconds))
+        ' elapsed_ms=' + $clock.ElapsedMilliseconds)
     } catch { } # Diagnostics never change fixture admission or error propagation.
 }
 $script:snapshotTraceComplete = $false

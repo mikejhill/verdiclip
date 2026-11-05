@@ -166,6 +166,94 @@ forced retirement, dependencies and cursor behavior remain unchanged. Removing
 unnecessary serializer work does not establish a common cause for the retained
 controls, bitmap and serialization stalls.
 
+## Hosted result at 5014f8c
+
+[CI at `5014f8c78e8dd76fb84e7a387ff03689e6c88daa`](https://github.com/mikejhill/verdiclip/actions/runs/42059056949)
+remained red. Both Windows Python profiles passed 2,841 tests at 95.59% coverage,
+including actual execution of the fixed serializer and cancellation probes. The
+[WPF Qt 6.12 / 1x profile](https://github.com/mikejhill/verdiclip/actions/runs/42059056949/job/127355322313)
+still reached the unchanged 20-second fixture readiness limit before a first
+snapshot. It retired normally with a matching closed receipt and no cleanup
+errors. The other four native profiles passed. This verifies the new wire-format
+probes and one ordinary cancellation path, not the cause or resolution of the
+retained slow-construction cases. Uninstrumented readiness and repeatability
+passed; both scheduler diagnostics still refused unknown intervals.
+
+The successful CodeQL workflow was not a security-clean result: exact-head check
+`127355766740` reported one new unused-import alert in the added test, tracked as
+[code-scanning alert 203](https://github.com/mikejhill/verdiclip/security/code-scanning/203).
+Its review thread must remain open until the substantive correction is verified
+on the final source. No alert suppression or security-setting change is justified.
+
+## Staged scrolling storage repair
+
+A controlled blocked-writer reproduction held storage for approximately 1.05
+seconds on the old GUI-thread path, used almost no CPU and delivered no GUI
+heartbeat callbacks. This proves the responsiveness risk independently of the
+hosted 1.017-second interval; it does not identify that interval's underlying cause.
+
+Scrolling now stages PNG writes, filesystem checks, renames and checksums on one
+retained worker with no queue. Immutable transaction receipts carry exact private
+directory ownership. Only the GUI owner may admit metadata, after generation,
+state, resource and finite-deadline checks. Stop retains only committed rows;
+before a committed baseline it cancels. Cancel invalidates late admission, while
+review and replacement wait for storage retirement. Native helper cleanup can
+release input independently of slow private storage. Failed rollback retains its
+exact owners and requires explicit cleanup retry. Retired callbacks are guarded
+by binding identity and capture epoch. Bounded shutdown reports unconfirmed
+cleanup rather than abandoning a potentially live owner or claiming success.
+
+The new blocked-writer, lifecycle and widget journeys verify responsive controls,
+no queue-ahead, stale/expired admission rejection, both native/storage cleanup
+receipt orders, stopped-prefix retention, rollback failures, interrupted thread
+startup and replacement safety. This repair keeps pixel, quota, provider and
+input guards and their deadlines. Native Windows and physical-pointer acceptance
+remain separate requirements; no cursor-presentation fix is included.
+
+## Frozen repair validation before hosted qualification
+
+The final focused storage/lifecycle suite passed 216 tests plus 3 subtests.
+Independent review passed 202 tests plus 3 subtests on unchanged source hashes,
+with no remaining actionable finding. Scoped combined coverage was 93.32%;
+changed executable lines were 480/490 (97.96%). The new worker module had 100%
+line and branch coverage. Whole-repository format, Ruff and strict ty passed.
+
+With the same controlled 1.05-second storage wait moved off the GUI thread, 210
+heartbeat callbacks ran and the largest Qt timer gap was 6.22 ms, versus 1.055
+seconds before. This demonstrates the repaired blocking mechanism on the
+controlled offscreen fixture, not the precise I/O cause of the hosted failure.
+
+The full restricted-cloud run passed 2,794 tests plus 3 subtests, with 120
+platform/qualification skips and 92.14% aggregate coverage. Nine tests failed at
+private IPC setup with QLocalServer Unknown error 1, matching the independently
+reproduced environment restriction. The run is not green. The separate UX
+snapshot run passed 222 tests, skipped 2 and deselected 8; its one failure was the
+same second-launch private-IPC setup. Neither run weakened or filtered the gate.
+
+The gallery rendered all 20 images. Editor, capture settings and selected-tab
+images were reviewed for layout and labels for both requested theme modes. This
+Linux offscreen platform rendered the requested dark mode with light native
+widget colors, so it does not qualify Windows dark-mode appearance. Native
+Windows CI and exact-head security/review checks remain required before merge or
+release. Local artifacts are retained separately from the scoped coverage run.
+
+## Further bounded fixture startup trim
+
+Optional focus diagnostics no longer construct managed stack traces or run
+reflection pipelines on the WPF dispatcher. Snapshot diagnostics no longer refresh
+process state or query CPU. Both retain fixed bounded phase/elapsed evidence.
+Owned start ticks use GetCurrentProcess with guaranteed disposal, followed by a
+stop check before Window construction. This closes the observed cancellation gap
+between the identity read and a potentially slow constructor. It preserves the
+same WPF controls, activation, full startup clock, schemas and deadlines.
+Independent review found no issue; focused local checks passed 78 tests with 10
+platform-dependent skips. Windows runtime validation is still required, and no
+common cause or resolution of all earlier stalls is claimed.
+
+The unused-import cause of alert 203 is corrected without suppression by using
+subprocess.Popen[bytes] as the actual runtime cast type. Its final exact-head
+CodeQL result and review-thread status still require verification.
+
 ## Retained failures and open release gates
 
 ### Visible cursor

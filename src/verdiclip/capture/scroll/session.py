@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
@@ -19,8 +20,14 @@ from verdiclip.capture.scroll.models import (
     ScrollTarget,
     StopReason,
 )
-from verdiclip.capture.scroll.storage import StripStore, StripWriter
+from verdiclip.capture.scroll.storage import (
+    AppendRequest,
+    StagedAppend,
+    StripStore,
+    StripWriter,
+)
 from verdiclip.exceptions import CaptureError
+from verdiclip.startup_lifetime import StartupLifetime
 
 
 class ScrollState(StrEnum):
@@ -33,6 +40,17 @@ class ScrollState(StrEnum):
     DELIVERED = "delivered"
     CANCELLED = "cancelled"
     CLOSED = "closed"
+
+
+@dataclass(frozen=True, slots=True)
+class PendingPixels:
+    """Owner-thread metadata applied only after the matching storage admission."""
+
+    request: AppendRequest
+    image: QImage
+    target: ScrollTarget | None = None
+    now: float = 0.0
+    taken_at: datetime | None = None
 
 
 class ScrollSession:
@@ -65,6 +83,13 @@ class ScrollSession:
         self._pause_reason: StopReason | None = None
         self._accepted: ReviewedCapture | None = None
         self._accepted_range: tuple[int, int] | None = None
+        self._pending_pixels: PendingPixels | None = None
+
+    @property
+    def storage_request(self) -> AppendRequest | None:
+        """Return the single immutable transaction awaiting worker completion."""
+        pending = self._pending_pixels
+        return pending.request if pending is not None else None
 
     @property
     def limits(self) -> ScrollLimits:
@@ -87,7 +112,13 @@ class ScrollSession:
         return self._result
 
     def start(
-        self, target: ScrollTarget, image: QImage, *, now: float, taken_at: datetime
+        self,
+        target: ScrollTarget,
+        image: QImage,
+        *,
+        now: float,
+        taken_at: datetime,
+        defer_storage: bool = False,
     ) -> None:
         """Commit a stable first viewport before permitting any scrolling."""
         if self._state is not ScrollState.IDLE:
@@ -95,13 +126,46 @@ class ScrollSession:
         if not math.isfinite(now) or taken_at.utcoffset() is None:
             raise CaptureError("Capture needs finite monotonic time and a timezone")
         self._validate_frame(image, target)
-        self._store.append(image)
-        self._target, self._previous = target, QImage(image)
-        self._started = self._observed = now
-        self._taken_at = taken_at
-        self._frames = 1
-        self._token += 1
-        self._state = ScrollState.CAPTURING
+        request = self._store.prepare(image)
+        self._pending_pixels = PendingPixels(
+            request, QImage(image), target, now, taken_at
+        )
+        if not defer_storage:
+            self._commit_synchronously(request)
+
+    def complete_storage(self, receipt: StagedAppend) -> None:
+        """Admit pixels and metadata together on the session's owning thread."""
+        pending = self._pending_pixels
+        if pending is None or receipt.token is not pending.request.token:
+            raise CaptureError("Capture storage receipt is stale")
+        self._store.admit(receipt)
+        self._pending_pixels = None
+        self._previous = pending.image
+        if pending.target is not None:
+            self._target = pending.target
+            self._started = self._observed = pending.now
+            self._taken_at = pending.taken_at
+            self._frames = 1
+            self._token += 1
+            self._state = ScrollState.CAPTURING
+        else:
+            self._frames += 1
+
+    def abandon_storage(self) -> None:
+        """Invalidate a transaction without deleting worker-owned staging files."""
+        self._store.abandon()
+        self._pending_pixels = None
+
+    def _commit_synchronously(self, request: AppendRequest) -> None:
+        """Keep model callers on the same staging and admission algorithm."""
+        receipt = StripStore.stage(request)
+        try:
+            self.complete_storage(receipt)
+        except BaseException:
+            self.abandon_storage()
+            with StartupLifetime() as lifetime:
+                lifetime.callback(self._store.discard, receipt)
+                raise
 
     def _validate_frame(self, image: QImage, target: ScrollTarget) -> None:
         """Refuse geometry drift and over-budget input before copying pixels."""
@@ -114,7 +178,7 @@ class ScrollSession:
         if image.width() * image.height() > self._limits.max_frame_pixels:
             raise ScrollLimitError("Capture viewport exceeds the working-memory limit")
 
-    def submit(self, frame: ScrollFrame) -> MatchStatus:
+    def submit(self, frame: ScrollFrame, *, defer_storage: bool = False) -> MatchStatus:
         """Apply one ordered observation; stale or cancelled work cannot commit."""
         if (
             self._state not in {ScrollState.CAPTURING, ScrollState.PAUSED}
@@ -145,10 +209,17 @@ class ScrollSession:
         except CaptureError:
             self._finish(StopReason.TARGET_CHANGED)
             return MatchStatus.GEOMETRY_CHANGED
-        return self._apply(frame, registration.status, registration.shift)
+        return self._apply(
+            frame, registration.status, registration.shift, defer_storage=defer_storage
+        )
 
     def _apply(
-        self, frame: ScrollFrame, status: MatchStatus, shift: int | None
+        self,
+        frame: ScrollFrame,
+        status: MatchStatus,
+        shift: int | None,
+        *,
+        defer_storage: bool = False,
     ) -> MatchStatus:
         """Apply registration evidence separately from observation validation."""
         if status is MatchStatus.STATIONARY:
@@ -166,10 +237,12 @@ class ScrollSession:
             return status
         if shift is None:
             raise CaptureError("A verified overlap must include a displacement")
-        self._commit(frame.image, shift)
+        self._commit(frame.image, shift, defer_storage=defer_storage)
         return status
 
-    def _commit(self, image: QImage, shift: int) -> None:
+    def _commit(
+        self, image: QImage, shift: int, *, defer_storage: bool = False
+    ) -> None:
         """Append only verified novel rows, preserving the prefix on failure."""
         if (
             self._frames >= self._limits.max_frames
@@ -179,17 +252,18 @@ class ScrollSession:
             self._finish(StopReason.LIMIT)
             return
         try:
-            self._store.append(
+            request = self._store.prepare(
                 image.copy(0, image.height() - shift, image.width(), shift)
             )
+            self._pending_pixels = PendingPixels(request, QImage(image))
+            if not defer_storage:
+                self._commit_synchronously(request)
         except ScrollLimitError:
             self._finish(StopReason.LIMIT)
             return
         except CaptureError:
             self._finish(StopReason.ERROR)
             return
-        self._frames += 1
-        self._previous = QImage(image)
 
     def resume(self, target: ScrollTarget) -> int:
         """Revalidate target identity and invalidate in-flight work before retry."""
@@ -245,6 +319,7 @@ class ScrollSession:
 
     def _finish(self, reason: StopReason) -> None:
         """End acquisition without deleting the reviewable committed prefix."""
+        self.abandon_storage()
         self._result = ScrollResult(
             self._store.width, self._store.height, self._frames, reason
         )
@@ -301,17 +376,23 @@ class ScrollSession:
         self._accepted_range = (top, rows)
         return accepted
 
-    def cancel(self) -> None:
+    def cancel(self, *, defer_cleanup: bool = False) -> tuple[StagedAppend, ...]:
         """Invalidate all pending work and discard only this session's storage."""
+        self.abandon_storage()
         self._token += 1
         self._previous = QImage()
         self._result = None
         self._accepted = None
         self._accepted_range = None
+        if defer_cleanup:
+            transactions = self._store.release()
+            self._state = ScrollState.CANCELLED
+            return transactions
         try:
             self._store.close()
         finally:
             self._state = ScrollState.CANCELLED
+        return ()
 
     def close(self) -> None:
         """Release temporary storage; an already delivered QImage remains valid."""

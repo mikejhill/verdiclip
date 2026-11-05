@@ -18,6 +18,7 @@ from verdiclip.capture.scroll.models import (
 )
 from verdiclip.capture.scroll.session import ScrollSession, ScrollState
 from verdiclip.capture.scroll.settling import FrameSettler, SettleStatus
+from verdiclip.capture.scroll.storage import AppendRequest, StagedAppend
 from verdiclip.exceptions import CaptureError
 
 
@@ -28,6 +29,7 @@ class AcquisitionState(StrEnum):
     SETTLING = "settling"
     READY = "ready_for_step"
     MOVING = "moving"
+    COMMITTING = "committing_pixels"
     PAUSED = "paused"
     REVIEW = "review"
     FAILED = "failed_without_pixels"
@@ -67,7 +69,13 @@ class ScrollAcquisition:
 
     MOVE_TIMEOUT_SECONDS = 2.0
 
-    def __init__(self, session: ScrollSession, *, max_seconds: float = 120) -> None:
+    def __init__(
+        self,
+        session: ScrollSession,
+        *,
+        max_seconds: float = 120,
+        defer_storage: bool = False,
+    ) -> None:
         """Keep storage owned by the caller and set a finite overall deadline."""
         if not math.isfinite(max_seconds) or max_seconds <= 0:
             raise ValueError("Acquisition duration must be finite and positive")
@@ -83,6 +91,17 @@ class ScrollAcquisition:
         self._sequence = 0
         self._started = self._observed = 0.0
         self._reason: StopReason | None = None
+        self._defer_storage = defer_storage
+        self._committing: tuple[ScrollFrame, MatchStatus | None] | None = None
+
+    @property
+    def storage_request(self) -> AppendRequest | None:
+        """Expose immutable staging work only during its current reservation."""
+        return (
+            self._session.storage_request
+            if self._state is AcquisitionState.COMMITTING
+            else None
+        )
 
     @property
     def state(self) -> AcquisitionState:
@@ -232,15 +251,50 @@ class ScrollAcquisition:
         status: MatchStatus | None = None
         try:
             if self._session.state is ScrollState.IDLE:
-                self._session.start(target, frame.image, now=now, taken_at=taken_at)
+                self._session.start(
+                    target,
+                    frame.image,
+                    now=now,
+                    taken_at=taken_at,
+                    defer_storage=self._defer_storage,
+                )
             else:
-                status = self._session.submit(frame)
+                status = self._session.submit(frame, defer_storage=self._defer_storage)
         except ScrollLimitError:
             self._interrupt(StopReason.LIMIT)
             return
         except CaptureError:
             self._interrupt(StopReason.ERROR)
             return
+        if self._session.storage_request is not None:
+            self._committing = frame, status
+            self._state = AcquisitionState.COMMITTING
+            return
+        self._after_commit(frame, status, now)
+
+    def complete_storage(self, receipt: StagedAppend, *, now: float) -> bool:
+        """Recheck current deadlines before metadata-only admission on the owner."""
+        self.tick(now=now)
+        request = self.storage_request
+        pending = self._committing
+        if request is None or pending is None or receipt.token is not request.token:
+            return False
+        try:
+            self._session.complete_storage(receipt)
+        except ScrollLimitError:
+            self._interrupt(StopReason.LIMIT)
+            return False
+        except CaptureError:
+            self._interrupt(StopReason.ERROR)
+            return False
+        self._committing = None
+        self._after_commit(*pending, now)
+        return True
+
+    def _after_commit(
+        self, frame: ScrollFrame, status: MatchStatus | None, now: float
+    ) -> None:
+        """Only an admitted transaction may permit another target operation."""
         if self._session.state is ScrollState.REVIEW:
             self._adopt_review()
         elif (
@@ -264,6 +318,7 @@ class ScrollAcquisition:
             AcquisitionState.SETTLING,
             AcquisitionState.MOVING,
             AcquisitionState.READY,
+            AcquisitionState.COMMITTING,
         }:
             return
         if self._session.state in {
@@ -288,6 +343,8 @@ class ScrollAcquisition:
     def _adopt_review(self) -> None:
         """Invalidate platform work before exposing the session's stop evidence."""
         self._pending = None
+        self._committing = None
+        self._session.abandon_storage()
         self._settler.cancel()
         self._state = AcquisitionState.REVIEW
         result = self._session.result
@@ -296,6 +353,8 @@ class ScrollAcquisition:
     def _interrupt(self, reason: StopReason) -> None:
         """Invalidate work and keep a prefix only when pixels were committed."""
         self._pending = None
+        self._committing = None
+        self._session.abandon_storage()
         self._settler.cancel()
         self._reason = reason
         if self._session.state in {ScrollState.CAPTURING, ScrollState.PAUSED}:
@@ -313,6 +372,8 @@ class ScrollAcquisition:
         }:
             return
         self._pending = None
+        self._committing = None
+        self._session.abandon_storage()
         self._settler.cancel()
         if self._session.state in {ScrollState.CAPTURING, ScrollState.PAUSED}:
             self._session.stop()
@@ -323,12 +384,14 @@ class ScrollAcquisition:
             self._state = AcquisitionState.FAILED
             self._reason = StopReason.USER_STOP
 
-    def cancel(self) -> None:
+    def cancel(self, *, defer_cleanup: bool = False) -> tuple[StagedAppend, ...]:
         """Discard this session and reject every outstanding platform completion."""
         self._pending = None
+        self._committing = None
         self._settler.cancel()
-        self._session.cancel()
+        cleanup = self._session.cancel(defer_cleanup=defer_cleanup)
         self._state = AcquisitionState.CANCELLED
+        return cleanup
 
     def backend_failed(self, *, target_changed: bool = False) -> None:
         """Stop asynchronous backend work without attributing it to user intent."""
@@ -337,6 +400,7 @@ class ScrollAcquisition:
             AcquisitionState.READY,
             AcquisitionState.MOVING,
             AcquisitionState.PAUSED,
+            AcquisitionState.COMMITTING,
         }:
             self._interrupt(
                 StopReason.TARGET_CHANGED if target_changed else StopReason.ERROR
