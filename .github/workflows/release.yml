@@ -25,6 +25,7 @@ concurrency:
 jobs:
   release-please:
     name: Version and changelog
+    needs: main-verification
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
@@ -82,11 +83,29 @@ jobs:
       security-events: write
       pull-requests: write
 
+  main-verification:
+    name: Verify exact main checks before publication
+    if: github.event_name == 'push' || inputs.testpypi
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    permissions:
+      contents: read
+      actions: read
+      security-events: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Require all observed main verification and clear scan findings
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/release_main_gate.py
+
   build:
     name: Build distributions
-    needs: [release-please, ci]
+    needs: [release-please, ci, main-verification]
     if: >-
-      always() && needs.ci.result == 'success' &&
+      always() && needs.ci.result == 'success' && needs.main-verification.result == 'success' &&
       (needs.release-please.outputs.release_created == 'true' || inputs.testpypi)
     runs-on: windows-latest
     steps:

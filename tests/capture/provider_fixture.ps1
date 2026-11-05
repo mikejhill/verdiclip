@@ -72,8 +72,28 @@ function Write-FocusPhase([string]$phase) {
 }
 $window.Add_Activated({ Write-FocusPhase 'activated' })
 $viewer.Add_GotKeyboardFocus({ Write-FocusPhase 'viewer-focus' })
+function Confirm-FixtureActivation([object]$owner) {
+    # ShowDialog normally activates this owned window already. Do not enter a
+    # second native activation transaction from ContentRendered unnecessarily.
+    if (-not $owner.IsActive) {
+        if (-not $owner.Activate()) { throw 'Owned fixture activation refused' }
+    }
+    if (-not $owner.IsActive) { throw 'Owned fixture activation incomplete' }
+}
+function Write-SnapshotPhase([string]$phase) {
+    if ($script:snapshotTraceComplete) { return }
+    # Exact fixed phase names and own-process timings only. No UI content.
+    try {
+    $fixtureProcess.Refresh()
+    [Console]::Error.WriteLine('FIXTURE_SNAPSHOT=' + $phase +
+        ' elapsed_ms=' + $clock.ElapsedMilliseconds +
+        ' cpu_ms=' + [Math]::Round($fixtureProcess.TotalProcessorTime.TotalMilliseconds))
+    } catch { } # Diagnostics never change fixture admission or error propagation.
+}
+$script:snapshotTraceComplete = $false
 function Write-FixtureState {
     if (-not $ready -or -not $window.IsLoaded -or $closed) { return }
+    Write-SnapshotPhase 'geometry-start'
     $handle = ([Windows.Interop.WindowInteropHelper]::new($window)).Handle.ToInt64()
     $point = $viewer.PointToScreen(([Windows.Point]::new(0,0)))
     $bottom = $viewer.PointToScreen(([Windows.Point]::new([Math]::Min($pixelWidth,$viewer.ViewportWidth),$viewer.ViewportHeight)))
@@ -93,11 +113,16 @@ function Write-FixtureState {
         physical_rectangle=@{x=[int][Math]::Ceiling($point.X);y=[int][Math]::Ceiling($point.Y)
             width=[int][Math]::Floor($bottom.X-$point.X);height=[int][Math]::Floor($bottom.Y-$point.Y)}
     }
+    Write-SnapshotPhase 'state-built'
+    $json = $state | ConvertTo-Json -Depth 5
+    Write-SnapshotPhase 'serialized'
     $temporary = Join-Path $fixtureDirectory 'fixture-state.partial'
-    [IO.File]::WriteAllText($temporary,($state | ConvertTo-Json -Depth 5))
+    [IO.File]::WriteAllText($temporary,$json)
     if ($sequence -gt 10000) { throw 'Fixture snapshot budget exceeded' }
     $target = Join-Path $fixtureDirectory ('fixture-state-{0:D6}.json' -f $sequence)
     [IO.File]::Move($temporary,$target)
+    Write-SnapshotPhase 'published'
+    $script:snapshotTraceComplete = $true
 }
 $timer = [Windows.Threading.DispatcherTimer]::new()
 $timer.Interval = [TimeSpan]::FromMilliseconds(100)
@@ -139,9 +164,11 @@ $window.Add_ContentRendered({
         return
     } # Later renders cannot reactivate an established fixture.
     [Console]::Error.WriteLine('FIXTURE_PHASE=initial-activation utc=' + [DateTime]::UtcNow.ToString('o'))
-    $null = $window.Activate()
+    Confirm-FixtureActivation $window
+    [Console]::Error.WriteLine('FIXTURE_PHASE=activation-complete utc=' + [DateTime]::UtcNow.ToString('o'))
     $script:ready = $true
     Write-FixtureState
+    [Console]::Error.WriteLine('FIXTURE_PHASE=initial-snapshot-written utc=' + [DateTime]::UtcNow.ToString('o'))
 })
 $viewer.Add_ScrollChanged({ Write-FixtureState })
 $window.Add_Closed({ $script:closed=$true; $timer.Stop() })

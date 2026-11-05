@@ -491,8 +491,10 @@ def test_provider_stop_timer_does_not_wait_for_render_event() -> None:
     assert "if ($null -ne $timer) { $timer.Stop() }" in script
     assert "if (-not $ready -or -not $window.IsLoaded -or $closed) { return }" in script
     rendered = script.split("$window.Add_ContentRendered({", 1)[1].split("})", 1)[0]
-    assert rendered.index("if ($script:ready)") < rendered.index("$window.Activate()")
-    assert rendered.index("$window.Activate()") < rendered.index(
+    assert rendered.index("if ($script:ready)") < rendered.index(
+        "Confirm-FixtureActivation $window"
+    )
+    assert rendered.index("Confirm-FixtureActivation $window") < rendered.index(
         "$script:ready = $true"
     )
     assert rendered.index("$script:ready = $true") < rendered.index(
