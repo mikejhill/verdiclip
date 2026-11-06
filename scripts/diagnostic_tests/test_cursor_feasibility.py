@@ -8,7 +8,14 @@ from typing import cast, override
 
 import pytest
 from scripts import cursor_actor
-from scripts.cursor_feasibility import Port, observe, retire_all, run_cases, scenario
+from scripts.cursor_feasibility import (
+    Port,
+    observe,
+    retain_unsupported_reason,
+    retire_all,
+    run_cases,
+    scenario,
+)
 
 
 class World:
@@ -272,3 +279,45 @@ def test_unknown_preservation_or_restoration_is_null(case: str) -> None:
     )
     assert receipt[key] is None
     assert receipt["product_pass"] is False
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [None, ["ownership"], {"raw": "private"}, "arbitrary private payload", 123],
+)
+def test_unknown_reason_never_retains_child_payload(reason: object) -> None:
+    """Unsupported diagnostics emit one fixed value, not unknown child content."""
+    result: dict[str, object] = {"status": "unsupported"}
+    receipt = {"supported": False, "status": "unsupported", "reason": reason}
+    retain_unsupported_reason(result, receipt)
+    assert result == {"status": "unsupported", "first_unsupported_reason": "unknown"}
+    assert receipt["reason"] is reason
+
+
+def test_first_fixed_reason_is_retained_without_changing_outcome() -> None:
+    """Keep the first limitation; setup and cleanup acknowledgments are excluded."""
+    result: dict[str, object] = {"status": "unsupported", "release_qualified": False}
+    for reason in ("ready_for_baseline", "stopped"):
+        retain_unsupported_reason(
+            result, {"supported": False, "status": "unsupported", "reason": reason}
+        )
+    retain_unsupported_reason(
+        result, {"supported": True, "status": "visible", "reason": "ownership"}
+    )
+    assert "first_unsupported_reason" not in result
+    retain_unsupported_reason(
+        result,
+        {
+            "supported": False,
+            "status": "unsupported",
+            "reason": "pointer_plane_unproven",
+        },
+    )
+    retain_unsupported_reason(
+        result, {"supported": False, "status": "unsupported", "reason": "ownership"}
+    )
+    assert result == {
+        "status": "unsupported",
+        "release_qualified": False,
+        "first_unsupported_reason": "pointer_plane_unproven",
+    }

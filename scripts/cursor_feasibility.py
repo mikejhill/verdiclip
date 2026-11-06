@@ -15,12 +15,57 @@ from scripts.cursor_actor import require_host
 
 MAX_COMMANDS = 48
 MAX_RECEIPT_BYTES = 16384
+UNSUPPORTED_REASONS = frozenset(
+    {
+        "ownership",
+        "duplication",
+        "pointer_shape",
+        "surface",
+        "surface_format",
+        "surface_bounds",
+        "surface_not_background",
+        "pointer_plane_unproven",
+        "pointer_outside_fixture",
+        "visible_baseline_required",
+        "pointer_update_timeout",
+        "fresh_frame_timeout",
+        "host_guard",
+        "initialization",
+        "input_pipe_required",
+        "invalid_command",
+        "protocol_timeout",
+    }
+)
+
+
+def retain_unsupported_reason(
+    result: dict[str, object], receipt: dict[str, object]
+) -> None:
+    """Retain only the first fixed native limitation, never arbitrary child payload."""
+    if receipt.get("status") != "unsupported" or receipt.get("supported") is not False:
+        return
+    reason = receipt.get("reason")
+    if isinstance(reason, str) and reason in {"ready_for_baseline", "stopped"}:
+        return
+    normalized = (
+        reason
+        if isinstance(reason, str) and reason in UNSUPPORTED_REASONS
+        else "unknown"
+    )
+    result.setdefault("first_unsupported_reason", normalized)
 
 
 class Actor:
     """One owned process, bounded commands, file-backed output (no reader threads)."""
 
-    def __init__(self, command: list[str], output: Path, deadline: float) -> None:
+    def __init__(
+        self,
+        command: list[str],
+        output: Path,
+        deadline: float,
+        evidence: dict[str, object] | None = None,
+    ) -> None:
+        self.evidence = evidence
         self.output = output
         self.sequence = 0
         self.deadline = deadline
@@ -64,7 +109,10 @@ class Actor:
                 result = json.loads(lines[self.sequence - 1])
                 if not isinstance(result, dict):
                     raise RuntimeError("Invalid owned receipt")
-                return cast("dict[str, object]", result)
+                receipt = cast("dict[str, object]", result)
+                if self.evidence is not None:
+                    retain_unsupported_reason(self.evidence, receipt)
+                return receipt
             if self.process.poll() is not None:
                 raise RuntimeError("Owned actor exited without receipt")
             time.sleep(0.02)
@@ -114,15 +162,12 @@ class Port(Protocol):
 
     def request(self, command: str) -> dict[str, object]:
         """Perform one bounded owned command."""
-        ...
 
     def terminate(self) -> None:
         """Force termination of exactly the owned child."""
-        ...
 
     def retire(self) -> None:
         """Confirm bounded retirement and close local handles."""
-        ...
 
 
 def retire_all(actors: Sequence[Port]) -> None:
@@ -301,7 +346,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="owned-", dir=root) as folder:
         directory = Path(folder)
         deadline = time.monotonic() + 100
-        oracle = Actor([str(executable)], directory / "oracle.jsonl", deadline)
+        oracle = Actor([str(executable)], directory / "oracle.jsonl", deadline, result)
         actors: list[Actor] = []
 
         def create(role: str) -> Actor:
