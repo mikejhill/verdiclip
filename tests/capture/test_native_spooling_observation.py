@@ -8,6 +8,8 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
+from PySide6.QtCore import QThread
+from PySide6.QtWidgets import QApplication
 from tests.capture.native_scrollbar import (
     OperationTiming,
     ScrollbarCase,
@@ -28,9 +30,12 @@ def forbid_trace(*_args: object) -> None:
 
 
 def test_deferred_storage_receipt_observes_actual_worker_and_gui_admission(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Real PNG staging is measured even though production never calls append."""
+    # Production owns QApplication before storage starts. Without that fixture,
+    # QImageWriter can register the worker as Qt main before the first GUI test.
+    del qapp
     monkeypatch.setattr("tests.capture.native_scrollbar.record_operation", forbid_trace)
     monkeypatch.setattr(StripStore, "append", forbid_trace)
     timings = observe_storage_operations(monkeypatch)
@@ -45,6 +50,7 @@ def test_deferred_storage_receipt_observes_actual_worker_and_gui_admission(
         staged = job.take().staged
         assert staged is not None
         owned.append(staged)
+        assert QThread.isMainThread(), "Storage must not claim Qt main-thread identity"
         assert store.height == 0
         store.admit(staged)
         assert store.materialize() == image
