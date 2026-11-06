@@ -28,7 +28,12 @@ class ScrollPeer:
     """Own one explicit child; never send pointer or keyboard input."""
 
     def __init__(
-        self, directory: Path, *, provider: str = "wpf", fixture: str = "scrolling"
+        self,
+        directory: Path,
+        *,
+        provider: str = "wpf",
+        fixture: str = "scrolling",
+        native_pointer_cursor: bool = False,
     ) -> None:
         if provider not in {"wpf", "winforms"}:
             raise ValueError("Unknown owned scrolling provider")
@@ -36,6 +41,9 @@ class ScrollPeer:
             fixture == "unsupported-scrollbar" and provider != "winforms"
         ):
             raise ValueError("Unsupported owned fixture/provider combination")
+        if native_pointer_cursor and provider != "winforms":
+            raise ValueError("Static cursor requires the owned WinForms fixture")
+        self.native_pointer_cursor = native_pointer_cursor
         self.fixture = fixture
         self.provider = provider
         self.directory = directory
@@ -84,6 +92,7 @@ class ScrollPeer:
                     "-Case",
                     "end",
                     "-ExecuteAfterHandoff",
+                    *(["-NativePointerCursor"] if self.native_pointer_cursor else []),
                     *(
                         ["-UnsupportedScrollbar"]
                         if self.fixture == "unsupported-scrollbar"
@@ -120,6 +129,8 @@ class ScrollPeer:
             or value["closed"]
             or value.get("activation_complete") is not True
             or value.get("fixture_kind", "scrolling") != self.fixture
+            or value.get("native_pointer_cursor", False)
+            is not self.native_pointer_cursor
         ):
             raise ValueError("Fixture snapshot ownership changed")
         identity = (value["pid"], value["started_ticks"], value["hwnd"])

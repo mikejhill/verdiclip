@@ -3,7 +3,8 @@ param(
     [Parameter(Mandatory=$true)][ValidatePattern('^[a-f0-9]{32}$')][string]$Nonce,
     [Parameter(Mandatory=$true)][ValidateSet('end')][string]$Case,
     [switch]$ExecuteAfterHandoff,
-    [switch]$UnsupportedScrollbar
+    [switch]$UnsupportedScrollbar,
+    [switch]$NativePointerCursor
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'fixture_snapshot.ps1')
@@ -13,6 +14,7 @@ $fixtureDirectory = [IO.Path]::GetFullPath($Directory)
 if (-not [IO.Directory]::Exists($fixtureDirectory)) { throw 'Runner must create private case directory.' }
 $window = $null; $viewer = $null; $timer = $null; $bitmap = $null; $standalone = $null
 $priorDpi = [IntPtr]::Zero
+$ownedCursorHandle = [IntPtr]::Zero; $ownedCursor = $null
 $sequence = 0; $ready = $false; $maximumOffset = 0; $endSeen = $false; $lastCommand = 0
 try {
     Add-Type -AssemblyName System.Windows.Forms,System.Drawing
@@ -27,6 +29,8 @@ public static class FixtureListGeometry {
         public int Size; public Rect Bounds; public int LineButton,ThumbTop,ThumbBottom,Reserved;
         [MarshalAs(UnmanagedType.ByValArray,SizeConst=6)] public int[] State;
     }
+    [DllImport("user32.dll",SetLastError=true)] public static extern IntPtr CreateCursor(IntPtr instance,int x,int y,int width,int height,byte[] andMask,byte[] xorMask);
+    [DllImport("user32.dll",SetLastError=true)] public static extern bool DestroyCursor(IntPtr cursor);
     [DllImport("user32.dll",SetLastError=true)] public static extern bool GetScrollBarInfo(IntPtr window,int objectId,ref Scrollbar info);
     [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
     [DllImport("user32.dll",SetLastError=true)] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
@@ -89,6 +93,19 @@ public static class FixtureListGeometry {
     })
     }
     $window.Controls.Add($viewer)
+    if ($NativePointerCursor) {
+        # Deliberately owned STATIC monochrome cursor, not a replaceable stock name.
+        $andMask = [byte[]]::new(32); $xorMask = [byte[]]::new(32)
+        for ($row=0; $row -lt 16; $row++) {
+            $andMask[$row*2] = [byte](255 - (128 -shr [Math]::Min($row,7)))
+            $andMask[$row*2+1] = 255
+        }
+        $ownedCursorHandle = [FixtureListGeometry]::CreateCursor([IntPtr]::Zero,0,0,16,16,$andMask,$xorMask)
+        if ($ownedCursorHandle -eq [IntPtr]::Zero) { throw 'Owned fixture cursor creation failed' }
+        $ownedCursor = [Windows.Forms.Cursor]::new($ownedCursorHandle)
+        $window.Cursor=$ownedCursor; $viewer.Cursor=$ownedCursor
+        if ($null -ne $standalone) { $standalone.Cursor=$ownedCursor }
+    }
     function Write-FixtureState {
         if (-not $ready -or $window.IsDisposed -or -not $window.Visible) { return }
         # This fixture deliberately refuses scaling instead of equating DIP and pixels.
@@ -122,6 +139,7 @@ public static class FixtureListGeometry {
         $state = @{
             nonce=$Nonce;pid=$PID;hwnd=$window.Handle.ToInt64();started_ticks=$startedTicks;list_handle=$viewer.Handle.ToInt64()
             scrollbar_handle=$(if($UnsupportedScrollbar){$standalone.Handle.ToInt64()}else{$viewer.Handle.ToInt64()})
+            native_pointer_cursor=[bool]$NativePointerCursor
             fixture_kind=$(if($UnsupportedScrollbar){'unsupported-scrollbar'}else{'scrolling'})
             sequence=$sequence;visible=[bool]$window.Visible;closed=$false;activation_complete=$ready
             offset=$offset;scrollable_height=840;maximum_offset=$maximumOffset;end_seen=$endSeen
@@ -190,11 +208,15 @@ finally {
     if ($null -ne $viewer) { try { $viewer.Dispose() } catch { $cleanupErrors++ } }
     if ($null -ne $standalone) { try { $standalone.Dispose() } catch { $cleanupErrors++ } }
     if ($null -ne $bitmap) { try { $bitmap.Dispose() } catch { $cleanupErrors++ } }
+    # Retain this single owned cursor until exact fixture process exit. A global
+    # cursor snapshot cannot prove no window/thread still references it. The
+    # supervisor confirms process retirement; no cursor write repairs teardown.
+    $cursorLifetime = if ($NativePointerCursor) { "process-exit" } else { "not-created" }
     if ($null -ne $priorDpi -and $priorDpi -ne [IntPtr]::Zero) {
         try { if ([FixtureListGeometry]::SetThreadDpiAwarenessContext($priorDpi) -eq [IntPtr]::Zero) { $cleanupErrors++ } }
         catch { $cleanupErrors++ }
     }
     $retired=$cleanupErrors -eq 0
-    [IO.File]::WriteAllText((Join-Path $fixtureDirectory 'fixture-retired.json'),(@{nonce=$Nonce;pid=$PID;closed=$retired}|ConvertTo-Json))
+    [IO.File]::WriteAllText((Join-Path $fixtureDirectory 'fixture-retired.json'),(@{nonce=$Nonce;pid=$PID;closed=$retired;cursor_lifetime=$cursorLifetime}|ConvertTo-Json))
     if (-not $retired) { throw 'Owned WinForms fixture cleanup failed' }
 }

@@ -2,11 +2,22 @@
 
 from __future__ import annotations
 
+import ctypes.wintypes as w
 import math
 from collections.abc import Sequence
 from typing import Final, Protocol, override
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import (
+    QByteArray,
+    QEvent,
+    QObject,
+    QPoint,
+    QPointF,
+    QRectF,
+    Qt,
+    QTimer,
+    Signal,
+)
 from PySide6.QtGui import (
     QCloseEvent,
     QColor,
@@ -26,9 +37,12 @@ from PySide6.QtWidgets import QWidget
 from verdiclip.capture.grabber import FrozenScreen
 from verdiclip.capture.input_policy import InputKind, SelectionInput
 from verdiclip.capture.models import ScreenGeometry
+from verdiclip.capture.native_pointer import PointerPhase
+from verdiclip.capture.native_pointer_win32 import NativePointerSession
 from verdiclip.capture.presentation import PASSIVE_WINDOW_FLAGS
 from verdiclip.geometry import Point, Rect
 
+WM_SETCURSOR: Final = 0x20
 DRAG_THRESHOLD: Final = 3.0
 MAGNIFIER_SOURCE_PX: Final = 31  # Odd, so the cursor pixel sits dead center
 MAGNIFIER_ZOOM: Final = 4
@@ -182,6 +196,7 @@ class SelectionOverlay(QWidget):
         show_magnifier: bool,
         shared: SharedSelection | None = None,
         external_input: bool = False,
+        native_pointer: NativePointerSession | None = None,
     ) -> None:
         super().__init__(None)
         self._geometry = geometry
@@ -196,6 +211,8 @@ class SelectionOverlay(QWidget):
         self._shown: tuple[object, ...] | None = None
         self._finishing = False
         self._external_input = external_input
+        self._native_pointer = native_pointer
+        self._cursor_admission_pending = False
         flags = (
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
@@ -203,6 +220,8 @@ class SelectionOverlay(QWidget):
         )
         if external_input:
             flags = PASSIVE_WINDOW_FLAGS
+            if native_pointer is not None:
+                flags &= ~Qt.WindowType.WindowTransparentForInput
             self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setWindowFlags(flags)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
@@ -213,6 +232,31 @@ class SelectionOverlay(QWidget):
         self.setGeometry(
             int(logical.x), int(logical.y), int(logical.width), int(logical.height)
         )
+
+    @override
+    def nativeEvent(
+        self, event_type: QByteArray | bytes | bytearray | memoryview, message: int
+    ) -> tuple[bool, int]:
+        """Observe natural ownership, then leave Qt's CrossCursor handler intact."""
+        pointer = self._native_pointer
+        if (
+            pointer is not None
+            and pointer.route.phase is PointerPhase.WAITING
+            and not self._cursor_admission_pending
+            and event_type == b"windows_generic_MSG"
+        ):
+            packet = w.MSG.from_address(int(message))
+            if (
+                packet.message == WM_SETCURSOR
+                and int(packet.hWnd or 0) == int(self.winId())
+                and int(packet.wParam) == int(self.winId())
+                and int(packet.lParam) & 0xFFFF == 1
+            ):
+                window = int(self.winId())
+                self._cursor_admission_pending = True
+                QTimer.singleShot(0, lambda: pointer.natural_cursor(window))
+        # False leaves the native message unhandled for Qt platform processing.
+        return False, 0
 
     def dismiss(self) -> None:
         """Close as part of an owner-controlled completion, without cancelling."""
@@ -429,6 +473,8 @@ class SelectionOverlay(QWidget):
 
         A left press while an ``Enter`` selection is open finishes it there.
         """
+        if self._native_pointer is not None:
+            return
         if event.button() == Qt.MouseButton.RightButton:
             self.cancelled.emit()
             return
@@ -443,11 +489,14 @@ class SelectionOverlay(QWidget):
     @override
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         """Track the pointer, here or (while pressed) over another monitor."""
-        self._shared.move_to(self._physical(event))
+        if self._native_pointer is None:
+            self._shared.move_to(self._physical(event))
 
     @override
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         """Report a dragged region, a clicked window, or the monitor clicked."""
+        if self._native_pointer is not None:
+            return
         if event.button() != Qt.MouseButton.LeftButton or not self._shared.pressed:
             return
         self._finish(self._physical(event))
@@ -474,6 +523,8 @@ class SelectionOverlay(QWidget):
     @override
     def keyPressEvent(self, event: QKeyEvent) -> None:
         """Cancel on Esc; Enter starts/ends a selection; arrows move (Ctrl = 10 px)."""
+        if self._native_pointer is not None:
+            return
         if event.key() == Qt.Key.Key_Escape:
             self.cancelled.emit()
             return

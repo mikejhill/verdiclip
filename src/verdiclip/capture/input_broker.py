@@ -10,6 +10,7 @@ from PySide6.QtCore import QCoreApplication, QObject, QTimer, Signal
 from PySide6.QtGui import QGuiApplication
 
 from verdiclip.capture.input_worker import CaptureInputWorker
+from verdiclip.capture.native_pointer_win32 import NativePointerSession
 from verdiclip.exceptions import CaptureError
 from verdiclip.geometry import Point, Rect
 
@@ -42,6 +43,10 @@ class InputBroker(QObject):
         """The unavailable base has no native input to release."""
         self.closed.emit(not self.busy, "")
 
+    def set_native_pointer(self, pointer: NativePointerSession | None) -> bool:
+        """Unsupported brokers retain the existing virtual pointer path."""
+        return pointer is None
+
     def set_controls_mode(self, *, enabled: bool) -> None:
         """Let an available implementation distinguish controls from selection."""
 
@@ -68,6 +73,7 @@ class NativeInputBroker(InputBroker):
         self._started = 0.0
         self._failure = ""
         self._controls = False
+        self._native_pointer: NativePointerSession | None = None
         self._poll = QTimer(self)
         self._poll.setInterval(10)
         self._poll.timeout.connect(self._advance)
@@ -90,6 +96,13 @@ class NativeInputBroker(InputBroker):
         return self._worker is not None or self._broken
 
     @override
+    def set_native_pointer(self, pointer: NativePointerSession | None) -> bool:
+        if self.busy:
+            raise CaptureError("Capture input is still being released")
+        self._native_pointer = pointer
+        return True
+
+    @override
     def start(self, initial: Point, bounds: Rect) -> None:
         """Reserve once; start no hook on unsupported/non-native Qt surfaces."""
         if self.busy or self._released:
@@ -100,6 +113,7 @@ class NativeInputBroker(InputBroker):
         self._failure = ""
         worker = self._factory(initial, bounds)
         worker.set_controls_mode(enabled=self._controls)
+        worker.native_pointer = self._native_pointer
         self._worker = worker
         self._started = self._clock()
         worker.start()

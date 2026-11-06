@@ -20,10 +20,13 @@ from verdiclip.capture.input_native import (
 from verdiclip.capture.input_policy import (
     CaptureInputPolicy,
     InputDecision,
+    InputKind,
     SelectionInput,
 )
 from verdiclip.capture.input_raw import RawPointer
 from verdiclip.capture.input_routing import MoveMode
+from verdiclip.capture.native_pointer import PointerPhase
+from verdiclip.capture.native_pointer_win32 import NativePointerSession
 from verdiclip.exceptions import CaptureError, PlatformError
 from verdiclip.geometry import Point, Rect
 
@@ -95,6 +98,7 @@ class CaptureInputWorker:
         self._raw_reports = 0
         self._legacy_buttons: set[tuple[int, int]] = set()
         self._raw_releases: set[tuple[int, int]] = set()
+        self.native_pointer: NativePointerSession | None = None
         self.foreground = 0
         self.failure = ""
         self.cleaned = False
@@ -130,6 +134,8 @@ class CaptureInputWorker:
         """Request bounded pair draining and removal on the installer thread."""
         if self._released_at is None:
             self._released_at = self._clock()
+        if self.native_pointer is not None:
+            self.native_pointer.close()
         self._release.set()
 
     def drain(self) -> tuple[SelectionInput, ...]:
@@ -143,6 +149,8 @@ class CaptureInputWorker:
 
     def _publish(self, decision: InputDecision) -> int:
         for event in decision.events:
+            if event.kind is InputKind.CANCEL and self.native_pointer is not None:
+                self.native_pointer.close()
             try:
                 self._events.put_nowait(event)
             except queue.Full:
@@ -236,8 +244,9 @@ class CaptureInputWorker:
             return "Capture stopped because its UI stopped responding"
         if api.foreground() != self.foreground or not api.desktop_safe():
             return "Capture foreground or desktop changed"
-        if not api.recipient_safe(self.foreground):
-            return "Capture input recipient is no longer supported"
+        native_failure = self._native_failure()
+        if native_failure or not api.recipient_safe(self.foreground):
+            return native_failure or "Capture input recipient is no longer supported"
         if (
             self._pending_raw is not None
             and now - self._pending_raw >= self.RAW_TIMEOUT_SECONDS
@@ -248,6 +257,17 @@ class CaptureInputWorker:
                 self._raw_reports,
             )
             return "This pointer source is unavailable for capture"
+        return ""
+
+    def _native_failure(self) -> str:
+        pointer = self.native_pointer
+        if pointer is not None:
+            if pointer.route.phase is PointerPhase.CLOSED:
+                return "Native pointer ownership ended"
+            if pointer.route.phase is PointerPhase.OWNED and not pointer.safe():
+                return "Native pointer recipient changed"
+            if pointer.route.phase is PointerPhase.WAITING and pointer.expired():
+                return "Native cursor ownership was not observed"
         return ""
 
     @staticmethod
@@ -314,6 +334,14 @@ class CaptureInputWorker:
             self._legacy_buttons.discard((message - 1, button))
         if api.foreground() != self.foreground:
             self._invalidate("Capture foreground changed")
+        if self.native_pointer is not None:
+            return self._native_mouse(
+                packet,
+                message,
+                address,
+                button=button,
+                owned_release=owned_release,
+            )
         if not packet.flags & 1:
             self._hardware_packets += 1
             if owned_release and (message, button) in self._raw_releases:
@@ -339,17 +367,58 @@ class CaptureInputWorker:
         consumed = self._publish(decision)
         return consumed or int(owned_release) or api.forward(code, message, address)
 
+    def _native_mouse(
+        self,
+        packet: MousePacket,
+        message: int,
+        address: int,
+        *,
+        button: int,
+        owned_release: bool,
+    ) -> int:
+        pointer, api = self.native_pointer, self._api
+        if pointer is None or api is None:
+            return 1
+        point = Point(packet.point.x, packet.point.y)
+        permitted = pointer.move(point)
+        if not permitted:
+            if (
+                pointer.route.phase is PointerPhase.CLOSED
+                or message != CaptureInputPolicy.MOVE
+            ):
+                self._invalidate("Native pointer recipient changed")
+        else:
+            movement = self._policy.mouse(
+                CaptureInputPolicy.MOVE, point, mode=MoveMode.ABSOLUTE, anchor=point
+            )
+            self._publish(movement)
+        if message == CaptureInputPolicy.MOVE:
+            return (
+                api.forward(0, message, address)
+                if permitted and pointer.route.phase is PointerPhase.OWNED
+                else 1
+            )
+        decision = self._policy.mouse(
+            message, point, mode=None, anchor=point, button=button
+        )
+        return (
+            self._publish(decision)
+            or int(owned_release)
+            or api.forward(0, message, address)
+        )
+
     def _raw_pointer(self, event: RawPointer) -> None:
         """Hardware semantics come from its raw flags, never inferred hook flags."""
         self._pending_raw = None
         self._raw_reports += 1
+        if self.native_pointer is not None:
+            # Native hook coordinates are absolute. Raw reports must not apply
+            # relative motion or duplicate button semantics in either order.
+            return
         point = self._policy.pointer.point
         self._publish(
             self._policy.mouse(
-                CaptureInputPolicy.MOVE,
-                event.point,
-                mode=event.mode,
-                anchor=point,
+                CaptureInputPolicy.MOVE, event.point, mode=event.mode, anchor=point
             )
         )
         for message, identity in event.buttons:
@@ -395,4 +464,10 @@ class CaptureInputWorker:
             shift=api.shift_held(),
             controls=self._controls.is_set(),
         )
+        pointer = self.native_pointer
+        if pointer is not None and not self._controls.is_set():
+            for event in decision.events:
+                if event.reason.startswith("arrow:") and not pointer.nudge(event.point):
+                    self._invalidate("Native pointer keyboard movement failed")
+                    return 1
         return self._publish(decision) or api.forward(code, message, address)
