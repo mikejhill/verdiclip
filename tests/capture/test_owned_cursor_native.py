@@ -13,6 +13,11 @@ from tests.capture.desktop import DesktopSession
 from tests.capture.hosted_fixture_input import require_hosted
 from tests.capture.menu_peer import MenuPeer
 from tests.capture.owned_cursor_observer import Snapshot, observe
+from tests.capture.owned_cursor_setup import (
+    OneMove,
+    baseline_summary,
+    eligible_baseline,
+)
 from tests.capture.owned_cursor_supervisor import Child
 from tests.capture.scroll_peer import ScrollPeer
 
@@ -29,14 +34,19 @@ def assert_restored(child: Child) -> None:
     )
 
 
-def ordinary(directory: Path, mode: str) -> None:
+def ordinary(directory: Path, mode: str, baseline: Snapshot | None = None) -> None:
     """Run one stationary session; an unsupported entry ends qualification."""
     child = Child(directory)
     try:
+        before = observe() if baseline is None else baseline
+        print(  # noqa: T201 - fixed setup provenance
+            "OWNED_CURSOR_BASELINE="
+            + json.dumps(baseline_summary(before), sort_keys=True)
+        )
+        assert eligible_baseline(before), (
+            "unsupported: baseline is not logically visible"
+        )
         child.launch()
-        before = observe()
-        visible = before.visible
-        assert visible, "unsupported: baseline is not logically visible"
         child.begin(before)
         during = child.admitted()
         checks = {
@@ -97,13 +107,14 @@ def refused_menu(directory: Path, qtbot: QtBot) -> None:
             peer.close()
 
 
-def changed_menu(directory: Path, qtbot: QtBot) -> None:
+def changed_menu(directory: Path, qtbot: QtBot, baseline: Snapshot) -> None:
     """Opening an owned foreign popup revokes, never causes corrective takeover."""
     child = Child(directory)
     peer = MenuPeer()
     try:
+        assert eligible_baseline(baseline), "unsupported: setup baseline unavailable"
         child.launch()
-        child.begin(observe())
+        child.begin(baseline)
         during = child.admitted()
         hidden = not during.visible
         assert hidden
@@ -144,12 +155,20 @@ def test_finite_owned_cursor_lifecycle(qtbot: QtBot, tmp_path: Path) -> None:
         try:
             peer.start()
             qtbot.waitUntil(peer.poll, timeout=20000)
-            baseline: Snapshot = observe()
+            baseline = OneMove(peer).prepare(qtbot.wait)
+            print(  # noqa: T201 - fixed setup provenance
+                "OWNED_CURSOR_SETUP="
+                + json.dumps(baseline_summary(baseline), sort_keys=True)
+            )
             assert peer.identity is not None
             owned_foreground = baseline.foreground == peer.identity[2]
             assert owned_foreground
             for repetition, mode in enumerate(("normal", "cancel", "normal")):
-                ordinary(tmp_path / f"case-{index}-{repetition}", mode)
+                ordinary(
+                    tmp_path / f"case-{index}-{repetition}",
+                    mode,
+                    baseline if repetition == 0 else None,
+                )
             if index == 1:
                 refused_menu(tmp_path / "refused", qtbot)
 
@@ -162,13 +181,17 @@ def test_finite_owned_cursor_lifecycle(qtbot: QtBot, tmp_path: Path) -> None:
         try:
             peer.start()
             qtbot.waitUntil(peer.poll, timeout=20000)
-            baseline = observe()
+            baseline = OneMove(peer).prepare(qtbot.wait)
+            print(  # noqa: T201 - fixed setup provenance
+                "OWNED_CURSOR_SETUP="
+                + json.dumps(baseline_summary(baseline), sort_keys=True)
+            )
             assert peer.identity is not None
             owned_foreground = baseline.foreground == peer.identity[2]
             assert owned_foreground
             if mode == "changed":
-                changed_menu(tmp_path / mode, qtbot)
+                changed_menu(tmp_path / mode, qtbot, baseline)
             else:
-                ordinary(tmp_path / mode, mode)
+                ordinary(tmp_path / mode, mode, baseline)
         finally:
             peer.close()

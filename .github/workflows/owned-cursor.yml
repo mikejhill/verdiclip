@@ -50,7 +50,7 @@ jobs:
         timeout-minutes: 2
         shell: pwsh
         run: |
-          uv run --no-sync pytest tests/capture/test_owned_cursor_policy.py tests/capture/test_owned_cursor_thread.py tests/capture/test_owned_cursor_adapter.py tests/capture/test_owned_cursor_observer.py tests/capture/test_owned_cursor_supervisor.py tests/capture/test_owned_cursor_runtime.py --no-cov -p no:randomly -q --tb=short
+          uv run --no-sync pytest tests/capture/test_owned_cursor_policy.py tests/capture/test_owned_cursor_thread.py tests/capture/test_owned_cursor_adapter.py tests/capture/test_owned_cursor_observer.py tests/capture/test_owned_cursor_supervisor.py tests/capture/test_owned_cursor_runtime.py tests/capture/test_owned_cursor_setup.py --no-cov -p no:randomly -q --tb=short
           exit $LASTEXITCODE
       - name: Finite owned cursor logical lifecycle
         timeout-minutes: 2

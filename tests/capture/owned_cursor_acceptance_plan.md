@@ -72,3 +72,23 @@ physical-input qualification, or release readiness.
 
 Before hosted execution: independent source
 review, cleanup faults, first-sample immutability controls and hosted identity gates.
+
+
+## Initial hosted result and narrowly scoped setup amendment
+
+Original PR112 head358eb5d, workflow42288213927: both Qt lanes passed100 portable
+controls but failed before component start because the logical visible baseline was
+false. Exact flags and handle presence were not retained; touch/pen suppression
+cannot be inferred. No hide, balance, restoration or crash case ran.
+
+The amended harness performs one injected MOVE per fresh owned client's initial
+setup, before any component child, surface or broker. Exact owned foreground,
+client destination/root/process and absence of menu/capture/move-size state are
+required. It neither clicks nor changes visibility counters or focus. A correlated
+fixture snapshot has a two-second acknowledgment bound; it proves liveness, not
+mouse delivery. One post-ack cursor baseline must confirm destination and preserved
+GUI state; visibility/handle eligibility is then required before child launch.
+Normal/cancel/repeat intervals receive no further setup movement. No after-teardown
+normalization or retry exists. Fixed receipt records simulated setup provenance,
+showing/hidden/suppressed/unknown and handle-presence without raw IDs/coordinates.
+This does not qualify physical input or rendered visibility.
