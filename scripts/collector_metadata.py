@@ -110,22 +110,39 @@ def decode(data: bytes) -> dict[str, object]:
     return result
 
 
-def retire(process: subprocess.Popen[bytes]) -> bool:
-    """Reap independently even if kill fails; never swallow control exceptions."""
-    confirmed = False
+def retire(process: subprocess.Popen[bytes]) -> dict[str, object]:
+    """Retain fixed cleanup outcomes; reap independently and propagate controls."""
+    outcome: dict[str, object] = {
+        "poll": "unconfirmed",
+        "kill": "not-attempted",
+        "reap": "unconfirmed",
+        "retired": False,
+    }
     try:
         try:
-            if process.poll() is None:
-                process.kill()
+            running = process.poll() is None
+            outcome["poll"] = "running" if running else "exited"
         except (OSError, subprocess.SubprocessError, RuntimeError):
-            pass
+            outcome["poll"] = "error"
+        else:
+            if running:
+                try:
+                    process.kill()
+                    outcome["kill"] = "sent"
+                except (OSError, subprocess.SubprocessError, RuntimeError):
+                    outcome["kill"] = "error"
+            else:
+                outcome["kill"] = "not-needed"
     finally:
         try:
             process.wait(timeout=2)
-            confirmed = True
+            outcome["reap"] = "confirmed"
+            outcome["retired"] = True
+        except subprocess.TimeoutExpired:
+            outcome["reap"] = "timeout"
         except (OSError, subprocess.SubprocessError, RuntimeError):
-            pass
-    return confirmed
+            outcome["reap"] = "error"
+    return outcome
 
 
 def inspect(helper: Path, target: str, directory: Path) -> dict[str, object]:
@@ -137,6 +154,12 @@ def inspect(helper: Path, target: str, directory: Path) -> dict[str, object]:
         "execution": "spawn-error",
         "exit_code": None,
         "retired": True,
+        "retirement": {
+            "poll": "not-started",
+            "kill": "not-attempted",
+            "reap": "not-started",
+            "retired": True,
+        },
     }
     process = None
     with output.open("xb") as stdout, errors.open("xb") as stderr:
@@ -164,7 +187,9 @@ def inspect(helper: Path, target: str, directory: Path) -> dict[str, object]:
             receipt["execution"] = "probe-error"
         finally:
             if process is not None:
-                receipt["retired"] = retire(process)
+                retirement = retire(process)
+                receipt["retirement"] = retirement
+                receipt["retired"] = retirement["retired"]
     try:
         with output.open("rb") as stream:
             evidence = decode(stream.read(LIMIT + 1))

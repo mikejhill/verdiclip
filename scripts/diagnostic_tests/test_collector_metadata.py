@@ -141,7 +141,10 @@ class MetadataTests(unittest.TestCase):
         process = Mock()
         process.poll.return_value = None
         process.kill.side_effect = OSError()
-        self.assertTrue(retire(process))
+        result = retire(process)
+        self.assertTrue(result["retired"])
+        self.assertEqual(result["kill"], "error")
+        self.assertEqual(result["reap"], "confirmed")
         process.wait.assert_called_once_with(timeout=2)
 
     def test_control_during_kill_still_reaps(self) -> None:
@@ -158,7 +161,10 @@ class MetadataTests(unittest.TestCase):
         process = Mock()
         process.poll.return_value = 0
         process.wait.side_effect = subprocess.TimeoutExpired("owned", 2)
-        self.assertFalse(retire(process))
+        result = retire(process)
+        self.assertFalse(result["retired"])
+        self.assertEqual(result["kill"], "not-needed")
+        self.assertEqual(result["reap"], "timeout")
         process.kill.assert_not_called()
 
     def test_timeout_is_not_late_success(self) -> None:
@@ -174,6 +180,10 @@ class MetadataTests(unittest.TestCase):
         self.assertEqual(result["execution"], "timeout")
         self.assertIsNone(result["exit_code"])
         self.assertTrue(result["retired"])
+        self.assertEqual(
+            result["retirement"],
+            {"poll": "running", "kill": "sent", "reap": "confirmed", "retired": True},
+        )
         process.kill.assert_called_once()
 
     def test_arbitrary_target_refused_before_spawn(self) -> None:
@@ -261,6 +271,60 @@ class MetadataTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, source)
         self.assertEqual(source.count("std::strcmp(argv[1],"), 4)
+
+    def test_cleanup_errors_retain_fixed_outcomes(self) -> None:
+        """Independent ordinary errors remain explicit without raw exception text."""
+        process = Mock()
+        process.poll.return_value = None
+        process.kill.side_effect = OSError("private-kill-path")
+        process.wait.side_effect = OSError("private-wait-path")
+        result = retire(process)
+        self.assertEqual(
+            result,
+            {"poll": "running", "kill": "error", "reap": "error", "retired": False},
+        )
+        process.wait.assert_called_once_with(timeout=2)
+        self.assertNotIn("private", json.dumps(result))
+
+    def test_poll_error_still_reaps_owned_handle(self) -> None:
+        """An unknown poll never prevents the independent bounded reap."""
+        process = Mock()
+        process.poll.side_effect = OSError("private-poll-path")
+        result = retire(process)
+        self.assertEqual(
+            result,
+            {
+                "poll": "error",
+                "kill": "not-attempted",
+                "reap": "confirmed",
+                "retired": True,
+            },
+        )
+        process.kill.assert_not_called()
+        process.wait.assert_called_once_with(timeout=2)
+
+    def test_cleanup_controls_preserve_exception_context(self) -> None:
+        """A new reap control preserves the pending kill control as context."""
+        process = Mock()
+        process.poll.return_value = None
+        first, second = KeyboardInterrupt(), SystemExit(2)
+        process.kill.side_effect = first
+        process.wait.side_effect = second
+        with self.assertRaises(SystemExit) as caught:
+            retire(process)
+        self.assertIs(caught.exception, second)
+        self.assertIs(caught.exception.__context__, first)
+        process.wait.assert_called_once_with(timeout=2)
+
+    def test_poll_control_still_reaps(self) -> None:
+        """Even control flow during initial status inspection retains owned cleanup."""
+        process = Mock()
+        failure = KeyboardInterrupt()
+        process.poll.side_effect = failure
+        with self.assertRaises(KeyboardInterrupt) as caught:
+            retire(process)
+        self.assertIs(caught.exception, failure)
+        process.wait.assert_called_once_with(timeout=2)
 
 
 if __name__ == "__main__":
