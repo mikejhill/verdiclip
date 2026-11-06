@@ -25,7 +25,6 @@ from verdiclip.capture.models import Capture, CaptureMode
 from verdiclip.geometry import Rect
 
 __all__ = ["make_app"]
-pytestmark = pytest.mark.native_desktop
 
 
 @pytest.fixture(autouse=True)
@@ -61,6 +60,7 @@ def capture(image: QImage) -> Capture:
     )
 
 
+@pytest.mark.native_desktop
 @pytest.mark.parametrize("minimized", [False, True])
 def test_existing_editor_becomes_os_foreground_repeatedly(
     make_app: AppFactory,
@@ -109,6 +109,7 @@ def test_existing_editor_becomes_os_foreground_repeatedly(
         assert host.session is host.pages[-1].record.session
 
 
+@pytest.mark.native_desktop
 def test_ordinary_capture_preserves_external_native_menu(
     make_app: AppFactory,
     sample_image: QImage,
@@ -148,6 +149,7 @@ def test_ordinary_capture_preserves_external_native_menu(
         peer.close()
 
 
+@pytest.mark.native_desktop
 def test_existing_editor_activates_from_owned_external_window(
     make_app: AppFactory,
     sample_image: QImage,
