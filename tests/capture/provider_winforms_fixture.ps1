@@ -15,6 +15,7 @@ if (-not [IO.Directory]::Exists($fixtureDirectory)) { throw 'Runner must create 
 $window = $null; $viewer = $null; $timer = $null; $bitmap = $null; $standalone = $null
 $priorDpi = [IntPtr]::Zero
 $ownedCursorHandle = [IntPtr]::Zero; $ownedCursor = $null
+$pointerSetup = @{observer=$null;request_id=""}
 $sequence = 0; $ready = $false; $maximumOffset = 0; $endSeen = $false; $lastCommand = 0
 try {
     Add-Type -AssemblyName System.Windows.Forms,System.Drawing
@@ -94,6 +95,12 @@ public static class FixtureListGeometry {
     }
     $window.Controls.Add($viewer)
     if ($NativePointerCursor) {
+        . (Join-Path $PSScriptRoot 'native_pointer_setup.ps1')
+        Add-Type -Path (Join-Path $PSScriptRoot 'native_pointer_fixture.cs') -ReferencedAssemblies @(
+            [Windows.Forms.NativeWindow].Assembly.Location,
+            [Drawing.Point].Assembly.Location,
+            [ComponentModel.Component].Assembly.Location
+        )
         # Deliberately owned STATIC monochrome cursor, not a replaceable stock name.
         $andMask = [byte[]]::new(32); $xorMask = [byte[]]::new(32)
         for ($row=0; $row -lt 16; $row++) {
@@ -158,6 +165,9 @@ public static class FixtureListGeometry {
         if ($clock.Elapsed.TotalSeconds -ge 90 -or [IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) {
             $timer.Stop();$window.Close();return
         }
+        if ($NativePointerCursor -and $ready) {
+            Update-OwnedPointerSetup -Directory $fixtureDirectory -Nonce $Nonce -Window $window -Viewer $viewer -State $pointerSetup
+        }
         $commandPath=Join-Path $fixtureDirectory 'fixture-command.json'
         if ([IO.File]::Exists($commandPath)) {
             if ($UnsupportedScrollbar) { throw 'Unsupported fixture must not receive scroll commands' }
@@ -204,6 +214,7 @@ finally {
         try { $timer.Stop() } catch { $cleanupErrors++ }
         try { $timer.Dispose() } catch { $cleanupErrors++ }
     }
+    if ($null -ne $pointerSetup.observer -and $pointerSetup.observer.Handle -ne [IntPtr]::Zero) { try { $pointerSetup.observer.ReleaseHandle() } catch { $cleanupErrors++ } }
     if ($null -ne $window) { try { $window.Dispose() } catch { $cleanupErrors++ } }
     if ($null -ne $viewer) { try { $viewer.Dispose() } catch { $cleanupErrors++ } }
     if ($null -ne $standalone) { try { $standalone.Dispose() } catch { $cleanupErrors++ } }

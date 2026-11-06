@@ -1,0 +1,82 @@
+name: Released 0.12.1 pointer comparison
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  foreground:
+    if: >-
+      github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
+      github.head_ref == 'diagnostic/released-pointer-baseline' &&
+      github.event.pull_request.draft == true
+    name: Released source / Qt ${{ matrix.qt }} / ${{ matrix.mode }}
+    runs-on: windows-2025
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        qt: ["6.11.2", "6.12.0"]
+        mode: ["cancel", "crash"]
+    env:
+      PYTHONUTF8: "1"
+      BASELINE_MODE: ${{ matrix.mode }}
+      VERDICLIP_RELEASED_BASELINE: "1"
+      VERDICLIP_RELEASED_BASELINE_ROOT: ${{ github.workspace }}/.released-baseline
+      QT_QPA_PLATFORM: windows
+      VERDICLIP_HOSTED_NATIVE_POINTER: "1"
+      VERDICLIP_HOSTED_SCROLLBAR: "1"
+      VERDICLIP_QUALIFICATION_HEAD: ${{ github.event.pull_request.head.sha }}
+      VERDICLIP_HOSTED_SOURCE: ${{ github.event.pull_request.head.sha }}
+      QT_VERSION: ${{ matrix.qt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Exact released source, not an installed replacement
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: "false"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: a1c6bbe488284cf5f5b4ed7a8b1e30181e0f62ed
+          path: .released-baseline
+          persist-credentials: false
+      - name: Verify immutable released checkout
+        shell: pwsh
+        run: |
+          $actual = git -C .released-baseline rev-parse HEAD
+          if ($actual -ne 'a1c6bbe488284cf5f5b4ed7a8b1e30181e0f62ed') { throw 'Released source mismatch' }
+          $changes = git -C .released-baseline status --porcelain
+          if ($changes) { throw 'Released source is not clean' }
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          enable-cache: false
+          python-version: "3.13"
+      - name: Locked dependencies and supported Qt
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          uv sync --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          uv pip install --python .venv "pyside6-essentials==$env:QT_VERSION" "shiboken6==$env:QT_VERSION"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Portable pointer and appearance controls
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          uv run --no-sync pytest tests/capture/test_released_pointer_child.py tests/capture/test_released_pointer_peer.py tests/capture/test_native_pointer_cursor.py tests/capture/test_native_pointer_driver.py tests/capture/test_native_pointer_setup.py --no-cov -p no:randomly -q
+          exit $LASTEXITCODE
+      - name: Actual released source normal cancel and crash
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          $actual = git rev-parse HEAD
+          if ($actual -ne $env:VERDICLIP_QUALIFICATION_HEAD) { throw 'Source mismatch' }
+          $node = "tests/capture/test_released_pointer_native.py::test_released_source_first_terminal[$($env:BASELINE_MODE)]"
+          uv run --no-sync pytest $node --no-cov -p no:randomly -vv
+          exit $LASTEXITCODE

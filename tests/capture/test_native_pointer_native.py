@@ -22,6 +22,7 @@ from tests.capture.native_pointer_cursor import (
     copy_appearance,
 )
 from tests.capture.native_pointer_driver import Driver, State
+from tests.capture.native_pointer_setup import prepare
 from tests.capture.scroll_peer import ScrollPeer
 
 from verdiclip.capture.grabber import MssScreenSource
@@ -137,10 +138,7 @@ def test_owned_native_pointer_stationary_retirement_and_input(  # noqa: PLR0915 
     assert desktop.flags == 1
     assert owned_source.process is not None
     driver = Driver(owned_source.handle, owned_source.process.pid)
-    center = driver.client().center
-    initial = Point(round(center.x), round(center.y))
-    driver.move(initial)
-    qtbot.wait(20)  # One finite pre-scope delivery interval, never restoration polling.
+    initial = prepare(driver, owned_source, qtbot.wait)
     before = driver.read()
     assert before.flags == 1
     baseline_position_matches = before.point == initial
@@ -308,9 +306,14 @@ def test_native_pointer_preserves_protected_menu(
     """Protected menu falls back before admission, or revokes an owned session."""
     assert owned_source.process is not None
     driver = Driver(owned_source.handle, owned_source.process.pid)
-    center = driver.client().center
-    driver.move(Point(round(center.x), round(center.y)))
-    qtbot.wait(20)
+    initial = prepare(driver, owned_source, qtbot.wait)
+    before = driver.read()
+    baseline_ready = (
+        before.flags == 1
+        and before.point == initial
+        and copy_appearance(before.cursor, NativeReader()) == expected_cursor()
+    )
+    assert baseline_ready, "Menu fixture baseline unavailable"
     source = MssScreenSource()
     service = CaptureService(source, FixedWindows(), show_magnifier=False)
     service.enable_native_pointer()
@@ -373,12 +376,11 @@ def test_native_pointer_abrupt_owned_process_exit(
     """Exact child exit, not normal cleanup, precedes the first restoration sample."""
     assert owned_source.process is not None
     driver = Driver(owned_source.handle, owned_source.process.pid)
-    center = driver.client().center
-    driver.move(Point(round(center.x), round(center.y)))
-    qtbot.wait(20)
+    initial = prepare(driver, owned_source, qtbot.wait)
     before = driver.read()
     baseline = (
         before.flags == 1
+        and before.point == initial
         and copy_appearance(before.cursor, NativeReader()) == expected_cursor()
     )
     assert baseline, "Crash baseline unavailable"
