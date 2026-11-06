@@ -56,7 +56,7 @@ public static class DiscoveryTests {
         Check(backend.Phases[backend.Phases.Count-1]=="inspect_ancestor_process_guard");
         backend.HitElement.Values[30002]=42;
         backend.HitElement.Id=null; backend.Phases.Clear(); Reject(()=>resolver.FindAncestors(0,0));
-        Check(backend.Phases[backend.Phases.Count-1]=="inspect_ancestor_runtime_read");
+        Check(String.Join(",",backend.Phases)=="inspect_hit,inspect_ancestor_identity,inspect_ancestor_process_read,inspect_ancestor_process_guard,inspect_ancestor_runtime_read,discovery_runtime_guard_before,discovery_runtime_call,discovery_runtime_array");
         backend.HitElement.Id=new[]{2};
         backend.Parents[backend.HitElement]=backend.HitElement; Reject(()=>resolver.FindAncestors(0,0));
         backend.Parents.Clear(); Reject(()=>resolver.FindAncestors(0,0));
@@ -110,6 +110,31 @@ public static class DiscoveryTests {
                 Check(seen is AggregateException);
                 var aggregate=(AggregateException)seen;
                 Check(aggregate.InnerExceptions.Count==2 && Object.ReferenceEquals(aggregate.InnerExceptions[0],one) && Object.ReferenceEquals(aggregate.InnerExceptions[1],two));
+            }
+        }
+        foreach(string fault in new[]{"", "guard-before", "call", "null", "empty", "oversized", "guard-after"}) {
+            foreach(bool brokenDiagnostics in new[]{false,true}) {
+                var phases=new List<string>(); int calls=0,guards=0; int[] result=null;
+                int[] valid=new[]{Int32.MinValue,0,Int32.MaxValue}; seen=null;
+                try { result=DiscoveryPolicy.ReadRuntime(
+                    ()=>{calls++;if(fault=="call")throw one;
+                        if(fault=="null")return null;if(fault=="empty")return new int[0];
+                        return fault=="oversized"?new int[65]:valid;},
+                    ()=>{guards++;if((guards==1 && fault=="guard-before") || (guards==2 && fault=="guard-after"))throw two;},
+                    phase=>{phases.Add(phase);if(brokenDiagnostics)throw new Exception("optional-diagnostic");}); }
+                catch(Exception error) { seen=error; }
+                Check(calls==(fault=="guard-before"?0:1));
+                Check(guards==((fault=="" || fault=="guard-after")?2:1));
+                var expected=new List<string>{"discovery_runtime_guard_before"};
+                if(fault!="guard-before")expected.Add("discovery_runtime_call");
+                if(fault!="guard-before" && fault!="call")expected.Add("discovery_runtime_array");
+                if(fault=="" || fault=="guard-after")expected.Add("discovery_runtime_guard_after");
+                if(fault=="")expected.Add("discovery_runtime_verified");
+                Check(String.Join(",",phases)==String.Join(",",expected));
+                Check((fault=="")== (seen==null));
+                if(fault=="")Check(Object.ReferenceEquals(result,valid));else Check(result==null);
+                if(fault=="call")Check(Object.ReferenceEquals(seen,one));
+                if(fault.StartsWith("guard-"))Check(Object.ReferenceEquals(seen,two));
             }
         }
         foreach(bool fail in new[]{false,true}) {

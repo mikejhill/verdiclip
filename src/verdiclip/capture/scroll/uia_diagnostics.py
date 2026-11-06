@@ -40,6 +40,17 @@ class WorkerTrace:
     LF = ord("\n")
     CR = ord("\r")
     MARKERS: ClassVar[dict[bytes, str]] = {
+        b"VERDICLIP_UIA_PHASE=discovery_runtime_guard_before": (
+            "discovery_runtime_guard_before"
+        ),
+        b"VERDICLIP_UIA_PHASE=discovery_runtime_call": ("discovery_runtime_call"),
+        b"VERDICLIP_UIA_PHASE=discovery_runtime_array": ("discovery_runtime_array"),
+        b"VERDICLIP_UIA_PHASE=discovery_runtime_guard_after": (
+            "discovery_runtime_guard_after"
+        ),
+        b"VERDICLIP_UIA_PHASE=discovery_runtime_verified": (
+            "discovery_runtime_verified"
+        ),
         b"VERDICLIP_UIA_PHASE=inspect_ancestor_process_read": (
             "inspect_ancestor_process_read"
         ),

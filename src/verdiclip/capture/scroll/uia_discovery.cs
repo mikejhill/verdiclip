@@ -94,6 +94,13 @@ public static class DiscoveryPolicy {
         try { mark(phase); }
         catch(Exception) { /* Optional diagnostics must never prevent cleanup. */ }
     }
+    public static int[] ReadRuntime(Func<int[]> read, Action guard, Action<string> mark) {
+        TryMark(mark,"discovery_runtime_guard_before"); guard();
+        TryMark(mark,"discovery_runtime_call"); int[] value=read();
+        TryMark(mark,"discovery_runtime_array"); Runtime(value);
+        TryMark(mark,"discovery_runtime_guard_after"); guard();
+        TryMark(mark,"discovery_runtime_verified"); return value;
+    }
     public static void Retire(Action release, Action restore) {
         Retire(release,restore,phase=>{});
     }
@@ -143,7 +150,7 @@ public sealed class DiscoveryNode {
     public bool IsOffscreen { get { return DiscoveryPolicy.Boolean(Property(30022)); } }
     public bool IsEnabled { get { return DiscoveryPolicy.Boolean(Property(30010)); } }
     public DiscoveryRectangle BoundingRectangle { get { return DiscoveryPolicy.Rectangle(Property(30001)); } }
-    public int[] GetRuntimeId() { backend.Guard(); int[] value=Element.Runtime(); DiscoveryPolicy.Runtime(value); backend.Guard(); return value; }
+    public int[] GetRuntimeId() { return DiscoveryPolicy.ReadRuntime(Element.Runtime,backend.Guard,backend.Mark); }
     public string RuntimeIdentity { get { return DiscoveryPolicy.Runtime(GetRuntimeId()); } }
     public DiscoveryPattern GetScroll() {
         // A typed availability property distinguishes genuine absence from failed

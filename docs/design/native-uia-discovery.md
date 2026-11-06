@@ -92,3 +92,25 @@ orientation, enabled/offscreen state and scroll metrics. Executable fault tests
 require each such failure to propagate with no result and preserved cleanup.
 The C# fake naming correction does not alter tested policy. These changes need
 fresh Windows validation; neither the earlier failures nor native holds are erased.
+
+
+## Runtime identity boundary diagnostic
+
+The next changed-source CI fixed both Windows fake tests and passed the four WPF
+profiles. WinForms again refused quickly: same-process ancestor validation passed,
+but the first ancestor runtime-read scope failed before cycle validation. Release
+and DPI restoration succeeded. This is not an operation timeout.
+
+Fixed labels now distinguish the guard before the existing runtime read, the
+single GetRuntimeId call, returned-array validation, and the guard afterward.
+Nonempty and at-most 64 signed integer IDs remain mandatory. No additional native
+query, fallback, retry or deadline change is introduced. Pure injected tests cover
+both guard failures, provider-call failure, null/empty/oversized arrays, success,
+and optional diagnostic exceptions without changing outcomes.
+
+Microsoft's [native GetRuntimeId contract](https://learn.microsoft.com/en-us/windows/win32/api/uiautomationclient/nf-uiautomationclient-iuiautomationelement-getruntimeid)
+returns an integer SAFEARRAY on success or an HRESULT failure; IDs remain opaque
+comparison values. The [modern managed implementation](https://source.dot.net/UIAutomationClient/System/Windows/Automation/AutomationElement.cs.html)
+can cache/pre-fetch IDs. Neither source establishes a safe native missing-identity
+fallback or explains this specific failure. Actual failure classification remains
+pending the changed-source Windows diagnostic.

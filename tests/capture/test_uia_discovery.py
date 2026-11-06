@@ -134,6 +134,9 @@ def test_discovery_failure_markers_are_fixed_and_bounded() -> None:
     expected = [
         "inspect_ancestor_process_read",
         "inspect_ancestor_process_guard",
+        "discovery_runtime_guard_before",
+        "discovery_runtime_call",
+        "discovery_runtime_array",
         "discovery_release",
         "discovery_released",
         "discovery_restore",
