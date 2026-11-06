@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from tests.capture.root_comparison import RootProbeTrace
 from tests.capture.test_scroll_metric_policy import run_policy_probe
 
 from verdiclip.capture.scroll.uia_diagnostics import WorkerTrace
@@ -168,7 +169,12 @@ def test_guards_cover_generation_foreground_desktop_and_dpi_restore() -> None:
 
 def test_foreground_boundary_samples_stay_outside_root_timing() -> None:
     """Cheap stage checks do not add process lookups or continuous monitoring."""
-    helper = helper_source()
+    helper = re.sub(
+        r"^ +\[VerdiClip.Automation.RootProbeTiming\]::Phase\('probe_[a-z_0-9]+'\)\n",
+        "",
+        helper_source(),
+        flags=re.MULTILINE,
+    )
     guard = "[VerdiClip.Automation.RootProbeGuard]::RequireForeground("
     assert helper.count(guard) == 4
     assert (
@@ -255,16 +261,16 @@ def test_timings_bracket_only_the_single_root_calls() -> None:
     assert "elapsed >= 0 && elapsed <= 999999999" in native
 
 
-def test_all_emitted_phases_are_existing_fixed_allowlisted_markers() -> None:
-    """No provider text, runtime IDs, arbitrary phases, or new stderr vocabulary."""
+def test_all_emitted_phases_are_test_only_fixed_allowlisted_markers() -> None:
+    """No provider text, runtime IDs, or unreviewed stderr vocabulary."""
     helper = helper_source()
     native = native_source()
-    phases = re.findall(r"::Phase\('([a-z_]+)'\)", helper)
-    phases += re.findall(r'RootProbeTiming.Phase\("([a-z_]+)"\)', native)
-    phases += re.findall(r"'VERDICLIP_UIA_PHASE=([a-z_]+)'", helper)
+    phases = re.findall(r"::Phase\('([a-z_0-9]+)'\)", helper)
+    phases += re.findall(r'RootProbeTiming.Phase\("([a-z_0-9]+)"\)', native)
+    phases += re.findall(r"'VERDICLIP_UIA_PHASE=([a-z_0-9]+)'", helper)
     assert phases
     assert all(
-        f"VERDICLIP_UIA_PHASE={phase}".encode() in WorkerTrace.MARKERS
+        f"VERDICLIP_UIA_PHASE={phase}".encode() in RootProbeTrace.MARKERS
         for phase in phases
     )
     assert "VERDICLIP_UIA_ROOT_US=" in native
@@ -632,7 +638,7 @@ public static class RootProbeTiming {
     public static long? Start() { return 0; }
     public static long? Finish(long? value) { return value; }
     public static void RootRecord(string id,long? duration) { }
-    public static void Phase(string phase) { }
+    public static void Phase(string phase) { ProbeFake.Trace.Add(phase); }
 }
 public sealed class RootProbeSession {
     public long? ConstructUs,RootUs,ValidateUs,ReleaseUs;
@@ -660,7 +666,7 @@ public sealed class AutomationElement {
             return new ProbeCurrent { ProcessId=42, NativeWindowHandle=100 };
         }
     }
-    public int[] GetRuntimeId() { return new int[] { 1 }; }
+    public int[] GetRuntimeId() { ProbeFake.Hit("runtime"); return new int[] { 1 }; }
 }
 }
 '@
@@ -685,6 +691,7 @@ foreach ($Client in @('managed','native')) {
             'construct,release','validate,release,restore','foreground-3',
             'release,foreground-3,restore')
     }
+    if ($Client -ceq 'managed') { $faults += @('runtime') }
     foreach ($fault in $faults) {
         [ProbeFake]::Reset($fault); $result=$null; $failure=$null
         try { $result=Invoke-RootProbe $request $runtime }
@@ -770,12 +777,36 @@ foreach ($Client in @('managed','native')) {
                 }
             }
         }
+        if ($fault -ceq 'validate,release,restore') {
+            $diagnostics=@([ProbeFake]::Trace | Where-Object {
+                $_ -like 'probe_*failed*'
+            })
+            $expected='probe_operation_failed,probe_cleanup_failed_1,' +
+                'probe_cleanup_failed_3'
+            if (($diagnostics -join ',') -cne $expected) {
+                throw 'Primary and cleanup failures were not separately retained'
+            }
+        }
+        $phaseMap=@{
+            'owned-2'='probe_owned_2'; 'physical-2'='probe_physical_2'
+            'restore'='probe_restore_1'; 'owned-3'='probe_owned_3'
+            'runtime'='probe_runtime_1'; 'release'='probe_release_native_1'
+        }
+        foreach ($faultStage in $fault.Split(',')) {
+            if ($phaseMap.ContainsKey($faultStage)) {
+                $index=[ProbeFake]::Trace.IndexOf($faultStage)
+                if ($index -lt 1 -or
+                    [ProbeFake]::Trace[$index-1] -cne $phaseMap[$faultStage]) {
+                    throw 'Failure stage diagnostic missing or incorrect'
+                }
+            }
+        }
         if (@([ProbeFake]::Trace | Where-Object { $_ -ceq 'release' }).Count -gt 1) {
             throw 'Release retried'
         }
     }
 }
-if ($count -ne 41) { throw 'Operation cases were not all executed' }
+if ($count -ne 42) { throw 'Operation cases were not all executed' }
 [Console]::WriteLine('operation-policy-passed')
 """
     )
@@ -783,3 +814,38 @@ if ($count -ne 41) { throw 'Operation cases were not all executed' }
         run_windows_script(tmp_path, "operation-policy.ps1", script)
         == "operation-policy-passed"
     )
+
+
+def test_probe_trace_is_scoped_bounded_and_discards_unknown_text() -> None:
+    """Extra vocabulary applies only to the experiment and survives fragmentation."""
+    production = WorkerTrace(lambda: 1.0)
+    probe = RootProbeTrace(lambda: 1.0)
+    expected = [
+        "probe_runtime_1",
+        "probe_operation_failed",
+        "probe_release_managed_1",
+        "probe_foreground_4",
+        "probe_cleanup_failed_2",
+        "probe_restore_1",
+        "probe_cleanup_failed_3",
+    ]
+    data = (
+        b"private-provider-text\n"
+        + b"".join(f"VERDICLIP_UIA_PHASE={stage}\r\n".encode() for stage in expected)
+        + b"VERDICLIP_UIA_PHASE=probe_private_value\n"
+    )
+    for byte in data:
+        probe_accepted = probe.error_bytes(bytes([byte]))
+        production_accepted = production.error_bytes(bytes([byte]))
+        assert probe_accepted
+        assert production_accepted
+    assert [event.stage for event in probe.events] == expected
+    assert not production.events
+    assert probe.dropped_events == 0
+    assert RootProbeTrace.MARKERS is not WorkerTrace.MARKERS
+    for _ in range(70):
+        probe.error_bytes(b"VERDICLIP_UIA_PHASE=probe_restore_1\n")
+    assert len(probe.events) == 64
+    assert probe.dropped_events == 13
+    overflow_accepted = probe.error_bytes(b"x" * WorkerTrace.MAX_ERROR_BYTES)
+    assert not overflow_accepted

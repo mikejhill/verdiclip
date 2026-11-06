@@ -5,13 +5,22 @@ from pathlib import Path
 
 import pytest
 from pytestqt.qtbot import QtBot
-from tests.capture.root_comparison import RootComparison, require_probe_environment
+from tests.capture.root_comparison import (
+    RootComparison,
+    RootProbeTrace,
+    require_probe_environment,
+)
+
+from verdiclip.capture.scroll import uia_worker
 
 pytestmark = pytest.mark.native_desktop
 
 
 def test_one_cold_root_lookup(
-    qtbot: QtBot, tmp_path: Path, request: pytest.FixtureRequest
+    qtbot: QtBot,
+    tmp_path: Path,
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """One cold arm on its own VM, with failures retained and no fallback."""
     if not request.config.getoption("--native-broker-handoff"):
@@ -19,6 +28,7 @@ def test_one_cold_root_lookup(
     if sys.platform != "win32":
         pytest.fail("Root comparison requires Windows", pytrace=False)
     client, provider = require_probe_environment()
+    monkeypatch.setattr(uia_worker, "WorkerTrace", RootProbeTrace)
     case = RootComparison(qtbot, tmp_path, client, provider)
     try:
         case.run()

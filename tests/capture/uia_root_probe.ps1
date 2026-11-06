@@ -69,52 +69,74 @@ function Invoke-RootProbe($Request, $Runtime) {
     $dpiRestored = $false
     $durations = @{ construct=$null; root=$null; validate=$null; release=$null }
     try {
+        [VerdiClip.Automation.RootProbeTiming]::Phase('probe_mta_1')
         [VerdiClip.Automation.RootProbeGuard]::RequireMta()
+        [VerdiClip.Automation.RootProbeTiming]::Phase('probe_native_only_1')
         if ($Client -ceq 'native') { [VerdiClip.Automation.RootProbeGuard]::RequireNativeOnlyProcess() }
         [VerdiClip.Automation.RootProbeTiming]::Phase('inspect_desktop')
+        [VerdiClip.Automation.RootProbeTiming]::Phase('probe_dpi_enter_1')
         $priorDpi = [CaptureDesktop]::SetThreadDpiAwarenessContext([IntPtr]::new(-4))
         if ($priorDpi -eq [IntPtr]::Zero) { throw 'unsupported_or_changed' }
+        [VerdiClip.Automation.RootProbeTiming]::Phase('probe_physical_1')
         [VerdiClip.Automation.RootProbeGuard]::RequirePhysicalPixels()
+        [VerdiClip.Automation.RootProbeTiming]::Phase('probe_owned_1')
         [VerdiClip.Automation.RootProbeGuard]::RequireOwnedWindow($payload.window_handle, $payload.process_id, $payload.started_ticks, $payload.foreground_handle)
         if ($Client -ceq 'native') {
             $session = [VerdiClip.Automation.RootProbeSession]::new()
+            [VerdiClip.Automation.RootProbeTiming]::Phase('probe_construct_1')
             $session.Construct()
+            [VerdiClip.Automation.RootProbeTiming]::Phase('probe_foreground_1')
             [VerdiClip.Automation.RootProbeGuard]::RequireForeground($payload.foreground_handle)
+            [VerdiClip.Automation.RootProbeTiming]::Phase('probe_acquire_native_1')
             $session.Acquire($payload.window_handle, $requestId)
+            [VerdiClip.Automation.RootProbeTiming]::Phase('probe_foreground_2')
             [VerdiClip.Automation.RootProbeGuard]::RequireForeground($payload.foreground_handle)
+            [VerdiClip.Automation.RootProbeTiming]::Phase('probe_validate_native_1')
             $session.Validate($payload.process_id, $payload.window_handle)
             $durations.construct = $session.ConstructUs
             $durations.root = $session.RootUs
             $durations.validate = $session.ValidateUs
         } else {
             [VerdiClip.Automation.RootProbeTiming]::Phase('inspect_root')
+            [VerdiClip.Automation.RootProbeTiming]::Phase('probe_acquire_managed_1')
             $started = [VerdiClip.Automation.RootProbeTiming]::Start()
             $root = [System.Windows.Automation.AutomationElement]::FromHandle($handle)
             $durations.root = [VerdiClip.Automation.RootProbeTiming]::Finish($started)
             [VerdiClip.Automation.RootProbeTiming]::RootRecord($requestId, $durations.root)
+            [VerdiClip.Automation.RootProbeTiming]::Phase('probe_foreground_3')
             [VerdiClip.Automation.RootProbeGuard]::RequireForeground($payload.foreground_handle)
             $started = [VerdiClip.Automation.RootProbeTiming]::Start()
             if ($null -eq $root) { throw 'unsupported_or_changed' }
             [VerdiClip.Automation.RootProbeTiming]::Phase('inspect_process')
+            [VerdiClip.Automation.RootProbeTiming]::Phase('probe_current_managed_1')
             $current = $root.Current
             if ($current.ProcessId -ne $payload.process_id -or [long]$current.NativeWindowHandle -ne $payload.window_handle) { throw 'unsupported_or_changed' }
             [VerdiClip.Automation.RootProbeTiming]::Phase('inspect_root_runtime')
+            [VerdiClip.Automation.RootProbeTiming]::Phase('probe_runtime_1')
             [VerdiClip.Automation.RootProbeGuard]::RequireRuntime($root.GetRuntimeId())
             $durations.validate = [VerdiClip.Automation.RootProbeTiming]::Finish($started)
         }
+        [VerdiClip.Automation.RootProbeTiming]::Phase('probe_owned_2')
         [VerdiClip.Automation.RootProbeGuard]::RequireOwnedWindow($payload.window_handle, $payload.process_id, $payload.started_ticks, $payload.foreground_handle)
+        [VerdiClip.Automation.RootProbeTiming]::Phase('probe_physical_2')
         [VerdiClip.Automation.RootProbeGuard]::RequirePhysicalPixels()
+        [VerdiClip.Automation.RootProbeTiming]::Phase('probe_native_only_2')
         if ($Client -ceq 'native') { [VerdiClip.Automation.RootProbeGuard]::RequireNativeOnlyProcess() }
-    } catch { $failure = $_.Exception }
+    } catch {
+        [VerdiClip.Automation.RootProbeTiming]::Phase('probe_operation_failed')
+        $failure = $_.Exception
+    }
     finally {
         try {
             if ($null -ne $session) {
+                [VerdiClip.Automation.RootProbeTiming]::Phase('probe_release_native_1')
                 $session.Release()
                 $durations.release = $session.ReleaseUs
             } else {
                 $started = [VerdiClip.Automation.RootProbeTiming]::Start()
                 # Managed AutomationElement is not an RCW. Release an exposed RCW
                 # defensively, never force collection of framework-owned objects.
+                [VerdiClip.Automation.RootProbeTiming]::Phase('probe_release_managed_1')
                 if ($null -ne $root -and [Runtime.InteropServices.Marshal]::IsComObject($root)) {
                     if ([Runtime.InteropServices.Marshal]::ReleaseComObject($root) -ne 0) { throw 'unsupported_or_changed' }
                 }
@@ -124,23 +146,28 @@ function Invoke-RootProbe($Request, $Runtime) {
             }
             $releaseConfirmed = $true
         } catch {
+            [VerdiClip.Automation.RootProbeTiming]::Phase('probe_cleanup_failed_1')
             if ($null -eq $failure) { $failure = $_.Exception }
             else { $failure = [AggregateException]::new([Exception[]]@($failure, $_.Exception)) }
         }
         try {
             if ($priorDpi -ne [IntPtr]::Zero) {
+                [VerdiClip.Automation.RootProbeTiming]::Phase('probe_foreground_4')
                 [VerdiClip.Automation.RootProbeGuard]::RequireForeground($payload.foreground_handle)
             }
         } catch {
+            [VerdiClip.Automation.RootProbeTiming]::Phase('probe_cleanup_failed_2')
             if ($null -eq $failure) { $failure = $_.Exception }
             else { $failure = [AggregateException]::new([Exception[]]@($failure, $_.Exception)) }
         }
         try {
             if ($priorDpi -ne [IntPtr]::Zero) {
+                [VerdiClip.Automation.RootProbeTiming]::Phase('probe_restore_1')
                 [VerdiClip.Automation.RootProbeGuard]::RestoreDpi($priorDpi)
                 $dpiRestored = $true
             }
         } catch {
+            [VerdiClip.Automation.RootProbeTiming]::Phase('probe_cleanup_failed_3')
             if ($null -eq $failure) { $failure = $_.Exception }
             else { $failure = [AggregateException]::new([Exception[]]@($failure, $_.Exception)) }
         }
@@ -149,8 +176,11 @@ function Invoke-RootProbe($Request, $Runtime) {
     # exceptions only in-process; do not expose messages, provider data, or HRESULTs.
     if ($null -ne $failure) { throw $failure }
     if (-not $releaseConfirmed -or -not $dpiRestored) { throw 'unsupported_or_changed' }
+    [VerdiClip.Automation.RootProbeTiming]::Phase('probe_mta_2')
     [VerdiClip.Automation.RootProbeGuard]::RequireMta()
+    [VerdiClip.Automation.RootProbeTiming]::Phase('probe_owned_3')
     [VerdiClip.Automation.RootProbeGuard]::RequireOwnedWindow($payload.window_handle, $payload.process_id, $payload.started_ticks, $payload.foreground_handle)
+    [VerdiClip.Automation.RootProbeTiming]::Phase('probe_native_only_3')
     if ($Client -ceq 'native') { [VerdiClip.Automation.RootProbeGuard]::RequireNativeOnlyProcess() }
     return @{
         client=$Client; apartment='MTA'; identity_verified=$true; foreground_unchanged=$true

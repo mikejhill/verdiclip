@@ -14,7 +14,7 @@ import subprocess
 import time
 from dataclasses import asdict
 from pathlib import Path
-from typing import cast
+from typing import ClassVar, cast
 
 from PySide6.QtCore import QPoint, qVersion
 from PySide6.QtWidgets import QApplication, QMenu
@@ -27,10 +27,51 @@ from tests.capture.production_matrix import (
 )
 from tests.capture.scroll_peer import ScrollPeer
 
-from verdiclip.capture.scroll.uia_diagnostics import WorkerDiagnostics
+from verdiclip.capture.scroll.uia_diagnostics import WorkerDiagnostics, WorkerTrace
 from verdiclip.capture.scroll.uia_messages import UiaAction, UiaRequest
 from verdiclip.capture.scroll.uia_process import UiaProcess
 from verdiclip.geometry import Rect
+
+
+class RootProbeTrace(WorkerTrace):
+    """Test-only bounded phase vocabulary; product diagnostics stay unchanged."""
+
+    MAX_EVENTS = 64
+    PROBE_PHASES = (
+        "probe_acquire_managed_1",
+        "probe_acquire_native_1",
+        "probe_cleanup_failed_1",
+        "probe_cleanup_failed_2",
+        "probe_cleanup_failed_3",
+        "probe_construct_1",
+        "probe_current_managed_1",
+        "probe_dpi_enter_1",
+        "probe_foreground_1",
+        "probe_foreground_2",
+        "probe_foreground_3",
+        "probe_foreground_4",
+        "probe_mta_1",
+        "probe_mta_2",
+        "probe_native_only_1",
+        "probe_native_only_2",
+        "probe_native_only_3",
+        "probe_operation_failed",
+        "probe_owned_1",
+        "probe_owned_2",
+        "probe_owned_3",
+        "probe_physical_1",
+        "probe_physical_2",
+        "probe_release_managed_1",
+        "probe_release_native_1",
+        "probe_restore_1",
+        "probe_runtime_1",
+        "probe_validate_native_1",
+    )
+    MARKERS: ClassVar[dict[bytes, str]] = {
+        **WorkerTrace.MARKERS,
+        **{f"VERDICLIP_UIA_PHASE={phase}".encode(): phase for phase in PROBE_PHASES},
+    }
+
 
 RESULT_KEYS = {
     "client",

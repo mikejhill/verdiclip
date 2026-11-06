@@ -66,3 +66,23 @@ Microsoft documents both [native HWND element retrieval](https://learn.microsoft
 and [non-UI MTA threading and apartment lifetime](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-threading).
 Those contracts support the comparison setup, not a claim about the cause of
 this particular timeout.
+
+## Targeted failure-stage follow-up
+
+The first batch returned managed failures after root acquisition, not operation
+timeouts. Native succeeded for both providers. That does not establish why
+managed validation failed. A reviewed follow-up adds fixed literal boundary
+markers around runtime validation, ownership/DPI guards, release, foreground
+checks and restoration. `probe_operation_failed` separates the first operation
+failure from subsequent cleanup progress; `probe_cleanup_failed_1/2/3` identify
+release, foreground and restore failures independently. The preceding boundary
+is diagnostic scope, not an exception classification or asserted root cause.
+
+Only the hosted test monkeypatches the worker trace constructor with a test-only
+allowlist. Its event cap is 64 so cleanup cannot evict earlier evidence in this
+single-operation experiment; stderr remains bounded to 65,536 bytes and receipts
+to 16 KiB. Product tracing is unchanged. Unknown text is discarded, no exception
+text is emitted, and original exception aggregation remains in-process. All
+guards, deadlines, fixture isolation and stop-after-one-batch policy remain.
+The extra markers add instrumentation overhead, so timings across revisions
+are not treated as a controlled performance comparison.
