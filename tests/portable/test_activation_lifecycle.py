@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import subprocess
 from unittest.mock import Mock
 
@@ -103,7 +104,7 @@ def test_diagnostic_failures_do_not_replace_timeout(
     monkeypatch.setattr(
         lifecycle, "time", Mock(monotonic=Mock(side_effect=RuntimeError))
     )
-    monkeypatch.setattr(lifecycle, "phase_receipts", Mock(side_effect=SystemExit))
+    monkeypatch.setattr(lifecycle, "phase_receipts", Mock(side_effect=RuntimeError))
     with pytest.raises(subprocess.TimeoutExpired) as caught:
         lifecycle.run_activation(["owned-command"])
     assert caught.value is original
@@ -169,3 +170,75 @@ def test_windows_interrupted_pipes_are_never_closed_or_claimed_retired(
     assert "retirement_confirmed': True" in original.__notes__[0]
     assert "pipe_cleanup_confirmed': False" in original.__notes__[0]
     assert "cleanup_confirmed': False" in original.__notes__[0]
+
+
+@pytest.mark.parametrize(
+    "kind", [KeyboardInterrupt, SystemExit, asyncio.CancelledError]
+)
+@pytest.mark.parametrize(
+    "stage", ["clock", "poll", "receipt", "kill", "reap", "stdout", "stderr"]
+)
+def test_controls_propagate_while_preserving_timeout_and_independent_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+    kind: type[BaseException],
+    stage: str,
+) -> None:
+    """Controls are not optional evidence; original timeout remains in context."""
+    monkeypatch.setattr(lifecycle, "sys", Mock(platform="linux"))
+    process = process_fixture(monkeypatch)
+    original = subprocess.TimeoutExpired("owned-command", 10)
+    control = kind("control")
+    process.communicate.side_effect = original
+    process.poll.return_value = None
+    if stage == "clock":
+        monkeypatch.setattr(
+            lifecycle, "time", Mock(monotonic=Mock(side_effect=[1.0, control]))
+        )
+    elif stage == "poll":
+        process.poll.side_effect = control
+    elif stage == "receipt":
+        monkeypatch.setattr(lifecycle, "phase_receipts", Mock(side_effect=control))
+    elif stage == "kill":
+        process.kill.side_effect = control
+    elif stage == "reap":
+        process.wait.side_effect = control
+    else:
+        getattr(process, stage).close.side_effect = control
+    with pytest.raises(kind) as caught:
+        lifecycle.run_activation(["owned-command"])
+    assert caught.value is control
+    assert control.__context__ is original
+    process.kill.assert_called_once_with()
+    process.wait.assert_called_once_with(timeout=2)
+    process.stdout.close.assert_called_once_with()
+    process.stderr.close.assert_called_once_with()
+
+
+def test_multiple_cleanup_controls_keep_complete_context_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every independent cleanup runs and all superseded controls remain visible."""
+    monkeypatch.setattr(lifecycle, "sys", Mock(platform="linux"))
+    process = process_fixture(monkeypatch)
+    original = KeyboardInterrupt("communicate")
+    kill = SystemExit("kill")
+    reap = asyncio.CancelledError("reap")
+    stdout = GeneratorExit("stdout")
+    stderr = KeyboardInterrupt("stderr")
+    process.communicate.side_effect = original
+    process.kill.side_effect = kill
+    process.wait.side_effect = reap
+    process.stdout.close.side_effect = stdout
+    process.stderr.close.side_effect = stderr
+    with pytest.raises(KeyboardInterrupt) as caught:
+        lifecycle.run_activation(["owned-command"])
+    assert caught.value is stderr
+    chain = []
+    error: BaseException | None = caught.value
+    while error is not None:
+        chain.append(error)
+        error = error.__context__
+    assert chain == [stderr, stdout, reap, kill, original]
+    process.wait.assert_called_once_with(timeout=2)
+    process.stdout.close.assert_called_once_with()
+    process.stderr.close.assert_called_once_with()

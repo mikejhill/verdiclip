@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
+from typing import IO
 
 _PHASE = re.compile(
     r"^ACTIVATION_PHASE=(script-started|before-decision|after-decision|assertions-complete)"
@@ -18,7 +19,7 @@ def optional[T](action: Callable[[], T], fallback: T) -> T:
     """Guard evidence only, never child execution or the original verdict."""
     try:
         return action()
-    except BaseException:  # noqa: BLE001 - retain original verdict through diagnostics
+    except Exception:  # noqa: BLE001 - ordinary diagnostic failures only
         return fallback
 
 
@@ -56,15 +57,17 @@ def _retire(
     process: subprocess.Popen[str], errors: list[str], *, exited: bool = False
 ) -> None:
     """Always attempt bounded reaping even when owned-process kill fails."""
-    if not exited:
-        try:
-            process.kill()
-        except BaseException:  # noqa: BLE001 - retain original verdict through diagnostics
-            errors.append("kill-failed")
     try:
-        process.wait(timeout=2)
-    except BaseException:  # noqa: BLE001 - retain original verdict through diagnostics
-        errors.append("reap-unconfirmed")
+        if not exited:
+            try:
+                process.kill()
+            except Exception:  # noqa: BLE001 - retain ordinary cleanup failure
+                errors.append("kill-failed")
+    finally:
+        try:
+            process.wait(timeout=2)
+        except Exception:  # noqa: BLE001 - retain ordinary cleanup failure
+            errors.append("reap-unconfirmed")
 
 
 def _close_pipes(process: subprocess.Popen[str], *, interrupted: bool) -> bool:
@@ -77,14 +80,20 @@ def _close_pipes(process: subprocess.Popen[str], *, interrupted: bool) -> bool:
     """
     if interrupted and sys.platform == "win32":
         return False
-    confirmed = True
-    for stream in (process.stdout, process.stderr):
+
+    def close(stream: IO[str] | None) -> bool:
         if stream is not None:
             try:
                 stream.close()
-            except BaseException:  # noqa: BLE001 - preserve original operation verdict
-                confirmed = False
-    return confirmed
+            except Exception:  # noqa: BLE001 - retain ordinary cleanup failure
+                return False
+        return True
+
+    try:
+        stdout_closed = close(process.stdout)
+    finally:
+        stderr_closed = close(process.stderr)
+    return stdout_closed and stderr_closed
 
 
 def run_activation(command: list[str]) -> subprocess.CompletedProcess[str]:
@@ -97,19 +106,25 @@ def run_activation(command: list[str]) -> subprocess.CompletedProcess[str]:
     process = subprocess.Popen(  # noqa: S603 - closed repository test command
         command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
     )
-    cleanup_state: dict[str, bool] = {"interrupted": False, "pipes_handled": False}
+    cleanup_state: dict[str, bool] = {"interrupted": False, "handled": False}
     try:
         try:
             stdout, stderr = process.communicate(timeout=10)
         except subprocess.TimeoutExpired as error:
             cleanup_state["interrupted"] = True
-            # communicate may wait for inherited pipes after the process exits.
-            at_timeout = _elapsed(started)
-            returncode = optional(process.poll, "unavailable")
+            cleanup_state["handled"] = True
+            at_timeout = None
+            returncode: int | str | None = "unavailable"
             cleanup_errors: list[str] = []
-            _retire(process, cleanup_errors, exited=isinstance(returncode, int))
-            pipes_closed = _close_pipes(process, interrupted=True)
-            cleanup_state["pipes_handled"] = True
+            # A diagnostic control signal must propagate, but cannot skip cleanup.
+            try:
+                at_timeout = _elapsed(started)
+                returncode = optional(process.poll, "unavailable")
+            finally:
+                try:
+                    _retire(process, cleanup_errors, exited=isinstance(returncode, int))
+                finally:
+                    pipes_closed = _close_pipes(process, interrupted=True)
             optional(
                 lambda error=error: error.add_note(
                     str(
@@ -139,10 +154,13 @@ def run_activation(command: list[str]) -> subprocess.CompletedProcess[str]:
             raise
         except BaseException:
             cleanup_state["interrupted"] = True
-            _retire(process, [])
             raise
         return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
     finally:
-        # Never use Popen.__exit__: its unconditional wait would defeat the cap.
-        if not cleanup_state.get("pipes_handled", False):
-            _close_pipes(process, interrupted=cleanup_state["interrupted"])
+        # No unconditional wait or reader-thread joins; controls retain context.
+        if not cleanup_state.get("handled", False):
+            try:
+                if cleanup_state["interrupted"]:
+                    _retire(process, [])
+            finally:
+                _close_pipes(process, interrupted=cleanup_state["interrupted"])
