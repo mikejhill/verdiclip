@@ -145,7 +145,6 @@ def test_fixture_observer_is_post_handler_readiness_only() -> None:
         assert forbidden not in source
 
 
-
 def test_fixture_receipt_follows_observer_detach_and_exact_read() -> None:
     """No prefix-only request or still-installed observer can qualify readiness."""
     source = Path(__file__).with_name("native_pointer_setup.ps1").read_text()
@@ -154,3 +153,62 @@ def test_fixture_receipt_follows_observer_detach_and_exact_read() -> None:
     assert "$stream.ReadByte() -ne -1" in source
     assert source.index("$State.observer.ReleaseHandle()") < source.index("$receipt=@{")
     assert "observer.Handle -ne [IntPtr]::Zero" in source
+
+
+@pytest.mark.parametrize("field", ["handler_completed", "assigned_cursor_observed"])
+@pytest.mark.parametrize("invalid", [False, 1, None])
+def test_first_unqualified_observation_never_waits_for_better(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, field: str, invalid: object
+) -> None:
+    """Completed zero-result handling is separate from a qualified first cursor read."""
+    expected: dict[str, object] = {
+        "handler_completed": True,
+        "assigned_cursor_observed": True,
+        "count": 1,
+    }
+    observe = Mock(side_effect=[{**expected, field: invalid}, expected])
+    pause = Mock()
+    monkeypatch.setattr("tests.capture.native_pointer_setup.read", observe)
+    monkeypatch.setattr("tests.capture.native_pointer_setup.time.monotonic", lambda: 1)
+    with pytest.raises(RuntimeError, match="receipt-invalid"):
+        wait_receipt(tmp_path / "ready", expected, 2, pause)
+    observe.assert_called_once()
+    pause.assert_not_called()
+
+
+def test_completed_zero_result_protocol_is_accepted(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """LRESULT is deliberately not a completion or cursor-shape oracle."""
+    expected: dict[str, object] = {
+        "handler_completed": True,
+        "assigned_cursor_observed": True,
+        "count": 1,
+    }
+    monkeypatch.setattr("tests.capture.native_pointer_setup.read", lambda _: expected)
+    monkeypatch.setattr("tests.capture.native_pointer_setup.time.monotonic", lambda: 1)
+    wait_receipt(tmp_path / "ready", expected, 2, Mock())
+
+
+def test_native_first_cursor_read_is_latched_after_handler() -> None:
+    """Never infer handler completion from Result or poll for a favorable cursor."""
+    source = Path(__file__).with_name("native_pointer_fixture.cs").read_text()
+    assert "message.Result" not in source
+    assert source.index("base.WndProc(ref message)") < source.index(
+        "HandlerCompleted=true"
+    )
+    assert (
+        source.index("Count=1")
+        < source.index("armed=false")
+        < source.index("GetCursorInfo(ref info)")
+    )
+    assert source.count("GetCursorInfo(ref info)") == 1
+    assert "info.Flags == 1" in source
+    assert "info.Cursor == expectedCursor" in source
+    assert "assignedCursor == IntPtr.Zero" in source
+    script = Path(__file__).with_name("native_pointer_setup.ps1").read_text()
+    assert "::new($Viewer.Handle,$x,$y,$Viewer.Cursor.Handle)" in script
+    assert (
+        "assigned_cursor_observed=[bool]$State.observer.AssignedCursorObserved"
+        in script
+    )

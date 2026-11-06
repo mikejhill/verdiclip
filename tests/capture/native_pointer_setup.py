@@ -119,7 +119,17 @@ def prepare(driver: Driver, peer: ScrollPeer, pause: Callable[[int], None]) -> P
     if peer.process.poll() is not None:
         raise RuntimeError("pointer-setup-owner-exited")
     driver.move(target)
-    wait_receipt(paths[3], {**expected, "handled": True, "count": 1}, deadline, pause)
+    wait_receipt(
+        paths[3],
+        {
+            **expected,
+            "handler_completed": True,
+            "assigned_cursor_observed": True,
+            "count": 1,
+        },
+        deadline,
+        pause,
+    )
     if peer.process.poll() is not None:
         raise RuntimeError("pointer-setup-owner-exited")
     return target

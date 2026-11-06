@@ -52,3 +52,22 @@ This is a bounded cancellation/crash comparison, not an exact replay of the
 candidate's fourth-session drag/keyboard history, mixed-DPI qualification,
 physical input testing, a desktop-rendered uniqueness oracle, or a captured-popup
 solution. Release remains held.
+
+### First qualification and readiness correction
+
+PR115's initial six jobs stopped at the ready-receipt prerequisite before either
+capture implementation ran. The rejected receipt value was not retained, so the
+specific runtime field mismatch is not claimed as directly observed. The
+nonzero-message-result requirement is independently invalid: Microsoft's
+[WinForms v3.0.0 Control.WmSetCursor source](https://github.com/dotnet/winforms/blob/v3.0.0/src/System.Windows.Forms/src/System/Windows/Forms/Control.cs)
+(and current official source) sets the own-client cursor without assigning the
+message result. This source establishes the semantic defect, not exact binary
+attestation of the installed .NET Framework fixture runtime.
+
+Readiness now records normal-handler completion separately. On the first matching
+completed handler, the observer permanently disarms and takes one GetCursorInfo
+sample requiring visible state and the exact constructed cursor assigned to this
+owned fixture. A failed read/mismatch is latched, never retried. The observer is
+still detached before acknowledgment; the independent single baseline appearance
+copy and every first-terminal restoration assertion remain unchanged. This adds
+no cursor-state writes, movement, deadline extension or production change.

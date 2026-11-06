@@ -33,7 +33,7 @@ function Update-OwnedPointerSetup {
         $client=$Viewer.PointToClient([Drawing.Point]::new($x,$y))
         if (-not $Viewer.ClientRectangle.Contains($client)) { throw 'Cursor setup outside owned client' }
         $State.request_id=$match.Groups[2].Value
-        $State.observer=[OwnedCursorReadiness]::new($Viewer.Handle,$x,$y)
+        $State.observer=[OwnedCursorReadiness]::new($Viewer.Handle,$x,$y,$Viewer.Cursor.Handle)
         $armed=@{nonce=$Nonce;request_id=$State.request_id;pid=$PID;hwnd=$Window.Handle.ToInt64();armed=$true}
         $partial=Join-Path $Directory 'pointer-setup-armed.partial'
         [IO.File]::WriteAllText($partial,($armed|ConvertTo-Json -Compress))
@@ -43,7 +43,7 @@ function Update-OwnedPointerSetup {
         # No observer remains installed during either capture implementation.
         $State.observer.ReleaseHandle()
         if ($State.observer.Handle -ne [IntPtr]::Zero) { throw 'Cursor setup observer detach unconfirmed' }
-        $receipt=@{nonce=$Nonce;request_id=$State.request_id;pid=$PID;hwnd=$Window.Handle.ToInt64();handled=[bool]$State.observer.Handled;count=1}
+        $receipt=@{nonce=$Nonce;request_id=$State.request_id;pid=$PID;hwnd=$Window.Handle.ToInt64();handler_completed=[bool]$State.observer.HandlerCompleted;assigned_cursor_observed=[bool]$State.observer.AssignedCursorObserved;count=1}
         $partial=Join-Path $Directory 'pointer-setup-ready.partial'
         [IO.File]::WriteAllText($partial,($receipt|ConvertTo-Json -Compress))
         [IO.File]::Move($partial,$readyPath)

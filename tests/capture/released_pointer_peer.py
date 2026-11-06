@@ -14,7 +14,7 @@ from tests.capture.released_pointer_child import child
 
 def reply(pipe: object, deadline: float, nonce: str) -> dict[str, object]:
     """Surface only a strictly allowlisted child failure category."""
-    value = receive(cast("Wire", pipe), deadline)
+    value = receive(cast(Wire, pipe), deadline)
     if value.get("phase") == "failed":
         stages = {"source", "start", "admission", "action", "retirement", "finish"}
         reasons = {"timeout", "invalid-proof", "unavailable", "unknown"}
