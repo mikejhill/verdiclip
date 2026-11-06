@@ -73,6 +73,7 @@ Consequences:
 | UX-CAP-13 | *Save to the output folder* is on | The image is saved using the filename pattern; the notification shows the path and clicking it opens the folder. If the editor also opens, it is already linked to that file, so `Ctrl+S` overwrites it. |
 | UX-CAP-14 | Any combination of the three after-capture actions | All chosen actions run for every capture. Settings won't accept turning all three off. |
 | UX-CAP-15 | During selection the user presses `Enter` | The first `Enter` starts a selection at the cursor, as a mouse press would; the arrow keys (or the mouse) then extend it. The second `Enter` — or a left click — finishes it exactly like releasing the mouse at that point: a region, or — without a ≥ 3 px drag — the window or monitor under the cursor. `Enter` acts at the cursor on whichever monitor it is on, not only the one it started on. |
+| UX-CAP-16 | Scrolling capture is waiting for temporary image storage and the user presses Stop or Cancel | The controls and GUI remain responsive. Stop retains only rows already committed; before the first committed viewport it cancels. Cancel never publishes a late image. Native input is released after helper cleanup even if storage is still draining. Review and another scrolling capture wait for storage cleanup; a failed cleanup stays visible and retryable without losing a stopped capture's verified prefix. Existing input and acquisition deadlines remain enforced. |
 
 ## Editor: canvas and navigation
 

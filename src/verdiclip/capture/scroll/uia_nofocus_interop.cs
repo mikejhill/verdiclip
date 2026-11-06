@@ -2,6 +2,8 @@
 // Unused slots are never invoked. No SetFocus/activation/input API is exposed.
 using System;
 using System.Runtime.InteropServices;
+using System.Collections.Generic;
+using System.Globalization;
 namespace VerdiClip.Automation {
 [StructLayout(LayoutKind.Sequential)] internal struct NativePoint { public int X, Y; }
 [ComImport, Guid("34723aff-0c9d-49d0-9896-7ab52df8cd8a"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
@@ -93,5 +95,57 @@ internal interface IScroll {
     void get_CurrentVerticalViewSize(out double value); // slot 8
     void Reserved_09_get_CurrentHorizontallyScrollable(); // slot 9
     void get_CurrentVerticallyScrollable(out int value); // slot 10
+}
+// Shared, pure proof for one transient initial hit. Never creates an identity.
+public static class TransientHitPolicy {
+    private static void Require(bool value) { if(!value)throw new InvalidOperationException("unresolved_hit_unverified"); }
+    private static bool Finite(double value) { return !Double.IsNaN(value) && !Double.IsInfinity(value); }
+    public static bool Missing(int[] runtime) { return runtime==null || runtime.Length==0; }
+    public static double[] Validate(object control,object scroll,object raw,int x,int y) {
+        Require(control is int && (int)control>=50000 && (int)control<=50040 && (int)control!=50014 && (int)control!=50032);
+        Require(scroll is bool && !(bool)scroll);
+        double[] bounds=raw as double[]; Require(bounds!=null && bounds.Length==4);
+        foreach(double value in bounds)Require(Finite(value));
+        Require(bounds[2]>0 && bounds[3]>0);
+        double left=Math.Ceiling(bounds[0]),top=Math.Ceiling(bounds[1]);
+        double right=Math.Floor(bounds[0]+bounds[2]),bottom=Math.Floor(bounds[1]+bounds[3]);
+        Require(Finite(right) && Finite(bottom) && left>=Int32.MinValue && top>=Int32.MinValue && right<=Int32.MaxValue && bottom<=Int32.MaxValue);
+        Require(right>left && bottom>top && right-left<=Int32.MaxValue && bottom-top<=Int32.MaxValue);
+        Require(x>=left && x<right && y>=top && y<bottom);
+        return new double[]{left,top,right-left,bottom-top};
+    }
+}
+// Pure mutation traversal policy; delegates own COM acquisitions before return.
+public static class NativeIdentityPath {
+    public static T Resolve<T>(T first,string rootId,string selectedId,int pid,long handle,
+        Func<T,object> process,Func<T,int[]> runtime,Func<T,T> parent,Func<T,object> window,
+        Action<T> proveMissing,Action guard) where T:class {
+        if(String.IsNullOrEmpty(rootId) || String.IsNullOrEmpty(selectedId) || pid<=0 || handle<=0)
+            throw new InvalidOperationException("native_scroll_identity_unavailable");
+        T target=null; var seen=new HashSet<string>(StringComparer.Ordinal);
+        T element=first;
+        for(int depth=0;depth<32 && element!=null;depth++) {
+            guard(); object actualPid=process(element); guard();
+            if(!(actualPid is int) || (int)actualPid!=pid)throw new InvalidOperationException("native_scroll_cross_process");
+            int[] raw=runtime(element); guard();
+            if(depth==0 && TransientHitPolicy.Missing(raw)) { proveMissing(element); guard(); }
+            else {
+                if(raw==null || raw.Length==0 || raw.Length>64)throw new InvalidOperationException("native_scroll_runtime_unavailable");
+                var parts=new string[raw.Length];
+                for(int i=0;i<raw.Length;i++)parts[i]=raw[i].ToString(CultureInfo.InvariantCulture);
+                string id=String.Join(".",parts);
+                if(!seen.Add(id))throw new InvalidOperationException("native_scroll_ancestry_changed");
+                if(id==selectedId)target=element;
+                if(id==rootId) {
+                    object actualHandle=window(element); guard();
+                    if(!(actualHandle is int) || (long)(int)actualHandle!=handle || target==null)
+                        throw new InvalidOperationException("native_scroll_root_changed");
+                    return target;
+                }
+            }
+            element=parent(element); guard();
+        }
+        throw new InvalidOperationException("native_scroll_ancestry_changed");
+    }
 }
 }

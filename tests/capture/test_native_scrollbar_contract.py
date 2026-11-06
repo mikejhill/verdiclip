@@ -1,23 +1,29 @@
 """Offline checks of the combined native case's evidence; no desktop operations."""
 
 import ctypes
+import ctypes.wintypes as w
 import json
 import subprocess
+import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import BinaryIO, cast
+from unittest.mock import Mock
 
 import pytest
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication, QMenu
 from pytestqt.qtbot import QtBot
 from tests.capture.native_scrollbar import (
+    OperationTiming,
     ScrollbarCase,
     discovery_metadata,
     fixture_image,
     guard_owned_backend,
     menu_physical_rect,
+    probe_worker_cursor_visibility,
     verify_pixels,
 )
 from tests.capture.production_matrix import (
@@ -31,7 +37,8 @@ from tests.capture.test_scroll_uia_protocol import Payload
 
 from verdiclip.capture.models import ScreenGeometry
 from verdiclip.capture.scroll.native_backend import UiaFrameBackend
-from verdiclip.capture.scroll.uia_messages import UiaRequest
+from verdiclip.capture.scroll.uia_diagnostics import WorkerDiagnostics, WorkerStamp
+from verdiclip.capture.scroll.uia_messages import UiaAction, UiaRequest
 from verdiclip.capture.scroll.uia_protocol import UiaDiscovery
 from verdiclip.geometry import Point, Rect
 
@@ -67,6 +74,10 @@ def test_unsupported_fixture_requires_safe_refusal(
         snapshot=SimpleNamespace(errors=list),
         driver=object(),
         operation_trace=[],
+        operation_timings={
+            f"strips.{method}": OperationTiming()
+            for method in ("prepare", "stage", "admit")
+        },
         peer=SimpleNamespace(poll=lambda: True, state={"offset": 0, "end_seen": False}),
         passed=False,
     )
@@ -110,6 +121,98 @@ class FunctionPort:
         return self.call(*args)
 
 
+@pytest.mark.parametrize("initially_visible", [True, False])
+@pytest.mark.parametrize("hides", [True, False])
+@pytest.mark.parametrize("read_failure", [True, False])
+def test_worker_cursor_probe_balances_visibility_even_when_observation_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    initially_visible: bool,
+    hides: bool,
+    read_failure: bool,
+) -> None:
+    """No actual DLL loads; a failed read still releases and joins the worker."""
+    for name, value in (
+        ("GITHUB_ACTIONS", "true"),
+        ("RUNNER_ENVIRONMENT", "github-hosted"),
+        ("VERDICLIP_HOSTED_SCROLLBAR", "1"),
+    ):
+        monkeypatch.setenv(name, value)
+    calls: list[int] = []
+    reads = 0
+    count = 0
+
+    def show(value: int) -> int:
+        nonlocal count
+        calls.append(value)
+        count += 1 if value else -1
+        return count
+
+    def observe(address: object) -> int:
+        nonlocal reads
+        reads += 1
+        if read_failure and reads == 2:
+            raise OSError("Fixture cursor read failed")
+        words = ctypes.cast(cast(ctypes.c_void_p, address), ctypes.POINTER(w.DWORD))
+        words[1] = int(initially_visible and not (hides and count < 0))
+        return 1
+
+    api = SimpleNamespace(
+        GetCursorInfo=FunctionPort(observe), ShowCursor=FunctionPort(show)
+    )
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: api, raising=False)
+    receipt: dict[str, object] = {}
+    workers: list[threading.Thread] = []
+    if read_failure:
+        with pytest.raises(OSError, match="Fixture cursor read failed"):
+            probe_worker_cursor_visibility(receipt, workers)
+        assert receipt["cleanup_confirmed"] is False
+        assert receipt["visibility_verdict"] == "incomplete"
+    else:
+        probe_worker_cursor_visibility(receipt, workers)
+        assert receipt["before"] is initially_visible
+        assert receipt["during"] is (initially_visible and not hides)
+        assert receipt["after"] is initially_visible
+        assert receipt["cleanup_confirmed"] is True
+        expected = (
+            "inconclusive-hidden-baseline"
+            if not initially_visible
+            else "logical-visible-hidden-restored"
+            if hides
+            else "logical-visibility-unchanged"
+        )
+        assert receipt["visibility_verdict"] == expected
+    assert receipt["presentation_verified"] is False
+    assert calls == [0, 1]
+    assert count == 0
+    assert len(workers) == 1
+    assert not workers[0].is_alive()
+
+
+def test_worker_cursor_probe_refuses_local_execution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Local app access cannot authorize this disposable-runner experiment."""
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("Local cursor probe attempted a DLL load")
+
+    monkeypatch.setattr(ctypes, "WinDLL", forbidden, raising=False)
+    with pytest.raises(RuntimeError, match="disposable hosted fixture"):
+        probe_worker_cursor_visibility({}, [])
+
+
+@pytest.mark.parametrize("alive", [True, False])
+def test_cursor_probe_uncertainty_blocks_fixture_retirement(*, alive: bool) -> None:
+    """The outer cleanup must not report success while new cursor ownership remains."""
+    case = SimpleNamespace(
+        cursor_workers=[SimpleNamespace(is_alive=lambda: alive)],
+        cursor_probe={"cleanup_confirmed": False},
+    )
+    assert not ScrollbarCase.retired(cast(ScrollbarCase, case))
+
+
 def test_provider_metadata_is_bounded_and_omits_runtime_identifiers() -> None:
     """Owned shape evidence preserves references without exporting opaque IDs."""
     discovery = UiaDiscovery.decode(Payload.discovery(Payload.nodes()))
@@ -127,9 +230,10 @@ def test_provider_metadata_is_bounded_and_omits_runtime_identifiers() -> None:
     assert Payload.WINDOW not in json.dumps(metadata)
 
 
+@pytest.mark.parametrize("fixture", ["scrolling", "unsupported-scrollbar"])
 @pytest.mark.parametrize("outcome", ["complete", "failed", "foreign", "wrong-point"])
 def test_provider_center_probe_cannot_satisfy_actual_click_discovery(
-    monkeypatch: pytest.MonkeyPatch, outcome: str
+    monkeypatch: pytest.MonkeyPatch, outcome: str, fixture: str
 ) -> None:
     """Actual probe method uses fake OS/adapter ports and never sends input."""
     request = object()
@@ -156,7 +260,13 @@ def test_provider_center_probe_cannot_satisfy_actual_click_discovery(
 
     api = SimpleNamespace(
         WindowFromPoint=FunctionPort(
-            lambda _point: 99 if outcome == "wrong-point" else 7
+            lambda point: (
+                99
+                if outcome == "wrong-point"
+                else 8
+                if fixture == "unsupported-scrollbar" and point.x == 93
+                else 7
+            )
         ),
         GetWindowThreadProcessId=FunctionPort(pid_query),
         GetAncestor=FunctionPort(lambda _handle, _flag: 1),
@@ -178,6 +288,7 @@ def test_provider_center_probe_cannot_satisfy_actual_click_discovery(
             handle=1,
             integer=lambda key: {
                 "list_handle": 7,
+                "scrollbar_handle": 8,
                 "pid": 2,
                 "started_ticks": Payload.TICKS,
             }[key],
@@ -185,6 +296,8 @@ def test_provider_center_probe_cannot_satisfy_actual_click_discovery(
         ),
         snapshot=SimpleNamespace(errors=list),
         adapter=SimpleNamespace(inspect=inspect, failed=SignalPort()),
+        process=SimpleNamespace(diagnostics_for_workers={}),
+        fixture=fixture,
         input_deadline=50,
         discoveries=[],
         _provider_probe_request=None,
@@ -209,7 +322,7 @@ def test_provider_center_probe_cannot_satisfy_actual_click_discovery(
         assert case.provider_preflight["state"] == "complete"
         assert inspected == [(1, Point(48, 24))]
     else:
-        with pytest.raises(AssertionError, match=r"ListBox|inspection failed"):
+        with pytest.raises(AssertionError, match=r"declared control|inspection failed"):
             ScrollbarCase.diagnose_provider(
                 cast(ScrollbarCase, case), Rect(0, 0, 96, 48)
             )
@@ -361,9 +474,11 @@ def test_cleanup_continues_after_journal_failure(tmp_path: Path) -> None:
             retired=lambda: True,
             popup_trace=None,
             retirement_probe={},
+            settling_evidence=SimpleNamespace(snapshot=dict),
             operation_trace=[],
-            operation_timings={},
+            operation_timings={"strips.stage": OperationTiming(calls=1)},
             fixture_readiness={},
+            peer=SimpleNamespace(snapshot_request=None, snapshot_ack=None),
             provider_profile={},
             process=SimpleNamespace(
                 diagnostics=None, diagnostics_for_workers={}, worker_pids=()
@@ -387,6 +502,10 @@ def test_cleanup_continues_after_journal_failure(tmp_path: Path) -> None:
     receipt = json.loads((tmp_path / "scrollbar-native.json").read_text())
     assert receipt["passed"] is False
     assert receipt["cleanup_errors"] == ["journal denied"]
+    assert (
+        receipt["operation_timings"]["strips.stage"]
+        == OperationTiming(calls=1).snapshot()
+    )
 
 
 @pytest.mark.parametrize(
@@ -631,3 +750,204 @@ def test_fixture_interference_cannot_recover_for_restore() -> None:
             fixture_safe=True,
             production_safe=lambda _: pytest.fail("Foreign target reached product"),
         )
+
+
+@pytest.mark.parametrize("preflight", [False, True])
+def test_first_discovery_retains_startup_before_rolling_trace_changes(
+    *, preflight: bool
+) -> None:
+    """Keep one immutable bounded snapshot, not the later warm-frame tail."""
+    first = WorkerDiagnostics(
+        phase="idle",
+        process_state="Running",
+        cleanup="pending",
+        request_sent=True,
+        events=(WorkerStamp("runtime_ready", 120),),
+        dropped_events=0,
+        stdout_bytes=0,
+        stderr_bytes=40,
+        pipe_bytes=100,
+        max_deadline_lateness_ms=0,
+    )
+    process = SimpleNamespace(diagnostics_for_workers={"managed": first})
+    request = UiaRequest("fixture", UiaAction.INSPECT, b"{}")
+    discovery = UiaDiscovery.decode(Payload.discovery(Payload.nodes()))
+    case = SimpleNamespace(
+        discovery_startup_diagnostics={},
+        process=process,
+        _provider_probe_request=request if preflight else None,
+        peer=SimpleNamespace(
+            handle=1, integer=lambda name: 2 if name == "pid" else Payload.TICKS
+        ),
+        provider_preflight={},
+        discoveries=[],
+    )
+    ScrollbarCase.record_discovery(cast(ScrollbarCase, case), request, discovery)
+    assert case.discovery_startup_diagnostics["managed"]["events"] == (
+        {"stage": "runtime_ready", "elapsed_ms": 120},
+    )
+    process.diagnostics_for_workers.clear()
+    ScrollbarCase.record_discovery(cast(ScrollbarCase, case), request, discovery)
+    assert case.discovery_startup_diagnostics["managed"]["events"] == (
+        {"stage": "runtime_ready", "elapsed_ms": 120},
+    )
+    assert case.provider_preflight.get("state") == ("complete" if preflight else None)
+    assert len(case.discoveries) == (0 if preflight else 2)
+
+
+@pytest.mark.parametrize("hosted", [False, True])
+@pytest.mark.parametrize("provider", ["wpf", "winforms"])
+@pytest.mark.parametrize("preflight_failure", [False, True])
+def test_provider_preflight_precedes_hosted_cursor_preparation_and_binding(
+    *,
+    hosted: bool,
+    provider: str,
+    preflight_failure: bool,
+) -> None:
+    """Preflight failure blocks preparation; local desktops never receive input."""
+    order: list[str] = []
+    target = Rect(10, 20, 4, 8)
+    journal = Mock()
+    journal.prepare_binding.side_effect = lambda _: order.append("binding")
+    hosted_input = Mock() if hosted else None
+    if hosted_input is not None:
+        hosted_input.prepare_cursor.side_effect = lambda *_args, **_kwargs: (
+            order.append("move")
+        )
+
+    def preflight(viewport: Rect) -> None:
+        assert viewport == target
+        order.append("preflight")
+        if preflight_failure:
+            raise RuntimeError("Provider preflight failed")
+
+    case = SimpleNamespace(
+        peer=SimpleNamespace(provider=provider),
+        check_passive_retirement=lambda: order.append("passive"),
+        diagnose_provider=preflight,
+        hosted_input=hosted_input,
+        journal=journal,
+        target=lambda: target,
+        snapshot=SimpleNamespace(errors=list),
+        menu=SimpleNamespace(winId=lambda: 43),
+        app=SimpleNamespace(
+            controller=SimpleNamespace(capture=SimpleNamespace(input_active=False))
+        ),
+        driver=SimpleNamespace(workers=[]),
+        input_deadline=123.0,
+    )
+    case.prepare_driver_binding = lambda: ScrollbarCase.prepare_driver_binding(
+        cast(ScrollbarCase, case)
+    )
+    if provider == "winforms" and preflight_failure:
+        with pytest.raises(RuntimeError, match="Provider preflight failed"):
+            ScrollbarCase.finish_provider_preparation(cast(ScrollbarCase, case), target)
+        assert order == ["passive", "preflight"]
+        journal.prepare_binding.assert_not_called()
+        if hosted_input is not None:
+            hosted_input.prepare_cursor.assert_not_called()
+        return
+    ScrollbarCase.finish_provider_preparation(cast(ScrollbarCase, case), target)
+    expected = ["passive"] + (["preflight"] if provider == "winforms" else [])
+    expected += ["move", "binding"] if hosted else ["binding"]
+    assert order == expected
+    if hosted_input is not None:
+        scope = hosted_input.prepare_cursor.call_args.kwargs["scope"]
+        assert scope.expires_at == 123.0
+        assert scope.owned_capture == 43
+        assert scope.preserved()
+        assert scope.broker_idle()
+        case.driver.workers.append(object())
+        assert not scope.broker_idle()
+        case.driver.workers.clear()
+        case.app.controller.capture.input_active = True
+        assert not scope.broker_idle()
+
+
+def test_ordinary_scrollbar_probe_never_calls_legacy_global_visibility(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only the retained worker probe may run; neither global entry is reachable."""
+    calls: list[str] = []
+
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("Ordinary qualification invoked legacy global visibility")
+
+    def worker(result: dict[str, object], workers: list[object]) -> None:
+        del workers
+        calls.append("worker")
+        result["cleanup_confirmed"] = True
+
+    monkeypatch.setattr(
+        "tests.capture.native_cursor.probe_owned_cursor_baseline", forbidden
+    )
+    monkeypatch.setattr(
+        "tests.capture.native_cursor.probe_magnification_cursor", forbidden
+    )
+    monkeypatch.setattr(
+        "tests.capture.native_scrollbar.probe_owned_cursor_baseline",
+        forbidden,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "tests.capture.native_scrollbar.probe_worker_cursor_visibility", worker
+    )
+    case = cast(
+        ScrollbarCase,
+        SimpleNamespace(
+            hosted_input=object(),
+            snapshot=SimpleNamespace(errors=list),
+            input_deadline=time.monotonic() + 10,
+        ),
+    )
+    ScrollbarCase.probe_cursor(case)
+    assert calls == ["worker"]
+    assert case.cursor_probe["cleanup_confirmed"] is True
+    assert not hasattr(case, "magnification_cursor_probe")
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        None,
+        "selecting",
+        "input-running",
+        "input-unclean",
+        "provider-busy",
+        "provider-alive",
+    ],
+)
+def test_actual_retirement_guards_survive_global_probe_removal(
+    fault: str | None,
+) -> None:
+    """Independent capture/input/provider evidence still decides retirement."""
+    case = cast(
+        ScrollbarCase,
+        SimpleNamespace(
+            driver=SimpleNamespace(
+                workers=[
+                    SimpleNamespace(
+                        stopped=SimpleNamespace(
+                            is_set=lambda: fault != "input-running"
+                        ),
+                        cleaned=fault != "input-unclean",
+                    )
+                ]
+            ),
+            app=SimpleNamespace(
+                controller=SimpleNamespace(
+                    capture=SimpleNamespace(
+                        is_selecting=fault == "selecting",
+                    )
+                )
+            ),
+            adapter=SimpleNamespace(busy=fault == "provider-busy"),
+            process=SimpleNamespace(
+                worker_pid=123 if fault == "provider-alive" else None
+            ),
+            cursor_workers=[],
+            cursor_probe={"cleanup_confirmed": True},
+        ),
+    )
+    retired = ScrollbarCase.retired(case)
+    assert retired is (fault is None)

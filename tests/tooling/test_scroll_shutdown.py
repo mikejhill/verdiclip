@@ -197,6 +197,7 @@ class ShutdownTests(unittest.TestCase):
         workflow = SimpleNamespace(
             cancel=Mock(),
             _adapter=SimpleNamespace(shutdown=Mock()),
+            _binding=None,
             _state="idle",
             has_work=False,
         )
@@ -205,6 +206,7 @@ class ShutdownTests(unittest.TestCase):
             "ScrollWorkflow",
             "shutdown",
             WorkflowState=phases,
+            monotonic=lambda: 0,
             StartupLifetime=runpy.run_path(
                 str(ROOT / "src/verdiclip/startup_lifetime.py")
             )["StartupLifetime"],
@@ -248,6 +250,53 @@ class ShutdownTests(unittest.TestCase):
         controller._workspace.cancel_drag.assert_called_once()
         controller._hotkeys.close.assert_called_once()
         controller._tray.hide.assert_called_once()
+
+    def test_workflow_storage_receives_only_shared_shutdown_remainder(self) -> None:
+        """Storage does not add a second timeout after provider retirement."""
+        binding = SimpleNamespace(shutdown_storage=Mock())
+        workflow = SimpleNamespace(
+            cancel=Mock(),
+            _adapter=SimpleNamespace(shutdown=Mock()),
+            _binding=binding,
+            _state="idle",
+            has_work=False,
+        )
+        shutdown = method(
+            "capture/scroll/workflow.py",
+            "ScrollWorkflow",
+            "shutdown",
+            WorkflowState=SimpleNamespace(CLOSING="closing"),
+            monotonic=Mock(side_effect=[10.0, 10.75]),
+        )
+        shutdown(workflow, timeout_ms=2000)
+        workflow._adapter.shutdown.assert_called_once_with(timeout_ms=2000)
+        binding.shutdown_storage.assert_called_once_with(timeout_ms=1250)
+
+    def test_workflow_storage_still_retires_after_cancel_control(self) -> None:
+        """Storage retires independently before a cancellation control escapes."""
+        control = KeyboardInterrupt()
+        binding = SimpleNamespace(shutdown_storage=Mock())
+        workflow = SimpleNamespace(
+            cancel=Mock(side_effect=control),
+            _adapter=SimpleNamespace(
+                shutdown=Mock(side_effect=CaptureError("provider"))
+            ),
+            _binding=binding,
+            _state="idle",
+            has_work=False,
+        )
+        shutdown = method(
+            "capture/scroll/workflow.py",
+            "ScrollWorkflow",
+            "shutdown",
+            WorkflowState=SimpleNamespace(CLOSING="closing"),
+            monotonic=lambda: 0,
+        )
+        with self.assertRaises(KeyboardInterrupt) as caught:
+            shutdown(workflow, timeout_ms=20)
+        self.assertIs(caught.exception, control)
+        workflow._adapter.shutdown.assert_called_once_with(timeout_ms=20)
+        binding.shutdown_storage.assert_called_once_with(timeout_ms=20)
 
     def test_shutdown_facade_never_creates_a_worker_and_stops_admission(self) -> None:
         """A partial startup with no lease closes without constructing one."""

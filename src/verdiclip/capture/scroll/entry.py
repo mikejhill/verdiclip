@@ -122,7 +122,10 @@ class ScrollEntry(QObject):
             return
         resolver = SemanticTargets(discovery.nodes)
         hint = (resolver.explicit_mode if self._explicit else resolver.normal_click)(
-            discovery.hit_identity, self._point, discovery.window_identity
+            discovery.hit_identity,
+            self._point,
+            discovery.window_identity,
+            discovery.unresolved_hit,
         )
         references = {
             reference.identity: reference for reference in discovery.references
@@ -134,7 +137,10 @@ class ScrollEntry(QObject):
             self._decline("No supported scroll area was found at this point.")
             return
         scrollbar = resolver.scrollbar_at(
-            discovery.hit_identity, self._point, discovery.window_identity
+            discovery.hit_identity,
+            self._point,
+            discovery.window_identity,
+            discovery.unresolved_hit,
         )
         self._offer = ScrollOffer(
             self._title,

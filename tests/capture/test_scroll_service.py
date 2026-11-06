@@ -10,6 +10,7 @@ import pytest
 from PySide6.QtWidgets import QApplication, QPushButton
 from pytestqt.qtbot import QtBot
 from tests.capture.input_fixture import ReplayInputBroker
+from tests.capture.scroll_failure_evidence import annotate_failure
 from tests.capture.test_popup_capture import ExistingScene
 from tests.capture.test_scroll_entry import EntryFixture
 from tests.capture.test_scroll_workflow import WorkflowFixture
@@ -152,12 +153,34 @@ class ServiceWorkflow:
         panel = self.fixture.workflow.panel
         assert isinstance(panel, ScrollTargetPanel)
         click_control(self.broker, panel, "Start")
-        qtbot.waitUntil(
-            lambda: self.fixture.workflow.state is WorkflowState.REVIEW, timeout=5000
-        )
+        try:
+            qtbot.waitUntil(
+                lambda: self.fixture.workflow.state is WorkflowState.REVIEW,
+                timeout=5000,
+            )
+        except BaseException as error:
+            annotate_failure(error, self.failure_receipt)
+            raise
         panel = self.fixture.workflow.panel
         assert isinstance(panel, ScrollReviewPanel)
         return panel
+
+    def failure_receipt(self) -> dict[str, object]:
+        """Report fixed categories and counters, never arbitrary failure strings."""
+        backend = self.fixture.backends[-1] if self.fixture.backends else None
+        return {
+            "workflow_state": self.fixture.workflow.state.value,
+            "failure_category": "workflow-failed" if self.fixture.failures else "none",
+            "failure_count": len(self.fixture.failures),
+            "backend_created": backend is not None,
+            "samples": backend.samples if backend else 0,
+            "moves": backend.moves if backend else 0,
+            "in_flight": backend.in_flight if backend else 0,
+            "finish_count": len(backend.finish_restore) if backend else 0,
+            "finish_restore": backend.finish_restore[-1]
+            if backend and backend.finish_restore
+            else None,
+        }
 
     def close(self) -> None:
         """Release only capture resources created by this test."""
@@ -246,6 +269,44 @@ def test_ordinary_content_click_falls_back_to_frozen_window_capture(
         assert not run.service.is_selecting
         assert not run.fixture.backends
     finally:
+        run.close()
+
+
+def test_repeated_window_selection_waits_for_both_cleanup_receipts(
+    qtbot: QtBot, qapp: QApplication, tmp_path: Path
+) -> None:
+    """Slow semantic and input cleanup must not poison the next window capture."""
+    run = ServiceWorkflow(qapp, tmp_path)
+    captures: list[object] = []
+    run.service.captured.connect(captures.append)
+    try:
+        for index in range(3):
+            run.service.capture_region()
+            qtbot.waitUntil(lambda: bool(run.service.overlays))
+            feed_click(run.broker, Point(92, 10))
+            discovery = EntryFixture.discovery()
+            run.fixture.adapter.defer_cleanup = True
+            run.broker.defer_cleanup = True
+            run.fixture.adapter.deliver(
+                replace(discovery, hit_identity=discovery.nodes[1].identity)
+            )
+            assert len(captures) == index
+            assert run.service.is_selecting
+            run.service.capture_region()
+            assert run.broker.starts == index + 1
+            run.fixture.adapter.pending = False
+            run.fixture.adapter.scope_closed.emit()
+            assert len(captures) == index
+            assert run.service.is_selecting
+            run.broker.acknowledge_cleanup()
+            assert len(captures) == index + 1
+            assert not run.service.is_selecting
+            assert run.fixture.workflow.state is WorkflowState.IDLE
+            assert not run.service.overlays
+        assert len(run.fixture.adapter.requests) == 3
+        assert not run.fixture.backends
+    finally:
+        run.fixture.adapter.defer_cleanup = False
         run.close()
 
 

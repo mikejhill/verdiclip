@@ -22,7 +22,7 @@ env:
 
 jobs:
   hosted-scrollbar:
-    name: Owned scrollbar / ${{ matrix.provider }} / Qt ${{ matrix.qt }} / scale ${{ matrix.scale }}
+    name: Owned scrollbar / ${{ matrix.provider }} / Qt ${{ matrix.qt }} / scale ${{ matrix.scale }} / ${{ matrix.fixture || 'scrolling' }}
     # Conservative coverage: every CI invocation, including documentation changes.
     # No path-based skip can accidentally omit a product/helper/workflow dependency.
     # The native input adapter separately verifies this disposable runner identity.
@@ -38,12 +38,14 @@ jobs:
           - {provider: wpf, qt: '6.12.0', scale: '1.5'}
           - {provider: wpf, qt: '6.12.0', scale: '2'}
           - {provider: winforms, qt: '6.12.0', scale: '1'}
+          - {provider: winforms, qt: '6.12.0', scale: '1', fixture: unsupported-scrollbar}
     cache-mode: none
     permissions:
       contents: read
     env:
       VERDICLIP_HOSTED_SCROLLBAR: '1'
       VERDICLIP_NATIVE_PROVIDER: ${{ matrix.provider }}
+      VERDICLIP_NATIVE_FIXTURE: ${{ matrix.fixture || 'scrolling' }}
       VERDICLIP_EXPECTED_QT: ${{ matrix.qt }}
       VERDICLIP_EXPECTED_QT_SCALE: ${{ matrix.scale }}
       QT_SCALE_FACTOR: ${{ matrix.scale }}
@@ -346,7 +348,7 @@ jobs:
           installed = Path(verdiclip.__file__).resolve().parent / 'capture' / 'scroll'
           assert installed != source, 'Verification must inspect the installed wheel'
           for name in ('uia_helper.ps1', 'uia_native_request.ps1', 'uia_desktop.cs',
-                       'uia_nofocus.cs', 'uia_nofocus_interop.cs'):
+                       'uia_nofocus.cs', 'uia_nofocus_interop.cs', 'uia_discovery.cs'):
               assert (installed / name).read_bytes() == (source / name).read_bytes(), name
           print('Installed native helper assets match reviewed source; no helper executed')
           '@ | & .smoke/Scripts/python.exe -

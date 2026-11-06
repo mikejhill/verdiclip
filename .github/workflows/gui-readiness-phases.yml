@@ -8,6 +8,8 @@ on:
       - 'src/verdiclip/shell/**'
       - 'src/verdiclip/__main__.py'
       - 'src/verdiclip/startup_lifetime.py'
+      # Scrolling resolver and worker changes also require the existing readiness gate.
+      - 'src/verdiclip/capture/scroll/**'
       - 'src/verdiclip/editor/**'
       - 'tests/ux/test_gui_readiness.py'
       - 'tests/ux/test_app_journeys.py'

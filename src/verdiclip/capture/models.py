@@ -25,6 +25,8 @@ class Capture:
     """A captured image and where it came from.
 
     ``area`` is in physical virtual-desktop pixels so it can be re-captured.
+    ``preserve_foreground`` records passive acquisition. Completed ordinary
+    screenshots may activate their editor only through post-capture UI guards.
     """
 
     image: QImage

@@ -4,6 +4,11 @@ on:
   pull_request:
     paths:
       - '.github/workflows/gui-readiness-profile.yml'
+      # Diagnose changes to startup admission and the actual first-capture path.
+      - 'src/verdiclip/shell/controller.py'
+      - 'src/verdiclip/shell/gui_readiness.py'
+      - 'src/verdiclip/editor/**'
+      - 'src/verdiclip/capture/**'
       - 'scripts/gui_readiness_profile.py'
       - 'scripts/gui_waits.wprp'
       - 'scripts/scheduler_trace_summary.py'

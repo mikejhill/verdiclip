@@ -13,7 +13,13 @@ from PySide6.QtWidgets import QCheckBox, QComboBox, QLineEdit, QTabWidget
 from pytestqt.qtbot import QtBot
 
 from verdiclip.document.style import Color
-from verdiclip.settings import ImageFormat, Settings, Theme, UpdateSettings
+from verdiclip.settings import (
+    CaptureDestination,
+    ImageFormat,
+    Settings,
+    Theme,
+    UpdateSettings,
+)
 from verdiclip.shell.settings_dialog import SettingsDialog
 
 
@@ -375,3 +381,29 @@ class TestUpdateSettings:
         qtbot.addWidget(dialog)
 
         assert not self.boxes(dialog)[1].isEnabled()
+
+
+@pytest.mark.parametrize("destination", list(CaptureDestination))
+def test_capture_destination_control_round_trips(
+    qtbot: QtBot, destination: CaptureDestination
+) -> None:
+    """The user-facing destination control loads and changes the persisted choice."""
+    initial = Settings()
+    initial = replace(
+        initial, capture=replace(initial.capture, destination=destination)
+    )
+    dialog = SettingsDialog(initial)
+    qtbot.addWidget(dialog)
+    control = next(
+        item
+        for item in dialog.findChildren(QComboBox)
+        if item.accessibleName() == "New screenshots"
+    )
+    assert dialog.result_settings().capture.destination is destination
+    other = (
+        CaptureDestination.WINDOWS
+        if destination is CaptureDestination.TABS
+        else CaptureDestination.TABS
+    )
+    control.setCurrentIndex(control.findData(other.value))
+    assert dialog.result_settings().capture.destination is other

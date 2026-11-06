@@ -55,3 +55,39 @@ def test_many_small_diagnostic_writes_share_one_byte_budget() -> None:
     assert trace.error_bytes(b"x" * (trace.MAX_ERROR_BYTES // 2))
     assert not trace.error_bytes(b"x")
     assert not trace.events
+
+
+@pytest.mark.parametrize(
+    ("marker", "stage"),
+    [
+        (marker, stage)
+        for marker, stage in WorkerTrace.MARKERS.items()
+        if stage.startswith("inspect_")
+    ],
+)
+def test_inspect_markers_are_exact_fragment_safe_and_content_free(
+    marker: bytes, stage: str
+) -> None:
+    """Only a literal approved phase survives, never a provider-valued suffix."""
+    for split in range(1, len(marker)):
+        trace = WorkerTrace(lambda: 0)
+        assert trace.error_bytes(marker[:split])
+        assert not trace.events
+        assert trace.error_bytes(marker[split:] + b"\r\n")
+        assert [event.stage for event in trace.events] == [stage]
+    trace = WorkerTrace(lambda: 0)
+    assert trace.error_bytes(marker + b"=private-provider-value\n")
+    assert trace.error_bytes(b"VERDICLIP_UIA_PHASE=inspect_unknown\n")
+    assert not trace.events
+
+
+def test_inspect_phases_preserve_both_existing_diagnostic_caps() -> None:
+    """Repeated bounded ancestry steps cannot grow the retained trace or budget."""
+    trace = WorkerTrace(lambda: 0)
+    marker = b"VERDICLIP_UIA_PHASE=inspect_parent\n"
+    for _ in range(trace.MAX_EVENTS + 3):
+        assert trace.error_bytes(marker)
+    assert len(trace.events) == 32
+    assert trace.dropped_events == 3
+    assert trace.error_bytes(b"x" * (65_536 - trace.stderr_bytes))
+    assert not trace.error_bytes(b"x")

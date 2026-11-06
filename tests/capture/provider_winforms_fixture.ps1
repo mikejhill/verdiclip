@@ -2,14 +2,16 @@ param(
     [Parameter(Mandatory=$true)][string]$Directory,
     [Parameter(Mandatory=$true)][ValidatePattern('^[a-f0-9]{32}$')][string]$Nonce,
     [Parameter(Mandatory=$true)][ValidateSet('end')][string]$Case,
-    [switch]$ExecuteAfterHandoff
+    [switch]$ExecuteAfterHandoff,
+    [switch]$UnsupportedScrollbar
 )
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'fixture_snapshot.ps1')
 if (-not $ExecuteAfterHandoff) { throw 'Fixture requires explicit desktop handoff; no UI was created.' }
 $clock = [Diagnostics.Stopwatch]::StartNew()
 $fixtureDirectory = [IO.Path]::GetFullPath($Directory)
 if (-not [IO.Directory]::Exists($fixtureDirectory)) { throw 'Runner must create private case directory.' }
-$window = $null; $viewer = $null; $timer = $null; $bitmap = $null
+$window = $null; $viewer = $null; $timer = $null; $bitmap = $null; $standalone = $null
 $priorDpi = [IntPtr]::Zero
 $sequence = 0; $ready = $false; $maximumOffset = 0; $endSeen = $false; $lastCommand = 0
 try {
@@ -52,6 +54,20 @@ public static class FixtureListGeometry {
     $window.MaximizeBox = $false; $window.MinimizeBox = $false
     $window.StartPosition = [Windows.Forms.FormStartPosition]::CenterScreen
     $window.ClientSize = [Drawing.Size]::new(480,340)
+    if ($UnsupportedScrollbar) {
+        # Real unsupported condition: a PictureBox and an independent RangeValue
+        # scrollbar, with no scrollable container/ScrollPattern ancestor.
+        $viewer = [Windows.Forms.PictureBox]::new()
+        $viewer.Location = [Drawing.Point]::new(24,24)
+        $viewer.Size = [Drawing.Size]::new(384,280)
+        $viewer.SizeMode = [Windows.Forms.PictureBoxSizeMode]::Normal
+        $viewer.Image = $bitmap
+        $standalone = [Windows.Forms.VScrollBar]::new()
+        $standalone.Location = [Drawing.Point]::new(408,24)
+        $standalone.Size = [Drawing.Size]::new(([FixtureListGeometry]::GetSystemMetrics(2)),280)
+        $standalone.Minimum=0;$standalone.Maximum=139;$standalone.LargeChange=35
+        $window.Controls.Add($standalone)
+    } else {
     $viewer = [Windows.Forms.ListBox]::new()
     $viewer.Name = 'VerdiClipQualificationScrollViewer'
     $viewer.AccessibleName = 'VerdiClipQualificationScrollViewer'
@@ -71,6 +87,7 @@ public static class FixtureListGeometry {
         $destination = [Drawing.Rectangle]::new($event.Bounds.X,$event.Bounds.Y,384,8)
         $event.Graphics.DrawImage($bitmap,$destination,0,($event.Index*8),384,8,[Drawing.GraphicsUnit]::Pixel)
     })
+    }
     $window.Controls.Add($viewer)
     function Write-FixtureState {
         if (-not $ready -or $window.IsDisposed -or -not $window.Visible) { return }
@@ -78,20 +95,34 @@ public static class FixtureListGeometry {
         $graphics = $viewer.CreateGraphics()
         try { if ($graphics.DpiX -ne 96 -or $graphics.DpiY -ne 96) { throw '100 percent DPI required' } }
         finally { $graphics.Dispose() }
-        if ($viewer.ClientSize.Width -ne 384 -or $viewer.ClientSize.Height -ne 280 -or $viewer.ItemHeight -ne 8) { throw 'Unexpected native list viewport' }
+        if ($viewer.ClientSize.Width -ne 384 -or $viewer.ClientSize.Height -ne 280) { throw 'Unexpected native viewport' }
         $scrollbar = [FixtureListGeometry+Scrollbar]::new()
-        $scrollbar.Size = [Runtime.InteropServices.Marshal]::SizeOf($scrollbar)
-        if (-not [FixtureListGeometry]::GetScrollBarInfo($viewer.Handle,-5,[ref]$scrollbar)) { throw 'Owned vertical scrollbar unavailable' }
-        if ($scrollbar.State[0] -band (1 -bor 0x8000 -bor 0x10000)) { throw 'Owned scrollbar unavailable or hidden' }
+        if ($UnsupportedScrollbar) {
+            $barPoint=$standalone.PointToScreen([Drawing.Point]::new(0,0))
+            $barBounds=[FixtureListGeometry+Rect]::new()
+            $barBounds.Left=$barPoint.X;$barBounds.Top=$barPoint.Y
+            $barBounds.Right=$barPoint.X+$standalone.Width
+            $barBounds.Bottom=$barPoint.Y+$standalone.Height
+            $scrollbar.Bounds=$barBounds
+            if (-not $standalone.Visible -or -not $standalone.Enabled) { throw 'Standalone scrollbar unavailable' }
+            $offset=$standalone.Value*8
+        } else {
+            if ($viewer.ItemHeight -ne 8) { throw 'Unexpected native list row height' }
+            $scrollbar.Size = [Runtime.InteropServices.Marshal]::SizeOf($scrollbar)
+            if (-not [FixtureListGeometry]::GetScrollBarInfo($viewer.Handle,-5,[ref]$scrollbar)) { throw 'Owned vertical scrollbar unavailable' }
+            if ($scrollbar.State[0] -band (1 -bor 0x8000 -bor 0x10000)) { throw 'Owned scrollbar unavailable or hidden' }
+            $offset=$viewer.TopIndex*8
+        }
         if ($scrollbar.Bounds.Right -le $scrollbar.Bounds.Left -or $scrollbar.Bounds.Bottom -le $scrollbar.Bounds.Top) { throw 'Invalid owned scrollbar bounds' }
         $point = $viewer.PointToScreen([Drawing.Point]::new(0,0))
-        $offset = $viewer.TopIndex*8
         $script:maximumOffset = [Math]::Max($maximumOffset,$offset)
         if ($offset -ge 840) { $script:endSeen=$true }
         $script:sequence++
         if ($sequence -gt 10000) { throw 'Fixture snapshot budget exceeded' }
         $state = @{
             nonce=$Nonce;pid=$PID;hwnd=$window.Handle.ToInt64();started_ticks=$startedTicks;list_handle=$viewer.Handle.ToInt64()
+            scrollbar_handle=$(if($UnsupportedScrollbar){$standalone.Handle.ToInt64()}else{$viewer.Handle.ToInt64()})
+            fixture_kind=$(if($UnsupportedScrollbar){'unsupported-scrollbar'}else{'scrolling'})
             sequence=$sequence;visible=[bool]$window.Visible;closed=$false;activation_complete=$ready
             offset=$offset;scrollable_height=840;maximum_offset=$maximumOffset;end_seen=$endSeen
             viewport_height=280;content_rows=1120
@@ -111,6 +142,7 @@ public static class FixtureListGeometry {
         }
         $commandPath=Join-Path $fixtureDirectory 'fixture-command.json'
         if ([IO.File]::Exists($commandPath)) {
+            if ($UnsupportedScrollbar) { throw 'Unsupported fixture must not receive scroll commands' }
             $command=[IO.File]::ReadAllText($commandPath)|ConvertFrom-Json
             if ($command.nonce -cne $Nonce -or $command.operation -cne 'scroll-percent' -or
                 ($command.sequence -isnot [long] -and $command.sequence -isnot [int]) -or
@@ -127,6 +159,12 @@ public static class FixtureListGeometry {
                 if ([IO.File]::Exists($path)) { [IO.File]::Replace($temporary,$path,[NullString]::Value) }
                 else { [IO.File]::Move($temporary,$path) }
             }
+        }
+        if ($ready -and -not $window.IsDisposed -and $window.Visible -and -not $UnsupportedScrollbar) {
+            Write-RequestedFixtureSnapshot -Directory $fixtureDirectory -Nonce $Nonce `
+                -StartedTicks $startedTicks -Observe {
+                    @{handle=$window.Handle.ToInt64();offset=($viewer.TopIndex*8);end_seen=$endSeen}
+                }
         }
         Write-FixtureState
     })
@@ -150,6 +188,7 @@ finally {
     }
     if ($null -ne $window) { try { $window.Dispose() } catch { $cleanupErrors++ } }
     if ($null -ne $viewer) { try { $viewer.Dispose() } catch { $cleanupErrors++ } }
+    if ($null -ne $standalone) { try { $standalone.Dispose() } catch { $cleanupErrors++ } }
     if ($null -ne $bitmap) { try { $bitmap.Dispose() } catch { $cleanupErrors++ } }
     if ($null -ne $priorDpi -and $priorDpi -ne [IntPtr]::Zero) {
         try { if ([FixtureListGeometry]::SetThreadDpiAwarenessContext($priorDpi) -eq [IntPtr]::Zero) { $cleanupErrors++ } }

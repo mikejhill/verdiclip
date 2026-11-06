@@ -205,15 +205,18 @@ internal sealed class NativeScrollClient : IScrollClient, IDisposable {
         if (value == null) throw new InvalidOperationException("native_scroll_interface_unavailable");
         owned.Add(value); return value;
     }
-    private static object Property(IElement element, int property) {
-        object value; element.GetCurrentPropertyValue(property, out value); return value;
+    private object Property(IElement element, int property) {
+        object value=null;
+        try { element.GetCurrentPropertyValue(property,out value); }
+        finally { if(value!=null && Marshal.IsComObject(value))Own(value); }
+        return value;
     }
     private static string Runtime(IElement element) {
         int[] value; element.GetRuntimeId(out value);
         if (value == null || value.Length == 0 || value.Length > 64) throw new InvalidOperationException("native_scroll_runtime_unavailable");
         return String.Join(".", value);
     }
-    private static double[] Bounds(IElement element) {
+    private double[] Bounds(IElement element) {
         var raw = Property(element, 30001) as double[]; // UIA_BoundingRectanglePropertyId
         if (raw == null || raw.Length != 4) throw new InvalidOperationException("native_scroll_bounds_unavailable");
         return new double[] { Math.Ceiling(raw[0]), Math.Ceiling(raw[1]),
@@ -251,17 +254,18 @@ internal sealed class NativeScrollClient : IScrollClient, IDisposable {
             Y=checked((int)Math.Floor(request.Bounds[1]+request.Bounds[3]/2)) };
         IElement element; automation.ElementFromPoint(point, out element);
         if (element != null) Own(element);
-        IElement target = null;
-        bool reachedRoot = false;
-        for (int depth=0; depth<32 && element != null; depth++) {
-            if ((int)Property(element,30002) != request.ProcessId) throw new InvalidOperationException("native_scroll_cross_process");
-            string id = Runtime(element);
-            if (id == request.Runtime) target = element;
-            if (id == rootId) { reachedRoot = true; break; }
-            IElement parent; walker.GetParentElement(element, out parent);
-            element = parent; if (element != null) Own(element);
-        }
-        if (!reachedRoot || target == null) throw new InvalidOperationException("native_scroll_ancestry_changed");
+        Action guard=()=>{foreground.EnsureUnchanged();NoFocusScroll.RequireNativeOnlyProcess();};
+        IElement target=NativeIdentityPath.Resolve<IElement>(element,rootId,request.Runtime,request.ProcessId,request.Handle,
+            value=>Property(value,30002),
+            value=>{int[] runtime;value.GetRuntimeId(out runtime);return runtime;},
+            value=>{IElement parent=null;try{walker.GetParentElement(value,out parent);}finally{if(parent!=null)Own(parent);}return parent;},
+            value=>Property(value,30020),
+            value=>{
+                object control=Property(value,30003);guard();
+                object scroll=Property(value,30034);guard();
+                object bounds=Property(value,30001);guard();
+                TransientHitPolicy.Validate(control,scroll,bounds,point.X,point.Y);
+            },guard);
         Guid patternId = new Guid("88f4d42a-e881-459d-a77c-73bbbb7e02dc");
         IScroll pattern; target.GetCurrentPatternAs(10004, ref patternId, out pattern); Own(pattern);
         double position, view; int scrollable;

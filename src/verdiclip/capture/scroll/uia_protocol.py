@@ -5,7 +5,12 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from verdiclip.capture.scroll.targets import NodeKind, SemanticNode, SemanticTargets
+from verdiclip.capture.scroll.targets import (
+    NodeKind,
+    SemanticNode,
+    SemanticTargets,
+    UnresolvedHit,
+)
 from verdiclip.geometry import Rect
 
 PERCENT_MAX = 100
@@ -142,16 +147,21 @@ class UiaDiscovery:
     """Bounded nearest-first ancestry and references, without live COM objects."""
 
     window_identity: str
-    hit_identity: str
+    hit_identity: str | None
     nodes: tuple[SemanticNode, ...]
     references: tuple[UiaReference, ...]
+    unresolved_hit: UnresolvedHit | None = None
 
     @classmethod
     def decode(cls, reply: object) -> UiaDiscovery:
         """Reject missing, oversized, cross-window and inconsistent target metadata."""
         result = Fields.get(reply, "result")
         window = Fields.text(Fields.get(result, "window_identity"))
-        hit = Fields.text(Fields.get(result, "hit_identity"))
+        raw_hit = Fields.get(result, "hit_identity")
+        hit = None if raw_hit is None else Fields.text(raw_hit)
+        raw_unresolved = (
+            result.get("unresolved_hit") if isinstance(result, dict) else None
+        )
         raw = Fields.get(result, "nodes")
         if (
             not isinstance(raw, list)
@@ -166,7 +176,9 @@ class UiaDiscovery:
             if reference is not None:
                 references.append(reference)
         identities = {node.identity for node in nodes}
-        if len(identities) != len(nodes) or hit != nodes[0].identity:
+        if len(identities) != len(nodes) or (
+            hit is not None and hit != nodes[0].identity
+        ):
             raise ValueError("UI Automation returned duplicate or unrelated hit nodes")
         for index, node in enumerate(nodes):
             expected = nodes[index + 1].identity if index + 1 < len(nodes) else None
@@ -176,7 +188,44 @@ class UiaDiscovery:
                 )
         if nodes[-1].kind is not NodeKind.WINDOW:
             raise ValueError("UI Automation ancestry has no verified window root")
-        return cls(window, hit, tuple(nodes), tuple(references))
+        unresolved = cls._unresolved(raw_unresolved, hit, nodes, window)
+        return cls(window, hit, tuple(nodes), tuple(references), unresolved)
+
+    @staticmethod
+    def _unresolved(
+        raw_unresolved: object, hit: str | None, nodes: list[SemanticNode], window: str
+    ) -> UnresolvedHit | None:
+        """Admit only an exclusive, identity-free link to the complete suffix."""
+        unresolved = None
+        if hit is None:
+            if (
+                not isinstance(raw_unresolved, dict)
+                or set(raw_unresolved)
+                != {
+                    "kind",
+                    "window_identity",
+                    "parent_identity",
+                    "bounds",
+                    "vertically_scrollable",
+                }
+                or len(nodes) >= SemanticTargets.MAX_ANCESTORS
+            ):
+                raise ValueError("UI Automation unresolved hit is malformed")
+            if (
+                raw_unresolved["kind"] != "other"
+                or raw_unresolved["window_identity"] != window
+                or raw_unresolved["parent_identity"] != nodes[0].identity
+                or raw_unresolved["vertically_scrollable"] is not False
+            ):
+                raise ValueError(
+                    "UI Automation unresolved hit is not a noncandidate parent link"
+                )
+            unresolved = UnresolvedHit(
+                window, Fields.bounds(raw_unresolved["bounds"]), nodes[0].identity
+            )
+        elif raw_unresolved is not None:
+            raise ValueError("UI Automation supplied conflicting hit representations")
+        return unresolved
 
     @staticmethod
     def _node(item: object, window: str) -> tuple[SemanticNode, UiaReference | None]:

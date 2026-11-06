@@ -14,6 +14,7 @@ from verdiclip.exceptions import SettingsError
 from verdiclip.settings import (
     DEFAULT_FILENAME_PATTERN,
     AppearanceSettings,
+    CaptureDestination,
     CaptureSettings,
     EditorSettings,
     HotkeySettings,
@@ -304,3 +305,14 @@ class TestLegacyMigration:
         store.save(chosen)
 
         assert store.load().output.filename_pattern == "Screenshot {date} {time}"
+
+
+@pytest.mark.parametrize("destination", list(CaptureDestination))
+def test_capture_destination_persists(
+    tmp_path: Path, destination: CaptureDestination
+) -> None:
+    """Destination survives restart without changing older capture choices."""
+    settings = Settings(capture=CaptureSettings(destination=destination))
+    store = SettingsStore(tmp_path / "settings.json")
+    store.save(settings)
+    assert store.load() == settings

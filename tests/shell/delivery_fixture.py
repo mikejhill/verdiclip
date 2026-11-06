@@ -246,7 +246,8 @@ def _settle_protected(
         assert isinstance(anchor, EditorWindow)
         assert app.controller.editors == (anchor,)
         assert len(anchor.pages) == 2
-        assert anchor.pages[anchor.tab_bar.currentIndex()] is scene.original_page
+        assert anchor.pages[anchor.tab_bar.currentIndex()] is anchor.pages[-1]
+        assert anchor.pages[0] is scene.original_page
         app.controller.capture.failed.emit("Synthetic provider failure")
         assert notifications[-1] == "Capture failed"
     else:
@@ -285,11 +286,16 @@ def _observe_presentations(
     shown: list[tuple[int, int, bool, bool]] = []
     present = app.controller.workspace._present_host
 
-    def observed_present(host: EditorWindow, *, activate: bool) -> None:
+    def observed_present(
+        host: EditorWindow,
+        *,
+        activate: bool,
+        activation_guard: Callable[[], bool] | None = None,
+    ) -> None:
         before = foreground()
         assert before > 0
         was_visible = host.isVisible()
-        present(host, activate=activate)
+        present(host, activate=activate, activation_guard=activation_guard)
         after = foreground()
         assert after > 0
         shown.append((before, after, activate, not was_visible and host.isVisible()))

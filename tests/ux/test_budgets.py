@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import gc
+import json
 import statistics
+import sys
+import threading
+import time
 from collections.abc import Callable
 
 import pytest
-from PySide6.QtGui import QColor, QImage
+from PySide6.QtCore import qVersion
+from PySide6.QtGui import QColor, QGuiApplication, QImage
 from tests.ux.conftest import Stopwatch, User
 
 from verdiclip.document.annotations import (
@@ -27,6 +32,19 @@ from verdiclip.settings import OutputSettings
 pytestmark = [pytest.mark.ux, pytest.mark.ux_budget]
 
 UHD = (3840, 2160)
+
+
+def gui_cpu_time() -> float | None:
+    """Keep unavailable diagnostic CPU clocks from changing the operation."""
+    try:
+        return time.thread_time()
+    except (AttributeError, OSError):
+        return None
+
+
+def cpu_elapsed_ms(start: float | None, end: float | None) -> float | None:
+    """Report an unavailable phase rather than inventing a CPU duration."""
+    return None if start is None or end is None else (end - start) * 1000
 
 
 @pytest.fixture(autouse=True)
@@ -94,7 +112,11 @@ class TestBudgets:
         assert statistics.median(timings) < 16, timings
 
     def test_flatten_and_copy_4k_under_250ms(
-        self, uhd_image: QImage, open_editor: Callable[[QImage], User]
+        self,
+        uhd_image: QImage,
+        open_editor: Callable[[QImage], User],
+        request: pytest.FixtureRequest,
+        record_property: Callable[[str, object], None],
     ) -> None:
         """Copying an annotated 4K image to the clipboard takes under 250 ms."""
         user = open_editor(uhd_image)
@@ -102,9 +124,38 @@ class TestBudgets:
         delivery = ImageDelivery(OutputSettings())
 
         clock = Stopwatch()
-        delivery.copy(user.window.flattened())
+        started_cpu = gui_cpu_time()
+        flattened = user.window.flattened()
+        flattened_ms = clock.elapsed_ms
+        flattened_cpu = gui_cpu_time()
+        delivery.copy(flattened)
+        del flattened  # Match the original expression's temporary-image lifetime.
+        copied_ms = clock.elapsed_ms
+        copied_cpu = gui_cpu_time()
+        threads = threading.enumerate()
+        seed = request.config.getoption("randomly_seed", default=None)
+        receipt = {
+            "python": ".".join(str(part) for part in sys.version_info[:3]),
+            "qt": qVersion(),
+            "os": sys.platform,
+            "qpa": QGuiApplication.platformName(),
+            "seed": seed if type(seed) is int else None,
+            "python_threads": len(threads),
+            "capture_storage_workers": sum(
+                thread.name == "VerdiClip capture storage" for thread in threads
+            ),
+            "flatten_wall_ms": flattened_ms,
+            "flatten_gui_cpu_ms": cpu_elapsed_ms(started_cpu, flattened_cpu),
+            "copy_wall_ms": copied_ms - flattened_ms,
+            "copy_gui_cpu_ms": cpu_elapsed_ms(flattened_cpu, copied_cpu),
+        }
+        # Keep every timing sample and metadata operation inside the total;
+        # report serialization happens afterwards and never changes the result.
+        elapsed_ms = clock.elapsed_ms
+        receipt["total_wall_ms"] = elapsed_ms
+        record_property("flatten_copy_budget", json.dumps(receipt, sort_keys=True))
 
-        assert clock.elapsed_ms < 250
+        assert elapsed_ms < 250, receipt
 
     def test_open_editor_on_4k_under_300ms(
         self, open_editor: Callable[[QImage], User], uhd_image: QImage

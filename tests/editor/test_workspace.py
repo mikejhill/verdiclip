@@ -1402,3 +1402,29 @@ def test_close_retains_reentrant_existing_capture_admission(
         # fault failure is not obscured by a second failure in fixture teardown.
         if page.record not in workspace.documents and page in second.pages:
             second.take_page(page)
+
+
+@pytest.mark.parametrize("operation", ["detach", "close"])
+def test_capture_typing_guard_does_not_block_explicit_document_actions(
+    workspace: Workspace, sample_image: QImage, tmp_path: Path, operation: str
+) -> None:
+    """Explicit detach/close still commits typing despite the capture guard."""
+    host = open_document(workspace, sample_image, tmp_path)
+    page = host.pages[0]
+    page.canvas.editors.edit_text(None, Point(20, 20))
+    editor = page.canvas.editors.widget
+    assert isinstance(editor, QPlainTextEdit)
+    editor.setPlainText("Keep this typing")
+    assert not host.accepts_capture
+    assert host.eligible
+    if operation == "detach":
+        assert workspace.move(host, page)
+        assert workspace.host_of(page.record.identifier) is not host
+        assert (
+            getattr(page.record.session.document.annotations[0], "text", None)
+            == "Keep this typing"
+        )
+    else:
+        host.set_confirm_close(confirm=False)
+        assert workspace.close_all()
+        assert not workspace.has_work

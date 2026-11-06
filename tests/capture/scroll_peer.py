@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import subprocess
@@ -13,12 +14,29 @@ from uuid import uuid4
 from verdiclip.geometry import Rect
 
 
+def unique_snapshot_fields(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Duplicate acknowledgment fields cannot establish ownership or observation."""
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("Duplicate snapshot field")
+        result[key] = value
+    return result
+
+
 class ScrollPeer:
     """Own one explicit child; never send pointer or keyboard input."""
 
-    def __init__(self, directory: Path, *, provider: str = "wpf") -> None:
+    def __init__(
+        self, directory: Path, *, provider: str = "wpf", fixture: str = "scrolling"
+    ) -> None:
         if provider not in {"wpf", "winforms"}:
             raise ValueError("Unknown owned scrolling provider")
+        if fixture not in {"scrolling", "unsupported-scrollbar"} or (
+            fixture == "unsupported-scrollbar" and provider != "winforms"
+        ):
+            raise ValueError("Unsupported owned fixture/provider combination")
+        self.fixture = fixture
         self.provider = provider
         self.directory = directory
         self.nonce = uuid4().hex
@@ -28,6 +46,8 @@ class ScrollPeer:
         self._forced = False
         self._exit_confirmed = False
         self._closed = False
+        self.snapshot_request: str | None = None
+        self.snapshot_ack: dict[str, object] | None = None
 
     def start(self) -> None:
         """Called only inside the existing native-handoff test gate."""
@@ -64,6 +84,11 @@ class ScrollPeer:
                     "-Case",
                     "end",
                     "-ExecuteAfterHandoff",
+                    *(
+                        ["-UnsupportedScrollbar"]
+                        if self.fixture == "unsupported-scrollbar"
+                        else []
+                    ),
                 ],
                 creationflags=subprocess.CREATE_NO_WINDOW,
                 stdout=stdout,
@@ -94,6 +119,7 @@ class ScrollPeer:
             or not value["visible"]
             or value["closed"]
             or value.get("activation_complete") is not True
+            or value.get("fixture_kind", "scrolling") != self.fixture
         ):
             raise ValueError("Fixture snapshot ownership changed")
         identity = (value["pid"], value["started_ticks"], value["hwnd"])
@@ -101,6 +127,91 @@ class ScrollPeer:
             raise ValueError("Fixture process/window generation changed")
         self.identity, self.state = identity, value
         return True
+
+    def request_snapshot(self) -> None:
+        """Request one post-terminal observation, without a mutation command."""
+        if (
+            self.snapshot_request is not None
+            or self.identity is None
+            or self.process is None
+            or self.process.poll() is not None
+        ):
+            raise RuntimeError("Snapshot requires one live admitted fixture")
+        paths = [
+            self.directory / name
+            for name in (
+                "fixture-snapshot-request.partial",
+                "fixture-snapshot-request.json",
+                "fixture-snapshot-ack.json",
+            )
+        ]
+        if any(path.exists() or path.is_symlink() for path in paths):
+            raise ValueError("Preexisting snapshot protocol file")
+        self.snapshot_request = uuid4().hex
+        payload = {
+            "nonce": self.nonce,
+            "operation": "snapshot",
+            "request_id": self.snapshot_request,
+        }
+        with paths[0].open("x", encoding="utf-8") as stream:
+            stream.write(json.dumps(payload, separators=(",", ":")))
+        paths[0].rename(paths[1])
+
+    def poll_snapshot(self) -> bool:
+        """Wait for acknowledgment arrival only; never wait for a favorable offset."""
+        if (
+            self.snapshot_request is None
+            or self.process is None
+            or self.process.poll() is not None
+        ):
+            raise RuntimeError("Snapshot owner unavailable")
+        if self.snapshot_ack is not None:
+            return True
+        path = self.directory / "fixture-snapshot-ack.json"
+        if path.is_symlink():
+            raise ValueError("Linked snapshot acknowledgment")
+        if not path.exists():
+            return False
+        metadata = path.stat()
+        if metadata.st_size > 512 or getattr(metadata, "st_file_attributes", 0) & 0x400:
+            raise ValueError("Oversized or linked snapshot acknowledgment")
+        value = json.loads(
+            path.read_text(encoding="utf-8-sig"),
+            object_pairs_hook=unique_snapshot_fields,
+        )
+        expected = {
+            "nonce",
+            "request_id",
+            "pid",
+            "started_ticks",
+            "hwnd",
+            "offset",
+            "end_seen",
+        }
+        if not isinstance(value, dict) or set(value) != expected:
+            raise ValueError("Invalid snapshot acknowledgment schema")
+        if (
+            value["nonce"] != self.nonce
+            or value["request_id"] != self.snapshot_request
+            or any(
+                type(value[key]) is not int for key in ("pid", "started_ticks", "hwnd")
+            )
+            or (value["pid"], value["started_ticks"], value["hwnd"]) != self.identity
+            or value["pid"] != self.process.pid
+            or type(value["end_seen"]) is not bool
+            or type(value["offset"]) not in (int, float)
+            or not math.isfinite(value["offset"])
+            or value["offset"] < 0
+        ):
+            raise ValueError("Snapshot correlation, ownership or observation changed")
+        self.snapshot_ack = value
+        return True
+
+    def assert_snapshot_restored(self) -> None:
+        """A fresh nonzero first observation is a failure, never a retry condition."""
+        assert self.snapshot_ack is not None, "Correlated snapshot missing"
+        assert self.snapshot_ack["end_seen"] is True
+        assert self.snapshot_ack["offset"] == 0, "Fresh fixture offset was not restored"
 
     @property
     def handle(self) -> int:

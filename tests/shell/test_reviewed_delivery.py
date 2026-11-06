@@ -9,7 +9,8 @@ from typing import cast
 
 import pytest
 from PySide6.QtGui import QGuiApplication, QImage
-from PySide6.QtWidgets import QFileDialog
+from PySide6.QtWidgets import QApplication, QComboBox, QFileDialog, QPlainTextEdit
+from pytestqt.qtbot import QtBot
 from tests.capture.test_scroll_core import Documents
 from tests.ux.test_app_journeys import AppFactory, make_app
 
@@ -19,11 +20,14 @@ from verdiclip.document.admission import CaptureProvenance
 from verdiclip.document.annotations import RectangleShape
 from verdiclip.document.commands import AddAnnotations
 from verdiclip.document.document import Document
+from verdiclip.editor import workspace as workspace_module
 from verdiclip.editor.close_prompt import CloseChoice, ClosePrompt
+from verdiclip.editor.session import ToolId
+from verdiclip.editor.window import EditorWindow
 from verdiclip.exceptions import DeliveryError
-from verdiclip.geometry import Rect
+from verdiclip.geometry import Point, Rect
 from verdiclip.output.delivery import ImageDelivery
-from verdiclip.settings import CaptureSettings, Settings
+from verdiclip.settings import CaptureDestination, CaptureSettings, Settings
 from verdiclip.shell import controller as controller_module
 
 
@@ -533,3 +537,166 @@ def test_successful_reviewed_delivery_clears_retained_capture_failure(
     app.controller.deliver_reviewed_capture(result)
     assert result.capture_id in app.controller._completed_deliveries
     assert not app.controller.tray.action("capture_error").isVisible()
+
+
+def test_successive_captures_select_the_new_image(
+    factory: AppFactory, sample_image: QImage
+) -> None:
+    """A second real delivery becomes visible without replacing the first document."""
+    app = factory(Settings())
+    first = capture(sample_image, "First screenshot")
+    second_image = sample_image.copy()
+    second_image.fill(0xFF123456)
+    second = capture(second_image, "Second screenshot")
+    host = app.controller.deliver_reviewed_capture(first)
+    assert host is not None
+    first_page = host.pages[host.tab_bar.currentIndex()]
+    assert app.controller.deliver_reviewed_capture(second) is host
+    assert len(host.pages) == 2
+    selected = host.pages[host.tab_bar.currentIndex()]
+    assert selected is not first_page
+    assert selected.record.provenance is not None
+    assert selected.record.provenance.capture_id == second.capture_id
+    assert selected.record.session.document.image == second_image
+    assert first_page.record.provenance is not None
+    assert first_page.record.provenance.capture_id == first.capture_id
+
+
+@pytest.mark.parametrize("destination", list(CaptureDestination))
+def test_capture_destination_preserves_documents_and_retry_identity(
+    factory: AppFactory, sample_image: QImage, destination: CaptureDestination
+) -> None:
+    """Each new capture follows placement policy; retry never duplicates a window."""
+    app = factory(Settings(capture=CaptureSettings(destination=destination)))
+    first = app.controller.deliver_reviewed_capture(capture(sample_image, "First"))
+    result = capture(sample_image, "Second")
+    second = app.controller.deliver_reviewed_capture(result)
+    assert first is not None
+    assert second is not None
+    assert (first is second) == (destination is CaptureDestination.TABS)
+    assert len(app.controller.workspace.documents) == 2
+    assert second.session is second.pages[-1].record.session
+    assert app.controller.deliver_reviewed_capture(result) is second
+    assert len(app.controller.editors) == (
+        1 if destination is CaptureDestination.TABS else 2
+    )
+
+
+@pytest.mark.parametrize("destination", list(CaptureDestination))
+def test_repeated_window_hotkey_delivers_fresh_selected_pixels(
+    factory: AppFactory, qtbot: QtBot, destination: CaptureDestination
+) -> None:
+    """Three real controller/service requests stay usable with an editor open."""
+    app = factory(Settings(capture=CaptureSettings(destination=destination)))
+    images: list[QImage] = []
+    for index in range(3):
+        app.press_hotkey("window")
+        qtbot.waitUntil(
+            lambda count=index + 1: len(app.controller.workspace.documents) == count
+        )
+        host = app.controller.editors[-1]
+        images.append(host.session.document.image.copy())
+        assert host.session is host.pages[-1].record.session
+        assert not app.controller.capture.is_selecting
+    assert images[0] != images[1]
+    assert images[1] != images[2]
+    assert len(app.controller.editors) == (
+        1 if destination is CaptureDestination.TABS else 3
+    )
+
+
+def test_new_capture_preserves_open_inline_editor(
+    factory: AppFactory, sample_image: QImage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Select the incoming capture in another host instead of closing live typing."""
+    app = factory(Settings())
+    original = app.controller.deliver_reviewed_capture(capture(sample_image))
+    assert original is not None
+    page = original.pages[0]
+    page.canvas.editors.edit_text(None, Point(20, 20))
+    editor = page.canvas.editors.widget
+    assert isinstance(editor, QPlainTextEdit)
+    editor.setPlainText("Uncommitted typing")
+    focus_requests: list[bool] = []
+    monkeypatch.setattr(page.canvas, "setFocus", lambda: focus_requests.append(True))
+    incoming = app.controller.deliver_reviewed_capture(
+        capture(sample_image, "Incoming")
+    )
+    assert incoming is not None
+    assert incoming is not original
+    assert original.session is page.record.session
+    assert page.canvas.editors.widget is editor
+    assert editor.isVisible()
+    assert editor.toPlainText() == "Uncommitted typing"
+    assert focus_requests == []
+    assert len(app.controller.workspace.documents) == 2
+
+
+@pytest.mark.parametrize("failure", ["record", "page"])
+def test_new_window_pre_admission_failure_retires_only_empty_hosts(
+    factory: AppFactory,
+    sample_image: QImage,
+    monkeypatch: pytest.MonkeyPatch,
+    qtbot: QtBot,
+    failure: str,
+) -> None:
+    """Repeated allocation failures do not accumulate orphan windows or lose data."""
+    app = factory(
+        Settings(capture=CaptureSettings(destination=CaptureDestination.WINDOWS))
+    )
+    original = app.controller.deliver_reviewed_capture(
+        capture(sample_image, "Original")
+    )
+    assert original is not None
+    result = capture(sample_image, "Retry")
+    add = EditorWindow.add_document
+
+    def fail(*_args: object, **_kwargs: object) -> None:
+        raise MemoryError("Before document registration")
+
+    record_type = workspace_module.DocumentRecord
+    if failure == "record":
+        monkeypatch.setattr(workspace_module, "DocumentRecord", fail)
+    else:
+        monkeypatch.setattr(EditorWindow, "add_document", fail)
+    for _attempt in range(2):
+        app.controller.deliver_reviewed_capture(result)
+        qtbot.waitUntil(lambda: app.controller.editors == (original,))
+        assert app.controller.workspace.windows == (original,)
+        assert len(app.controller.workspace.documents) == 1
+        assert app.controller.pending_deliveries == (result,)
+    monkeypatch.setattr(EditorWindow, "add_document", add)
+    monkeypatch.setattr(workspace_module, "DocumentRecord", record_type)
+    second = app.controller.deliver_reviewed_capture(result)
+    assert second is not None
+    assert second is not original
+    assert len(app.controller.editors) == 2
+    assert len(app.controller.workspace.documents) == 2
+    assert app.controller.pending_deliveries == ()
+
+
+def test_capture_preserves_editor_owned_combo_popup(
+    factory: AppFactory, sample_image: QImage
+) -> None:
+    """Changing capture tabs must not dismiss an already-open editor control."""
+    app = factory(Settings())
+    host = app.controller.deliver_reviewed_capture(capture(sample_image))
+    assert host is not None
+    host.resize(1400, 900)
+    host.activate_tool(ToolId.TEXT)
+    QApplication.processEvents()
+    combo = next(item for item in host.findChildren(QComboBox) if item.isVisible())
+    combo.showPopup()
+    popup = QApplication.activePopupWidget()
+    assert popup is not None
+    selected = combo.currentIndex()
+    assert not host.accepts_capture
+    try:
+        incoming = app.controller.deliver_reviewed_capture(capture(sample_image, "New"))
+        assert incoming is not None
+        assert QApplication.activePopupWidget() is popup
+        assert popup.isVisible()
+        assert combo.currentIndex() == selected
+        assert incoming.session is incoming.pages[-1].record.session
+    finally:
+        combo.hidePopup()

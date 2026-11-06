@@ -120,8 +120,24 @@ class CaptureService(QObject):
 
     @property
     def preserve_foreground(self) -> bool:
-        """Delivery and failure presentation must also avoid foreground activation."""
+        """Keep acquisition/failure UI passive; completed delivery has its own guard."""
         return True
+
+    @property
+    def delivery_ready(self) -> bool:
+        """No input ownership remains; synchronous direct-capture frames are safe.
+
+        Fullscreen/window/repeat delivery runs inside ``_start_pending``. Its
+        ``_starting`` frame is not an input lease and must not veto completion.
+        """
+        return not (
+            self._pending is not None
+            or self._preparing
+            or self._ending
+            or self._overlays
+            or self._broker.busy
+            or (self._workflow is not None and self._workflow.has_work)
+        )
 
     @property
     def input_active(self) -> bool:
