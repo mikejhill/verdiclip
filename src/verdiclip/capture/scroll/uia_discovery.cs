@@ -95,9 +95,12 @@ public static class DiscoveryPolicy {
         catch(Exception) { /* Optional diagnostics must never prevent cleanup. */ }
     }
     public static int[] ReadRuntime(Func<int[]> read, Action guard, Action<string> mark) {
+        return ReadRuntimeCandidate(read,guard,mark,false);
+    }
+    public static int[] ReadRuntimeCandidate(Func<int[]> read, Action guard, Action<string> mark, bool initial) {
         TryMark(mark,"discovery_runtime_guard_before"); guard();
         TryMark(mark,"discovery_runtime_call"); int[] value=read();
-        TryMark(mark,"discovery_runtime_array"); Runtime(value);
+        TryMark(mark,"discovery_runtime_array"); if(!initial || !TransientHitPolicy.Missing(value)) Runtime(value);
         TryMark(mark,"discovery_runtime_guard_after"); guard();
         TryMark(mark,"discovery_runtime_verified"); return value;
     }
@@ -179,6 +182,7 @@ public sealed class DiscoveryResolver {
     public readonly DiscoveryNode Root;
     public readonly int ProcessId;
     private readonly string rootRuntime;
+    public double[] UnresolvedHitBounds { get; private set; }
     public DiscoveryResolver(IDiscoveryBackend backend, long handle) {
         DiscoveryPolicy.Require(backend != null && handle > 0); this.backend=backend;
         backend.Mark("inspect_root"); Root=new DiscoveryNode(backend,backend.Root(handle));
@@ -187,17 +191,30 @@ public sealed class DiscoveryResolver {
         backend.Mark("inspect_root_runtime"); rootRuntime=Root.RuntimeIdentity;
     }
     public DiscoveryNode[] FindAncestors(double x,double y) {
+        UnresolvedHitBounds=null;
+        double[] unresolved=null;
+        int pixelX=DiscoveryPolicy.Pixel(x),pixelY=DiscoveryPolicy.Pixel(y);
         var chain=new List<DiscoveryNode>(); var seen=new HashSet<string>(StringComparer.Ordinal);
-        backend.Mark("inspect_hit"); backend.Guard(); IDiscoveryElement element=backend.Hit(DiscoveryPolicy.Pixel(x),DiscoveryPolicy.Pixel(y)); backend.Guard();
+        backend.Mark("inspect_hit"); backend.Guard(); IDiscoveryElement element=backend.Hit(pixelX,pixelY); backend.Guard();
         for (int depth=0; depth<32 && element!=null; depth++) {
             var node=new DiscoveryNode(backend,element);
             backend.Mark("inspect_ancestor_identity");
             backend.Mark("inspect_ancestor_process_read"); int process=node.ProcessId;
             backend.Mark("inspect_ancestor_process_guard"); DiscoveryPolicy.Require(process==ProcessId);
-            backend.Mark("inspect_ancestor_runtime_read"); string runtime=node.RuntimeIdentity;
+            backend.Mark("inspect_ancestor_runtime_read");
+            int[] raw=DiscoveryPolicy.ReadRuntimeCandidate(element.Runtime,backend.Guard,backend.Mark,depth==0);
+            if(depth==0 && TransientHitPolicy.Missing(raw)) {
+                backend.Guard(); object control=element.Property(30003); backend.Guard();
+                object scroll=element.Property(30034); backend.Guard();
+                object bounds=element.Property(30001); backend.Guard();
+                unresolved=TransientHitPolicy.Validate(control,scroll,bounds,pixelX,pixelY);
+                backend.Mark("inspect_parent"); backend.Guard(); element=backend.Parent(element); backend.Guard();
+                continue;
+            }
+            string runtime=DiscoveryPolicy.Runtime(raw);
             backend.Mark("inspect_ancestor_cycle_guard"); DiscoveryPolicy.Require(seen.Add(runtime));
             backend.Mark("inspect_ancestor_verified"); chain.Add(node);
-            if (runtime==rootRuntime) { DiscoveryPolicy.Require(node.NativeWindowHandle==Root.NativeWindowHandle); return chain.ToArray(); }
+            if (runtime==rootRuntime) { DiscoveryPolicy.Require(node.NativeWindowHandle==Root.NativeWindowHandle); UnresolvedHitBounds=unresolved; return chain.ToArray(); }
             backend.Mark("inspect_parent"); backend.Guard(); element=backend.Parent(element); backend.Guard();
         }
         throw new InvalidOperationException("discovery_ancestry_unverified");

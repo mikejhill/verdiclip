@@ -176,7 +176,14 @@ function Invoke-ReadOnlyDiscoveryRequest($request) {
             $nodes += @{ identity=$identity; window_identity=$windowId; kind=$kind; bounds=(Get-Bounds $element); parent_identity=$parent; vertically_scrollable=($null -ne $pattern); reference=$reference }
         }
         if ($request.action -eq 'inspect') { [Console]::Error.WriteLine('VERDICLIP_UIA_PHASE=inspect_complete') }
-        $result = @{ nodes=$nodes; hit_identity=$nodes[0].identity; window_identity=$windowId }
+        $unresolved = $null
+        $hitIdentity = $nodes[0].identity
+        $unresolvedBounds = $resolver.UnresolvedHitBounds
+        if ($null -ne $unresolvedBounds) {
+            $hitIdentity = $null
+            $unresolved = @{ kind='other'; bounds=@($unresolvedBounds); parent_identity=$nodes[0].identity; window_identity=$windowId; vertically_scrollable=$false }
+        }
+        $result = @{ nodes=$nodes; hit_identity=$hitIdentity; unresolved_hit=$unresolved; window_identity=$windowId }
     } else {
         $reference = $payload.reference
         if ([long]$reference.window_handle -ne $handle.ToInt64() -or [long]$reference.started_ticks -ne $started -or [int]$reference.process_id -ne $process.Id) { throw 'target_identity_changed' }

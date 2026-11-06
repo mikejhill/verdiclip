@@ -7,10 +7,11 @@ public static class DiscoveryTests {
     static void Reject(Action action) { bool failed=false; try { action(); } catch(InvalidOperationException) { failed=true; } Check(failed); }
     sealed class Element : IDiscoveryElement {
         public Dictionary<int,object> Values=new Dictionary<int,object>();
+        public Action Tick=()=>{};
         public int[] Id; public IDiscoveryScroll Pattern; public bool ThrowScroll;
         public Element(int id) { Id=new[]{id}; Values[30002]=42; Values[30020]=id==1?100:0; Values[30034]=false; Values[30001]=new double[]{-10.2,3.2,100.8,200.8}; Values[30003]=50014; Values[30023]=2; Values[30022]=false; Values[30010]=true; }
-        public object Property(int id) { return Values[id]; }
-        public int[] Runtime() { return Id; }
+        public object Property(int id) { Tick(); return Values[id]; }
+        public int[] Runtime() { Tick(); return Id; }
         public IDiscoveryScroll Scroll() { if(ThrowScroll) throw new InvalidOperationException("provider-failure"); return Pattern; }
     }
     sealed class Scroll : IDiscoveryScroll {
@@ -22,12 +23,13 @@ public static class DiscoveryTests {
     sealed class Backend : IDiscoveryBackend {
         public Element RootElement=new Element(1), HitElement=new Element(2);
         public Dictionary<IDiscoveryElement,IDiscoveryElement> Parents=new Dictionary<IDiscoveryElement,IDiscoveryElement>();
+        public Action Tick=()=>{};
         public int X,Y,Guards; public bool FailGuard; public List<string> Phases=new List<string>();
         public Backend() { Parents[HitElement]=RootElement; }
         public IDiscoveryElement Root(long handle) { return RootElement; }
         public IDiscoveryElement Hit(int x,int y) { X=x;Y=y;return HitElement; }
-        public IDiscoveryElement Parent(IDiscoveryElement element) { return Parents.ContainsKey(element)?Parents[element]:null; }
-        public void Guard() { Guards++; if(FailGuard) throw new InvalidOperationException("guard"); }
+        public IDiscoveryElement Parent(IDiscoveryElement element) { Tick(); return Parents.ContainsKey(element)?Parents[element]:null; }
+        public void Guard() { Tick(); Guards++; if(FailGuard) throw new InvalidOperationException("guard"); }
         public void Mark(string phase) { Phases.Add(phase); }
         public void Dispose() { }
     }
@@ -56,7 +58,7 @@ public static class DiscoveryTests {
         Check(backend.Phases[backend.Phases.Count-1]=="inspect_ancestor_process_guard");
         backend.HitElement.Values[30002]=42;
         backend.HitElement.Id=null; backend.Phases.Clear(); Reject(()=>resolver.FindAncestors(0,0));
-        Check(String.Join(",",backend.Phases)=="inspect_hit,inspect_ancestor_identity,inspect_ancestor_process_read,inspect_ancestor_process_guard,inspect_ancestor_runtime_read,discovery_runtime_guard_before,discovery_runtime_call,discovery_runtime_array");
+        Check(String.Join(",",backend.Phases)=="inspect_hit,inspect_ancestor_identity,inspect_ancestor_process_read,inspect_ancestor_process_guard,inspect_ancestor_runtime_read,discovery_runtime_guard_before,discovery_runtime_call,discovery_runtime_array,discovery_runtime_guard_after,discovery_runtime_verified");
         backend.HitElement.Id=new[]{2};
         backend.Parents[backend.HitElement]=backend.HitElement; Reject(()=>resolver.FindAncestors(0,0));
         backend.Parents.Clear(); Reject(()=>resolver.FindAncestors(0,0));
@@ -147,6 +149,80 @@ public static class DiscoveryTests {
         object empty=new object();
         DiscoveryPolicy.Acquire<object>(delegate(out object value){value=null;},v=>{empty=v;});
         Check(empty==null);
+        UnresolvedCases();
         return checks;
+    }
+
+    static Backend MissingLeaf() {
+        var b=new Backend(); b.HitElement.Id=new int[0];b.HitElement.Values[30003]=50007;
+        return b;
+    }
+    static IDiscoveryElement MutatePath(Backend b,string selected) {
+        return NativeIdentityPath.Resolve<IDiscoveryElement>(b.HitElement,"1",selected,42,100,
+            e=>e.Property(30002),e=>e.Runtime(),b.Parent,e=>e.Property(30020),
+            e=>{TransientHitPolicy.Validate(e.Property(30003),e.Property(30034),e.Property(30001),0,10);},b.Guard);
+    }
+    static void UnresolvedCases() {
+        foreach(bool nullId in new[]{false,true}) {
+            var b=MissingLeaf(); if(nullId)b.HitElement.Id=null;
+            var r=new DiscoveryResolver(b,100); var chain=r.FindAncestors(0,10);
+            Check(chain.Length==1 && chain[0].RuntimeIdentity=="1" && r.UnresolvedHitBounds!=null);
+            Check(Object.ReferenceEquals(MutatePath(b,"1"),b.RootElement));
+            b.HitElement.Values[30002]=43;Reject(()=>r.FindAncestors(0,10));Check(r.UnresolvedHitBounds==null);
+            Reject(()=>MutatePath(b,"1"));
+            b.HitElement.Values[30002]=42;b.HitElement.Id=new[]{2};r.FindAncestors(0,10);Check(r.UnresolvedHitBounds==null);
+        }
+        foreach(object control in new object[]{50014,50032,49999,50041,"50007",null}) {
+            var b=MissingLeaf();b.HitElement.Values[30003]=control;var r=new DiscoveryResolver(b,100);
+            Reject(()=>r.FindAncestors(0,10));Reject(()=>MutatePath(b,"1"));Check(r.UnresolvedHitBounds==null);
+        }
+        foreach(object scroll in new object[]{true,0,"false",null}) {
+            var b=MissingLeaf();b.HitElement.Values[30034]=scroll;var r=new DiscoveryResolver(b,100);
+            Reject(()=>r.FindAncestors(0,10));Reject(()=>MutatePath(b,"1"));
+        }
+        foreach(int length in new[]{0,65}) {
+            var b=MissingLeaf();var middle=new Element(3);middle.Id=new int[length];
+            b.Parents[b.HitElement]=middle;b.Parents[middle]=b.RootElement;
+            var r=new DiscoveryResolver(b,100);Reject(()=>r.FindAncestors(0,10));Reject(()=>MutatePath(b,"1"));
+        }
+        {var b=MissingLeaf();b.Parents[b.HitElement]=b.HitElement;var r=new DiscoveryResolver(b,100);Reject(()=>r.FindAncestors(0,10));Reject(()=>MutatePath(b,"1"));}
+        {var b=MissingLeaf();b.HitElement.Id=new int[65];var r=new DiscoveryResolver(b,100);Reject(()=>r.FindAncestors(0,10));Reject(()=>MutatePath(b,"1"));}
+        {var b=MissingLeaf();b.HitElement.Values[30001]=new double[]{100,100,10,10};var r=new DiscoveryResolver(b,100);Reject(()=>r.FindAncestors(0,10));Reject(()=>MutatePath(b,"1"));}
+        {var b=MissingLeaf();Reject(()=>MutatePath(b,"missing"));b.RootElement.Values[30020]=101;Reject(()=>MutatePath(b,"1"));}
+        for(int count=32;count<=33;count++) {
+            var b=MissingLeaf();Element previous=b.HitElement;
+            for(int i=0;i<count-2;i++){var node=new Element(i+3);b.Parents[previous]=node;previous=node;}
+            b.Parents[previous]=b.RootElement;var r=new DiscoveryResolver(b,100);
+            if(count==32){Check(r.FindAncestors(0,10).Length==31);Check(MutatePath(b,"3")!=null);}
+            else {Reject(()=>r.FindAncestors(0,10));Reject(()=>MutatePath(b,"3"));}
+        }
+        {var b=new Backend();b.Parents[b.HitElement]=b.HitElement;Reject(()=>MutatePath(b,"2"));}
+        {var b=MissingLeaf();var r=new DiscoveryResolver(b,100);b.RootElement.Id=new[]{9};Reject(()=>r.FindAncestors(0,10));Check(r.UnresolvedHitBounds==null);}
+        int discoveryTotal=0;
+        {var b=MissingLeaf();var r=new DiscoveryResolver(b,100);Action tick=()=>discoveryTotal++;b.Tick=tick;b.HitElement.Tick=tick;b.RootElement.Tick=tick;r.FindAncestors(0,10);}
+        for(int fail=0;fail<discoveryTotal;fail++) {
+            var b=MissingLeaf();var r=new DiscoveryResolver(b,100);int calls=0;var expected=new Exception("private discovery fault");
+            Action tick=()=>{if(calls++==fail)throw expected;};b.Tick=tick;b.HitElement.Tick=tick;b.RootElement.Tick=tick;
+            bool returned=false;try{r.FindAncestors(0,10);returned=true;}catch(Exception error){Check(Object.ReferenceEquals(error,expected));}
+            Check(!returned && calls==fail+1 && r.UnresolvedHitBounds==null);
+        }
+        foreach(object badBounds in new object[]{null,new int[]{0,0,100,100},new double[3],
+            new double[]{Double.NaN,0,100,100},new double[]{0,0,Double.PositiveInfinity,100},
+            new double[]{0,0,0,100},new double[]{0,0,100,-1},new double[]{0.1,9.1,0.1,0.1},
+            new double[]{Int32.MaxValue,0,2,100},new double[]{-1e20,0,1e21,100}}) {
+            var b=MissingLeaf();b.HitElement.Values[30001]=badBounds;var r=new DiscoveryResolver(b,100);
+            Reject(()=>r.FindAncestors(0,10));Reject(()=>MutatePath(b,"1"));Check(r.UnresolvedHitBounds==null);
+        }
+        {var b=MissingLeaf();var middle=new Element(3);b.Parents[b.HitElement]=middle;b.Parents[middle]=middle;
+         var r=new DiscoveryResolver(b,100);Reject(()=>r.FindAncestors(0,10));Reject(()=>MutatePath(b,"3"));Check(r.UnresolvedHitBounds==null);}
+        // Inject provider/guard errors at every mutation traversal boundary.
+        int total=0;
+        {var b=MissingLeaf();Action tick=()=>total++;b.Tick=tick;b.HitElement.Tick=tick;b.RootElement.Tick=tick;MutatePath(b,"1");}
+        for(int fail=0;fail<total;fail++) {
+            var b=MissingLeaf();int calls=0;var expected=new Exception("private fault");
+            Action tick=()=>{if(calls++==fail)throw expected;};b.Tick=tick;b.HitElement.Tick=tick;b.RootElement.Tick=tick;
+            bool returned=false;try{MutatePath(b,"1");returned=true;}catch(Exception error){Check(Object.ReferenceEquals(error,expected));}
+            Check(!returned && calls==fail+1);
+        }
     }
 }

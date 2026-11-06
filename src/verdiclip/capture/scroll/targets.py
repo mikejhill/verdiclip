@@ -39,6 +39,15 @@ class SemanticNode:
 
 
 @dataclass(frozen=True, slots=True)
+class UnresolvedHit:
+    """A proven OTHER initial leaf with no persistent or selectable identity."""
+
+    window_identity: str
+    bounds: Rect
+    parent_identity: str
+
+
+@dataclass(frozen=True, slots=True)
 class TargetCandidate:
     """Unconfirmed container bounds; setup must choose the content viewport."""
 
@@ -66,9 +75,15 @@ class SemanticTargets:
         self._nodes = {node.identity: node for node in nodes[: self.MAX_NODES]}
         self._valid = len(nodes) <= self.MAX_NODES and len(self._nodes) == len(nodes)
 
-    def normal_click(self, hit: str, point: Point, window: str) -> TargetHint:
+    def normal_click(
+        self,
+        hit: str | None,
+        point: Point,
+        window: str,
+        unresolved: UnresolvedHit | None = None,
+    ) -> TargetHint:
         """Propose scrolling only for a verified semantic scrollbar hit."""
-        node = self.scrollbar_at(hit, point, window)
+        node = self.scrollbar_at(hit, point, window, unresolved)
         if node is None:
             return TargetHint(TargetIntent.WINDOW)
         candidates = self._ancestors(node, window)
@@ -78,9 +93,15 @@ class SemanticTargets:
             else TargetHint(TargetIntent.WINDOW)
         )
 
-    def scrollbar_at(self, hit: str, point: Point, window: str) -> SemanticNode | None:
+    def scrollbar_at(
+        self,
+        hit: str | None,
+        point: Point,
+        window: str,
+        unresolved: UnresolvedHit | None = None,
+    ) -> SemanticNode | None:
         """Accept native scrollbar parts only through their verified ancestry."""
-        node = self._hit(hit, point, window)
+        node = self._initial_parent(hit, point, window, unresolved)
         visited: set[str] = set()
         for _depth in range(self.MAX_ANCESTORS):
             if node is None or node.identity in visited:
@@ -93,15 +114,42 @@ class SemanticTargets:
             node = self._hit(node.parent_identity, point, window)
         return None
 
-    def explicit_mode(self, hit: str, point: Point, window: str) -> TargetHint:
+    def explicit_mode(
+        self,
+        hit: str | None,
+        point: Point,
+        window: str,
+        unresolved: UnresolvedHit | None = None,
+    ) -> TargetHint:
         """Offer hidden-bar containers or fall back to an explicit manual area."""
-        node = self.scrollbar_at(hit, point, window) or self._hit(hit, point, window)
+        node = self.scrollbar_at(
+            hit, point, window, unresolved
+        ) or self._initial_parent(hit, point, window, unresolved)
         candidates = () if node is None else self._ancestors(node, window)
         return (
             TargetHint(TargetIntent.SCROLL_CANDIDATE, candidates)
             if candidates
             else TargetHint(TargetIntent.MANUAL_AREA)
         )
+
+    def _initial_parent(
+        self,
+        hit: str | None,
+        point: Point,
+        window: str,
+        unresolved: UnresolvedHit | None,
+    ) -> SemanticNode | None:
+        """Follow an explicit unresolved OTHER link without assigning it an ID."""
+        if unresolved is None:
+            return None if hit is None else self._hit(hit, point, window)
+        if (
+            hit is not None
+            or unresolved.window_identity != window
+            or not unresolved.bounds.contains(point)
+            or len(self._nodes) >= self.MAX_ANCESTORS
+        ):
+            return None
+        return self._hit(unresolved.parent_identity, point, window)
 
     def _hit(self, hit: str, point: Point, window: str) -> SemanticNode | None:
         """Ignore stale provider results, changed windows and out-of-bounds hits."""

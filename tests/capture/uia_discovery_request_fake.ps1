@@ -31,7 +31,7 @@ Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
 public static class DiscoveryFake {
- public static string Fault=""; public static List<string> Trace=new List<string>();
+ public static bool Unresolved; public static string Fault=""; public static List<string> Trace=new List<string>();
  public static void Hit(string stage){Trace.Add(stage);if(Array.IndexOf(Fault.Split(','),stage)>=0)throw new InvalidOperationException("private-provider-text:"+stage);}
 }
 public static class CaptureDesktop {
@@ -56,7 +56,8 @@ public sealed class Node {
 }
 public sealed class Resolver {
  public Node Root=new Node(1);public int ProcessId=42;
- public Node[] FindAncestors(double x,double y){DiscoveryFake.Hit("resolve");return new[]{new Node(3),new Node(2),Root};}
+ public double[] UnresolvedHitBounds {get{return DiscoveryFake.Unresolved?new double[]{-20,30,100,80}:null;}}
+ public Node[] FindAncestors(double x,double y){DiscoveryFake.Hit("resolve");return DiscoveryFake.Unresolved?new[]{new Node(2),Root}:new[]{new Node(3),new Node(2),Root};}
 }
 public sealed class DiscoverySession : IDisposable {
  public Resolver Resolver=new Resolver(); public long StartedTicks=30;
@@ -96,6 +97,14 @@ function Get-FailureLeaves($failureValue) {
  elseif($null -ne $failureValue.InnerException){Get-FailureLeaves $failureValue.InnerException}
  else{$failureValue.Message}
 }
+[DiscoveryFake]::Unresolved=$true
+foreach($operation in @('inspect','observe','sample')) {
+ [DiscoveryFake]::Fault=''; $r=Invoke-ReadOnlyDiscoveryRequest (Request $operation)
+ if($operation -eq 'inspect') {
+  if($null -ne $r.hit_identity -or $r.nodes.Count -ne 2 -or $r.unresolved_hit.parent_identity -ne $r.nodes[0].identity -or $r.unresolved_hit.kind -ne 'other' -or $r.unresolved_hit.vertically_scrollable){throw 'Unresolved hit schema invalid'}
+ }else{if($r.reference.runtime_id -ne '2'){throw 'Transient hit became reference'}}
+}
+[DiscoveryFake]::Unresolved=$false
 foreach($action in @('inspect','observe','sample')){
  [DiscoveryFake]::Fault='';[DiscoveryFake]::Trace.Clear()
  $result=Invoke-ReadOnlyDiscoveryRequest (Request $action)
