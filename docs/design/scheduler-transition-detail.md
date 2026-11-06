@@ -66,3 +66,33 @@ fail the conservative budget earlier. Failure remains explicit; no events are
 silently dropped to fit. Portable C++ tests cover flag-dependent field selection
 (including16-bit indices and legacy zero/255 values). Compilation against actual
 Windows EVENT_RECORD/SDK headers remains a required hosted check.
+
+## Separate switch-pair occupancy evidence
+
+Microsoft's [CPU Analysis](https://learn.microsoft.com/en-us/windows-hardware/test/wpt/cpu-analysis)
+defines the switched-in interval using the next switch-out boundary. The additive
+occupancy diagnostic independently matches target-thread switch pairs on the
+same logging CPU and encoding. Every switch-out closes the pair, including an
+outgoing Running state. No migration gap is filled and no ready/wait state is
+inferred. This is an independent reconstruction algorithm, not independently
+validated evidence: the existing Xperf multiset check still does not validate
+CPU identity, timestamps, pairings or order.
+
+Matched intervals overlap phase boundaries using integer QPC arithmetic. Only
+regions covered by exactly one unambiguous pair and no exclusion span count as
+verified. Overlapping CPU pairs are excluded where they overlap. Missing inputs
+produce exclusion spans from lifetime birth; missing outputs extend to lifetime
+end. Repeated inputs and tied switch groups invalidate affected pairs. Tied
+records are handled as a group, never ordered arbitrarily. Self-switches close
+and reopen distinct pairs at the same boundary. Any missing CPU or mixed CPU
+encoding makes the lifetime's occupancy unverified. Readiness remains a separate
+classification; ready records do not establish or close occupancy.
+
+Public output contains only fixed per-phase aggregates (at most128 phases):
+matched switch-pair duration, unverified remainder, clipped segment count and
+coverage flag. Count saturation is explicit. The complement is NOT proven idle,
+ready or waiting time. Matched occupancy is not exclusive application CPU time:
+interrupts, DPCs and other execution on that processor are not subtracted.
+Exact private pairs are temporary in memory and never persisted or logged.
+Existing loss, timestamp, lifetime, phase, unknown-state, completeness and exit
+checks remain unchanged; the new evidence cannot turn a failed analysis green.

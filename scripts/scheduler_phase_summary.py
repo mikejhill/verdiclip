@@ -13,6 +13,7 @@ from itertools import groupby
 from pathlib import Path
 
 from scripts.scheduler_adjacency import adjacency_detail
+from scripts.scheduler_occupancy import occupancy_detail
 from scripts.scheduler_trace_summary import numeric_event
 
 MAX_DETAIL_COUNT = 2**31 - 1
@@ -110,6 +111,9 @@ def aggregate(rows: list[list[str]], phases: dict[str, object]) -> dict[str, obj
         "transition_detail": transition_detail(rows, tid, starts[0], ends[0]),
         "adjacency_detail": adjacency_detail(
             rows, tid, (starts[0], ends[0]), frequency, next_state
+        ),
+        "occupancy_detail": occupancy_detail(
+            rows, tid, (starts[0], ends[0]), frequency, intervals
         ),
         "analysis_complete": all(entry["state_complete"] for entry in output),
         "phase_count": len(output),

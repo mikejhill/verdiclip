@@ -426,7 +426,23 @@ def test_private_cpu_adjacency_does_not_change_existing_receipt() -> None:
         enriched.append(row)
     actual = aggregate(enriched, phases)
     control.pop("adjacency_detail")
+    control.pop("occupancy_detail")
+    actual.pop("occupancy_detail")
     detail = actual.pop("adjacency_detail")
     assert actual == control
     assert actual["analysis_complete"] is False
     assert "1001" not in json.dumps(detail)
+
+
+@pytest.mark.parametrize("header_index", [3, 4, 5])
+def test_occupancy_never_bypasses_loss_validation(
+    header_index: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Loss at any retained boundary rejects evidence before occupancy analysis."""
+    rows, phases = evidence()
+    rows[-1][header_index] = "1"
+    called = []
+    monkeypatch.setattr(module, "occupancy_detail", lambda *_: called.append(True))
+    with pytest.raises(ValueError, match="trace loss"):
+        aggregate(rows, phases)
+    assert called == []
