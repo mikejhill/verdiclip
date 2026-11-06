@@ -372,6 +372,21 @@ class PopupFailureTrace(QObject):
         return False
 
 
+def native_fixture_profile() -> tuple[str, str]:
+    """Select declared fixture behavior, never infer it from observed output."""
+    if os.environ.get("VERDICLIP_HOSTED_SCROLLBAR") != "1":
+        return "wpf", "scrolling"
+    provider = os.environ.get("VERDICLIP_NATIVE_PROVIDER", "wpf")
+    fixture = os.environ.get("VERDICLIP_NATIVE_FIXTURE", "scrolling")
+    if (
+        provider not in {"wpf", "winforms"}
+        or fixture not in {"scrolling", "unsupported-scrollbar"}
+        or (fixture == "unsupported-scrollbar" and provider != "winforms")
+    ):
+        raise ValueError("Unsupported owned fixture/provider combination")
+    return provider, fixture
+
+
 class ScrollbarCase:
     """External driver locally; explicit owned-input driver on disposable CI only."""
 
@@ -382,6 +397,7 @@ class ScrollbarCase:
         patch: pytest.MonkeyPatch,
         directory: Path,
     ) -> None:
+        self.provider, self.fixture = native_fixture_profile()
         self.qtbot, self.directory = qtbot, directory
         self.fixture_readiness: dict[str, object] = {}
         self.input_deadline = time.monotonic() + 50
@@ -395,18 +411,16 @@ class ScrollbarCase:
             screens=self.source,
             windows=WindowLocator(),
         )
-        self.provider = (
-            os.environ.get("VERDICLIP_NATIVE_PROVIDER", "wpf")
-            if os.environ.get("VERDICLIP_HOSTED_SCROLLBAR") == "1"
-            else "wpf"
-        )
         self.provider_profile: dict[str, object] = {
             "provider": self.provider,
+            "fixture": self.fixture,
             "qt": qVersion(),
             "qt_process_scale": None,
             "physical_mixed_dpi_proved": False,
         }
-        self.peer = ScrollPeer(directory / "provider", provider=self.provider)
+        self.peer = ScrollPeer(
+            directory / "provider", provider=self.provider, fixture=self.fixture
+        )
         self.menu = QMenu("Owned scrollbar test popup")
         request.addfinalizer(self.close_owned_windows)
         self.operation_trace: list[dict[str, object]] = []
@@ -476,8 +490,8 @@ class ScrollbarCase:
         self.provider_preflight: dict[str, object] = {}
         self._provider_probe_request: UiaRequest | None = None
         self.adapter.discovered.connect(self.record_discovery)
-        self.passed = False
-        self.repeated_window_captures = 0
+        self.passed, self.repeated_window_captures = False, 0
+        self.positive_checks: dict[str, bool] = {}
         self.snapshot: StrictFixtureSnapshot | None = None
         self.journal = DriverJournal(
             directory,
@@ -828,9 +842,14 @@ class ScrollbarCase:
             lambda: bool(self.app.controller.workspace.documents) or bool(self.errors),
             timeout=30000,
         )
-        if self.provider == "winforms":
+        if self.fixture == "unsupported-scrollbar":
             self.verify_unsupported()
             return
+        self.verify_supported(target)
+
+    def verify_supported(self, target: Rect) -> None:
+        """Both scrolling providers must satisfy the complete positive oracle."""
+        assert self.snapshot is not None
         assert not self.errors
         self.qtbot.waitUntil(self.retired, timeout=5000)
         records = self.app.controller.workspace.documents
@@ -839,26 +858,37 @@ class ScrollbarCase:
         assert record.provenance is not None
         assert record.provenance.source_kind is CaptureKind.SCROLLING
         assert record.provenance.completeness is CaptureCompleteness.COMPLETE
+        self.positive_checks["complete_provenance"] = True
         assert self.discoveries, "No native UIA discovery received"
         discovery = self.discoveries[0]
         assert (
             SemanticTargets(discovery.nodes).scrollbar_at(
-                discovery.hit_identity, target.center, discovery.window_identity
+                discovery.hit_identity,
+                target.center,
+                discovery.window_identity,
+                discovery.unresolved_hit,
             )
             is not None
         ), "Native hit is not a verified scrollbar or its child"
         assert self.discoveries[0].references, "Provider has no verified ScrollPattern"
         verify_pixels(record.session.document.image, self.image)
+        self.positive_checks["pixel_exact"] = True
         verify_deferred_storage(self.operation_timings)
+        self.positive_checks["deferred_storage"] = True
         assert not native_action_errors(self.driver, "scrollbar-click")
         assert not self.snapshot.errors()
         assert cleanup_confirmed(
             self.driver, selecting=self.app.controller.capture.is_selecting
         )
         assert self.peer.poll()
+        self.positive_checks["popup_input_cleanup"] = True
         assert self.peer.state["end_seen"] is True
+        self.positive_checks["fixture_end_seen"] = True
         assert self.peer.state["offset"] == 0
+        self.positive_checks["fixture_restored"] = True
         self.verify_repeated_window_capture()
+        assert self.repeated_window_captures == 2
+        self.positive_checks["two_subsequent_captures"] = True
         self.passed = True
 
     def verify_repeated_window_capture(self) -> None:
@@ -904,7 +934,7 @@ class ScrollbarCase:
         assert len(identities) == 3, "Repeated capture reused an earlier document"
 
     def verify_unsupported(self) -> None:
-        """This exact ListBox fixture must refuse safely, not claim capture support."""
+        """Standalone scrollbar without a scroll container must refuse safely."""
         assert self.errors == ["No supported scroll area was found at this point."]
         self.qtbot.waitUntil(self.retired, timeout=5000)
         assert not self.app.controller.workspace.documents, "Refusal delivered output"
@@ -1011,10 +1041,12 @@ class ScrollbarCase:
                         "simulated hotkey callback; real pixels/window lookup"
                     ),
                     "expected_result": (
-                        "safe refusal of this unsupported WinForms ListBox fixture"
-                        if self.provider_profile.get("provider") == "winforms"
+                        "safe refusal of standalone scrollbar without scroll container"
+                        if self.provider_profile.get("fixture")
+                        == "unsupported-scrollbar"
                         else "complete pixel-exact capture"
                     ),
+                    "positive_checks": getattr(self, "positive_checks", {}),
                     "provider_preflight": getattr(self, "provider_preflight", {}),
                     "scrollbar_discoveries": [
                         discovery_metadata(item) for item in self.discoveries[:4]

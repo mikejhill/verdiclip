@@ -16,9 +16,16 @@ from verdiclip.geometry import Rect
 class ScrollPeer:
     """Own one explicit child; never send pointer or keyboard input."""
 
-    def __init__(self, directory: Path, *, provider: str = "wpf") -> None:
+    def __init__(
+        self, directory: Path, *, provider: str = "wpf", fixture: str = "scrolling"
+    ) -> None:
         if provider not in {"wpf", "winforms"}:
             raise ValueError("Unknown owned scrolling provider")
+        if fixture not in {"scrolling", "unsupported-scrollbar"} or (
+            fixture == "unsupported-scrollbar" and provider != "winforms"
+        ):
+            raise ValueError("Unsupported owned fixture/provider combination")
+        self.fixture = fixture
         self.provider = provider
         self.directory = directory
         self.nonce = uuid4().hex
@@ -64,6 +71,11 @@ class ScrollPeer:
                     "-Case",
                     "end",
                     "-ExecuteAfterHandoff",
+                    *(
+                        ["-UnsupportedScrollbar"]
+                        if self.fixture == "unsupported-scrollbar"
+                        else []
+                    ),
                 ],
                 creationflags=subprocess.CREATE_NO_WINDOW,
                 stdout=stdout,
@@ -94,6 +106,7 @@ class ScrollPeer:
             or not value["visible"]
             or value["closed"]
             or value.get("activation_complete") is not True
+            or value.get("fixture_kind", "scrolling") != self.fixture
         ):
             raise ValueError("Fixture snapshot ownership changed")
         identity = (value["pid"], value["started_ticks"], value["hwnd"])
