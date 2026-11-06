@@ -5,15 +5,31 @@ from __future__ import annotations
 import json
 from itertools import islice
 from pathlib import Path
+from typing import cast
 
 from verdiclip.capture.scroll.uia_inspect_clock import LABELS
 
 MAX_RECEIPT_BYTES = 2 * 1024 * 1024
 
 
+def select_first_inspect(workers: object) -> tuple[dict[str, object] | None, str]:
+    """Select by immutable first action, never worker name or successful outcome."""
+    if not isinstance(workers, dict) or len(workers) > 2:
+        return None, "inspect-worker-shape"
+    candidates = []
+    for diagnostic in workers.values():
+        if not isinstance(diagnostic, dict):
+            return None, "inspect-worker-shape"
+        first = diagnostic.get("first_request")
+        if isinstance(first, dict) and first.get("action") == "inspect":
+            candidates.append(diagnostic)
+    if len(candidates) != 1:
+        return None, "inspect-worker-missing-or-ambiguous"
+    return cast(dict[str, object], candidates[0]), ""
+
+
 def summarize(value: dict[str, object]) -> dict[str, object]:
     """Never copy exception, provider, request, window or process data to output."""
-    diagnostics = value.get("provider_diagnostics")
     result: dict[str, object] = {
         "schema": 1,
         "receipt_present": True,
@@ -24,8 +40,10 @@ def summarize(value: dict[str, object]) -> dict[str, object]:
         "events": [],
         "clock_unavailable": True,
     }
-    if not isinstance(diagnostics, dict):
-        return result
+    diagnostics, gap = select_first_inspect(value.get("provider_worker_diagnostics"))
+    if diagnostics is None:
+        return {**result, "gap": gap}
+    result["first_action_inspect"] = True
     events = diagnostics.get("inspect_clock")
     if not isinstance(events, list) or len(events) > len(LABELS):
         return result
@@ -44,7 +62,11 @@ def summarize(value: dict[str, object]) -> dict[str, object]:
     result["events"] = cleaned
     result["clock_unavailable"] = (
         diagnostics.get("inspect_clock_unavailable") is not False
+        or not cleaned
+        or cleaned[0]["stage"] != "armed"
     )
+    if not cleaned or cleaned[0]["stage"] != "armed":
+        result["gap"] = "inspect-clock-missing-origin"
     timing = diagnostics.get("first_request")
     if isinstance(timing, dict):
         result["first_action_inspect"] = timing.get("action") == "inspect"

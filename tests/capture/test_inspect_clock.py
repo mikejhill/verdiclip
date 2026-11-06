@@ -158,9 +158,12 @@ def test_public_summary_rejects_private_fields(fault: str) -> None:
     result = summarize(
         {
             "errors": ["secret"],
-            "provider_diagnostics": {
-                "inspect_clock": [event],
-                "inspect_clock_unavailable": False,
+            "provider_worker_diagnostics": {
+                "read": {
+                    "first_request": {"action": "inspect"},
+                    "inspect_clock": [event],
+                    "inspect_clock_unavailable": False,
+                }
             },
         }
     )
@@ -179,10 +182,12 @@ def test_public_summary_contains_only_fixed_fields() -> None:
             "passed": True,
             "retired": True,
             "cleanup_errors": [],
-            "provider_diagnostics": {
-                "inspect_clock": [{"stage": "root_call", "microseconds": 5}],
-                "inspect_clock_unavailable": False,
-                "first_request": {"action": "inspect", "outcome": "success"},
+            "provider_worker_diagnostics": {
+                "read": {
+                    "inspect_clock": [{"stage": "root_call", "microseconds": 5}],
+                    "inspect_clock_unavailable": False,
+                    "first_request": {"action": "inspect", "outcome": "success"},
+                }
             },
         }
     )
@@ -253,3 +258,73 @@ def test_actual_report_main_preserves_fixed_gap(
     assert '"receipt_present": false' in output.out
     assert "private" not in output.out
     assert not output.err
+
+
+@pytest.mark.parametrize("outcome", ["success", "operation_timeout"])
+def test_summary_uses_first_inspect_worker_not_current_mutation(outcome: str) -> None:
+    """A later RESTORE worker cannot hide or replace first-INSPECT evidence."""
+    from tests.capture.inspect_clock_report import summarize  # noqa: PLC0415
+
+    inspect = {
+        "first_request": {"action": "inspect", "outcome": outcome},
+        "inspect_clock": [
+            {"stage": "armed", "microseconds": 1},
+            {"stage": "root_call", "microseconds": 100},
+        ],
+        "inspect_clock_unavailable": False,
+    }
+    mutation = {
+        "first_request": {"action": "restore", "outcome": "success"},
+        "inspect_clock": [],
+        "inspect_clock_unavailable": False,
+    }
+    result = summarize(
+        {
+            "provider_diagnostics": mutation,
+            "provider_worker_diagnostics": {
+                "arbitrary-role-a": mutation,
+                "arbitrary-role-b": inspect,
+            },
+        }
+    )
+    assert result["events"] == inspect["inspect_clock"]
+    assert result["first_outcome"] == outcome
+    assert result["clock_unavailable"] is False
+    assert result["first_action_inspect"] is True
+
+
+@pytest.mark.parametrize("count", [0, 2])
+def test_summary_refuses_missing_or_ambiguous_inspect(count: int) -> None:
+    """No fallback to the current worker or successful candidate is permitted."""
+    from tests.capture.inspect_clock_report import summarize  # noqa: PLC0415
+
+    diagnostic = {"first_request": {"action": "inspect", "outcome": "success"}}
+    result = summarize(
+        {
+            "provider_diagnostics": diagnostic,
+            "provider_worker_diagnostics": {str(i): diagnostic for i in range(count)},
+        }
+    )
+    assert result["gap"] == "inspect-worker-missing-or-ambiguous"
+    assert result["events"] == []
+    assert result["clock_unavailable"] is True
+
+
+@pytest.mark.parametrize("events", [[], [{"stage": "root_call", "microseconds": 1}]])
+def test_summary_marks_missing_initial_clock_unavailable(events: list[object]) -> None:
+    """A successful case and false error flag cannot manufacture a clock origin."""
+    from tests.capture.inspect_clock_report import summarize  # noqa: PLC0415
+
+    result = summarize(
+        {
+            "provider_worker_diagnostics": {
+                "read": {
+                    "first_request": {"action": "inspect", "outcome": "success"},
+                    "inspect_clock": events,
+                    "inspect_clock_unavailable": False,
+                }
+            }
+        }
+    )
+    assert result["clock_unavailable"] is True
+    assert result["gap"] == "inspect-clock-missing-origin"
