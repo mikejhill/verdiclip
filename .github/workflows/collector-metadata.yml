@@ -1,0 +1,34 @@
+name: Installed collector metadata only
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+permissions:
+  contents: read
+jobs:
+  metadata:
+    if: >-
+      github.repository == 'mikejhill/verdiclip' &&
+      github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
+      github.head_ref == 'diagnostic/collector-metadata' &&
+      github.event.pull_request.draft == true
+    runs-on: windows-2025
+    timeout-minutes: 4
+    env:
+      VERDICLIP_COLLECTOR_METADATA: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Pure metadata policy controls
+        run: python -m unittest scripts.diagnostic_tests.test_collector_metadata
+      - name: Compile reviewed metadata reader using installed SDK
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
+          $vcvars = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find 'VC/Auxiliary/Build/vcvars64.bat'
+          if ($LASTEXITCODE -ne 0 -or -not $vcvars -or @($vcvars).Count -ne 1) { throw 'Installed SDK toolchain unavailable' }
+          & cmd /d /c "`"$vcvars`" && cl /nologo /std:c++17 /EHsc /W4 scripts\collector_metadata.cpp /Fe:scripts\collector_metadata.exe /Fo:scripts\collector_metadata.obj /link wintrust.lib crypt32.lib version.lib shell32.lib ole32.lib"
+          if ($LASTEXITCODE -ne 0) { throw 'Metadata reader compilation failed' }
+      - name: One bounded installed-file metadata pass
+        run: python -m scripts.collector_metadata
