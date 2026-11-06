@@ -583,6 +583,7 @@ def test_popup_observer_detach_failure_cannot_skip_retirement(
     case.operation_trace = []
     case.operation_timings = {}
     case.fixture_readiness = {}
+    case.peer = SimpleNamespace(snapshot_request=None, snapshot_ack=None)
     case.provider_profile = {}
     case.process = SimpleNamespace(
         diagnostics=None, diagnostics_for_workers={}, worker_pids=()
