@@ -1,16 +1,19 @@
 name: Isolated Qt filter health diagnostic
 
 on:
-  push:
-    branches: [diagnostic/qt-filter-health]
-  workflow_dispatch:
+  pull_request:
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: read
 
 jobs:
   diagnostic:
-    if: github.repository == 'mikejhill/verdiclip' && github.ref == 'refs/heads/diagnostic/qt-filter-health'
+    if: >-
+      github.repository == 'mikejhill/verdiclip' &&
+      github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
+      github.head_ref == 'diagnostic/qt-filter-health' &&
+      github.event.pull_request.draft == true
     runs-on: windows-latest
     timeout-minutes: 15
     env:
@@ -21,6 +24,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
         with:
           python-version: '3.14'
