@@ -12,7 +12,7 @@ from pytestqt.qtbot import QtBot
 from tests.capture.desktop import DesktopSession
 from tests.capture.hosted_fixture_input import require_hosted
 from tests.capture.menu_peer import MenuPeer
-from tests.capture.owned_cursor_observer import Snapshot, observe
+from tests.capture.owned_cursor_observer import Snapshot, during_checks, observe
 from tests.capture.owned_cursor_setup import (
     OneMove,
     baseline_summary,
@@ -49,13 +49,14 @@ def ordinary(directory: Path, mode: str, baseline: Snapshot | None = None) -> No
         child.launch()
         child.begin(before)
         during = child.admitted()
-        checks = {
-            "logical_hidden": not during.visible,
-            "stationary": during.position == before.position,
-            "shape_unchanged": during.shape == before.shape,
-            "foreground_preserved": during.foreground == before.foreground,
-            "foreign_gui_preserved": during.gui == before.gui,
-        }
+        checks = during_checks(before, during)
+        print(  # noqa: T201 - information only across different cursor owners
+            "OWNED_CURSOR_DURING="
+            + json.dumps(
+                {**checks, "shape_unchanged": during.shape == before.shape},
+                sort_keys=True,
+            )
+        )
         assert all(checks.values()), checks
         if mode == "crash":
             child.crash()
@@ -116,7 +117,7 @@ def changed_menu(directory: Path, qtbot: QtBot, baseline: Snapshot) -> None:
         child.launch()
         child.begin(baseline)
         during = child.admitted()
-        hidden = not during.visible
+        hidden = during.flags == 0
         assert hidden
         child.require_active()
         peer.start(handoff=True)

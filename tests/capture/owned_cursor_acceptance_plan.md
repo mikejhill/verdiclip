@@ -92,3 +92,19 @@ Normal/cancel/repeat intervals receive no further setup movement. No after-teard
 normalization or retry exists. Fixed receipt records simulated setup provenance,
 showing/hidden/suppressed/unknown and handle-presence without raw IDs/coordinates.
 This does not qualify physical input or rendered visibility.
+
+
+## During-state oracle correction
+
+Changed-source setup run42289425470 established showing/handle-present baselines
+and actual admission in both Qt lanes. Logical hidden, stationary position and
+foreign GUI checks passed, but the during global-handle equality failed. The run
+stopped before normal restoration or crash qualification; it does not establish
+either restoration success or failure.
+
+Independent review identified the during global-handle equality as unsupported
+across natural thread ownership. It is now retained as information only. During
+acceptance requires flags exactly0 (not touch/pen suppression), stationary position,
+and unchanged foreign GUI/foreground/process/thread identity. First post-retirement
+baseline flags, shape, position and foreign state equality remain mandatory and
+unchanged, including after the causally armed crash. No native/API behavior changed.

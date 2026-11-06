@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import pytest
 from tests.capture.owned_cursor_child import validate_result
-from tests.capture.owned_cursor_observer import FirstRetirement, Snapshot
+from tests.capture.owned_cursor_observer import FirstRetirement, Snapshot, during_checks
 
 BASE = Snapshot(1, 7, (10, 20), 9, 11, 12, (0, 9, 9, 0, 0, 0))
 
@@ -82,3 +82,26 @@ def test_control_signal_consumes_first_observation() -> None:
     with pytest.raises(RuntimeError, match="already-observed"):
         latch.record(lambda: BASE)
     assert latch.summary()["first_observation_available"] is False
+
+
+@pytest.mark.parametrize("shape", [0, 8])
+def test_hidden_different_handle_allowed_only_during_ownership(shape: int) -> None:
+    """Natural thread ownership changes do not establish terminal restoration."""
+    during = replace(BASE, flags=0, shape=shape)
+    assert all(during_checks(BASE, during).values())
+    latch = FirstRetirement(BASE)
+    latch.record(lambda: replace(BASE, shape=shape))
+    assert latch.summary()["global_shape_restored"] is False
+
+
+@pytest.mark.parametrize("flags", [1, 2, 3, 4])
+def test_only_exact_hidden_flag_qualifies_during(flags: int) -> None:
+    """Touch/pen suppression, unknown state and showing are never hiding proof."""
+    assert during_checks(BASE, replace(BASE, flags=flags))["logical_hidden"] is False
+
+
+@pytest.mark.parametrize("field", ["foreground", "thread", "process"])
+def test_during_foreign_identity_remains_required(field: str) -> None:
+    """Removing the cross-owner shape gate does not weaken foreign identity."""
+    during = replace(BASE, flags=0, **{field: 99})
+    assert not all(during_checks(BASE, during).values())

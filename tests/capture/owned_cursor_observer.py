@@ -30,6 +30,18 @@ class Snapshot:
         return bool(self.flags & 1)
 
 
+def during_checks(before: Snapshot, during: Snapshot) -> dict[str, bool]:
+    """Require hidden state and preserved foreign identity, not cross-owner shape."""
+    return {
+        "logical_hidden": during.flags == 0,
+        "stationary": during.position == before.position,
+        "foreground_preserved": during.foreground == before.foreground,
+        "foreign_identity_preserved": (during.thread, during.process)
+        == (before.thread, before.process),
+        "foreign_gui_preserved": during.gui == before.gui,
+    }
+
+
 def observe() -> Snapshot:
     """Read independent global cursor and foreground GUI state without mutation."""
     api = ctypes.WinDLL("user32", use_last_error=True)
