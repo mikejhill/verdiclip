@@ -20,6 +20,7 @@ from tests.capture.cursor_admission_surface import NativeState, OwnedSurface
 from tests.capture.cursor_state_evidence import Evidence
 from tests.capture.cursor_state_peer import Wire, send
 from tests.capture.cursor_state_policy import CursorStatePolicy
+from tests.capture.cursor_state_runtime import measure_runtime
 from tests.capture.cursor_state_surface import CursorStateSurface
 from tests.capture.hosted_fixture_input import require_hosted
 
@@ -387,15 +388,26 @@ def main() -> None:
         raise ValueError("Private nonce required")
     commands = Commands(nonce)
     app: QApplication | None = None
-    if role not in {"client", "owner"} or mode not in {
+    if role not in {"client", "owner", "runtime"} or mode not in {
         "arrow",
         "cross",
         "normal",
         "cancel",
         "crash",
+        "control",
     }:
         raise ValueError("Unknown experiment role")
     try:
+        commands.evidence.mark("runtime-measure")
+        runtime = measure_runtime()
+        commands.evidence.mark("runtime-report")
+        commands.report("runtime", pid=os.getpid(), runtime=runtime)
+        commands.evidence.mark("runtime-run-command")
+        commands.expect("run")
+        if role == "runtime" and mode == "control":
+            commands.report("ready", pid=os.getpid())
+            commands.expect("close")
+            return
         commands.evidence.mark("child-bootstrap")
         app = QApplication([])
         if role == "client":

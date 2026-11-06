@@ -43,7 +43,7 @@ jobs:
         run: |
           if ((& git rev-parse HEAD).Trim() -cne $env:VERDICLIP_QUALIFICATION_HEAD) { throw 'Source mismatch' }
           if ((& git status --porcelain).Length -ne 0) { throw 'Dirty source' }
-          uv run --no-sync pytest tests/capture/test_cursor_state_policy.py tests/capture/test_cursor_state_evidence.py -q --no-cov
+          uv run --no-sync pytest tests/capture/test_cursor_state_policy.py tests/capture/test_cursor_state_evidence.py tests/capture/test_cursor_state_runtime.py -q --no-cov
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           uv run --no-sync pytest tests/capture/test_cursor_state_native.py --native-broker-handoff -q -s --no-cov
           exit $LASTEXITCODE

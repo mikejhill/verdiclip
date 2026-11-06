@@ -3,6 +3,7 @@
 import asyncio
 import io
 import subprocess
+import time
 from types import SimpleNamespace
 from typing import cast
 
@@ -14,6 +15,7 @@ from tests.capture.cursor_admission_policy import PreservedState
 from tests.capture.cursor_admission_surface import NativeState
 from tests.capture.cursor_state_evidence import CheckError, ChildError, Evidence, kind
 from tests.capture.cursor_state_peer import Peer, Wire
+from tests.capture.cursor_state_runtime import LaunchPlan
 
 
 @pytest.mark.parametrize(
@@ -53,6 +55,7 @@ def test_actual_peer_retains_allowlisted_child_failure(
     """A child setup failure is not collapsed into an unexpected phase error."""
     peer = object.__new__(Peer)
     peer.nonce = "scope"
+    peer.startup_deadline = time.monotonic() + 5
     monkeypatch.setattr(
         peer,
         "wire",
@@ -83,7 +86,7 @@ def test_actual_peer_retains_allowlisted_child_failure(
     [
         ("spawn", "client-spawn"),
         ("ready", "client-ready"),
-        ("identity", "peer-identity"),
+        ("identity", "peer-process-pid"),
         ("snapshot", "client-snapshot"),
         ("baseline", "baseline-read"),
         ("child", "client-set-foreground"),
@@ -265,6 +268,9 @@ def test_spawned_child_stays_owned_when_reader_initialization_fails(
     events: list[str] = []
     monkeypatch.setattr(peer_module, "_UNCONFIRMED", retained)
     monkeypatch.setattr(peer_module, "_INITIALIZING", initializing)
+    monkeypatch.setattr(
+        peer_module, "build_launch_plan", lambda: LaunchPlan("python", {}, {})
+    )
     original = {
         "control": KeyboardInterrupt("private reader initialization details"),
         "cancelled": asyncio.CancelledError("private reader initialization details"),

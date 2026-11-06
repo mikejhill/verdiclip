@@ -86,3 +86,31 @@ foreground, physical hit, thread cursor, class cursor and global cursor checks
 retain the original admission conditions. Child snapshot operations identify
 which UI-thread API read failed. The cleanup predicate is named outside finally
 to avoid the known scanner lambda false positive; no cleanup behavior changes.
+
+## Direct-child runtime admission
+
+The next hosted head stopped at the combined peer-identity check. This does not
+identify which conjunct failed. CPython's Windows venv redirector launches another
+process; this is a plausible explanation, not an established cause. The isolated
+harness now follows the official Windows multiprocessing strategy: launch the
+verified base interpreter directly with a copied child environment whose
+`__PYVENV_LAUNCHER__` explicitly identifies the current venv executable. There is
+no fallback interpreter and no parent-environment mutation.
+
+Before constructing QApplication, a fixture HWND, broker or cursor surface, each
+child sends private runtime attestation. The parent requires its exact Popen PID,
+actual interpreter image, venv/base paths, interpreter version/bitness and Qt/
+PySide versions and package paths to match independently measured parent values.
+Only then does the parent authorize `run`. All setup work, including this
+handshake and readiness, shares the original five-second deadline. PID and HWND
+ownership predicates remain strict and have separate fixed failure labels.
+
+A runtime-only hosted control runs before the first native case and confirms the
+direct-child PID and runtime identity without constructing a GUI. Public receipts
+contain only its verification/cleanup booleans and fixed failure labels, never
+runtime paths or IDs. Rejection stops native cases, retains exact-child cleanup
+ownership and is not evidence of cursor support. No cursor behavior or restoration
+oracle changes follow from this launcher correction.
+
+Sources: [CPython Windows venv launcher](https://github.com/python/cpython/blob/3.13/PC/venvlauncher.c)
+and [Windows multiprocessing launcher](https://github.com/python/cpython/blob/3.13/Lib/multiprocessing/popen_spawn_win32.py).

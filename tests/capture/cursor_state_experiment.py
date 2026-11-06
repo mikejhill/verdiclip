@@ -41,10 +41,9 @@ def verify_peer(state: NativeState, peer: Peer, receipt: dict[str, object]) -> i
     require(type(handle) is int and type(pid) is int, "peer-identity-shape")
     assert isinstance(handle, int)
     assert isinstance(pid, int)
-    require(
-        handle != 0 and pid == peer.child.pid and state.process(handle) == pid,
-        "peer-identity",
-    )
+    require(handle != 0, "peer-hwnd-nonzero")
+    require(pid == peer.child.pid, "peer-process-pid")
+    require(state.process(handle) == pid, "peer-hwnd-pid")
     return handle
 
 
@@ -273,6 +272,41 @@ def retire_pair(
             trace.fail(error)
             errors += 1
     return errors
+
+
+def runtime_control() -> dict[str, object]:
+    """Prove direct process/venv identity without creating any child GUI object."""
+    evidence = Evidence()
+    peer: Peer | None = None
+    result: dict[str, object] = {"verified": False, "cleanup": False}
+    try:
+        require_hosted(os.environ)
+        require(os.environ.get("CURSOR_STATE_DISPOSABLE") == "1", "disposable-only")
+        evidence.mark("runtime-control-spawn")
+        peer = Peer("runtime", "control")
+        evidence.mark("runtime-control-ready")
+        ready = peer.receive("ready", timeout=5)
+        require(
+            type(ready.get("pid")) is int and ready["pid"] == peer.child.pid,
+            "runtime-pid",
+        )
+        peer.command("close")
+        evidence.mark("runtime-control-exit")
+        peer.child.wait(timeout=2)
+        result["verified"] = True
+    except Exception as error:  # noqa: BLE001 - sanitized control evidence only
+        result.update(evidence.fail(error))
+    finally:
+        try:
+            if peer is not None:
+                evidence.mark("runtime-control-cleanup")
+                peer.close()
+            result["cleanup"] = cleanup_confirmed()
+        except Exception as error:  # noqa: BLE001 - keep exact first failure
+            result.update(evidence.fail(error))
+        if result["cleanup"] is not True:
+            result["verified"] = False
+    return result
 
 
 def run_experiment() -> list[dict[str, object]]:

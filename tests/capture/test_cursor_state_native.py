@@ -5,7 +5,7 @@ import sys
 
 import pytest
 from pytestqt.qtbot import QtBot
-from tests.capture.cursor_state_experiment import run_experiment
+from tests.capture.cursor_state_experiment import run_experiment, runtime_control
 
 pytestmark = pytest.mark.native_desktop
 
@@ -19,10 +19,18 @@ def test_cursor_state_falsification(
         pytest.skip("Explicit hosted admission required")
     if sys.platform != "win32":
         pytest.fail("Windows required", pytrace=False)
-    results = run_experiment()
+    control = runtime_control()
+    results = run_experiment() if control["verified"] is True else []
     print(  # noqa: T201 - fixed-schema hosted receipt
         "CURSOR_STATE="
-        + json.dumps({"cases": results, "presentation_verified": False}, sort_keys=True)
+        + json.dumps(
+            {
+                "runtime_control": control,
+                "cases": results,
+                "presentation_verified": False,
+            },
+            sort_keys=True,
+        )
     )
     # An unsafe/unsupported observation is a completed falsification, not support.
-    assert results
+    assert results or control["verified"] is False

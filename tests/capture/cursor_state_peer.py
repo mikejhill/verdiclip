@@ -11,8 +11,10 @@ import time
 from typing import IO, cast
 from uuid import uuid4
 
+from PySide6.QtCore import QCoreApplication
 from PySide6.QtTest import QTest
-from tests.capture.cursor_state_evidence import ChildError
+from tests.capture.cursor_state_evidence import CheckError, ChildError
+from tests.capture.cursor_state_runtime import build_launch_plan, verify_runtime
 
 
 class Wire:
@@ -47,7 +49,10 @@ class Wire:
             try:
                 line = self.lines.get_nowait()
             except queue.Empty:
-                QTest.qWait(5)
+                if QCoreApplication.instance() is None:
+                    time.sleep(0.005)
+                else:
+                    QTest.qWait(5)
                 continue
             value = json.loads(line)
             if not isinstance(value, dict):
@@ -75,12 +80,14 @@ class Peer:
     """Own exactly one child, with bounded termination on exceptional cleanup."""
 
     def __init__(self, role: str, mode: str) -> None:
+        self.startup_deadline = time.monotonic() + 5
+        plan = build_launch_plan()
         self.nonce = uuid4().hex
         self.sequence = 0
         self.crashed = False
         self.child = subprocess.Popen(  # noqa: S603 - fixed local test module
             [
-                sys.executable,
+                plan.executable,
                 "-m",
                 "tests.capture.cursor_state_child",
                 role,
@@ -92,6 +99,7 @@ class Peer:
             stderr=subprocess.DEVNULL,
             text=True,
             encoding="utf-8",
+            env=plan.environment,
         )
         _INITIALIZING.append(self)
         initialized = False
@@ -108,6 +116,10 @@ class Peer:
             # Retain a Wire whose initializer fails after starting a reader.
             self.wire = object.__new__(Wire)
             Wire.__init__(self.wire, self.child.stdout)
+            receipt = self.receive("runtime", timeout=5)
+            verify_runtime(receipt, plan.expected, self.child.pid)
+            self.startup_remaining()
+            self.command("run")
             initialized = True
         finally:
             try:
@@ -130,6 +142,13 @@ class Peer:
                     _UNCONFIRMED.append(self)
                 _INITIALIZING.remove(self)
 
+    def startup_remaining(self) -> float:
+        """Share the original five seconds between attestation and readiness."""
+        remaining = self.startup_deadline - time.monotonic()
+        if remaining <= 0:
+            raise CheckError("runtime-startup-deadline")
+        return remaining
+
     def command(self, op: str) -> int:
         """Issue a monotonically correlated command to this child alone."""
         if self.child.stdin is None or self.child.poll() is not None:
@@ -142,6 +161,8 @@ class Peer:
 
     def receive(self, phase: str, *, timeout: float = 1) -> dict[str, object]:
         """Admit only the expected phase from the correct child scope."""
+        if phase in {"runtime", "ready", "owned"}:
+            timeout = min(timeout, self.startup_remaining())
         value = self.wire.receive(timeout=timeout)
         if value.get("nonce") == self.nonce and value.get("phase") in {
             "failed",
