@@ -70,3 +70,19 @@ Passing these finite samples would establish only the recorded cases. It cannot
 prove absence of unsampled transients, eliminate the guard-to-call race, establish
 mixed-DPI/physical-input acceptance, or replace rendered presentation evidence.
 The popup/capture limitation from Stage A remains a product-design blocker.
+
+## Initial hosted result and diagnostic correction
+
+PR107 at `5f02402a` stopped on the first arrow/normal case during setup,
+with cleanup confirmed. No owner admission or restoration was qualified. The
+initial receipt did not retain the exact setup predicate; private child output
+was not archived, so the cause cannot be reconstructed. That uncertainty is
+preserved, not attributed to a cursor or foreground cause.
+
+The follow-up adds a finite allowlist of parent/child operation stages and error
+categories. It emits neither exception messages nor native identities. The first
+failure survives later cleanup failures. Separate ready, process identity,
+foreground, physical hit, thread cursor, class cursor and global cursor checks
+retain the original admission conditions. Child snapshot operations identify
+which UI-thread API read failed. The cleanup predicate is named outside finally
+to avoid the known scanner lambda false positive; no cleanup behavior changes.

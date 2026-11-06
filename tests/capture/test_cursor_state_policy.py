@@ -13,6 +13,7 @@ from tests.capture import cursor_state_experiment as experiment
 from tests.capture import cursor_state_peer as peer_module
 from tests.capture.cursor_admission_policy import PreservedState
 from tests.capture.cursor_admission_surface import NativeState
+from tests.capture.cursor_state_evidence import Evidence
 from tests.capture.cursor_state_peer import Peer, Wire
 from tests.capture.cursor_state_policy import CursorStatePolicy
 from tests.capture.cursor_state_surface import CursorStateSurface
@@ -402,6 +403,7 @@ def test_owner_waits_for_natural_admission_event(
         SimpleNamespace(
             report=lambda phase, **_kw: events.append(phase),
             expect=events.append,
+            evidence=Evidence(),
         ),
     )
     context = child_module.OwnedContext(state, policy, surface, lambda: True, 0)
@@ -429,6 +431,6 @@ def test_missing_natural_message_fails_without_write(
     )
     with pytest.raises(TimeoutError, match="admission deadline"):
         child_module.owned_interval(
-            cast(child_module.Commands, SimpleNamespace()), context
+            cast(child_module.Commands, SimpleNamespace(evidence=Evidence())), context
         )
     assert policy.writes == 0

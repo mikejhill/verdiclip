@@ -12,6 +12,7 @@ from typing import IO, cast
 from uuid import uuid4
 
 from PySide6.QtTest import QTest
+from tests.capture.cursor_state_evidence import ChildError
 
 
 class Wire:
@@ -62,6 +63,12 @@ def send(stream: IO[str], value: dict[str, object]) -> None:
 
 
 _UNCONFIRMED: list[Peer] = []
+_INITIALIZING: list[Peer] = []
+
+
+def cleanup_confirmed() -> bool:
+    """Report uncertain owned lifetimes without exposing process or cursor IDs."""
+    return not _UNCONFIRMED and not _INITIALIZING
 
 
 class Peer:
@@ -86,8 +93,42 @@ class Peer:
             text=True,
             encoding="utf-8",
         )
-        assert self.child.stdout is not None
-        self.wire = Wire(self.child.stdout)
+        _INITIALIZING.append(self)
+        initialized = False
+        self.retirement_confirmed = False
+
+        def initialization_completed() -> bool:
+            return initialized
+
+        def retirement_completed() -> bool:
+            return self.retirement_confirmed
+
+        try:
+            assert self.child.stdout is not None
+            # Retain a Wire whose initializer fails after starting a reader.
+            self.wire = object.__new__(Wire)
+            Wire.__init__(self.wire, self.child.stdout)
+            initialized = True
+        finally:
+            try:
+                if not initialization_completed():
+                    original = sys.exception()
+                    try:
+                        self.close()
+                    except Exception:
+                        if original is None:
+                            raise
+                        original.add_note(
+                            "Owned initialization cleanup reported a failure"
+                        )
+            finally:
+                if (
+                    not initialization_completed()
+                    and not retirement_completed()
+                    and self not in _UNCONFIRMED
+                ):
+                    _UNCONFIRMED.append(self)
+                _INITIALIZING.remove(self)
 
     def command(self, op: str) -> int:
         """Issue a monotonically correlated command to this child alone."""
@@ -102,6 +143,11 @@ class Peer:
     def receive(self, phase: str, *, timeout: float = 1) -> dict[str, object]:
         """Admit only the expected phase from the correct child scope."""
         value = self.wire.receive(timeout=timeout)
+        if value.get("nonce") == self.nonce and value.get("phase") in {
+            "failed",
+            "unsupported",
+        }:
+            raise ChildError(value.get("failure_stage"), value.get("error_kind"))
         if value.get("nonce") != self.nonce or value.get("phase") != phase:
             raise ValueError("Private receipt correlation failed")
         return value
@@ -146,16 +192,27 @@ class Peer:
             self._retire_streams(terminated=terminated)
 
     def _retire_streams(self, *, terminated: bool) -> None:
-        if not terminated:
-            _UNCONFIRMED.append(self)
-            return
-        self.wire.reader.join(timeout=1)
-        if self.wire.reader.is_alive():
-            _UNCONFIRMED.append(self)
-            # Preserve any original process/control failure instead of masking it.
-            if sys.exception() is None:
-                raise RuntimeError("Owned reader retirement unconfirmed")
-            return
-        for stream in (self.child.stdin, self.child.stdout):
-            if stream is not None:
-                stream.close()
+        confirmed = False
+        original = sys.exception()
+        try:
+            if not terminated:
+                return
+            reader = getattr(getattr(self, "wire", None), "reader", None)
+            if reader is not None:
+                try:
+                    reader.join(timeout=1)
+                    alive = reader.is_alive()
+                except Exception:  # noqa: BLE001 - retain a partial reader conservatively
+                    alive = True
+                if alive:
+                    if original is None:
+                        raise RuntimeError("Owned reader retirement unconfirmed")
+                    return
+            for stream in (self.child.stdin, self.child.stdout):
+                if stream is not None:
+                    stream.close()
+            confirmed = True
+        finally:
+            self.retirement_confirmed = confirmed
+            if not confirmed and self not in _UNCONFIRMED:
+                _UNCONFIRMED.append(self)
