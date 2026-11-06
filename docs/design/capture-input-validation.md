@@ -415,3 +415,71 @@ The separate first-show problem remains open: uninstrumented captures reproduced
 1090 ms inside `show`, mostly before the Python `showEvent` callback. A later
 virtual-event profiling override caused teardown access violations and was
 removed; those runs remain invalid. No timing threshold or heartbeat was relaxed.
+
+## Opt-in physical scrollbar qualification
+
+The physical scrollbar harness is prepared separately from the default hosted
+injected lane. It is **not** a cursor-presentation fix or installed-build result.
+Do not run it on a user's desktop without an explicit exclusive handoff.
+
+Plan only (no native resources or input):
+
+```powershell
+./scripts/test_capture_broker_native.ps1 -PhysicalScrollbar
+```
+
+After independent review, run only from the clean, pinned harness commit, passing
+one explicit isolated runtime and the full reviewed commit as
+`-ExpectedHarnessHead`, with `-PhysicalScrollbar -ExecuteAfterHandoff`. The launcher
+uses an isolated `-I -B` bootstrap before pytest/product imports. It rejects dirty
+or moved trees, unexpected harness changes and ignored files in `src`, `scripts`
+or `tests`, plus ignored code reachable from the repository import root
+(including bytecode/extensions). Start from a fresh clean checkout,
+not one with caches from earlier tests. Every product/dependency file must remain
+identical to production base `a0869f762f8fb47009a04c76ec3ab174817db6c1`; only the
+explicit eight-file harness/documentation scope may differ. Actual loaded product
+module paths are checked before native resources exist. Receipts identify the
+production base and separate harness head. The supplied interpreter and its
+installed pytest/Qt/dependencies remain a trusted, separately verified runtime;
+this lane does not download, rebuild, replace or certify an installed wheel.
+
+The case retains the owned-target nonce binding before arming, then requests one
+physical movement to the scrollbar and left press/release only at `input-now`.
+Physical mode cannot be combined with hosted input, the physical drag matrix or
+delivery flags. It selects the unchanged production PHYSICAL route and requires
+one non-injected hook pair plus the actual Raw Input left-button pair. Any
+injected packet, unsupported eligibility, absent raw delivery, missing pair or
+unconfirmed cleanup fails rather than falling back to injected input. Product
+matching-report (250 ms), GUI-heartbeat (1 s), case, input and cleanup deadlines
+are unchanged. The full-panel pixel oracle, popup/content identity checks, two
+subsequent selected captures and provider/input cleanup remain mandatory.
+
+No cursor visibility probe is dispatched in this mode. The operator may observe
+cursor presentation during the single click; receipts always leave cursor
+presentation unqualified. No readiness/preview flag, global hotkey registration,
+startup/association/updater setting, installed application or normal user state
+is changed. Output/logs, temporary settings and spool stay within the test's
+unique `.test-tmp` case directory. A failed run is evidence of refusal, not a
+passing qualification. Native execution and the exceptional manual observation
+remain outstanding until explicitly authorized and actually completed.
+
+
+### Current-core physical harness preparation
+
+This prepared harness targets PR91 source commit
+`a0869f762f8fb47009a04c76ec3ab174817db6c1` (tree
+`05c9d1555f687ffaadc3e946926c895c979ec24c`). Supply the separately reviewed
+full harness commit to `-ExpectedHarnessHead`; a branch name, abbreviated hash,
+old PR93 head or production source commit alone is not an execution pin.
+
+The current oracle requests one correlated fixture snapshot after capture
+termination. The first matching acknowledgment must report end-seen and offset
+zero within the existing input deadline. It cannot reuse periodic state or retry
+until the offset looks restored. Exact pixels, two subsequent captures and the
+non-injected hook/Raw Input matching requirements remain mandatory.
+
+Preparation and automated fake/refusal checks do not authorize execution.
+MHILL-X1 backup work must finish first; only then may a coordinated exclusive
+window and verified isolated interpreter be arranged with Mike. Do not switch to
+MHILL-LAPTOP or run any native/physical fixture while that hold applies. Cursor
+presentation remains unqualified and no cursor prototype is included.

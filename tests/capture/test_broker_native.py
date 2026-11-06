@@ -17,10 +17,12 @@ from PySide6.QtCore import QElapsedTimer, QPoint, QTimer
 from PySide6.QtGui import QGuiApplication, QImage
 from PySide6.QtWidgets import QApplication, QMenu, QWidget
 from pytestqt.qtbot import QtBot
+from scripts.physical_scrollbar_qualification import SourceProvenance
 from tests.capture.desktop import DesktopSession
 from tests.capture.hosted_fixture_input import require_hosted
 from tests.capture.menu_peer import MenuPeer
 from tests.capture.native_scrollbar import ScrollbarCase
+from tests.capture.physical_scrollbar import admit_physical_scrollbar
 from tests.capture.preservation_harness import HarnessBudgets, PreservationSnapshot
 from tests.capture.production_matrix import (
     CASES,
@@ -46,8 +48,11 @@ pytestmark = pytest.mark.native_desktop
 
 
 @pytest.fixture(autouse=True)
-def require_broker_handoff(request: pytest.FixtureRequest) -> None:
+def require_broker_handoff(
+    request: pytest.FixtureRequest,
+) -> SourceProvenance | None:
     """Fail/skip before creating a fixture host, child or input worker."""
+    provenance = admit_physical_scrollbar(request)
     if not request.config.getoption("--native-broker-handoff"):
         pytest.skip("Production broker matrix requires explicit exclusive handoff")
     if os.environ.get("VERDICLIP_HOSTED_SCROLLBAR") == "1":
@@ -62,6 +67,7 @@ def require_broker_handoff(request: pytest.FixtureRequest) -> None:
         pytest.fail(
             "Production broker requires a positively known active/unlocked session"
         )
+    return provenance
 
 
 class ExternalSnapshot(StrictFixtureSnapshot):
