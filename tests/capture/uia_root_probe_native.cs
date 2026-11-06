@@ -47,9 +47,23 @@ public static class RootProbeGuard {
         Require(AreDpiAwarenessContextsEqual(GetThreadDpiAwarenessContext(), new IntPtr(-4)));
     }
     public static void RestoreDpi(IntPtr previous) {
+        RestoreDpiWithCalls(previous, CaptureDesktop.SetThreadDpiAwarenessContext,
+            GetThreadDpiAwarenessContext, AreDpiAwarenessContextsEqual, RootProbeTiming.Phase);
+    }
+    // Pure injected boundary for failure-policy tests; the live wrapper uses only
+    // the original APIs once each. No retry or canonicalization of opaque tokens.
+    public static void RestoreDpiWithCalls(IntPtr previous, Func<IntPtr,IntPtr> set,
+        Func<IntPtr> get, Func<IntPtr,IntPtr,bool> equal, Action<string> phase) {
+        phase("probe_restore_previous");
         Require(previous != IntPtr.Zero);
-        Require(CaptureDesktop.SetThreadDpiAwarenessContext(previous) != IntPtr.Zero);
-        Require(AreDpiAwarenessContextsEqual(GetThreadDpiAwarenessContext(), previous));
+        phase("probe_restore_set");
+        IntPtr replaced = set(previous);
+        Require(replaced != IntPtr.Zero);
+        phase("probe_restore_set_succeeded");
+        IntPtr current = get();
+        phase("probe_restore_compare");
+        Require(equal(current, previous));
+        phase("probe_restore_verified");
     }
     public static void RequireRuntime(int[] runtime) {
         Require(runtime != null && runtime.Length >= 1 && runtime.Length <= 64);

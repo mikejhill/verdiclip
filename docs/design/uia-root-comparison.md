@@ -86,3 +86,12 @@ text is emitted, and original exception aggregation remains in-process. All
 guards, deadlines, fixture isolation and stop-after-one-batch policy remain.
 The extra markers add instrumentation overhead, so timings across revisions
 are not treated as a controlled performance comparison.
+
+A further targeted restoration split retains the same three checks. Fixed
+`probe_restore_previous`, `probe_restore_set`, `probe_restore_set_succeeded`,
+`probe_restore_compare`, and `probe_restore_verified` markers distinguish a
+rejected saved token, restoration-call failure, current-context retrieval and
+comparison failure. The saved opaque token is passed unchanged and neither API
+is retried. Injected pure tests cover throwing APIs, zero return, unequal
+contexts and success without calling user32. No raw context or exception is
+exported, and no process-default mutation is inferred from these markers.

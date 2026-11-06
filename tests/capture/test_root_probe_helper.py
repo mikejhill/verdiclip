@@ -155,8 +155,14 @@ def test_guards_cover_generation_foreground_desktop_and_dpi_restore() -> None:
         "process.StartTime.ToUniversalTime().Ticks == startedTicks",
         "GetForegroundWindow() == new IntPtr(foreground)",
         "AreDpiAwarenessContextsEqual(GetThreadDpiAwarenessContext(), new IntPtr(-4))",
-        "CaptureDesktop.SetThreadDpiAwarenessContext(previous) != IntPtr.Zero",
-        "AreDpiAwarenessContextsEqual(GetThreadDpiAwarenessContext(), previous)",
+        "RestoreDpiWithCalls(previous, CaptureDesktop.SetThreadDpiAwarenessContext,",
+        "GetThreadDpiAwarenessContext, AreDpiAwarenessContextsEqual, "
+        "RootProbeTiming.Phase)",
+        "Require(previous != IntPtr.Zero)",
+        "IntPtr replaced = set(previous)",
+        "Require(replaced != IntPtr.Zero)",
+        "IntPtr current = get()",
+        "Require(equal(current, previous))",
     ):
         assert guard in native
     assert helper.count("::RequireOwnedWindow(") == 3
@@ -268,6 +274,7 @@ def test_all_emitted_phases_are_test_only_fixed_allowlisted_markers() -> None:
     phases = re.findall(r"::Phase\('([a-z_0-9]+)'\)", helper)
     phases += re.findall(r'RootProbeTiming.Phase\("([a-z_0-9]+)"\)', native)
     phases += re.findall(r"'VERDICLIP_UIA_PHASE=([a-z_0-9]+)'", helper)
+    phases += re.findall(r'phase\("([a-z_0-9]+)"\)', native)
     assert phases
     assert all(
         f"VERDICLIP_UIA_PHASE={phase}".encode() in RootProbeTrace.MARKERS
@@ -537,6 +544,55 @@ public static class PureRootProbeTests {
             try { RootProbeGuard.RequireRuntime(invalid); }
             catch (Exception error) { seen = error; }
             if (seen == null) throw new Exception("Unbounded runtime accepted");
+        }
+        // Exercise actual restore policy without invoking user32 or a desktop.
+        foreach (string fault in new string[] {
+            "", "previous", "set-throws", "set-zero", "get-throws",
+            "equal-throws", "equal-false"
+        }) {
+            var phases = new List<string>();
+            int sets = 0, gets = 0, equals = 0;
+            Exception restoreFailure = null;
+            IntPtr previous = fault == "previous" ? IntPtr.Zero : new IntPtr(17);
+            try {
+                RootProbeGuard.RestoreDpiWithCalls(previous,
+                    value => {
+                        sets++;
+                        if (value != previous) throw new Exception("Token changed");
+                        if (fault == "set-throws") throw primary;
+                        return fault == "set-zero" ? IntPtr.Zero : new IntPtr(-4);
+                    },
+                    () => {
+                        gets++;
+                        if (fault == "get-throws") throw primary;
+                        return new IntPtr(23);
+                    },
+                    (current, saved) => {
+                        equals++;
+                        if (current != new IntPtr(23) || saved != previous)
+                            throw new Exception("Comparison arguments changed");
+                        if (fault == "equal-throws") throw primary;
+                        return fault != "equal-false";
+                    }, phases.Add);
+            } catch (Exception error) { restoreFailure = error; }
+            if ((restoreFailure == null) != (fault == ""))
+                throw new Exception("Restoration failure became success");
+            if (fault.EndsWith("-throws") &&
+                !Object.ReferenceEquals(primary, restoreFailure))
+                throw new Exception("Restoration exception replaced");
+            int expectedSets = fault == "previous" ? 0 : 1;
+            int expectedGets = fault == "previous" || fault.StartsWith("set-") ? 0 : 1;
+            int expectedEquals = expectedGets == 0 || fault == "get-throws" ? 0 : 1;
+            if (sets != expectedSets || gets != expectedGets ||
+                equals != expectedEquals)
+                throw new Exception("Restoration retried or continued after failure");
+            var expected = new List<string> { "probe_restore_previous" };
+            if (expectedSets != 0) expected.Add("probe_restore_set");
+            if (expectedGets != 0) expected.Add("probe_restore_set_succeeded");
+            if (expectedEquals != 0) expected.Add("probe_restore_compare");
+            if (fault == "") expected.Add("probe_restore_verified");
+            if (String.Join(",", phases) != String.Join(",", expected))
+                throw new Exception("Restoration markers lost failure boundary");
         }
         RootProbeGuard.RequireMta();
         RootProbeGuard.RequireNativeOnlyProcess();

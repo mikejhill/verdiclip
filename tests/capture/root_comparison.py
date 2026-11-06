@@ -64,6 +64,11 @@ class RootProbeTrace(WorkerTrace):
         "probe_release_managed_1",
         "probe_release_native_1",
         "probe_restore_1",
+        "probe_restore_previous",
+        "probe_restore_set",
+        "probe_restore_set_succeeded",
+        "probe_restore_compare",
+        "probe_restore_verified",
         "probe_runtime_1",
         "probe_validate_native_1",
     )
