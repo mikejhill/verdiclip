@@ -458,10 +458,14 @@ class MemoryCaptureSink:
         self.count = 0
 
     def accept(
-        self, capture: ReviewedCapture, *, activate_editor: bool = False
+        self,
+        capture: ReviewedCapture,
+        *,
+        activate_editor: bool = False,
+        activation_guard: Callable[[], bool] | None = None,
     ) -> None:
         """No output sink can be reached even for an unexpected full frame."""
-        del capture, activate_editor
+        del capture, activate_editor, activation_guard
         self.count += 1
 
 

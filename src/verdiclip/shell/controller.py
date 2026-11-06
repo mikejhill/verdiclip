@@ -44,6 +44,7 @@ from verdiclip.editor.workspace import Workspace
 from verdiclip.exceptions import AppError, HotkeyError
 from verdiclip.output.delivery import ImageDelivery
 from verdiclip.platform.associations import DEFAULT_APPS_URI, FileAssociations
+from verdiclip.platform.capture_activation import permits_capture_activation
 from verdiclip.platform.hotkeys import Hotkey, HotkeyService
 from verdiclip.platform.keyboard_hook import KeyCapture
 from verdiclip.platform.launcher import LaunchCommand, tray_launch
@@ -99,6 +100,7 @@ class CaptureDelivery:
     output: OutputSettings
     target: EditorWindow | None
     activate_editor: bool
+    activation_guard: Callable[[], bool] | None = None
     saved: Path | None = None
     copied: bool = False
     admitted: bool = False
@@ -377,8 +379,14 @@ class AppController(QObject):
                 capture.taken_at,
                 CaptureKind.SCREENSHOT,
                 CaptureCompleteness.COMPLETE,
-            )
+            ),
+            activate_editor=True,
+            activation_guard=self._capture_activation_allowed,
         )
+
+    def _capture_activation_allowed(self) -> bool:
+        """Activate only after input retirement and while native UI permits it."""
+        return self._capture.delivery_ready and permits_capture_activation()
 
     def deliver_reviewed_capture(
         self,
@@ -386,6 +394,7 @@ class AppController(QObject):
         *,
         target: EditorWindow | None = None,
         activate_editor: bool = False,
+        activation_guard: Callable[[], bool] | None = None,
     ) -> EditorWindow | None:
         """Apply chosen outputs once; preserve native popup/modal context by default.
 
@@ -405,6 +414,7 @@ class AppController(QObject):
                 self._settings.output,
                 target,
                 activate_editor,
+                activation_guard,
             ),
         )
         if attempt.in_flight:
@@ -514,6 +524,7 @@ class AppController(QObject):
                 delivered=attempt.saved is not None or attempt.copied,
                 target=attempt.target,
                 activate=attempt.activate_editor,
+                activation_guard=attempt.activation_guard,
                 new_window=attempt.actions.destination is CaptureDestination.WINDOWS,
             )
             attempt.admitted = True
@@ -558,6 +569,7 @@ class AppController(QObject):
         delivered: bool,
         target: EditorWindow | None = None,
         activate: bool = True,
+        activation_guard: Callable[[], bool] | None = None,
         new_window: bool = False,
     ) -> EditorWindow:
         existing = (
@@ -582,6 +594,7 @@ class AppController(QObject):
             options,
             target=target,
             activate=activate,
+            activation_guard=activation_guard,
             new_window=new_window,
             select_new=options.provenance is not None,
         )

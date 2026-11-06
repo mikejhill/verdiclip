@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import cast
@@ -183,6 +184,7 @@ def test_initial_save_path_survives_partial_admission_failure(
         delivered: bool,
         target: EditorWindow | None = None,
         activate: bool = True,
+        activation_guard: Callable[[], bool] | None = None,
         new_window: bool = False,
     ) -> None:
         original(
@@ -191,6 +193,7 @@ def test_initial_save_path_survives_partial_admission_failure(
             delivered=delivered,
             target=target,
             activate=activate,
+            activation_guard=activation_guard,
             new_window=new_window,
         )
         raise MemoryError("Presentation callback interrupted admission")
