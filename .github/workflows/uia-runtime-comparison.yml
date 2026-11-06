@@ -1,0 +1,99 @@
+name: Native runtime identity comparison
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: uia-runtime-comparison-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  runtime-comparison:
+    if: >-
+      github.repository == 'mikejhill/verdiclip' &&
+      github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
+      github.head_ref == 'test/native-runtime-property-comparison' &&
+      github.event.pull_request.draft == true
+    name: Runtime identity / ${{ matrix.provider }}
+    runs-on: windows-2025
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        provider: [winforms, wpf]
+    env:
+      UV_LOCKED: '1'
+      PYTHONUTF8: '1'
+      VERDICLIP_HOSTED_SCROLLBAR: '1'
+      VERDICLIP_RUNTIME_PROBE: '1'
+      VERDICLIP_NATIVE_PROVIDER: ${{ matrix.provider }}
+      VERDICLIP_EXPECTED_QT: '6.12.0'
+      VERDICLIP_EXPECTED_QT_SCALE: '1'
+      QT_SCALE_FACTOR: '1'
+      VERDICLIP_HOSTED_SOURCE: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: '3.13'
+          enable-cache: false
+      - run: uv sync --locked
+      - name: Select the existing explicit Qt runtime
+        run: uv pip install pyside6-essentials==6.12.0 shiboken6==6.12.0
+      - name: Compile and execute pure injected policies
+        run: uv run pytest tests/capture/test_runtime_comparison_contract.py -q --no-cov
+      - name: Verify pinned source and run one read-only arm
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          $head = (& git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $head -cne $env:VERDICLIP_HOSTED_SOURCE) { throw 'Source mismatch' }
+          $changes = & git status --porcelain
+          if ($LASTEXITCODE -ne 0 -or $changes) { throw 'Dirty source' }
+          ./scripts/test_runtime_comparison.ps1 -ScrollbarOnly -RuntimeProbe -ExecuteAfterHandoff -PythonPaths "$PWD/.venv/Scripts/python.exe"
+      - name: Retain sanitized evidence, including missing results
+        if: always()
+        shell: pwsh
+        run: |
+          function Require-OrdinaryPath($item) {
+            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Aliased diagnostic path refused' }
+          }
+          $base = Get-Item -LiteralPath .test-tmp -ErrorAction SilentlyContinue
+          $roots = @()
+          if ($null -ne $base) {
+            Require-OrdinaryPath $base
+            $roots = @(Get-ChildItem -LiteralPath $base.FullName -Directory -Filter 'native-broker-*' | Select-Object -First 2)
+          }
+          $file = $null
+          if ($roots.Count -eq 1 -and $roots[0].Name -cmatch '^native-broker-[a-f0-9]{32}$') {
+            Require-OrdinaryPath $roots[0]
+            $cases = @(Get-ChildItem -LiteralPath $roots[0].FullName -Directory | Select-Object -First 2)
+            if ($cases.Count -eq 1 -and $cases[0].Name -cmatch '^[a-f0-9]{32}$') {
+              Require-OrdinaryPath $cases[0]
+              $temp = Get-Item -LiteralPath (Join-Path $cases[0].FullName 'temp') -ErrorAction SilentlyContinue
+              if ($null -ne $temp) {
+                Require-OrdinaryPath $temp
+                $leaf = Get-Item -LiteralPath (Join-Path $temp.FullName 'test_runtime_identity_comparis0') -ErrorAction SilentlyContinue
+                if ($null -ne $leaf) {
+                  Require-OrdinaryPath $leaf
+                  $file = Get-Item -LiteralPath (Join-Path $leaf.FullName 'runtime-comparison.json') -ErrorAction SilentlyContinue
+                }
+              }
+            }
+          }
+          if ($null -eq $file) {
+            @{schema=1;provider=$env:VERDICLIP_NATIVE_PROVIDER;expected_head=$env:VERDICLIP_HOSTED_SOURCE;source_verified=$false;outcome='missing';result=$null} | ConvertTo-Json -Compress
+            throw 'Missing or ambiguous diagnostic receipt'
+          }
+          Require-OrdinaryPath $file
+          if ($file.Length -gt 16384 -or $file.PSIsContainer) { throw 'Diagnostic receipt exceeds bound or is not a file' }
+          $text = Get-Content -LiteralPath $file.FullName -Raw
+          if ($text.Length -gt 16384) { throw 'Diagnostic receipt exceeds bound' }
+          Write-Output $text
