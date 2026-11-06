@@ -1,6 +1,7 @@
 """Managed inspect diagnostics expose fixed phases, never provider content."""
 
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -11,58 +12,23 @@ from verdiclip.capture.scroll import uia_process
 from verdiclip.capture.scroll.uia_diagnostics import WorkerTrace
 
 
-def test_inspect_markers_guard_only_existing_managed_calls() -> None:
-    """Markers add no provider query and cannot enter native or warm sample paths."""
+def test_native_inspect_markers_are_fixed_and_allowlisted() -> None:
+    """Native resolution retains fixed phase evidence without provider text."""
     helper = Path(uia_process.__file__).with_name("uia_helper.ps1").read_text()
+    native = Path(uia_process.__file__).with_name("uia_discovery.cs").read_text()
+    stages = re.findall(r"VERDICLIP_UIA_PHASE=(inspect_[a-z_]+)", helper)
+    stages += re.findall(r'Mark\("(inspect_[a-z_]+)"\)', native)
     expected = {
-        "inspect_desktop": (
-            "$dpiContext = [CaptureDesktop]::SetThreadDpiAwarenessContext"
-        ),
-        "inspect_root": (
-            "$root = [System.Windows.Automation.AutomationElement]::FromHandle"
-        ),
-        "inspect_process": "$process = Get-Process -Id $root.Current.ProcessId",
-        "inspect_root_runtime": "$rootRuntime = ($root.GetRuntimeId()",
-        "inspect_bounds": "$bounds = $element.Current.BoundingRectangle",
-        "inspect_pattern": "if ($element.TryGetCurrentPattern",
-        "inspect_scrollable": "if ($pattern.Current.VerticallyScrollable)",
-        "inspect_hit": (
-            "$element = [System.Windows.Automation.AutomationElement]::FromPoint"
-        ),
-        "inspect_ancestor_identity": "if ($element.Current.ProcessId",
-        "inspect_parent": "$element = $walker.GetParent($element)",
-        "inspect_node_identity": "$runtime = ($element.GetRuntimeId()",
-        "inspect_control": "$kind = 'other'",
-        "inspect_reference": "$reference = if ($null -ne $pattern)",
-        "inspect_complete": "$result = @{ nodes=$nodes;",
-    }
-    marker_lines = [
-        line.strip()
-        for line in helper.splitlines()
-        if "VERDICLIP_UIA_PHASE=inspect_" in line
-    ]
-    assert len(marker_lines) == len(expected)
-    assert {
         stage for stage in WorkerTrace.MARKERS.values() if stage.startswith("inspect_")
-    } == set(expected)
-    for stage, operation in expected.items():
-        marker = (
-            "if ($request.action -eq 'inspect') { [Console]::Error.WriteLine("
-            f"'VERDICLIP_UIA_PHASE={stage}') }}"
-        )
-        assert marker in marker_lines
-        following = helper.split(marker, 1)[1].splitlines()
-        next_statement = next(
-            line.strip()
-            for line in following
-            if line.strip() and not line.strip().startswith("#")
-        )
-        assert next_statement.startswith(operation)
-    native_branch = helper.split("    if ($NativeOnly) {", 1)[1].split(
+    }
+    assert set(stages) == expected
+    assert "if(!diagnostics) return;" in native
+    assert "($request.action -eq 'inspect')" in helper
+    branch = helper.split("    if ($NativeOnly) {", 1)[1].split(
         "    if ($request.action -in", 1
     )[0]
-    assert "continue" in native_branch
-    assert "VERDICLIP_UIA_PHASE=inspect_" not in native_branch
+    assert "continue" in branch
+    assert "VERDICLIP_UIA_PHASE=inspect_" not in branch
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Installed Windows PowerShell")

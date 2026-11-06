@@ -12,18 +12,21 @@ from tests.capture.test_scroll_metric_policy import run_policy_probe
 from verdiclip.capture.scroll import uia_process
 
 
-def test_discovery_only_compiles_desktop_checks() -> None:
+def test_discovery_compiles_only_read_only_native_resolver() -> None:
     """Portable guard against compiling the mutation client on discovery startup."""
     helper = Path(uia_process.__file__).with_name("uia_helper.ps1").read_text()
-    startup = helper.split("try {", 1)[1].split("} catch {", 1)[0]
+    startup = helper.split("try {\n    if (-not $NativeOnly)", 1)[1].split(
+        "} catch {", 1
+    )[0]
     discovery, native = startup.split("} else {", 1)
-    assert "if (-not $NativeOnly)" in discovery
-    assert 'Add-Type -Path (Join-Path $PSScriptRoot "uia_desktop.cs")' in discovery
-    assert "uia_nofocus" not in discovery
+    assert "uia_desktop.cs" in discovery
+    assert "uia_discovery.cs" in discovery
+    assert "uia_nofocus_interop.cs" in discovery
+    assert '"uia_nofocus.cs"' not in discovery
     assert "NoFocusScroll" not in discovery
-    assert "UIAutomationClient" in discovery
-    assert "UIAutomationTypes" in discovery
-    assert "WindowsBase" in discovery
+    assert "UIAutomationClient" not in discovery
+    assert "UIAutomationTypes" not in discovery
+    assert "WindowsBase" not in discovery
     assert "System.Drawing" in discovery
     assert "Add-Type -AssemblyName" not in native
     assert "uia_nofocus_interop.cs" in native
@@ -66,7 +69,9 @@ if ($NativeOnly) {
     [VerdiClip.Automation.NoFocusScroll]::RequireNativeOnlyProcess()
 } else {
     if ($null -ne $mutator) { throw 'Discovery compiled native mutation client' }
-    if ($null -eq $managed) { throw 'Discovery UIA missing' }
+    if ($null -ne $managed) { throw 'Managed discovery UIA loaded' }
+    $resolver = 'VerdiClip.Automation.DiscoverySession' -as [type]
+    if ($null -eq $resolver) { throw 'Native discovery missing' }
 }
 [Console]::WriteLine('startup-compilation-passed')
 """,

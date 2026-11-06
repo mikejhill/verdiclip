@@ -346,7 +346,7 @@ jobs:
           installed = Path(verdiclip.__file__).resolve().parent / 'capture' / 'scroll'
           assert installed != source, 'Verification must inspect the installed wheel'
           for name in ('uia_helper.ps1', 'uia_native_request.ps1', 'uia_desktop.cs',
-                       'uia_nofocus.cs', 'uia_nofocus_interop.cs'):
+                       'uia_nofocus.cs', 'uia_nofocus_interop.cs', 'uia_discovery.cs'):
               assert (installed / name).read_bytes() == (source / name).read_bytes(), name
           print('Installed native helper assets match reviewed source; no helper executed')
           '@ | & .smoke/Scripts/python.exe -
