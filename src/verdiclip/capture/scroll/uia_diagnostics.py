@@ -8,6 +8,10 @@ from dataclasses import dataclass, field
 from math import isfinite
 from typing import ClassVar
 
+from verdiclip.capture.scroll.uia_inspect_clock import (
+    ChildClockStamp,
+    InspectClockReceipt,
+)
 from verdiclip.capture.scroll.uia_messages import UiaAction
 from verdiclip.capture.scroll.uia_timing import (
     ActionTiming,
@@ -42,6 +46,8 @@ class WorkerDiagnostics:
     first_request: FirstRequestTiming = field(default_factory=FirstRequestTiming)
     action_timings: tuple[ActionTiming, ...] = ()
     timing_unavailable: bool = False
+    inspect_clock: tuple[ChildClockStamp, ...] = ()
+    inspect_clock_unavailable: bool = False
 
 
 class WorkerTrace:
@@ -120,6 +126,7 @@ class WorkerTrace:
         self.dropped_events = 0
         self.stdout_bytes = self.stderr_bytes = self.pipe_bytes = 0
         self.max_deadline_lateness_ms = 0
+        self.inspect_clock = InspectClockReceipt()
         self._marker = bytearray()
         self._skip_line = False
 
@@ -178,6 +185,7 @@ class WorkerTrace:
         if self.stderr_bytes > self.MAX_ERROR_BYTES:
             self._marker.clear()
             return False
+        self._retain(lambda: self.inspect_clock.feed(data))
         for byte in data:
             if byte == self.LF:
                 stage = self.MARKERS.get(bytes(self._marker))

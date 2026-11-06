@@ -7,6 +7,53 @@ using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Threading;
 namespace VerdiClip.Automation {
+// Isolated first-request diagnostic. Fixed labels, no provider data or extra calls.
+public sealed class InspectClockTrace {
+    public static readonly string[] Labels = { "armed", "request_read", "json_parse", "json_parsed", "dispatch", "admission", "admitted", "inspect_desktop", "inspect_root", "root_call", "root_return", "root_owned", "root_wrapped", "inspect_process" };
+    private readonly Func<long> clock;
+    private readonly Action<string> write;
+    private readonly long frequency;
+    private readonly HashSet<string> seen=new HashSet<string>();
+    private long origin, last;
+    private bool unavailable;
+    public InspectClockTrace(Func<long> clock, long frequency, Action<string> write) {
+        this.clock=clock; this.frequency=frequency; this.write=write;
+        try { origin=clock(); if(origin<0 || frequency<=0) unavailable=true; }
+        catch(OperationCanceledException) { throw; }
+        catch(ThreadAbortException) { throw; }
+        catch(Exception) { unavailable=true; }
+    }
+    public void Mark(string label) {
+        if(Array.IndexOf(Labels,label)<0 || seen.Count>=Labels.Length || !seen.Add(label)) return;
+        long microseconds=-1;
+        try {
+            if(!unavailable) {
+                long now=clock();
+                double delta=((double)now-origin)*1000000.0/frequency;
+                if(now<origin || Double.IsNaN(delta) || Double.IsInfinity(delta) || delta<last || delta>Int32.MaxValue) unavailable=true;
+                else { microseconds=(long)Math.Floor(delta); last=microseconds; }
+            }
+        }
+        catch(OperationCanceledException) { throw; }
+        catch(ThreadAbortException) { throw; }
+        catch(Exception) { unavailable=true; }
+        try { write("VERDICLIP_INSPECT_CLOCK="+label+":"+microseconds.ToString(CultureInfo.InvariantCulture)); }
+        catch(OperationCanceledException) { throw; }
+        catch(ThreadAbortException) { throw; }
+        catch(Exception) { unavailable=true; }
+    }
+}
+public static class FirstInspectClock {
+    private static InspectClockTrace trace;
+    public static void Arm() {
+        if(trace!=null) return;
+        trace=new InspectClockTrace(Stopwatch.GetTimestamp,Stopwatch.Frequency,Console.Error.WriteLine);
+        trace.Mark("armed");
+    }
+    public static void Mark(string label) { if(trace!=null) trace.Mark(label); }
+    public static void Stop() { trace=null; }
+}
+
 public interface IDiscoveryElement {
     object Property(int id);
     int[] Runtime();
@@ -234,6 +281,7 @@ internal sealed class NativeDiscoveryBackend : IDiscoveryBackend {
     }
     public void Mark(string phase) {
         if(!diagnostics) return;
+        FirstInspectClock.Mark(phase);
         try { Console.Error.WriteLine("VERDICLIP_UIA_PHASE="+phase); } catch(System.IO.IOException) {} catch(ObjectDisposedException) {}
     }
     public void Construct() {
@@ -250,7 +298,14 @@ internal sealed class NativeDiscoveryBackend : IDiscoveryBackend {
         DiscoveryPolicy.Require(GetForegroundWindow()==foreground);
         if(automation!=null) { int enabled; automation.get_AutoSetFocus(out enabled); DiscoveryPolicy.Require(enabled==0); }
     }
-    public IDiscoveryElement Root(long handle) { return Wrap(DiscoveryPolicy.Acquire<IElement>(delegate(out IElement value){automation.ElementFromHandle(new IntPtr(handle),out value);}, value=>Own(value))); }
+    public IDiscoveryElement Root(long handle) {
+        IElement result=DiscoveryPolicy.Acquire<IElement>(delegate(out IElement value){
+            FirstInspectClock.Mark("root_call");
+            automation.ElementFromHandle(new IntPtr(handle),out value);
+            FirstInspectClock.Mark("root_return");
+        }, value=>{ Own(value); FirstInspectClock.Mark("root_owned"); });
+        IDiscoveryElement wrapped=Wrap(result); FirstInspectClock.Mark("root_wrapped"); return wrapped;
+    }
     public IDiscoveryElement Hit(int x,int y) { return Wrap(DiscoveryPolicy.Acquire<IElement>(delegate(out IElement value){automation.ElementFromPoint(new NativePoint{X=x,Y=y},out value);}, value=>Own(value))); }
     public IDiscoveryElement Parent(IDiscoveryElement element) { return Wrap(DiscoveryPolicy.Acquire<IElement>(delegate(out IElement value){walker.GetParentElement(((NativeDiscoveryElement)element).Value,out value);}, value=>Own(value))); }
     public void Dispose() {
@@ -286,6 +341,7 @@ public sealed class DiscoverySession : IDisposable {
     private bool diagnostics;
     private void Mark(string phase) {
         if(!diagnostics) return;
+        FirstInspectClock.Mark(phase);
         try { Console.Error.WriteLine("VERDICLIP_UIA_PHASE="+phase); } catch(System.IO.IOException) {} catch(ObjectDisposedException) {}
     }
     public DiscoveryResolver Resolver { get; private set; }
