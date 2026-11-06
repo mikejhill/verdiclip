@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 from unittest.mock import Mock
 
 import pytest
@@ -22,6 +21,9 @@ from tests.capture.test_scroll_service import ServiceWorkflow
 from tests.capture.test_scroll_settling import Viewport
 
 from verdiclip.capture.scroll.settling import SettleStatus
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 @pytest.mark.parametrize("error", [RuntimeError(), SystemExit(), KeyboardInterrupt()])

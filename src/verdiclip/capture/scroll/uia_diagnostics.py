@@ -128,8 +128,8 @@ class WorkerTrace:
             value = self._clock()
             valid = isfinite(value)
         except Exception:  # noqa: BLE001 - optional telemetry cannot affect requests
-            valid = False
-            value = 0.0
+            self.timing_unavailable = True
+            return None
         if valid:
             return value
         self.timing_unavailable = True

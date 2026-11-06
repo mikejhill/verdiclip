@@ -7,6 +7,7 @@ import math
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
+from typing import TypeVar
 
 import pytest
 
@@ -114,13 +115,17 @@ class SettlingEvidence:
         }
 
 
-def observed[**P, R](
-    operation: Callable[P, R], record: Callable[[R], None]
-) -> Callable[P, R]:
+# Explicit TypeVar avoids CodeQL's nested PEP 695 annotation-scope false positive.
+_Result = TypeVar("_Result")
+
+
+def observed(  # noqa: UP047 - retain analyzer-compatible nested return typing
+    operation: Callable[[], _Result], record: Callable[[_Result], None]
+) -> Callable[[], _Result]:
     """Preserve the exact operation result and exceptions; record returns only."""
 
-    def invoke(*args: P.args, **kwargs: P.kwargs) -> R:
-        result = operation(*args, **kwargs)
+    def invoke() -> _Result:
+        result = operation()
         diagnostic(lambda: record(result))
         return result
 

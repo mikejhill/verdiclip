@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import pytest
 from tests.capture import native_scrollbar
@@ -21,6 +20,9 @@ from tests.capture.test_scroll_uia_protocol import Payload
 from verdiclip.capture.reviewed import CaptureCompleteness, CaptureKind
 from verdiclip.capture.scroll.uia_protocol import UiaDiscovery
 from verdiclip.geometry import Rect
+
+if TYPE_CHECKING:
+    import subprocess
 
 
 @pytest.mark.parametrize("provider", ["wpf", "winforms"])
