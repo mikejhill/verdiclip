@@ -5,6 +5,7 @@ import ctypes.wintypes as w
 import json
 import subprocess
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
@@ -861,3 +862,92 @@ def test_provider_preflight_precedes_hosted_cursor_preparation_and_binding(
         case.driver.workers.clear()
         case.app.controller.capture.input_active = True
         assert not scope.broker_idle()
+
+
+def test_ordinary_scrollbar_probe_never_calls_legacy_global_visibility(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only the retained worker probe may run; neither global entry is reachable."""
+    calls: list[str] = []
+
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("Ordinary qualification invoked legacy global visibility")
+
+    def worker(result: dict[str, object], workers: list[object]) -> None:
+        del workers
+        calls.append("worker")
+        result["cleanup_confirmed"] = True
+
+    monkeypatch.setattr(
+        "tests.capture.native_cursor.probe_owned_cursor_baseline", forbidden
+    )
+    monkeypatch.setattr(
+        "tests.capture.native_cursor.probe_magnification_cursor", forbidden
+    )
+    monkeypatch.setattr(
+        "tests.capture.native_scrollbar.probe_owned_cursor_baseline",
+        forbidden,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "tests.capture.native_scrollbar.probe_worker_cursor_visibility", worker
+    )
+    case = cast(
+        ScrollbarCase,
+        SimpleNamespace(
+            hosted_input=object(),
+            snapshot=SimpleNamespace(errors=list),
+            input_deadline=time.monotonic() + 10,
+        ),
+    )
+    ScrollbarCase.probe_cursor(case)
+    assert calls == ["worker"]
+    assert case.cursor_probe["cleanup_confirmed"] is True
+    assert not hasattr(case, "magnification_cursor_probe")
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        None,
+        "selecting",
+        "input-running",
+        "input-unclean",
+        "provider-busy",
+        "provider-alive",
+    ],
+)
+def test_actual_retirement_guards_survive_global_probe_removal(
+    fault: str | None,
+) -> None:
+    """Independent capture/input/provider evidence still decides retirement."""
+    case = cast(
+        ScrollbarCase,
+        SimpleNamespace(
+            driver=SimpleNamespace(
+                workers=[
+                    SimpleNamespace(
+                        stopped=SimpleNamespace(
+                            is_set=lambda: fault != "input-running"
+                        ),
+                        cleaned=fault != "input-unclean",
+                    )
+                ]
+            ),
+            app=SimpleNamespace(
+                controller=SimpleNamespace(
+                    capture=SimpleNamespace(
+                        is_selecting=fault == "selecting",
+                    )
+                )
+            ),
+            adapter=SimpleNamespace(busy=fault == "provider-busy"),
+            process=SimpleNamespace(
+                worker_pid=123 if fault == "provider-alive" else None
+            ),
+            cursor_workers=[],
+            cursor_probe={"cleanup_confirmed": True},
+        ),
+    )
+    retired = ScrollbarCase.retired(case)
+    assert retired is (fault is None)
