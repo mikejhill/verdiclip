@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from tests.portable.activation_lifecycle import run_activation, wall_start_ms
 
 
 @pytest.mark.parametrize("case", ["active", "inactive", "refused", "incomplete"])
@@ -24,7 +25,21 @@ def test_fixture_activation_decision(case: str) -> None:
         + function
         + r"""
 $ErrorActionPreference = 'Stop'
-[Console]::Error.WriteLine('ACTIVATION_PHASE=script-started')
+$phaseClock = $null
+try { $phaseClock = [Diagnostics.Stopwatch]::StartNew() } catch {}
+function Write-ActivationPhase([string]$phase) {
+    try {
+        $elapsed = -1
+        $wall = -1
+        if ($null -ne $phaseClock) { $elapsed = $phaseClock.ElapsedMilliseconds }
+        if ($parentStartedMs -gt 0) {
+            $wall = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - $parentStartedMs
+        }
+        $format = 'ACTIVATION_PHASE={0} script_ms={1} parent_wall_ms={2}'
+        [Console]::Error.WriteLine(($format -f $phase, $elapsed, $wall))
+    } catch {}
+}
+Write-ActivationPhase 'script-started'
 $owner = [pscustomobject]@{ IsActive = ($case -eq 'active'); Calls = 0; Case = $case }
 $owner | Add-Member ScriptMethod Activate {
     $this.Calls++
@@ -33,9 +48,9 @@ $owner | Add-Member ScriptMethod Activate {
     return $false
 }
 $failed = $false
-[Console]::Error.WriteLine('ACTIVATION_PHASE=before-decision')
+Write-ActivationPhase 'before-decision'
 try { Confirm-FixtureActivation $owner } catch { $failed = $true }
-[Console]::Error.WriteLine('ACTIVATION_PHASE=after-decision')
+Write-ActivationPhase 'after-decision'
 if ($case -eq 'active') {
     if ($owner.Calls -ne 0 -or $failed) { throw 'Redundant activation' }
 } elseif ($case -eq 'inactive') {
@@ -43,7 +58,7 @@ if ($case -eq 'active') {
         throw 'Activation failed'
     }
 } elseif (-not $failed -or $owner.Calls -ne 1) { throw 'Unsafe admission' }
-[Console]::Error.WriteLine('ACTIVATION_PHASE=assertions-complete')
+Write-ActivationPhase 'assertions-complete'
 """
     )
     # case is a closed parametrization, never external PowerShell text.
@@ -53,16 +68,14 @@ if ($case -eq 'active') {
         "-NoProfile",
         "-NonInteractive",
         "-Command",
-        f"$case = '{case}'\n" + script,
+        f"$parentStartedMs = {wall_start_ms()}\n$case = '{case}'\n" + script,
     ]
     try:
-        result = subprocess.run(  # noqa: S603 - repository function, closed fake cases
-            command, capture_output=True, text=True, timeout=10, check=False
-        )
+        result = run_activation(command)
     except subprocess.TimeoutExpired as error:
         pytest.fail(
             f"Pure activation case {case} exceeded unchanged 10s deadline; "
-            f"last phase evidence: {error.stderr!r}",
+            f"lifecycle evidence: {getattr(error, '__notes__', [])}",
             pytrace=False,
         )
     assert result.returncode == 0, result.stderr

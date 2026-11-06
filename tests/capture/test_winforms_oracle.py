@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, cast
+from typing import cast
 
 import pytest
 from tests.capture import native_scrollbar
@@ -20,9 +21,6 @@ from tests.capture.test_scroll_uia_protocol import Payload
 from verdiclip.capture.reviewed import CaptureCompleteness, CaptureKind
 from verdiclip.capture.scroll.uia_protocol import UiaDiscovery
 from verdiclip.geometry import Rect
-
-if TYPE_CHECKING:
-    import subprocess
 
 
 @pytest.mark.parametrize("provider", ["wpf", "winforms"])
@@ -196,7 +194,7 @@ def test_negative_peer_requires_matching_fixture_attestation(
     """A positive/missing-mode snapshot cannot stand in for the negative fixture."""
     peer = ScrollPeer(tmp_path, provider="winforms", fixture="unsupported-scrollbar")
     peer.process = cast(
-        "subprocess.Popen[bytes]", SimpleNamespace(pid=123, poll=lambda: None)
+        subprocess.Popen[bytes], SimpleNamespace(pid=123, poll=lambda: None)
     )
     value: dict[str, object] = {
         "nonce": peer.nonce,
