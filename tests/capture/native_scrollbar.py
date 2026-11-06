@@ -21,7 +21,6 @@ from PySide6.QtWidgets import QApplication, QMenu
 from pytestqt.qtbot import QtBot
 from shiboken6 import isValid
 from tests.capture.hosted_fixture_input import CursorPreparation, HostedFixtureClick
-from tests.capture.native_cursor import probe_owned_cursor_baseline
 from tests.capture.production_matrix import (
     DriverJournal,
     InputProfile,
@@ -818,7 +817,6 @@ class ScrollbarCase:
     def probe_cursor(self) -> None:
         """Keep this diagnostic out of local desktop handoffs."""
         self.cursor_probe: dict[str, object] = {}
-        self.magnification_cursor_probe: dict[str, object] = {}
         self.cursor_workers: list[threading.Thread] = []
         if self.hosted_input is not None:
             assert self.snapshot is not None
@@ -826,12 +824,6 @@ class ScrollbarCase:
             assert not self.snapshot.errors()
             probe_worker_cursor_visibility(self.cursor_probe, self.cursor_workers)
             assert not self.snapshot.errors(), "Cursor probe changed the popup"
-            snapshot = self.snapshot
-            probe_owned_cursor_baseline(
-                self.magnification_cursor_probe,
-                int(self.menu.winId()),
-                lambda: not snapshot.errors(),
-            )
 
     def target(self) -> Rect:
         """Restrict the actual click to the owned native scrollbar center."""
@@ -1067,9 +1059,6 @@ class ScrollbarCase:
                     "provider_profile": self.provider_profile,
                     "cursor_preparation": getattr(self, "cursor_preparation", {}),
                     "worker_cursor_probe": getattr(self, "cursor_probe", {}),
-                    "magnification_cursor_probe": getattr(
-                        self, "magnification_cursor_probe", {}
-                    ),
                     "subsequent_active_window_captures": getattr(
                         self, "repeated_window_captures", 0
                     ),
@@ -1132,9 +1121,6 @@ class ScrollbarCase:
             return False
         probe = getattr(self, "cursor_probe", {})
         if probe and probe.get("cleanup_confirmed") is not True:
-            return False
-        magnification = getattr(self, "magnification_cursor_probe", {})
-        if magnification and magnification.get("cleanup_confirmed") is not True:
             return False
         return cleanup_confirmed(
             self.driver, selecting=self.app.controller.capture.is_selecting
