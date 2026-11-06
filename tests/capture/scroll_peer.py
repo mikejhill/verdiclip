@@ -272,7 +272,17 @@ class ScrollPeer:
             raise failure
         self._exit_confirmed = True
         receipt = json.loads((self.directory / "fixture-retired.json").read_text())
-        assert receipt == {"nonce": self.nonce, "pid": self.process.pid, "closed": True}
+        expected: dict[str, object] = {
+            "nonce": self.nonce,
+            "pid": self.process.pid,
+            "closed": True,
+        }
+        if self.native_pointer_cursor:
+            expected["cursor_lifetime"] = "process-exit"
+        assert isinstance(receipt, dict)
+        assert receipt == expected
+        assert type(receipt["pid"]) is int
+        assert receipt["closed"] is True
         assert self.process.returncode == 0
         self._closed = True
 

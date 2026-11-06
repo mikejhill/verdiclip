@@ -2,16 +2,18 @@
 
 import ctypes
 import ctypes.wintypes as w
+from collections.abc import Callable
 from typing import override
 
 import pytest
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QPoint, Qt, QTimer
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 from pytestqt.qtbot import QtBot
 from tests.capture.input_fixture import ReplayInputBroker
 from tests.ux.test_capture_journeys import FakeDesktop, FakeWindows
 
+from verdiclip.capture.input_broker import InputBroker, NativeInputBroker
 from verdiclip.capture.native_pointer import NativePointerRoute, PointerPhase
 from verdiclip.capture.native_pointer_win32 import NativePointerSession
 from verdiclip.capture.service import CaptureService
@@ -61,6 +63,10 @@ def test_protected_native_context_keeps_existing_passive_path(
     broker = Broker(qapp)
     service = CaptureService(FakeDesktop(), FakeWindows(), input_broker=broker)
     service.enable_native_pointer()
+
+    def retired() -> bool:
+        return not service.is_selecting
+
     try:
         service.capture_region()
         qtbot.waitUntil(lambda: bool(service.overlays))
@@ -71,7 +77,7 @@ def test_protected_native_context_keeps_existing_passive_path(
         )
     finally:
         service.cancel()
-        qtbot.waitUntil(lambda: not service.is_selecting)
+        qtbot.waitUntil(retired)
 
 
 def test_owned_surface_ignores_duplicate_qt_input_and_closes_generation(
@@ -84,6 +90,10 @@ def test_owned_surface_ignores_duplicate_qt_input_and_closes_generation(
     broker = Broker(qapp)
     service = CaptureService(FakeDesktop(), FakeWindows(), input_broker=broker)
     service.enable_native_pointer()
+
+    def retired() -> bool:
+        return not service.is_selecting
+
     try:
         service.capture_region()
         qtbot.waitUntil(lambda: bool(service.overlays))
@@ -101,9 +111,10 @@ def test_owned_surface_ignores_duplicate_qt_input_and_closes_generation(
         with pytest.raises(CaptureError, match="routing"):
             service.enable_native_pointer()
         service.cancel()
-        qtbot.waitUntil(lambda: not service.is_selecting)
+        qtbot.waitUntil(retired)
         assert pointer.route.phase is PointerPhase.CLOSED
-        assert not pointer.route.admit(handle, lambda: True)
+        operation_result_4 = pointer.route.admit(handle, lambda: True)
+        assert not operation_result_4
     finally:
         service.cancel()
 
@@ -117,17 +128,30 @@ def test_actual_native_handler_requires_owned_client_message(
 ) -> None:
     """Decode the actual message structure, without sending an OS cursor message."""
     session = Session()
+    # Keep the actual nativeEvent parser, but never show a native target. Real
+    # Windows WM_SETCURSOR callbacks must not contaminate this portable oracle.
+    monkeypatch.setattr(
+        "verdiclip.capture.overlay.SelectionOverlay.show", lambda _self: None
+    )
     monkeypatch.setattr(
         "verdiclip.capture.service.NativePointerSession", lambda: session
     )
     broker = Broker(qapp)
     service = CaptureService(FakeDesktop(), FakeWindows(), input_broker=broker)
     service.enable_native_pointer()
+
+    def retired() -> bool:
+        return not service.is_selecting
+
     try:
         service.capture_region()
         qtbot.waitUntil(lambda: bool(service.overlays))
         overlay = service.overlays[0]
         handle = int(overlay.winId())
+        callbacks: list[Callable[[], object]] = []
+        monkeypatch.setattr(
+            QTimer, "singleShot", lambda _delay, callback: callbacks.append(callback)
+        )
         packet = w.MSG()
         packet.message = 0x20
         packet.hWnd = handle + 1 if fault == "target" else handle
@@ -135,8 +159,79 @@ def test_actual_native_handler_requires_owned_client_message(
         packet.lParam = 2 if fault == "nonclient" else 1
         overlay.nativeEvent(b"windows_generic_MSG", ctypes.addressof(packet))
         overlay.nativeEvent(b"windows_generic_MSG", ctypes.addressof(packet))
-        qapp.processEvents()
+        for callback in callbacks:
+            callback()
         assert session.observations == ([handle] if fault == "none" else [])
     finally:
         service.cancel()
-        qtbot.waitUntil(lambda: not service.is_selecting)
+        qtbot.waitUntil(retired)
+
+
+def test_broker_admits_configuration_only_while_idle(qapp: QApplication) -> None:
+    """Unsupported brokers refuse, and active ownership cannot be replaced."""
+    base = InputBroker(qapp)
+    operation_result_1 = base.set_native_pointer(None)
+    assert operation_result_1
+    pointer = object.__new__(NativePointerSession)
+    operation_result_2 = base.set_native_pointer(pointer)
+    assert not operation_result_2
+    broker = NativeInputBroker(qapp, require_windows=False)
+    operation_result_3 = broker.set_native_pointer(pointer)
+    assert operation_result_3
+    assert broker._native_pointer is pointer
+    broker._broken = True
+    with pytest.raises(CaptureError, match="still being released"):
+        broker.set_native_pointer(None)
+    assert broker._native_pointer is pointer
+    broker._broken = False
+
+
+@pytest.mark.parametrize("failure", ["bind", "cancel-bind", "stale-bind", "dismiss"])
+def test_owned_surface_setup_failure_or_retirement_closes_session(
+    qtbot: QtBot,
+    qapp: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    """Partial construction and reentrant cancellation never leave input reserved."""
+    session = Session()
+    monkeypatch.setattr(
+        "verdiclip.capture.service.NativePointerSession", lambda: session
+    )
+    broker = Broker(qapp)
+    service = CaptureService(FakeDesktop(), FakeWindows(), input_broker=broker)
+    service.enable_native_pointer()
+    errors: list[str] = []
+    service.failed.connect(errors.append)
+
+    def retired() -> bool:
+        return not service.is_selecting
+
+    def failing_bind(_self: Session, _windows: frozenset[int]) -> None:
+        if failure == "bind":
+            raise ValueError("fixture-bind-failure")
+        if failure == "stale-bind":
+            service._generation += 1
+            return
+        service.cancel()
+
+    if failure != "dismiss":
+        monkeypatch.setattr(Session, "bind", failing_bind)
+    try:
+        service.capture_region()
+        if failure == "stale-bind":
+            qtbot.waitUntil(lambda: bool(service.overlays))
+            assert not any(overlay.isVisible() for overlay in service.overlays)
+            service.cancel()
+        if failure == "dismiss":
+            qtbot.waitUntil(lambda: bool(service.overlays))
+            service._dismiss_overlays()
+            assert session.route.phase is PointerPhase.CLOSED
+            service.cancel()
+        qtbot.waitUntil(retired)
+        assert session.route.phase is PointerPhase.CLOSED
+        assert not service.overlays
+        assert bool(errors) is (failure == "bind")
+    finally:
+        service.cancel()
+        qtbot.waitUntil(retired)

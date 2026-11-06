@@ -10,11 +10,16 @@ def test_absolute_route_requires_natural_owned_admission() -> None:
     """Retain deterministic ownership and routing without native execution."""
     route = NativePointerRoute()
     route.bind(frozenset({7}))
-    assert not route.move(Point(1, 2), lambda: True)
-    assert not route.admit(8, lambda: True)
-    assert route.admit(7, lambda: True)
-    assert route.move(Point(10, 20), lambda: True)
-    assert route.move(Point(11, 19), lambda: True)
+    operation_result_1 = route.move(Point(1, 2), lambda: True)
+    assert not operation_result_1
+    operation_result_2 = route.admit(8, lambda: True)
+    assert not operation_result_2
+    operation_result_3 = route.admit(7, lambda: True)
+    assert operation_result_3
+    operation_result_4 = route.move(Point(10, 20), lambda: True)
+    assert operation_result_4
+    operation_result_5 = route.move(Point(11, 19), lambda: True)
+    assert operation_result_5
     assert route.point == Point(11, 19)
 
 
@@ -26,7 +31,8 @@ def test_reentrant_cancellation_cannot_restore_ownership(
     route = NativePointerRoute()
     route.bind(frozenset({7}))
     if not during_admission:
-        assert route.admit(7, lambda: True)
+        operation_result_11 = route.admit(7, lambda: True)
+        assert operation_result_11
 
     def cancelled() -> bool:
         route.close()
@@ -39,7 +45,8 @@ def test_reentrant_cancellation_cannot_restore_ownership(
     )
     assert not accepted
     assert route.phase is PointerPhase.CLOSED
-    assert not route.admit(7, lambda: True)
+    operation_result_6 = route.admit(7, lambda: True)
+    assert not operation_result_6
     assert route.point is None
 
 
@@ -47,9 +54,12 @@ def test_foreign_ownership_change_is_terminal() -> None:
     """Retain deterministic ownership and routing without native execution."""
     route = NativePointerRoute()
     route.bind(frozenset({7}))
-    assert route.admit(7, lambda: True)
-    assert not route.move(Point(2, 3), lambda: False)
-    assert not route.move(Point(2, 3), lambda: True)
+    operation_result_7 = route.admit(7, lambda: True)
+    assert operation_result_7
+    operation_result_8 = route.move(Point(2, 3), lambda: False)
+    assert not operation_result_8
+    operation_result_9 = route.move(Point(2, 3), lambda: True)
+    assert not operation_result_9
     assert route.phase is PointerPhase.CLOSED
 
 
@@ -66,4 +76,22 @@ def test_failed_proof_closes_route_even_for_control_exception(
 
     with pytest.raises(error):
         route.admit(7, failed)
+    assert route.phase is PointerPhase.CLOSED
+
+
+@pytest.mark.parametrize("windows", [frozenset(), frozenset({0}), frozenset({True})])
+def test_invalid_surface_set_cannot_be_bound(windows: frozenset[int]) -> None:
+    """Empty, null and coercible identities are not ownership evidence."""
+    route = NativePointerRoute()
+    with pytest.raises(ValueError, match="surface lifetime"):
+        route.bind(windows)
+    assert route.phase is PointerPhase.WAITING
+
+
+def test_failed_admission_proof_is_terminal() -> None:
+    """An explicit proof refusal cannot be retried into success."""
+    route = NativePointerRoute()
+    route.bind(frozenset({7}))
+    operation_result_10 = route.admit(7, lambda: False)
+    assert not operation_result_10
     assert route.phase is PointerPhase.CLOSED

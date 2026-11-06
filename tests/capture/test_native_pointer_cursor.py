@@ -85,11 +85,17 @@ def test_primary_control_survives_two_cleanup_failures(control: BaseException) -
         calls.append(number)
         raise OSError("cleanup-failed")
 
+    def fail_first() -> None:
+        failed(1)
+
+    def fail_second() -> None:
+        failed(2)
+
     def interrupted() -> None:
         try:
             raise control
         finally:
-            cleanup((lambda: failed(1), lambda: failed(2)))
+            cleanup((fail_first, fail_second))
 
     with pytest.raises(type(control)) as caught:
         interrupted()

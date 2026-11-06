@@ -211,12 +211,13 @@ finally {
     # Retain this single owned cursor until exact fixture process exit. A global
     # cursor snapshot cannot prove no window/thread still references it. The
     # supervisor confirms process retirement; no cursor write repairs teardown.
-    $cursorLifetime = if ($NativePointerCursor) { "process-exit" } else { "not-created" }
     if ($null -ne $priorDpi -and $priorDpi -ne [IntPtr]::Zero) {
         try { if ([FixtureListGeometry]::SetThreadDpiAwarenessContext($priorDpi) -eq [IntPtr]::Zero) { $cleanupErrors++ } }
         catch { $cleanupErrors++ }
     }
     $retired=$cleanupErrors -eq 0
-    [IO.File]::WriteAllText((Join-Path $fixtureDirectory 'fixture-retired.json'),(@{nonce=$Nonce;pid=$PID;closed=$retired;cursor_lifetime=$cursorLifetime}|ConvertTo-Json))
+    $retiredReceipt = @{nonce=$Nonce;pid=$PID;closed=$retired}
+    if ($NativePointerCursor) { $retiredReceipt.cursor_lifetime = 'process-exit' }
+    [IO.File]::WriteAllText((Join-Path $fixtureDirectory 'fixture-retired.json'),($retiredReceipt|ConvertTo-Json))
     if (-not $retired) { throw 'Owned WinForms fixture cleanup failed' }
 }

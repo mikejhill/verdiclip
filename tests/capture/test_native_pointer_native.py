@@ -170,6 +170,10 @@ def test_owned_native_pointer_stationary_retirement_and_input(  # noqa: PLR0915 
     service.enable_native_pointer()
     events: list[SelectionInput] = []
     captures: list[Capture] = []
+
+    def broker_retired() -> bool:
+        return not broker.busy
+
     broker.input_event.connect(events.append)
     service.captured.connect(captures.append)
     try:
@@ -255,7 +259,7 @@ def test_owned_native_pointer_stationary_retirement_and_input(  # noqa: PLR0915 
     finally:
         service.cancel()
         try:
-            qtbot.waitUntil(lambda: not broker.busy, timeout=5000)
+            qtbot.waitUntil(broker_retired, timeout=5000)
         finally:
             try:
                 source.close()
@@ -311,6 +315,10 @@ def test_native_pointer_preserves_protected_menu(
     service = CaptureService(source, FixedWindows(), show_magnifier=False)
     service.enable_native_pointer()
     peer = MenuPeer()
+
+    def selection_retired() -> bool:
+        return not service.is_selecting
+
     try:
         if preexisting:
             open_menu(peer, qtbot)
@@ -347,7 +355,7 @@ def test_native_pointer_preserves_protected_menu(
     finally:
         service.cancel()
         try:
-            qtbot.waitUntil(lambda: not service.is_selecting, timeout=5000)
+            qtbot.waitUntil(selection_retired, timeout=5000)
         finally:
             try:
                 peer.close()

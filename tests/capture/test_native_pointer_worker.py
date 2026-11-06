@@ -1,11 +1,13 @@
 """Exercise the actual native-mode worker through a replay OS boundary."""
 
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
 from tests.capture.input_fixture import ReplayInputPlatform
 from tests.capture.test_input_worker import ReplayRun
 
+from verdiclip.capture.input_native import MousePacket
 from verdiclip.capture.input_policy import InputKind, SelectionInput
 from verdiclip.capture.input_raw import RawPointer
 from verdiclip.capture.input_routing import MoveMode
@@ -144,3 +146,37 @@ def test_queue_overflow_revokes_before_forwarding_current_move() -> None:
     platform.actions.get_nowait()()
     assert not platform.forwarded
     assert "event budget" in worker.failure
+
+
+def test_terminal_and_expired_admission_report_distinct_failures() -> None:
+    """No terminal generation or expired natural observation remains routable."""
+    platform = ReplayInputPlatform()
+    worker = ReplayRun.make(platform)
+    pointer = Pointer()
+    worker.native_pointer = cast(NativePointerSession, pointer)
+    pointer.close()
+    assert worker._native_failure() == "Native pointer ownership ended"
+    waiting = SimpleNamespace(route=NativePointerRoute(), expired=lambda: True)
+    worker.native_pointer = cast(NativePointerSession, waiting)
+    assert worker._native_failure() == "Native cursor ownership was not observed"
+    packet = MousePacket()
+    operation_result_1 = worker._native_mouse(
+        packet, 0x200, 0, button=0, owned_release=False
+    )
+    assert operation_result_1 == 1
+
+
+def test_failed_keyboard_nudge_cancels_without_forwarding_key() -> None:
+    """A physical write/readback refusal cannot leak a key or desired coordinate."""
+    platform = ReplayInputPlatform()
+    worker = ReplayRun.make(platform)
+    pointer = Pointer()
+    worker.native_pointer = cast(NativePointerSession, pointer)
+    worker._api = platform
+    worker.foreground = platform.owner
+    platform.install(worker._mouse_callback, worker._key_callback, worker._raw_pointer)
+    pointer.permitted = False
+    platform.key(0x100, 0x27)
+    platform.actions.get_nowait()()
+    assert not platform.forwarded
+    assert "keyboard movement failed" in worker.failure
