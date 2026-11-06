@@ -286,3 +286,96 @@ def test_owned_hit_cannot_mask_original_foreign_recipient(
     )
     allowed = platform.recipient_safe(1)
     assert allowed == (fault is None)
+
+
+@pytest.mark.parametrize("fault", [None, "request", "stale", "closed", "owner"])
+def test_menu_refresh_requires_new_ack_and_preserved_popup(fault: str | None) -> None:
+    """Old snapshots cannot satisfy a post-session preservation check."""
+    calls: list[object] = []
+
+    def poll() -> int | None:
+        calls.append("request")
+        return None if fault == "request" else 7
+
+    def acknowledged(sequence: int) -> bool:
+        calls.append(sequence)
+        return fault != "stale"
+
+    def wait(predicate: Callable[[], bool], *, timeout: int) -> None:
+        assert timeout == 1000
+        if not predicate():
+            raise TimeoutError("missing fresh reply")
+
+    peer = cast(
+        module.MenuPeer,
+        SimpleNamespace(
+            poll=poll,
+            acknowledged=acknowledged,
+            preservation_errors=lambda: [fault] if fault in {"closed", "owner"} else [],
+        ),
+    )
+    bot = cast(QtBot, SimpleNamespace(waitUntil=wait))
+    if fault is None:
+        module.refresh_menu(bot, peer)
+    else:
+        with pytest.raises((RuntimeError, TimeoutError)):
+            module.refresh_menu(bot, peer)
+    assert calls == (["request"] if fault == "request" else ["request", 7])
+
+
+def test_menu_setup_requests_snapshot_until_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fixture reports on request while TrackPopupMenuEx is still blocked."""
+    events: list[object] = []
+    peer = object.__new__(module.MenuPeer)
+    sequence = 0
+
+    def poll() -> int:
+        nonlocal sequence
+        sequence += 1
+        events.append(sequence)
+        return sequence
+
+    monkeypatch.setattr(peer, "start", lambda **_kw: events.append("start"))
+    monkeypatch.setattr(peer, "poll", poll)
+    monkeypatch.setattr(peer, "acknowledged", lambda seq: seq == sequence)
+    monkeypatch.setattr(
+        peer, "preservation_errors", lambda: ["starting"] if sequence < 2 else []
+    )
+
+    def wait(predicate: Callable[[], bool], *, timeout: int) -> None:
+        assert timeout == 10000
+        assert not predicate()
+        assert not predicate()
+        assert predicate()
+
+    module.prepare_peer(
+        cast(QtBot, SimpleNamespace(waitUntil=wait)), object.__new__(NativeState), peer
+    )
+    assert events == ["start", 1, 2]
+
+
+def test_menu_setup_failure_still_closes_owned_peer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A failed request/ack cannot strand the test-owned popup child."""
+    events: list[str] = []
+    monkeypatch.setattr(module, "require_hosted", lambda _env: None)
+    monkeypatch.setattr(
+        module.DesktopSession, "current", lambda: SimpleNamespace(state=0, flags=1)
+    )
+    monkeypatch.setattr(module, "NativeState", SimpleNamespace)
+    monkeypatch.setattr(
+        module,
+        "MenuPeer",
+        lambda: SimpleNamespace(close=lambda: events.append("close")),
+    )
+
+    def fail(*_args: object) -> None:
+        raise TimeoutError("missing acknowledgment")
+
+    monkeypatch.setattr(module, "prepare_peer", fail)
+    with pytest.raises(TimeoutError, match="acknowledgment"):
+        module.run_admission(cast(QtBot, SimpleNamespace()), tmp_path, "menu")
+    assert events == ["close"]

@@ -87,6 +87,9 @@ def observe_once(
         except Exception:  # noqa: BLE001 - latch observation failure, still retire
             admission.fail()
 
+    def cleanup_reported() -> bool:
+        return bool(clean)
+
     broker.input_event.connect(lambda _event: admission.fail())
     timer.timeout.connect(observe)
     destroyed = active = created = False
@@ -109,7 +112,7 @@ def observe_once(
             admission.observe(state.read(), safe=destroyed)
         finally:
             broker.release()
-            qtbot.waitUntil(lambda: bool(clean), timeout=1500)
+            qtbot.waitUntil(cleanup_reported, timeout=1500)
             admission.observe(state.read(), safe=clean == [True])
     return {
         "verdict": admission.verdict(broker_active=active, destroyed=destroyed),
@@ -145,14 +148,14 @@ def run_admission(
         prepare_peer(qtbot, state, peer)
         results = []
         for cancel in (False, True, False):
-            if isinstance(peer, MenuPeer) and peer.preservation_errors():
-                raise RuntimeError("Foreign popup changed")
+            if isinstance(peer, MenuPeer):
+                refresh_menu(qtbot, peer)
             result = observe_once(qtbot, state, cancel_early=cancel)
             results.append(result)
+            if isinstance(peer, MenuPeer):
+                refresh_menu(qtbot, peer)
             if result["verdict"] == "unsupported-preservation-or-cleanup":
                 break
-            if isinstance(peer, MenuPeer) and peer.preservation_errors():
-                raise RuntimeError("Foreign popup changed")
         return results
     finally:
         peer.close()
@@ -185,6 +188,27 @@ def prepare_peer(qtbot: QtBot, state: NativeState, peer: ScrollPeer | MenuPeer) 
             raise RuntimeError("Stationary anchor does not hit the owned fixture")
     else:
         peer.start(handoff=True)
-        qtbot.waitUntil(lambda: peer.state is not None, timeout=10000)
-        if peer.preservation_errors():
-            raise RuntimeError("Owned foreign popup unavailable")
+        sequence: int | None = None
+
+        def ready() -> bool:
+            nonlocal sequence
+            if sequence is not None and not peer.acknowledged(sequence):
+                return False
+            if sequence is not None and not peer.preservation_errors():
+                return True
+            sequence = peer.poll()
+            if sequence is None:
+                raise RuntimeError("Owned foreign popup unavailable")
+            return False
+
+        qtbot.waitUntil(ready, timeout=10000)
+
+
+def refresh_menu(qtbot: QtBot, peer: MenuPeer) -> None:
+    """Require a new correlated reply, never reuse the pre-session snapshot."""
+    sequence = peer.poll()
+    if sequence is None:
+        raise RuntimeError("Foreign popup observation unavailable")
+    qtbot.waitUntil(lambda: peer.acknowledged(sequence), timeout=1000)
+    if peer.preservation_errors():
+        raise RuntimeError("Foreign popup changed")
