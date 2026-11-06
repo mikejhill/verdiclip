@@ -77,3 +77,14 @@ primary-retrieval investigation, not an immediate fallback or merge. Both-valid
 unequal results require identity compatibility analysis. Missing property means
 continued refusal. Even equality here does not establish cross-helper mutation
 identity compatibility or satisfy cursor/physical/performance release holds.
+
+
+## Workflow runtime preservation
+
+The first hosted comparison run passed both sets of52 Windows pure controls but
+failed before the fixture receipt. Its log shows that `uv run pytest` after the
+explicit Qt6.12.0 install synchronized two packages back to the lockfile runtime
+(Qt6.11.2). The unchanged admission requires6.12.0. Controls now use
+`uv run --no-sync`, and the exact venv interpreter checks Qt6.12.0 again before
+starting the native runner. Admission and constructor failures also produce a
+fixed-label failed receipt; no raw pytest/provider output is published.

@@ -123,6 +123,34 @@ def source_manifest() -> dict[str, object]:
     }
 
 
+def run_comparison(qtbot: QtBot, directory: Path) -> bool:
+    """Keep early admission/construction failures visible without provider text."""
+    case: RuntimeComparison | None = None
+    stage = "admission"
+    try:
+        provider = require_probe_environment()
+        stage = "construction"
+        case = RuntimeComparison(qtbot, directory, provider)
+        case.run()
+    except Exception:  # noqa: BLE001 - export fixed failure labels only
+        if case is not None:
+            case.receipt["outcome"] = "failed"
+    finally:
+        if case is not None:
+            case.close()
+        else:
+            receipt = {
+                "schema": 1,
+                "outcome": "failed",
+                "failure_stage": stage,
+                "result": None,
+            }
+            (directory / "runtime-comparison.json").write_text(
+                json.dumps(receipt, sort_keys=True), encoding="utf-8"
+            )
+    return case is not None and case.receipt["outcome"] == "passed"
+
+
 class RuntimeComparison:
     """A fresh fixture, popup and helper with exactly one read-only request."""
 

@@ -379,3 +379,49 @@ def test_actual_probe_request_admission(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stdout.strip() == "admission-passed"
+
+
+@pytest.mark.parametrize("failure", ["admission", "construction"])
+def test_early_failure_retains_fixed_receipt(
+    failure: str, qtbot: QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Admission and construction errors leave evidence without exposing text."""
+    calls: list[str] = []
+
+    def admit() -> str:
+        calls.append("admission")
+        if failure == "admission":
+            raise ValueError("private environment detail")
+        return "wpf"
+
+    def construct(*_args: object) -> None:
+        calls.append("construction")
+        raise ValueError("private constructor detail")
+
+    monkeypatch.setattr(runtime_comparison, "require_probe_environment", admit)
+    monkeypatch.setattr(runtime_comparison, "RuntimeComparison", construct)
+    assert not runtime_comparison.run_comparison(qtbot, tmp_path)
+    assert calls == (
+        ["admission"] if failure == "admission" else ["admission", "construction"]
+    )
+    receipt = json.loads((tmp_path / "runtime-comparison.json").read_text())
+    assert receipt == {
+        "schema": 1,
+        "outcome": "failed",
+        "failure_stage": failure,
+        "result": None,
+    }
+
+
+def test_pure_controls_cannot_resync_selected_qt() -> None:
+    """The locked lower Qt must not overwrite the explicit comparison runtime."""
+    workflow = Path(".github/workflows/uia-runtime-comparison.yml").read_text()
+    assert (
+        "uv run --no-sync pytest tests/capture/test_runtime_comparison_contract.py"
+        in workflow
+    )
+    assert "uv run pytest" not in workflow
+    assert "assert qVersion() == '6.12.0'" in workflow
+    assert workflow.index("assert qVersion()") < workflow.index(
+        "./scripts/test_runtime_comparison.ps1"
+    )

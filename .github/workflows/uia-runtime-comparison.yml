@@ -48,7 +48,7 @@ jobs:
       - name: Select the existing explicit Qt runtime
         run: uv pip install pyside6-essentials==6.12.0 shiboken6==6.12.0
       - name: Compile and execute pure injected policies
-        run: uv run pytest tests/capture/test_runtime_comparison_contract.py -q --no-cov
+        run: uv run --no-sync pytest tests/capture/test_runtime_comparison_contract.py -q --no-cov
       - name: Verify pinned source and run one read-only arm
         timeout-minutes: 2
         shell: pwsh
@@ -57,6 +57,8 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $head -cne $env:VERDICLIP_HOSTED_SOURCE) { throw 'Source mismatch' }
           $changes = & git status --porcelain
           if ($LASTEXITCODE -ne 0 -or $changes) { throw 'Dirty source' }
+          & "$PWD/.venv/Scripts/python.exe" -c "from PySide6.QtCore import qVersion; assert qVersion() == '6.12.0', 'Selected Qt runtime mismatch'"
+          if ($LASTEXITCODE -ne 0) { throw 'Selected Qt runtime mismatch' }
           ./scripts/test_runtime_comparison.ps1 -ScrollbarOnly -RuntimeProbe -ExecuteAfterHandoff -PythonPaths "$PWD/.venv/Scripts/python.exe"
       - name: Retain sanitized evidence, including missing results
         if: always()
