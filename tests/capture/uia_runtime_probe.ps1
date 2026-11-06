@@ -31,7 +31,7 @@ function Start-RuntimeProbe {
     if ($PSVersionTable.PSVersion.Major -ne 5 -or $PSVersionTable.PSVersion.Minor -ne 1 -or [IntPtr]::Size -ne 8) { throw 'unsupported_or_changed' }
     $source = Join-Path $PSScriptRoot '../../src/verdiclip/capture/scroll'
     Add-Type -AssemblyName System.Drawing
-    Add-Type -Path @((Join-Path $source 'uia_nofocus_interop.cs'), (Join-Path $source 'uia_desktop.cs'), (Join-Path $source 'uia_discovery.cs'), (Join-Path $PSScriptRoot 'uia_runtime_probe.cs'))
+    Add-Type -Path @((Join-Path $source 'uia_nofocus_interop.cs'), (Join-Path $source 'uia_desktop.cs'), (Join-Path $source 'uia_discovery.cs'), (Join-Path $PSScriptRoot 'uia_runtime_probe.cs'), (Join-Path $PSScriptRoot 'uia_ancestry_policy.cs'))
     [VerdiClip.Automation.DiscoveryPolicy]::RequireNativeOnly()
 }
 function Invoke-RuntimeProbe($Request) {

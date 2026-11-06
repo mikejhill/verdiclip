@@ -35,6 +35,7 @@ from verdiclip.geometry import Rect
 SOURCE_FILES = {
     "helper": "tests/capture/uia_runtime_probe.ps1",
     "probe": "tests/capture/uia_runtime_probe.cs",
+    "ancestry": "tests/capture/uia_ancestry_policy.cs",
     "discovery": "src/verdiclip/capture/scroll/uia_discovery.cs",
     "interop": "src/verdiclip/capture/scroll/uia_nofocus_interop.cs",
     "desktop": "src/verdiclip/capture/scroll/uia_desktop.cs",
@@ -61,7 +62,7 @@ def decode_result(value: object) -> dict[str, object]:
         "dpi_restored",
         "native_only_verified",
     }
-    require(set(result) == flags | {"root", "hit"})
+    require(set(result) == flags | {"root", "hit", "ancestry"})
     require(all(result[key] is True for key in flags))
     for key in ("root", "hit"):
         pair = result[key]
@@ -75,6 +76,53 @@ def decode_result(value: object) -> dict[str, object]:
             )
         valid = pair["method"] == pair["property"] == "valid"
         require(type(pair["equal"]) is bool if valid else pair["equal"] is None)
+    require(cast(dict[str, object], result["root"])["method"] == "valid")
+    ancestry = result["ancestry"]
+    require(isinstance(ancestry, dict))
+    ancestry = cast(dict[str, object], ancestry)
+    require(
+        set(ancestry)
+        == {
+            "hit_category",
+            "scroll_available",
+            "root_reached",
+            "ancestor_count",
+            "walk_outcome",
+        }
+    )
+    require(
+        type(ancestry["hit_category"]) is str
+        and ancestry["hit_category"] in {"scrollbar", "window", "list_item", "other"}
+    )
+    require(type(ancestry["scroll_available"]) is bool)
+    require(type(ancestry["root_reached"]) is bool)
+    count = ancestry["ancestor_count"]
+    require(type(count) is int and 0 <= count <= 31)
+    outcome = ancestry["walk_outcome"]
+    hit = cast(dict[str, object], result["hit"])
+    if outcome == "identified_hit":
+        require(
+            hit["method"] == "valid"
+            and count == 0
+            and ancestry["root_reached"] is False
+        )
+    elif outcome == "candidate_hit":
+        require(
+            hit["method"] in {"null", "empty"}
+            and count == 0
+            and ancestry["root_reached"] is False
+        )
+        require(
+            ancestry["scroll_available"] is True
+            or ancestry["hit_category"] in {"scrollbar", "window"}
+        )
+    else:
+        require(outcome == "verified_suffix" and hit["method"] in {"null", "empty"})
+        require(ancestry["root_reached"] is True and cast(int, count) > 0)
+        require(
+            ancestry["scroll_available"] is False
+            and ancestry["hit_category"] in {"list_item", "other"}
+        )
     return result
 
 
@@ -83,9 +131,7 @@ def require_probe_environment() -> str:
     require_hosted(os.environ)
     require(os.environ.get("VERDICLIP_QUALIFICATION_DIRTY") == "false")
     require(os.environ.get("VERDICLIP_RUNTIME_PROBE") == "1")
-    require(
-        os.environ.get("GITHUB_HEAD_REF") == "test/native-runtime-property-comparison"
-    )
+    require(os.environ.get("GITHUB_HEAD_REF") == "test/native-identityless-ancestry")
     provider = os.environ.get("VERDICLIP_NATIVE_PROVIDER", "")
     require(provider in {"winforms", "wpf"})
     require(qVersion() == "6.12.0" and os.environ.get("QT_SCALE_FACTOR") == "1")
