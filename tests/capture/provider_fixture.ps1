@@ -74,19 +74,42 @@ function Get-FixtureStartedTicks {
 }
 # Loaded only in the separately owned STA child after authorization.
 $clock = [Diagnostics.Stopwatch]::StartNew()
+$script:fixtureTraceEnabled = $false
 $window = $null; $timer = $null; $closed = $false
 $fixtureDirectory = [IO.Path]::GetFullPath($Directory)
 if (-not [IO.Directory]::Exists($fixtureDirectory)) { throw 'Runner must create private case directory.' }
 try {
+if ($env:VERDICLIP_FIXTURE_TRACE_DIR) {
+    try {
+        . (Join-Path $PSScriptRoot 'fixture_startup_trace.ps1')
+        Initialize-FixtureTrace $env:VERDICLIP_FIXTURE_TRACE_DIR $Nonce
+    } catch { $script:fixtureTraceEnabled = $false }
+}
+if ($script:fixtureTraceEnabled) { Write-FixtureTrace 'entry'; Write-FixtureTrace 'assemblies_begin' }
 Add-Type -AssemblyName PresentationFramework,PresentationCore,WindowsBase
+if ($script:fixtureTraceEnabled) { Write-FixtureTrace 'assemblies_end' }
 Write-Output ('FIXTURE_PHASE=assemblies-loaded utc=' + [DateTime]::UtcNow.ToString('o'))
-if ([IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) { return }
+if ([IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) {
+    if ($script:fixtureTraceEnabled) { Write-FixtureTrace 'stop_observed' }
+    return
+}
+if ($script:fixtureTraceEnabled) { Write-FixtureTrace 'identity_begin' }
 $startedTicks = Get-FixtureStartedTicks
-if ([IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) { return }
+if ([IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) {
+    if ($script:fixtureTraceEnabled) { Write-FixtureTrace 'stop_observed' }
+    return
+}
+if ($script:fixtureTraceEnabled) { Write-FixtureTrace 'identity_end' }
 Write-Output ('FIXTURE_PHASE=before-window utc=' + [DateTime]::UtcNow.ToString('o'))
+if ($script:fixtureTraceEnabled) { Write-FixtureTrace 'window_begin' }
 $window = [Windows.Window]::new()
+if ($script:fixtureTraceEnabled) { Write-FixtureTrace 'window_end' }
 Write-Output ('FIXTURE_PHASE=window-created utc=' + [DateTime]::UtcNow.ToString('o'))
-if ([IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) { return }
+if ([IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) {
+    if ($script:fixtureTraceEnabled) { Write-FixtureTrace 'stop_observed' }
+    return
+}
+if ($script:fixtureTraceEnabled) { Write-FixtureTrace 'controls_begin' }
 $window.Title = "VerdiClip synthetic scroll fixture $Nonce"
 $window.Width = 480; $window.Height = 420
 $window.WindowStartupLocation = 'CenterScreen'
@@ -102,29 +125,53 @@ $viewer.HorizontalScrollBarVisibility = 'Disabled'
 $viewer.VerticalScrollBarVisibility = 'Visible'
 $viewer.CanContentScroll = $false
 [Windows.Automation.AutomationProperties]::SetAutomationId($viewer, 'VerdiClipQualificationScrollViewer')
+if ($script:fixtureTraceEnabled) { Write-FixtureTrace 'controls_end' }
 Write-Output ('FIXTURE_PHASE=controls-created utc=' + [DateTime]::UtcNow.ToString('o'))
-if ([IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) { return }
+if ([IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) {
+    if ($script:fixtureTraceEnabled) { Write-FixtureTrace 'stop_observed' }
+    return
+}
 $pixelWidth = 384
 $pixelHeight = if ($Case -eq 'end') { 1120 } else { 8000 }
 # Input is prepared before native launch; no CodeDOM/compiler cold-start here.
+if ($script:fixtureTraceEnabled) { Write-FixtureTrace 'pixels_begin' }
 $pixels = [IO.File]::ReadAllBytes((Join-Path $fixtureDirectory 'fixture-pixels.bgr32'))
+if ($script:fixtureTraceEnabled) { Write-FixtureTrace 'pixels_end' }
 Write-Output ('FIXTURE_PHASE=pixels-read utc=' + [DateTime]::UtcNow.ToString('o'))
 if ($pixels.Length -ne ($pixelWidth * $pixelHeight * 4)) { throw 'Invalid synthetic bitmap length' }
-if ([IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) { return }
+if ([IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) {
+    if ($script:fixtureTraceEnabled) { Write-FixtureTrace 'stop_observed' }
+    return
+}
+if ($script:fixtureTraceEnabled) { Write-FixtureTrace 'bitmap_begin' }
 $bitmap = [Windows.Media.Imaging.BitmapSource]::Create($pixelWidth,$pixelHeight,96,96,[Windows.Media.PixelFormats]::Bgr32,$null,$pixels,($pixelWidth*4))
+if ($script:fixtureTraceEnabled) { Write-FixtureTrace 'bitmap_end' }
 Write-Output ('FIXTURE_PHASE=bitmap-copied utc=' + [DateTime]::UtcNow.ToString('o'))
-if ([IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) { return }
+if ([IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) {
+    if ($script:fixtureTraceEnabled) { Write-FixtureTrace 'stop_observed' }
+    return
+}
+if ($script:fixtureTraceEnabled) { Write-FixtureTrace 'freeze_begin' }
 $bitmap.Freeze()
+if ($script:fixtureTraceEnabled) { Write-FixtureTrace 'freeze_end' }
 Write-Output ('FIXTURE_PHASE=bitmap-created utc=' + [DateTime]::UtcNow.ToString('o'))
-if ([IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) { return }
+if ([IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) {
+    if ($script:fixtureTraceEnabled) { Write-FixtureTrace 'stop_observed' }
+    return
+}
+if ($script:fixtureTraceEnabled) { Write-FixtureTrace 'content_begin' }
 $image = [Windows.Controls.Image]::new()
 $image.Source = $bitmap; $image.Width = $pixelWidth; $image.Height = $pixelHeight
 $image.Stretch = 'None'; $image.HorizontalAlignment = 'Left'
 [Windows.Media.RenderOptions]::SetBitmapScalingMode($image, 'NearestNeighbor')
 $viewer.Content = $image; $stack.Children.Add($viewer) | Out-Null
 $window.Content = $stack
+if ($script:fixtureTraceEnabled) { Write-FixtureTrace 'content_end' }
 Write-Output ('FIXTURE_PHASE=content-assigned utc=' + [DateTime]::UtcNow.ToString('o'))
-if ([IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) { return }
+if ([IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) {
+    if ($script:fixtureTraceEnabled) { Write-FixtureTrace 'stop_observed' }
+    return
+}
 $sequence = 0; $closed = $false; $ready = $false; $renderObserved = $false; $maximumOffset = 0.0; $endSeen = $false
 $lastCommand = 0; $pendingCommand = $null
 # Bounded owned-fixture evidence only; no window titles, values or source paths.
@@ -157,7 +204,11 @@ function Write-SnapshotPhase([string]$phase) {
 $script:snapshotTraceComplete = $false
 function Write-FixtureState {
     if (-not $ready -or -not $window.IsLoaded -or $closed) { return }
-    if ([IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) { return }
+    if ([IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) {
+    if ($script:fixtureTraceEnabled) { Write-FixtureTrace 'stop_observed' }
+    return
+}
+    if ($script:fixtureTraceEnabled) { Write-FixtureTrace 'snapshot_begin' }
     Write-SnapshotPhase 'geometry-start'
     $handle = ([Windows.Interop.WindowInteropHelper]::new($window)).Handle.ToInt64()
     $point = $viewer.PointToScreen(([Windows.Point]::new(0,0)))
@@ -185,8 +236,12 @@ function Write-FixtureState {
     [IO.File]::WriteAllText($temporary,$json)
     if ($sequence -gt 10000) { throw 'Fixture snapshot budget exceeded' }
     $target = Join-Path $fixtureDirectory ('fixture-state-{0:D6}.json' -f $sequence)
-    if ([IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) { return }
+    if ([IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) {
+    if ($script:fixtureTraceEnabled) { Write-FixtureTrace 'stop_observed' }
+    return
+}
     [IO.File]::Move($temporary,$target)
+    if ($script:fixtureTraceEnabled) { Write-FixtureTrace 'snapshot_end' }
     Write-SnapshotPhase 'published'
     $script:snapshotTraceComplete = $true
 }
@@ -194,6 +249,7 @@ $timer = [Windows.Threading.DispatcherTimer]::new()
 $timer.Interval = [TimeSpan]::FromMilliseconds(100)
 $timer.Add_Tick({
     if ($clock.Elapsed.TotalSeconds -ge 90 -or [IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) {
+        if ($script:fixtureTraceEnabled) { Write-FixtureTrace 'stop_observed' }
         $timer.Stop(); $window.Close(); return
     }
     $commandPath = Join-Path $fixtureDirectory 'fixture-command.json'
@@ -221,7 +277,11 @@ $timer.Add_Tick({
     Write-FixtureState
 })
 $window.Add_ContentRendered({
-    if ([IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) { return }
+    if ([IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) {
+    if ($script:fixtureTraceEnabled) { Write-FixtureTrace 'stop_observed' }
+    return
+}
+    if ($script:fixtureTraceEnabled) { Write-FixtureTrace 'render' }
     # One ordinary owned-window activation; never force foreground or send input.
     if ($script:ready) {
         if (-not $script:renderObserved) {
@@ -231,7 +291,9 @@ $window.Add_ContentRendered({
         return
     } # Later renders cannot reactivate an established fixture.
     [Console]::Error.WriteLine('FIXTURE_PHASE=initial-activation utc=' + [DateTime]::UtcNow.ToString('o'))
+    if ($script:fixtureTraceEnabled) { Write-FixtureTrace 'activation_begin' }
     Confirm-FixtureActivation $window
+    if ($script:fixtureTraceEnabled) { Write-FixtureTrace 'activation_end' }
     [Console]::Error.WriteLine('FIXTURE_PHASE=activation-complete utc=' + [DateTime]::UtcNow.ToString('o'))
     $script:ready = $true
     Write-FixtureState
@@ -243,11 +305,19 @@ $viewer.Add_ScrollChanged({ Write-FixtureState })
 $window.Add_Closed({ $script:closed=$true; $timer.Stop() })
 Write-Output ('FIXTURE_PHASE=before-show utc=' + [DateTime]::UtcNow.ToString('o'))
 $timer.Start() # Cancellation does not depend on ContentRendered firing.
-if ([IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) { return }
+if ([IO.File]::Exists((Join-Path $fixtureDirectory 'fixture-stop.json'))) {
+    if ($script:fixtureTraceEnabled) { Write-FixtureTrace 'stop_observed' }
+    return
+}
+if ($script:fixtureTraceEnabled) { Write-FixtureTrace 'show_begin' }
 $window.ShowDialog() | Out-Null
 }
 finally {
+    if ($script:fixtureTraceEnabled) { Write-FixtureTrace 'retirement_begin' }
+    try {
     if ($null -ne $timer) { $timer.Stop() }
     if ($null -ne $window -and $window.IsVisible) { $window.Close() }
     [IO.File]::WriteAllText((Join-Path $fixtureDirectory 'fixture-retired.json'),(ConvertTo-FixtureRetiredJson @{nonce=$Nonce;pid=$PID;closed=$true}))
+    if ($script:fixtureTraceEnabled) { Write-FixtureTrace 'fixture_retired' }
+    } finally { if ($script:fixtureTraceEnabled) { Close-FixtureTrace } }
 }

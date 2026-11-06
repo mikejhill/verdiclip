@@ -1,0 +1,109 @@
+name: Owned WPF fixture startup diagnosis
+
+on:
+  pull_request:
+    types: [opened, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fixture-startup-diagnostic-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    if: >-
+      github.repository == 'mikejhill/verdiclip' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'diagnose/013-fixture-startup' &&
+      github.event.pull_request.base.ref == 'fix/013-capture-regressions'
+    name: One WPF startup / Qt 6.12 / scale 2 (diagnostic only)
+    runs-on: windows-2025
+    timeout-minutes: 15
+    cache-mode: none
+    env:
+      UV_LOCKED: '1'
+      PYTHONUTF8: '1'
+      PYTHONUNBUFFERED: '1'
+      QT_QPA_PLATFORM: windows
+      VERDICLIP_HOSTED_SCROLLBAR: '1'
+      VERDICLIP_NATIVE_PROVIDER: wpf
+      VERDICLIP_EXPECTED_QT: '6.12.0'
+      VERDICLIP_EXPECTED_QT_SCALE: '2'
+      QT_SCALE_FACTOR: '2'
+      VERDICLIP_BENCHMARK_SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+      VERDICLIP_HOSTED_SOURCE: ${{ github.event.pull_request.head.sha }}
+      VERDICLIP_FIXTURE_REPAIR_BASE: '5a5983275dfbd7e7243bd329ca3d859faca024c2'
+      VERDICLIP_FIXTURE_EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify pinned repair base and diagnostic-only source delta
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $base = $env:VERDICLIP_FIXTURE_REPAIR_BASE
+          if ($env:VERDICLIP_FIXTURE_EVENT_BASE -cne $base) { throw 'Repair base advanced; diagnosis is not authorized for this base.' }
+          $head = (& git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $head -cne $env:VERDICLIP_BENCHMARK_SOURCE_SHA) { throw 'Immutable PR head mismatch.' }
+          & git merge-base --is-ancestor $base HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Diagnostic head does not descend from the pinned repair base.' }
+          $allowed = @(
+            '.github/actionlint.yaml',
+            '.github/workflows/fixture-startup-diagnostic.yml',
+            'scripts/test_fixture_startup_diagnostics.ps1',
+            'docs/design/fixture-startup-diagnostics.md',
+            'scripts/fixture_startup_summary.py',
+            'tests/capture/fixture_startup_trace.ps1',
+            'tests/capture/provider_fixture.ps1',
+            'tests/capture/scroll_peer.py',
+            'tests/tooling/test_fixture_startup_summary.py',
+            'tests/portable/test_fixture_startup_trace.py',
+            'tests/portable/test_hosted_workflow.py'
+          )
+          $changed = @(& git diff --no-renames --name-only $base HEAD --)
+          if ($LASTEXITCODE -ne 0 -or $changed.Count -ne $allowed.Count -or
+              @($changed | Where-Object { $_ -cnotin $allowed }).Count) { throw 'Diagnostic changes exceeded the exact reviewed file set.' }
+          & git diff --quiet $base HEAD -- src pyproject.toml uv.lock scripts/read_scheduler_etl.cpp scripts/scheduler_payload.hpp scripts/gui_waits.wprp scripts/scheduler_phase_summary.py scripts/scheduler_trace_summary.py scripts/test_capture_broker_native.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Product, dependencies, native bounds, or scheduler controls changed.' }
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: '3.13.16'
+          enable-cache: false
+      - run: uv sync --locked
+      - name: Select the one isolated Qt runtime without starting a GUI
+        shell: pwsh
+        run: uv pip install --python .venv "pyside6-essentials==$env:VERDICLIP_EXPECTED_QT" "shiboken6==$env:VERDICLIP_EXPECTED_QT"
+      - name: Diagnose one unchanged bounded native wrapper invocation
+        timeout-minutes: 6
+        shell: pwsh
+        run: ./scripts/test_fixture_startup_diagnostics.ps1 -PythonPath "$PWD/.venv/Scripts/python.exe"
+      - name: Always retire the exact owned recording and private files
+        if: always()
+        timeout-minutes: 2
+        shell: pwsh
+        run: ./scripts/test_fixture_startup_diagnostics.ps1 -CleanupOnly
+      - name: Test pure Windows marker and cleanup guards after the native run
+        if: always()
+        timeout-minutes: 2
+        shell: pwsh
+        # In particular, never warm Windows PowerShell 5.1 before the target.
+        run: .venv/Scripts/python.exe -m pytest tests/portable/test_fixture_startup_trace.py tests/tooling/test_fixture_startup_summary.py --no-cov -q
+      - name: Preserve the original native result independently of analysis
+        if: always()
+        shell: pwsh
+        run: |
+          $code = 125
+          if ($env:VERDICLIP_FIXTURE_NATIVE_EXIT -match '^-?\d{1,10}$') {
+            $parsed = 125
+            if ([int]::TryParse($env:VERDICLIP_FIXTURE_NATIVE_EXIT, [ref]$parsed)) { $code = $parsed }
+          }
+          $forced = if ($env:VERDICLIP_FIXTURE_NATIVE_FORCED -in @('true', 'false')) { $env:VERDICLIP_FIXTURE_NATIVE_FORCED } else { 'unknown' }
+          $providerForced = if ($env:VERDICLIP_FIXTURE_PROVIDER_FORCED -in @('true', 'false')) { $env:VERDICLIP_FIXTURE_PROVIDER_FORCED } else { 'unknown' }
+          $cleanup = if ($env:VERDICLIP_FIXTURE_NATIVE_CLEANUP -in @('confirmed', 'failed', 'unknown')) { $env:VERDICLIP_FIXTURE_NATIVE_CLEANUP } else { 'unknown' }
+          Write-Output "FIXTURE_NATIVE_RESULT=exit:$code; wrapper_forced:$forced; provider_forced:$providerForced; native_cleanup:$cleanup"
+          exit $code
