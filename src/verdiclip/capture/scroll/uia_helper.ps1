@@ -114,12 +114,15 @@ function Save-DiscoveryFrame($payload, $area) {
 }
 
 function Invoke-ReadOnlyDiscoveryRequest($request) {
+    if ($script:firstInspectClock) { [VerdiClip.Automation.FirstInspectClock]::Mark('admission') }
     Assert-DiscoveryRequest $request
+    if ($script:firstInspectClock) { [VerdiClip.Automation.FirstInspectClock]::Mark('admitted') }
     $process = $null
     $discovery = $null
     $operationFailure = $null
     try {
     if ($request.action -in @('step', 'restore')) { throw 'native_process_required' }
+    if ($script:firstInspectClock) { [VerdiClip.Automation.FirstInspectClock]::Mark('inspect_desktop') }
     if ($request.action -eq 'inspect') { [Console]::Error.WriteLine('VERDICLIP_UIA_PHASE=inspect_desktop') }
     $payload = $request.payload
     $handle = [IntPtr]([long]$payload.window_handle)
@@ -261,16 +264,25 @@ try {
     $writer.WriteLine((@{ request_id=''; ok=$false; error='worker_startup_unavailable' } | ConvertTo-Json -Compress))
     exit 1
 }
+# Diagnostic branch only: opt-in disposable hosted first request, never mutation.
+$script:firstInspectClock = -not $NativeOnly -and $env:VERDICLIP_FIRST_INSPECT_CLOCK -ceq '1' -and $env:GITHUB_ACTIONS -ceq 'true' -and $env:RUNNER_ENVIRONMENT -ceq 'github-hosted' -and $env:VERDICLIP_HOSTED_SCROLLBAR -ceq '1'
+if ($script:firstInspectClock) { [VerdiClip.Automation.FirstInspectClock]::Arm() }
 # Reuse this MTA only while the parent's finite active/idle lease remains alive.
 [Console]::Error.WriteLine('VERDICLIP_UIA_PHASE=runtime_ready')
 $writer.WriteLine((@{ ready=$true; protocol=1 } | ConvertTo-Json -Compress))
 while ($null -ne ($requestLine = $reader.ReadLine())) {
+    if ($script:firstInspectClock) { [VerdiClip.Automation.FirstInspectClock]::Mark('request_read') }
     $requestId = ''
     $process = $null
     $discovery = $null
     $operationFailure = $null
 try {
+    if ($script:firstInspectClock) { [VerdiClip.Automation.FirstInspectClock]::Mark('json_parse') }
     $request = $requestLine | ConvertFrom-Json
+    if ($script:firstInspectClock) {
+        [VerdiClip.Automation.FirstInspectClock]::Mark('json_parsed')
+        if ($request.action -cne 'inspect') { [VerdiClip.Automation.FirstInspectClock]::Stop(); $script:firstInspectClock = $false }
+    }
     $requestId = [string]$request.request_id
     if ($requestId -notmatch '^[a-f0-9]{32}$') { throw 'invalid_request' }
     if ($request.action -notin @('inspect', 'observe', 'sample', 'step', 'restore')) {
@@ -283,8 +295,11 @@ try {
         $writer.WriteLine((@{ request_id=$requestId; ok=$true; result=$result } | ConvertTo-Json -Depth 12 -Compress))
         continue
     }
+    if ($script:firstInspectClock) { [VerdiClip.Automation.FirstInspectClock]::Mark('dispatch') }
     $result = Invoke-ReadOnlyDiscoveryRequest $request
-} catch { $operationFailure = $_.Exception }
+} catch { $operationFailure = $_.Exception } finally {
+    if ($script:firstInspectClock) { [VerdiClip.Automation.FirstInspectClock]::Stop(); $script:firstInspectClock = $false }
+}
 
 if ($null -eq $operationFailure) {
     $writer.WriteLine((@{ request_id=$requestId; ok=$true; result=$result } | ConvertTo-Json -Depth 12 -Compress))

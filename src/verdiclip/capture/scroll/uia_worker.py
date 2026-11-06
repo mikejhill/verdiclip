@@ -93,6 +93,8 @@ class UiaWorkerLease(QObject):
             first_request=self._trace.timing.first,
             action_timings=self._trace.timing.actions,
             timing_unavailable=self._trace.timing_unavailable,
+            inspect_clock=tuple(self._trace.inspect_clock.events),
+            inspect_clock_unavailable=self._trace.inspect_clock.unavailable,
         )
 
     @property

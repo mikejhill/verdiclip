@@ -12,6 +12,7 @@ from tests.capture.test_scroll_metric_policy import run_policy_probe
 
 from verdiclip.capture.scroll import uia_process
 from verdiclip.capture.scroll.uia_diagnostics import WorkerTrace
+from verdiclip.capture.scroll.uia_inspect_clock import LABELS
 
 FOLDER = Path(uia_process.__file__).parent
 
@@ -129,7 +130,7 @@ def test_discovery_failure_markers_are_fixed_and_bounded() -> None:
     native = (FOLDER / "uia_discovery.cs").read_text()
     phases = set(re.findall(r'(?:[Mm]ark\(|TryMark\(mark,)"([a-z_]+)"', native))
     assert phases
-    assert phases <= set(WorkerTrace.MARKERS.values())
+    assert phases <= set(WorkerTrace.MARKERS.values()) | set(LABELS)
     trace = WorkerTrace(lambda: 1.0)
     expected = [
         "inspect_ancestor_process_read",

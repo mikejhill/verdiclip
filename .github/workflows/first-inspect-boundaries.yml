@@ -1,0 +1,63 @@
+name: First INSPECT child boundaries
+on:
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: first-inspect-boundaries-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  observe:
+    if: >-
+      github.repository == 'mikejhill/verdiclip' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.draft == true &&
+      github.head_ref == 'test/first-inspect-boundaries'
+    runs-on: windows-2025
+    timeout-minutes: 5
+    env:
+      UV_LOCKED: '1'
+      PYTHONUTF8: '1'
+      VERDICLIP_HOSTED_SCROLLBAR: '1'
+      VERDICLIP_NATIVE_PROVIDER: wpf
+      VERDICLIP_NATIVE_FIXTURE: scrolling
+      VERDICLIP_EXPECTED_QT: '6.12.0'
+      VERDICLIP_EXPECTED_QT_SCALE: '1'
+      QT_SCALE_FACTOR: '1'
+      VERDICLIP_HOSTED_SOURCE: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: '3.13'
+          enable-cache: false
+      - run: uv sync --locked
+      - run: uv pip install 'pyside6-essentials==6.12.0' 'shiboken6==6.12.0'
+      - name: Pure parser and actual Windows clock controls
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          uv run --no-sync pytest tests/capture/test_inspect_clock.py --no-cov -q
+          if ($LASTEXITCODE -ne 0) { throw 'Clock controls failed' }
+      - name: One source-pinned owned WPF interaction
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          $head = (& git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $head -cne $env:VERDICLIP_HOSTED_SOURCE) { throw 'Source mismatch' }
+          $changes = & git status --porcelain --untracked-files=all
+          if ($LASTEXITCODE -ne 0 -or $changes) { throw 'Dirty source' }
+          $tree = (& git rev-parse 'HEAD^{tree}').Trim()
+          Write-Output "INSPECT_SOURCE=$head; TREE=$tree"
+          $env:VERDICLIP_FIRST_INSPECT_CLOCK = '1'
+          $env:QT_QPA_PLATFORM = 'windows'
+          try {
+            ./scripts/test_capture_broker_native.ps1 -ScrollbarOnly -ExecuteAfterHandoff -PythonPaths "$PWD/.venv/Scripts/python.exe" *> .first-inspect-private.log
+          } catch { throw 'Owned diagnostic failed; fixed receipt follows' }
+      - name: Fixed content-free evidence, including failure
+        if: always()
+        shell: pwsh
+        run: uv run --no-sync python -m tests.capture.inspect_clock_report
