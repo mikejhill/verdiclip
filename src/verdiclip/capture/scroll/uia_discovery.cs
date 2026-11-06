@@ -90,10 +90,21 @@ public static class DiscoveryPolicy {
         }
         ThrowFailures(failures);
     }
+    private static void TryMark(Action<string> mark, string phase) {
+        try { mark(phase); }
+        catch(Exception) { /* Optional diagnostics must never prevent cleanup. */ }
+    }
     public static void Retire(Action release, Action restore) {
+        Retire(release,restore,phase=>{});
+    }
+    public static void Retire(Action release, Action restore, Action<string> mark) {
         var failures=new List<Exception>();
-        try { release(); } catch(Exception error) { failures.Add(error); }
-        try { restore(); } catch(Exception error) { failures.Add(error); }
+        TryMark(mark,"discovery_release");
+        try { release(); TryMark(mark,"discovery_released"); }
+        catch(Exception error) { TryMark(mark,"discovery_release_failed"); failures.Add(error); }
+        TryMark(mark,"discovery_restore");
+        try { restore(); TryMark(mark,"discovery_restored"); }
+        catch(Exception error) { TryMark(mark,"discovery_restore_failed"); failures.Add(error); }
         ThrowFailures(failures);
     }
     public static void ThrowFailures(List<Exception> failures) {
@@ -117,6 +128,14 @@ public sealed class DiscoveryNode {
     }
     private object Property(int id) { backend.Guard(); object result=Element.Property(id); backend.Guard(); return result; }
     public DiscoveryNode Current { get { return this; } }
+    // PowerShell can suppress property-getter errors. Cross its boundary through
+    // explicit methods so provider/COM exceptions remain terminating failures.
+    public DiscoveryRectangle ReadBounds() { return BoundingRectangle; }
+    public string ReadRuntime() { return RuntimeIdentity; }
+    public int ReadControlType() { return ControlType; }
+    public int ReadOrientation() { return Orientation; }
+    public bool ReadOffscreen() { return IsOffscreen; }
+    public bool ReadEnabled() { return IsEnabled; }
     public int ProcessId { get { return DiscoveryPolicy.Integer(Property(30002)); } }
     public int NativeWindowHandle { get { return DiscoveryPolicy.Integer(Property(30020)); } }
     public int ControlType { get { return DiscoveryPolicy.Integer(Property(30003)); } }
@@ -142,6 +161,8 @@ public sealed class DiscoveryPattern {
     private readonly IDiscoveryScroll pattern;
     internal DiscoveryPattern(IDiscoveryBackend backend, IDiscoveryScroll pattern) { this.backend=backend; this.pattern=pattern; }
     public DiscoveryPattern Current { get { return this; } }
+    public double ReadPosition() { return VerticalScrollPercent; }
+    public double ReadViewSize() { return VerticalViewSize; }
     public bool VerticallyScrollable { get { backend.Guard(); bool value=pattern.VerticallyScrollable; backend.Guard(); return value; } }
     public double VerticalScrollPercent { get { backend.Guard(); double value=pattern.VerticalScrollPercent; backend.Guard(); DiscoveryPolicy.Require(DiscoveryPolicy.Finite(value) && value>=0 && value<=100); return value; } }
     public double VerticalViewSize { get { backend.Guard(); double value=pattern.VerticalViewSize; backend.Guard(); DiscoveryPolicy.Require(DiscoveryPolicy.Finite(value) && value>0 && value<100); return value; } }
@@ -163,8 +184,12 @@ public sealed class DiscoveryResolver {
         backend.Mark("inspect_hit"); backend.Guard(); IDiscoveryElement element=backend.Hit(DiscoveryPolicy.Pixel(x),DiscoveryPolicy.Pixel(y)); backend.Guard();
         for (int depth=0; depth<32 && element!=null; depth++) {
             var node=new DiscoveryNode(backend,element);
-            backend.Mark("inspect_ancestor_identity"); DiscoveryPolicy.Require(node.ProcessId==ProcessId);
-            string runtime=node.RuntimeIdentity; DiscoveryPolicy.Require(seen.Add(runtime)); chain.Add(node);
+            backend.Mark("inspect_ancestor_identity");
+            backend.Mark("inspect_ancestor_process_read"); int process=node.ProcessId;
+            backend.Mark("inspect_ancestor_process_guard"); DiscoveryPolicy.Require(process==ProcessId);
+            backend.Mark("inspect_ancestor_runtime_read"); string runtime=node.RuntimeIdentity;
+            backend.Mark("inspect_ancestor_cycle_guard"); DiscoveryPolicy.Require(seen.Add(runtime));
+            backend.Mark("inspect_ancestor_verified"); chain.Add(node);
             if (runtime==rootRuntime) { DiscoveryPolicy.Require(node.NativeWindowHandle==Root.NativeWindowHandle); return chain.ToArray(); }
             backend.Mark("inspect_parent"); backend.Guard(); element=backend.Parent(element); backend.Guard();
         }
@@ -234,6 +259,11 @@ public sealed class DiscoverySession : IDisposable {
     private NativeDiscoveryBackend backend;
     private IntPtr prior;
     private bool disposed;
+    private bool diagnostics;
+    private void Mark(string phase) {
+        if(!diagnostics) return;
+        try { Console.Error.WriteLine("VERDICLIP_UIA_PHASE="+phase); } catch(System.IO.IOException) {} catch(ObjectDisposedException) {}
+    }
     public DiscoveryResolver Resolver { get; private set; }
     public long StartedTicks { get; private set; }
     [DllImport("user32.dll")] private static extern IntPtr GetThreadDpiAwarenessContext();
@@ -241,6 +271,7 @@ public sealed class DiscoverySession : IDisposable {
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr window,out uint pid);
     public DiscoverySession() { DiscoveryPolicy.RequireNativeOnly(); }
     public void Open(long handle, bool diagnostics) {
+        this.diagnostics=diagnostics;
         DiscoveryPolicy.Require(!disposed && backend==null && prior==IntPtr.Zero && handle>0);
         prior=CaptureDesktop.SetThreadDpiAwarenessContext(new IntPtr(-4)); DiscoveryPolicy.Require(prior!=IntPtr.Zero);
         DiscoveryPolicy.Require(AreDpiAwarenessContextsEqual(GetThreadDpiAwarenessContext(),new IntPtr(-4)));
@@ -264,7 +295,7 @@ public sealed class DiscoverySession : IDisposable {
             () => { if(saved!=IntPtr.Zero) {
                 DiscoveryPolicy.Require(CaptureDesktop.SetThreadDpiAwarenessContext(saved)!=IntPtr.Zero);
                 DiscoveryPolicy.Require(AreDpiAwarenessContextsEqual(GetThreadDpiAwarenessContext(),saved));
-            } });
+            } },Mark);
     }
 }
 }

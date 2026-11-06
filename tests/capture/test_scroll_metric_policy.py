@@ -61,6 +61,7 @@ $rectangle = [pscustomobject]@{
 $element = [pscustomobject]@{
     Current=[pscustomobject]@{ BoundingRectangle=$rectangle }
 }
+$element | Add-Member ScriptMethod ReadBounds { return $this.Current.BoundingRectangle }
 $bounds = @(Get-Bounds $element)
 if ($bounds.Count -ne 4 -or ($bounds -join ',') -ne '-100,21,300,99') {
     throw ('Incorrect integral physical bounds: ' + ($bounds -join ','))

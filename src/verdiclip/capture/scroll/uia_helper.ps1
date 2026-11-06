@@ -130,11 +130,11 @@ function Invoke-ReadOnlyDiscoveryRequest($request) {
     $process = Get-Process -Id $resolver.ProcessId
     $started = $discovery.StartedTicks
     $windowId = '{0}:{1}:{2}' -f $handle.ToInt64(), $process.Id, $started
-    $rootRuntime = $root.RuntimeIdentity
+    $rootRuntime = $root.ReadRuntime()
 
     function Get-Bounds($element) {
         if ($request.action -eq 'inspect') { [Console]::Error.WriteLine('VERDICLIP_UIA_PHASE=inspect_bounds') }
-        $bounds = $element.Current.BoundingRectangle
+        $bounds = $element.ReadBounds()
         if ($bounds.IsEmpty -or [double]::IsInfinity($bounds.Width) -or [double]::IsNaN($bounds.Width)) { throw 'invalid_geometry' }
         # Insets exclude fractional pixels outside a provider's physical bounds.
         $left = [Math]::Ceiling($bounds.Left)
@@ -148,9 +148,9 @@ function Invoke-ReadOnlyDiscoveryRequest($request) {
         $bounds = Get-Bounds $element
         return @{
             window_handle = $handle.ToInt64(); process_id = $process.Id
-            started_ticks = $started; runtime_id = $element.RuntimeIdentity
-            bounds = $bounds; vertical_percent = [double]$pattern.Current.VerticalScrollPercent
-            view_size = [double]$pattern.Current.VerticalViewSize
+            started_ticks = $started; runtime_id = $element.ReadRuntime()
+            bounds = $bounds; vertical_percent = [double]$pattern.ReadPosition()
+            view_size = [double]$pattern.ReadViewSize()
         }
     }
     function Find-Ancestors([double]$x, [double]$y) {
@@ -162,15 +162,15 @@ function Invoke-ReadOnlyDiscoveryRequest($request) {
         for ($index = 0; $index -lt $chain.Count; $index++) {
             $element = $chain[$index]
             if ($request.action -eq 'inspect') { [Console]::Error.WriteLine('VERDICLIP_UIA_PHASE=inspect_node_identity') }
-            $runtime = $element.RuntimeIdentity
+            $runtime = $element.ReadRuntime()
             $identity = $windowId + '/' + $runtime
-            $parent = if ($index + 1 -lt $chain.Count) { $windowId + '/' + $chain[$index + 1].RuntimeIdentity } else { $null }
+            $parent = if ($index + 1 -lt $chain.Count) { $windowId + '/' + $chain[$index + 1].ReadRuntime() } else { $null }
             $pattern = Get-Scroll $element
             if ($request.action -eq 'inspect') { [Console]::Error.WriteLine('VERDICLIP_UIA_PHASE=inspect_control') }
             $kind = 'other'
             if ($runtime -eq $rootRuntime) { $kind = 'window' }
             elseif ($null -ne $pattern) { $kind = 'content' }
-            elseif ($element.Current.ControlType -eq 50014 -and $element.Current.Orientation -eq 2) { $kind = 'vertical_scrollbar' }
+            elseif ($element.ReadControlType() -eq 50014 -and $element.ReadOrientation() -eq 2) { $kind = 'vertical_scrollbar' }
             if ($request.action -eq 'inspect') { [Console]::Error.WriteLine('VERDICLIP_UIA_PHASE=inspect_reference') }
             $reference = if ($null -ne $pattern) { Get-Reference $element $pattern } else { $null }
             $nodes += @{ identity=$identity; window_identity=$windowId; kind=$kind; bounds=(Get-Bounds $element); parent_identity=$parent; vertically_scrollable=($null -ne $pattern); reference=$reference }
@@ -184,11 +184,11 @@ function Invoke-ReadOnlyDiscoveryRequest($request) {
         $chain = Find-Ancestors ([double]$bounds[0] + [double]$bounds[2] / 2) ([double]$bounds[1] + [double]$bounds[3] / 2)
         $element = $null
         foreach ($candidate in $chain) {
-            if ($candidate.RuntimeIdentity -eq $reference.runtime_id) { $element = $candidate; break }
+            if ($candidate.ReadRuntime() -eq $reference.runtime_id) { $element = $candidate; break }
         }
         if ($null -eq $element -or -not (Test-SamePhysicalBounds (Get-Bounds $element) $bounds)) { throw 'target_geometry_changed' }
         $pattern = Get-Scroll $element
-        if ($null -eq $pattern -or $element.Current.IsOffscreen -or -not $element.Current.IsEnabled) { throw 'unsupported_scroll_area' }
+        if ($null -eq $pattern -or $element.ReadOffscreen() -or -not $element.ReadEnabled()) { throw 'unsupported_scroll_area' }
         $area = $bounds
         if ($null -ne $payload.viewport) {
             $area = @($payload.viewport)
@@ -203,8 +203,8 @@ function Invoke-ReadOnlyDiscoveryRequest($request) {
         # In-process/custom composited overlays still require native qualification;
         # this is not a claim of universal semantic visibility.
         if (-not [CaptureDesktop]::Unoccluded($handle, [int]$area[0], [int]$area[1], [int]$area[2], [int]$area[3])) { throw 'target_occluded_or_uncertain' }
-        $position = [double]$pattern.Current.VerticalScrollPercent
-        $view = [double]$pattern.Current.VerticalViewSize
+        $position = [double]$pattern.ReadPosition()
+        $view = [double]$pattern.ReadViewSize()
         if ([double]::IsNaN($position) -or [double]::IsNaN($view) -or $position -lt 0 -or $position -gt 100 -or $view -le 0 -or $view -ge 100) { throw 'unsupported_scroll_metrics' }
         $updated = Get-Reference $element $pattern
         $result = @{ reference=$updated; at_end=($updated.vertical_percent -ge 100) }

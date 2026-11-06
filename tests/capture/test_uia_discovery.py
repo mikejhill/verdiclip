@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -10,6 +11,7 @@ import pytest
 from tests.capture.test_scroll_metric_policy import run_policy_probe
 
 from verdiclip.capture.scroll import uia_process
+from verdiclip.capture.scroll.uia_diagnostics import WorkerTrace
 
 FOLDER = Path(uia_process.__file__).parent
 
@@ -96,3 +98,54 @@ def test_actual_discovery_operation_with_fake_session() -> None:
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stdout.strip() == "discovery-operation-policy-passed"
+
+
+def test_provider_reads_cross_powershell_as_methods() -> None:
+    """Property-getter failures cannot be swallowed by the PowerShell adapter."""
+    helper = (FOLDER / "uia_helper.ps1").read_text()
+    for getter in (
+        "$element.Current.",
+        "$pattern.Current.",
+        "$element.RuntimeIdentity",
+        "$candidate.RuntimeIdentity",
+        "$root.RuntimeIdentity",
+    ):
+        assert getter not in helper
+    for method in (
+        "ReadBounds()",
+        "ReadRuntime()",
+        "ReadControlType()",
+        "ReadOrientation()",
+        "ReadOffscreen()",
+        "ReadEnabled()",
+        "ReadPosition()",
+        "ReadViewSize()",
+    ):
+        assert method in helper
+
+
+def test_discovery_failure_markers_are_fixed_and_bounded() -> None:
+    """Retain fragmented failure scope while excluding arbitrary provider text."""
+    native = (FOLDER / "uia_discovery.cs").read_text()
+    phases = set(re.findall(r'(?:[Mm]ark\(|TryMark\(mark,)"([a-z_]+)"', native))
+    assert phases
+    assert phases <= set(WorkerTrace.MARKERS.values())
+    trace = WorkerTrace(lambda: 1.0)
+    expected = [
+        "inspect_ancestor_process_read",
+        "inspect_ancestor_process_guard",
+        "discovery_release",
+        "discovery_released",
+        "discovery_restore",
+        "discovery_restore_failed",
+    ]
+    payload = b"private-provider-text\n" + b"".join(
+        f"VERDICLIP_UIA_PHASE={phase}\r\n".encode() for phase in expected
+    )
+    for byte in payload:
+        accepted = trace.error_bytes(bytes([byte]))
+        assert accepted
+    assert [event.stage for event in trace.events] == expected
+    assert trace.dropped_events == 0
+    assert trace.MAX_EVENTS == 32
+    assert trace.MAX_ERROR_BYTES == 65_536

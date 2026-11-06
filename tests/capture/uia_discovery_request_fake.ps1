@@ -39,18 +39,24 @@ public static class CaptureDesktop {
 }
 namespace VerdiClip.Automation {
 public sealed class Rectangle {public bool IsEmpty=false;public double Left=-20,Top=30,Width=100,Height=80;public double Right{get{return Left+Width;}}public double Bottom{get{return Top+Height;}}}
-public sealed class Pattern {public Pattern Current{get{return this;}}public bool VerticallyScrollable=true;public double VerticalScrollPercent=25,VerticalViewSize=20;}
+public sealed class Pattern {public Pattern Current{get{return this;}}public bool VerticallyScrollable=true;public double VerticalScrollPercent=25,VerticalViewSize=20;public double ReadPosition(){DiscoveryFake.Hit("position");return VerticalScrollPercent;}public double ReadViewSize(){DiscoveryFake.Hit("view");return VerticalViewSize;}}
 public sealed class Node {
  public int Index;public Node(int i){Index=i;}public Node Current{get{return this;}}
  public int ProcessId=42,ControlType=50014,Orientation=2;public bool IsOffscreen=false,IsEnabled=true;
  public Rectangle BoundingRectangle{get{DiscoveryFake.Hit("bounds");return new Rectangle();}}
  public string RuntimeIdentity{get{return Index.ToString();}}
+ public Rectangle ReadBounds(){DiscoveryFake.Hit("bounds");return new Rectangle();}
+ public string ReadRuntime(){DiscoveryFake.Hit("runtime");return RuntimeIdentity;}
+ public int ReadControlType(){DiscoveryFake.Hit("control");return ControlType;}
+ public int ReadOrientation(){DiscoveryFake.Hit("orientation");return Orientation;}
+ public bool ReadOffscreen(){DiscoveryFake.Hit("offscreen");return IsOffscreen;}
+ public bool ReadEnabled(){DiscoveryFake.Hit("enabled");return IsEnabled;}
  public int[] GetRuntimeId(){return new[]{Index};}
  public Pattern GetScroll(){return Index==2?new Pattern():null;}
 }
 public sealed class Resolver {
  public Node Root=new Node(1);public int ProcessId=42;
- public Node[] FindAncestors(double x,double y){DiscoveryFake.Hit("resolve");return new[]{new Node(2),Root};}
+ public Node[] FindAncestors(double x,double y){DiscoveryFake.Hit("resolve");return new[]{new Node(3),new Node(2),Root};}
 }
 public sealed class DiscoverySession : IDisposable {
  public Resolver Resolver=new Resolver(); public long StartedTicks=30;
@@ -96,17 +102,19 @@ foreach($action in @('inspect','observe','sample')){
  $trace=[DiscoveryFake]::Trace
  if($trace[$trace.Count-1] -ne 'dpi' -or $trace[$trace.Count-2] -ne 'release'){throw 'Result preceded retirement'}
  if($action -eq 'inspect'){
-  if($result.nodes.Count -ne 2 -or $result.hit_identity -ne '100:42:30/2' -or $result.nodes[0].parent_identity -ne '100:42:30/1' -or $result.nodes[0].kind -ne 'content'){throw 'Inspect schema changed'}
+  if($result.nodes.Count -ne 3 -or $result.hit_identity -ne '100:42:30/3' -or $result.nodes[0].parent_identity -ne '100:42:30/2' -or $result.nodes[0].kind -ne 'vertical_scrollbar' -or $result.nodes[1].kind -ne 'content' -or $result.nodes[1].parent_identity -ne '100:42:30/1'){throw 'Inspect schema changed'}
  }else{
   if($result.reference.vertical_percent -ne 25 -or $result.reference.runtime_id -ne '2' -or $result.at_end){throw 'Observe rejected legitimate position change'}
  }
  if($action -eq 'sample'){
   if($result.image_path -ne 'owned-frame-path' -or $result.viewport.Count -ne 4 -or -not $trace.Contains('sample')){throw 'Sample schema changed'}
  }elseif($trace.Contains('sample')){throw 'Read-only action wrote pixels'}
- foreach($fault in @('open','resolve','bounds','verify','process','release','dpi','resolve,process,release,dpi')){
+ $faultCases=@('open','resolve','bounds','runtime','position','view','verify','process','release','dpi','resolve,process,release,dpi')
+ if($action -ne 'inspect'){$faultCases+=@('offscreen','enabled')}else{$faultCases+=@('control','orientation')}
+ foreach($fault in $faultCases){
   [DiscoveryFake]::Fault=$fault;[DiscoveryFake]::Trace.Clear();$result=$null;$failure=$null
   try{$result=Invoke-ReadOnlyDiscoveryRequest (Request $action)}catch{$failure=$_.Exception}
-  if($null -eq $failure -or $null -ne $result){throw 'Failure returned result'}
+  if($null -eq $failure -or $null -ne $result){throw ('Failure returned result: action='+$action+';fault='+$fault)}
   if(-not [DiscoveryFake]::Trace.Contains('release') -or -not [DiscoveryFake]::Trace.Contains('dpi')){throw 'Independent cleanup skipped'}
   if($fault -eq 'resolve,process,release,dpi'){
    $leaves=@(Get-FailureLeaves $failure)

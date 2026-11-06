@@ -40,6 +40,25 @@ class WorkerTrace:
     LF = ord("\n")
     CR = ord("\r")
     MARKERS: ClassVar[dict[bytes, str]] = {
+        b"VERDICLIP_UIA_PHASE=inspect_ancestor_process_read": (
+            "inspect_ancestor_process_read"
+        ),
+        b"VERDICLIP_UIA_PHASE=inspect_ancestor_process_guard": (
+            "inspect_ancestor_process_guard"
+        ),
+        b"VERDICLIP_UIA_PHASE=inspect_ancestor_runtime_read": (
+            "inspect_ancestor_runtime_read"
+        ),
+        b"VERDICLIP_UIA_PHASE=inspect_ancestor_cycle_guard": (
+            "inspect_ancestor_cycle_guard"
+        ),
+        b"VERDICLIP_UIA_PHASE=inspect_ancestor_verified": "inspect_ancestor_verified",
+        b"VERDICLIP_UIA_PHASE=discovery_release": "discovery_release",
+        b"VERDICLIP_UIA_PHASE=discovery_released": "discovery_released",
+        b"VERDICLIP_UIA_PHASE=discovery_release_failed": "discovery_release_failed",
+        b"VERDICLIP_UIA_PHASE=discovery_restore": "discovery_restore",
+        b"VERDICLIP_UIA_PHASE=discovery_restored": "discovery_restored",
+        b"VERDICLIP_UIA_PHASE=discovery_restore_failed": "discovery_restore_failed",
         b"VERDICLIP_UIA_PHASE=script_entered": "script_entered",
         b"VERDICLIP_UIA_PHASE=pipe_connected": "helper_pipe_connected",
         b"VERDICLIP_UIA_PHASE=runtime_ready": "runtime_ready",

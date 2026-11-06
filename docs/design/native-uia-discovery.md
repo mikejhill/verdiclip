@@ -72,3 +72,23 @@ copied into observation.
    remain necessary; repeated root successes alone cannot replace them.
 5. Cursor rendering/global-state/crash concerns, physical scrolling qualification,
    retained timing/readiness failures and final release acceptance remain held.
+
+
+## First CI correction
+
+The first candidate's four WPF profiles passed, but WinForms refused during first
+ancestor identity inspection before any parent traversal, without a deadline
+expiration. Fixed labels now separate the PID read, PID guard, runtime read and
+cycle guard, and independently report release/restoration failure. Guards and
+budgets remain unchanged; no provider values or raw identities are logged.
+
+Windows tests exposed a fake C# local-name collision and a fake operation failure
+that could still return a result. The original test did not label which injected
+fault failed, so its exact stage remains unverified. The helper crossed its
+PowerShell boundary via
+provider-backed .NET property getters, whose failures can be hidden by property
+adaptation. It now uses explicit read methods for runtime IDs, bounds, control/
+orientation, enabled/offscreen state and scroll metrics. Executable fault tests
+require each such failure to propagate with no result and preserved cleanup.
+The C# fake naming correction does not alter tested policy. These changes need
+fresh Windows validation; neither the earlier failures nor native holds are erased.

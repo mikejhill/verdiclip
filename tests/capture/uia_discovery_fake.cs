@@ -22,13 +22,13 @@ public static class DiscoveryTests {
     sealed class Backend : IDiscoveryBackend {
         public Element RootElement=new Element(1), HitElement=new Element(2);
         public Dictionary<IDiscoveryElement,IDiscoveryElement> Parents=new Dictionary<IDiscoveryElement,IDiscoveryElement>();
-        public int X,Y,Guards; public bool FailGuard;
+        public int X,Y,Guards; public bool FailGuard; public List<string> Phases=new List<string>();
         public Backend() { Parents[HitElement]=RootElement; }
         public IDiscoveryElement Root(long handle) { return RootElement; }
         public IDiscoveryElement Hit(int x,int y) { X=x;Y=y;return HitElement; }
         public IDiscoveryElement Parent(IDiscoveryElement element) { return Parents.ContainsKey(element)?Parents[element]:null; }
         public void Guard() { Guards++; if(FailGuard) throw new InvalidOperationException("guard"); }
-        public void Mark(string phase) { }
+        public void Mark(string phase) { Phases.Add(phase); }
         public void Dispose() { }
     }
     public static int Run() {
@@ -51,8 +51,13 @@ public static class DiscoveryTests {
         pattern.Scrollable=false; Check(chain[0].GetScroll()==null); pattern.Scrollable=true;
         foreach(double wrong in new[]{Double.NaN,Double.PositiveInfinity,-1.0,101.0}) { pattern.Position=wrong; Reject(()=>{double n=scroll.VerticalScrollPercent;}); }
         foreach(double wrong in new[]{Double.NaN,Double.PositiveInfinity,0.0,100.0}) { pattern.View=wrong; Reject(()=>{double n=scroll.VerticalViewSize;}); }
-        backend.HitElement.Values[30022]=1; Reject(()=>{bool b=chain[0].IsOffscreen;});
-        backend.HitElement.Values[30002]=43; Reject(()=>resolver.FindAncestors(0,0)); backend.HitElement.Values[30002]=42;
+        backend.HitElement.Values[30022]=1; Reject(()=>{bool offscreen=chain[0].IsOffscreen;});
+        backend.HitElement.Values[30002]=43; backend.Phases.Clear(); Reject(()=>resolver.FindAncestors(0,0));
+        Check(backend.Phases[backend.Phases.Count-1]=="inspect_ancestor_process_guard");
+        backend.HitElement.Values[30002]=42;
+        backend.HitElement.Id=null; backend.Phases.Clear(); Reject(()=>resolver.FindAncestors(0,0));
+        Check(backend.Phases[backend.Phases.Count-1]=="inspect_ancestor_runtime_read");
+        backend.HitElement.Id=new[]{2};
         backend.Parents[backend.HitElement]=backend.HitElement; Reject(()=>resolver.FindAncestors(0,0));
         backend.Parents.Clear(); Reject(()=>resolver.FindAncestors(0,0));
         backend=new Backend(); backend.RootElement.Values[30020]=101; Reject(()=>new DiscoveryResolver(backend,100));
@@ -76,16 +81,36 @@ public static class DiscoveryTests {
         Check(released.Count==2 && seen is AggregateException && ((AggregateException)seen).InnerExceptions.Count==2);
         seen=null; try { DiscoveryPolicy.Release(new[]{a},v=>true,v=>{throw one;}); } catch(Exception error) { seen=error; } Check(Object.ReferenceEquals(seen,one));
         for(int faults=0;faults<4;faults++) {
-            var trace=new List<string>(); seen=null;
+            var trace=new List<string>(); var phases=new List<string>(); seen=null;
             try { DiscoveryPolicy.Retire(
                 ()=>{trace.Add("release");if((faults&1)!=0)throw one;},
-                ()=>{trace.Add("restore");if((faults&2)!=0)throw two;}); }
+                ()=>{trace.Add("restore");if((faults&2)!=0)throw two;},phases.Add); }
             catch(Exception error) { seen=error; }
             Check(String.Join(",",trace)=="release,restore");
+            Check(String.Join(",",phases)=="discovery_release,"+((faults&1)!=0?"discovery_release_failed":"discovery_released")+",discovery_restore,"+((faults&2)!=0?"discovery_restore_failed":"discovery_restored"));
             if(faults==0) Check(seen==null);
             if(faults==1) Check(Object.ReferenceEquals(seen,one));
             if(faults==2) Check(Object.ReferenceEquals(seen,two));
             if(faults==3) Check(seen is AggregateException && ((AggregateException)seen).InnerExceptions.Count==2);
+        }
+        // A diagnostic failure at every marker must not change cleanup outcome,
+        // skip the independent action, or replace the original exception(s).
+        for(int faults=0;faults<4;faults++) {
+            var trace=new List<string>(); int markers=0; seen=null;
+            try { DiscoveryPolicy.Retire(
+                ()=>{trace.Add("release");if((faults&1)!=0)throw one;},
+                ()=>{trace.Add("restore");if((faults&2)!=0)throw two;},
+                phase=>{markers++;throw new InvalidOperationException("diagnostic-fault");}); }
+            catch(Exception error) { seen=error; }
+            Check(String.Join(",",trace)=="release,restore" && markers==4);
+            if(faults==0) Check(seen==null);
+            if(faults==1) Check(Object.ReferenceEquals(seen,one));
+            if(faults==2) Check(Object.ReferenceEquals(seen,two));
+            if(faults==3) {
+                Check(seen is AggregateException);
+                var aggregate=(AggregateException)seen;
+                Check(aggregate.InnerExceptions.Count==2 && Object.ReferenceEquals(aggregate.InnerExceptions[0],one) && Object.ReferenceEquals(aggregate.InnerExceptions[1],two));
+            }
         }
         foreach(bool fail in new[]{false,true}) {
             object retained=null; seen=null;
