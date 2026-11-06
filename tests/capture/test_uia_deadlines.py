@@ -465,6 +465,11 @@ def test_stale_timeout_after_reply_preserves_idle_worker_and_next_request(
     rig.response()
     assert len(rig.replies) == 2
     assert not rig.failures
+    receipt = rig.client.diagnostics
+    assert receipt is not None
+    assert receipt.first_request.terminal_ms == 0
+    assert receipt.action_timings[1].succeeded == 2
+    assert receipt.action_timings[1].timed_out == 0
 
 
 def test_operation_timeout_records_positive_lateness_in_milliseconds(rig: Rig) -> None:
@@ -475,6 +480,9 @@ def test_operation_timeout_records_positive_lateness_in_milliseconds(rig: Rig) -
     assert len(rig.failures) == 1
     diagnostics = rig.client.diagnostics
     assert diagnostics is not None
+    assert diagnostics.first_request.outcome == "operation_timeout"
+    assert diagnostics.action_timings[1].timed_out == 1
+    assert diagnostics.action_timings[1].max_sent_to_terminal_ms == 3125
     assert diagnostics.max_deadline_lateness_ms == 125
     assert diagnostics.request_sent
     assert not rig.client.busy

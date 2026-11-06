@@ -214,3 +214,42 @@ def test_negative_peer_requires_matching_fixture_attestation(
     else:
         with pytest.raises(ValueError, match="ownership changed"):
             peer.poll()
+
+
+@pytest.mark.parametrize("separate", [False, True])
+@pytest.mark.parametrize(
+    "fault", [None, "missing", "center", "scrollbar", "pid", "root"]
+)
+def test_point_owners_require_each_exact_owned_control(
+    *, separate: bool, fault: str | None
+) -> None:
+    """Different negative controls retain the same exact HWND/PID/root guards."""
+    expected = {"center": 10, "scrollbar": 20 if separate else 10}
+    actual = expected.copy()
+    if fault == "missing":
+        expected["scrollbar"] = 0
+    elif fault in {"center", "scrollbar"}:
+        actual[fault] = 30
+    checked: list[int] = []
+
+    def pid(handle: int) -> int:
+        checked.append(handle)
+        return 999 if fault == "pid" and handle == expected["scrollbar"] else 100
+
+    def run() -> None:
+        native_scrollbar.attest_fixture_point_owners(
+            expected,
+            actual,
+            fixture_identity=(1, 100),
+            process_id=pid,
+            root_handle=lambda handle: (
+                999 if fault == "root" and handle == expected["scrollbar"] else 1
+            ),
+        )
+
+    if fault is None:
+        run()
+        assert set(checked) == set(expected.values())
+    else:
+        with pytest.raises(AssertionError):
+            run()

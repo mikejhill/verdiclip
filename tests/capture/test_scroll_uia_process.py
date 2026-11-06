@@ -15,7 +15,8 @@ from PySide6.QtCore import QCoreApplication, QEvent, QObject
 from pytestqt.qtbot import QtBot
 from tests.capture.uia_test_cleanup import wait_idle
 
-from verdiclip.capture.scroll import uia_process
+from verdiclip.capture.scroll import uia_process, uia_worker
+from verdiclip.capture.scroll.uia_diagnostics import WorkerTrace
 from verdiclip.capture.scroll.uia_pipe import UiaPipe
 from verdiclip.capture.scroll.uia_process import UiaAction, UiaProcess
 from verdiclip.capture.scroll.uia_worker import UiaWorkerLease
@@ -169,6 +170,9 @@ def test_success_releases_slot_before_callback_retry(
 
     def receive(_request: object, reply: object) -> None:
         assert not client.busy
+        snapshot = client.diagnostics
+        assert snapshot is not None
+        assert snapshot.action_timings[len(results)].succeeded == 1
         results.append(reply)
         if len(results) == 1:
             client.start(UiaAction.OBSERVE, {})
@@ -177,6 +181,11 @@ def test_success_releases_slot_before_callback_retry(
     client.start(UiaAction.INSPECT, {})
     qtbot.waitUntil(lambda: len(results) == 2, timeout=reply_observer_ms(operations=2))
     assert not client.busy
+    snapshot = client.diagnostics
+    assert snapshot is not None
+    assert snapshot.first_request.action is UiaAction.INSPECT
+    assert snapshot.first_request.outcome == "success"
+    assert [item.succeeded for item in snapshot.action_timings] == [1, 1, 0, 0, 0]
     client.deleteLater()
 
 
@@ -706,3 +715,118 @@ def test_pipe_admission_and_cleanup_failures_are_both_retained(
     # Test-only endpoint was never listening; retire the fake failure's object.
     original_close(endpoints[0])
     client.deleteLater()
+
+
+@pytest.mark.parametrize(
+    ("mode", "outcome", "sent"),
+    [
+        ("startup_hang", "startup_timeout", False),
+        ("hang", "operation_timeout", True),
+        ("bad", "failure", True),
+        ("foreign", "failure", True),
+        ("unsupported", "failure", True),
+        ("exit", "failure", True),
+    ],
+)
+def test_retained_terminal_evidence_for_real_protocol_peer(  # noqa: PLR0913 - case + fixtures
+    qtbot: QtBot,
+    helper: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    outcome: str,
+    *,
+    sent: bool,
+) -> None:
+    """Actual process failures/timeouts remain once-only after child cleanup."""
+    monkeypatch.setattr(UiaProcess, "STARTUP_MS", 500 if not sent else 5000)
+    monkeypatch.setattr(UiaProcess, "DEADLINE_MS", 100)
+    client = UiaProcess(
+        helper_command=(sys.executable, str(helper), mode),
+        qualified=True,
+    )
+    try:
+        with qtbot.waitSignal(client.failed, timeout=reply_observer_ms()):
+            client.start(UiaAction.INSPECT, {})
+        wait_idle(qtbot, client)
+        client.cancel()
+        receipt = client.diagnostics
+        assert receipt is not None
+        assert receipt.first_request.outcome == outcome
+        action = receipt.action_timings[0]
+        assert action.accepted == 1
+        assert action.sent == int(sent)
+        assert action.failed + action.timed_out == 1
+        assert action.succeeded == action.cancelled == 0
+        assert (action.max_sent_to_terminal_ms is not None) is sent
+        assert not receipt.timing_unavailable
+    finally:
+        client.shutdown()
+        client.deleteLater()
+
+
+@pytest.mark.parametrize("after_send", [False, True])
+def test_retained_cancellation_before_and_after_send(
+    qtbot: QtBot,
+    helper: Path,
+    *,
+    after_send: bool,
+) -> None:
+    """A late peer callback or second cancel cannot replace the first outcome."""
+    client = UiaProcess(
+        helper_command=(sys.executable, str(helper), "hang"),
+        qualified=True,
+    )
+    try:
+        client.start(UiaAction.SAMPLE, {})
+        if after_send:
+            qtbot.waitUntil(
+                lambda: (
+                    client.diagnostics is not None
+                    and client.diagnostics.first_request.request_sent_ms is not None
+                ),
+                timeout=reply_observer_ms(),
+            )
+        client.cancel()
+        client.cancel()
+        wait_idle(qtbot, client)
+        receipt = client.diagnostics
+        assert receipt is not None
+        assert receipt.first_request.outcome == "cancelled"
+        action = receipt.action_timings[2]
+        assert action.cancelled == action.accepted == 1
+        assert action.sent == int(after_send)
+        assert action.failed == action.timed_out == action.succeeded == 0
+    finally:
+        client.shutdown()
+        client.deleteLater()
+
+
+def test_failed_diagnostic_clock_does_not_block_protocol_success(
+    qtbot: QtBot,
+    helper: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fault only the diagnostic clock, never the production deadline clock."""
+
+    def broken_clock() -> float:
+        raise RuntimeError("Private diagnostic failure")
+
+    monkeypatch.setattr(
+        uia_worker, "WorkerTrace", lambda _clock: WorkerTrace(broken_clock)
+    )
+    client = UiaProcess(
+        helper_command=(sys.executable, str(helper), "success"),
+        qualified=True,
+    )
+    try:
+        with qtbot.waitSignal(client.completed, timeout=reply_observer_ms()):
+            client.start(UiaAction.INSPECT, {})
+        receipt = client.diagnostics
+        assert receipt is not None
+        assert receipt.timing_unavailable
+        assert receipt.first_request.outcome == "success"
+        assert receipt.first_request.terminal_ms is None
+        assert receipt.action_timings[0].succeeded == 1
+    finally:
+        client.shutdown()
+        client.deleteLater()

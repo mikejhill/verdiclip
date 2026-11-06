@@ -120,6 +120,7 @@ public static class FixtureListGeometry {
         if ($sequence -gt 10000) { throw 'Fixture snapshot budget exceeded' }
         $state = @{
             nonce=$Nonce;pid=$PID;hwnd=$window.Handle.ToInt64();started_ticks=$startedTicks;list_handle=$viewer.Handle.ToInt64()
+            scrollbar_handle=$(if($UnsupportedScrollbar){$standalone.Handle.ToInt64()}else{$viewer.Handle.ToInt64()})
             fixture_kind=$(if($UnsupportedScrollbar){'unsupported-scrollbar'}else{'scrolling'})
             sequence=$sequence;visible=[bool]$window.Visible;closed=$false;activation_complete=$ready
             offset=$offset;scrollable_height=840;maximum_offset=$maximumOffset;end_seen=$endSeen

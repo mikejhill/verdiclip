@@ -14,6 +14,7 @@ from shiboken6 import isValid
 from verdiclip.capture.scroll.uia_diagnostics import WorkerDiagnostics, WorkerTrace
 from verdiclip.capture.scroll.uia_messages import UiaRequest
 from verdiclip.capture.scroll.uia_pipe import UiaPipe
+from verdiclip.capture.scroll.uia_timing import Outcome
 from verdiclip.exceptions import CaptureError
 from verdiclip.startup_lifetime import StartupLifetime
 
@@ -89,6 +90,9 @@ class UiaWorkerLease(QObject):
             stderr_bytes=self._trace.stderr_bytes,
             pipe_bytes=self._trace.pipe_bytes,
             max_deadline_lateness_ms=self._trace.max_deadline_lateness_ms,
+            first_request=self._trace.timing.first,
+            action_timings=self._trace.timing.actions,
+            timing_unavailable=self._trace.timing_unavailable,
         )
 
     @property
@@ -143,7 +147,7 @@ class UiaWorkerLease(QObject):
             raise CaptureError("The UI Automation worker is unavailable")
         self._pending = request
         self._request_sent = False
-        self._trace.mark("queued")
+        self._trace.begin_request(request.action)
         self._operation_ms = deadline_ms
         self._output.clear()
         self._idle.stop()
@@ -307,6 +311,7 @@ class UiaWorkerLease(QObject):
             return
         self._pending = None
         self._trace.mark("response_received")
+        self._trace.finish_request("success")
         self._stop_deadline()
         self._idle.start(self.IDLE_MS)
         self.completed.emit(request, reply)
@@ -343,6 +348,7 @@ class UiaWorkerLease(QObject):
                 timer.stop()
         self._cleanup_state = "unconfirmed"
         self._trace.mark("process_ownership_lost")
+        self._trace.finish_request("failure")
         message = "UI Automation worker ownership was lost; cleanup is unconfirmed"
         self.cleanup_failed.emit(message)
         if request is not None:
@@ -401,18 +407,20 @@ class UiaWorkerLease(QObject):
                 "and the target may have moved"
                 if self._request_sent
                 else "before a command was sent"
-            )
+            ),
+            outcome="startup_timeout" if phase == "startup" else "operation_timeout",
         )
 
     def _expired(self) -> None:
         """No helper persists beyond the explicit finite active-session lease."""
         self._fail("UI Automation session reached its lifetime limit")
 
-    def _fail(self, message: str) -> None:
+    def _fail(self, message: str, *, outcome: Outcome = "failure") -> None:
         """Invalidate before callbacks and terminate only this lease's child."""
         if self._ownership_lost:
             return
         request, self._pending = self._pending, None
+        self._trace.finish_request(outcome)
         self._stop_deadline()
         self._idle.stop()
         if self._process is not None:
@@ -535,7 +543,10 @@ class UiaWorkerLease(QObject):
 
     def cancel(self) -> None:
         """End the current warm-worker scope without issuing further native work."""
-        self._fail("Scrolling capture was cancelled; no further work will be issued")
+        self._fail(
+            "Scrolling capture was cancelled; no further work will be issued",
+            outcome="cancelled",
+        )
 
     def shutdown(self, *, timeout_ms: int = CLEANUP_MS) -> None:
         """Retire this exact child without requiring a running application loop."""

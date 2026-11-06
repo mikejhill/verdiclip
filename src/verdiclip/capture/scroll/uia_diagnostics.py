@@ -4,8 +4,17 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from math import isfinite
 from typing import ClassVar
+
+from verdiclip.capture.scroll.uia_messages import UiaAction
+from verdiclip.capture.scroll.uia_timing import (
+    ActionTiming,
+    FirstRequestTiming,
+    LifetimeTiming,
+    Outcome,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +39,9 @@ class WorkerDiagnostics:
     stderr_bytes: int
     pipe_bytes: int
     max_deadline_lateness_ms: int
+    first_request: FirstRequestTiming = field(default_factory=FirstRequestTiming)
+    action_timings: tuple[ActionTiming, ...] = ()
+    timing_unavailable: bool = False
 
 
 class WorkerTrace:
@@ -100,7 +112,10 @@ class WorkerTrace:
 
     def __init__(self, clock: Callable[[], float]) -> None:
         self._clock = clock
-        self._start = clock()
+        self.timing_unavailable = False
+        self._start = self._read_clock()
+        self._last_ms = 0
+        self.timing = LifetimeTiming()
         self.events: deque[WorkerStamp] = deque(maxlen=self.MAX_EVENTS)
         self.dropped_events = 0
         self.stdout_bytes = self.stderr_bytes = self.pipe_bytes = 0
@@ -108,13 +123,54 @@ class WorkerTrace:
         self._marker = bytearray()
         self._skip_line = False
 
-    def mark(self, stage: str) -> None:
-        """Callers pass only fixed lifecycle constants, never provider strings."""
-        if len(self.events) == self.MAX_EVENTS:
-            self.dropped_events += 1
-        self.events.append(
-            WorkerStamp(stage, max(0, round((self._clock() - self._start) * 1000)))
-        )
+    def _read_clock(self) -> float | None:
+        try:
+            value = self._clock()
+            valid = isfinite(value)
+        except Exception:  # noqa: BLE001 - optional telemetry cannot affect requests
+            valid = False
+            value = 0.0
+        if valid:
+            return value
+        self.timing_unavailable = True
+        return None
+
+    def _elapsed(self) -> int | None:
+        value = self._read_clock()
+        if self._start is not None and value is not None:
+            delta = (value - self._start) * 1000
+            if isfinite(delta) and self._last_ms <= delta <= 2**31 - 1:
+                self._last_ms = delta
+                return round(delta)
+        self.timing_unavailable = True
+        return None
+
+    def _retain(self, observation: Callable[[], None]) -> None:
+        try:
+            observation()
+        except Exception:  # noqa: BLE001 - diagnostics cannot change request outcomes
+            self.timing_unavailable = True
+
+    def begin_request(self, action: UiaAction) -> None:
+        """Retain only a fixed action value and the existing queued timestamp."""
+        elapsed = self.mark("queued")
+        self._retain(lambda: self.timing.begin(action, elapsed))
+
+    def finish_request(self, outcome: Outcome) -> None:
+        """No provider/correlation data is retained by terminal accounting."""
+        elapsed = self._elapsed()
+        self._retain(lambda: self.timing.finish(outcome, elapsed))
+
+    def mark(self, stage: str, *, helper: bool = False) -> int | None:
+        """Keep parent milestones even after bounded tail events are evicted."""
+        elapsed = self._elapsed()
+        if not helper:
+            self._retain(lambda: self.timing.mark(stage, elapsed))
+        if elapsed is not None:
+            if len(self.events) == self.MAX_EVENTS:
+                self.dropped_events += 1
+            self.events.append(WorkerStamp(stage, elapsed))
+        return elapsed
 
     def error_bytes(self, data: bytes) -> bool:
         """Recognize fragmented fixed markers without retaining unrelated text."""
@@ -126,7 +182,7 @@ class WorkerTrace:
             if byte == self.LF:
                 stage = self.MARKERS.get(bytes(self._marker))
                 if stage is not None:
-                    self.mark(stage)
+                    self.mark(stage, helper=True)
                 self._marker.clear()
                 self._skip_line = False
             elif byte != self.CR and not self._skip_line:

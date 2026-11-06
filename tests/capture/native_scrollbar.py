@@ -32,6 +32,7 @@ from tests.capture.production_matrix import (
     fixture_foreground_errors,
     native_action_errors,
 )
+from tests.capture.scroll_failure_evidence import observe_settling, safe_receipt
 from tests.capture.scroll_peer import ScrollPeer
 from tests.capture.test_capture_native import RealDesktop
 from tests.ux.test_app_journeys import App, AppFactory, make_app
@@ -53,6 +54,26 @@ from verdiclip.geometry import Point, Rect
 from verdiclip.platform.windows import WindowLocator
 from verdiclip.scrolling import compose_scrolling
 from verdiclip.settings import CaptureSettings, Settings
+
+
+def attest_fixture_point_owners(
+    expected: dict[str, int],
+    actual: dict[str, int],
+    *,
+    fixture_identity: tuple[int, int],
+    process_id: Callable[[int], int],
+    root_handle: Callable[[int], int],
+) -> None:
+    """Require exact declared controls, each owned by this fixture process/root."""
+    fixture_handle, fixture_pid = fixture_identity
+    assert set(expected) == set(actual) == {"center", "scrollbar"}
+    for handle in set(expected.values()):
+        assert handle > 0, "Owned fixture control handle unavailable"
+        assert process_id(handle) == fixture_pid, "Owned fixture control PID changed"
+        assert root_handle(handle) == fixture_handle, (
+            "Owned fixture control root changed"
+        )
+    assert actual == expected, "Fixture point does not hit its declared control"
 
 
 def guard_owned_backend(
@@ -424,7 +445,10 @@ class ScrollbarCase:
         self.menu = QMenu("Owned scrollbar test popup")
         request.addfinalizer(self.close_owned_windows)
         self.operation_trace: list[dict[str, object]] = []
-        self.operation_timings = observe_storage_operations(patch)
+        self.operation_timings, self.settling_evidence = (
+            observe_storage_operations(patch),
+            observe_settling(patch),
+        )
         workflow = compose_scrolling(self.app.controller, data_root=directory)
         assert workflow is not None, "Production scrolling is unavailable"
         self.workflow = workflow
@@ -638,8 +662,18 @@ class ScrollbarCase:
         api.GetAncestor.argtypes = [w.HWND, w.UINT]
         api.GetAncestor.restype = w.HWND
         list_handle = self.peer.integer("list_handle")
-        pid = w.DWORD()
-        api.GetWindowThreadProcessId(list_handle, ctypes.byref(pid))
+        expected_owners = {
+            "center": list_handle,
+            "scrollbar": self.peer.integer("scrollbar_handle")
+            if self.fixture == "unsupported-scrollbar"
+            else list_handle,
+        }
+
+        def process_id(handle: int) -> int:
+            pid = w.DWORD()
+            api.GetWindowThreadProcessId(handle, ctypes.byref(pid))
+            return pid.value
+
         owners = {
             name: int(
                 api.WindowFromPoint(w.POINT(round(location.x), round(location.y))) or 0
@@ -655,14 +689,12 @@ class ScrollbarCase:
             "list_handle": list_handle,
             "point_owners": owners,
         }
-        assert pid.value == self.peer.integer("pid"), (
-            "Owned ListBox generation unavailable"
-        )
-        assert int(api.GetAncestor(list_handle, 2) or 0) == self.peer.handle, (
-            "Owned ListBox generation unavailable"
-        )
-        assert all(owner == list_handle for owner in owners.values()), (
-            "Fixture point does not hit its ListBox"
+        attest_fixture_point_owners(
+            expected_owners,
+            owners,
+            fixture_identity=(self.peer.handle, self.peer.integer("pid")),
+            process_id=process_id,
+            root_handle=lambda handle: int(api.GetAncestor(handle, 2) or 0),
         )
         remaining_ms = int((self.input_deadline - time.monotonic()) * 1000)
         assert remaining_ms > 0, (
@@ -1016,6 +1048,7 @@ class ScrollbarCase:
                     "visible_test_windows_before_cleanup": visible_owned,
                     "first_popup_loss": popup_loss,
                     "passive_retirement_probe": self.retirement_probe,
+                    "settling_evidence": safe_receipt(self.settling_evidence.snapshot),
                     "operation_trace": self.operation_trace,
                     "operation_trace_at_capacity": len(self.operation_trace) >= 128,
                     "operation_timings": {

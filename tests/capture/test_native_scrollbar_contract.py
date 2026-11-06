@@ -229,9 +229,10 @@ def test_provider_metadata_is_bounded_and_omits_runtime_identifiers() -> None:
     assert Payload.WINDOW not in json.dumps(metadata)
 
 
+@pytest.mark.parametrize("fixture", ["scrolling", "unsupported-scrollbar"])
 @pytest.mark.parametrize("outcome", ["complete", "failed", "foreign", "wrong-point"])
 def test_provider_center_probe_cannot_satisfy_actual_click_discovery(
-    monkeypatch: pytest.MonkeyPatch, outcome: str
+    monkeypatch: pytest.MonkeyPatch, outcome: str, fixture: str
 ) -> None:
     """Actual probe method uses fake OS/adapter ports and never sends input."""
     request = object()
@@ -258,7 +259,13 @@ def test_provider_center_probe_cannot_satisfy_actual_click_discovery(
 
     api = SimpleNamespace(
         WindowFromPoint=FunctionPort(
-            lambda _point: 99 if outcome == "wrong-point" else 7
+            lambda point: (
+                99
+                if outcome == "wrong-point"
+                else 8
+                if fixture == "unsupported-scrollbar" and point.x == 93
+                else 7
+            )
         ),
         GetWindowThreadProcessId=FunctionPort(pid_query),
         GetAncestor=FunctionPort(lambda _handle, _flag: 1),
@@ -280,6 +287,7 @@ def test_provider_center_probe_cannot_satisfy_actual_click_discovery(
             handle=1,
             integer=lambda key: {
                 "list_handle": 7,
+                "scrollbar_handle": 8,
                 "pid": 2,
                 "started_ticks": Payload.TICKS,
             }[key],
@@ -288,6 +296,7 @@ def test_provider_center_probe_cannot_satisfy_actual_click_discovery(
         snapshot=SimpleNamespace(errors=list),
         adapter=SimpleNamespace(inspect=inspect, failed=SignalPort()),
         process=SimpleNamespace(diagnostics_for_workers={}),
+        fixture=fixture,
         input_deadline=50,
         discoveries=[],
         _provider_probe_request=None,
@@ -312,7 +321,7 @@ def test_provider_center_probe_cannot_satisfy_actual_click_discovery(
         assert case.provider_preflight["state"] == "complete"
         assert inspected == [(1, Point(48, 24))]
     else:
-        with pytest.raises(AssertionError, match=r"ListBox|inspection failed"):
+        with pytest.raises(AssertionError, match=r"declared control|inspection failed"):
             ScrollbarCase.diagnose_provider(
                 cast(ScrollbarCase, case), Rect(0, 0, 96, 48)
             )
@@ -464,6 +473,7 @@ def test_cleanup_continues_after_journal_failure(tmp_path: Path) -> None:
             retired=lambda: True,
             popup_trace=None,
             retirement_probe={},
+            settling_evidence=SimpleNamespace(snapshot=dict),
             operation_trace=[],
             operation_timings={"strips.stage": OperationTiming(calls=1)},
             fixture_readiness={},
