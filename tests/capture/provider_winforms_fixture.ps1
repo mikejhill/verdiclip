@@ -6,6 +6,7 @@ param(
     [switch]$UnsupportedScrollbar
 )
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'fixture_snapshot.ps1')
 if (-not $ExecuteAfterHandoff) { throw 'Fixture requires explicit desktop handoff; no UI was created.' }
 $clock = [Diagnostics.Stopwatch]::StartNew()
 $fixtureDirectory = [IO.Path]::GetFullPath($Directory)
@@ -158,6 +159,12 @@ public static class FixtureListGeometry {
                 if ([IO.File]::Exists($path)) { [IO.File]::Replace($temporary,$path,[NullString]::Value) }
                 else { [IO.File]::Move($temporary,$path) }
             }
+        }
+        if ($ready -and -not $window.IsDisposed -and $window.Visible -and -not $UnsupportedScrollbar) {
+            Write-RequestedFixtureSnapshot -Directory $fixtureDirectory -Nonce $Nonce `
+                -StartedTicks $startedTicks -Observe {
+                    @{handle=$window.Handle.ToInt64();offset=($viewer.TopIndex*8);end_seen=$endSeen}
+                }
         }
         Write-FixtureState
     })

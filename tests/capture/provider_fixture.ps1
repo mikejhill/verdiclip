@@ -5,6 +5,7 @@ param(
     [switch]$ExecuteAfterHandoff
 )
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'fixture_snapshot.ps1')
 if (-not $ExecuteAfterHandoff) { throw 'Fixture requires explicit desktop handoff; no UI was created.' }
 # Fixed owned frames contain only a validated nonce, booleans and finite numbers.
 # Do not load a general JSON serializer on the WPF dispatcher or during retirement.
@@ -217,6 +218,13 @@ $timer.Add_Tick({
         if ([IO.File]::Exists($ackPath)) { [IO.File]::Replace($ackTemporary,$ackPath,[NullString]::Value) }
         else { [IO.File]::Move($ackTemporary,$ackPath) }
         $script:pendingCommand = $null
+    }
+    if ($ready -and -not $closed -and $window.IsVisible -and $window.IsLoaded) {
+        Write-RequestedFixtureSnapshot -Directory $fixtureDirectory -Nonce $Nonce `
+            -StartedTicks $startedTicks -Observe {
+                @{handle=([Windows.Interop.WindowInteropHelper]::new($window)).Handle.ToInt64()
+                  offset=$viewer.VerticalOffset;end_seen=$endSeen}
+            }
     }
     Write-FixtureState
 })

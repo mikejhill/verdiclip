@@ -477,6 +477,7 @@ def test_cleanup_continues_after_journal_failure(tmp_path: Path) -> None:
             operation_trace=[],
             operation_timings={"strips.stage": OperationTiming(calls=1)},
             fixture_readiness={},
+            peer=SimpleNamespace(snapshot_request=None, snapshot_ack=None),
             provider_profile={},
             process=SimpleNamespace(
                 diagnostics=None, diagnostics_for_workers={}, worker_pids=()

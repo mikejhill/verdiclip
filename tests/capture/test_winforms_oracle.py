@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -127,11 +128,20 @@ def test_positive_oracle_rejects_each_incomplete_gate(  # noqa: C901 - one fault
         operation_timings={},
         driver=object(),
         peer=SimpleNamespace(
-            poll=lambda: True,
-            state={"end_seen": fault != "end", "offset": 8 if fault == "offset" else 0},
+            request_snapshot=lambda: None,
+            poll_snapshot=lambda: True,
+            snapshot_ack={
+                "end_seen": fault != "end",
+                "offset": 8 if fault == "offset" else 0,
+            },
         ),
+        input_deadline=time.monotonic() + 50,
         repeated_window_captures=0,
         passed=False,
+    )
+
+    case.peer.assert_snapshot_restored = lambda: ScrollPeer.assert_snapshot_restored(
+        cast(ScrollPeer, case.peer)
     )
 
     def repeat() -> None:

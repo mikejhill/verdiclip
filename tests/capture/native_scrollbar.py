@@ -912,11 +912,14 @@ class ScrollbarCase:
         assert cleanup_confirmed(
             self.driver, selecting=self.app.controller.capture.is_selecting
         )
-        assert self.peer.poll()
         self.positive_checks["popup_input_cleanup"] = True
-        assert self.peer.state["end_seen"] is True
+        assert self.input_deadline > time.monotonic(), "Snapshot input budget exhausted"
+        self.peer.request_snapshot()
+        remaining_ms = int((self.input_deadline - time.monotonic()) * 1000)
+        assert remaining_ms > 0, "Snapshot observation exhausted existing input budget"
+        self.qtbot.waitUntil(self.peer.poll_snapshot, timeout=remaining_ms)
+        self.peer.assert_snapshot_restored()
         self.positive_checks["fixture_end_seen"] = True
-        assert self.peer.state["offset"] == 0
         self.positive_checks["fixture_restored"] = True
         self.verify_repeated_window_capture()
         assert self.repeated_window_captures == 2
@@ -1080,6 +1083,16 @@ class ScrollbarCase:
                         else "complete pixel-exact capture"
                     ),
                     "positive_checks": getattr(self, "positive_checks", {}),
+                    "restoration_snapshot": {
+                        "requested": self.peer.snapshot_request is not None,
+                        "received": self.peer.snapshot_ack is not None,
+                        "offset": self.peer.snapshot_ack["offset"]
+                        if self.peer.snapshot_ack is not None
+                        else None,
+                        "end_seen": self.peer.snapshot_ack["end_seen"]
+                        if self.peer.snapshot_ack is not None
+                        else None,
+                    },
                     "provider_preflight": getattr(self, "provider_preflight", {}),
                     "scrollbar_discoveries": [
                         discovery_metadata(item) for item in self.discoveries[:4]
