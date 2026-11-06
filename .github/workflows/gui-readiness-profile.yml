@@ -13,6 +13,8 @@ on:
       - 'scripts/gui_waits.wprp'
       - 'scripts/scheduler_trace_summary.py'
       - 'scripts/scheduler_phase_summary.py'
+      - 'scripts/scheduler_adjacency.py'
+      - 'tests/tooling/test_scheduler_adjacency.py'
       - 'scripts/read_scheduler_etl.cpp'
       - 'scripts/scheduler_payload.hpp'
       - 'tests/tooling/test_scheduler_payload.cpp'

@@ -31,6 +31,13 @@ static bool property(PEVENT_RECORD event, const wchar_t* name, ULONG& value, ULO
     return status == ERROR_SUCCESS;
 }
 
+// MS-DTYP EVENT_HEADER: the flag selects which BufferContext union member is valid.
+// ExtendedData is not the source of the logging CPU. Values stay in private CSV.
+static void private_cpu(PEVENT_RECORD event) {
+    const auto cpu = scheduler_logging_cpu(*event, EVENT_HEADER_FLAG_PROCESSOR_INDEX);
+    std::printf("C,%u,%u\n", cpu.indexed, cpu.value);
+}
+
 static void WINAPI receive(PEVENT_RECORD event) {
     if (invalid || !IsEqualGUID(event->EventHeader.ProviderId, ThreadProvider)) return;
     if (++count > 2000000) { invalid = 10; return; }
@@ -50,12 +57,16 @@ static void WINAPI receive(PEVENT_RECORD event) {
                 event->UserData, event->UserDataLength, decoded)) { invalid = 13; return; }
         first = decoded.next; second = decoded.previous; state = decoded.state;
         if (first != targetTid && second != targetTid) return;
+        private_cpu(event);
         std::printf("S,%lld,%u,%u,%u\n", stamp, first, second, state);
         break;
     }
     case 50: // ReadyThread.
         if (!property(event, L"TThreadId", first)) { invalid = 11; return; }
-        if (first == targetTid) std::printf("R,%lld,%u\n", stamp, first);
+        if (first == targetTid) {
+            private_cpu(event);
+            std::printf("R,%lld,%u\n", stamp, first);
+        }
         break;
     default: break;
     }

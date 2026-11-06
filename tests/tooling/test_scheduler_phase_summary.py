@@ -412,3 +412,21 @@ def test_tie_classes_do_not_depend_on_unproven_event_order() -> None:
     assert empty["outgoing_state_counts"] == []
     assert empty["timestamp_tie_counts"] == []
     assert empty["count_saturated"] is False
+
+
+def test_private_cpu_adjacency_does_not_change_existing_receipt() -> None:
+    """Private CPU metadata cannot resolve unknowns or change phase totals."""
+    rows, phases = evidence()
+    rows[2][4] = "2"
+    control = aggregate(rows, phases)
+    enriched = []
+    for row in rows:
+        if row[0] in {"S", "R"}:
+            enriched.append(["C", "1", "1001"])
+        enriched.append(row)
+    actual = aggregate(enriched, phases)
+    control.pop("adjacency_detail")
+    detail = actual.pop("adjacency_detail")
+    assert actual == control
+    assert actual["analysis_complete"] is False
+    assert "1001" not in json.dumps(detail)

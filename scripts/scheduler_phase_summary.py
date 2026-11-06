@@ -12,6 +12,7 @@ from collections import Counter
 from itertools import groupby
 from pathlib import Path
 
+from scripts.scheduler_adjacency import adjacency_detail
 from scripts.scheduler_trace_summary import numeric_event
 
 MAX_DETAIL_COUNT = 2**31 - 1
@@ -107,6 +108,9 @@ def aggregate(rows: list[list[str]], phases: dict[str, object]) -> dict[str, obj
             for reason, counts in unknown_reasons.items()
         ],
         "transition_detail": transition_detail(rows, tid, starts[0], ends[0]),
+        "adjacency_detail": adjacency_detail(
+            rows, tid, (starts[0], ends[0]), frequency, next_state
+        ),
         "analysis_complete": all(entry["state_complete"] for entry in output),
         "phase_count": len(output),
         "phases": output,
@@ -289,7 +293,7 @@ def phase_totals(
 def verify_independent_decoder(
     rows: list[list[str]], lines: list[str], tid: int
 ) -> None:
-    """Cross-check every owned switch field and ready count against Microsoft Xperf."""
+    """Cross-check kind/ID/state multisets, NOT timestamps, ordering or CPU."""
     native = Counter(
         (row[0], *map(int, row[2:])) for row in rows if row and row[0] in {"S", "R"}
     )
@@ -366,6 +370,7 @@ def main() -> None:
     )
     report = aggregate(rows, phases)
     report["independent_xperf_field_crosscheck"] = True
+    report["independent_crosscheck_excludes_timestamp_order_cpu"] = True
     sys.stdout.write("GUI_PHASE_SCHEDULER=" + json.dumps(report, sort_keys=True) + "\n")
     if not report["analysis_complete"]:
         raise ValueError("unknown phase state")
