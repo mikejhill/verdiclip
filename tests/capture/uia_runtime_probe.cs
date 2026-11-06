@@ -91,6 +91,7 @@ public static class RuntimeComparisonPolicy {
 }
 public sealed class RuntimeProbeResult {
     public RuntimeShapes root, hit;
+    public AncestryObservation ancestry;
     public bool ownership_verified, foreground_unchanged, release_confirmed, dpi_restored, native_only_verified;
 }
 public static class RuntimeProbe {
@@ -110,13 +111,16 @@ public static class RuntimeProbe {
             DiscoveryPolicy.Require(DiscoveryPolicy.Integer(root.Property(30002))==pid);
             DiscoveryPolicy.Require((long)DiscoveryPolicy.Integer(root.Property(30020))==handle);
             guard();
-            var rootShapes=RuntimeComparisonPolicy.Compare(root.Runtime,()=>root.Property(30000),guard);
+            int[] rootId=null;
+            var rootShapes=RuntimeComparisonPolicy.Compare(()=>{rootId=root.Runtime();return rootId;},()=>root.Property(30000),guard);
             var hit=backend.Hit(x,y); guard();
             DiscoveryPolicy.Require(hit!=null);
             DiscoveryPolicy.Require(DiscoveryPolicy.Integer(hit.Property(30002))==pid);
             guard();
-            var hitShapes=RuntimeComparisonPolicy.Compare(hit.Runtime,()=>hit.Property(30000),guard);
-            return new RuntimeProbeResult {root=rootShapes,hit=hitShapes};
+            int[] hitId=null;
+            var hitShapes=RuntimeComparisonPolicy.Compare(()=>{hitId=hit.Runtime();return hitId;},()=>hit.Property(30000),guard);
+            var ancestry=AncestryPolicy.Trace(backend,rootId,hit,hitId,handle,pid,x,y,guard);
+            return new RuntimeProbeResult {root=rootShapes,hit=hitShapes,ancestry=ancestry};
         },()=>{ if(backend!=null) backend.Dispose(); },
         ()=>{ if(prior!=IntPtr.Zero) RuntimeProbeGuard.Restore(prior); },
         ()=>{ owned(); DiscoveryPolicy.RequireNativeOnly(); });

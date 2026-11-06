@@ -22,6 +22,13 @@ from verdiclip.capture.scroll.uia_process import UiaProcess
 def valid_result() -> dict[str, object]:
     """Build only fixed safe fields."""
     return {
+        "ancestry": {
+            "hit_category": "list_item",
+            "scroll_available": False,
+            "root_reached": True,
+            "ancestor_count": 2,
+            "walk_outcome": "verified_suffix",
+        },
         "root": {"method": "valid", "property": "valid", "equal": True},
         "hit": {"method": "empty", "property": "valid", "equal": None},
         "ownership_verified": True,
@@ -41,6 +48,18 @@ def test_fixed_shape_receipt(shape: str) -> None:
         "property": "valid",
         "equal": False if shape == "valid" else None,
     }
+    if shape in {"oversized", "wrong_type"}:
+        with pytest.raises(ValueError, match="precondition or result failed"):
+            decode_result(result)
+        return
+    if shape == "valid":
+        result["ancestry"] = {
+            "hit_category": "other",
+            "scroll_available": False,
+            "root_reached": False,
+            "ancestor_count": 0,
+            "walk_outcome": "identified_hit",
+        }
     assert decode_result(result) == result
 
 
@@ -85,8 +104,8 @@ def test_bad_pairs_cannot_export_provider_data(pair: object) -> None:
 
 def test_source_and_workflow_isolation() -> None:
     """Restrict execution to a distinct owned diagnostic lane."""
-    workflow = Path(".github/workflows/uia-runtime-comparison.yml").read_text()
-    assert "github.head_ref == 'test/native-runtime-property-comparison'" in workflow
+    workflow = Path(".github/workflows/uia-ancestry.yml").read_text()
+    assert "github.head_ref == 'test/native-identityless-ancestry'" in workflow
     assert "github.event.pull_request.draft == true" in workflow
     assert "provider: [winforms, wpf]" in workflow
     assert "contents: read" in workflow
@@ -128,10 +147,12 @@ def test_actual_runtime_policy_compiles_and_injected_faults(tmp_path: Path) -> N
                 source / "uia_desktop.cs",
                 source / "uia_discovery.cs",
                 tests / "uia_runtime_probe.cs",
+                tests / "uia_ancestry_policy.cs",
+                tests / "uia_ancestry_fake.cs",
                 tests / "uia_runtime_probe_fake.cs",
             ]
         )
-        + ")\n[RuntimeProbeTests]::Run()\n",
+        + ")\n[RuntimeProbeTests]::Run() + [AncestryTests]::Run()\n",
         encoding="utf-8",
     )
     host = (
@@ -227,7 +248,7 @@ def hosted_probe_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "VERDICLIP_HOSTED_SOURCE": "a" * 40,
         "VERDICLIP_QUALIFICATION_DIRTY": "false",
         "VERDICLIP_RUNTIME_PROBE": "1",
-        "GITHUB_HEAD_REF": "test/native-runtime-property-comparison",
+        "GITHUB_HEAD_REF": "test/native-identityless-ancestry",
         "VERDICLIP_NATIVE_PROVIDER": "winforms",
         "QT_SCALE_FACTOR": "1",
     }
@@ -415,7 +436,7 @@ def test_early_failure_retains_fixed_receipt(
 
 def test_pure_controls_cannot_resync_selected_qt() -> None:
     """The locked lower Qt must not overwrite the explicit comparison runtime."""
-    workflow = Path(".github/workflows/uia-runtime-comparison.yml").read_text()
+    workflow = Path(".github/workflows/uia-ancestry.yml").read_text()
     assert (
         "uv run --no-sync pytest tests/capture/test_runtime_comparison_contract.py"
         in workflow
@@ -425,3 +446,51 @@ def test_pure_controls_cannot_resync_selected_qt() -> None:
     assert workflow.index("assert qVersion()") < workflow.index(
         "./scripts/test_runtime_comparison.ps1"
     )
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("ancestor_count", True),
+        ("ancestor_count", 32),
+        ("ancestor_count", -1),
+        ("ancestor_count", 0),
+        ("root_reached", False),
+        ("scroll_available", True),
+        ("hit_category", "scrollbar"),
+        ("hit_category", "private provider name"),
+        ("walk_outcome", "private error"),
+        ("extra", "private value"),
+    ],
+)
+def test_ancestry_receipt_rejects_inconsistent_or_private_fields(
+    key: str, value: object
+) -> None:
+    """A verified suffix cannot conceal an invalid leaf, bound, or extra data."""
+    result = valid_result()
+    cast(dict[str, object], result["ancestry"])[key] = value
+    with pytest.raises(ValueError, match="precondition or result failed"):
+        decode_result(result)
+
+
+@pytest.mark.parametrize("category", ["scrollbar", "window", "list_item"])
+def test_candidate_stop_is_evidence_not_ancestry(category: str) -> None:
+    """Candidate leaves retain classification but make no root/ancestry claim."""
+    result = valid_result()
+    result["ancestry"] = {
+        "hit_category": category,
+        "scroll_available": category == "list_item",
+        "root_reached": False,
+        "ancestor_count": 0,
+        "walk_outcome": "candidate_hit",
+    }
+    assert decode_result(result) == result
+
+
+@pytest.mark.parametrize("shape", ["null", "empty", "oversized", "wrong_type"])
+def test_ancestry_requires_valid_saved_root(shape: str) -> None:
+    """Even a claimed verified suffix cannot admit an invalid saved root ID."""
+    result = valid_result()
+    result["root"] = {"method": shape, "property": "valid", "equal": None}
+    with pytest.raises(ValueError, match="precondition or result failed"):
+        decode_result(result)
