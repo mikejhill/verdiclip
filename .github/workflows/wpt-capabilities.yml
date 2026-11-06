@@ -1,0 +1,26 @@
+name: Installed WPT capability inspection
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+permissions:
+  contents: read
+jobs:
+  capability:
+    if: >-
+      github.repository == 'mikejhill/verdiclip' &&
+      github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
+      github.head_ref == 'diagnostic/wpt-capabilities' &&
+      github.event.pull_request.draft == true
+    runs-on: windows-2025
+    timeout-minutes: 3
+    env:
+      VERDICLIP_WPT_CAPABILITIES: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Pure fixed-output controls using preinstalled Python
+        run: python -m unittest scripts.diagnostic_tests.test_wpt_capabilities
+      - name: Read signed installed tool help only
+        run: python -m scripts.wpt_capabilities
