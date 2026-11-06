@@ -1,0 +1,49 @@
+name: Owned cursor state falsification
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/cursor-state-falsification.yml'
+      - 'tests/capture/cursor_state*.py'
+      - 'tests/capture/test_cursor_state*.py'
+permissions:
+  contents: read
+concurrency:
+  group: cursor-state-falsification-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  observe:
+    if: >-
+      github.repository == 'mikejhill/verdiclip' &&
+      github.head_ref == 'test/owned-cursor-state-falsification' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.draft == true
+    runs-on: windows-latest
+    timeout-minutes: 5
+    env:
+      UV_LOCKED: '1'
+      QT_QPA_PLATFORM: windows
+      PYTHONUTF8: '1'
+      VERDICLIP_HOSTED_SCROLLBAR: '1'
+      VERDICLIP_QUALIFICATION_HEAD: ${{ github.event.pull_request.head.sha }}
+      VERDICLIP_HOSTED_SOURCE: ${{ github.event.pull_request.head.sha }}
+      CURSOR_STATE_DISPOSABLE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          python-version: '3.13'
+          enable-cache: false
+      - run: uv sync --locked
+      - name: Verify source and falsify scoped cursor-state safety
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          if ((& git rev-parse HEAD).Trim() -cne $env:VERDICLIP_QUALIFICATION_HEAD) { throw 'Source mismatch' }
+          if ((& git status --porcelain).Length -ne 0) { throw 'Dirty source' }
+          uv run --no-sync pytest tests/capture/test_cursor_state_policy.py -q --no-cov
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          uv run --no-sync pytest tests/capture/test_cursor_state_native.py --native-broker-handoff -q -s --no-cov
+          exit $LASTEXITCODE
