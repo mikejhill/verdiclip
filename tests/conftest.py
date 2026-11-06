@@ -49,6 +49,11 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help="Include physical raw-pointer cases requiring the human operator.",
     )
     parser.addoption(
+        "--native-scrollbar-physical",
+        action="store_true",
+        help="One physical scrollbar click through the pinned source launcher.",
+    )
+    parser.addoption(
         "--ux-snapshots",
         default="",
         help="Directory to write UX journey step screenshots into.",

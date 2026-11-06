@@ -3,13 +3,23 @@ param(
     [switch]$ExecuteAfterHandoff,
     [switch]$PhysicalObservation,
     [switch]$DeliveryOnly,
-    [switch]$ScrollbarOnly
+    [switch]$ScrollbarOnly,
+    [switch]$PhysicalScrollbar,
+    [string]$ExpectedHarnessHead = ''
 )
 $ErrorActionPreference = 'Stop'
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+if ($PhysicalScrollbar -and ($ScrollbarOnly -or $DeliveryOnly -or $PhysicalObservation)) { throw 'Physical scrollbar qualification is a separate single-runtime window.' }
+if ($PhysicalScrollbar -and $env:VERDICLIP_HOSTED_SCROLLBAR -eq '1') { throw 'Physical scrollbar mode forbids hosted injection and cursor probes.' }
 if ($ScrollbarOnly -and ($DeliveryOnly -or $PhysicalObservation)) { throw 'Scrollbar qualification is a separate single-runtime window.' }
 if ($DeliveryOnly -and $PhysicalObservation) { throw 'Delivery and physical-input lanes are separate windows.' }
 if (-not $ExecuteAfterHandoff) {
+    if ($PhysicalScrollbar) {
+        Write-Output 'PLAN ONLY: one physical scrollbar click in an owned WPF fixture, with automated pixel, popup, subsequent-capture and cleanup checks. No input is generated.'
+        Write-Output 'Requires one explicit interpreter and a clean, reviewed harness commit whose production source/dependencies match a0869f762f8fb47009a04c76ec3ab174817db6c1. Source qualification only, not installed-wheel proof.'
+        Write-Output 'Reserve the existing 90-second exclusive window. Bind the owned target before input-now. Observe cursor presentation separately; no cursor experiment is run or fix claimed.'
+        return
+    }
     if ($ScrollbarOnly) {
         Write-Output 'PLAN ONLY: one native scrollbar click with an owned popup, UIA full-panel capture and pixel comparison. Single Qt runtime, 90 seconds including cleanup.'
         Write-Output 'Requires supported external driver binding and one guarded click; this script generates no input. No clipboard or installed settings changes. 100% scaling required for exact pixels.'
@@ -31,11 +41,17 @@ if (-not $ExecuteAfterHandoff) {
     return
 }
 if ($PythonPaths.Count -eq 0) { throw 'Pass -PythonPaths for the isolated verified Qt runtimes; no interpreter is selected implicitly.' }
-if ($ScrollbarOnly -and $PythonPaths.Count -ne 1) { throw 'Pass exactly one Qt runtime for the bounded scrollbar case.' }
+if (($ScrollbarOnly -or $PhysicalScrollbar) -and $PythonPaths.Count -ne 1) { throw 'Pass exactly one Qt runtime for the bounded scrollbar case.' }
 $sourceHead = (& git -C $repoRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $sourceHead -notmatch '^[a-f0-9]{40}$') { throw 'Cannot establish source provenance.' }
 $sourceChanges = & git -C $repoRoot status --porcelain
 if ($LASTEXITCODE -ne 0) { throw 'Cannot establish source cleanliness.' }
+if ($PhysicalScrollbar) {
+    if ($ExpectedHarnessHead -notmatch '^[a-f0-9]{40}$' -or $sourceHead -ne $ExpectedHarnessHead) { throw 'Pass the exact reviewed physical harness commit; current HEAD must match.' }
+    if ($sourceChanges) { throw 'Physical qualification requires a clean reviewed worktree.' }
+}
+$harnessHead = $sourceHead
+if ($PhysicalScrollbar) { $sourceHead = 'a0869f762f8fb47009a04c76ec3ab174817db6c1' }
 $sourceDirty = if ($sourceChanges) { 'true' } else { 'false' }
 $cases = @(
     'qt-menu-production-default-escape-x1', 'owned-modal-production-default-escape-x1',
@@ -46,15 +62,15 @@ if ($PhysicalObservation) {
     $cases = @('qt-menu-physical-raw-pointer-drag-x1', 'win32-menu-physical-raw-pointer-drag-x1')
 }
 if ($DeliveryOnly) { $cases = @('popup-save-present', 'modal-provider-error', 'popup-write-retry') }
-if ($ScrollbarOnly) { $cases = @('qt-scrollbar-popup') }
+if ($ScrollbarOnly -or $PhysicalScrollbar) { $cases = @('qt-scrollbar-popup') }
 $directory = Join-Path $repoRoot ('.test-tmp/native-broker-' + [Guid]::NewGuid().ToString('N'))
 [IO.Directory]::CreateDirectory($directory) | Out-Null
 $overall = [Diagnostics.Stopwatch]::StartNew()
 $limit = if ($PhysicalObservation -or $DeliveryOnly) { 120 } else { 480 }
 $caseLimit = if ($DeliveryOnly) { 20 } else { 40 }
-if ($ScrollbarOnly) { $limit = 75; $caseLimit = 65 } # Reserve 15s for termination/log retirement inside 90s.
+if ($ScrollbarOnly -or $PhysicalScrollbar) { $limit = 75; $caseLimit = 65 } # Reserve 15s for termination/log retirement inside 90s.
 function Get-CleanupWaitMilliseconds {
-    if (-not $ScrollbarOnly) { return 5000 }
+    if (-not ($ScrollbarOnly -or $PhysicalScrollbar)) { return 5000 }
     return [int][Math]::Max(0, [Math]::Min(5000, (90 - $overall.Elapsed.TotalSeconds) * 1000))
 }
 foreach ($python in $PythonPaths) {
@@ -76,12 +92,18 @@ foreach ($python in $PythonPaths) {
         $info.Environment['VERDICLIP_QUALIFICATION_HEAD'] = $sourceHead
         $info.Environment['VERDICLIP_QUALIFICATION_DIRTY'] = $sourceDirty
         $selector = if ($DeliveryOnly) { 'tests/shell/test_delivery_native.py::test_native_synthetic_delivery[' + $case + ']' } else { 'tests/capture/test_broker_native.py::test_production_broker_preserves_declared_owners[' + $case + ']' }
-        if ($ScrollbarOnly) { $selector = 'tests/capture/test_broker_native.py::test_native_scrollbar_selection_preserves_popup' }
+        if ($ScrollbarOnly -or $PhysicalScrollbar) { $selector = 'tests/capture/test_broker_native.py::test_native_scrollbar_selection_preserves_popup' }
         $handoffFlag = if ($DeliveryOnly) { '--native-delivery-handoff' } else { '--native-broker-handoff' }
         $arguments = @('-m', 'pytest', $selector,
             $handoffFlag, '--require-interactive-capture', '-s', '--no-cov',
             ('--basetemp=' + (Join-Path $caseDirectory 'temp')), ('--junitxml=' + (Join-Path $caseDirectory 'result.xml')))
         if ($PhysicalObservation) { $arguments += '--native-broker-physical' }
+        if ($PhysicalScrollbar) {
+            $info.Environment['VERDICLIP_PHYSICAL_SCROLLBAR'] = '1'
+            $info.Environment['VERDICLIP_HARNESS_HEAD'] = $harnessHead
+            $info.Environment['PYTHONDONTWRITEBYTECODE'] = '1'
+            $arguments = @('-I', '-B', (Join-Path $repoRoot 'scripts/physical_scrollbar_qualification.py'), $harnessHead) + $arguments[2..($arguments.Count - 1)] + @('--native-scrollbar-physical')
+        }
         foreach ($argument in $arguments) { $info.ArgumentList.Add($argument) }
         if ($DeliveryOnly) { Write-Output "Synthetic delivery case $case; no input required. Receipts at $caseDirectory/temp." } else { Write-Output "Case $case; bind driver-bind-request.json, then await input-now in driver-request.json under $caseDirectory/temp. No input is generated by this script." }
         $process = [Diagnostics.Process]::new()
