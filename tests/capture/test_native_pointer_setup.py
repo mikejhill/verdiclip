@@ -212,3 +212,22 @@ def test_native_first_cursor_read_is_latched_after_handler() -> None:
         "assigned_cursor_observed=[bool]$State.observer.AssignedCursorObserved"
         in script
     )
+
+
+def test_post_phase_is_independently_one_use(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No second setup or third interaction can reuse immutable phase files."""
+    driver, peer = fixtures(tmp_path)
+    (tmp_path / "pointer-setup-ready.json").write_text("{}")
+    wait = Mock()
+    monkeypatch.setattr("tests.capture.native_pointer_setup.wait_receipt", wait)
+    prepare(driver, peer, Mock(), phase="post-retirement")
+    driver.move_post_retirement.assert_called_once()
+    assert wait.call_args_list[0].args[0].name == "pointer-post-retirement-armed.json"
+    assert wait.call_args_list[1].args[0].name == "pointer-post-retirement-ready.json"
+    with pytest.raises(RuntimeError, match="already-used"):
+        prepare(driver, peer, Mock(), phase="post-retirement")
+    driver.move_post_retirement.assert_called_once()
+    with pytest.raises(ValueError, match="phase-invalid"):
+        prepare(driver, peer, Mock(), phase="third")

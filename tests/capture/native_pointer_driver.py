@@ -64,6 +64,8 @@ class Driver:
         self.fixture_pid = fixture_pid
         self.allowed = {fixture: fixture_pid}
         self.sent = 0
+        self.post_consumed = False
+        self._post_packet = False
         self.api = ctypes.WinDLL("user32", use_last_error=True)
         signatures = {
             "GetCursorInfo": ([ctypes.POINTER(CursorInfo)], w.BOOL),
@@ -164,11 +166,22 @@ class Driver:
     def send(self, packet: Input, *, point: Point | None = None) -> None:
         """At most sixteen requested packets; no failed insertion retry."""
         self.guard(point)
-        if self.sent >= 16:
+        if self.sent >= (17 if self._post_packet else 16):
             raise RuntimeError("input-budget-exhausted")
         self.sent += 1
         if self.api.SendInput(1, ctypes.byref(packet), ctypes.sizeof(Input)) != 1:
             raise RuntimeError("input-insertion-unconfirmed")
+
+    def move_post_retirement(self, point: Point) -> None:
+        """Reserve one additional MOVE for the independently guarded later phase."""
+        if self.post_consumed or self.sent > 16:
+            raise RuntimeError("post-input-budget-exhausted")
+        self.post_consumed = True
+        self._post_packet = True
+        try:
+            self.move(point)
+        finally:
+            self._post_packet = False
 
     def move(self, point: Point) -> None:
         """One absolute virtual-desktop MOVE, never movement normalization."""

@@ -71,3 +71,20 @@ owned fixture. A failed read/mismatch is latched, never retried. The observer is
 still detached before acknowledgment; the independent single baseline appearance
 copy and every first-terminal restoration assertion remain unchanged. This adds
 no cursor-state writes, movement, deadline extension or production change.
+
+### Separate subsequent interaction
+
+First terminal observations and their original verdicts remain immutable. After
+confirmed resource retirement, an appearance-only mismatch (or the last successful
+ordinary session) can be followed by one separately labeled normal mouse MOVE.
+The same strict owned fixture foreground/client/no-menu/no-capture guards apply;
+there is no forced foreground or cursor write. A separate one-use readiness phase
+arms the normal handler, observes that single MOVE's target, detaches, and permits
+one subsequent cursor/GUI sample. This is simulated subsequent interaction, not
+teardown repair or a replacement first sample. A failing ordinary session stops
+immediately after its follow-up; no later session benefits from it. Old-source
+foreground differences can legitimately make this follow-up unavailable. Physical
+input and rendered-pointer behavior remain unqualified.
+The original sixteen-command ordinary input cap is retained. The separate phase
+has one dedicated additional MOVE allowance, consumed on its first attempt even
+if insertion fails; it cannot authorize clicks/keys or a second follow-up MOVE.

@@ -13,6 +13,7 @@ from pytestqt.qtbot import QtBot
 from tests.capture.native_cursor import CursorInfo
 from tests.capture.native_pointer_cursor import NativeReader, copy_appearance
 from tests.capture.native_pointer_driver import Driver, State
+from tests.capture.native_pointer_followup import followup
 from tests.capture.native_pointer_setup import prepare
 from tests.capture.released_pointer_peer import BaselinePeer
 from tests.capture.scroll_peer import ScrollPeer
@@ -137,11 +138,16 @@ def test_released_source_first_terminal(
                 sort_keys=True,
             )
         )
-        child.finish()
-        # Old focus behavior is recorded, not coerced into the candidate policy.
-        assert all(
+        first_ok = all(
             checks[key]
             for key in ("visible", "position_preserved", "appearance_preserved")
-        ), "Released source restoration mismatch"
+        )
+        second_ok = followup(
+            driver, owned_source, qtbot.wait, checks, fixture_appearance
+        )
+        child.finish()
+        # Old focus behavior is recorded, not coerced into the candidate policy.
+        assert first_ok, "Released source restoration mismatch"
+        assert second_ok, "Subsequent interaction unavailable or mismatched"
     finally:
         child.close()

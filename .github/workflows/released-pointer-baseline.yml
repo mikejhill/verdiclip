@@ -69,7 +69,7 @@ jobs:
         timeout-minutes: 2
         shell: pwsh
         run: |
-          uv run --no-sync pytest tests/capture/test_released_pointer_child.py tests/capture/test_released_pointer_peer.py tests/capture/test_native_pointer_cursor.py tests/capture/test_native_pointer_driver.py tests/capture/test_native_pointer_setup.py --no-cov -p no:randomly -q
+          uv run --no-sync pytest tests/capture/test_released_pointer_child.py tests/capture/test_released_pointer_peer.py tests/capture/test_native_pointer_cursor.py tests/capture/test_native_pointer_driver.py tests/capture/test_native_pointer_setup.py tests/capture/test_native_pointer_followup.py --no-cov -p no:randomly -q
           exit $LASTEXITCODE
       - name: Actual released source normal cancel and crash
         timeout-minutes: 2

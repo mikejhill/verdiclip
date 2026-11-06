@@ -1,8 +1,8 @@
 # Opt-in fixture readiness only: no cursor writes, focus changes or input.
 function Update-OwnedPointerSetup {
-    param([string]$Directory,[string]$Nonce,$Window,$Viewer,[hashtable]$State)
-    $requestPath=Join-Path $Directory 'pointer-setup-request.json'
-    $readyPath=Join-Path $Directory 'pointer-setup-ready.json'
+    param([string]$Directory,[string]$Nonce,$Window,$Viewer,[hashtable]$State,[ValidateSet("setup","post-retirement")][string]$Phase="setup")
+    $requestPath=Join-Path $Directory "pointer-$Phase-request.json"
+    $readyPath=Join-Path $Directory "pointer-$Phase-ready.json"
     if ([IO.File]::Exists($readyPath)) { return }
     if ($null -eq $State.observer) {
         if (-not [IO.File]::Exists($requestPath)) { return }
@@ -35,16 +35,16 @@ function Update-OwnedPointerSetup {
         $State.request_id=$match.Groups[2].Value
         $State.observer=[OwnedCursorReadiness]::new($Viewer.Handle,$x,$y,$Viewer.Cursor.Handle)
         $armed=@{nonce=$Nonce;request_id=$State.request_id;pid=$PID;hwnd=$Window.Handle.ToInt64();armed=$true}
-        $partial=Join-Path $Directory 'pointer-setup-armed.partial'
+        $partial=Join-Path $Directory "pointer-$Phase-armed.partial"
         [IO.File]::WriteAllText($partial,($armed|ConvertTo-Json -Compress))
-        [IO.File]::Move($partial,(Join-Path $Directory 'pointer-setup-armed.json'))
+        [IO.File]::Move($partial,(Join-Path $Directory "pointer-$Phase-armed.json"))
     }
     if ($State.observer.Count -eq 1) {
         # No observer remains installed during either capture implementation.
         $State.observer.ReleaseHandle()
         if ($State.observer.Handle -ne [IntPtr]::Zero) { throw 'Cursor setup observer detach unconfirmed' }
         $receipt=@{nonce=$Nonce;request_id=$State.request_id;pid=$PID;hwnd=$Window.Handle.ToInt64();handler_completed=[bool]$State.observer.HandlerCompleted;assigned_cursor_observed=[bool]$State.observer.AssignedCursorObserved;count=1}
-        $partial=Join-Path $Directory 'pointer-setup-ready.partial'
+        $partial=Join-Path $Directory "pointer-$Phase-ready.partial"
         [IO.File]::WriteAllText($partial,($receipt|ConvertTo-Json -Compress))
         [IO.File]::Move($partial,$readyPath)
     }

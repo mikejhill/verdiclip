@@ -64,8 +64,25 @@ def wait_receipt(
         pause(10)
 
 
-def prepare(driver: Driver, peer: ScrollPeer, pause: Callable[[int], None]) -> Point:
+def _validate_phase(peer: ScrollPeer, phase: str) -> None:
+    if phase not in {"setup", "post-retirement"}:
+        raise ValueError("pointer-phase-invalid")
+    if (
+        phase == "post-retirement"
+        and not (peer.directory / "pointer-setup-ready.json").is_file()
+    ):
+        raise RuntimeError("pointer-initial-readiness-missing")
+
+
+def prepare(
+    driver: Driver,
+    peer: ScrollPeer,
+    pause: Callable[[int], None],
+    *,
+    phase: str = "setup",
+) -> Point:
     """One MOVE and handler readiness; the caller owns the sole baseline copy."""
+    _validate_phase(peer, phase)
     if not peer.native_pointer_cursor or peer.identity is None or peer.process is None:
         raise RuntimeError("pointer-setup-owner-unavailable")
     if (
@@ -87,7 +104,7 @@ def prepare(driver: Driver, peer: ScrollPeer, pause: Callable[[int], None]) -> P
         raise RuntimeError("pointer-setup-hit-unavailable")
     request_id = uuid4().hex
     paths = [
-        peer.directory / name
+        peer.directory / name.replace("pointer-setup", "pointer-" + phase)
         for name in (
             "pointer-setup-request.partial",
             "pointer-setup-request.json",
@@ -118,7 +135,10 @@ def prepare(driver: Driver, peer: ScrollPeer, pause: Callable[[int], None]) -> P
     wait_receipt(paths[2], {**expected, "armed": True}, deadline, pause)
     if peer.process.poll() is not None:
         raise RuntimeError("pointer-setup-owner-exited")
-    driver.move(target)
+    if phase == "post-retirement":
+        driver.move_post_retirement(target)
+    else:
+        driver.move(target)
     wait_receipt(
         paths[3],
         {

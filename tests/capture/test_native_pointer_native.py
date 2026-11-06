@@ -22,6 +22,7 @@ from tests.capture.native_pointer_cursor import (
     copy_appearance,
 )
 from tests.capture.native_pointer_driver import Driver, State
+from tests.capture.native_pointer_followup import followup
 from tests.capture.native_pointer_setup import prepare
 from tests.capture.scroll_peer import ScrollPeer
 
@@ -96,6 +97,9 @@ def terminal(  # noqa: PLR0913, PLR0917 - explicit independent terminal boundary
     expected: Point,
     qtbot: QtBot,
     owned_handles: tuple[int, ...],
+    peer: ScrollPeer,
+    *,
+    final: bool,
 ) -> None:
     """First snapshot after actual retirement cannot be replaced by later recovery."""
     qtbot.waitUntil(
@@ -116,12 +120,22 @@ def terminal(  # noqa: PLR0913, PLR0917 - explicit independent terminal boundary
         "physical_input_verified": False,
         "rendered_pointer_verified": False,
     }
-    print("NATIVE_POINTER_TERMINAL=" + json.dumps(checks, sort_keys=True))  # noqa: T201 - fixed private comparison only
-    assert all(
-        value
-        for key, value in checks.items()
-        if key not in {"physical_input_verified", "rendered_pointer_verified"}
+    first_ok = all(
+        checks[key]
+        for key in (
+            "visible",
+            "position_preserved",
+            "foreign_gui_preserved",
+            "appearance_preserved",
+        )
     )
+    checks["terminal_matches_cross_resource"] = after.cursor == driver.cross_cursor()
+    print("NATIVE_POINTER_TERMINAL=" + json.dumps(checks, sort_keys=True))  # noqa: T201 - fixed private comparison only
+    second_ok = True
+    if not first_ok or final:
+        second_ok = followup(driver, peer, qtbot.wait, checks, expected_cursor())
+    assert first_ok, "First terminal observation failed"
+    assert second_ok, "Subsequent interaction unavailable or mismatched"
 
 
 @pytest.mark.native_desktop
@@ -248,7 +262,16 @@ def test_owned_native_pointer_stationary_retirement_and_input(  # noqa: PLR0915 
             else:
                 driver.key(0x1B, down=True)
                 driver.key(0x1B, down=False)
-            terminal(service, driver, before, point, qtbot, owned_handles)
+            terminal(
+                service,
+                driver,
+                before,
+                point,
+                qtbot,
+                owned_handles,
+                owned_source,
+                final=index == 3,
+            )
             driver.allowed = {driver.fixture: driver.fixture_pid}
             assert all(item.stopped.is_set() and item.cleaned for item in workers)
         assert len(captures) == 1
@@ -400,7 +423,15 @@ def test_native_pointer_abrupt_owned_process_exit(
             == expected_cursor(),
             "causal_exit_confirmed": True,
         }
+        first_ok = all(checks.values())
+        checks["terminal_matches_cross_resource"] = (
+            after.cursor == driver.cross_cursor()
+        )
         print("NATIVE_POINTER_CRASH=" + json.dumps(checks, sort_keys=True))  # noqa: T201 - fixed comparisons
-        assert all(checks.values()), checks
+        second_ok = followup(
+            driver, owned_source, qtbot.wait, checks, expected_cursor()
+        )
+        assert first_ok, "First crash observation failed"
+        assert second_ok, "Subsequent interaction unavailable or mismatched"
     finally:
         child.close()

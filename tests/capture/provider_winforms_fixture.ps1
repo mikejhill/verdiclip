@@ -16,6 +16,7 @@ $window = $null; $viewer = $null; $timer = $null; $bitmap = $null; $standalone =
 $priorDpi = [IntPtr]::Zero
 $ownedCursorHandle = [IntPtr]::Zero; $ownedCursor = $null
 $pointerSetup = @{observer=$null;request_id=""}
+$pointerPost = @{observer=$null;request_id=""}
 $sequence = 0; $ready = $false; $maximumOffset = 0; $endSeen = $false; $lastCommand = 0
 try {
     Add-Type -AssemblyName System.Windows.Forms,System.Drawing
@@ -167,6 +168,9 @@ public static class FixtureListGeometry {
         }
         if ($NativePointerCursor -and $ready) {
             Update-OwnedPointerSetup -Directory $fixtureDirectory -Nonce $Nonce -Window $window -Viewer $viewer -State $pointerSetup
+            if ([IO.File]::Exists((Join-Path $fixtureDirectory 'pointer-setup-ready.json'))) {
+                Update-OwnedPointerSetup -Directory $fixtureDirectory -Nonce $Nonce -Window $window -Viewer $viewer -State $pointerPost -Phase 'post-retirement'
+            }
         }
         $commandPath=Join-Path $fixtureDirectory 'fixture-command.json'
         if ([IO.File]::Exists($commandPath)) {
@@ -215,6 +219,7 @@ finally {
         try { $timer.Dispose() } catch { $cleanupErrors++ }
     }
     if ($null -ne $pointerSetup.observer -and $pointerSetup.observer.Handle -ne [IntPtr]::Zero) { try { $pointerSetup.observer.ReleaseHandle() } catch { $cleanupErrors++ } }
+    if ($null -ne $pointerPost.observer -and $pointerPost.observer.Handle -ne [IntPtr]::Zero) { try { $pointerPost.observer.ReleaseHandle() } catch { $cleanupErrors++ } }
     if ($null -ne $window) { try { $window.Dispose() } catch { $cleanupErrors++ } }
     if ($null -ne $viewer) { try { $viewer.Dispose() } catch { $cleanupErrors++ } }
     if ($null -ne $standalone) { try { $standalone.Dispose() } catch { $cleanupErrors++ } }
