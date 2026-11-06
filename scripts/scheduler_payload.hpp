@@ -16,3 +16,13 @@ inline bool decode_scheduler_switch(unsigned version, const void* payload, std::
     output.state = data[14];
     return true;
 }
+
+// EVENT_HEADER_FLAG_PROCESSOR_INDEX selects the BufferContext union member.
+// Template keeps this field-selection contract testable without Windows APIs.
+struct SchedulerCpu { unsigned indexed, value; };
+template<class Event>
+inline SchedulerCpu scheduler_logging_cpu(const Event& event, unsigned processorIndexFlag) {
+    const bool indexed = (event.EventHeader.Flags & processorIndexFlag) != 0;
+    return {indexed ? 1u : 0u, indexed ? static_cast<unsigned>(event.BufferContext.ProcessorIndex)
+        : static_cast<unsigned>(event.BufferContext.ProcessorNumber)};
+}

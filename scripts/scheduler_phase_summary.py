@@ -12,7 +12,14 @@ from collections import Counter
 from itertools import groupby
 from pathlib import Path
 
+from scripts.scheduler_adjacency import adjacency_detail
+from scripts.scheduler_occupancy import occupancy_detail
 from scripts.scheduler_trace_summary import numeric_event
+
+MAX_DETAIL_COUNT = 2**31 - 1
+OUT_OF_RANGE_STATE = 256
+STATE_BUCKETS = 257  # uint8 plus one out-of-range bucket; never echo raw values.
+TIE_CLASS_LIMIT = 3  # 3 means three or more events of that kind.
 
 MAX_ROWS = 2_000_000
 HEADER_FIELDS = 9
@@ -101,11 +108,79 @@ def aggregate(rows: list[list[str]], phases: dict[str, object]) -> dict[str, obj
             }
             for reason, counts in unknown_reasons.items()
         ],
+        "transition_detail": transition_detail(rows, tid, starts[0], ends[0]),
+        "adjacency_detail": adjacency_detail(
+            rows, tid, (starts[0], ends[0]), frequency, next_state
+        ),
+        "occupancy_detail": occupancy_detail(
+            rows, tid, (starts[0], ends[0]), frequency, intervals
+        ),
         "analysis_complete": all(entry["state_complete"] for entry in output),
         "phase_count": len(output),
         "phases": output,
         "causal_claim": False,
         "scheduled_time_is_not_exclusive_application_cpu": True,
+    }
+
+
+def transition_detail(
+    rows: list[list[str]], tid: int, birth: int, death: int
+) -> dict[str, object]:
+    """Count validated lifetime transitions without interpreting scheduler states.
+
+    Fixed cardinality: 257 outgoing-state bins and 16 tie-composition bins.
+    No timestamps, identifiers, event ordering or provider strings are retained.
+    State bucket 256 is out-of-range; tie counts of three mean three-or-more.
+    """
+    states = [0] * STATE_BUCKETS
+    ties = [0] * 16
+    saturated = False
+
+    def increment(bins: list[int], index: int) -> None:
+        nonlocal saturated
+        if bins[index] < MAX_DETAIL_COUNT:
+            bins[index] += 1
+        else:
+            saturated = True
+
+    candidate = (row for row in rows if row and row[0] in {"S", "R"})
+    for stamp, group in groupby(candidate, key=lambda row: int(row[1])):
+        if not birth <= stamp <= death:
+            continue
+        switches = ready = 0
+        for row in group:
+            if row[0] == "S":
+                switches = min(TIE_CLASS_LIMIT, switches + 1)
+                if int(row[3]) == tid:
+                    value = int(row[4])
+                    increment(
+                        states,
+                        value
+                        if 0 <= value < OUT_OF_RANGE_STATE
+                        else OUT_OF_RANGE_STATE,
+                    )
+            else:
+                ready = min(TIE_CLASS_LIMIT, ready + 1)
+        if switches + ready > 1:
+            increment(ties, switches * 4 + ready)
+    return {
+        "outgoing_state_counts": [
+            {"state_bucket": index, "count": count}
+            for index, count in enumerate(states)
+            if count
+        ],
+        "timestamp_tie_counts": [
+            {
+                "switch_count_class": index // 4,
+                "ready_count_class": index % 4,
+                "group_count": count,
+            }
+            for index, count in enumerate(ties)
+            if count
+        ],
+        "count_saturated": saturated,
+        "tie_class_limit": TIE_CLASS_LIMIT,
+        "out_of_range_state_bucket": 256,
     }
 
 
@@ -222,7 +297,7 @@ def phase_totals(
 def verify_independent_decoder(
     rows: list[list[str]], lines: list[str], tid: int
 ) -> None:
-    """Cross-check every owned switch field and ready count against Microsoft Xperf."""
+    """Cross-check kind/ID/state multisets, NOT timestamps, ordering or CPU."""
     native = Counter(
         (row[0], *map(int, row[2:])) for row in rows if row and row[0] in {"S", "R"}
     )
@@ -299,6 +374,7 @@ def main() -> None:
     )
     report = aggregate(rows, phases)
     report["independent_xperf_field_crosscheck"] = True
+    report["independent_crosscheck_excludes_timestamp_order_cpu"] = True
     sys.stdout.write("GUI_PHASE_SCHEDULER=" + json.dumps(report, sort_keys=True) + "\n")
     if not report["analysis_complete"]:
         raise ValueError("unknown phase state")

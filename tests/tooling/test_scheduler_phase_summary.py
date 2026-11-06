@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import TextIO
 
 import pytest
+from scripts import scheduler_phase_summary as module
 from scripts.scheduler_phase_summary import (
     aggregate,
     main,
@@ -323,3 +324,125 @@ def test_unknown_renewal_conserves_duration_and_excludes_outside_lifetime() -> N
     assert sum(row["unknown_ms"] for row in reasons) == 41.0
     assert report["outside_lifetime_events_excluded"] == 1
     assert report["analysis_complete"] is False
+
+
+def test_transition_detail_is_bounded_private_and_noninterpreting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unknown intervals and acceptance are identical with/without detail."""
+    rows, phases = evidence()
+    rows[2][4] = "99"
+    rows.insert(3, ["R", "20", "20"])
+    saved = deepcopy(rows)
+    report = aggregate(rows, phases)
+    detail = report.pop("transition_detail")
+    assert isinstance(detail, dict)
+    assert detail["outgoing_state_counts"] == [{"state_bucket": 99, "count": 1}]
+    assert detail["timestamp_tie_counts"] == [
+        {"switch_count_class": 1, "ready_count_class": 1, "group_count": 1}
+    ]
+    assert report["analysis_complete"] is False
+    monkeypatch.setattr(module, "transition_detail", lambda *_: {})
+    control = aggregate(rows, phases)
+    control.pop("transition_detail")
+    assert report == control
+    assert rows == saved
+
+
+def test_transition_detail_cardinality_clamping_and_saturation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Arbitrary state values and long ties cannot expand the output schema."""
+    monkeypatch.setattr(module, "MAX_DETAIL_COUNT", 2)
+    rows = [["S", "1", "987654", "876543", str(i)] for i in range(-2, 300)]
+    rows += [["R", "1", "876543"]] * 10
+    rows += [["S", "2", "987654", "876543", "99"]] * 10
+    rows += [["S", "3", "987654", "876543", "99"]] * 10
+    rows += [["S", "4", "987654", "876543", "99"]] * 10
+    rows += [["S", "6", "987654", "876543", "88"]]
+    detail = module.transition_detail(rows, 876543, 0, 5)
+    states = detail["outgoing_state_counts"]
+    ties = detail["timestamp_tie_counts"]
+    assert isinstance(states, list)
+    assert isinstance(ties, list)
+    assert len(states) == 257
+    assert len(ties) <= 16
+    assert detail["count_saturated"] is True
+    assert max(entry["count"] for entry in states) == 2
+    assert detail["timestamp_tie_counts"] == [
+        {"switch_count_class": 3, "ready_count_class": 0, "group_count": 2},
+        {"switch_count_class": 3, "ready_count_class": 3, "group_count": 1},
+    ]
+    serialized = json.dumps(detail)
+    assert "876543" not in serialized
+    assert "987654" not in serialized
+
+
+@pytest.mark.parametrize("cause", ["ready", "tie", "outgoing"])
+def test_transition_detail_never_resolves_unknown_states(cause: str) -> None:
+    """Counts remain informational across all observed unknown transition causes."""
+    rows, phases = evidence()
+    if cause == "ready":
+        rows.insert(2, ["R", "10", "20"])
+    elif cause == "tie":
+        rows.insert(3, ["R", "20", "20"])
+    else:
+        rows[2][4] = "2"
+    before = scheduler_segments(rows, 20, 0, 100)
+    detail = module.transition_detail(rows, 20, 0, 100)
+    after = scheduler_segments(rows, 20, 0, 100)
+    report = aggregate(rows, phases)
+    assert before == after
+    assert detail == report["transition_detail"]
+    assert report["analysis_complete"] is False
+    assert report["causal_claim"] is False
+
+
+def test_tie_classes_do_not_depend_on_unproven_event_order() -> None:
+    """A pair of ready records is a tie too; unrelated lifetime data stays absent."""
+    rows = [["R", "10", "20"], ["S", "10", "30", "20", "6"]]
+    forward = module.transition_detail(rows, 20, 0, 100)
+    reverse = module.transition_detail(list(reversed(rows)), 20, 0, 100)
+    assert forward == reverse
+    ready = module.transition_detail([["R", "10", "20"]] * 2, 20, 0, 100)
+    assert ready["timestamp_tie_counts"] == [
+        {"switch_count_class": 0, "ready_count_class": 2, "group_count": 1}
+    ]
+    empty = module.transition_detail(rows, 20, 20, 100)
+    assert empty["outgoing_state_counts"] == []
+    assert empty["timestamp_tie_counts"] == []
+    assert empty["count_saturated"] is False
+
+
+def test_private_cpu_adjacency_does_not_change_existing_receipt() -> None:
+    """Private CPU metadata cannot resolve unknowns or change phase totals."""
+    rows, phases = evidence()
+    rows[2][4] = "2"
+    control = aggregate(rows, phases)
+    enriched = []
+    for row in rows:
+        if row[0] in {"S", "R"}:
+            enriched.append(["C", "1", "1001"])
+        enriched.append(row)
+    actual = aggregate(enriched, phases)
+    control.pop("adjacency_detail")
+    control.pop("occupancy_detail")
+    actual.pop("occupancy_detail")
+    detail = actual.pop("adjacency_detail")
+    assert actual == control
+    assert actual["analysis_complete"] is False
+    assert "1001" not in json.dumps(detail)
+
+
+@pytest.mark.parametrize("header_index", [3, 4, 5])
+def test_occupancy_never_bypasses_loss_validation(
+    header_index: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Loss at any retained boundary rejects evidence before occupancy analysis."""
+    rows, phases = evidence()
+    rows[-1][header_index] = "1"
+    called = []
+    monkeypatch.setattr(module, "occupancy_detail", lambda *_: called.append(True))
+    with pytest.raises(ValueError, match="trace loss"):
+        aggregate(rows, phases)
+    assert called == []
