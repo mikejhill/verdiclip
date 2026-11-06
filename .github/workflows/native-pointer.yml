@@ -1,0 +1,60 @@
+name: Isolated ordinary native pointer
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  foreground:
+    if: >-
+      github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
+      github.head_ref == 'feature/native-pointer' &&
+      github.event.pull_request.draft == true
+    name: Ordinary pointer / Qt ${{ matrix.qt }}
+    runs-on: windows-2025
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        qt: ["6.11.2", "6.12.0"]
+    env:
+      PYTHONUTF8: "1"
+      QT_QPA_PLATFORM: windows
+      VERDICLIP_HOSTED_NATIVE_POINTER: "1"
+      VERDICLIP_HOSTED_SCROLLBAR: "1"
+      VERDICLIP_QUALIFICATION_HEAD: ${{ github.event.pull_request.head.sha }}
+      VERDICLIP_HOSTED_SOURCE: ${{ github.event.pull_request.head.sha }}
+      QT_VERSION: ${{ matrix.qt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          enable-cache: false
+          python-version: "3.13"
+      - name: Locked dependencies and supported Qt
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          uv sync --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          uv pip install --python .venv "pyside6-essentials==$env:QT_VERSION" "shiboken6==$env:QT_VERSION"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Portable pointer and appearance controls
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          uv run --no-sync pytest tests/capture/test_native_pointer_route.py tests/capture/test_native_pointer_service.py tests/capture/test_native_pointer_session.py tests/capture/test_native_pointer_worker.py tests/capture/test_native_pointer_cursor.py tests/capture/test_native_pointer_driver.py tests/capture/test_native_pointer_crash.py --no-cov -p no:randomly -q
+          exit $LASTEXITCODE
+      - name: Stationary admission and first terminal appearance
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          $actual = git rev-parse HEAD
+          if ($actual -ne $env:VERDICLIP_QUALIFICATION_HEAD) { throw 'Source mismatch' }
+          uv run --no-sync pytest tests/capture/test_native_pointer_native.py --no-cov -p no:randomly -vv
+          exit $LASTEXITCODE

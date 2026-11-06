@@ -16,6 +16,7 @@ from verdiclip.capture.grabber import FrozenScreen, ScreenSource
 from verdiclip.capture.input_broker import InputBroker, make_input_broker
 from verdiclip.capture.input_policy import InputKind, SelectionInput
 from verdiclip.capture.models import Capture, CaptureMode, ScreenGeometry
+from verdiclip.capture.native_pointer_win32 import NativePointerSession
 from verdiclip.capture.overlay import SelectionOverlay, SharedSelection, WindowTarget
 from verdiclip.capture.scroll.workflow import ScrollWorkflow, WorkflowState
 from verdiclip.exceptions import AppError, CaptureError
@@ -67,6 +68,8 @@ class CaptureService(QObject):
         super().__init__()
         self._screens, self._windows = screens, windows
         self._show_magnifier = show_magnifier
+        self._native_pointer_enabled = False
+        self._native_pointer: NativePointerSession | None = None
         self._broker = (
             input_broker if input_broker is not None else make_input_broker(self)
         )
@@ -99,6 +102,12 @@ class CaptureService(QObject):
         self._handoff = QTimer(self)
         self._handoff.setSingleShot(True)
         self._handoff.timeout.connect(self._start_pending)
+
+    def enable_native_pointer(self) -> None:
+        """Opt into the unqualified ordinary-window prototype while idle only."""
+        if self.is_selecting:
+            raise CaptureError("Cannot change pointer routing during capture")
+        self._native_pointer_enabled = True
 
     @property
     def is_selecting(self) -> bool:
@@ -246,6 +255,16 @@ class CaptureService(QObject):
                 for point in (screen.physical.top_left, screen.physical.bottom_right)
             ]
         )
+        self._native_pointer = None
+        if self._native_pointer_enabled:
+            self._broker.set_native_pointer(None)
+        if self._native_pointer_enabled and not self._resuming_review:
+            try:
+                pointer = NativePointerSession()
+            except (OSError, ValueError, AttributeError):
+                pointer = None
+            if self._broker.set_native_pointer(pointer):
+                self._native_pointer = pointer
         self._broker.start(initial, bounds)
 
     def _input_ready(self) -> None:
@@ -299,6 +318,11 @@ class CaptureService(QObject):
                     show_magnifier=self._show_magnifier,
                     shared=shared,
                     external_input=True,
+                    **(
+                        {"native_pointer": self._native_pointer}
+                        if self._native_pointer is not None
+                        else {}
+                    ),
                 )
             except (AppError, RuntimeError) as error:
                 logger.warning("Capture overlay unavailable: %s", error)
@@ -309,9 +333,22 @@ class CaptureService(QObject):
             overlay.window_selected.connect(self._on_window_selected)
             overlay.cancelled.connect(self.cancel)
             self._overlays.append(overlay)
-            overlay.show()
+            if self._native_pointer is None:
+                overlay.show()
             if generation != self._generation:
                 return
+        try:
+            if self._native_pointer is not None:
+                self._native_pointer.bind(
+                    frozenset(int(overlay.winId()) for overlay in self._overlays)
+                )
+                for overlay in self._overlays:
+                    if generation != self._generation:
+                        return
+                    overlay.show()
+        except (OSError, ValueError, RuntimeError):
+            self._end(error="Native pointer surfaces became unavailable")
+            return
         self._preparing = False
 
     def _input_event(self, event: object) -> None:
@@ -467,6 +504,8 @@ class CaptureService(QObject):
         )
 
     def _dismiss_overlays(self) -> None:
+        if self._native_pointer is not None:
+            self._native_pointer.close()
         self._generation += 1
         overlays, self._overlays = self._overlays, []
         for overlay in overlays:
@@ -511,6 +550,8 @@ class CaptureService(QObject):
             return False
         self._ending = True
         self._aborted = True
+        if self._native_pointer is not None:
+            self._native_pointer.close()
         self._generation += 1
         self._result, self._error = result, error
         self._preparing = False
