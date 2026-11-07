@@ -495,3 +495,29 @@ retention now reports that root cause rather than only a secondary missing final
 guard. Its dedicated outcome JSON was not included by the artifact upload glob;
 the next batch adds that exact file path. Existing receipts and raw logs remain
 available, but the omitted detailed outcome file is not claimed as verified.
+
+At `007990d`, ordinary Windows CI passes again, including diff-cover at 99.875%.
+The added tests cover all new helper boundary statements without changing
+thresholds, exclusions or production behavior. Installed-runtime and channel
+native regressions also pass. The retained table origin failure remains separate.
+
+## Separate paint-containment control
+
+The next independent owned-table experiment keeps the original failed origin
+oracle unchanged. It captures a fixed full-root visible image, an opacity-zero
+control, and exact visible restoration. Native target/root identity, offscreen
+state, geometry and scroll state must remain unchanged throughout. Opacity is
+the only allowed authored style change. Visibility-hidden was not selected
+because it can intentionally remove the accessibility node.
+
+Exact RGB difference support must be nonempty and entirely inside an independently
+selected native rectangle. Every edge and corner must have observable support;
+one-pixel inset controls must reject. The rectangle is never enlarged to fit the
+observed pixels, and blended pixels are not thresholded away. Full-root visible
+restoration and repeated control samples must match exactly. Any outside paint,
+replacement identity, unstable state or missing edge evidence rejects.
+
+This is one pose of an authored fixture. It tests containment of observed
+panel-attributable paint, not invisible or occluded content, all scroll positions,
+a universal CSS transform, or a completed scrolling capture. No product code
+changes another application's opacity or visibility. Native results are pending.
