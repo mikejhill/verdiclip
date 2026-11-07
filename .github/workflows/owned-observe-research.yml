@@ -19,8 +19,8 @@ jobs:
     timeout-minutes: 7
     env:
       PYTHONUTF8: "1"
-      QUALIFICATION_HEAD: "d988a7a95617d9de23a4f23e97d1c18c7bbb2a2a"
-      QUALIFICATION_TREE: "c8f6cb20f3e4fd4daf3a040955399f144860f478"
+      QUALIFICATION_HEAD: "15fe4f16846c86957983f17f295645529f053577"
+      QUALIFICATION_TREE: "2d9f1679f187f623a0f36272ed7f8eab7fc37c37"
       WORKFLOW_HEAD: ${{ github.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -29,7 +29,7 @@ jobs:
           GIT_CONFIG_KEY_0: core.autocrlf
           GIT_CONFIG_VALUE_0: "false"
         with:
-          ref: d988a7a95617d9de23a4f23e97d1c18c7bbb2a2a
+          ref: 15fe4f16846c86957983f17f295645529f053577
           persist-credentials: false
       - name: Assert fixed source and retain separate workflow identity
         timeout-minutes: 1
@@ -114,6 +114,10 @@ jobs:
             scripts/installed_runtime_smoke.py
             scripts/panel_fixture/Program.cs
             receipts/installed-observe/receipt.json
+            receipts/installed-observe/membership-failure.json
+            receipts/installed-observe/failure-phase-evidence.json
+            receipts/installed-observe/startup-diagnostics/*.json
+            receipts/installed-observe/startup-diagnostics/*.jsonl
             receipts/installed-observe/executor/*.json
             receipts/installed-observe/executor/*.jsonl
             receipts/installed-observe/executor/*.png
