@@ -2,10 +2,14 @@
 
 import json
 import math
+import time
 from types import SimpleNamespace
 from unittest.mock import Mock, PropertyMock
 
 import pytest
+from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer
+from PySide6.QtWidgets import QApplication, QWidget
+from pytestqt.qtbot import QtBot
 from scripts import cold_region_native as subject
 from scripts.cold_region_native import FirstPaints, NoWindows, wait_for
 
@@ -56,14 +60,43 @@ def test_partial_or_duplicate_overlay_list_never_counts_as_all_monitors() -> Non
 
 def test_event_loop_callback_cannot_accept_after_deadline(
     monkeypatch: pytest.MonkeyPatch,
+    qtbot: QtBot,
 ) -> None:
-    """A paint arriving after a long callback remains an observation timeout."""
+    """Late synthetic paint cannot mutate the real clock or pytest-qt's loop."""
     ticks = iter([0.0, 0.1, 5.1])
-    monkeypatch.setattr(subject.time, "perf_counter", lambda: next(ticks))
-    monkeypatch.setattr(subject.QCoreApplication, "sendPostedEvents", lambda *_: None)
-    monkeypatch.setattr(subject.QApplication, "processEvents", lambda: None)
-    observed = wait_for(lambda: True, 5.0)
-    assert observed is False
+    real_clock = time.perf_counter
+    widget = QWidget()
+    qtbot.addWidget(widget)
+    delivered: list[bool] = []
+    with monkeypatch.context() as scoped:
+        scoped.setattr(
+            subject,
+            "time",
+            SimpleNamespace(perf_counter=lambda: next(ticks), sleep=lambda _: None),
+        )
+        scoped.setattr(
+            subject,
+            "QCoreApplication",
+            SimpleNamespace(sendPostedEvents=lambda *_: None),
+        )
+        scoped.setattr(
+            subject,
+            "QApplication",
+            SimpleNamespace(processEvents=lambda: None),
+        )
+        observed = wait_for(lambda: True, 5.0)
+        assert observed is False
+        assert time.perf_counter is real_clock
+        # Match pytest-qt's one-argument call while fake dependencies are active.
+        QTimer.singleShot(0, lambda: delivered.append(True))
+        QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents)
+        assert delivered == [True]
+    assert subject.time is time
+    assert subject.QApplication is QApplication
+    assert subject.QCoreApplication is QCoreApplication
+    QTimer.singleShot(0, lambda: delivered.append(True))
+    qtbot.waitUntil(lambda: len(delivered) == 2)
+    QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents)
 
 
 @pytest.mark.parametrize("boundary", ["constructor", "signal", "handles"])
