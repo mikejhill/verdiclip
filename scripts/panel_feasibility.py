@@ -281,7 +281,9 @@ def probe_arguments(fixture: Json, experiment: str) -> list[str]:
     extra = (
         ["--settle-discovery"] if fixture["kind"] == "owned-edge" else ["--full-sweep"]
     )
-    if experiment == "clipping":
+    if experiment == "raw-geometry":
+        extra = ["--raw-geometry-diagnostic"]
+    elif experiment == "clipping":
         extra = ["--clipping-diagnostic"]
     elif experiment == "seam":
         extra = ["--seam-sweep"]
@@ -549,14 +551,19 @@ def full_width_oracle(fixture: Json, output: Path, state_dir: Path) -> Json:
 
 def verify_diagnostic(result: Json, output: Path) -> None:
     """Diagnostic completion never implies capture qualification."""
-    if result.get("msaa_diagnostic"):
+    if result.get("msaa_diagnostic") or result.get("raw_geometry_diagnostic"):
         report = json.loads(
             (output / "probe/manifest.json").read_text(encoding="utf-8")
         )
         result["diagnostic"] = report
         _require_probe_success(result["helper"]["exit_code"])
         result["diagnostic_completed"] = (
-            report.get("msaa_diagnostic_completed") is True
+            report.get(
+                "raw_geometry_diagnostic_completed"
+                if result.get("raw_geometry_diagnostic")
+                else "msaa_diagnostic_completed"
+            )
+            is True
             and report.get("read_only_unchanged") is True
             and load_pixels(output / "probe/before.png")
             == load_pixels(output / "probe/after.png")
@@ -616,7 +623,11 @@ def verify_result(result: Json, output: Path, state_dir: Path, fixture: Json) ->
         raise RuntimeError("Completed native call exceeded three seconds")
     if result.get("browser_sequence"):
         verify_browser_sequence(result, output, state_dir, fixture)
-    elif result.get("msaa_diagnostic") or result.get("clipping_diagnostic"):
+    elif (
+        result.get("msaa_diagnostic")
+        or result.get("clipping_diagnostic")
+        or result.get("raw_geometry_diagnostic")
+    ):
         verify_diagnostic(result, output)
     elif result.get("full_sweep"):
         result["oracle"] = full_sweep_oracle(fixture, output)

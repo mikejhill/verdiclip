@@ -17,6 +17,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from scripts import panel_matrix_raw_geometry as raw_geometry
 from scripts.panel_feasibility import (
     ROOT,
     NativeWindow,
@@ -25,6 +26,7 @@ from scripts.panel_feasibility import (
     load_pixels,
     run_probe,
     snapshots,
+    verify_diagnostic,
     wait_snapshot,
     write,
 )
@@ -75,20 +77,18 @@ def launch(
     edge = next((p for p in candidates if p.is_file()), None)
     if edge is None:
         raise RuntimeError("Installed Edge unavailable")
-    _, handle = job.start(
-        [
-            str(edge),
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--disable-sync",
-            f"--user-data-dir={output / 'edge-profile'}",
-            "--window-size=760,520",
-            "--window-position=40,40",
-            f"--force-device-scale-factor={scale}",
-            "--app=" + server.url,
-        ],
-        ROOT,
-    )
+    argv = [
+        str(edge),
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-sync",
+        f"--user-data-dir={output / 'edge-profile'}",
+        "--window-size=760,520",
+        "--window-position=40,40",
+        f"--force-device-scale-factor={scale}",
+        "--app=" + server.url,
+    ]
+    _, handle = job.start(argv, ROOT)
     initial = wait_snapshot(server.output, job, handle)
     native = NativeWindow()
     owner = native.foreground(job.pids())
@@ -103,6 +103,7 @@ def launch(
         "initial": initial,
         "root_rect": owner["allowed_rect"],
         "edge_executable": str(edge),
+        "launch_argv": argv,
     }
 
 
@@ -310,7 +311,74 @@ def collect_session(
             raise RuntimeError("Reference authored state changed during capture")
 
 
-def session(case: MatrixCase, scale: str, output: Path) -> Json:
+def validate_raw_completion(helper: Json, records: list[Json]) -> None:
+    """Validate returned-call timing independently of the live pending watchdog."""
+    elapsed: Any = helper.get("seconds")
+    if (
+        type(elapsed) not in (int, float)
+        or not math.isfinite(elapsed)
+        or not 0 <= elapsed < HELPER_SECONDS
+        or helper.get("timed_out") is not False
+        or type(helper.get("exit_code")) is not int
+        or helper["exit_code"] != 0
+    ):
+        raise RuntimeError("Raw helper completion/total deadline invalid")
+    completed = [record for record in records if record.get("event") == "call_end"]
+    if not completed:
+        raise RuntimeError("Raw completed native call evidence missing")
+    # Wrappers and nested COM calls each retain their own measured duration.
+    for record in completed:
+        duration: Any = record.get("seconds")
+        if (
+            type(duration) not in (int, float)
+            or not math.isfinite(duration)
+            or not 0 <= duration < CALL_SECONDS
+        ):
+            raise RuntimeError("Raw completed native call duration invalid or >=3s")
+
+
+def collect_raw_geometry(  # noqa: PLR0913, PLR0917 - explicit fixed experiment inputs
+    case: MatrixCase,
+    scale: str,
+    html: str,
+    helper_job: OwnedJob,
+    output: Path,
+    receipt: Json,
+) -> None:
+    """One original-pose read only; no browser sequence or reference planning."""
+    initial = receipt["oracle_only"]["initial"]
+    # Reject wrong assets/pose before readiness or the native diagnostic starts.
+    raw_geometry.manifest(receipt["acquisition"], initial, case, scale, html)
+    prepare_acquisition(helper_job, output, receipt)
+    manifest = raw_geometry.manifest(receipt["acquisition"], initial, case, scale, html)
+    receipt["acquisition"] = manifest
+    current = snapshots(output / "states")
+    if not current or any(item["state"] != initial["state"] for item in current):
+        raise RuntimeError("Matrix pose drift before raw probe")
+    raw_geometry.validate_manifest(manifest)
+    receipt["raw_geometry_diagnostic"] = True
+    receipt["helper"] = run_probe(
+        helper_job, manifest, output, experiment="raw-geometry"
+    )
+    validate_raw_completion(receipt["helper"], events(output / "probe/calls.jsonl"))
+    verify_diagnostic(receipt, output)
+    # Same bounded root-only raster helper, not a reference pose or seek.
+    after = output / "exit-readiness"
+    after.mkdir(exist_ok=False)
+    receipt["exit_helper"] = run_reference(
+        helper_job, {**manifest, "capture_mode": "entry-readiness"}, after
+    )
+    if load_pixels(output / "entry-readiness/reference/reference.png") != load_pixels(
+        after / "reference/reference.png"
+    ):
+        raise RuntimeError("Matrix full-root pixels changed")
+    current = snapshots(output / "states")
+    if not current or any(item["state"] != initial["state"] for item in current):
+        raise RuntimeError("Matrix pose drift during raw probe")
+    receipt["full_root_unchanged"] = True
+
+
+def session(case: MatrixCase, scale: str, output: Path, *, raw: bool = False) -> Json:
     """Preserve first failure and every independent cleanup result."""
     output.mkdir(exist_ok=False)
     receipt: Json = {
@@ -335,7 +403,13 @@ def session(case: MatrixCase, scale: str, output: Path) -> Json:
         )
         receipt["acquisition"] = manifest
         receipt["oracle_only"] = oracle
-        collect_session(case, helper_job, output, receipt)
+        if raw:
+            receipt["oracle_only"]["edge_sha256"] = hashlib.sha256(
+                Path(oracle["edge_executable"]).read_bytes()
+            ).hexdigest()
+            collect_raw_geometry(case, scale, html, helper_job, output, receipt)
+        else:
+            collect_session(case, helper_job, output, receipt)
     except Exception as error:  # noqa: BLE001 - diagnostic first-failure boundary
         receipt["first_failure"] = repr(error)
     finally:
@@ -448,7 +522,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--case", choices=tuple(CASES), required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--raw-geometry-diagnostic", action="store_true")
     args = parser.parse_args()
+    if args.raw_geometry_diagnostic and args.case != "table-dark125":
+        parser.error("Raw geometry requires original table-dark125")
     args.output.mkdir(parents=True, exist_ok=False)
     args.output = args.output.resolve(strict=True)
     result: Json = {
@@ -459,7 +536,15 @@ def main() -> int:
     start = time.monotonic()
     try:
         result["source"] = attest()
-        collect_batch(args.case, args.output, result, start)
+        if args.raw_geometry_diagnostic:
+            case, scale = CASES[args.case]
+            raw_geometry.provenance()
+            result["raw"] = session(case, scale, args.output / "raw", raw=True)
+            if time.monotonic() - start >= BATCH_SECONDS:
+                raise RuntimeError("Matrix batch deadline exceeded")  # noqa: TRY301
+            result["raw_geometry_diagnostic_completed"] = True
+        else:
+            collect_batch(args.case, args.output, result, start)
     except Exception as error:  # noqa: BLE001 - preserve first collection failure
         result["first_failure"] = repr(error)
     write(args.output / "receipt.json", result)

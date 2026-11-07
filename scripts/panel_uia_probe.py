@@ -14,6 +14,7 @@ import json
 import os
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
@@ -23,7 +24,10 @@ import mss.tools
 from scripts.panel_browser_sequence import BrowserSequence
 from scripts.panel_clipping_diagnostic import ClippingDiagnostic, validate_fixture
 from scripts.panel_full_sweep import FullSweep
+from scripts.panel_matrix_raw_geometry import validate_manifest as validate_raw_manifest
 from scripts.panel_msaa_probe import probe_msaa
+from scripts.panel_raw_geometry import CALL_SECONDS as RAW_CALL_SECONDS
+from scripts.panel_raw_geometry import compare as compare_raw_geometry
 from scripts.panel_seam_candidate import SeamSweep
 from scripts.panel_uia import MAX_ANCESTORS, PanelUia, Point, ScrollState, Structure
 from scripts.panel_viewport import midpoint_percent, viewport_rect
@@ -392,7 +396,9 @@ class Probe:
         """Keep independent experiments explicit; never fallback between them."""
         if self.initial is None or self.identity is None:
             raise RuntimeError("Experiment requires acknowledged initial state")
-        if getattr(self.args, "browser_sequence", False):
+        if getattr(self.args, "raw_geometry_diagnostic", False):
+            self.read_raw_geometry(fixture, source, before, started)
+        elif getattr(self.args, "browser_sequence", False):
             BrowserSequence(self, source, self.identity.rect, before, started).run()
         elif getattr(self.args, "msaa_diagnostic", False):
             self.read_msaa(fixture, source, before)
@@ -416,6 +422,85 @@ class Probe:
             self.seek(self.initial.vertical)
             self.frame(source, "restore")
             self.report["restored"] = True
+
+    def read_raw_geometry(  # noqa: C901 - explicit read-only native guards
+        self,
+        fixture: dict[str, Any],
+        source: mss.MSS,
+        before: ScrollFrame,
+        started: float,
+    ) -> None:
+        """Record raw bounds only; no writes, source crop or acceptance change."""
+        self.report["restoration_prohibited"] = True
+        validate_raw_manifest(fixture)
+        if self.uia is None or self.uia.target is None:
+            raise RuntimeError("Raw geometry requires a retained native target")
+        if self.guard is None:
+            raise RuntimeError("Missing owned native guard")
+        user = self.guard.user
+        user.GetDpiForWindow.argtypes = [c.c_void_p]
+        user.GetDpiForWindow.restype = c.c_uint32
+
+        deadline = started + 30.0
+
+        def timed(name: str, operation: Callable[[], int]) -> int:
+            if time.monotonic() >= deadline:
+                raise RuntimeError("Raw geometry DPI deadline expired")
+            self.emit({"event": "call_start", "raw_geometry": name})
+            beginning = time.monotonic()
+            if beginning >= deadline:
+                raise RuntimeError("Raw geometry DPI deadline expired")
+            value = operation()
+            ended = time.monotonic()
+            self.emit(
+                {
+                    "event": "call_end",
+                    "raw_geometry": name,
+                    "seconds": ended - beginning,
+                }
+            )
+            if ended - beginning >= RAW_CALL_SECONDS or ended < beginning:
+                raise RuntimeError("Raw geometry DPI call exceeded three seconds")
+            if time.monotonic() >= deadline:
+                raise RuntimeError("Raw geometry DPI deadline expired")
+            return value
+
+        def dpi() -> int:
+            value = timed(
+                "root_dpi", lambda: int(user.GetDpiForWindow(int(fixture["root_hwnd"])))
+            )
+            if not value:
+                raise RuntimeError("Cannot read owned root DPI")
+            return value
+
+        self.validate()
+        root_dpi = dpi()
+        self.validate()
+
+        def guarded() -> None:
+            self.validate()
+            context = timed(
+                "dpi_context", lambda: int(user.GetThreadDpiAwarenessContext())
+            )
+            pmv2 = timed(
+                "dpi_awareness",
+                lambda: int(user.AreDpiAwarenessContextsEqual(context, c.c_void_p(-4))),
+            )
+            if not pmv2 or dpi() != root_dpi:
+                raise RuntimeError("Raw geometry DPI context changed")
+
+        self.report["raw_geometry_root_dpi"] = root_dpi
+        self.report["raw_geometry"] = compare_raw_geometry(
+            self.uia.target, guarded, self.emit, started + 30.0
+        )
+        after = self.frame(source, "after")
+        self.validate()
+        self.report["read_only_unchanged"] = (
+            after == before and self.last == self.initial
+        )
+        if not self.report["read_only_unchanged"]:
+            raise RuntimeError("Raw geometry diagnostic observed changed raster/state")
+        self.report["raw_geometry_diagnostic_completed"] = True
 
     def read_msaa(
         self, fixture: dict[str, Any], source: mss.MSS, before: ScrollFrame
@@ -477,6 +562,7 @@ class Probe:
         """Do not overwrite first failure with a secondary restoration failure."""
         if (
             getattr(getattr(self, "args", None), "msaa_diagnostic", False)
+            or getattr(getattr(self, "args", None), "raw_geometry_diagnostic", False)
             or self.uncertain
             or self.report.get("full_sweep_deadline_exceeded")
             or self.report.get("restoration_prohibited")
@@ -507,10 +593,14 @@ def main() -> int:
     mode.add_argument("--full-sweep", action="store_true")
     mode.add_argument("--clipping-diagnostic", action="store_true")
     mode.add_argument("--msaa-diagnostic", action="store_true")
+    mode.add_argument("--raw-geometry-diagnostic", action="store_true")
     mode.add_argument("--seam-sweep", action="store_true")
     mode.add_argument("--browser-sequence", action="store_true")
     parser.add_argument("--settle-discovery", action="store_true")
-    return Probe(parser.parse_args()).run()
+    args = parser.parse_args()
+    if args.raw_geometry_diagnostic and args.settle_discovery:
+        parser.error("Raw geometry permits no discovery retry")
+    return Probe(args).run()
 
 
 if __name__ == "__main__":
