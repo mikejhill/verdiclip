@@ -35,7 +35,8 @@ def installed(
     for name, content in files.items():
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
+        # A wheel installs bytes verbatim; text-mode writes translate LF on Windows.
+        path.write_bytes(content.encode("utf-8"))
     wheel = tmp_path / "verdiclip-1.2.3-py3-none-any.whl"
     with zipfile.ZipFile(wheel, "w") as archive:
         for name, content in files.items():
@@ -75,6 +76,24 @@ def test_manifest_uses_actual_installed_origins(
     )
     assert len(runtime.wheel_sha256) == 64
     assert runtime.payload()["pointer_bits"] in (32, 64)
+
+
+def test_wheel_rejects_newline_only_installed_mutation(
+    installed: tuple[Path, Path, smoke.InstalledRuntime],
+) -> None:
+    """Windows newline translation is a real byte mismatch, not an allowed edit."""
+    root, wheel, _ = installed
+    original = root / "verdiclip/__init__.py"
+    with zipfile.ZipFile(wheel) as archive:
+        payload = archive.read("verdiclip/__init__.py")
+    assert b"\n" in payload
+    assert b"\r\n" not in payload
+    assert original.read_bytes() == payload
+    original.write_bytes(payload.replace(b"\n", b"\r\n"))
+    with pytest.raises(ValueError, match="does not match wheel"):
+        smoke.inspect_runtime(wheel)
+    original.write_bytes(payload)
+    smoke.inspect_runtime(wheel)
 
 
 def test_editable_source_and_wheel_mismatches_are_rejected(
