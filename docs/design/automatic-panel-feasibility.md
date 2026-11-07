@@ -343,3 +343,32 @@ The narrow correction uses the unchanged internal allowlist; a regression now
 executes real routing rather than mocking the router. No watchdog or retry changes
 accompany it. Ordinary CI, CodeQL and both original browser raw sequences pass.
 The new matrix references and complete outer lifecycle cleanup remain unqualified.
+
+## Sixteenth experiment and independent conversation reference
+
+Native run [42360697287](https://github.com/mikejhill/verdiclip/actions/runs/42360697287)
+at `831ed63df11b0d0f89758c51f920a26cdf849099` restores ordinary CI and
+CodeQL success. The conversation/light case collects all seven independent
+reference tiles. Unchanged offline full-outer matching produces 320 by 1,823
+pixels. Independent comparison verifies all 543,004 body pixels and all 613,137
+overlapping tile comparisons exactly, including tile-edge rows and the complete
+301-column body. Full-width top and bottom endpoint appearances also match. No
+fractional rounding or edge exclusion is used for this 100% case. This is one
+owned fixture, not the complete product journey.
+
+The table/125% reference still rejects its rounded requested endpoint rather
+than claiming exact fractional coverage. Reference readiness and geometry work
+continue separately. The outer lifecycle witness now identifies an owned console
+host while alive, then observes the same pinned handle signaled with zero exit
+and the job empty about 11 ms later. A redundant postmortem image lookup fails.
+The next correction retains that already verified identity for the same handle,
+while still requiring fresh exit evidence. There is no process-name exemption.
+Initial identity failures and uncertain exit observations remain disqualifying.
+
+A separate owned-browser experiment compares bounded WM_MOUSEWHEEL scrolling with
+read-only UIA/native evidence. Native scroll messaging is not foreign-code
+injection. This diagnostic never moves the cursor, switches input methods or
+uses UIA-write restoration after an uncertain wheel action. Four fixed cases
+cover top/middle starts and interior/endpoint behavior; independent fixture state
+audits ancestor, sibling and horizontal preservation. Its native results are
+pending and do not authorize a product input strategy.

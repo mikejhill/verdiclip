@@ -357,3 +357,63 @@ def test_image_error_preserves_live_or_exited_partial_witness(
     ]
     assert calls == ["wait", "exit", "image", "GetLastError", "close"]
     assert not observer.handles
+
+
+def test_verified_identity_survives_same_handle_exit_without_image_requery() -> None:
+    """An already verified executable need not be rediscovered after process exit."""
+    job = Mock()
+    observer = supervisor.ResidualObserver(job)
+    observer.handles = {77: 88}
+    job.api.WaitForSingleObject.side_effect = [supervisor.WAIT_TIMEOUT, 0]
+    job.api.GetExitCodeProcess.return_value = True
+
+    def image(_handle: int, _flags: int, buffer: object, _size: object) -> bool:
+        buffer.value = r"C:\fixture.exe"  # ty: ignore[unresolved-attribute]
+        return True
+
+    job.api.QueryFullProcessImageNameW.side_effect = image
+    first = observer.snapshot(77)
+    job.api.QueryFullProcessImageNameW.side_effect = AssertionError("postmortem query")
+    final = observer.snapshot(77)
+    assert first["exited"] is False
+    assert final["exited"] is True
+    assert final["image"] == first["image"]
+    assert final["image_source"] == "verified-same-pinned-handle"
+    assert final["exit_code"] == 0
+    job.api.QueryFullProcessImageNameW.assert_called_once()
+    assert observer.close() == []
+    assert observer.identities == {}
+
+
+def test_cached_identity_cannot_cross_replaced_handle() -> None:
+    """A PID match alone never permits using an old executable witness."""
+    job = Mock()
+    observer = supervisor.ResidualObserver(job)
+    observer.handles = {77: 99}
+    observer.identities = {77: (88, "old.exe")}
+    with pytest.raises(RuntimeError, match="handle changed"):
+        observer.snapshot(77)
+    job.api.WaitForSingleObject.assert_not_called()
+    observer.close()
+
+
+def test_cached_identity_does_not_hide_exit_query_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Retained image identity never substitutes for actual retirement evidence."""
+    job = Mock()
+    observer = supervisor.ResidualObserver(job)
+    observer.handles = {77: 88}
+    observer.identities = {77: (88, "owned.exe")}
+    job.api.WaitForSingleObject.return_value = 0
+    job.api.GetExitCodeProcess.return_value = False
+    monkeypatch.setattr(supervisor.ctypes, "get_last_error", lambda: 5, raising=False)
+    with pytest.raises(supervisor.ResidualInspectionError) as caught:
+        observer.snapshot(77)
+    assert caught.value.witness["image"] == "owned.exe"
+    assert caught.value.witness["error"] == {
+        "operation": "GetExitCodeProcess",
+        "winerror": 5,
+    }
+    job.api.QueryFullProcessImageNameW.assert_not_called()
+    observer.close()

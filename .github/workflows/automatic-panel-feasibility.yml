@@ -300,3 +300,62 @@ jobs:
             receipts/**/reference/*.png
           if-no-files-found: error
           retention-days: 14
+
+  browser-wheel:
+    if: >-
+      github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
+      github.head_ref == 'feature/automatic-panel-capture' &&
+      github.event.pull_request.draft == true
+    name: Owned browser wheel / ${{ matrix.initial }} / ${{ matrix.mode }}
+    runs-on: windows-2025
+    timeout-minutes: 6
+    strategy:
+      fail-fast: false
+      matrix:
+        initial: [top, middle]
+        mode: [interior, endpoint]
+    env:
+      PYTHONUTF8: "1"
+      QUALIFICATION_HEAD: ${{ github.event.pull_request.head.sha }}
+      WHEEL_INITIAL: ${{ matrix.initial }}
+      WHEEL_MODE: ${{ matrix.mode }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: "false"
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          enable-cache: false
+          python-version: "3.13"
+      - name: Locked wheel experiment dependencies
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          uv sync --locked
+          exit $LASTEXITCODE
+      - name: One guarded wheel attempt, no retries
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          & .\.venv\Scripts\python.exe -m scripts.panel_wheel_feasibility --initial $env:WHEEL_INITIAL --mode $env:WHEEL_MODE --output "receipts/wheel-$env:WHEEL_INITIAL-$env:WHEEL_MODE"
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: ${{ !cancelled() }}
+        with:
+          name: owned-browser-wheel-${{ matrix.initial }}-${{ matrix.mode }}
+          path: |
+            scripts/panel_wheel_probe.py
+            scripts/panel_wheel_feasibility.py
+            receipts/**/owned-wheel.html
+            receipts/**/receipt.json
+            receipts/**/fixture.json
+            receipts/**/states/*.json
+            receipts/**/probe/*.json
+            receipts/**/probe/*.jsonl
+          if-no-files-found: error
+          retention-days: 14

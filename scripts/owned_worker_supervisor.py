@@ -44,6 +44,7 @@ class ResidualObserver:
         self.job = job
         self.api = job.api
         self.handles: dict[int, int] = {}
+        self.identities: dict[int, tuple[int, str]] = {}
         for name, arguments, result in (
             (
                 "OpenProcess",
@@ -88,7 +89,13 @@ class ResidualObserver:
     def snapshot(self, pid: int) -> dict[str, object]:
         """Read exit evidence first; never lose it when a later image query fails."""
         handle = self.handles[pid]
-        witness: dict[str, object] = {"pid": pid, "image": None}
+        identity = self.identities.get(pid)
+        if identity is not None and identity[0] != handle:
+            raise RuntimeError("Residual identity handle changed")
+        witness: dict[str, object] = {
+            "pid": pid,
+            "image": identity[1] if identity is not None else None,
+        }
         wait = self.api.WaitForSingleObject(handle, 0)
         if wait not in (0, WAIT_TIMEOUT):
             raise ResidualInspectionError(
@@ -101,12 +108,18 @@ class ResidualObserver:
         witness.update(
             raw_exit_code=code.value, exit_code=code.value if wait == 0 else None
         )
+        if wait == 0 and identity is not None:
+            witness["image_source"] = "verified-same-pinned-handle"
+            return witness
         size = wintypes.DWORD(IMAGE_CHARS)
         image = ctypes.create_unicode_buffer(IMAGE_CHARS)
         if not self.api.QueryFullProcessImageNameW(
             handle, 0, image, ctypes.byref(size)
         ):
             raise ResidualInspectionError("QueryFullProcessImageNameW", witness)
+        if identity is not None and identity[1] != image.value:
+            raise RuntimeError("Residual kernel identity changed")
+        self.identities.setdefault(pid, (handle, image.value))
         witness["image"] = image.value
         return witness
 
@@ -120,6 +133,7 @@ class ResidualObserver:
             except Exception as error:  # noqa: BLE001 - attempt every retained handle
                 errors.append(repr(error))
         self.handles.clear()
+        self.identities.clear()
         return errors
 
 
