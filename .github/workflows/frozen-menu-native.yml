@@ -92,6 +92,7 @@ jobs:
           $failures = @()
           $scenarios = @('owned-drag', 'foreign-drag', 'foreign-hmenu', 'owned-escape', 'foreign-escape', 'tray-command', 'owned-window', 'owned-fullscreen', 'owned-repeat', 'owned-error')
           foreach ($scenario in $scenarios) {
+            $env:QUALIFICATION_RUN_NONCE = [guid]::NewGuid().ToString('N')
             $env:QUALIFICATION_INPUT_LEDGER = Join-Path $PWD "receipts/$scenario.input.json"
             $log = Join-Path $PWD "receipts/$scenario.log"
             $errorLog = Join-Path $PWD "receipts/$scenario.stderr.log"
@@ -105,7 +106,7 @@ jobs:
             if ($timedOut -or $process.ExitCode -ne 0) { $failures += $scenario }
             $cleanupLog = Join-Path $PWD "receipts/$scenario.cleanup.log"
             $cleanupError = Join-Path $PWD "receipts/$scenario.cleanup.stderr.log"
-            $cleanup = Start-Process -FilePath $python -ArgumentList @('-m', 'scripts.frozen_menu_input', '--release-ledger', $env:QUALIFICATION_INPUT_LEDGER, $process.Id) -NoNewWindow -PassThru -RedirectStandardOutput $cleanupLog -RedirectStandardError $cleanupError
+            $cleanup = Start-Process -FilePath $python -ArgumentList @('-m', 'scripts.frozen_menu_input', '--release-ledger', $env:QUALIFICATION_INPUT_LEDGER, $env:QUALIFICATION_RUN_NONCE, $process.Id) -NoNewWindow -PassThru -RedirectStandardOutput $cleanupLog -RedirectStandardError $cleanupError
             if (-not $cleanup.WaitForExit(10000)) {
               $cleanup.Kill($true)
               $cleanup.WaitForExit()

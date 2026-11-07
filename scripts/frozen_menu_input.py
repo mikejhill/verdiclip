@@ -131,10 +131,17 @@ class HotkeyObservation(QAbstractNativeEventFilter):
         return False, 0
 
 
+def valid_case_nonce(value: str) -> bool:
+    """Require the supervisor's exact opaque 128-bit hexadecimal case identity."""
+    return len(value) == 32 and all(  # noqa: PLR2004 - UUID hex width
+        character in "0123456789abcdef" for character in value
+    )
+
+
 class OwnedInput:
     """SendInput only while the foreground belongs to the disposable fixture."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, initialize_ledger: bool = True) -> None:
         self.api = ctypes.WinDLL("user32", use_last_error=True)
         self.api.SendInput.argtypes = (
             w.UINT,
@@ -155,6 +162,9 @@ class OwnedInput:
         self.mouse_down = False
         path = os.environ.get("QUALIFICATION_INPUT_LEDGER")
         self.ledger = Path(path) if path is not None else None
+        self.nonce = os.environ.get("QUALIFICATION_RUN_NONCE", "")
+        if initialize_ledger:
+            self._save_ledger()
 
     def process(self, hwnd: int) -> int:
         """Resolve an explicitly known owned HWND, never enumerate applications."""
@@ -171,11 +181,16 @@ class OwnedInput:
     def _save_ledger(self) -> None:
         """Persist owned releases for the independent timeout supervisor."""
         if self.ledger is not None:
+            if not valid_case_nonce(self.nonce):
+                raise RuntimeError(
+                    "Valid supervisor case identity required before input"
+                )
             pending = self.ledger.with_suffix(".pending")
             pending.write_text(
                 json.dumps(
                     {
                         "pid": os.getpid(),
+                        "nonce": self.nonce,
                         "keys": sorted(self.down),
                         "mouse_down": self.mouse_down,
                     }
@@ -192,6 +207,8 @@ class OwnedInput:
         mark_key: int | None = None,
         mark_button: bool = False,
     ) -> None:
+        if self.ledger is not None and not valid_case_nonce(self.nonce):
+            raise RuntimeError("Valid supervisor case identity required before input")
         if not cleanup and not self.foreground_owned():
             raise RuntimeError("Foreground is not an owned qualification window")
         # A rejected ownership check never acquires a key/button release lease.
@@ -287,7 +304,7 @@ class OwnedInput:
         app.installNativeEventFilter(observer)
 
 
-def release_timeout_ledger(path: Path, expected_pid: int) -> None:
+def release_timeout_ledger(path: Path, expected_nonce: str, launcher_pid: int) -> None:
     """After the supervisor reaps a hung child, release only its recorded input."""
     if (
         sys.platform != "win32"
@@ -295,21 +312,39 @@ def release_timeout_ledger(path: Path, expected_pid: int) -> None:
         or os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted"
     ):
         raise RuntimeError("Disposable hosted Windows required for timeout cleanup")
-    if not path.exists():
-        sys.stdout.write("NATIVE_INPUT_CLEANUP=no submitted input ledger\n")
-        return
+    if not valid_case_nonce(expected_nonce) or not path.exists():
+        raise RuntimeError("Owned input ledger or supervisor identity unavailable")
     ledger = json.loads(path.read_text(encoding="utf-8"))
+    producer_pid = ledger.get("pid") if isinstance(ledger, dict) else None
+    sys.stdout.write(
+        "NATIVE_INPUT_IDENTITY="
+        + json.dumps(
+            {
+                "launcher_pid": launcher_pid,
+                "producer_pid": producer_pid if type(producer_pid) is int else None,
+                "case_token_matches": isinstance(ledger, dict)
+                and ledger.get("nonce") == expected_nonce,
+            }
+        )
+        + "\n"
+    )
     allowed = {0x11, 0x10, 0x0D, 0x1B, *range(0x81, 0x85)}
     if (
         not isinstance(ledger, dict)
-        or ledger.get("pid") != expected_pid
+        or set(ledger) != {"pid", "nonce", "keys", "mouse_down"}
+        or ledger.get("nonce") != expected_nonce
+        or type(producer_pid) is not int
+        or producer_pid <= 0
+        or launcher_pid <= 0
         or not isinstance(ledger.get("keys"), list)
         or any(type(key) is not int or key not in allowed for key in ledger["keys"])
+        or len(set(ledger["keys"])) != len(ledger["keys"])
         or type(ledger.get("mouse_down")) is not bool
     ):
         raise RuntimeError("Invalid owned timeout input ledger")
-    owner = OwnedInput()
+    owner = OwnedInput(initialize_ledger=False)
     owner.ledger = path
+    owner.nonce = expected_nonce
     owner.down = set(ledger["keys"])
     owner.mouse_down = ledger["mouse_down"]
     owner.release()
@@ -317,6 +352,6 @@ def release_timeout_ledger(path: Path, expected_pid: int) -> None:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 4 or sys.argv[1] != "--release-ledger":  # noqa: PLR2004 - CLI arity
-        raise SystemExit("Expected --release-ledger PATH OWNED_PID")
-    release_timeout_ledger(Path(sys.argv[2]), int(sys.argv[3]))
+    if len(sys.argv) != 5 or sys.argv[1] != "--release-ledger":  # noqa: PLR2004 - CLI arity
+        raise SystemExit("Expected --release-ledger PATH CASE_NONCE LAUNCHER_PID")
+    release_timeout_ledger(Path(sys.argv[2]), sys.argv[3], int(sys.argv[4]))

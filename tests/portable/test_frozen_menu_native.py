@@ -246,6 +246,7 @@ def test_input_ledger_precedes_submission_and_clears_after_release(
     """A killed native call leaves only its owned pending release in durable state."""
     path = tmp_path / "input.json"
     monkeypatch.setenv("QUALIFICATION_INPUT_LEDGER", str(path))
+    monkeypatch.setenv("QUALIFICATION_RUN_NONCE", "a" * 32)
     api = Mock()
     observations: list[dict[str, object]] = []
 
@@ -275,6 +276,7 @@ def test_rejected_input_does_not_create_timeout_release_ledger(
     """An unrelated foreground receives neither a new input nor a cleanup keyup."""
     path = tmp_path / "input.json"
     monkeypatch.setenv("QUALIFICATION_INPUT_LEDGER", str(path))
+    monkeypatch.setenv("QUALIFICATION_RUN_NONCE", "a" * 32)
     api = Mock()
     monkeypatch.setattr(
         input_module.ctypes, "WinDLL", Mock(return_value=api), raising=False
@@ -285,7 +287,7 @@ def test_rejected_input_does_not_create_timeout_release_ledger(
         owner.button()
     owner.release()
     api.SendInput.assert_not_called()
-    assert not path.exists()
+    assert json.loads(path.read_text(encoding="utf-8"))["keys"] == []
 
 
 @pytest.mark.parametrize("valid", [True, False])
@@ -296,7 +298,12 @@ def test_timeout_cleanup_only_accepts_recorded_owned_keys(
     path = tmp_path / "input.json"
     path.write_text(
         json.dumps(
-            {"pid": 1234, "keys": [0x11] if valid else [0x41], "mouse_down": True}
+            {
+                "pid": 1234,
+                "nonce": "a" * 32,
+                "keys": [0x11] if valid else [0x41],
+                "mouse_down": True,
+            }
         ),
         encoding="utf-8",
     )
@@ -309,13 +316,13 @@ def test_timeout_cleanup_only_accepts_recorded_owned_keys(
     factory = Mock(return_value=owner)
     monkeypatch.setattr(input_module, "OwnedInput", factory)
     if valid:
-        input_module.release_timeout_ledger(path, 1234)
+        input_module.release_timeout_ledger(path, "a" * 32, 5678)
         assert owner.down == {0x11}
         assert owner.mouse_down is True
         owner.release.assert_called_once()
     else:
         with pytest.raises(RuntimeError, match="Invalid owned"):
-            input_module.release_timeout_ledger(path, 1234)
+            input_module.release_timeout_ledger(path, "a" * 32, 5678)
         factory.assert_not_called()
 
 
@@ -377,3 +384,123 @@ def test_native_probe_failure_is_never_readiness_retry(
         native.ready_reference(native.Rect(0, 0, 224, 84), "owned-drag", 5, {})
     probe.freeze.assert_called_once()
     context.__exit__.assert_called_once()
+
+
+@pytest.mark.parametrize("control", [KeyboardInterrupt("stop"), SystemExit(7)])
+def test_cleanup_continues_and_preserves_explicit_control_exit(
+    control: BaseException,
+) -> None:
+    """An interrupt survives ordinary cleanup failures and does not skip retirement."""
+    completed: list[str] = []
+    ordinary = RuntimeError("cleanup error")
+    primary = ValueError("original action failed")
+
+    def fail() -> None:
+        raise ordinary
+
+    def interrupt() -> None:
+        raise control
+
+    def retire() -> None:
+        completed.append("last owner retired")
+
+    errors = native.retire_callbacks([fail, interrupt, retire])
+    assert errors == [ordinary, control]
+    assert completed == ["last owner retired"]
+    with pytest.raises(type(control)) as caught:
+        native.propagate_cleanup(errors, primary)
+    assert caught.value is control
+    assert isinstance(caught.value.__cause__, BaseExceptionGroup)
+    assert caught.value.__cause__.exceptions == (primary, ordinary)
+
+
+def test_cleanup_preserves_original_error_and_each_later_cause() -> None:
+    """Cleanup must not replace the original action failure or suppress its causes."""
+    primary = RuntimeError("original")
+    secondary = ValueError("cleanup")
+    with pytest.raises(RuntimeError, match="original") as caught:
+        native.propagate_cleanup([secondary], primary)
+    assert caught.value is primary
+    assert isinstance(caught.value.__cause__, ExceptionGroup)
+    assert caught.value.__cause__.exceptions == (secondary,)
+    native.propagate_cleanup([], primary)
+
+
+@pytest.mark.parametrize("nonce", ["", "stale", "x" * 32])
+def test_missing_or_invalid_case_nonce_blocks_input_initialization(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, nonce: str
+) -> None:
+    """Malformed case identity is rejected before any native submission."""
+    monkeypatch.setenv("QUALIFICATION_INPUT_LEDGER", str(tmp_path / "input.json"))
+    monkeypatch.setenv("QUALIFICATION_RUN_NONCE", nonce)
+    api = Mock()
+    monkeypatch.setattr(
+        input_module.ctypes, "WinDLL", Mock(return_value=api), raising=False
+    )
+    with pytest.raises(RuntimeError, match="identity required before input"):
+        OwnedInput()
+    api.SendInput.assert_not_called()
+
+
+@pytest.mark.parametrize("ledger_nonce", [None, "b" * 32])
+def test_supervisor_rejects_missing_or_wrong_case_nonce(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, ledger_nonce: str | None
+) -> None:
+    """A stale case ledger cannot authorize any release in this observation."""
+    path = tmp_path / "input.json"
+    if ledger_nonce is not None:
+        path.write_text(
+            json.dumps(
+                {"pid": 1234, "nonce": ledger_nonce, "keys": [0x11], "mouse_down": True}
+            ),
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(
+        input_module, "sys", SimpleNamespace(platform="win32", stdout=Mock())
+    )
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("RUNNER_ENVIRONMENT", "github-hosted")
+    factory = Mock()
+    monkeypatch.setattr(input_module, "OwnedInput", factory)
+    with pytest.raises(RuntimeError, match=r"unavailable|Invalid owned"):
+        input_module.release_timeout_ledger(path, "a" * 32, 5678)
+    factory.assert_not_called()
+
+
+@pytest.mark.parametrize("release_succeeds", [True, False])
+def test_cleanup_adopts_pending_ledger_without_clearing_it_first(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, release_succeeds: bool
+) -> None:
+    """A helper killed during construction must leave all pending releases durable."""
+    path = tmp_path / "input.json"
+    pending = {"pid": 1234, "nonce": "a" * 32, "keys": [0x11], "mouse_down": True}
+    path.write_text(json.dumps(pending), encoding="utf-8")
+    monkeypatch.setenv("QUALIFICATION_INPUT_LEDGER", str(path))
+    monkeypatch.delenv("QUALIFICATION_RUN_NONCE", raising=False)
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("RUNNER_ENVIRONMENT", "github-hosted")
+    monkeypatch.setattr(
+        input_module, "sys", SimpleNamespace(platform="win32", stdout=Mock())
+    )
+    api = Mock()
+    api.SendInput.return_value = 1 if release_succeeds else 0
+    monkeypatch.setattr(
+        input_module.ctypes, "WinDLL", Mock(return_value=api), raising=False
+    )
+    monkeypatch.setattr(input_module.ctypes, "get_last_error", lambda: 5, raising=False)
+
+    def construct(*, initialize_ledger: bool = True) -> OwnedInput:
+        owner = OwnedInput(initialize_ledger=initialize_ledger)
+        assert json.loads(path.read_text(encoding="utf-8")) == pending
+        return owner
+
+    monkeypatch.setattr(input_module, "OwnedInput", construct)
+    if release_succeeds:
+        input_module.release_timeout_ledger(path, "a" * 32, 5678)
+    else:
+        with pytest.raises(ExceptionGroup, match="Owned input release failed"):
+            input_module.release_timeout_ledger(path, "a" * 32, 5678)
+    after = json.loads(path.read_text(encoding="utf-8"))
+    assert after["nonce"] == "a" * 32
+    assert after["keys"] == ([] if release_succeeds else [0x11])
+    assert after["mouse_down"] is not release_succeeds

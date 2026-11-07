@@ -77,7 +77,12 @@ Input is submitted only while foreground PID belongs to this process or its
 verified child fixture. Partial input errors still release all submitted keys and
 buttons. Cleanup independently closes the controller, unregisters shortcuts,
 removes observers, reaps the exact child, stops fixture timers and releases screen
-resources. An atomic ledger precedes each native submission. After every observation exits
+resources. An initially empty atomic ledger is created before setup, then updated before
+each native submission. A fresh supervisor-issued per-case nonce binds the ledger
+to the observation, including Python interpreter children of a Windows virtual-
+environment launcher. A missing/stale token or ledger fails closed. Launcher PID
+and actual producer PID are reported separately; the token does not replace the
+requirement to reap the owned process tree. After every observation exits
 and is reaped, an independent cleanup process has ten seconds to release only its
 recorded test keys/button. A hard-timeout or ordinary failed observation remains
 failed even if this cleanup succeeds. Cleanup failure/hang has an explicit receipt
@@ -103,3 +108,27 @@ menu implementation. Those limits must remain explicit in release assessment.
 Portable tests in `tests/portable/test_frozen_menu_native.py` reject corrupted
 pixels, malformed geometry, late success, partial-input leaks, ownership loss and
 child-start cleanup failures. They validate the harness, not native Windows behavior.
+
+
+## First native attempt and harness correction
+
+The first exact-head attempt (`c239216e517c731826f5f46b3592e21ab6d0c5c3`,
+[run 42341304572](https://github.com/mikejhill/verdiclip/actions/runs/42341304572))
+completed only the application-owned drag case across all six source/runtime jobs.
+Both candidate observations preserved the exact menu patch; both historical
+versions lost it on both Qt runtimes. All six observed real
+`windows_generic_MSG` with a null HWND, exactly one frame and delivered image,
+correct native pointer coordinates, focused editor and internal cleanup.
+
+All jobs then stopped at the independent cleanup helper's ledger-identity check.
+No foreign-menu, tray, metadata or cancellation/failure verdict was obtained.
+The first logs remain preserved; the overall run is failed, not qualified.
+
+The original helper assumed the process ID returned by PowerShell for the virtual-
+environment launcher equaled Python's `os.getpid()`. That equality is not a valid
+Windows architectural requirement: [CPython's venv launcher](https://github.com/python/cpython/blob/3.13/PC/venvlauncher.c)
+creates and waits for a child runtime process. The original run did not log both
+IDs, so it does not by itself prove their specific values differed. The correction
+uses the supervisor-issued nonce, retains a strict positive producer PID and key/
+button schema, reports both PID values, and preserves independent process-tree
+retirement and fail-closed input gating. It changes only qualification infrastructure.

@@ -16,8 +16,9 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 from typing import cast, override
 
@@ -73,6 +74,8 @@ def attest() -> dict[str, str]:
         raise RuntimeError("GitHub-hosted disposable runner identity required")
     if not bool(os.environ.get("QUALIFICATION_INPUT_LEDGER")):
         raise RuntimeError("Timeout input retirement ledger required")
+    if not bool(os.environ.get("QUALIFICATION_RUN_NONCE")):
+        raise RuntimeError("Supervisor case identity required")
     if qt_version != os.environ["QT_VERSION"]:
         raise RuntimeError("Unexpected Qt runtime")
     git = shutil.which("git")
@@ -330,6 +333,51 @@ def validate_outcome(
             raise RuntimeError("Captured mode does not match requested action")
 
 
+def retire_callbacks(callbacks: Sequence[Callable[[], None]]) -> list[BaseException]:
+    """Finish cleanup despite ordinary errors or explicit control exits."""
+    failures: list[BaseException] = []
+    for callback in callbacks:
+        try:
+            callback()
+        except Exception as error:  # noqa: BLE001 - propagate_cleanup retains each cause
+            failures.append(error)
+        except (
+            KeyboardInterrupt,
+            SystemExit,
+            GeneratorExit,
+            BaseExceptionGroup,
+        ) as control:
+            failures.append(control)
+    return failures
+
+
+def propagate_cleanup(
+    errors: Sequence[BaseException], primary: BaseException | None
+) -> None:
+    """Re-raise control exits first, otherwise preserve the exact original failure."""
+    if not errors:
+        return
+    candidates = ([primary] if primary is not None else []) + list(errors)
+    controls = [error for error in candidates if not isinstance(error, Exception)]
+    chosen = controls[0] if controls else primary
+    if chosen is not None:
+        others = [error for error in candidates if error is not chosen]
+        if others:
+            raise chosen from BaseExceptionGroup("Other owned cleanup failures", others)
+        raise chosen
+    raise BaseExceptionGroup("Owned qualification cleanup failed", list(errors))
+
+
+def verify_selection_retired(
+    controller: AppController, input_owner: OwnedInput, handles: set[int]
+) -> None:
+    """Fail if any owned selection or native overlay remains after cleanup."""
+    if controller.capture.is_selecting or any(
+        input_owner.api.IsWindow(handle) for handle in handles
+    ):
+        raise RuntimeError("Owned native overlays were not retired")
+
+
 def observe(scenario: str) -> dict[str, object]:  # noqa: C901, PLR0915, PLR0912 - explicit bounded native phases
     """Make exactly one test observation; no retry or alternate dispatch path."""
     if scenario not in SCENARIOS:
@@ -366,6 +414,13 @@ def observe(scenario: str) -> dict[str, object]:  # noqa: C901, PLR0915, PLR0912
     temporary = tempfile.TemporaryDirectory(prefix="verdiclip-menu-")
     failure: BaseException | None = None
     overlay_handles: set[int] = set()
+    callbacks: list[Callable[[], None]] = [
+        input_owner.release,
+        keys.close,
+        partial(app.removeNativeEventFilter, observer),
+        source.close,
+        temporary.cleanup,
+    ]
     try:
         directory = Path(temporary.name)
         setup_started = time.perf_counter()
@@ -374,6 +429,7 @@ def observe(scenario: str) -> dict[str, object]:  # noqa: C901, PLR0915, PLR0912
             foreign=scenario.startswith("foreign"),
             native=scenario == "foreign-hmenu",
         )
+        callbacks.insert(1, owner.close)
         wait_for(
             lambda: (
                 owner.state().get("exposed") is True
@@ -393,6 +449,10 @@ def observe(scenario: str) -> dict[str, object]:  # noqa: C901, PLR0915, PLR0912
         windows = OwnedWindows(background)
         expected_window = windows.foreground()
         controller = make_controller(directory, source, windows, keys)
+        callbacks.insert(1, partial(close_controller, controller))
+        callbacks.append(
+            partial(verify_selection_retired, controller, input_owner, overlay_handles)
+        )
         controller.capture.captured.connect(captures.append)
         controller.capture.failed.connect(errors.append)
         for index, action in enumerate(("region", "window", "fullscreen", "repeat")):
@@ -599,34 +659,10 @@ def observe(scenario: str) -> dict[str, object]:  # noqa: C901, PLR0915, PLR0912
     else:
         return receipt
     finally:
-        callbacks = [input_owner.release]
-        if controller is not None:
-            callbacks.append(lambda: close_controller(controller))
         if owner is not None:
             receipt["first_fixture_state"] = owner.first
             receipt["last_fixture_state"] = owner.last
-            callbacks.append(owner.close)
-        callbacks.extend(
-            (
-                keys.close,
-                lambda: app.removeNativeEventFilter(observer),
-                source.close,
-                temporary.cleanup,
-            )
-        )
-        cleanup_errors: list[BaseException] = []
-        for callback in callbacks:
-            try:
-                callback()
-            except BaseException as error:  # noqa: BLE001 - re-raised after all retirement
-                cleanup_errors.append(error)
-        if controller is not None and (
-            controller.capture.is_selecting
-            or any(input_owner.api.IsWindow(handle) for handle in overlay_handles)
-        ):
-            cleanup_errors.append(
-                RuntimeError("Owned native overlays were not retired")
-            )
+        cleanup_errors = retire_callbacks(callbacks)
         receipt.update(
             cleanup_confirmed=not cleanup_errors
             and not input_owner.down
@@ -644,13 +680,7 @@ def observe(scenario: str) -> dict[str, object]:  # noqa: C901, PLR0915, PLR0912
         sys.stdout.write(
             "FROZEN_MENU_NATIVE=" + json.dumps(receipt, sort_keys=True) + "\n"
         )
-        if cleanup_errors:
-            group = BaseExceptionGroup(
-                "Owned qualification cleanup failed", cleanup_errors
-            )
-            if failure is not None:
-                raise failure from group
-            raise group
+        propagate_cleanup(cleanup_errors, failure)
 
 
 class MssScreenSourceContext(MssScreenSource):
