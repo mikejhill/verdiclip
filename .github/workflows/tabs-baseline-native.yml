@@ -53,6 +53,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Original capture journey and timing controls
         timeout-minutes: 3
+        env:
+          QT_QPA_PLATFORM: offscreen
         shell: pwsh
         run: |
           uv run --no-sync pytest tests/ux/test_capture_journeys.py --no-cov -p no:randomly -q
