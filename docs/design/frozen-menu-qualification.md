@@ -88,7 +88,13 @@ recorded test keys/button. A hard-timeout or ordinary failed observation remains
 failed even if this cleanup succeeds. Cleanup failure/hang has an explicit receipt
 and prevents any later input test from running. Outstanding selection/native
 overlay handles or cleanup errors fail.
-The first action error is retained even if cleanup also fails.
+The first action error is retained even if cleanup also fails. Foreign fixture
+state travels as flushed JSON lines through its already-owned QProcess stdout,
+with partial records buffered and complete records parsed in order. Malformed
+records, read errors, a buffer exceeding 64 KiB or an unexpected child exit fail
+immediately. No file-read sharing errors are suppressed or retried. First/last
+state, complete-record count and pending-byte count are retained; stderr remains
+a separate diagnostic channel. Existing setup/action deadlines are unchanged.
 
 ## Privacy and limits
 
@@ -132,3 +138,25 @@ IDs, so it does not by itself prove their specific values differed. The correcti
 uses the supervisor-issued nonce, retains a strict positive producer PID and key/
 button schema, reports both PID values, and preserves independent process-tree
 retirement and fail-closed input gating. It changes only qualification infrastructure.
+
+## Corrected supervisor attempt and fixture transport correction
+
+The next exact-head attempt (`a2bed961a710bb8d2c149ae76598184ff1d6a089`,
+[run 42342128321](https://github.com/mikejhill/verdiclip/actions/runs/42342128321))
+completed all 60 fixed observations with 59 passing. Both candidate runtime jobs
+passed all ten cases and all 18 existing native popup/tab tests. Both 0.12.1 jobs
+and 0.13.1 with Qt 6.11.2 passed all ten cases. The candidate preserved owned-menu
+patches in region/window/fullscreen/repeat where both historical versions lost
+them. Foreign Qt and HMENU patches survived on all three sources, and initiating
+tray-command patches were excluded. All 54 registered chords were observed as
+`windows_generic_MSG`; all 60 independent input-cleanup checks succeeded, with
+distinct launcher and producer PIDs and matching per-case identities.
+
+The sole failed observation was 0.13.1 / Qt 6.12.0 foreign Escape: reading the
+fixture's replaced JSON file raised `PermissionError` while waiting for menu
+closure, before Escape was submitted. Cleanup succeeded, and remaining fixed
+cases ran. That observation provides no cancellation verdict, and the overall
+run remains failed. Its original logs are preserved without a same-head rerun.
+The correction replaces only the fixture's file transport with owned QProcess
+stdout records. It does not catch that permission error, relax any assertion or
+change product source. Fresh exact-head native qualification is still required.

@@ -145,8 +145,10 @@ class OwnedWindows:
 class FixtureOwner:
     """Own either an in-process popup or one bounded disposable child process."""
 
-    def __init__(self, path: Path, *, foreign: bool, native: bool = False) -> None:
-        self.path = path
+    def __init__(self, *, foreign: bool, native: bool = False) -> None:
+        self.pending = bytearray()
+        self.remote: dict[str, object] = {"visible": False, "exposed": False}
+        self.records = 0
         self.local = None if foreign else MenuFixture()
         self.process: QProcess | None = None
         self.first: dict[str, object] | None = None
@@ -155,8 +157,7 @@ class FixtureOwner:
             self.process = QProcess()
             self.process.setProgram(sys.executable)
             self.process.setArguments(
-                ["-m", "scripts.frozen_menu_fixture", str(path)]
-                + (["--hmenu"] if native else [])
+                ["-m", "scripts.frozen_menu_fixture"] + (["--hmenu"] if native else [])
             )
             self.process.start()
             if not self.process.waitForStarted(5000):
@@ -174,16 +175,31 @@ class FixtureOwner:
             self.local.show()
 
     def state(self) -> dict[str, object]:
-        """Read an atomic fixture receipt, retaining first and last setup state."""
+        """Read complete child stdout records, retaining first and last state."""
         if self.local is not None:
             state = self.local.state()
-        elif self.path.exists():
-            decoded = json.loads(self.path.read_text(encoding="utf-8"))
-            if not isinstance(decoded, dict):
-                raise RuntimeError("Invalid owned fixture receipt")
-            state = cast("dict[str, object]", decoded)
         else:
-            state = {"visible": False, "exposed": False}
+            if self.process is None:
+                raise RuntimeError("Missing owned fixture process")
+            self.pending.extend(self.process.readAllStandardOutput().data())
+            if len(self.pending) > 65536:  # noqa: PLR2004 - bounded fixture transport
+                raise RuntimeError("Owned fixture stdout exceeded 64 KiB")
+            while b"\n" in self.pending:
+                line, _, remaining = self.pending.partition(b"\n")
+                decoded = json.loads(line)
+                if not isinstance(decoded, dict):
+                    raise TypeError("Invalid owned fixture receipt")
+                self.remote = cast("dict[str, object]", decoded)
+                self.records += 1
+                self.pending = remaining
+            if self.process.state() == QProcess.ProcessState.NotRunning:
+                diagnostic = bytes(self.process.readAllStandardError().data())[
+                    :65536
+                ].decode("utf-8", errors="replace")
+                raise RuntimeError(
+                    f"Owned fixture exited before retirement: {diagnostic}"
+                )
+            state = self.remote
         self.first = state if self.first is None else self.first
         self.last = state
         return state
@@ -425,7 +441,6 @@ def observe(scenario: str) -> dict[str, object]:  # noqa: C901, PLR0915, PLR0912
         directory = Path(temporary.name)
         setup_started = time.perf_counter()
         owner = FixtureOwner(
-            directory / "fixture.json",
             foreign=scenario.startswith("foreign"),
             native=scenario == "foreign-hmenu",
         )
@@ -662,6 +677,8 @@ def observe(scenario: str) -> dict[str, object]:  # noqa: C901, PLR0915, PLR0912
         if owner is not None:
             receipt["first_fixture_state"] = owner.first
             receipt["last_fixture_state"] = owner.last
+            receipt["fixture_stdout_records"] = owner.records
+            receipt["fixture_pending_bytes"] = len(owner.pending)
         cleanup_errors = retire_callbacks(callbacks)
         receipt.update(
             cleanup_confirmed=not cleanup_errors

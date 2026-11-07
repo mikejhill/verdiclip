@@ -143,7 +143,7 @@ def test_late_success_is_failure_not_a_faster_second_observation(
 
 
 def test_child_start_failure_runs_bounded_owned_cleanup(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A failed setup still owns a potentially started process and must reap it."""
     process = Mock()
@@ -154,7 +154,7 @@ def test_child_start_failure_runs_bounded_owned_cleanup(
     factory.ProcessState = QProcess.ProcessState
     monkeypatch.setattr(native, "QProcess", factory)
     with pytest.raises(RuntimeError, match="failed to start"):
-        native.FixtureOwner(tmp_path / "receipt.json", foreign=True)
+        native.FixtureOwner(foreign=True)
     process.terminate.assert_called_once()
     process.kill.assert_called_once()
     assert process.waitForFinished.call_count == 2
@@ -219,7 +219,7 @@ def test_expected_fault_is_exact_and_never_hides_a_different_error() -> None:
 
 @pytest.mark.parametrize("started", [True, False])
 def test_already_stopped_child_is_reaped_without_termination(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, started: bool
+    monkeypatch: pytest.MonkeyPatch, *, started: bool
 ) -> None:
     """A confirmed stopped process is not a false cleanup failure."""
     process = Mock()
@@ -230,14 +230,153 @@ def test_already_stopped_child_is_reaped_without_termination(
     factory.ProcessState = QProcess.ProcessState
     monkeypatch.setattr(native, "QProcess", factory)
     if started:
-        fixture = native.FixtureOwner(tmp_path / "receipt.json", foreign=True)
+        fixture = native.FixtureOwner(foreign=True)
         fixture.close()
     else:
         with pytest.raises(RuntimeError, match="failed to start: owned setup failure"):
-            native.FixtureOwner(tmp_path / "receipt.json", foreign=True)
+            native.FixtureOwner(foreign=True)
     process.terminate.assert_not_called()
     process.kill.assert_not_called()
     process.waitForFinished.assert_not_called()
+
+
+@pytest.fixture
+def foreign_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[native.FixtureOwner, Mock]:
+    """Keep transport controls independent of a desktop or native input."""
+    process = Mock()
+    process.waitForStarted.return_value = True
+    process.state.return_value = QProcess.ProcessState.Running
+    factory = Mock(return_value=process)
+    factory.ProcessState = QProcess.ProcessState
+    monkeypatch.setattr(native, "QProcess", factory)
+    return native.FixtureOwner(foreign=True), process
+
+
+def test_fixture_stdout_waits_for_complete_records_and_keeps_latest_state(
+    foreign_transport: tuple[native.FixtureOwner, Mock],
+) -> None:
+    """A fragmented record is pending, and coalesced records remain ordered."""
+    owner, process = foreign_transport
+    process.readAllStandardOutput.side_effect = [
+        QByteArray(b'{"visible": true, "exposed":'),
+        QByteArray(b' true}\n{"visible": false, "exposed": false}\n{"vis'),
+        QByteArray(b'ible": true, "exposed": true}\n'),
+    ]
+    assert owner.state() == {"visible": False, "exposed": False}
+    assert owner.records == 0
+    assert owner.state() == {"visible": False, "exposed": False}
+    assert owner.records == 2
+    assert owner.pending == b'{"vis'
+    assert owner.state() == {"visible": True, "exposed": True}
+    assert owner.records == 3
+    assert owner.pending == b""
+    assert owner.first == {"visible": False, "exposed": False}
+    assert owner.last == {"visible": True, "exposed": True}
+    process.readAllStandardError.assert_not_called()
+
+
+def test_fixture_stdout_supports_windows_crlf_split_between_reads(
+    foreign_transport: tuple[native.FixtureOwner, Mock],
+) -> None:
+    """Windows text-mode newline translation cannot corrupt a split JSON line."""
+    owner, process = foreign_transport
+    process.readAllStandardOutput.side_effect = [
+        QByteArray(b'{"visible": true, "exposed": true}\r'),
+        QByteArray(b'\n{"visible": false, "exposed": false}\r\n'),
+    ]
+    assert owner.state() == {"visible": False, "exposed": False}
+    assert owner.records == 0
+    assert owner.state() == {"visible": False, "exposed": False}
+    assert owner.records == 2
+    assert owner.pending == b""
+
+
+@pytest.mark.parametrize("record", [b"not-json\n", b"[]\n", b"\xff\n"])
+def test_fixture_stdout_rejects_malformed_complete_record_immediately(
+    foreign_transport: tuple[native.FixtureOwner, Mock], record: bytes
+) -> None:
+    """Transport errors cannot become a readiness retry or successful state."""
+    owner, process = foreign_transport
+    process.readAllStandardOutput.return_value = QByteArray(record)
+    with pytest.raises((ValueError, TypeError)):
+        owner.state()
+    process.readAllStandardOutput.assert_called_once()
+    assert owner.records == 0
+    assert owner.first is None
+    assert owner.last is None
+
+
+def test_fixture_stdout_keeps_incomplete_or_missing_state_pending_until_deadline(
+    foreign_transport: tuple[native.FixtureOwner, Mock],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No complete visible state means the original wait budget still fails."""
+    owner, process = foreign_transport
+    process.readAllStandardOutput.return_value = QByteArray(b'{"visible":')
+    ticks = iter((0, 0.1, 6))
+    monkeypatch.setattr(
+        input_module,
+        "time",
+        SimpleNamespace(perf_counter=lambda: next(ticks), sleep=lambda _: None),
+    )
+    monkeypatch.setattr(
+        input_module, "QApplication", SimpleNamespace(processEvents=lambda: None)
+    )
+    with pytest.raises(TimeoutError, match=r"within 5\.0s"):
+        input_module.wait_for(lambda: owner.state().get("visible") is True, "setup")
+    assert owner.records == 0
+    assert owner.pending == b'{"visible":'
+
+
+def test_fixture_stdout_read_failure_and_excess_data_fail_without_retry(
+    foreign_transport: tuple[native.FixtureOwner, Mock],
+) -> None:
+    """Unexpected pipe failure is not hidden, and buffered bytes are bounded."""
+    owner, process = foreign_transport
+    error = PermissionError("owned transport failed")
+    process.readAllStandardOutput.side_effect = error
+    with pytest.raises(PermissionError, match="owned transport failed") as captured:
+        owner.state()
+    assert captured.value is error
+    process.readAllStandardOutput.assert_called_once()
+    process.readAllStandardOutput.side_effect = None
+    process.readAllStandardOutput.return_value = QByteArray(b"x" * 65537)
+    with pytest.raises(RuntimeError, match="64 KiB"):
+        owner.state()
+    assert owner.records == 0
+
+
+def test_fixture_early_exit_reports_separate_stderr_and_does_not_qualify(
+    foreign_transport: tuple[native.FixtureOwner, Mock],
+) -> None:
+    """Even a last valid receipt cannot hide a dead fixture or its diagnostics."""
+    owner, process = foreign_transport
+    process.readAllStandardOutput.return_value = QByteArray(b'{"visible": false}\n')
+    process.state.return_value = QProcess.ProcessState.NotRunning
+    process.readAllStandardError.return_value = QByteArray(b"owned child failed")
+    with pytest.raises(RuntimeError, match="before retirement: owned child failed"):
+        owner.state()
+    assert owner.records == 1
+    assert owner.last is None
+
+
+def test_fixture_publishes_only_complete_changed_json_lines(
+    qtbot: QtBot, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The child protocol contains no filenames, partial JSON or duplicate state."""
+    fixture = MenuFixture(publish_state=True)
+    qtbot.addWidget(fixture.background)
+    states = iter(({"visible": True}, {"visible": True}, {"visible": False}))
+    monkeypatch.setattr(fixture, "state", lambda: next(states))
+    try:
+        fixture.publish()
+        fixture.publish()
+        fixture.publish()
+        assert capsys.readouterr().out == '{"visible": true}\n{"visible": false}\n'
+    finally:
+        fixture.close()
 
 
 def test_input_ledger_precedes_submission_and_clears_after_release(

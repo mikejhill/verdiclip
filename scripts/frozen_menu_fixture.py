@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-from pathlib import Path
 from typing import Final, override
 
 from PySide6.QtCore import QPoint, Qt, QTimer
@@ -60,8 +59,8 @@ def physical_box(widget: QWidget) -> list[int]:
 class MenuFixture:
     """A full-screen owned backdrop and real popup in this process only."""
 
-    def __init__(self, receipt: Path | None = None, *, native: bool = False) -> None:
-        self.receipt = receipt
+    def __init__(self, *, publish_state: bool = False, native: bool = False) -> None:
+        self.publish_state = publish_state
         self.background = QWidget()
         self.background.setWindowTitle("Owned freeze-first menu fixture")
         self.background.setStyleSheet(f"background: {BACKGROUND};")
@@ -122,12 +121,11 @@ class MenuFixture:
         }
 
     def publish(self) -> None:
-        """Atomically replace an owned temporary receipt only on state change."""
+        """Flush complete JSON lines to the owning QProcess only on state change."""
         state = self.state()
-        if self.receipt is not None and state != self.last:
-            pending = self.receipt.with_suffix(".pending")
-            pending.write_text(json.dumps(state), encoding="utf-8")
-            pending.replace(self.receipt)
+        if self.publish_state and state != self.last:
+            sys.stdout.write(json.dumps(state) + "\n")
+            sys.stdout.flush()
         self.last = state
 
     def close(self) -> None:
@@ -142,7 +140,7 @@ class MenuFixture:
 def main() -> None:
     """Run a disposable fixture until its owning qualification process exits."""
     app = QApplication([])
-    fixture = MenuFixture(Path(sys.argv[1]), native="--hmenu" in sys.argv[2:])
+    fixture = MenuFixture(publish_state=True, native="--hmenu" in sys.argv[1:])
     fixture.show()
     # A crashed owner cannot leave the disposable fixture alive indefinitely.
     QTimer.singleShot(60000, app.quit)
