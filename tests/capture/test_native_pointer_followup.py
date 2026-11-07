@@ -6,7 +6,7 @@ from unittest.mock import Mock
 import pytest
 from tests.capture import test_native_pointer_native as native
 from tests.capture.native_pointer_driver import State
-from tests.capture.native_pointer_followup import followup
+from tests.capture.native_pointer_followup import followup, handoff_acceptable
 from tests.capture.test_native_pointer_setup import fixtures
 
 from verdiclip.geometry import Point
@@ -24,6 +24,8 @@ def test_second_sample_does_not_change_first(
     driver, peer = fixtures(tmp_path)
     first = {
         "visible": True,
+        "cleanup_confirmed": True,
+        "terminal_matches_cross_resource": True,
         "position_preserved": True,
         "foreign_gui_preserved": True,
         "appearance_preserved": first_match,
@@ -60,6 +62,8 @@ def test_guard_refusal_sends_no_input(
         Mock(),
         {
             "visible": True,
+            "cleanup_confirmed": True,
+            "terminal_matches_cross_resource": True,
             "position_preserved": True,
             "foreign_gui_preserved": True,
             "appearance_preserved": False,
@@ -87,6 +91,8 @@ def test_failed_ack_never_observes_or_retries(
         Mock(),
         {
             "visible": True,
+            "cleanup_confirmed": True,
+            "terminal_matches_cross_resource": True,
             "position_preserved": True,
             "foreign_gui_preserved": True,
             "appearance_preserved": False,
@@ -114,6 +120,8 @@ def test_control_is_not_swallowed(
             Mock(),
             {
                 "visible": True,
+                "cleanup_confirmed": True,
+                "terminal_matches_cross_resource": True,
                 "position_preserved": True,
                 "foreign_gui_preserved": True,
                 "appearance_preserved": False,
@@ -134,6 +142,8 @@ def test_first_state_failure_refuses_followup(
     monkeypatch.setattr("tests.capture.native_pointer_followup.prepare", prepare)
     first = {
         "visible": True,
+        "cleanup_confirmed": True,
+        "terminal_matches_cross_resource": True,
         "position_preserved": True,
         "foreign_gui_preserved": True,
         "appearance_preserved": False,
@@ -144,25 +154,107 @@ def test_first_state_failure_refuses_followup(
     prepare.assert_not_called()
 
 
-def test_terminal_failure_stays_failed_after_successful_followup(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize("final", [False, True])
+def test_known_cross_retains_first_mismatch_without_early_movement(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], *, final: bool
 ) -> None:
-    """The real terminal adapter reports the first mismatch before any MOVE."""
+    """Sessions one to three never receive recovery input; fourth receives one."""
     state = State(1, 2, Point(11, 10), 7, (0,) * 6)
     driver = Mock()
     driver.read.return_value = state
     driver.cross_cursor.return_value = 2
     monkeypatch.setattr(native, "copy_appearance", Mock(return_value=object()))
     monkeypatch.setattr(native, "NativeReader", Mock())
-
-    def later(*_args: object) -> bool:
-        assert '"appearance_preserved": false' in capsys.readouterr().out
-        return True
-
-    second = Mock(side_effect=later)
+    second = Mock(return_value=True)
     monkeypatch.setattr(native, "followup", second)
-    with pytest.raises(AssertionError, match="First terminal observation failed"):
+    native.terminal(Mock(), driver, state, state.point, Mock(), (), Mock(), final=final)
+    receipt = capsys.readouterr().out
+    assert '"appearance_preserved": false' in receipt
+    assert '"first_handoff_acceptable": true' in receipt
+    assert second.call_count == int(final)
+
+
+@pytest.mark.parametrize(
+    "bad", ["unknown", "null-resource", "invisible", "position", "gui"]
+)
+def test_unqualified_terminal_never_injects_followup(
+    monkeypatch: pytest.MonkeyPatch, bad: str
+) -> None:
+    """Unknown appearance or any safety-state mismatch stops before interaction."""
+    before = State(1, 2, Point(11, 10), 7, (0,) * 6)
+    after = State(
+        0 if bad == "invisible" else 1,
+        0 if bad == "null-resource" else 2,
+        Point(12, 10) if bad == "position" else before.point,
+        7,
+        (1,) * 6 if bad == "gui" else before.gui,
+    )
+    driver = Mock()
+    driver.read.return_value = after
+    driver.cross_cursor.return_value = (
+        0 if bad == "null-resource" else 3 if bad == "unknown" else 2
+    )
+    monkeypatch.setattr(native, "copy_appearance", Mock(return_value=object()))
+    monkeypatch.setattr(native, "NativeReader", Mock())
+    second = Mock(return_value=True)
+    monkeypatch.setattr(native, "followup", second)
+    with pytest.raises(AssertionError, match="First stationary handoff unavailable"):
         native.terminal(
-            Mock(), driver, state, state.point, Mock(), (), Mock(), final=False
+            Mock(), driver, before, before.point, Mock(), (), Mock(), final=True
+        )
+    second.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "cleanup_confirmed",
+        "visible",
+        "position_preserved",
+        "foreign_gui_preserved",
+        "terminal_matches_cross_resource",
+    ],
+)
+@pytest.mark.parametrize("invalid", [False, None, 1])
+def test_handoff_requires_exact_boolean_evidence(key: str, invalid: object) -> None:
+    """Truthy/missing or arbitrary cursor evidence cannot qualify a handoff."""
+    first: dict[str, object] = {
+        "cleanup_confirmed": True,
+        "visible": True,
+        "position_preserved": True,
+        "foreign_gui_preserved": True,
+        "appearance_preserved": False,
+        "terminal_matches_cross_resource": True,
+    }
+    first[key] = invalid
+    assert not handoff_acceptable(first)
+
+
+def test_exact_fixture_appearance_does_not_require_cross_identity() -> None:
+    """The normal fixture cursor is an independently supported first state."""
+    first = {
+        "cleanup_confirmed": True,
+        "visible": True,
+        "position_preserved": True,
+        "foreign_gui_preserved": True,
+        "appearance_preserved": True,
+        "terminal_matches_cross_resource": False,
+    }
+    assert handoff_acceptable(first)
+
+
+def test_final_handoff_failure_still_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A recognized stationary CrossCursor cannot excuse failed subsequent handoff."""
+    state = State(1, 2, Point(11, 10), 7, (0,) * 6)
+    driver = Mock()
+    driver.read.return_value = state
+    driver.cross_cursor.return_value = 2
+    monkeypatch.setattr(native, "copy_appearance", Mock(return_value=object()))
+    monkeypatch.setattr(native, "NativeReader", Mock())
+    second = Mock(return_value=False)
+    monkeypatch.setattr(native, "followup", second)
+    with pytest.raises(AssertionError, match="Subsequent interaction"):
+        native.terminal(
+            Mock(), driver, state, state.point, Mock(), (), Mock(), final=True
         )
     second.assert_called_once()

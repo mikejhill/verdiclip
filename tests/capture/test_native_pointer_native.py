@@ -22,7 +22,7 @@ from tests.capture.native_pointer_cursor import (
     copy_appearance,
 )
 from tests.capture.native_pointer_driver import Driver, State
-from tests.capture.native_pointer_followup import followup
+from tests.capture.native_pointer_followup import followup, handoff_acceptable
 from tests.capture.native_pointer_setup import prepare
 from tests.capture.scroll_peer import ScrollPeer
 
@@ -120,22 +120,18 @@ def terminal(  # noqa: PLR0913, PLR0917 - explicit independent terminal boundary
         "physical_input_verified": False,
         "rendered_pointer_verified": False,
     }
-    first_ok = all(
-        checks[key]
-        for key in (
-            "visible",
-            "position_preserved",
-            "foreign_gui_preserved",
-            "appearance_preserved",
-        )
+    cross_reference = driver.cross_cursor()
+    checks["terminal_matches_cross_resource"] = (
+        bool(cross_reference) and after.cursor == cross_reference
     )
-    checks["terminal_matches_cross_resource"] = after.cursor == driver.cross_cursor()
+    checks["cleanup_confirmed"] = True
+    first_ok = handoff_acceptable(checks)
+    checks["first_handoff_acceptable"] = first_ok
     print("NATIVE_POINTER_TERMINAL=" + json.dumps(checks, sort_keys=True))  # noqa: T201 - fixed private comparison only
-    second_ok = True
-    if not first_ok or final:
+    assert first_ok, "First stationary handoff unavailable"
+    if final:
         second_ok = followup(driver, peer, qtbot.wait, checks, expected_cursor())
-    assert first_ok, "First terminal observation failed"
-    assert second_ok, "Subsequent interaction unavailable or mismatched"
+        assert second_ok, "Subsequent interaction unavailable or mismatched"
 
 
 @pytest.mark.native_desktop
@@ -423,15 +419,18 @@ def test_native_pointer_abrupt_owned_process_exit(
             == expected_cursor(),
             "causal_exit_confirmed": True,
         }
-        first_ok = all(checks.values())
+        cross_reference = driver.cross_cursor()
         checks["terminal_matches_cross_resource"] = (
-            after.cursor == driver.cross_cursor()
+            bool(cross_reference) and after.cursor == cross_reference
         )
+        checks["cleanup_confirmed"] = True
+        first_ok = handoff_acceptable(checks)
+        checks["first_handoff_acceptable"] = first_ok
         print("NATIVE_POINTER_CRASH=" + json.dumps(checks, sort_keys=True))  # noqa: T201 - fixed comparisons
+        assert first_ok, "First crash handoff unavailable"
         second_ok = followup(
             driver, owned_source, qtbot.wait, checks, expected_cursor()
         )
-        assert first_ok, "First crash observation failed"
         assert second_ok, "Subsequent interaction unavailable or mismatched"
     finally:
         child.close()

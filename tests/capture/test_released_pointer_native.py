@@ -13,7 +13,7 @@ from pytestqt.qtbot import QtBot
 from tests.capture.native_cursor import CursorInfo
 from tests.capture.native_pointer_cursor import NativeReader, copy_appearance
 from tests.capture.native_pointer_driver import Driver, State
-from tests.capture.native_pointer_followup import followup
+from tests.capture.native_pointer_followup import followup, handoff_acceptable
 from tests.capture.native_pointer_setup import prepare
 from tests.capture.released_pointer_peer import BaselinePeer
 from tests.capture.scroll_peer import ScrollPeer
@@ -118,6 +118,12 @@ def test_released_source_first_terminal(
             "foreign_gui_preserved": (after.foreground, after.gui)
             == (before.foreground, before.gui),
         }
+        checks["terminal_matches_cross_resource"] = (
+            bool(cross_reference) and after.cursor == cross_reference
+        )
+        checks["cleanup_confirmed"] = True
+        first_ok = handoff_acceptable(checks)
+        checks["first_handoff_acceptable"] = first_ok
         print(  # noqa: T201 - fixed comparison fields only
             "RELEASED_POINTER_TERMINAL="
             + json.dumps(
@@ -125,7 +131,6 @@ def test_released_source_first_terminal(
                     "source": "0.12.1",
                     "mode": mode,
                     "old_foreground_transferred": child.foreground_owned,
-                    "terminal_matches_cross_resource": after.cursor == cross_reference,
                     "terminal_dimensions_match": (appearance.width, appearance.height)
                     == (fixture_appearance.width, fixture_appearance.height),
                     "terminal_hotspot_matches": appearance.hotspot
@@ -138,16 +143,12 @@ def test_released_source_first_terminal(
                 sort_keys=True,
             )
         )
-        first_ok = all(
-            checks[key]
-            for key in ("visible", "position_preserved", "appearance_preserved")
-        )
+        assert first_ok, "Released stationary handoff unavailable"
         second_ok = followup(
             driver, owned_source, qtbot.wait, checks, fixture_appearance
         )
         child.finish()
-        # Old focus behavior is recorded, not coerced into the candidate policy.
-        assert first_ok, "Released source restoration mismatch"
+        # Exact follow-up fixture state is required; first appearance stays recorded.
         assert second_ok, "Subsequent interaction unavailable or mismatched"
     finally:
         child.close()

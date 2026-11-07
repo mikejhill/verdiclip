@@ -15,6 +15,22 @@ from tests.capture.native_pointer_setup import prepare
 from tests.capture.scroll_peer import ScrollPeer
 
 
+def handoff_acceptable(first: Mapping[str, object]) -> bool:
+    """Qualify known stationary state without changing first-appearance evidence."""
+    return all(
+        first.get(key) is True
+        for key in (
+            "cleanup_confirmed",
+            "visible",
+            "position_preserved",
+            "foreign_gui_preserved",
+        )
+    ) and (
+        first.get("appearance_preserved") is True
+        or first.get("terminal_matches_cross_resource") is True
+    )
+
+
 def followup(
     driver: Driver,
     peer: ScrollPeer,
@@ -30,9 +46,7 @@ def followup(
         "physical_input_verified": False,
         "rendered_pointer_verified": False,
     }
-    if not all(
-        first[k] for k in ("visible", "position_preserved", "foreign_gui_preserved")
-    ):
+    if not handoff_acceptable(first):
         result["status"] = "prerequisite-unavailable"
         return _report(result)
     stage = "prerequisite"

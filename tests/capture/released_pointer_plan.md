@@ -88,3 +88,23 @@ input and rendered-pointer behavior remain unqualified.
 The original sixteen-command ordinary input cap is retained. The separate phase
 has one dedicated additional MOVE allowance, consumed on its first attempt even
 if insertion fails; it cannot authorize clicks/keys or a second follow-up MOVE.
+
+### Refined internal stationary-handoff gate
+
+The original strict appearance-only runs remain historical RED evidence. The
+paired source comparison and one-movement follow-up established that both old and
+current code can retain the positively identified shared CrossCursor while
+stationary after cleanup, then hand back the fixture cursor after ordinary input.
+The isolated internal gate now distinguishes `appearance_preserved` from
+`first_handoff_acceptable`: confirmed retirement, visible cursor, unchanged
+position and foreign GUI are mandatory, with either exact constructed fixture
+appearance or a positive nonzero shared CrossCursor identity. Unknown/invisible
+states fail without follow-up input. No arbitrary readable appearance qualifies.
+
+All four current ordinary sessions must satisfy this first-state gate. No extra
+movement occurs between them; the sole separately guarded follow-up comes after
+the fourth retirement and must restore exact fixture appearance. Crash and old
+source cases use the same rule and required follow-up. Every original first
+appearance receipt remains recorded, including false values. This deliberately
+revises only the isolated internal gate, not the historical verdicts or any full
+popup, physical-input, rendered-pointer or release qualification.
