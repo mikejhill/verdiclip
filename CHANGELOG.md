@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.13.1](https://github.com/mikejhill/verdiclip/compare/v0.13.0...v0.13.1) (2026-11-07)
+
+
+### Bug Fixes
+
+* gate release publication on exact main verification ([#83](https://github.com/mikejhill/verdiclip/issues/83)) ([9030047](https://github.com/mikejhill/verdiclip/commit/90300471544236d1e5a5203c4fc7bad91dc27a0f))
+* restore 0.12.1 capture behavior with tabs ([#116](https://github.com/mikejhill/verdiclip/issues/116)) ([80a4d66](https://github.com/mikejhill/verdiclip/commit/80a4d661262e526c72068c8450d6424f5056ca12))
+* retire mutation writers before sealing cached verdicts ([#90](https://github.com/mikejhill/verdiclip/issues/90)) ([6936b5e](https://github.com/mikejhill/verdiclip/commit/6936b5edc4f1ecf889205b1f2cb9b35ee110c9c1))
+* stage workflow configuration for mutation statistics ([#87](https://github.com/mikejhill/verdiclip/issues/87)) ([0b15699](https://github.com/mikejhill/verdiclip/commit/0b156997985b9ad24e8e0d3e691d51702b51f670))
+
 ## [0.13.0](https://github.com/mikejhill/verdiclip/compare/v0.12.1...v0.13.0) (2026-11-05)
 
 
