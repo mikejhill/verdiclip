@@ -35,6 +35,7 @@ from verdiclip.platform.hotkeys import Hotkey
 from verdiclip.platform.keyboard_hook import KeyCapture
 from verdiclip.settings import (
     AppearanceSettings,
+    CaptureDestination,
     CaptureSettings,
     HotkeySettings,
     ImageFormat,
@@ -85,6 +86,10 @@ class SettingsDialog(QDialog):
         self._after_status = QLabel()
         self._theme = QComboBox()
         self._magnifier = QCheckBox("Show a magnifier")
+        self._destination = QComboBox()
+        self._destination.setAccessibleName("New screenshots")
+        self._destination.addItem("New tab", CaptureDestination.TABS.value)
+        self._destination.addItem("New window", CaptureDestination.WINDOWS.value)
         self._hotkeys: dict[str, QLineEdit] = {}
         self._hotkey_fields: dict[str, HotkeyField] = {}
         self._hotkey_status: dict[str, QLabel] = {}
@@ -123,6 +128,7 @@ class SettingsDialog(QDialog):
                 copy_to_clipboard=self._copy.isChecked(),
                 save_to_file=self._save.isChecked(),
                 show_magnifier=self._magnifier.isChecked(),
+                destination=CaptureDestination(self._destination.currentData()),
             ),
             hotkeys=HotkeySettings(
                 **{
@@ -211,6 +217,7 @@ class SettingsDialog(QDialog):
         tab = QWidget()
         form = QFormLayout(tab)
         form.addRow("After capturing:", actions)
+        form.addRow("New screenshots:", self._destination)
         form.addRow("While selecting:", self._magnifier)
         return tab
 
@@ -313,6 +320,9 @@ class SettingsDialog(QDialog):
             self._theme.findData(settings.appearance.theme.value)
         )
         self._magnifier.setChecked(settings.capture.show_magnifier)
+        self._destination.setCurrentIndex(
+            self._destination.findData(settings.capture.destination.value)
+        )
         for name, edit in self._hotkeys.items():
             text = getattr(settings.hotkeys, name)
             edit.setText(self._display_hotkey(text))

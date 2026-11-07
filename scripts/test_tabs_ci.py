@@ -37,12 +37,9 @@ TESTS = (
     "tests/platform/test_tab_synthetic_topology.py",
     "tests/output/test_delivery.py",
     "tests/output/test_atomic_save.py",
-    "tests/shell/test_editor_smoke.py",
-    "tests/shell/test_reviewed_delivery.py",
-    "tests/shell/test_scroll_review_delivery.py",
-    "tests/shell/test_passive_capture_delivery.py",
-    "tests/shell/test_scroll_workflow_delivery.py",
-    "tests/shell/test_delivery_recovery_receipts.py",
+    "tests/ux/test_app_journeys.py",
+    "tests/ux/test_editor_journeys.py",
+    "tests/ux/test_tabs_baseline_settings.py",
     "tests/ux/test_tabs_journeys.py",
 )
 COVERAGE = (
@@ -58,7 +55,6 @@ COVERAGE = (
     "verdiclip.editor.workspace",
     "verdiclip.platform.tab_drag",
     "verdiclip.output.delivery",
-    "verdiclip.shell.scroll_review",
 )
 
 

@@ -47,6 +47,13 @@ class ImageFormat(StrEnum):
     WEBP = "webp"
 
 
+class CaptureDestination(StrEnum):
+    """Where a newly captured image opens."""
+
+    TABS = "tabs"
+    WINDOWS = "windows"
+
+
 @dataclass(frozen=True, slots=True)
 class CaptureSettings:
     """Capture behavior; the three after-capture actions combine freely."""
@@ -55,6 +62,7 @@ class CaptureSettings:
     copy_to_clipboard: bool = False
     save_to_file: bool = False
     show_magnifier: bool = True
+    destination: CaptureDestination = CaptureDestination.TABS
 
     @property
     def has_action(self) -> bool:

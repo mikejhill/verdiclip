@@ -24,10 +24,10 @@ from tests.ux.test_app_journeys import FakeHotkeys
 from verdiclip import __main__ as entry
 from verdiclip.__main__ import Application
 from verdiclip.capture.grabber import FrozenScreen
+from verdiclip.exceptions import AppError
 from verdiclip.geometry import Rect
 from verdiclip.platform.hotkeys import HotkeyService
 from verdiclip.settings import Settings, SettingsStore
-from verdiclip.shell.gui_readiness import GuiReadinessError
 from verdiclip.shell.instance import SingleInstance
 
 
@@ -288,12 +288,12 @@ def qt_entry_owners(
     qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> Iterator[SimpleNamespace]:
     """Own real Qt test resources even if production or retirement assertions fail."""
-    failure = GuiReadinessError("fixture preparation failure")
+    failure = AppError("fixture preparation failure")
     instances: list[SingleInstance] = []
     hotkeys: list[HotkeyService] = []
     timers: list[QTimer] = []
     shutdowns: list[bool] = []
-    compositions: list[object] = []
+    starts: list[object] = []
     safety = ExitStack()
     filters = OwnedFilterCalls(qapp, safety)
     name = f"VerdiClip-readiness-fixture-{uuid.uuid4().hex}"
@@ -312,7 +312,7 @@ def qt_entry_owners(
             pass
 
         def start(self) -> None:
-            assert compositions[-1] is self
+            starts.append(self)
             raise failure
 
         def shutdown(self) -> None:
@@ -326,14 +326,6 @@ def qt_entry_owners(
     monkeypatch.setattr(entry, "QTimer", timer)
     monkeypatch.setattr(entry, "AppController", Controller)
 
-    def compose(controller: object, *, data_root: Path) -> None:
-        # This fixture isolates entry-owner retirement, not native UIA startup.
-        # Production composition has its own real-controller integration tests.
-        assert isinstance(controller, Controller)
-        assert data_root == tmp_path
-        compositions.append(controller)
-
-    monkeypatch.setattr(entry, "compose_scrolling", compose)
     monkeypatch.setattr(Application, "_install_sigint", sigint.install)
     monkeypatch.setattr(
         qapp, "exec", lambda: pytest.fail("Startup must not enter exec")
@@ -369,7 +361,7 @@ def qt_entry_owners(
             hotkeys=hotkeys,
             timers=timers,
             shutdowns=shutdowns,
-            compositions=compositions,
+            starts=starts,
             name=name,
             previous=sigint.previous,
             filters=filters,
@@ -381,7 +373,7 @@ def test_gui_readiness_failure_retires_real_qt_owners_without_exec(
 ) -> None:
     """Observe production retirement before the fixture safety cleanup runs."""
     for _attempt in range(2):
-        with pytest.raises(GuiReadinessError) as caught:
+        with pytest.raises(AppError) as caught:
             qt_entry_owners.application._run_gui(
                 qt_entry_owners.request, qt_entry_owners.store
             )
@@ -417,4 +409,4 @@ def test_gui_readiness_failure_retires_real_qt_owners_without_exec(
         finally:
             probe.close()
     assert len(qt_entry_owners.shutdowns) == 2
-    assert len(qt_entry_owners.compositions) == 2
+    assert len(qt_entry_owners.starts) == 2

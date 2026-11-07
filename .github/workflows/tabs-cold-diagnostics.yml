@@ -1,0 +1,202 @@
+name: Informational cold capture baseline comparison
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+# Diagnostic jobs retain truthful failures; they are not release qualification.
+# Original aggregate timing tests and native functional gates remain enforced.
+jobs:
+  synthetic-comparison:
+    if: >-
+      github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
+      github.head_ref == 'fix/tabs-on-0121' &&
+      github.event.pull_request.draft == true
+    name: Cold capture / ${{ matrix.source }} / Qt ${{ matrix.qt }}
+    runs-on: windows-2025
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        qt: ["6.11.2", "6.12.0"]
+        source: [candidate, released]
+    env:
+      PYTHONUTF8: "1"
+      QT_QPA_PLATFORM: offscreen
+      QUALIFICATION_HEAD: ${{ github.event.pull_request.head.sha }}
+      QT_VERSION: ${{ matrix.qt }}
+      CAPTURE_SOURCE: ${{ matrix.source }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: "false"
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: "false"
+        with:
+          ref: a1c6bbe488284cf5f5b4ed7a8b1e30181e0f62ed
+          path: released
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          enable-cache: false
+          python-version: "3.13"
+      - name: Same locked dependencies and supported Qt for both sources
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          uv sync --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          uv pip install --python .venv "pyside6-essentials==$env:QT_VERSION" "shiboken6==$env:QT_VERSION"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify both source identities and unchanged capture timing test
+        shell: pwsh
+        run: |
+          $actual = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0 -or $actual -ne $env:QUALIFICATION_HEAD) { throw 'Candidate source mismatch' }
+          $old = git -C released rev-parse HEAD
+          if ($LASTEXITCODE -ne 0 -or $old -ne 'a1c6bbe488284cf5f5b4ed7a8b1e30181e0f62ed') { throw 'Released source mismatch' }
+          foreach ($repo in @('.', 'released')) {
+            $dirty = git -C $repo status --porcelain --untracked-files=no
+            if ($LASTEXITCODE -ne 0 -or $dirty) { throw 'Tracked source is dirty' }
+          }
+          foreach ($path in @('src/verdiclip/capture', 'tests/ux/test_capture_journeys.py')) {
+            $candidate = git rev-parse "HEAD:$path"
+            if ($LASTEXITCODE -ne 0) { throw 'Candidate object missing' }
+            $baseline = git -C released rev-parse "HEAD:$path"
+            if ($LASTEXITCODE -ne 0 -or $candidate -ne $baseline) { throw 'Comparison source differs' }
+          }
+      - name: One cold synthetic journey suite on the selected source
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          $python = Join-Path $PWD '.venv/Scripts/python.exe'
+          $root = $PWD.Path
+          if ($env:CAPTURE_SOURCE -eq 'released') { $root = Join-Path $root 'released' }
+          $env:PYTHONPATH = "$root/src;$root"
+          $env:EXPECTED_CAPTURE_ROOT = Join-Path $root 'src/verdiclip'
+          Set-Location -LiteralPath $root
+          @'
+          import os
+          from pathlib import Path
+          import sys
+          import hashlib
+          import subprocess
+          import pytest
+          import verdiclip
+          import PySide6
+          assert Path(verdiclip.__file__).resolve().parent == Path(os.environ['EXPECTED_CAPTURE_ROOT']).resolve(), 'Selected package mismatch'
+          assert PySide6.__version__ == os.environ['QT_VERSION'], 'Qt profile mismatch'
+          print('COLD_COMPARISON', os.environ['CAPTURE_SOURCE'], sys.version.split()[0], PySide6.__version__, flush=True)
+          class Provenance:
+              def pytest_collection_modifyitems(self, items):
+                  root = Path.cwd().resolve()
+                  expected = {
+                      'verdiclip.capture.service': 'src/verdiclip/capture/service.py',
+                      'verdiclip.capture.overlay': 'src/verdiclip/capture/overlay.py',
+                  }
+                  paths = [root / relative for relative in expected.values()]
+                  for name, relative in expected.items():
+                      module = sys.modules.get(name)
+                      assert module is not None and Path(module.__file__).resolve() == root / relative, 'Capture import origin mismatch'
+                  test = root / 'tests/ux/test_capture_journeys.py'
+                  assert items and all(Path(item.module.__file__).resolve() == test for item in items), 'Test import origin mismatch'
+                  for path in [*paths, test]:
+                      relative = path.relative_to(root).as_posix()
+                      committed = subprocess.check_output(['git', 'show', 'HEAD:' + relative], cwd=root)
+                      assert path.read_bytes() == committed, 'Source bytes mismatch'
+                      print('SOURCE_ATTESTED', relative, hashlib.sha256(committed).hexdigest(), flush=True)
+          raise SystemExit(pytest.main(['tests/ux/test_capture_journeys.py', '--no-cov', '-p', 'no:randomly', '-vv', '-rP'], plugins=[Provenance()]))
+          '@ | & $python -
+          exit $LASTEXITCODE
+
+  native-cold-comparison:
+    if: >-
+      github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
+      github.head_ref == 'fix/tabs-on-0121' &&
+      github.event.pull_request.draft == true
+    name: First native region paint / ${{ matrix.source }} / Qt ${{ matrix.qt }}
+    runs-on: windows-2025
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        qt: ["6.11.2", "6.12.0"]
+        source: [candidate, released]
+    env:
+      PYTHONUTF8: "1"
+      QT_QPA_PLATFORM: windows
+      QUALIFICATION_HEAD: ${{ github.event.pull_request.head.sha }}
+      QT_VERSION: ${{ matrix.qt }}
+      CAPTURE_SOURCE: ${{ matrix.source }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: "false"
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: "false"
+        with:
+          ref: a1c6bbe488284cf5f5b4ed7a8b1e30181e0f62ed
+          path: released
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          enable-cache: false
+          python-version: "3.13"
+      - name: Same locked dependencies and supported Qt for both sources
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          uv sync --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          uv pip install --python .venv "pyside6-essentials==$env:QT_VERSION" "shiboken6==$env:QT_VERSION"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify both source identities and unchanged capture timing test
+        shell: pwsh
+        run: |
+          $actual = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0 -or $actual -ne $env:QUALIFICATION_HEAD) { throw 'Candidate source mismatch' }
+          $old = git -C released rev-parse HEAD
+          if ($LASTEXITCODE -ne 0 -or $old -ne 'a1c6bbe488284cf5f5b4ed7a8b1e30181e0f62ed') { throw 'Released source mismatch' }
+          foreach ($repo in @('.', 'released')) {
+            $dirty = git -C $repo status --porcelain --untracked-files=no
+            if ($LASTEXITCODE -ne 0 -or $dirty) { throw 'Tracked source is dirty' }
+          }
+          foreach ($path in @('src/verdiclip/capture', 'tests/ux/test_capture_journeys.py')) {
+            $candidate = git rev-parse "HEAD:$path"
+            if ($LASTEXITCODE -ne 0) { throw 'Candidate object missing' }
+            $baseline = git -C released rev-parse "HEAD:$path"
+            if ($LASTEXITCODE -ne 0 -or $candidate -ne $baseline) { throw 'Comparison source differs' }
+          }
+      - name: One first native region paint on the selected source
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          $python = Join-Path $PWD '.venv/Scripts/python.exe'
+          $root = $PWD.Path
+          if ($env:CAPTURE_SOURCE -eq 'released') { $root = Join-Path $root 'released' }
+          $env:PYTHONPATH = "$root/src;$root"
+          $env:EXPECTED_CAPTURE_ROOT = Join-Path $root 'src/verdiclip'
+          Set-Location -LiteralPath $root
+          $observer = Join-Path $env:GITHUB_WORKSPACE 'scripts/cold_region_native.py'
+          & $python $observer
+          exit $LASTEXITCODE

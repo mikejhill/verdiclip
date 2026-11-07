@@ -24,9 +24,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QWidget
 
 from verdiclip.capture.grabber import FrozenScreen
-from verdiclip.capture.input_policy import InputKind, SelectionInput
 from verdiclip.capture.models import ScreenGeometry
-from verdiclip.capture.presentation import PASSIVE_WINDOW_FLAGS
 from verdiclip.geometry import Point, Rect
 
 DRAG_THRESHOLD: Final = 3.0
@@ -167,9 +165,6 @@ class SelectionOverlay(QWidget):
 
     region_chosen = Signal(object)  # Rect (physical)
     window_chosen = Signal(object, str)  # Rect (physical), title
-    window_selected = Signal(
-        object, object
-    )  # immutable window snapshot, physical point
     cancelled = Signal()
 
     def __init__(  # noqa: PLR0913
@@ -181,7 +176,6 @@ class SelectionOverlay(QWidget):
         *,
         show_magnifier: bool,
         shared: SharedSelection | None = None,
-        external_input: bool = False,
     ) -> None:
         super().__init__(None)
         self._geometry = geometry
@@ -195,16 +189,11 @@ class SelectionOverlay(QWidget):
         self._shared.changed.connect(self._on_shared_changed)
         self._shown: tuple[object, ...] | None = None
         self._finishing = False
-        self._external_input = external_input
-        flags = (
+        self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
             | Qt.WindowType.Tool
         )
-        if external_input:
-            flags = PASSIVE_WINDOW_FLAGS
-            self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
-        self.setWindowFlags(flags)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.setMouseTracking(True)
         self.setCursor(Qt.CursorShape.CrossCursor)
@@ -407,22 +396,6 @@ class SelectionOverlay(QWidget):
 
     # Input
 
-    def receive_input(self, event: SelectionInput) -> None:
-        """Apply one broker command directly, without Qt popup/native focus routing."""
-        if event.kind is InputKind.CANCEL:
-            self.cancelled.emit()
-            return
-        self._shared.move_to(event.point)
-        if event.kind is InputKind.PRESS:
-            if self._shared.pressed:
-                self._finish(event.point)
-            else:
-                self._shared.press(event.point)
-        elif event.kind is InputKind.RELEASE and self._shared.pressed:
-            self._finish(event.point)
-        elif event.kind is InputKind.ENTER:
-            self._enter()
-
     @override
     def mousePressEvent(self, event: QMouseEvent) -> None:
         """Start a selection on left press; cancel on right press.
@@ -461,12 +434,9 @@ class SelectionOverlay(QWidget):
             return
         window = self._window_at(at)
         if window is not None:
-            if self._external_input:
-                self.window_selected.emit(window, at)
-            else:
-                self.window_chosen.emit(
-                    window.bounds.intersected(self._frozen.bounds), window.title
-                )
+            self.window_chosen.emit(
+                window.bounds.intersected(self._frozen.bounds), window.title
+            )
             return
         screen = self._shared.screen_at(at) or self._geometry
         self.region_chosen.emit(screen.physical)
@@ -491,10 +461,7 @@ class SelectionOverlay(QWidget):
         if delta is None:
             super().keyPressEvent(event)
             return
-        if self._external_input and self._shared.pointer is not None:
-            self._shared.move_to(self._shared.pointer + Point(delta.x(), delta.y()))
-        else:
-            QCursor.setPos(QCursor.pos() + delta)
+        QCursor.setPos(QCursor.pos() + delta)
 
     def _enter(self) -> None:
         """Press at the pointer, or finish the press already started (UX-CAP-15).
@@ -513,8 +480,7 @@ class SelectionOverlay(QWidget):
     def showEvent(self, event: QShowEvent) -> None:
         """Show guides and the window highlight at once, before any mouse move."""
         super().showEvent(event)
-        if not self._external_input:
-            self.sync_cursor()
+        self.sync_cursor()
 
     def sync_cursor(self) -> None:
         """Pick up the current pointer position."""
@@ -525,7 +491,7 @@ class SelectionOverlay(QWidget):
     def leaveEvent(self, event: QEvent) -> None:
         """Hide the crosshair when the cursor moves to another monitor."""
         del event
-        if not self._external_input and not self._shared.pressed:
+        if not self._shared.pressed:
             self.sync_cursor()
 
     # Internals

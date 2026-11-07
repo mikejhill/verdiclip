@@ -1,3 +1,5 @@
+> Historical design/evidence retained from the 0.13 development cycle. The corrective release restores the exact 0.12.1 capture implementation with tabs. Broker-based menu preservation, reviewed/scrolling capture and native-pointer experiments described here are not included. See [current corrective scope](../corrective-release-scope.md).
+
 # Tab acceptance evidence
 
 Mike reported: "Done. Manual smoke tests pass. You *do* need to create automated tests for this as well, though."

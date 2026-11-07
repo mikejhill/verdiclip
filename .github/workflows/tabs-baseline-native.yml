@@ -1,0 +1,59 @@
+name: Baseline capture with tabs
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  baseline:
+    if: >-
+      github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
+      github.head_ref == 'fix/tabs-on-0121' &&
+      github.event.pull_request.draft == true
+    name: Baseline native capture / Qt ${{ matrix.qt }}
+    runs-on: windows-2025
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        qt: ["6.11.2", "6.12.0"]
+    env:
+      PYTHONUTF8: "1"
+      QT_QPA_PLATFORM: windows
+      QUALIFICATION_HEAD: ${{ github.event.pull_request.head.sha }}
+      QT_VERSION: ${{ matrix.qt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Require exact released capture implementation
+        shell: pwsh
+        run: |
+          $actual = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0 -or $actual -ne $env:QUALIFICATION_HEAD) { throw 'Source mismatch' }
+          $released = git rev-parse 'a1c6bbe488284cf5f5b4ed7a8b1e30181e0f62ed:src/verdiclip/capture'
+          if ($LASTEXITCODE -ne 0) { throw 'Released capture tree unavailable' }
+          $candidate = git rev-parse 'HEAD:src/verdiclip/capture'
+          if ($LASTEXITCODE -ne 0 -or $candidate -ne $released) { throw 'Capture differs from 0.12.1' }
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          enable-cache: false
+          python-version: "3.13"
+      - name: Locked dependencies and supported Qt
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          uv sync --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          uv pip install --python .venv "pyside6-essentials==$env:QT_VERSION" "shiboken6==$env:QT_VERSION"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Native baseline input and tabs destination focus
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          uv run --no-sync pytest tests/capture/test_capture_native.py tests/capture/test_tabs_baseline_native.py --require-interactive-capture --no-cov -p no:randomly -vv -rP
+          exit $LASTEXITCODE

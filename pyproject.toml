@@ -90,15 +90,15 @@ all = "error"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Tooling tests resolve scripts.* from both checkout and mutmut staging root.
+# Tooling imports resolve in both checkout and mutation staging.
 pythonpath = ["."]
 addopts = ["--strict-markers", "--strict-config", "-ra", "--import-mode=importlib"]
 xfail_strict = true
 qt_api = "pyside6"
 markers = [
-    "native_desktop: supplemental compatibility test requiring a real interactive Windows desktop",
-    "native_hooks: installs real Windows hooks; exclude from local runs without a handoff",
-    "native_registry: mutates disposable Windows registry keys or notifies Explorer",
+    "native_desktop: supplemental compatibility test requiring an interactive Windows desktop",
+    "native_hooks: installs real owned Windows input hooks",
+    "native_registry: modifies disposable test registry keys",
     "ux: user journey test proving a UX contract item",
     "ux_budget: journey test that enforces a latency budget",
 ]
@@ -120,7 +120,7 @@ lint = { cmd = "ruff check .", help = "Lint code" }
 lint-fix = { cmd = "ruff check . --fix", help = "Lint and auto-fix" }
 typecheck = { cmd = "ty check", help = "Type check (strict)" }
 test = { cmd = "pytest --cov", help = "Run tests with coverage" }
-test-tabs-ci = { cmd = "python scripts/test_tabs_ci.py", help = "Run simulated tab/topology contracts with scoped coverage and replay evidence" }
+test-tabs-ci = { cmd = "python scripts/test_tabs_ci.py", help = "Run simulated tab contracts with scoped coverage" }
 ux = { cmd = "pytest -m ux tests/ux", help = "Run UX journey tests only" }
 ux-gallery = { cmd = "python scripts/ux_gallery.py", help = "Render key screens in light and dark themes into docs/ux/gallery for design review" }
 ux-snapshots = { cmd = "pytest -m ux tests/ux --ux-snapshots=docs/ux/snapshots", help = "Run UX journeys and save a PNG per step for review" }
@@ -148,7 +148,6 @@ mutation = [
 # Mutation testing: change the code in small ways and check a test fails.
 # POSIX only (it forks); run it on Linux or WSL with `uv run poe mutate`.
 source_paths = ["src/verdiclip/"]
-# Tooling tests import scripts.* and inspect workflow contracts in staging.
 also_copy = ["scripts/", ".github/"]
 pytest_add_cli_args_test_selection = ["tests/"]
 # tests.mutation_support loads before any test imports verdiclip; see its docstring

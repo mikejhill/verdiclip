@@ -194,24 +194,33 @@ class Workspace(QObject):
         target: window_types.EditorWindow | None = None,
         *,
         new_window: bool = False,
+        select_new: bool = False,
         activate: bool = True,
+        activation_guard: Callable[[], bool] | None = None,
     ) -> window_types.EditorWindow:
         """Admit producer-independent work without replacing any existing tab."""
         from verdiclip.editor.window import EditorWindow  # noqa: PLC0415 - avoid cycle
 
-        should_activate = activate and not self._protected_ui()
+        should_activate = activate and self._activation_allowed(activation_guard)
         existing = self._existing_capture(options)
         if existing is not None:
             host = self.host_of(existing.record.identifier)
             if host is not None:
-                with host.presentation_policy(activate=should_activate):
-                    self._present_host(host, activate=should_activate)
+                with host.presentation_policy(
+                    activate=should_activate and activation_guard is None
+                ):
+                    self._present_host(
+                        host,
+                        activate=should_activate,
+                        activation_guard=activation_guard,
+                    )
                 return host
-        if target is None or target not in self._windows or not target.eligible:
-            target = next((window for window in self._windows if window.eligible), None)
-        if new_window or target is None:
-            target = EditorWindow(None, delivery, options, workspace=self)
-            target.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+
+        def accepts(host: window_types.EditorWindow) -> bool:
+            return host.accepts_capture if select_new else host.eligible
+
+        if target is None or target not in self._windows or not accepts(target):
+            target = next((window for window in self._windows if accepts(window)), None)
         record = DocumentRecord(
             session,
             delivery,
@@ -219,21 +228,48 @@ class Workspace(QObject):
             options.source_path,
             provenance=options.provenance,
         )
-        with target.presentation_policy(activate=should_activate):
-            if existing is None:
-                target.add_document(record, activate=should_activate)
-            else:
-                target.attach_page(existing, len(target.pages))
-                if should_activate:
-                    target.activate_page(existing)
-            self._present_host(target, activate=should_activate)
+        created_host = new_window or target is None
+        if new_window or target is None:
+            target = EditorWindow(None, delivery, options, workspace=self)
+        try:
+            if created_host:
+                target.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+            with target.presentation_policy(
+                activate=should_activate and activation_guard is None
+            ):
+                if existing is None:
+                    target.add_document(record, activate=should_activate or select_new)
+                else:
+                    target.attach_page(existing, len(target.pages))
+                    if should_activate or select_new:
+                        target.activate_page(existing)
+                self._present_host(
+                    target, activate=should_activate, activation_guard=activation_guard
+                )
+        except (RuntimeError, ValueError, MemoryError):
+            # Retire only a newly allocated, still-empty host. A page registered
+            # before an attachment failure remains owned by parking for retry.
+            self._retire_failed_admission(target, created=created_host)
+            raise
         return target
 
+    def _retire_failed_admission(
+        self, target: window_types.EditorWindow, *, created: bool
+    ) -> None:
+        """Never dispose a pre-existing host or a newly admitted document."""
+        if created and not target.pages:
+            self.forget_window(target)
+            target.deleteLater()
+
     def _present_host(
-        self, target: window_types.EditorWindow, *, activate: bool
+        self,
+        target: window_types.EditorWindow,
+        *,
+        activate: bool,
+        activation_guard: Callable[[], bool] | None = None,
     ) -> None:
         # Visible/minimized hosts need no presentation change for background work.
-        activate = activate and not self._protected_ui()
+        activate = activate and self._activation_allowed(activation_guard)
         if not target.isVisible():
             # Reserve before show: failure must remain retryable/recoverable.
             self._pending_presentations.add(target)
@@ -250,7 +286,7 @@ class Workspace(QObject):
                 target.setWindowState(
                     target.windowState() & ~Qt.WindowState.WindowMinimized
                 )
-            if self._protected_ui():
+            if not self._activation_allowed(activation_guard):
                 if not target.isVisible():
                     self._presentation_timer.start()
                 return
@@ -258,11 +294,23 @@ class Workspace(QObject):
         self._pending_presentations.discard(target)
         if not self._pending_presentations:
             self._presentation_timer.stop()
-        if activate and not self._protected_ui() and target in self._windows:
+        if (
+            activate
+            and self._activation_allowed(activation_guard)
+            and target in self._windows
+        ):
             target.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, on=False)
             target.raise_()
-            if not self._protected_ui():
+            if self._activation_allowed(activation_guard):
                 target.activateWindow()
+
+    def _activation_allowed(self, guard: Callable[[], bool] | None) -> bool:
+        if self._protected_ui():
+            return False
+        try:
+            return guard is None or guard() is True
+        except Exception:  # noqa: BLE001 - unknown admission is passive; controls propagate
+            return False
 
     @staticmethod
     def _protected_ui() -> bool:

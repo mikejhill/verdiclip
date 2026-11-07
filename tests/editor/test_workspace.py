@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast, override
 
@@ -19,7 +20,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from pytestqt.qtbot import QtBot
-from tests.shell.test_reviewed_delivery import capture
 
 from verdiclip.document.admission import CaptureProvenance
 from verdiclip.document.annotations import RectangleShape
@@ -1356,7 +1356,9 @@ def test_close_retains_reentrant_existing_capture_admission(
     """A supported re-admission cannot be disposed with its former host."""
     first = open_document(workspace, sample_image, tmp_path)
     page = first.pages[0]
-    page.record.provenance = CaptureProvenance.from_capture(capture(sample_image))
+    page.record.provenance = CaptureProvenance(
+        "fixture-capture", "Screenshot", datetime(2026, 11, 7, tzinfo=UTC)
+    )
     open_document(workspace, sample_image, tmp_path, title="Neighbor")
     second = open_document(workspace, sample_image, tmp_path, title="Other", new=True)
     documents = workspace.documents
@@ -1402,3 +1404,103 @@ def test_close_retains_reentrant_existing_capture_admission(
         # fault failure is not obscured by a second failure in fixture teardown.
         if page.record not in workspace.documents and page in second.pages:
             second.take_page(page)
+
+
+@pytest.mark.parametrize("operation", ["detach", "close"])
+def test_capture_typing_guard_does_not_block_explicit_document_actions(
+    workspace: Workspace, sample_image: QImage, tmp_path: Path, operation: str
+) -> None:
+    """Explicit detach/close still commits typing despite the capture guard."""
+    host = open_document(workspace, sample_image, tmp_path)
+    page = host.pages[0]
+    page.canvas.editors.edit_text(None, Point(20, 20))
+    editor = page.canvas.editors.widget
+    assert isinstance(editor, QPlainTextEdit)
+    editor.setPlainText("Keep this typing")
+    assert not host.accepts_capture
+    assert host.eligible
+    if operation == "detach":
+        assert workspace.move(host, page)
+        assert workspace.host_of(page.record.identifier) is not host
+        assert (
+            getattr(page.record.session.document.annotations[0], "text", None)
+            == "Keep this typing"
+        )
+    else:
+        host.set_confirm_close(confirm=False)
+        assert workspace.close_all()
+        assert not workspace.has_work
+
+
+@pytest.mark.parametrize("error_type", [RuntimeError, MemoryError])
+def test_retained_presentation_failure_preserves_work_and_can_retry(
+    workspace: Workspace,
+    sample_image: QImage,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error_type: type[Exception],
+) -> None:
+    """A deferred show failure stops automatic retry without losing dirty tabs."""
+    host = open_document(workspace, sample_image, tmp_path, delivered=False)
+    page = host.pages[0]
+    add_rectangle(page)
+    documents = workspace.documents
+    state = page.record.session.history.state_id
+    host.hide()
+    workspace._pending_presentations.add(host)
+    workspace._presentation_timer.start()
+    errors = QSignalSpy(workspace.presentation_failed)
+    real_show = host.show
+
+    def fail_show() -> None:
+        raise error_type("Owned fixture show failure")
+
+    monkeypatch.setattr(host, "show", fail_show)
+    workspace.present_retained()
+    assert errors.count() == 1
+    assert "Recover retained tabs" in errors.at(0)[0]
+    assert workspace.documents == documents
+    assert page.record.session.history.state_id == state
+    assert page.record.session.document.annotations
+    assert host in workspace._pending_presentations
+    assert not workspace._presentation_timer.isActive()
+    assert not host.isVisible()
+
+    monkeypatch.setattr(host, "show", real_show)
+    workspace.present_retained()
+    assert host.isVisible()
+    assert host not in workspace._pending_presentations
+    assert not workspace._presentation_timer.isActive()
+    assert workspace.documents == documents
+    assert host.pages == (page,)
+    assert page.record.session.history.state_id == state
+    assert errors.count() == 1
+
+
+def test_duplicate_capture_returns_original_host_without_duplicate_document(
+    workspace: Workspace, sample_image: QImage, tmp_path: Path
+) -> None:
+    """Re-admitting the same capture preserves its edited page and original host."""
+    original = open_document(workspace, sample_image, tmp_path, delivered=False)
+    page = original.pages[0]
+    page.record.provenance = CaptureProvenance(
+        "retained-capture", "Original", datetime(2026, 11, 7, tzinfo=UTC)
+    )
+    add_rectangle(page)
+    other = open_document(workspace, sample_image, tmp_path, new=True)
+    documents = workspace.documents
+    state = page.record.session.history.state_id
+    returned = workspace.open_document(
+        page.record.session,
+        page.record.delivery,
+        EditorOptions(title="Retry", provenance=page.record.provenance),
+        target=other,
+        new_window=True,
+        activate=False,
+    )
+    assert returned is original
+    assert workspace.documents == documents
+    assert original.pages == (page,)
+    assert page not in other.pages
+    assert page.record.session.history.state_id == state
+    assert len(workspace.windows) == 2
