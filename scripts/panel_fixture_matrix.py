@@ -25,6 +25,7 @@ class MatrixCase:
     width: int = 320
     reference_offset: float | None = None
     reference_mode: str = "scroll"
+    reference_endpoint: bool = False
 
     def validate(self) -> None:
         """Bound all authored controls before interpolating the local document."""
@@ -34,6 +35,14 @@ class MatrixCase:
             raise ValueError("Invalid owned matrix variant or width")
         if self.reference_mode not in {"scroll", "translate"}:
             raise ValueError("Invalid reference mode")
+        if self.reference_endpoint and (
+            self.reference_offset is not None
+            or self.reference_mode != "scroll"
+            or self.variant != "static"
+        ):
+            raise ValueError(
+                "Endpoint reference requires static self-scroll without offset"
+            )
         if self.reference_offset is not None and (
             not math.isfinite(self.reference_offset)
             or not 0 <= self.reference_offset <= MAX_REFERENCE_OFFSET

@@ -10,12 +10,13 @@ import sys
 import time
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import mss
 import mss.tools
-from scripts.panel_feasibility import NativeWindow, write
+from scripts.panel_feasibility import NativeWindow, snapshots, write
 from scripts.panel_probe_oracle import Pixels
 from scripts.panel_uia_probe import NativeGuard
 
@@ -26,6 +27,7 @@ OVERLAP_PIXELS = 32
 STABLE_COUNT = 3
 MAX_DPR = 2
 SETTLE_SECONDS = 2
+MAX_READINESS_SAMPLES = 16
 
 
 def reference_offsets(extent: float, viewport: float, dpr: float) -> tuple[float, ...]:
@@ -99,14 +101,50 @@ def check_monitor(
         raise RuntimeError("Reference target is not wholly on one monitor")
 
 
-def capture_reference(manifest: dict[str, Any], output: Path) -> None:
-    """Read only an owned fixed reference, guarded before and after native calls."""
+def latest_authored_state(directory: Path) -> dict[str, Any]:
+    """Require fresh observer-backed authored telemetry, never zero-box fallback."""
+    values = snapshots(directory)
+    if not values or values[-1].get("observer_ready") is not True:
+        raise RuntimeError("Authored content-box observer not ready")
+    latest = values[-1]
+    for pane in ("target", "outer", "sibling"):
+        box = latest["state"][pane].get("content_box")
+        if not box or not all(
+            math.isfinite(box[k]) and box[k] > 0 for k in ("width", "height")
+        ):
+            raise RuntimeError("Authored content-box dimensions unavailable")
+    return latest
+
+
+@dataclass
+class RootObservationContext:
+    """Bounded read-only evidence inputs, never capture matcher geometry."""
+
+    manifest: dict[str, Any]
+    output: Path
+    states: Path | None
+    observations: list[dict[str, Any]]
+    started: float
+
+
+def check_readiness_deadline(started: float) -> None:
+    """Reject expiration after native resource cleanup, before admission."""
+    if time.monotonic() - started >= SETTLE_SECONDS:
+        raise RuntimeError("Owned root readiness deadline exceeded")
+
+
+def stable_owned_root(
+    manifest: dict[str, Any], output: Path, states: Path | None = None
+) -> Pixels:
+    """Retain full root pixels across three guarded stable observations in2s."""
     output.mkdir(exist_ok=False)
-    rect = manifest["pixel_border_rect"]
+    rect = manifest["allowed_rect"]
     width, height = rect[2] - rect[0], rect[3] - rect[1]
     if width <= 0 or height <= 0 or width * height > MAX_PIXELS:
-        raise ValueError("Reference raster exceeds bounds")
+        raise ValueError("Owned root raster exceeds bounds")
+    observations: list[dict[str, Any]] = []
     started = time.monotonic()
+    failure = None
     with (output / "calls.jsonl").open("x", encoding="utf-8") as log:
 
         def emit(event: str, operation: str) -> None:
@@ -123,57 +161,142 @@ def capture_reference(manifest: dict[str, Any], output: Path) -> None:
             log.flush()
 
         emit("process", "reference")
-        emit("call_start", "reference.setup")
-        guard = NativeGuard(
-            manifest["root_hwnd"],
-            round(manifest["click"][0]),
-            round(manifest["click"][1]),
-        )
-        native = NativeWindow()
-        emit("call_end", "reference.setup")
-        previous = None
-        matched = 0
-        with logged_source(emit) as source:
-            check_monitor(source, guard, rect, emit)
-            while time.monotonic() - started < SETTLE_SECONDS:
-                emit("call_start", "reference.guard")
-                guard.check()
-                owner = native.foreground(manifest["owned_process_ids"])
-                guard.check()
-                emit("call_end", "reference.guard")
-                if (
-                    owner["root_hwnd"] != manifest["root_hwnd"]
-                    or owner["allowed_rect"] != manifest["allowed_rect"]
-                ):
-                    raise RuntimeError("Owned reference geometry changed")
-                emit("call_start", "reference.grab")
-                guard.check()
-                shot = source.grab(
-                    {"left": rect[0], "top": rect[1], "width": width, "height": height}
+        try:
+            emit("call_start", "reference.setup")
+            guard = NativeGuard(
+                manifest["root_hwnd"],
+                round((rect[0] + rect[2]) / 2),
+                round((rect[1] + rect[3]) / 2),
+            )
+            native = NativeWindow()
+            emit("call_end", "reference.setup")
+            with logged_source(emit) as source:
+                check_monitor(source, guard, rect, emit)
+                image = root_observations(
+                    source,
+                    native,
+                    guard,
+                    RootObservationContext(
+                        manifest, output, states, observations, started
+                    ),
+                    emit,
                 )
+                emit("call_start", "reference.final_guard")
                 guard.check()
-                emit("call_end", "reference.grab")
-                if (shot.width, shot.height) != (width, height):
-                    raise RuntimeError("Reference native raster dimensions changed")
-                rgb = shot.rgb
-                matched = matched + 1 if rgb == previous else 1
-                previous = rgb
-                if matched == STABLE_COUNT:
-                    if time.monotonic() - started >= SETTLE_SECONDS:
-                        break
-                    mss.tools.to_png(
-                        rgb, (width, height), output=str(output / "reference.png")
-                    )
-                    emit("call_start", "reference.final_guard")
-                    guard.check()
-                    emit("call_end", "reference.final_guard")
-                    write(
-                        output / "reference.json",
-                        {"reference_captured": True, "rect": rect, "samples": matched},
-                    )
-                    return
-                time.sleep(0.1)
-    raise RuntimeError("Reference pixels did not settle within two seconds")
+                emit("call_end", "reference.final_guard")
+            check_readiness_deadline(started)
+        except Exception as error:
+            failure = repr(error)
+            raise
+        else:
+            return image
+        finally:
+            write(
+                output / "readiness.json",
+                {
+                    "root_rect": rect,
+                    "observations": observations,
+                    "first_failure": failure,
+                },
+            )
+
+
+def root_observations(
+    source: mss.MSS,
+    native: NativeWindow,
+    guard: NativeGuard,
+    context: RootObservationContext,
+    emit: Callable[[str, str], None],
+) -> Pixels:
+    """Bracket each full root raster with ownership and optional fresh DOM state."""
+    manifest, output, states, observations, started = (
+        context.manifest,
+        context.output,
+        context.states,
+        context.observations,
+        context.started,
+    )
+    rect = manifest["allowed_rect"]
+    width, height = rect[2] - rect[0], rect[3] - rect[1]
+    previous = None
+    previous_state = None
+    matched = 0
+    while (
+        time.monotonic() - started < SETTLE_SECONDS
+        and len(observations) < MAX_READINESS_SAMPLES
+    ):
+        before = latest_authored_state(states) if states is not None else None
+        emit("call_start", "reference.grab")
+        guard.check()
+        owner = native.foreground(manifest["owned_process_ids"])
+        if owner["root_hwnd"] != manifest["root_hwnd"] or owner["allowed_rect"] != rect:
+            raise RuntimeError("Owned root geometry changed before raster")
+        shot = source.grab(
+            {"left": rect[0], "top": rect[1], "width": width, "height": height}
+        )
+        guard.check()
+        after_owner = native.foreground(manifest["owned_process_ids"])
+        guard.check()
+        emit("call_end", "reference.grab")
+        if after_owner != owner or (shot.width, shot.height) != (width, height):
+            raise RuntimeError("Owned root geometry changed after raster")
+        rgb = shot.rgb
+        if not observations:
+            mss.tools.to_png(
+                rgb, (width, height), output=str(output / "root-first.png")
+            )
+        mss.tools.to_png(rgb, (width, height), output=str(output / "root-last.png"))
+        after = before
+        while states is not None and time.monotonic() - started < SETTLE_SECONDS:
+            after = latest_authored_state(states)
+            if before is not None and after["sequence"] > before["sequence"]:
+                break
+            time.sleep(0.02)
+        stable_state = before is None or (
+            after is not None
+            and after["sequence"] > before["sequence"]
+            and after["state"] == before["state"]
+        )
+        state = after["state"] if after is not None else None
+        matched = (
+            matched + 1
+            if stable_state and rgb == previous and state == previous_state
+            else int(stable_state)
+        )
+        observations.append(
+            {
+                "before": before,
+                "after": after,
+                "root_rect": rect,
+                "stable_count": matched,
+            }
+        )
+        previous, previous_state = rgb, state
+        if matched == STABLE_COUNT and time.monotonic() - started < SETTLE_SECONDS:
+            return Pixels(width, height, rgb)
+        time.sleep(0.05)
+    raise RuntimeError("Owned root pixels/state did not settle within two seconds")
+
+
+def capture_reference(manifest: dict[str, Any], output: Path) -> None:
+    """Capture the whole owned root; color borders never crop reference evidence."""
+    mode = manifest.get("capture_mode")
+    if mode not in {"entry-readiness", "oracle-reference"}:
+        raise ValueError("Unknown owned root capture mode")
+    states = Path(manifest["state_directory"]) if mode == "oracle-reference" else None
+    image = stable_owned_root(manifest, output, states)
+    mss.tools.to_png(
+        image.rgb, (image.width, image.height), output=str(output / "reference.png")
+    )
+    write(
+        output / "reference.json",
+        {
+            "reference_captured": True,
+            "rect": manifest["allowed_rect"],
+            "samples": STABLE_COUNT,
+            "capture_scope": "owned-root",
+        },
+    )
 
 
 def main() -> int:
@@ -189,6 +312,18 @@ def main() -> int:
         raise RuntimeError("Reference capture requires disposable hosted CI")
     capture_reference(json.loads(args.manifest.read_text()), args.output)
     return 0
+
+
+def selected_from_root(image: Pixels, root: list[int], selected: list[int]) -> Pixels:
+    """Use exact native half-open physical bounds, never color/DOM crop guesses."""
+    if (image.width, image.height) != (root[2] - root[0], root[3] - root[1]):
+        raise ValueError("Owned root raster geometry differs")
+    left, top, right, bottom = selected
+    if not root[0] <= left < right <= root[2] or not root[1] <= top < bottom <= root[3]:
+        raise ValueError("Selected outer rectangle is outside reference root")
+    return image.crop(
+        [left - root[0], top - root[1], right - root[0], bottom - root[1]]
+    )
 
 
 def assemble_reference_body(tiles: list[tuple[int, Pixels]], total_rows: int) -> Pixels:

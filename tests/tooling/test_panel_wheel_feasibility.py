@@ -10,7 +10,8 @@ import mss
 import pytest
 from scripts import panel_wheel_feasibility as supervisor
 from scripts import panel_wheel_probe as probe
-from scripts.panel_uia import ScrollState
+from scripts.panel_uia import PanelUia, ScrollState, Structure
+from scripts.panel_uia_probe import NativeGuard, Probe
 
 
 class FakeApi:
@@ -575,3 +576,48 @@ def test_slow_mss_creation_retained_and_closed(
         {"event": "call_start", "name": "wheel.mss.close"},
         {"event": "call_end", "name": "wheel.mss.close"},
     ]
+
+
+@pytest.mark.parametrize("miss", [False, True])
+def test_real_discovery_emitter_to_wheel_validator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, miss: bool
+) -> None:
+    """Nested calls finish before discovery's receipt, including cold misses."""
+    now = [0.1]
+    monkeypatch.setattr(probe.time, "monotonic", lambda: now[0])
+    instance = Probe(argparse.Namespace(output=tmp_path / "probe", x=50, y=50))
+    instance.guard = object.__new__(NativeGuard)
+    instance.uia = object.__new__(PanelUia)
+    instance.uia.ancestors = []
+    target = Structure(123, 0, 50033, "Chrome", (10, 20, 100, 200), offscreen=False)
+    monkeypatch.setattr(NativeGuard, "check", lambda _: None)
+
+    def discover(self: PanelUia, _x: int, _y: int) -> Structure:
+        now[0] = 0.2
+        instance.emit({"event": "call_start", "slot": 7})
+        now[0] = 0.3
+        instance.emit({"event": "call_end", "slot": 7})
+        self.ancestors.append(target)
+        if miss:
+            raise OSError(
+                "No vertical ScrollPattern: ancestor chain ended after 1 nodes"
+            )
+        return target
+
+    monkeypatch.setattr(PanelUia, "discover", discover)
+    try:
+        if miss:
+            with pytest.raises(OSError, match="No vertical ScrollPattern"):
+                instance.discovery_observation("cold")
+        else:
+            assert instance.discovery_observation("cold") == target
+    finally:
+        instance.log.close()
+    records = supervisor.events(tmp_path / "probe" / "calls.jsonl")
+    assert records[-1]["monotonic"] == 0.3
+    assert records[-1]["discovery_started_monotonic"] == 0.1
+    assert ("error" in records[-1]) is miss
+    supervisor.validate_log(records, 0.0, 0.4, finished=True)
+    records[-1]["monotonic"] = 0.1
+    with pytest.raises(RuntimeError, match="Wheel event time invalid"):
+        supervisor.validate_log(records, 0.0, 0.4, finished=True)

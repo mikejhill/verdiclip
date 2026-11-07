@@ -17,7 +17,6 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-import mss
 from scripts.panel_feasibility import (
     ROOT,
     NativeWindow,
@@ -29,12 +28,11 @@ from scripts.panel_feasibility import (
     wait_snapshot,
     write,
 )
-from scripts.panel_fixture_matrix import MatrixCase, render
+from scripts.panel_fixture_matrix import MAX_REFERENCE_OFFSET, MatrixCase, render
 from scripts.panel_fixture_server import FixtureServer
 from scripts.panel_matrix_reference import reference_offsets
 from scripts.panel_owned_job import OwnedJob
-from scripts.panel_probe_oracle import Pixels, color_bounds
-from scripts.panel_uia_probe import NativeGuard
+from scripts.panel_probe_oracle import color_bounds
 
 CASES = {
     "conversation-light100": (MatrixCase("conversation", width=320), "1"),
@@ -63,7 +61,10 @@ def acquisition_manifest(owner: Json, border: list[int], pids: list[int]) -> Jso
 
 
 def launch(
-    job: OwnedJob, server: FixtureServer, output: Path, scale: str
+    job: OwnedJob,
+    server: FixtureServer,
+    output: Path,
+    scale: str,
 ) -> tuple[Json, Json]:
     """Locate only the authored entry border; no DOM geometry selects capture."""
     candidates = [
@@ -91,26 +92,15 @@ def launch(
     native = NativeWindow()
     owner = native.foreground(job.pids())
     left, top, right, bottom = owner["allowed_rect"]
-    guard = NativeGuard(
-        owner["root_hwnd"], round((left + right) / 2), round((top + bottom) / 2)
-    )
-    with mss.MSS() as source:
-        guard.check()
-        if native.foreground(job.pids()) != owner:
-            raise RuntimeError("Owned window changed before border observation")
-        shot = source.grab(
-            {"left": left, "top": top, "width": right - left, "height": bottom - top}
-        )
-        guard.check()
-        if native.foreground(job.pids()) != owner:
-            raise RuntimeError("Owned window changed after border observation")
-        guard.check()
-        x1, y1, x2, y2 = color_bounds(Pixels(shot.width, shot.height, shot.rgb), BORDER)
-    border = [left + x1, top + y1, left + x2, top + y2]
-    manifest = acquisition_manifest(owner, border, job.pids())
+    manifest = {
+        **owner,
+        "kind": "owned-edge",
+        "owned_process_ids": job.pids(),
+        "click": [(left + right) / 2, (top + bottom) / 2],
+    }
     return manifest, {
         "initial": initial,
-        "pixel_border_rect": border,
+        "root_rect": owner["allowed_rect"],
         "edge_executable": str(edge),
     }
 
@@ -241,6 +231,29 @@ def verify_raw(output: Path, initial: Json) -> Json:
     return report
 
 
+def prepare_acquisition(helper_job: OwnedJob, output: Path, receipt: Json) -> None:
+    """Locate the owned entry only after a bounded root-only readiness helper."""
+    entry = output / "entry-readiness"
+    entry.mkdir(exist_ok=False)
+    owner = receipt["acquisition"]
+    receipt["entry_helper"] = run_reference(
+        helper_job, {**owner, "capture_mode": "entry-readiness"}, entry
+    )
+    root = load_pixels(entry / "reference/reference.png")
+    if (root.width, root.height) != (
+        owner["allowed_rect"][2] - owner["allowed_rect"][0],
+        owner["allowed_rect"][3] - owner["allowed_rect"][1],
+    ):
+        raise RuntimeError("Owned entry root raster dimensions changed")
+    left, top, _, _ = owner["allowed_rect"]
+    x1, y1, x2, y2 = color_bounds(root, BORDER)
+    border = [left + x1, top + y1, left + x2, top + y2]
+    receipt["acquisition"] = acquisition_manifest(
+        owner, border, owner["owned_process_ids"]
+    )
+    receipt["oracle_only"]["pixel_border_rect"] = border
+
+
 def collect_session(
     case: MatrixCase,
     helper_job: OwnedJob,
@@ -249,7 +262,9 @@ def collect_session(
 ) -> None:
     """Collect one raw or fixed-reference session without swallowing failures."""
     manifest, oracle = receipt["acquisition"], receipt["oracle_only"]
-    if case.reference_offset is None:
+    if case.reference_offset is None and not case.reference_endpoint:
+        prepare_acquisition(helper_job, output, receipt)
+        manifest = receipt["acquisition"]
         receipt["helper"] = run_probe(
             helper_job, manifest, output, experiment="browser"
         )
@@ -260,12 +275,13 @@ def collect_session(
     else:
         reference_manifest = {
             **manifest,
-            "pixel_border_rect": oracle["pixel_border_rect"],
+            "state_directory": str((output / "states").resolve(strict=True)),
+            "capture_mode": "oracle-reference",
         }
         receipt["helper"] = run_reference(helper_job, reference_manifest, output)
         captured = json.loads((output / "reference/reference.json").read_text())
         image = load_pixels(output / "reference/reference.png")
-        border = oracle["pixel_border_rect"]
+        border = oracle["root_rect"]
         if (
             captured.get("reference_captured") is not True
             or captured.get("rect") != border
@@ -298,7 +314,12 @@ def session(case: MatrixCase, scale: str, output: Path) -> Json:
         NativeWindow()
         fixture_job, helper_job = OwnedJob(), OwnedJob()
         server = FixtureServer(source, output / "states")
-        manifest, oracle = launch(fixture_job, server, output, scale)
+        manifest, oracle = launch(
+            fixture_job,
+            server,
+            output,
+            scale,
+        )
         receipt["acquisition"] = manifest
         receipt["oracle_only"] = oracle
         collect_session(case, helper_job, output, receipt)
@@ -333,11 +354,16 @@ def session(case: MatrixCase, scale: str, output: Path) -> Json:
     return receipt
 
 
-def verify_reference_identity(raw: Json, reference: Json, offset: float) -> None:
+def verify_reference_identity(raw: Json, reference: Json, offset: float | None) -> None:
     """Admit identical authored raster conditions and exact requested DOM pose."""
     oracle, observed = raw["initial"], reference["initial"]
     target, actual = oracle["state"]["target"], observed["state"]["target"]
-    if raw["pixel_border_rect"] != reference["pixel_border_rect"]:
+    if (
+        oracle.get("observer_ready") is not True
+        or observed.get("observer_ready") is not True
+    ):
+        raise RuntimeError("Reference content-box observer not initialized")
+    if raw["root_rect"] != reference["root_rect"]:
         raise RuntimeError("Reference physical outer rectangle changed")
     if observed["dpr"] != oracle["dpr"] or actual["horizontal"] != target["horizontal"]:
         raise RuntimeError("Reference scale or horizontal origin changed")
@@ -350,6 +376,8 @@ def verify_reference_identity(raw: Json, reference: Json, offset: float) -> None
             "extent_height",
             "rect",
             "border",
+            "fractional_border",
+            "content_box",
         )
     ):
         raise RuntimeError("Reference body extent or width changed")
@@ -363,7 +391,14 @@ def verify_reference_identity(raw: Json, reference: Json, offset: float) -> None
         or observed["config"]["reference_offset"] != offset
     ):
         raise RuntimeError("Reference mode or requested offset changed")
-    if abs(actual["vertical"] - offset) * oracle["dpr"] > OFFSET_TOLERANCE:
+    if offset is None:
+        if (
+            observed["config"].get("reference_endpoint") is not True
+            or observed.get("endpoint_limit") != actual["vertical"]
+            or not 0 < actual["vertical"] <= MAX_REFERENCE_OFFSET
+        ):
+            raise RuntimeError("Reference actual settled endpoint not established")
+    elif abs(actual["vertical"] - offset) * oracle["dpr"] > OFFSET_TOLERANCE:
         raise RuntimeError("Reference authored offset was not attained")
 
 
@@ -373,15 +408,18 @@ def collect_batch(case_name: str, output: Path, result: Json, start: float) -> N
     raw = session(case, scale, output / "raw")
     oracle = raw["oracle_only"]["initial"]
     target = oracle["state"]["target"]
-    offsets = reference_offsets(
-        target["extent_height"], target["viewport_height"], oracle["dpr"]
+    offsets: list[float | None] = list(
+        reference_offsets(
+            target["extent_height"], target["viewport_height"], oracle["dpr"]
+        )
     )
+    offsets[-1] = None  # Explicit authored bottom, never rounded integer DOM extent.
     result["oracle_reference_offsets"] = offsets
     for index, offset in enumerate(offsets):
         if time.monotonic() - start >= BATCH_SECONDS:
             raise RuntimeError("Matrix batch deadline exceeded")
         reference = session(
-            replace(case, reference_offset=offset),
+            replace(case, reference_offset=offset, reference_endpoint=offset is None),
             scale,
             output / f"reference-{index:02d}",
         )

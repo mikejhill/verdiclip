@@ -372,3 +372,44 @@ uses UIA-write restoration after an uncertain wheel action. Four fixed cases
 cover top/middle starts and interior/endpoint behavior; independent fixture state
 audits ancestor, sibling and horizontal preservation. Its native results are
 pending and do not authorize a product input strategy.
+
+### Residual image metadata versus natural retirement
+
+The outer lifecycle-proof supervisor now separates optional residual executable
+metadata from mandatory retirement evidence. It attempts an image query once per
+same-job pinned process handle, at the existing query-limited rights. A failed
+image lookup remains visible as `image_status: unavailable` with the exact API
+and Win32 error. It is not retried after exit or through another API, and no
+executable name is inferred or exempted. Available identity is retained only for
+that same pinned handle.
+
+Natural cleanup still requires successful handle acquisition and same-job
+validation, successful zero-wait and exit-code queries, signaled pinned handles,
+an empty final owned job, successful inspection-handle closes, and admission
+within the original 45-second absolute deadline. These failures remain fatal.
+The receipt labels `image_metadata_required_for_cleanup: false` and lists
+`metadata_unavailable` separately from cleanup `errors`. Direct provider PID and
+kernel-image authentication are unchanged and remain mandatory.
+
+This is an explicit revision of the diagnostic contract, not a reinterpretation
+of prior runs. The run at `69639e4` remains failed: its initial image lookup was
+denied and the earlier supervisor stopped without proving natural retirement.
+Its forced cleanup does not qualify it. The prior observed `conhost.exe` lifetime
+at `831ed63` motivates avoiding redundant postmortem metadata reads, not a
+process-name exception. A fresh reviewed native run is required to qualify this
+revised outer-supervisor contract.
+
+The next reference collector retains complete owned-root screenshots rather than
+cropping on an exact border color. Three equal rasters and matching static DOM
+states must settle within two seconds, under the existing process/native-call
+watchdogs. It retains first/last images and bounded observations on failure.
+Raw entry selection has no DOM input. Independent reference telemetry records
+initialized fractional content-box/border geometry and the actual authored bottom
+position; unresolved phase still rejects. Received DOM sequence ordering is not
+atomic pixel/state attestation, so this proves only the authored static case.
+
+All four first wheel runs at `69639e4` stop on backwards discovery timestamps:
+the discovery-start value overwrote its later event emission time. The producer
+now owns the event timestamp and records discovery start separately. A regression
+exercises the actual emitter, JSONL reader and unchanged watchdog validator.
+Existing bounded discovery settling was already enabled and is not extended.

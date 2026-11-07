@@ -75,3 +75,16 @@ def test_invalid_config_rejected(case: MatrixCase) -> None:
     """No unbounded or dynamic reference case is rendered."""
     with pytest.raises(ValueError, match=r"Unknown|Invalid|Reference"):
         render(case)
+
+
+def test_endpoint_mode_and_observer_readiness_are_authored() -> None:
+    """Actual endpoint and fractional box receipts come only from the owned page."""
+    page = render(MatrixCase("table", "dark", reference_endpoint=True))
+    config = configuration(page)
+    assert config["reference_endpoint"] is True
+    assert config["reference_offset"] is None
+    assert "Number.MAX_SAFE_INTEGER" in page
+    assert "ResizeObserver" in page
+    assert "observer_ready" in page
+    assert "fractional_border" in page
+    assert "setInterval(report, 100)" in page

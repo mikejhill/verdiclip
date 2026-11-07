@@ -77,27 +77,49 @@ if (config.scenario === 'conversation') {
 if (config.variant === 'sticky') {
   const sticky = document.createElement('div'); sticky.id = 'sticky'; sticky.textContent = 'Stationary interior warning'; content.prepend(sticky);
 }
-let initialized = false, sequence = 0, streamTick = 0;
+let initialized = false, sequence = 0, streamTick = 0, endpointLimit = null;
+const observedBoxes = new Map();
+const boxObserver = new ResizeObserver(entries => {
+  for (const entry of entries) {
+    const r = entry.contentRect;
+    observedBoxes.set(entry.target, {x:r.x, y:r.y, width:r.width, height:r.height});
+  }
+});
+for (const element of [target, outer, sibling]) boxObserver.observe(element);
+const isReference = config.reference_offset !== null || config.reference_endpoint;
 function state(element) {
   const r = element.getBoundingClientRect();
+  const style = getComputedStyle(element);
+  const box = observedBoxes.get(element);
+  if (!box) throw new Error('Authored content-box observer is not initialized');
   return {vertical: element.scrollTop, horizontal: element.scrollLeft,
     viewport_height: element.clientHeight, viewport_width: element.clientWidth,
     extent_height: element.scrollHeight, extent_width: element.scrollWidth,
-    rect: [r.left, r.top, r.right, r.bottom], border: [element.clientLeft, element.clientTop]};
+    rect: [r.left, r.top, r.right, r.bottom], border: [element.clientLeft, element.clientTop],
+    fractional_border: [parseFloat(style.borderLeftWidth), parseFloat(style.borderTopWidth),
+      parseFloat(style.borderRightWidth), parseFloat(style.borderBottomWidth)], content_box: box};
 }
 function report() {
   if (!initialized || sequence >= 256) return;
   const receipt = {sequence: sequence++, dpr: devicePixelRatio, user_agent: navigator.userAgent,
-    mode: config.reference_offset === null ? 'scroll' : `${config.reference_mode}-reference`, config,
+    mode: isReference ? `${config.reference_mode}-reference` : 'scroll', config,
+    observer_ready: [target,outer,sibling].every(element => observedBoxes.has(element)), endpoint_limit: endpointLimit,
     reference_offset: config.reference_offset, stream_tick: streamTick, expected_ids: ids,
     state: {target: state(target), outer: state(outer), sibling: state(sibling)}};
   // Existing owned fixture server may retain this bounded evidence; no external URL.
   fetch('state', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(receipt)});
 }
-requestAnimationFrame(() => requestAnimationFrame(() => {
+const observerStarted = performance.now();
+function initializeWhenObserved() {
+  if (![target,outer,sibling].every(element => observedBoxes.has(element))) {
+    if (performance.now() - observerStarted < 2000) requestAnimationFrame(initializeWhenObserved);
+    return; // Missing observer data is a startup failure, never a zero-box fallback.
+  }
+  requestAnimationFrame(() => requestAnimationFrame(() => {
   outer.scrollLeft = 11; sibling.scrollTop = 93; sibling.scrollLeft = 27;
   target.scrollLeft = config.scenario === 'table' ? 147 : 0;
-  if (config.reference_offset === null) { target.scrollTop = 119; }
+  if (config.reference_endpoint) { target.scrollTop = Number.MAX_SAFE_INTEGER; }
+  else if (config.reference_offset === null) { target.scrollTop = 119; }
   else if (config.reference_mode === 'scroll') {
     // Independent authored oracle offset; never obtained from capture alignment.
     target.scrollTop = config.reference_offset;
@@ -107,7 +129,11 @@ requestAnimationFrame(() => requestAnimationFrame(() => {
     content.style.transform = `translateY(${-config.reference_offset}px)`;
     target.scrollTop = 0;
   }
-  initialized = true; report();
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    endpointLimit = config.reference_endpoint ? target.scrollTop : null;
+    initialized = true; report();
+    setInterval(report, 100); // Read-only bounded fresh-state receipts for raster bracketing.
+  }));
   if (config.variant === 'streaming') setInterval(() => {
     streamTick++;
     for (const text of document.querySelectorAll('.text, td')) {
@@ -116,5 +142,7 @@ requestAnimationFrame(() => requestAnimationFrame(() => {
     report();
   }, 250);
 }));
+}
+requestAnimationFrame(initializeWhenObserved);
 for (const element of [target, outer, sibling]) element.addEventListener('scroll', report);
 </script>

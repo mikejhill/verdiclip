@@ -287,6 +287,7 @@ def test_residual_snapshot_pins_same_job_image_and_exit() -> None:
     assert witness == {
         "pid": 77,
         "image": "C:\\Windows\\owned.exe",
+        "image_status": "available",
         "exited": True,
         "exit_code": 0,
         "raw_exit_code": 0,
@@ -298,11 +299,11 @@ def test_residual_snapshot_pins_same_job_image_and_exit() -> None:
 
 
 @pytest.mark.parametrize("wait_result", [0, supervisor.WAIT_TIMEOUT])
-def test_image_error_preserves_live_or_exited_partial_witness(
+def test_unavailable_metadata_does_not_replace_natural_exit_proof(
     monkeypatch: pytest.MonkeyPatch,
     wait_result: int,
 ) -> None:
-    """Retain exit evidence and exact image errors while failing closed."""
+    """Retain unavailable image metadata while independently proving natural exit."""
     calls: list[str] = []
     job = Mock()
     job.handle = 1
@@ -312,13 +313,17 @@ def test_image_error_preserves_live_or_exited_partial_witness(
         member._obj.value = 1  # ty: ignore[unresolved-attribute] - ctypes byref
         return True
 
+    waits = iter([wait_result, 0])
+    current = [wait_result]
+
     def wait(_handle: int, _timeout: int) -> int:
         calls.append("wait")
-        return wait_result
+        current[0] = next(waits)
+        return current[0]
 
     def exit_code(_handle: int, code: object) -> bool:
         calls.append("exit")
-        code._obj.value = 0 if wait_result == 0 else 259  # ty: ignore[unresolved-attribute]
+        code._obj.value = 0 if current[0] == 0 else 259  # ty: ignore[unresolved-attribute]
         return True
 
     def image(*_args: object) -> bool:
@@ -339,11 +344,19 @@ def test_image_error_preserves_live_or_exited_partial_witness(
     job.api.QueryFullProcessImageNameW.side_effect = image
     job.api.CloseHandle.side_effect = close
     monkeypatch.setattr(supervisor.ctypes, "get_last_error", last_error, raising=False)
+    job.pids.return_value = []
     observer = supervisor.ResidualObserver(job)
     monkeypatch.setattr(supervisor, "ResidualObserver", lambda _: observer)
     result = supervisor.drain_naturally(job, [77], supervisor.time.monotonic() + 1)
-    assert result["natural_empty"] is False
-    assert result["errors"]
+    assert result["natural_empty"] is True
+    assert result["errors"] == []
+    assert result["image_metadata_required_for_cleanup"] is False
+    assert result["metadata_unavailable"] == [
+        {
+            "pid": 77,
+            "image_error": {"operation": "QueryFullProcessImageNameW", "winerror": 31},
+        }
+    ]
     assert result["initial_witnesses"] == [
         {
             "pid": 77,
@@ -352,10 +365,11 @@ def test_image_error_preserves_live_or_exited_partial_witness(
             "exited": wait_result == 0,
             "raw_exit_code": 0 if wait_result == 0 else 259,
             "exit_code": 0 if wait_result == 0 else None,
-            "error": {"operation": "QueryFullProcessImageNameW", "winerror": 31},
+            "image_status": "unavailable",
+            "image_error": {"operation": "QueryFullProcessImageNameW", "winerror": 31},
         }
     ]
-    assert calls == ["wait", "exit", "image", "GetLastError", "close"]
+    assert calls == ["wait", "exit", "image", "GetLastError", "wait", "exit", "close"]
     assert not observer.handles
 
 
@@ -417,3 +431,47 @@ def test_cached_identity_does_not_hide_exit_query_failure(
     }
     job.api.QueryFullProcessImageNameW.assert_not_called()
     observer.close()
+
+
+@pytest.mark.parametrize(
+    "failure", ["nonempty", "live", "wait", "exit", "close", "deadline"]
+)
+def test_denied_metadata_never_masks_critical_retirement_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    """Optional metadata cannot weaken any mandatory retirement observation."""
+    now = [0.0]
+    monkeypatch.setattr(supervisor.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(
+        supervisor.time, "sleep", lambda delay: now.__setitem__(0, now[0] + delay)
+    )
+    monkeypatch.setattr(supervisor.ctypes, "get_last_error", lambda: 5, raising=False)
+    job = Mock()
+    job.pids.return_value = [77] if failure == "nonempty" else []
+    observer = supervisor.ResidualObserver(job)
+    observer.handles = {77: 88}
+    job.api.WaitForSingleObject.return_value = supervisor.WAIT_TIMEOUT
+    job.api.GetExitCodeProcess.return_value = True
+    job.api.QueryFullProcessImageNameW.return_value = False
+    first = observer.snapshot(77)
+    assert first["image_status"] == "unavailable"
+    job.api.WaitForSingleObject.return_value = (
+        supervisor.WAIT_TIMEOUT
+        if failure == "live"
+        else (0xFFFFFFFF if failure == "wait" else 0)
+    )
+    job.api.GetExitCodeProcess.return_value = failure != "exit"
+    job.api.CloseHandle.return_value = failure != "close"
+    if failure == "deadline":
+
+        def late_exit(_handle: int, _code: object) -> bool:
+            now[0] = 0.02
+            return True
+
+        job.api.GetExitCodeProcess.side_effect = late_exit
+    monkeypatch.setattr(supervisor, "ResidualObserver", lambda _: observer)
+    result = supervisor.drain_naturally(job, [77], 0.02)
+    assert result["natural_empty"] is False
+    job.api.QueryFullProcessImageNameW.assert_called_once()
+    assert not observer.handles

@@ -118,7 +118,9 @@ class Probe:
 
     def emit(self, event: dict[str, object]) -> None:
         """Flush each event so killed/hung helpers retain their first evidence."""
-        self.log.write(json.dumps({"monotonic": time.monotonic(), **event}) + "\n")
+        # The envelope owns emission time; observation payloads can describe an
+        # earlier instant and must never rewind nested native-call evidence.
+        self.log.write(json.dumps({**event, "monotonic": time.monotonic()}) + "\n")
         self.log.flush()
 
     def validate(self) -> ScrollState:
@@ -286,7 +288,13 @@ class Probe:
             return target
         finally:
             observation["ancestors"] = [asdict(item) for item in self.uia.ancestors]
-            self.emit({"event": "discovery_observation", **observation})
+            self.emit(
+                {
+                    "event": "discovery_observation",
+                    **observation,
+                    "discovery_started_monotonic": observation["monotonic"],
+                }
+            )
 
     def discover_target(self) -> Structure:
         """Optionally settle one normal cold miss; never retry native errors."""

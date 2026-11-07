@@ -33,6 +33,7 @@ class ResidualInspectionError(OSError):
 
     def __init__(self, operation: str, witness: dict[str, object]) -> None:
         code = ctypes.get_last_error()
+        self.winerror_code = code
         self.witness = {**witness, "error": {"operation": operation, "winerror": code}}
         super().__init__(f"{operation} failed with Win32 error {code}")
 
@@ -45,6 +46,7 @@ class ResidualObserver:
         self.api = job.api
         self.handles: dict[int, int] = {}
         self.identities: dict[int, tuple[int, str]] = {}
+        self.image_failures: dict[int, tuple[int, dict[str, object]]] = {}
         for name, arguments, result in (
             (
                 "OpenProcess",
@@ -90,12 +92,17 @@ class ResidualObserver:
         """Read exit evidence first; never lose it when a later image query fails."""
         handle = self.handles[pid]
         identity = self.identities.get(pid)
+        unavailable = self.image_failures.get(pid)
+        if unavailable is not None and unavailable[0] != handle:
+            raise RuntimeError("Residual metadata handle changed")
         if identity is not None and identity[0] != handle:
             raise RuntimeError("Residual identity handle changed")
         witness: dict[str, object] = {
             "pid": pid,
             "image": identity[1] if identity is not None else None,
         }
+        if unavailable is not None:
+            witness.update(image_status="unavailable", image_error=unavailable[1])
         wait = self.api.WaitForSingleObject(handle, 0)
         if wait not in (0, WAIT_TIMEOUT):
             raise ResidualInspectionError(
@@ -108,19 +115,29 @@ class ResidualObserver:
         witness.update(
             raw_exit_code=code.value, exit_code=code.value if wait == 0 else None
         )
-        if wait == 0 and identity is not None:
-            witness["image_source"] = "verified-same-pinned-handle"
+        if identity is not None:
+            witness.update(
+                image_status="available", image_source="verified-same-pinned-handle"
+            )
+            return witness
+        if unavailable is not None:
+            witness.update(image_status="unavailable", image_error=unavailable[1])
             return witness
         size = wintypes.DWORD(IMAGE_CHARS)
         image = ctypes.create_unicode_buffer(IMAGE_CHARS)
         if not self.api.QueryFullProcessImageNameW(
             handle, 0, image, ctypes.byref(size)
         ):
-            raise ResidualInspectionError("QueryFullProcessImageNameW", witness)
-        if identity is not None and identity[1] != image.value:
-            raise RuntimeError("Residual kernel identity changed")
+            error = ResidualInspectionError("QueryFullProcessImageNameW", witness)
+            detail: dict[str, object] = {
+                "operation": "QueryFullProcessImageNameW",
+                "winerror": error.winerror_code,
+            }
+            self.image_failures[pid] = (handle, detail)
+            witness.update(image_status="unavailable", image_error=detail)
+            return witness
         self.identities.setdefault(pid, (handle, image.value))
-        witness["image"] = image.value
+        witness.update(image=image.value, image_status="available")
         return witness
 
     def close(self) -> list[str]:
@@ -134,6 +151,7 @@ class ResidualObserver:
                 errors.append(repr(error))
         self.handles.clear()
         self.identities.clear()
+        self.image_failures.clear()
         return errors
 
 
@@ -149,6 +167,8 @@ def drain_naturally(
         "natural_empty": False,
         "elapsed_seconds": 0.0,
         "errors": [],
+        "image_metadata_required_for_cleanup": False,
+        "metadata_unavailable": [],
     }
     if not initial:
         result["natural_empty"] = True
@@ -186,6 +206,11 @@ def drain_naturally(
     finally:
         result["initial_witnesses"] = first
         result["final_witnesses"] = final
+        result["metadata_unavailable"] = [
+            {"pid": item["pid"], "image_error": item["image_error"]}
+            for item in first
+            if item.get("image_status") == "unavailable"
+        ]
         if observer is not None:
             errors.extend(observer.close())
         result["elapsed_seconds"] = time.monotonic() - started

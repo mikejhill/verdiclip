@@ -4,16 +4,16 @@ from __future__ import annotations
 
 import json
 import os
+from copy import deepcopy
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 from scripts import panel_feasibility
 from scripts import panel_matrix_feasibility as matrix
 from scripts.panel_fixture_matrix import MatrixCase
-from scripts.panel_fixture_server import FixtureServer
 from scripts.panel_owned_job import OwnedJob
+from scripts.panel_probe_oracle import Pixels
 
 
 def test_acquisition_has_no_oracle_geometry() -> None:
@@ -62,7 +62,7 @@ def test_first_failure_and_cleanup_receipts(
         def close(self) -> None:
             closed.append("server")
 
-    def fail(*_args: object) -> None:
+    def fail(*_args: object, **_kwargs: object) -> None:
         raise RuntimeError("Original launch failure")
 
     monkeypatch.setattr(matrix, "NativeWindow", lambda: None)
@@ -178,56 +178,37 @@ def test_reference_zero_exit_final_deadline(
         assert result["exit_code"] == 0
 
 
-def test_border_observation_ownership_brackets_grab(
+def test_entry_readiness_uses_bounded_root_only_helper(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Read-only border location still checks foreground/geometry around pixels."""
-    calls = []
-    owner = {"root_hwnd": 12, "pid": 1, "allowed_rect": [0, 0, 2, 2]}
+    """Entry location consumes a helper raster with no oracle DOM input."""
+    sent = []
 
-    class Native:
-        def foreground(self, _pids: list[int]) -> dict[str, Any]:
-            calls.append("foreground")
-            return owner
+    def capture(
+        _job: OwnedJob, manifest: dict[str, Any], _output: Path
+    ) -> dict[str, int]:
+        sent.append(manifest)
+        return {"exit_code": 0}
 
-    class Guard:
-        def __init__(self, *_args: object) -> None:
-            pass
-
-        def check(self) -> None:
-            calls.append("guard")
-
-    class Source:
-        def __enter__(self) -> Source:
-            return self
-
-        def __exit__(self, *_args: object) -> None:
-            pass
-
-        def grab(self, _area: object) -> SimpleNamespace:
-            calls.append("grab")
-            return SimpleNamespace(width=2, height=2, rgb=matrix.BORDER * 4)
-
-    class Job:
-        def start(self, *_args: object) -> tuple[int, int]:
-            return (1, 2)
-
-        def pids(self) -> list[int]:
-            return [1]
-
-    monkeypatch.setattr(matrix, "NativeWindow", Native)
-    monkeypatch.setattr(matrix, "NativeGuard", Guard)
-    monkeypatch.setattr(matrix.mss, "MSS", Source)
-    monkeypatch.setattr(matrix, "wait_snapshot", lambda *_args: {"state": {}})
-    monkeypatch.setattr(Path, "is_file", lambda _self: True)
-    server = SimpleNamespace(output=tmp_path, url="http://127.0.0.1/owned/")
-    manifest, _ = matrix.launch(
-        cast("OwnedJob", Job()), cast("FixtureServer", server), tmp_path, "1"
+    monkeypatch.setattr(matrix, "run_reference", capture)
+    monkeypatch.setattr(
+        matrix, "load_pixels", lambda _path: Pixels(2, 2, matrix.BORDER * 4)
     )
-    assert manifest["click"] == [1, 1]
-    index = calls.index("grab")
-    assert calls[index - 2 : index] == ["guard", "foreground"]
-    assert calls[index + 1 : index + 3] == ["guard", "foreground"]
+    receipt: dict[str, Any] = {
+        "acquisition": {
+            "root_hwnd": 12,
+            "pid": 1,
+            "allowed_rect": [0, 0, 2, 2],
+            "kind": "owned-edge",
+            "owned_process_ids": [1],
+        },
+        "oracle_only": {},
+    }
+    matrix.prepare_acquisition(cast("OwnedJob", object()), tmp_path, receipt)
+    assert sent[0]["capture_mode"] == "entry-readiness"
+    assert "state_directory" not in sent[0]
+    assert "content_rect" not in sent[0]
+    assert receipt["acquisition"]["click"] == [1, 1]
 
 
 def test_matrix_calls_real_browser_experiment_routing(
@@ -247,6 +228,9 @@ def test_matrix_calls_real_browser_experiment_routing(
     # No replacement of run_probe/probe_arguments: the old caller typo must fail
     # at the real fixed allowlist before any simulated helper launch.
     assert matrix.run_probe is panel_feasibility.run_probe
+    monkeypatch.setattr(
+        matrix, "prepare_acquisition", lambda _job, _output, _receipt: None
+    )
     monkeypatch.setenv("PYTHONPATH", os.environ.get("PYTHONPATH", ""))
     monkeypatch.setattr(
         matrix, "verify_raw", lambda _output, _initial: {"verified": True}
@@ -264,3 +248,41 @@ def test_matrix_calls_real_browser_experiment_routing(
     assert "--full-sweep" not in launched[0]
     assert receipt["helper"]["exit_code"] == 0
     assert receipt["raw_diagnostic"] == {"verified": True}
+
+
+def test_actual_endpoint_763_2_is_not_rounded_to_763() -> None:
+    """Authoritative settled endpoint is distinct from integer DOM extent math."""
+    target = {
+        "vertical": 119.2,
+        "horizontal": 147.2,
+        "viewport_width": 502,
+        "viewport_height": 292,
+        "extent_width": 1081,
+        "extent_height": 1055,
+        "rect": [44.4, 55.6, 564.4, 365.6],
+        "border": [2, 2],
+        "fractional_border": [1.6] * 4,
+        "content_box": {"x": 0, "y": 0, "width": 502.4, "height": 292.8},
+    }
+    raw: dict[str, Any] = {
+        "root_rect": [50, 50, 1000, 700],
+        "initial": {
+            "observer_ready": True,
+            "dpr": 1.25,
+            "state": {"target": target},
+            "config": {
+                "scenario": "table",
+                "theme": "dark",
+                "variant": "static",
+                "width": 520,
+            },
+        },
+    }
+    observed = deepcopy(raw)
+    observed["initial"].update(mode="scroll-reference", endpoint_limit=763.2)
+    observed["initial"]["state"]["target"]["vertical"] = 763.2
+    observed["initial"]["config"].update(reference_offset=None, reference_endpoint=True)
+    matrix.verify_reference_identity(raw, observed, None)
+    observed["initial"]["endpoint_limit"] = 763
+    with pytest.raises(RuntimeError, match="actual settled endpoint"):
+        matrix.verify_reference_identity(raw, observed, None)
