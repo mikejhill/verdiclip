@@ -52,7 +52,7 @@ def test_com_call_and_release(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_scroll_slots_preserve_horizontal(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Provider slots are fixed and horizontal always receives NoScroll."""
+    """Provider slots are fixed and the default horizontal argument is NoScroll."""
     panel = object.__new__(PanelUia)
     panel.pattern = Com(c.c_void_p(1), lambda _: None)
     calls: list[tuple[int, tuple[object, ...]]] = []
@@ -163,8 +163,11 @@ def test_close_releases_before_uninitializing(monkeypatch: pytest.MonkeyPatch) -
     assert released == [2, 1, "uninitialize"]
 
 
+@pytest.mark.parametrize("scrollable", [False, True])
 def test_bounded_acknowledgement_accepts_quantized_percent(
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    scrollable: bool,
 ) -> None:
     """Async initial readback then stable quantized midpoint needs one write."""
     from scripts.panel_uia_probe import NativeGuard  # noqa: PLC0415 - test fixture
@@ -174,28 +177,37 @@ def test_bounded_acknowledgement_accepts_quantized_percent(
     probe.uia.target = Com(c.c_void_p(1), lambda _: None)
     probe.guard = object.__new__(NativeGuard)
     probe.initial = ScrollState(
-        30, 25, 80, 20, horizontal_scrollable=True, vertical_scrollable=True
+        30 if scrollable else -1,
+        25,
+        80 if scrollable else 100,
+        20,
+        horizontal_scrollable=scrollable,
+        vertical_scrollable=True,
     )
     probe.last = replace(probe.initial, vertical=0)
     probe.identity = Structure(1, 2, 50030, "WPF", (0, 0, 20, 20), offscreen=False)
     current = replace(probe.initial, vertical=49.98)
     states = iter([probe.last, current, current, current])
-    writes: list[float] = []
+    writes: list[tuple[float, float]] = []
     monkeypatch.setattr(Probe, "emit", lambda *_: None)
     monkeypatch.setattr(Probe, "validate", lambda self: self.last)
     monkeypatch.setattr(NativeGuard, "check", lambda _: None)
     monkeypatch.setattr(PanelUia, "structure", lambda *_: probe.identity)
     monkeypatch.setattr(PanelUia, "read_state", lambda _: next(states))
-    monkeypatch.setattr(PanelUia, "set_vertical", lambda _, p: writes.append(p))
+    monkeypatch.setattr(
+        PanelUia,
+        "set_vertical",
+        lambda _, p, *, horizontal: writes.append((horizontal, p)),
+    )
     monkeypatch.setattr("scripts.panel_uia_probe.time.sleep", lambda _: None)
     probe.seek(50)
-    assert writes == [50]
+    assert writes == [(30 if scrollable else -1, 50)]
     assert probe.last == current
     assert not probe.uncertain
 
 
 def test_horizontal_change_latches_uncertain(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A provider ignoring NoScroll cannot trigger a blind restore."""
+    """A provider changing the preserved horizontal value cannot trigger a restore."""
     from scripts.panel_uia_probe import NativeGuard  # noqa: PLC0415 - test fixture
 
     probe = object.__new__(Probe)
@@ -207,19 +219,23 @@ def test_horizontal_change_latches_uncertain(monkeypatch: pytest.MonkeyPatch) ->
     )
     probe.last = probe.initial
     probe.identity = Structure(1, 2, 50030, "WPF", (0, 0, 20, 20), offscreen=False)
-    writes: list[float] = []
+    writes: list[tuple[float, float]] = []
     monkeypatch.setattr(Probe, "emit", lambda *_: None)
     monkeypatch.setattr(Probe, "validate", lambda self: self.last)
     monkeypatch.setattr(NativeGuard, "check", lambda _: None)
     monkeypatch.setattr(PanelUia, "structure", lambda *_: probe.identity)
     changed = replace(probe.initial, horizontal=0, vertical=0)
     monkeypatch.setattr(PanelUia, "read_state", lambda _: changed)
-    monkeypatch.setattr(PanelUia, "set_vertical", lambda _, p: writes.append(p))
+    monkeypatch.setattr(
+        PanelUia,
+        "set_vertical",
+        lambda _, p, *, horizontal: writes.append((horizontal, p)),
+    )
     with pytest.raises(RuntimeError, match="horizontal state changed"):
         probe.seek(0)
     assert probe.uncertain
     probe.restore_after_failure()
-    assert writes == [0]
+    assert writes == [(30, 0)]
 
 
 @pytest.fixture
@@ -327,3 +343,45 @@ def test_bound_diagnostics_are_bounded(
     assert len(events) == 64
     assert [e["index"] for e in events if e["event"] == "ancestor"] == list(range(32))
     assert len(panel.ancestors) == 32
+
+
+@pytest.mark.parametrize(
+    "horizontal", [-2.0, -0.5, 100.01, float("nan"), float("inf"), -float("inf")]
+)
+def test_invalid_horizontal_percentage_never_calls_native(
+    monkeypatch: pytest.MonkeyPatch,
+    horizontal: float,
+) -> None:
+    """Only the exact NoScroll sentinel or a finite valid percentage is allowed."""
+    panel = object.__new__(PanelUia)
+    panel.pattern = Com(c.c_void_p(1), lambda _: None)
+    calls = []
+    monkeypatch.setattr(Com, "checked", lambda *_: calls.append(1))
+    with pytest.raises(ValueError, match="Horizontal percent"):
+        panel.set_vertical(0, horizontal=horizontal)
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "horizontal", [-1.0, 0.0, 10.561797752808989, 10.611510791366907, 100.0]
+)
+def test_scroll_double_abi_preserves_exact_axis_argument(
+    monkeypatch: pytest.MonkeyPatch,
+    horizontal: float,
+) -> None:
+    """Real ctypes vtable dispatch retains horizontal/vertical order and precision."""
+    monkeypatch.setattr(c, "WINFUNCTYPE", c.CFUNCTYPE, raising=False)
+    calls: list[tuple[float, float]] = []
+
+    @c.CFUNCTYPE(c.c_int32, c.c_void_p, c.c_double, c.c_double)
+    def setter(_this: int, x: float, y: float) -> int:
+        calls.append((x, y))
+        return 0
+
+    table = (c.c_void_p * 5)()
+    table[4] = c.cast(setter, c.c_void_p)
+    interface = c.pointer(c.cast(table, c.POINTER(c.c_void_p)))
+    panel = object.__new__(PanelUia)
+    panel.pattern = Com(c.cast(interface, c.c_void_p), lambda _: None)
+    panel.set_vertical(0, horizontal=horizontal)
+    assert calls == [(horizontal, 0.0)]

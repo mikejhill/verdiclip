@@ -287,11 +287,13 @@ class PanelUia:
             bool(self.pattern.read(10, c.c_int32).value),
         )
 
-    def set_vertical(self, percent: float) -> None:
-        """Request a vertical percentage while preserving the horizontal axis."""
+    def set_vertical(self, percent: float, *, horizontal: float = -1.0) -> None:
+        """Request vertical position with an explicit unchanged horizontal value."""
         if self.pattern is None or not 0 <= percent <= FULL_PERCENT:
             raise ValueError("A selected panel and percent in [0, 100] are required")
-        self.pattern.checked(4, (c.c_double, c.c_double), -1.0, percent)
+        if horizontal != -1.0 and not 0 <= horizontal <= FULL_PERCENT:
+            raise ValueError("Horizontal percent must be NoScroll or in [0, 100]")
+        self.pattern.checked(4, (c.c_double, c.c_double), horizontal, percent)
 
     def inspect_children(self) -> list[Structure]:
         """Inspect at most 64 immediate children; no desktop subtree search."""

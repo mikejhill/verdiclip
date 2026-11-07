@@ -73,3 +73,28 @@ interior. Minimum evidence applies after excluding the two scanlines. Preserve
 exact-overlap diagnostics. This is a real acceptance-rule change with a recorded
 one-pixel-edge ambiguity limit, not a claim that prior exact-boundary checks pass.
 The pure stitcher is tested independently before any product path is wired.
+
+## Fourth experiment
+
+Head `420c35e9b027ea82b02ddd6c58d5e129701f6586`, native run
+[42350368338](https://github.com/mikejhill/verdiclip/actions/runs/42350368338).
+All three WPF cases now pass the boundary-aware checkpoint, including exact
+interior overlap (206 or 126 physical pixels), independent row checks,
+horizontal/sibling preservation, exact restored pixels and process retirement.
+This is still a bounded top/mid/bottom probe, not full capture qualification.
+
+Both Edge cases discover the correct inner target after settling, but the first
+vertical seek resets horizontal position from approximately 47 to 0. The invariant
+check fails immediately and the uncertain operation prohibits restoration.
+No partial image is delivered; all owned processes retire.
+
+Chromium's native provider implementation confirms the cause:
+[AXPlatformNodeWin::SetScrollPercent](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/ui/accessibility/platform/ax_platform_node_win.cc)
+converts both arguments to offsets without a special `NoScroll(-1)` branch.
+The negative horizontal percentage is consequently clamped to the left edge.
+The next fresh probe passes the exact acknowledged horizontal percentage
+explicitly for a horizontally scrollable target, while preserving all readback
+checks. No retry or corrective write is attempted in an uncertain session.
+The same source computes view size from clipped outer bounds plus scroll range;
+this explains the browser provider's metrics without claiming its rectangle is
+the actual content viewport. Browser viewport qualification remains open.

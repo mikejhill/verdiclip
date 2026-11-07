@@ -133,7 +133,13 @@ class Probe:
         if self.uia is None or self.guard is None or self.initial is None:
             raise RuntimeError("Probe not initialized")
         self.uncertain = True
-        self.uia.set_vertical(percent)
+        # Chromium's SetScrollPercent computes both offsets even for NoScroll.
+        # Preserve the already-validated horizontal value, without a second write.
+        # https://chromium.googlesource.com/chromium/src/+/refs/heads/main/ui/accessibility/platform/ax_platform_node_win.cc
+        horizontal = (
+            self.initial.horizontal if self.initial.horizontal_scrollable else -1.0
+        )
+        self.uia.set_vertical(percent, horizontal=horizontal)
         self.guard.check()
         current = self.observe_acknowledgement(percent)
         self.last = current

@@ -144,8 +144,11 @@ before scrolling and rechecked before frames; `FrozenScreen.crop` clipping is
 not used to excuse missing pixels.
 
 Initial state saves position, view size, horizontal position, target identity,
-viewport, input epoch, and foreground owner. Seek vertical percent 0 while using
-horizontal `NoScroll`; read back top and wait for stable pixels. A valid frame
+viewport, input epoch, and foreground owner. Seek vertical percent 0 while explicitly retaining the acknowledged horizontal
+percentage when that axis is scrollable (`NoScroll` only for a non-scrollable
+horizontal axis); read back top and wait for stable pixels. Chromium currently
+fails to honor `NoScroll` for a scrollable axis. Readback must still prove the
+horizontal position unchanged, without corrective retries. A valid frame
 requires three matching samples over a bounded quiet interval, with unchanged
 provider state. A provider at top alone is insufficient.
 
