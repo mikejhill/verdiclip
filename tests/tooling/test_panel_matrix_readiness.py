@@ -61,6 +61,14 @@ class Guard:
 def setup(monkeypatch: pytest.MonkeyPatch, frames: list[bytes]) -> dict[str, Any]:
     """Select bounded fake clock, foreground and screen samples."""
     owner = {"root_hwnd": 12, "pid": 1, "allowed_rect": [0, 0, WIDTH, HEIGHT]}
+    monkeypatch.setattr(
+        reference,
+        "ViewportOrigin",
+        lambda *_args: SimpleNamespace(observe=lambda _manifest: {"stable": True}),
+    )
+    monkeypatch.setattr(
+        reference, "verify_calibration", lambda *_args: {"checked": True}
+    )
     clock = [0.0]
     monkeypatch.setattr(reference.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(

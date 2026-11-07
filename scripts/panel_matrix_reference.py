@@ -17,6 +17,7 @@ from typing import Any
 import mss
 import mss.tools
 from scripts.panel_feasibility import NativeWindow, snapshots, write
+from scripts.panel_matrix_origin import ViewportOrigin, verify_calibration
 from scripts.panel_probe_oracle import Pixels
 from scripts.panel_uia_probe import NativeGuard
 
@@ -201,6 +202,20 @@ def stable_owned_root(
             )
 
 
+def prepare_origin_reader(
+    states: Path | None, guard: NativeGuard, emit: Callable[[str, str], None]
+) -> ViewportOrigin | None:
+    """Guard and log reference-only native library setup."""
+    origin_reader = None
+    if states is not None:
+        emit("call_start", "reference.origin.setup")
+        guard.check()
+        origin_reader = ViewportOrigin(guard, emit)
+        guard.check()
+        emit("call_end", "reference.origin.setup")
+    return origin_reader
+
+
 def root_observations(
     source: mss.MSS,
     native: NativeWindow,
@@ -218,6 +233,8 @@ def root_observations(
     )
     rect = manifest["allowed_rect"]
     width, height = rect[2] - rect[0], rect[3] - rect[1]
+    origin_reader = prepare_origin_reader(states, guard, emit)
+    previous_origin = None
     previous = None
     previous_state = None
     matched = 0
@@ -226,6 +243,7 @@ def root_observations(
         and len(observations) < MAX_READINESS_SAMPLES
     ):
         before = latest_authored_state(states) if states is not None else None
+        origin_before = origin_reader.observe(manifest) if origin_reader else None
         emit("call_start", "reference.grab")
         guard.check()
         owner = native.foreground(manifest["owned_process_ids"])
@@ -246,6 +264,21 @@ def root_observations(
                 rgb, (width, height), output=str(output / "root-first.png")
             )
         mss.tools.to_png(rgb, (width, height), output=str(output / "root-last.png"))
+        origin_after = origin_reader.observe(manifest) if origin_reader else None
+        write(
+            output / f"origin-{len(observations):02d}.json",
+            {"before": origin_before, "after": origin_after},
+        )
+        if origin_before != origin_after or (
+            previous_origin is not None and previous_origin != origin_after
+        ):
+            raise RuntimeError("Render widget origin changed across reference raster")
+        previous_origin = origin_after
+        calibration = (
+            verify_calibration(rgb, rect, origin_after, before)
+            if origin_after is not None and before is not None
+            else None
+        )
         after = before
         while states is not None and time.monotonic() - started < SETTLE_SECONDS:
             after = latest_authored_state(states)
@@ -265,6 +298,8 @@ def root_observations(
         )
         observations.append(
             {
+                "origin": origin_after,
+                "calibration": calibration,
                 "before": before,
                 "after": after,
                 "root_rect": rect,

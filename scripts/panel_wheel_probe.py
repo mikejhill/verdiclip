@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Protocol, override
 
 import mss
-from scripts.panel_uia import PanelUia, Point, ScrollState
+from scripts.panel_uia import PanelUia, Point, ScrollState, Structure
 from scripts.panel_uia_probe import NativeGuard, Probe
 
 FULL_PERCENT = 100
@@ -67,6 +67,7 @@ class WheelWriter:
         self.writes = 0
         self.uncertain = False
         self.failed = False
+        self.pending_delta: int | None = None
 
     def step(self, delta: int) -> None:
         """Only settled acknowledgement can authorize a subsequent write."""
@@ -90,14 +91,19 @@ class WheelWriter:
             self.failed = True
             raise
 
-    def acknowledge(self) -> None:
+        self.pending_delta = delta
+
+    def acknowledge(self, *, settle_deadline: float | None = None) -> None:
         """Caller must first verify settled guarded native state and pixels."""
         if self.failed:
             raise RuntimeError("Wheel failed write cannot be acknowledged")
         self.api.check()
         if time.monotonic() - self.started >= SESSION_SECONDS:
             raise RuntimeError("Wheel session deadline expired")
+        if settle_deadline is not None and time.monotonic() >= settle_deadline:
+            raise RuntimeError("Wheel settling completed after deadline")
         self.uncertain = False
+        self.pending_delta = None
 
 
 class NativeWheel:
@@ -167,8 +173,35 @@ class NativeWheel:
             raise OSError("Wheel SendMessageTimeout failed; outcome uncertain")
 
 
+class ReadbackMotion:
+    """Only a successfully returned pending write permits monotonic vertical motion."""
+
+    def __init__(self, writer: WheelWriter, acknowledged: float) -> None:
+        if writer.failed:
+            raise RuntimeError("Failed wheel write has no admissible readback")
+        if writer.uncertain and writer.pending_delta is None:
+            raise RuntimeError("Wheel write has no successful return")
+        self.delta = writer.pending_delta if writer.uncertain else None
+        self.previous = acknowledged
+
+    def observe(self, vertical: float) -> None:
+        """Reject reversals, wrong direction, unsolicited motion and invalid values."""
+        if not math.isfinite(vertical) or not 0 <= vertical <= FULL_PERCENT:
+            raise RuntimeError("Invalid wheel readback")
+        difference = vertical - self.previous
+        if difference and (
+            self.delta is None
+            or (self.delta < 0 and difference < 0)
+            or (self.delta > 0 and difference > 0)
+        ):
+            raise RuntimeError("Wheel state changed without matching pending direction")
+        self.previous = vertical
+
+
 class WheelProbe(Probe):
     """Read UIA state but never invoke its scrolling write API."""
+
+    capture_samples: int = 0
 
     def stable(self, source: mss.MSS) -> tuple[ScrollState, bytes]:
         """Observe three identical guarded state/pixel samples across200ms."""
@@ -177,11 +210,14 @@ class WheelProbe(Probe):
             or self.uia.target is None
             or self.identity is None
             or self.initial is None
+            or self.last is None
         ):
             raise RuntimeError("Wheel probe not initialized")
         previous = None
         matched = 0
         start = time.monotonic()
+        equal_since = start
+        motion = ReadbackMotion(self.wheel, self.last.vertical)
         while time.monotonic() - start < SETTLE_SECONDS:
             self.wheel.api.check()
             identity = self.uia.structure(self.uia.target)
@@ -191,67 +227,37 @@ class WheelProbe(Probe):
                 or replace(state, vertical=self.initial.vertical) != self.initial
             ):
                 raise RuntimeError("Wheel changed target geometry or nonvertical state")
-            if not 0 <= state.vertical <= FULL_PERCENT:
-                raise RuntimeError("Invalid wheel readback")
-            sample = getattr(self, "capture_samples", 0) + 1
-            if sample > MAX_CAPTURE_SAMPLES:
-                raise RuntimeError("Wheel capture evidence sample bound")
-            self.capture_samples = sample
-            self.emit(
-                {
-                    "event": "wheel_capture_sample",
-                    "sample": sample,
-                    "phase": "before",
-                    "structure": asdict(identity),
-                    "state": asdict(state),
-                }
-            )
-            left, top, right, bottom = identity.rect
-            self.emit({"event": "call_start", "name": "wheel.capture"})
-            after_identity = None
-            after_state = None
-            try:
-                pixels = source.grab(
-                    {
-                        "left": left,
-                        "top": top,
-                        "width": right - left,
-                        "height": bottom - top,
-                    }
-                ).rgb
-                self.wheel.api.check()
-                after_identity = self.uia.structure(self.uia.target)
-                # Preserve the original short circuit: a geometry/identity failure
-                # must not cause another native state read merely for diagnostics.
-                if after_identity == identity:
-                    after_state = self.uia.read_state()
-            finally:
+            motion.observe(state.vertical)
+            after_state, pixels, sample = self.capture_sample(source, identity, state)
+            motion.observe(after_state.vertical)
+            self.emit({"event": "call_end", "name": "wheel.capture"})
+            if after_state != state:
                 self.emit(
                     {
-                        "event": "wheel_capture_sample",
+                        "event": "wheel_capture_discarded",
                         "sample": sample,
-                        "phase": "after",
-                        "structure": (
-                            asdict(after_identity)
-                            if after_identity is not None
-                            else None
-                        ),
-                        "state": asdict(after_state)
-                        if after_state is not None
-                        else None,
+                        "reason": "pending-direction vertical crossing",
                     }
                 )
-            if after_identity != identity or after_state != state:
-                raise RuntimeError("State changed across wheel capture")
-            self.emit({"event": "call_end", "name": "wheel.capture"})
+                previous, matched = None, 0
+                equal_since = time.monotonic()
+                time.sleep(0.1)
+                continue
             if time.monotonic() - start >= SETTLE_SECONDS:
                 break
             current = (state, pixels)
-            matched = matched + 1 if current == previous else 1
+            if current == previous:
+                matched += 1
+            else:
+                matched = 1
+                equal_since = time.monotonic()
             previous = current
-            if matched >= MIN_SAMPLES and time.monotonic() - start >= QUIET_SECONDS:
+            if (
+                matched >= MIN_SAMPLES
+                and time.monotonic() - equal_since >= QUIET_SECONDS
+            ):
                 self.last = state
-                self.wheel.acknowledge()
+                self.wheel.acknowledge(settle_deadline=start + SETTLE_SECONDS)
                 self.emit(
                     {
                         "event": "wheel_observation",
@@ -262,6 +268,68 @@ class WheelProbe(Probe):
                 return current
             time.sleep(0.1)
         raise RuntimeError("Wheel pixels/state did not settle")
+
+    def capture_sample(
+        self,
+        source: mss.MSS,
+        identity: Structure,
+        state: ScrollState,
+    ) -> tuple[ScrollState, bytes, int]:
+        """Retain both sides of one capture without admitting vertical movement."""
+        if self.uia is None or self.uia.target is None:
+            raise RuntimeError("Missing wheel target")
+
+        sample = self.capture_samples + 1
+        if sample > MAX_CAPTURE_SAMPLES:
+            raise RuntimeError("Wheel capture evidence sample bound")
+        self.capture_samples = sample
+        self.emit(
+            {
+                "event": "wheel_capture_sample",
+                "sample": sample,
+                "phase": "before",
+                "structure": asdict(identity),
+                "state": asdict(state),
+            }
+        )
+        left, top, right, bottom = identity.rect
+        self.emit({"event": "call_start", "name": "wheel.capture"})
+        after_identity = None
+        after_state = None
+        try:
+            pixels = source.grab(
+                {
+                    "left": left,
+                    "top": top,
+                    "width": right - left,
+                    "height": bottom - top,
+                }
+            ).rgb
+            self.wheel.api.check()
+            after_identity = self.uia.structure(self.uia.target)
+            # Preserve the original short circuit: a geometry/identity failure
+            # must not cause another native state read merely for diagnostics.
+            if after_identity == identity:
+                after_state = self.uia.read_state()
+        finally:
+            self.emit(
+                {
+                    "event": "wheel_capture_sample",
+                    "sample": sample,
+                    "phase": "after",
+                    "structure": (
+                        asdict(after_identity) if after_identity is not None else None
+                    ),
+                    "state": asdict(after_state) if after_state is not None else None,
+                }
+            )
+        if (
+            after_identity != identity
+            or after_state is None
+            or replace(after_state, vertical=state.vertical) != state
+        ):
+            raise RuntimeError("State changed across wheel capture")
+        return after_state, pixels, sample
 
     def move(self, source: mss.MSS, delta: int) -> tuple[ScrollState, bytes]:
         """Validate immediately before one wheel send and await readback afterward."""

@@ -359,3 +359,67 @@ jobs:
             receipts/**/probe/*.jsonl
           if-no-files-found: error
           retention-days: 14
+
+  stable-identity:
+    if: >-
+      github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
+      github.head_ref == 'feature/automatic-panel-capture' &&
+      github.event.pull_request.draft == true
+    name: Read-only stable identity / ${{ matrix.case }}
+    runs-on: windows-2025
+    timeout-minutes: 7
+    strategy:
+      fail-fast: false
+      matrix:
+        case: [wpf-borderless, edge-100]
+    env:
+      PYTHONUTF8: "1"
+      QUALIFICATION_HEAD: ${{ github.event.pull_request.head.sha }}
+      IDENTITY_CASE: ${{ matrix.case }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: "false"
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          enable-cache: false
+          python-version: "3.13"
+      - name: Locked identity experiment dependencies
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          uv sync --locked
+          exit $LASTEXITCODE
+      - name: Precompile the owned WPF fixture
+        if: matrix.case == 'wpf-borderless'
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          dotnet build scripts/panel_fixture/PanelFixture.csproj --configuration Release --output .tmp/panel-fixture
+          exit $LASTEXITCODE
+      - name: One read-only identity attempt, no retries
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          & .\.venv\Scripts\python.exe -m scripts.panel_identity_feasibility --case $env:IDENTITY_CASE --output "receipts/identity-$env:IDENTITY_CASE" --wpf-executable .tmp/panel-fixture/PanelFixture.exe
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: ${{ !cancelled() }}
+        with:
+          name: owned-stable-identity-${{ matrix.case }}
+          path: |
+            scripts/panel_uia_identity.py
+            scripts/panel_identity_probe.py
+            scripts/panel_identity_feasibility.py
+            receipts/**/receipt.json
+            receipts/**/fixture.json
+            receipts/**/states/*.json
+            receipts/**/probe/*.json
+            receipts/**/probe/*.jsonl
+          if-no-files-found: error
+          retention-days: 14

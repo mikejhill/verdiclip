@@ -631,6 +631,7 @@ def test_capture_failure_retains_native_pair(tmp_path: Path, change: str) -> Non
     candidate = probe.WheelProbe(argparse.Namespace(output=tmp_path / "probe"))
     identity = Structure(1, 2, 3, "Chrome", (0, 0, 10, 10), offscreen=False)
     candidate.identity, candidate.initial = identity, STATE
+    candidate.last = STATE
     after_identity = (
         replace(identity, rect=(0, -1, 10, 9)) if change == "geometry" else identity
     )
@@ -703,6 +704,7 @@ def test_capture_evidence_bound_precedes_grab(monkeypatch: pytest.MonkeyPatch) -
     candidate = object.__new__(probe.WheelProbe)
     identity = Structure(1, 2, 3, "Chrome", (0, 0, 10, 10), offscreen=False)
     candidate.identity, candidate.initial = identity, STATE
+    candidate.last = STATE
     candidate.capture_samples = probe.MAX_CAPTURE_SAMPLES
     candidate.uia = cast(
         "probe.PanelUia",
@@ -718,3 +720,180 @@ def test_capture_evidence_bound_precedes_grab(monkeypatch: pytest.MonkeyPatch) -
     with pytest.raises(RuntimeError, match="sample bound"):
         candidate.stable(cast("mss.MSS", object()))
     assert not api.sent
+
+
+@pytest.mark.parametrize(
+    ("start", "finish"),
+    [
+        (9.818481848184819, 18.06930693069307),
+        (0.0, 8.250825082508252),
+    ],
+)
+def test_recorded_vertical_pair_discards_then_waits_equal_span(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, start: float, finish: float
+) -> None:
+    """Reproduce cb517c9 failed UIA pairs through the actual capture settling loop."""
+    from types import SimpleNamespace  # noqa: PLC0415 - native seams
+
+    now = [0.0]
+    monkeypatch.setattr(probe.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(
+        probe.time, "sleep", lambda seconds: now.__setitem__(0, now[0] + seconds)
+    )
+    candidate = probe.WheelProbe(argparse.Namespace(output=tmp_path / "probe"))
+    identity = Structure(1, 0, 50026, "Chrome", (99, 129, 433, 393), offscreen=False)
+    initial = ScrollState(
+        10.561797752808989,
+        start,
+        42.87548138639281,
+        17.88617886178862,
+        horizontal_scrollable=True,
+        vertical_scrollable=True,
+    )
+    candidate.identity, candidate.initial, candidate.last = identity, initial, initial
+    api = FakeApi()
+    candidate.wheel = probe.WheelWriter(api, 100, 130)
+    candidate.wheel.step(-120)
+    reads = [0]
+
+    def state() -> ScrollState:
+        reads[0] += 1
+        assert candidate.wheel.uncertain
+        return replace(initial, vertical=start if reads[0] == 1 else finish)
+
+    candidate.uia = cast(
+        "probe.PanelUia",
+        SimpleNamespace(
+            target=object(),
+            structure=lambda _: identity,
+            read_state=state,
+        ),
+    )
+    source = cast(
+        "mss.MSS", SimpleNamespace(grab=lambda _: SimpleNamespace(rgb=b"same"))
+    )
+    try:
+        assert candidate.stable(source) == (replace(initial, vertical=finish), b"same")
+    finally:
+        candidate.log.close()
+    records = supervisor.events(tmp_path / "probe/calls.jsonl")
+    assert len([x for x in records if x["event"] == "wheel_capture_discarded"]) == 1
+    complete = [
+        x
+        for x in records
+        if x["event"] == "wheel_capture_sample" and x["phase"] == "after"
+    ][1:]
+    assert len(complete) >= 3
+    assert complete[-1]["monotonic"] - complete[0]["monotonic"] >= 0.2
+    assert not candidate.wheel.uncertain
+    assert len(api.sent) == 1
+
+
+@pytest.mark.parametrize(
+    ("delta", "values"),
+    [
+        (-120, [11, 10]),
+        (-120, [9]),
+        (120, [9, 10]),
+        (120, [11]),
+        (-120, [float("nan")]),
+        (-120, [float("inf")]),
+        (-120, [101]),
+        (-120, [-1]),
+    ],
+)
+def test_pending_motion_rejects_reversal_and_invalid_values(
+    delta: int, values: list[float]
+) -> None:
+    """Every sampled native value participates, including discarded-pair interiors."""
+    writer = probe.WheelWriter(FakeApi(), 0, 0)
+    writer.step(delta)
+    motion = probe.ReadbackMotion(writer, 10)
+    for value in values[:-1]:
+        motion.observe(value)
+    with pytest.raises(RuntimeError, match=r"direction|Invalid"):
+        motion.observe(values[-1])
+    assert writer.uncertain
+
+
+def test_failed_or_unreturned_write_cannot_settle() -> None:
+    """The uncertain flag alone is never proof that the native call returned."""
+    writer = probe.WheelWriter(FakeApi(), 0, 0)
+    writer.uncertain = True
+    with pytest.raises(RuntimeError, match="successful return"):
+        probe.ReadbackMotion(writer, 10)
+    writer.failed = True
+    with pytest.raises(RuntimeError, match="Failed wheel"):
+        probe.ReadbackMotion(writer, 10)
+
+
+def test_exact_settle_deadline_does_not_acknowledge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Late final guard cannot clear pending-write uncertainty at the2s boundary."""
+    now = [0.0]
+    monkeypatch.setattr(probe.time, "monotonic", lambda: now[0])
+    writer = probe.WheelWriter(FakeApi(), 0, 0)
+    writer.step(-120)
+    now[0] = 2.0
+    with pytest.raises(RuntimeError, match="settling completed"):
+        writer.acknowledge(settle_deadline=2.0)
+    assert writer.uncertain
+    assert writer.pending_delta == -120
+
+
+@pytest.mark.parametrize("scenario", ["late", "pixels", "nonvertical", "nonfinite"])
+def test_actual_pending_capture_admission_boundaries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scenario: str
+) -> None:
+    """Pending writes do not relax time, nonvertical fields, or equal-pixel duration."""
+    from types import SimpleNamespace  # noqa: PLC0415 - native seams
+
+    now = [0.0]
+    monkeypatch.setattr(probe.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(
+        probe.time, "sleep", lambda seconds: now.__setitem__(0, now[0] + seconds)
+    )
+    candidate = probe.WheelProbe(argparse.Namespace(output=tmp_path / "probe"))
+    identity = Structure(1, 0, 1, "Chrome", (0, 0, 10, 10), offscreen=False)
+    candidate.identity, candidate.initial, candidate.last = identity, STATE, STATE
+    api = FakeApi()
+    candidate.wheel = probe.WheelWriter(api, 1, 1)
+    candidate.wheel.step(-120)
+    reads, captures = [0], [0]
+
+    def state() -> ScrollState:
+        reads[0] += 1
+        if reads[0] == 2 and scenario == "nonvertical":
+            return replace(STATE, horizontal=11)
+        if reads[0] == 2 and scenario == "nonfinite":
+            return replace(STATE, vertical=float("nan"))
+        return STATE
+
+    def grab(_rect: object) -> object:
+        captures[0] += 1
+        if scenario == "late":
+            now[0] = 2.0
+        return SimpleNamespace(rgb=b"first" if captures[0] < 3 else b"changed")
+
+    candidate.uia = cast(
+        "probe.PanelUia",
+        SimpleNamespace(
+            target=object(),
+            structure=lambda _: identity,
+            read_state=state,
+        ),
+    )
+    source = cast("mss.MSS", SimpleNamespace(grab=grab))
+    try:
+        if scenario == "pixels":
+            assert candidate.stable(source)[1] == b"changed"
+            assert now[0] >= 0.4
+            assert captures[0] >= 5
+        else:
+            with pytest.raises(RuntimeError, match=r"settle|State changed|Invalid"):
+                candidate.stable(source)
+            assert candidate.wheel.uncertain
+    finally:
+        candidate.log.close()
+    assert len(api.sent) == 1
