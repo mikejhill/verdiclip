@@ -3,7 +3,7 @@ name: Owned observation bounded research
 # This workflow is separate from PR 119 and does not qualify the unresolved Qt CI failure.
 on:
   push:
-    branches: [research/one-frame-sink]
+    branches: [research/one-frame-credit]
 
 permissions:
   contents: read
@@ -13,14 +13,14 @@ jobs:
     if: >-
       github.repository == 'mikejhill/verdiclip' &&
       github.event_name == 'push' &&
-      github.ref == 'refs/heads/research/one-frame-sink'
+      github.ref == 'refs/heads/research/one-frame-credit'
     name: Research only / installed wheel owned WPF observation
     runs-on: windows-2025
     timeout-minutes: 7
     env:
       PYTHONUTF8: "1"
-      QUALIFICATION_HEAD: "4b136a47e9d51e3fe459ca0bb27528336302b5de"
-      QUALIFICATION_TREE: "7996e3b10631688e1e9df3fbc24c217bddce9218"
+      QUALIFICATION_HEAD: "d2556f987aeadf13d2fa9c076af2b3f8b57d9293"
+      QUALIFICATION_TREE: "2e117a79dbc2c2962e3ed936b65da4bc6640915c"
       WORKFLOW_HEAD: ${{ github.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -29,7 +29,7 @@ jobs:
           GIT_CONFIG_KEY_0: core.autocrlf
           GIT_CONFIG_VALUE_0: "false"
         with:
-          ref: 4b136a47e9d51e3fe459ca0bb27528336302b5de
+          ref: d2556f987aeadf13d2fa9c076af2b3f8b57d9293
           persist-credentials: false
       - name: Assert fixed source and retain separate workflow identity
         timeout-minutes: 1
@@ -105,7 +105,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: ${{ !cancelled() }}
         with:
-          name: research-installed-wheel-retained-one-frame
+          name: research-installed-wheel-one-frame-credit
           path: |
             receipts/research-source.json
             scripts/installed_observe_smoke.py
@@ -114,7 +114,12 @@ jobs:
             scripts/installed_runtime_smoke.py
             scripts/panel_fixture/Program.cs
             src/verdiclip/capture/retained_frame.py
+            src/verdiclip/capture/frame_credit.py
             src/verdiclip/platform/helper_channel.py
+            src/verdiclip/platform/helper_peer.py
+            src/verdiclip/platform/helper_protocol.py
+            src/verdiclip/platform/helper_runtime.py
+            src/verdiclip/platform/helper_bootstrap.py
             receipts/installed-observe/receipt.json
             receipts/installed-observe/membership-failure.json
             receipts/installed-observe/failure-phase-evidence.json
