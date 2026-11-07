@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.2](https://github.com/mikejhill/verdiclip/compare/v0.13.1...v0.13.2) (2026-11-07)
+
+
+### Bug Fixes
+
+* freeze requested menu pixels before popup handoff ([#117](https://github.com/mikejhill/verdiclip/issues/117)) ([19ed7e1](https://github.com/mikejhill/verdiclip/commit/19ed7e1ec1203e6a48fadcc2e78841ce92889836))
+
 ## [0.13.1](https://github.com/mikejhill/verdiclip/compare/v0.13.0...v0.13.1) (2026-11-07)
 
 
