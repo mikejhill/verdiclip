@@ -20,6 +20,11 @@ def make_run(monkeypatch: pytest.MonkeyPatch) -> tuple[subject.NativeRun, Mock, 
     run.phase = "settings-setup"
     run.setup_started = 0.0
     run.setup_elapsed_ms = None
+    run.first_setup_callback_ms = None
+    run.constructor_return_ms = None
+    run.constructor_returned_after_timeout = False
+    run.first_readiness = None
+    run.last_readiness = None
     run.settings_dialog = None
     run.existing_settings = ()
     run.errors = []
@@ -152,3 +157,107 @@ def test_timeout_latches_setup_and_precleanup_state(
     assert run.expired_selecting is True
     assert run.errors == ["Owned settings setup never became ready before the deadline"]
     as_mock(run.finish).assert_called_once_with()
+
+
+def test_first_and_last_readiness_preserve_actual_observed_predicates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A later ready observation never overwrites the initial refusal snapshot."""
+    run, dialog, posted = make_run(monkeypatch)
+    dialog.isVisible.return_value = False
+    run._settings_ready()
+    first = run.first_readiness
+    assert first == {
+        "elapsed_ms": 1000,
+        "new_dialog_count": 1,
+        "visible": False,
+        "modal": True,
+        "active": True,
+        "exposed": True,
+    }
+    dialog.isVisible.return_value = True
+    run._settings_ready()
+    assert run.first_readiness == first
+    assert run.last_readiness is not first
+    assert run.last_readiness is not None
+    assert run.last_readiness["visible"] is True
+    assert run.first_setup_callback_ms == 1000
+    posted.assert_called_once_with()
+
+
+def test_first_callback_already_late_does_not_invent_readiness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An overdue first callback records its time without probing after deadline."""
+    run, dialog, posted = make_run(monkeypatch)
+    monkeypatch.setattr(subject, "time", SimpleNamespace(perf_counter=lambda: 5.2))
+    run._settings_ready()
+    assert run.first_setup_callback_ms == 5200
+    assert run.first_readiness is None
+    assert run.last_readiness is None
+    dialog.windowHandle.assert_not_called()
+    posted.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "outcome", ["returned", "raised", "control", "returned-after-timeout"]
+)
+def test_actual_constructor_wrapper_preserves_call_exception_and_scope(
+    monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    """Only actual successful constructor return gets a marker, even after timeout."""
+    run, _dialog, _posted = make_run(monkeypatch)
+    failure = (
+        KeyboardInterrupt("owned control")
+        if outcome == "control"
+        else RuntimeError("owned construction failure")
+    )
+    calls: list[tuple[object, object, object]] = []
+    snapshot: dict[str, bool | int | float | None] = {"visible": False}
+    run.first_readiness = snapshot.copy()
+    run.last_readiness = snapshot.copy()
+
+    class OwnedDialog:
+        def __init__(
+            self, settings: object, parent: object = None, *, key_capture: object = None
+        ) -> None:
+            calls.append((settings, parent, key_capture))
+            assert run.constructor_return_ms is None
+            if outcome in {"raised", "control"}:
+                raise failure
+            if outcome == "returned-after-timeout":
+                run.done = True
+
+    original = OwnedDialog.__init__
+    settings, parent, key_capture = object(), object(), object()
+    action = Mock(
+        side_effect=lambda: OwnedDialog(settings, parent, key_capture=key_capture)
+    )
+    monkeypatch.setattr(subject, "SettingsDialog", OwnedDialog)
+    monkeypatch.setattr(
+        run,
+        "app",
+        SimpleNamespace(
+            controller=SimpleNamespace(
+                tray=SimpleNamespace(action=lambda _: SimpleNamespace(trigger=action))
+            )
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(run, "await_settings", Mock())
+    if outcome in {"raised", "control"}:
+        with pytest.raises(type(failure)) as caught:
+            run.open_dialog("settings")
+        assert caught.value is failure
+        assert run.constructor_return_ms is None
+    else:
+        run.open_dialog("settings")
+        assert run.constructor_return_ms == 1000
+        assert run.constructor_returned_after_timeout is (
+            outcome == "returned-after-timeout"
+        )
+    assert calls == [(settings, parent, key_capture)]
+    assert OwnedDialog.__init__ is original
+    assert run.first_readiness == snapshot
+    assert run.last_readiness == snapshot
+    action.assert_called_once_with()

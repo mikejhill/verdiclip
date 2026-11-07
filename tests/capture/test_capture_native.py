@@ -19,7 +19,7 @@ import pytest
 from PySide6.QtCore import QPoint, Qt, QThread, QTimer
 from PySide6.QtGui import QGuiApplication, QImage, QWindow
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
+from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QWidget
 from pytestqt.qtbot import QtBot
 from tests.capture.desktop import DesktopSession
 from tests.capture.test_popup_capture import InputTrace
@@ -30,6 +30,8 @@ from tests.ux.test_app_journeys import (
 
 from verdiclip.capture.grabber import FrozenScreen, MssScreenSource
 from verdiclip.capture.models import Capture
+from verdiclip.platform.keyboard_hook import KeyCapture
+from verdiclip.settings import Settings
 from verdiclip.shell.settings_dialog import SettingsDialog
 
 
@@ -84,6 +86,11 @@ class NativeRun:
         self.triggered = False
         self.setup_started = time.perf_counter() if settings_setup else None
         self.setup_elapsed_ms: float | None = None
+        self.first_setup_callback_ms: float | None = None
+        self.constructor_return_ms: float | None = None
+        self.constructor_returned_after_timeout = False
+        self.first_readiness: dict[str, bool | int | float | None] | None = None
+        self.last_readiness: dict[str, bool | int | float | None] | None = None
         self.settings_dialog: SettingsDialog | None = None
         self.existing_settings = tuple(
             w for w in QApplication.topLevelWidgets() if isinstance(w, SettingsDialog)
@@ -146,6 +153,13 @@ class NativeRun:
                         "overlay_count_at_timeout": self.expired_overlay_count,
                         "selecting_at_timeout": self.expired_selecting,
                         "setup_elapsed_ms": self.setup_elapsed_ms,
+                        "first_setup_callback_ms": self.first_setup_callback_ms,
+                        "constructor_return_ms": self.constructor_return_ms,
+                        "constructor_returned_after_timeout": (
+                            self.constructor_returned_after_timeout
+                        ),
+                        "first_readiness": self.first_readiness,
+                        "last_readiness": self.last_readiness,
                     },
                     sort_keys=True,
                 )
@@ -166,12 +180,31 @@ class NativeRun:
         )
 
     def open_dialog(self, scenario: str) -> None:
-        """Keep actual tray dialog entry, separating only settings setup."""
-        if scenario == "settings":
-            self.await_settings()
-        else:
+        """Keep actual tray entry; observe only the real settings constructor return."""
+        if scenario != "settings":
             QTimer.singleShot(0, self.post_hotkey)
-        self.app.controller.tray.action(scenario).trigger()
+            self.app.controller.tray.action(scenario).trigger()
+            return
+        original = SettingsDialog.__init__
+
+        def observed_constructor(
+            dialog: SettingsDialog,
+            settings: Settings,
+            parent: QWidget | None = None,
+            *,
+            key_capture: KeyCapture | None = None,
+        ) -> None:
+            original(dialog, settings, parent, key_capture=key_capture)
+            if self.setup_started is not None:
+                self.constructor_return_ms = (
+                    time.perf_counter() - self.setup_started
+                ) * 1000
+                self.constructor_returned_after_timeout = self.done
+
+        self.await_settings()
+        with pytest.MonkeyPatch.context() as scoped:
+            scoped.setattr(SettingsDialog, "__init__", observed_constructor)
+            self.app.controller.tray.action(scenario).trigger()
 
     def save_and_close(
         self, directory: Path, scenario: str, source: RealDesktop
@@ -203,25 +236,40 @@ class NativeRun:
             return
         assert self.setup_started is not None
         self.setup_elapsed_ms = (time.perf_counter() - self.setup_started) * 1000
+        if self.first_setup_callback_ms is None:
+            self.first_setup_callback_ms = self.setup_elapsed_ms
         if self.setup_elapsed_ms >= 5000:
             self._expired()
             return
-        if self.settings_dialog is None:
-            candidates = [
-                w
-                for w in QApplication.topLevelWidgets()
-                if isinstance(w, SettingsDialog) and w not in self.existing_settings
-            ]
-            if len(candidates) != 1:
-                return
+        candidates = [
+            w
+            for w in QApplication.topLevelWidgets()
+            if isinstance(w, SettingsDialog) and w not in self.existing_settings
+        ]
+        snapshot: dict[str, bool | int | float | None] = {
+            "elapsed_ms": self.setup_elapsed_ms,
+            "new_dialog_count": len(candidates),
+            "visible": None,
+            "modal": None,
+            "active": None,
+            "exposed": None,
+        }
+        if self.settings_dialog is None and len(candidates) == 1:
             self.settings_dialog = candidates[0]
         dialog = self.settings_dialog
-        window = dialog.windowHandle()
-        if not (
-            dialog.isVisible()
-            and QApplication.activeModalWidget() is dialog
-            and dialog.isModal()
-            and native_window_exposed(window)
+        if dialog is not None:
+            window = dialog.windowHandle()
+            snapshot.update(
+                visible=dialog.isVisible(),
+                modal=dialog.isModal(),
+                active=QApplication.activeModalWidget() is dialog,
+                exposed=native_window_exposed(window),
+            )
+        if self.first_readiness is None:
+            self.first_readiness = snapshot.copy()
+        self.last_readiness = snapshot.copy()
+        if not all(
+            snapshot[key] is True for key in ("visible", "modal", "active", "exposed")
         ):
             return
         self.setup_elapsed_ms = (time.perf_counter() - self.setup_started) * 1000
