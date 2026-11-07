@@ -1,0 +1,67 @@
+name: Isolated Qt 6.11.3 hang diagnosis
+
+on:
+  push:
+    branches: [diagnostic/qt6113-owned-stacks]
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: windows-2025
+    timeout-minutes: 5
+    env:
+      PYTHONUTF8: "1"
+      PYTHONUNBUFFERED: "1"
+      UV_LOCKED: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: "false"
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Verify preinstalled Microsoft x64 debugger before tests
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory diagnostic-results | Out-Null
+          ./scripts/qt_hang_diagnostic/preflight.ps1 -Output diagnostic-results/preflight.json
+      - name: Record debugger availability
+        id: debugger
+        shell: pwsh
+        run: |
+          $receipt = Get-Content diagnostic-results/preflight.json -Raw | ConvertFrom-Json
+          "available=$($receipt.status -eq 'available')" >> $env:GITHUB_OUTPUT
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        if: steps.debugger.outputs.available == 'True'
+        with:
+          python-version: "3.13.17"
+          enable-cache: false
+      - name: Prepare unchanged failed sources and locked runtime
+        if: steps.debugger.outputs.available == 'True'
+        shell: pwsh
+        run: |
+          uv sync --locked
+          git archive --format=zip --output=diagnostic-results/failed-source.zip ecb4a4cf675b701259ced8b18c1f5f4c1a32cdfa
+          Expand-Archive diagnostic-results/failed-source.zip failed-source
+          Copy-Item scripts/qt_hang_diagnostic/inputs.json diagnostic-results/
+          Copy-Item scripts/qt_hang_diagnostic/prefix.json diagnostic-results/
+          git rev-parse HEAD | Set-Content diagnostic-results/diagnostic-head.txt
+          Get-FileHash diagnostic-results/failed-source.zip -Algorithm SHA256 | Format-List | Out-File diagnostic-results/archive-sha256.txt
+      - name: One owned prefix, conditional stack-only debugger
+        if: steps.debugger.outputs.available == 'True'
+        timeout-minutes: 2
+        shell: pwsh
+        run: >-
+          .venv/Scripts/python.exe scripts/qt_hang_diagnostic.py
+          --source failed-source --output diagnostic-results
+          --preflight diagnostic-results/preflight.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ always() && !cancelled() }}
+        with:
+          name: qt6113-owned-stack-diagnostic
+          path: diagnostic-results/
+          if-no-files-found: error
