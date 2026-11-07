@@ -217,8 +217,11 @@ class TestHotkeyService:
         assert "capture" not in service.registered
         assert "did not unregister" in caplog.text
 
-    def test_native_filter(self, qtbot: QtBot) -> None:
-        """Only recognized generic WM_HOTKEY messages dispatch a signal."""
+    @pytest.mark.parametrize(
+        "category", [b"windows_generic_MSG", b"windows_dispatcher_MSG"]
+    )
+    def test_native_filter(self, qtbot: QtBot, category: bytes) -> None:
+        """Only recognized window/thread WM_HOTKEY messages dispatch a signal."""
         service = HotkeyService(FakeHotkeyApi())
         event_filter = _NativeHotkeyFilter(service)
         message = ctypes.wintypes.MSG()
@@ -227,24 +230,24 @@ class TestHotkeyService:
         try:
             assert service.register("capture", Hotkey.parse("a"))
             assert event_filter.nativeEventFilter(b"other", address) == (False, 0)
-            assert event_filter.nativeEventFilter(b"windows_generic_MSG", 0) == (
+            assert event_filter.nativeEventFilter(category, 0) == (
                 False,
                 0,
             )
-            assert event_filter.nativeEventFilter(b"windows_generic_MSG", address) == (
+            assert event_filter.nativeEventFilter(category, address) == (
                 False,
                 0,
             )
             message.message = 0x0312
             message.wParam = 999
-            assert event_filter.nativeEventFilter(b"windows_generic_MSG", address) == (
+            assert event_filter.nativeEventFilter(category, address) == (
                 False,
                 0,
             )
             message.wParam = 1
             with qtbot.waitSignal(service.triggered) as signal:
                 assert event_filter.nativeEventFilter(
-                    QByteArray(b"windows_generic_MSG"), address
+                    QByteArray(category), address
                 ) == (True, 0)
             assert signal.args == ["capture"]
         finally:

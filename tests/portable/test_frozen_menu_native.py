@@ -1,0 +1,645 @@
+"""Portable tests of native qualification oracles, limits and owned cleanup."""
+
+from __future__ import annotations
+
+import ctypes
+import ctypes.wintypes as w
+import json
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
+
+import pytest
+from PySide6.QtCore import QByteArray, QProcess
+from PySide6.QtGui import QColor, QImage, QPainter
+from pytestqt.qtbot import QtBot
+from scripts import frozen_menu_input as input_module
+from scripts import frozen_menu_native as native
+from scripts.frozen_menu_fixture import MenuFixture, MenuPatch
+from scripts.frozen_menu_input import (
+    HotkeyObservation,
+    OwnedInput,
+    has_contrast,
+    is_marker,
+    pixel_digest,
+)
+
+
+def marker() -> QImage:
+    """Match the fixture's unscaled interior, without capturing any desktop."""
+    image = QImage(224, 84, QImage.Format.Format_RGB32)
+    image.fill(QColor("#d72b91"))
+    painter = QPainter(image)
+    painter.fillRect(112, 0, 112, 84, QColor("#19bd83"))
+    painter.end()
+    return image
+
+
+def test_pixel_oracle_rejects_single_corrupted_pixel_and_background() -> None:
+    """Neither a selected center sample nor a callback claim can substitute pixels."""
+    expected = marker()
+    assert is_marker(expected)
+    altered = expected.copy()
+    altered.setPixelColor(3, 7, QColor("#18314d"))
+    assert not is_marker(altered)
+    assert pixel_digest(altered) != pixel_digest(expected)
+    altered.fill(QColor("#18314d"))
+    assert not is_marker(altered)
+    assert not has_contrast(altered)
+    assert has_contrast(expected)
+    assert not is_marker(QImage())
+    assert not has_contrast(QImage())
+    with pytest.raises(ValueError, match="Empty image"):
+        pixel_digest(QImage())
+
+
+def test_marker_widget_paints_the_oracle_not_a_synthetic_receipt(qtbot: QtBot) -> None:
+    """Actual widget paint yields both expected colors independent of theme."""
+    patch = MenuPatch()
+    qtbot.addWidget(patch)
+    actual = patch.grab().toImage().copy(8, 8, 224, 84)
+    assert is_marker(actual)
+    assert pixel_digest(actual) == pixel_digest(marker())
+
+
+@pytest.mark.parametrize(
+    "category", [b"windows_generic_MSG", b"windows_dispatcher_MSG"]
+)
+def test_observer_records_but_does_not_consume_real_category(category: bytes) -> None:
+    """Both Qt paths remain observable without replacing production dispatch."""
+    observation = HotkeyObservation()
+    message = w.MSG()
+    message.message = 0x0312
+    message.wParam = 42
+    assert observation.nativeEventFilter(
+        QByteArray(category), ctypes.addressof(message)
+    ) == (False, 0)
+    assert observation.events == [{"category": category.decode(), "id": 42, "hwnd": 0}]
+    assert observation.nativeEventFilter(b"unrelated", ctypes.addressof(message)) == (
+        False,
+        0,
+    )
+    assert observation.nativeEventFilter(category, 0) == (False, 0)
+    message.message = 0x0100
+    assert observation.nativeEventFilter(category, ctypes.addressof(message)) == (
+        False,
+        0,
+    )
+    assert len(observation.events) == 1
+
+
+def test_partial_chord_failure_releases_every_submitted_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Failure is preserved, modifiers are not stranded, and nothing is retried."""
+    api = Mock()
+    monkeypatch.setattr(
+        input_module.ctypes, "WinDLL", Mock(return_value=api), raising=False
+    )
+    owner = OwnedInput()
+    monkeypatch.setattr(owner, "foreground_owned", lambda: True)
+    api.SendInput.side_effect = [1, 0, 1, 1]
+    monkeypatch.setattr(input_module.ctypes, "get_last_error", lambda: 5, raising=False)
+    with pytest.raises(RuntimeError, match="SendInput failed"):
+        owner.chord(0x81)
+    assert not owner.down
+    assert api.SendInput.call_count == 4
+
+
+def test_input_target_loss_blocks_new_actions_but_allows_owned_key_release(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No keydown goes to another application after a focus change."""
+    api = Mock()
+    api.SendInput.return_value = 1
+    monkeypatch.setattr(
+        input_module.ctypes, "WinDLL", Mock(return_value=api), raising=False
+    )
+    owner = OwnedInput()
+    monkeypatch.setattr(owner, "foreground_owned", lambda: False)
+    with pytest.raises(RuntimeError, match="not an owned"):
+        owner.key(0x11)
+    api.SendInput.assert_not_called()
+    owner.release()
+    api.SendInput.assert_not_called()
+    assert owner.down == set()
+
+
+def test_late_success_is_failure_not_a_faster_second_observation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Readiness/action deadlines cannot be passed by a blocked callback."""
+    ticks = iter((0, 0.1, 6, 6))
+    monkeypatch.setattr(
+        input_module,
+        "time",
+        SimpleNamespace(perf_counter=lambda: next(ticks), sleep=lambda _: None),
+    )
+    monkeypatch.setattr(
+        input_module, "QApplication", SimpleNamespace(processEvents=lambda: None)
+    )
+    with pytest.raises(TimeoutError, match=r"within 5\.0s"):
+        input_module.wait_for(lambda: True, "late observation")
+
+
+def test_child_start_failure_runs_bounded_owned_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed setup still owns a potentially started process and must reap it."""
+    process = Mock()
+    process.waitForStarted.return_value = False
+    process.waitForFinished.side_effect = [False, True]
+    process.state.return_value = QProcess.ProcessState.Running
+    factory = Mock(return_value=process)
+    factory.ProcessState = QProcess.ProcessState
+    monkeypatch.setattr(native, "QProcess", factory)
+    with pytest.raises(RuntimeError, match="failed to start"):
+        native.FixtureOwner(foreign=True)
+    process.terminate.assert_called_once()
+    process.kill.assert_called_once()
+    assert process.waitForFinished.call_count == 2
+
+
+def test_owned_fixture_retirement_stops_its_timer_and_popup(qtbot: QtBot) -> None:
+    """The local variant cannot leak a periodic callback into the next case."""
+    fixture = MenuFixture()
+    qtbot.addWidget(fixture.background)
+    try:
+        fixture.show()
+        qtbot.waitUntil(fixture.menu.isVisible)
+        assert fixture.timer.isActive()
+    finally:
+        fixture.close()
+    assert not fixture.timer.isActive()
+    assert not fixture.menu.isVisible()
+    assert not fixture.background.isVisible()
+
+
+@pytest.mark.parametrize("patch", [None, [], [1, 2, 3], [1, 2, "x", 4]])
+def test_malformed_fixture_geometry_cannot_feed_native_input(patch: object) -> None:
+    """Missing/invalid child data is a failed setup, never guessed coordinates."""
+    with pytest.raises(RuntimeError, match="Invalid fixture patch"):
+        native.state_patch({"patch": patch})
+
+
+def test_comparison_keeps_exact_baselines_and_existing_gates() -> None:
+    """Both historical controls run identical scripts with no weakened CI gate."""
+    root = Path(__file__).resolve().parents[2]
+    workflow = (root / ".github/workflows/frozen-menu-native.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "a1c6bbe488284cf5f5b4ed7a8b1e30181e0f62ed" in workflow
+    assert "1f73bde2b6ab5ab2324ce8079159004ee2713d3a" in workflow
+    assert 'qt: ["6.11.2", "6.12.0"]' in workflow
+    assert "source: [candidate, released-0121, released-0131]" in workflow
+    assert "continue-on-error" not in workflow
+    assert "timeout-minutes: 6" in workflow
+    assert "tests/capture/test_capture_native.py" in workflow
+    assert "tests/capture/test_tabs_baseline_native.py" in workflow
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    ["owned-drag", "foreign-drag", "owned-window", "owned-fullscreen", "tray-command"],
+)
+def test_missing_capture_or_emitted_error_cannot_qualify(scenario: str) -> None:
+    """The original native error is not mistaken for a successful empty result."""
+    with pytest.raises(RuntimeError, match="missing frame/capture"):
+        native.validate_outcome(scenario, 1, [], ["Real desktop capture failed"])
+
+
+def test_expected_fault_is_exact_and_never_hides_a_different_error() -> None:
+    """Only the deliberate fixture fault is accepted in the failure lane."""
+    native.validate_outcome("owned-error", 1, [], ["Owned qualification freeze fault"])
+    with pytest.raises(RuntimeError, match="Unexpected capture errors"):
+        native.validate_outcome("owned-error", 1, [], ["Real desktop capture failed"])
+    with pytest.raises(RuntimeError, match="missing frame/capture"):
+        native.validate_outcome("owned-repeat", 2, [], [])
+
+
+@pytest.mark.parametrize("started", [True, False])
+def test_already_stopped_child_is_reaped_without_termination(
+    monkeypatch: pytest.MonkeyPatch, *, started: bool
+) -> None:
+    """A confirmed stopped process is not a false cleanup failure."""
+    process = Mock()
+    process.waitForStarted.return_value = started
+    process.state.return_value = QProcess.ProcessState.NotRunning
+    process.errorString.return_value = "owned setup failure"
+    factory = Mock(return_value=process)
+    factory.ProcessState = QProcess.ProcessState
+    monkeypatch.setattr(native, "QProcess", factory)
+    if started:
+        fixture = native.FixtureOwner(foreign=True)
+        fixture.close()
+    else:
+        with pytest.raises(RuntimeError, match="failed to start: owned setup failure"):
+            native.FixtureOwner(foreign=True)
+    process.terminate.assert_not_called()
+    process.kill.assert_not_called()
+    process.waitForFinished.assert_not_called()
+
+
+@pytest.fixture
+def foreign_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[native.FixtureOwner, Mock]:
+    """Keep transport controls independent of a desktop or native input."""
+    process = Mock()
+    process.waitForStarted.return_value = True
+    process.state.return_value = QProcess.ProcessState.Running
+    factory = Mock(return_value=process)
+    factory.ProcessState = QProcess.ProcessState
+    monkeypatch.setattr(native, "QProcess", factory)
+    return native.FixtureOwner(foreign=True), process
+
+
+def test_fixture_stdout_waits_for_complete_records_and_keeps_latest_state(
+    foreign_transport: tuple[native.FixtureOwner, Mock],
+) -> None:
+    """A fragmented record is pending, and coalesced records remain ordered."""
+    owner, process = foreign_transport
+    process.readAllStandardOutput.side_effect = [
+        QByteArray(b'{"visible": true, "exposed":'),
+        QByteArray(b' true}\n{"visible": false, "exposed": false}\n{"vis'),
+        QByteArray(b'ible": true, "exposed": true}\n'),
+    ]
+    assert owner.state() == {"visible": False, "exposed": False}
+    assert owner.records == 0
+    assert owner.state() == {"visible": False, "exposed": False}
+    assert owner.records == 2
+    assert owner.pending == b'{"vis'
+    assert owner.state() == {"visible": True, "exposed": True}
+    assert owner.records == 3
+    assert owner.pending == b""
+    assert owner.first == {"visible": False, "exposed": False}
+    assert owner.last == {"visible": True, "exposed": True}
+    process.readAllStandardError.assert_not_called()
+
+
+def test_fixture_stdout_supports_windows_crlf_split_between_reads(
+    foreign_transport: tuple[native.FixtureOwner, Mock],
+) -> None:
+    """Windows text-mode newline translation cannot corrupt a split JSON line."""
+    owner, process = foreign_transport
+    process.readAllStandardOutput.side_effect = [
+        QByteArray(b'{"visible": true, "exposed": true}\r'),
+        QByteArray(b'\n{"visible": false, "exposed": false}\r\n'),
+    ]
+    assert owner.state() == {"visible": False, "exposed": False}
+    assert owner.records == 0
+    assert owner.state() == {"visible": False, "exposed": False}
+    assert owner.records == 2
+    assert owner.pending == b""
+
+
+@pytest.mark.parametrize("record", [b"not-json\n", b"[]\n", b"\xff\n"])
+def test_fixture_stdout_rejects_malformed_complete_record_immediately(
+    foreign_transport: tuple[native.FixtureOwner, Mock], record: bytes
+) -> None:
+    """Transport errors cannot become a readiness retry or successful state."""
+    owner, process = foreign_transport
+    process.readAllStandardOutput.return_value = QByteArray(record)
+    with pytest.raises((ValueError, TypeError)):
+        owner.state()
+    process.readAllStandardOutput.assert_called_once()
+    assert owner.records == 0
+    assert owner.first is None
+    assert owner.last is None
+
+
+def test_fixture_stdout_keeps_incomplete_or_missing_state_pending_until_deadline(
+    foreign_transport: tuple[native.FixtureOwner, Mock],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No complete visible state means the original wait budget still fails."""
+    owner, process = foreign_transport
+    process.readAllStandardOutput.return_value = QByteArray(b'{"visible":')
+    ticks = iter((0, 0.1, 6))
+    monkeypatch.setattr(
+        input_module,
+        "time",
+        SimpleNamespace(perf_counter=lambda: next(ticks), sleep=lambda _: None),
+    )
+    monkeypatch.setattr(
+        input_module, "QApplication", SimpleNamespace(processEvents=lambda: None)
+    )
+    with pytest.raises(TimeoutError, match=r"within 5\.0s"):
+        input_module.wait_for(lambda: owner.state().get("visible") is True, "setup")
+    assert owner.records == 0
+    assert owner.pending == b'{"visible":'
+
+
+def test_fixture_stdout_read_failure_and_excess_data_fail_without_retry(
+    foreign_transport: tuple[native.FixtureOwner, Mock],
+) -> None:
+    """Unexpected pipe failure is not hidden, and buffered bytes are bounded."""
+    owner, process = foreign_transport
+    error = PermissionError("owned transport failed")
+    process.readAllStandardOutput.side_effect = error
+    with pytest.raises(PermissionError, match="owned transport failed") as captured:
+        owner.state()
+    assert captured.value is error
+    process.readAllStandardOutput.assert_called_once()
+    process.readAllStandardOutput.side_effect = None
+    process.readAllStandardOutput.return_value = QByteArray(b"x" * 65537)
+    with pytest.raises(RuntimeError, match="64 KiB"):
+        owner.state()
+    assert owner.records == 0
+
+
+def test_fixture_early_exit_reports_separate_stderr_and_does_not_qualify(
+    foreign_transport: tuple[native.FixtureOwner, Mock],
+) -> None:
+    """Even a last valid receipt cannot hide a dead fixture or its diagnostics."""
+    owner, process = foreign_transport
+    process.readAllStandardOutput.return_value = QByteArray(b'{"visible": false}\n')
+    process.state.return_value = QProcess.ProcessState.NotRunning
+    process.readAllStandardError.return_value = QByteArray(b"owned child failed")
+    with pytest.raises(RuntimeError, match="before retirement: owned child failed"):
+        owner.state()
+    assert owner.records == 1
+    assert owner.last is None
+
+
+def test_fixture_publishes_only_complete_changed_json_lines(
+    qtbot: QtBot, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The child protocol contains no filenames, partial JSON or duplicate state."""
+    fixture = MenuFixture(publish_state=True)
+    qtbot.addWidget(fixture.background)
+    states = iter(({"visible": True}, {"visible": True}, {"visible": False}))
+    monkeypatch.setattr(fixture, "state", lambda: next(states))
+    try:
+        fixture.publish()
+        fixture.publish()
+        fixture.publish()
+        assert capsys.readouterr().out == '{"visible": true}\n{"visible": false}\n'
+    finally:
+        fixture.close()
+
+
+def test_input_ledger_precedes_submission_and_clears_after_release(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A killed native call leaves only its owned pending release in durable state."""
+    path = tmp_path / "input.json"
+    monkeypatch.setenv("QUALIFICATION_INPUT_LEDGER", str(path))
+    monkeypatch.setenv("QUALIFICATION_RUN_NONCE", "a" * 32)
+    api = Mock()
+    observations: list[dict[str, object]] = []
+
+    def submitted(*_args: object) -> int:
+        observations.append(json.loads(path.read_text(encoding="utf-8")))
+        return 1
+
+    api.SendInput.side_effect = submitted
+    monkeypatch.setattr(
+        input_module.ctypes, "WinDLL", Mock(return_value=api), raising=False
+    )
+    owner = OwnedInput()
+    monkeypatch.setattr(owner, "foreground_owned", lambda: True)
+    owner.key(0x11)
+    owner.button()
+    owner.release()
+    assert observations[0]["keys"] == [0x11]
+    assert observations[1]["mouse_down"] is True
+    after = json.loads(path.read_text(encoding="utf-8"))
+    assert after["keys"] == []
+    assert after["mouse_down"] is False
+
+
+def test_rejected_input_does_not_create_timeout_release_ledger(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An unrelated foreground receives neither a new input nor a cleanup keyup."""
+    path = tmp_path / "input.json"
+    monkeypatch.setenv("QUALIFICATION_INPUT_LEDGER", str(path))
+    monkeypatch.setenv("QUALIFICATION_RUN_NONCE", "a" * 32)
+    api = Mock()
+    monkeypatch.setattr(
+        input_module.ctypes, "WinDLL", Mock(return_value=api), raising=False
+    )
+    owner = OwnedInput()
+    monkeypatch.setattr(owner, "foreground_owned", lambda: False)
+    with pytest.raises(RuntimeError, match="not an owned"):
+        owner.button()
+    owner.release()
+    api.SendInput.assert_not_called()
+    assert json.loads(path.read_text(encoding="utf-8"))["keys"] == []
+
+
+@pytest.mark.parametrize("valid", [True, False])
+def test_timeout_cleanup_only_accepts_recorded_owned_keys(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, valid: bool
+) -> None:
+    """The external supervisor cannot expand a ledger into arbitrary key input."""
+    path = tmp_path / "input.json"
+    path.write_text(
+        json.dumps(
+            {
+                "pid": 1234,
+                "nonce": "a" * 32,
+                "keys": [0x11] if valid else [0x41],
+                "mouse_down": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        input_module, "sys", SimpleNamespace(platform="win32", stdout=Mock())
+    )
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("RUNNER_ENVIRONMENT", "github-hosted")
+    owner = Mock()
+    factory = Mock(return_value=owner)
+    monkeypatch.setattr(input_module, "OwnedInput", factory)
+    if valid:
+        input_module.release_timeout_ledger(path, "a" * 32, 5678)
+        assert owner.down == {0x11}
+        assert owner.mouse_down is True
+        owner.release.assert_called_once()
+    else:
+        with pytest.raises(RuntimeError, match="Invalid owned"):
+            input_module.release_timeout_ledger(path, "a" * 32, 5678)
+        factory.assert_not_called()
+
+
+def test_supervisor_cleanup_failure_cannot_start_later_native_tests() -> None:
+    """Even the legacy native step is gated on confirmed input retirement."""
+    root = Path(__file__).resolve().parents[2]
+    workflow = (root / ".github/workflows/frozen-menu-native.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "WaitForExit(10000)" in workflow
+    assert "NATIVE_INPUT_CLEANUP=FAILED" in workflow
+    assert "steps.observations.outputs.input_cleanup_confirmed == 'true'" in workflow
+    assert "'input_cleanup_confirmed=true' >> $env:GITHUB_OUTPUT" in workflow
+
+
+def test_pretrigger_readiness_retains_first_and_last_pixel_states(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Waiting for fixture paint is setup only and cannot erase its first state."""
+    probe = Mock()
+    context = Mock()
+    context.__enter__ = Mock(return_value=probe)
+    context.__exit__ = Mock(return_value=None)
+    background = marker()
+    background.fill(QColor("#18314d"))
+    probe.freeze.return_value.crop.side_effect = [background, marker()]
+    monkeypatch.setattr(native, "MssScreenSourceContext", Mock(return_value=context))
+
+    def wait_twice(predicate: object, _label: str, _seconds: float) -> None:
+        assert callable(predicate)
+        assert predicate() is False
+        assert predicate() is True
+
+    monkeypatch.setattr(native, "wait_for", wait_twice)
+    receipt: dict[str, object] = {}
+    result = native.ready_reference(
+        native.Rect(0, 0, 224, 84), "owned-drag", 5, receipt
+    )
+    assert is_marker(result)
+    assert receipt == {
+        "first_pixel_ready": False,
+        "last_pixel_ready": True,
+        "pixel_readiness_attempts": 2,
+    }
+    context.__exit__.assert_called_once()
+
+
+def test_native_probe_failure_is_never_readiness_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Actual desktop-read errors propagate immediately instead of becoming skips."""
+    probe = Mock()
+    probe.freeze.side_effect = native.CaptureError("native read failed")
+    context = Mock()
+    context.__enter__ = Mock(return_value=probe)
+    context.__exit__ = Mock(return_value=None)
+    monkeypatch.setattr(native, "MssScreenSourceContext", Mock(return_value=context))
+    with pytest.raises(native.CaptureError, match="native read failed"):
+        native.ready_reference(native.Rect(0, 0, 224, 84), "owned-drag", 5, {})
+    probe.freeze.assert_called_once()
+    context.__exit__.assert_called_once()
+
+
+@pytest.mark.parametrize("control", [KeyboardInterrupt("stop"), SystemExit(7)])
+def test_cleanup_continues_and_preserves_explicit_control_exit(
+    control: BaseException,
+) -> None:
+    """An interrupt survives ordinary cleanup failures and does not skip retirement."""
+    completed: list[str] = []
+    ordinary = RuntimeError("cleanup error")
+    primary = ValueError("original action failed")
+
+    def fail() -> None:
+        raise ordinary
+
+    def interrupt() -> None:
+        raise control
+
+    def retire() -> None:
+        completed.append("last owner retired")
+
+    errors = native.retire_callbacks([fail, interrupt, retire])
+    assert errors == [ordinary, control]
+    assert completed == ["last owner retired"]
+    with pytest.raises(type(control)) as caught:
+        native.propagate_cleanup(errors, primary)
+    assert caught.value is control
+    assert isinstance(caught.value.__cause__, BaseExceptionGroup)
+    assert caught.value.__cause__.exceptions == (primary, ordinary)
+
+
+def test_cleanup_preserves_original_error_and_each_later_cause() -> None:
+    """Cleanup must not replace the original action failure or suppress its causes."""
+    primary = RuntimeError("original")
+    secondary = ValueError("cleanup")
+    with pytest.raises(RuntimeError, match="original") as caught:
+        native.propagate_cleanup([secondary], primary)
+    assert caught.value is primary
+    assert isinstance(caught.value.__cause__, ExceptionGroup)
+    assert caught.value.__cause__.exceptions == (secondary,)
+    native.propagate_cleanup([], primary)
+
+
+@pytest.mark.parametrize("nonce", ["", "stale", "x" * 32])
+def test_missing_or_invalid_case_nonce_blocks_input_initialization(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, nonce: str
+) -> None:
+    """Malformed case identity is rejected before any native submission."""
+    monkeypatch.setenv("QUALIFICATION_INPUT_LEDGER", str(tmp_path / "input.json"))
+    monkeypatch.setenv("QUALIFICATION_RUN_NONCE", nonce)
+    api = Mock()
+    monkeypatch.setattr(
+        input_module.ctypes, "WinDLL", Mock(return_value=api), raising=False
+    )
+    with pytest.raises(RuntimeError, match="identity required before input"):
+        OwnedInput()
+    api.SendInput.assert_not_called()
+
+
+@pytest.mark.parametrize("ledger_nonce", [None, "b" * 32])
+def test_supervisor_rejects_missing_or_wrong_case_nonce(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, ledger_nonce: str | None
+) -> None:
+    """A stale case ledger cannot authorize any release in this observation."""
+    path = tmp_path / "input.json"
+    if ledger_nonce is not None:
+        path.write_text(
+            json.dumps(
+                {"pid": 1234, "nonce": ledger_nonce, "keys": [0x11], "mouse_down": True}
+            ),
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(
+        input_module, "sys", SimpleNamespace(platform="win32", stdout=Mock())
+    )
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("RUNNER_ENVIRONMENT", "github-hosted")
+    factory = Mock()
+    monkeypatch.setattr(input_module, "OwnedInput", factory)
+    with pytest.raises(RuntimeError, match=r"unavailable|Invalid owned"):
+        input_module.release_timeout_ledger(path, "a" * 32, 5678)
+    factory.assert_not_called()
+
+
+@pytest.mark.parametrize("release_succeeds", [True, False])
+def test_cleanup_adopts_pending_ledger_without_clearing_it_first(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, release_succeeds: bool
+) -> None:
+    """A helper killed during construction must leave all pending releases durable."""
+    path = tmp_path / "input.json"
+    pending = {"pid": 1234, "nonce": "a" * 32, "keys": [0x11], "mouse_down": True}
+    path.write_text(json.dumps(pending), encoding="utf-8")
+    monkeypatch.setenv("QUALIFICATION_INPUT_LEDGER", str(path))
+    monkeypatch.delenv("QUALIFICATION_RUN_NONCE", raising=False)
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("RUNNER_ENVIRONMENT", "github-hosted")
+    monkeypatch.setattr(
+        input_module, "sys", SimpleNamespace(platform="win32", stdout=Mock())
+    )
+    api = Mock()
+    api.SendInput.return_value = 1 if release_succeeds else 0
+    monkeypatch.setattr(
+        input_module.ctypes, "WinDLL", Mock(return_value=api), raising=False
+    )
+    monkeypatch.setattr(input_module.ctypes, "get_last_error", lambda: 5, raising=False)
+
+    def construct(*, initialize_ledger: bool = True) -> OwnedInput:
+        owner = OwnedInput(initialize_ledger=initialize_ledger)
+        assert json.loads(path.read_text(encoding="utf-8")) == pending
+        return owner
+
+    monkeypatch.setattr(input_module, "OwnedInput", construct)
+    if release_succeeds:
+        input_module.release_timeout_ledger(path, "a" * 32, 5678)
+    else:
+        with pytest.raises(ExceptionGroup, match="Owned input release failed"):
+            input_module.release_timeout_ledger(path, "a" * 32, 5678)
+    after = json.loads(path.read_text(encoding="utf-8"))
+    assert after["nonce"] == "a" * 32
+    assert after["keys"] == ([] if release_succeeds else [0x11])
+    assert after["mouse_down"] is not release_succeeds

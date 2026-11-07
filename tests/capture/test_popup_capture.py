@@ -253,8 +253,11 @@ def test_pending_requests_coalesce_and_cancel_without_freezing(
     assert desktop.frames == 1
 
 
+@pytest.mark.parametrize("freeze_first", [False, True])
 def test_popup_hide_handler_can_cancel_the_pending_capture(
     qtbot: QtBot,
+    *,
+    freeze_first: bool,
     capturing: tuple[CaptureService, FakeDesktop],
 ) -> None:
     """A reentrant dismissal callback cannot resurrect a cancelled request."""
@@ -264,9 +267,9 @@ def test_popup_hide_handler_can_cancel_the_pending_capture(
     menu.aboutToHide.connect(service.cancel)
     try:
         menu.popup(QPoint(80, 80))
-        service.capture_region()
+        service.capture_region(freeze_first=freeze_first)
         qtbot.wait(0)
-        assert desktop.frames == 0
+        assert desktop.frames == int(freeze_first)
         assert not service.is_selecting
     finally:
         menu.close()
@@ -412,8 +415,11 @@ class VetoPopup(QWidget):
             event.ignore()
 
 
+@pytest.mark.parametrize("freeze_first", [False, True])
 def test_popup_refusing_close_reports_failure_and_allows_retry(
     qtbot: QtBot,
+    *,
+    freeze_first: bool,
     capturing: tuple[CaptureService, FakeDesktop],
 ) -> None:
     """An input owner veto cannot strand capture or be silently forced closed."""
@@ -423,24 +429,27 @@ def test_popup_refusing_close_reports_failure_and_allows_retry(
     popup = VetoPopup()
     popup.show()
     try:
-        service.capture_region()
+        service.capture_region(freeze_first=freeze_first)
         assert failures == ["Close the open popup before capturing"]
         assert popup.isVisible()
         assert not service.is_selecting
-        assert desktop.frames == 0
+        assert desktop.frames == int(freeze_first)
         popup.allow_close = True
         popup.close()
-        service.capture_region()
+        service.capture_region(freeze_first=freeze_first)
         qtbot.waitUntil(lambda: bool(service.overlays))
-        assert desktop.frames == 1
+        assert desktop.frames == 1 + int(freeze_first)
     finally:
         popup.allow_close = True
         popup.close()
 
 
 @pytest.mark.parametrize("kind", ["popup", "keyboard", "mouse"])
+@pytest.mark.parametrize("freeze_first", [False, True])
 def test_input_reacquired_before_queued_start_fails_safely(
     qtbot: QtBot,
+    *,
+    freeze_first: bool,
     capturing: tuple[CaptureService, FakeDesktop],
     kind: str,
 ) -> None:
@@ -452,7 +461,7 @@ def test_input_reacquired_before_queued_start_fails_safely(
         None, Qt.WindowType.Popup if kind == "popup" else Qt.WindowType.Window
     )
     try:
-        service.capture_region()
+        service.capture_region(freeze_first=freeze_first)
         owner.show()
         if kind == "keyboard":
             owner.grabKeyboard()
@@ -460,15 +469,15 @@ def test_input_reacquired_before_queued_start_fails_safely(
             owner.grabMouse()
         qtbot.waitUntil(lambda: bool(failures))
         assert failures == ["Another window is holding input; try capturing again"]
-        assert desktop.frames == 0
+        assert desktop.frames == int(freeze_first)
         assert not service.is_selecting
         assert owner.isVisible()
         owner.releaseKeyboard()
         owner.releaseMouse()
         owner.close()
-        service.capture_region()
+        service.capture_region(freeze_first=freeze_first)
         qtbot.waitUntil(lambda: bool(service.overlays))
-        assert desktop.frames == 1
+        assert desktop.frames == 1 + int(freeze_first)
     finally:
         owner.releaseKeyboard()
         owner.releaseMouse()
@@ -492,8 +501,11 @@ def test_application_deactivation_cancels_selection(
         QApplication.sendEvent(qapp, QEvent(QEvent.Type.ApplicationActivate))
 
 
+@pytest.mark.parametrize("freeze_first", [False, True])
 def test_reentrant_request_during_freeze_coalesces(
     qtbot: QtBot,
+    *,
+    freeze_first: bool,
     capturing: tuple[CaptureService, FakeDesktop],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -505,11 +517,11 @@ def test_reentrant_request_during_freeze_coalesces(
 
     def prepare(_desktop: FakeDesktop) -> FrozenScreen:
         """A screen provider that reenters capture while preparing the first frame."""
-        service.capture_fullscreen()
+        service.capture_fullscreen(freeze_first=freeze_first)
         return freeze()
 
     monkeypatch.setattr(FakeDesktop, "freeze", prepare)
-    service.capture_region()
+    service.capture_region(freeze_first=freeze_first)
     qtbot.waitUntil(lambda: bool(service.overlays))
     QApplication.processEvents()
     assert desktop.frames == 1, "Preparation is part of the same exclusive session"
@@ -539,8 +551,11 @@ def test_closing_one_overlay_finishes_every_overlay(
 
 
 @pytest.mark.parametrize("entry", ["capture_region", "capture_fullscreen"])
+@pytest.mark.parametrize("freeze_first", [False, True])
 def test_cancel_during_preparation_cannot_deliver_or_create_overlays(
     qtbot: QtBot,
+    *,
+    freeze_first: bool,
     capturing: tuple[CaptureService, FakeDesktop],
     monkeypatch: pytest.MonkeyPatch,
     entry: str,
@@ -559,20 +574,23 @@ def test_cancel_during_preparation_cannot_deliver_or_create_overlays(
         return freeze()
 
     monkeypatch.setattr(FakeDesktop, "freeze", prepare)
-    getattr(service, entry)()
+    getattr(service, entry)(freeze_first=freeze_first)
     qtbot.waitUntil(lambda: bool(cancelled))
     assert not service.is_selecting
     assert service.overlays == ()
     assert captured == []
     assert cancelled == [True]
     monkeypatch.undo()
-    service.capture_region()
+    service.capture_region(freeze_first=freeze_first)
     qtbot.waitUntil(lambda: bool(service.overlays))
     assert desktop.frames == 2
 
 
+@pytest.mark.parametrize("freeze_first", [False, True])
 def test_cancelled_preparation_preserves_repeat_history(
     qtbot: QtBot,
+    *,
+    freeze_first: bool,
     capturing: tuple[CaptureService, FakeDesktop],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -580,7 +598,7 @@ def test_cancelled_preparation_preserves_repeat_history(
     service, desktop = capturing
     delivered: list[Capture] = []
     service.captured.connect(delivered.append)
-    service.capture_region()
+    service.capture_region(freeze_first=freeze_first)
     qtbot.waitUntil(lambda: bool(service.overlays))
     window = service.overlays[0].windowHandle()
     assert window is not None
@@ -596,11 +614,11 @@ def test_cancelled_preparation_preserves_repeat_history(
         return freeze()
 
     monkeypatch.setattr(FakeDesktop, "freeze", cancelled_frame)
-    service.capture_fullscreen()
+    service.capture_fullscreen(freeze_first=freeze_first)
     qtbot.waitUntil(lambda: desktop.frames == 2)
     assert len(delivered) == 1
     monkeypatch.undo()
-    service.repeat_last()
+    service.repeat_last(freeze_first=freeze_first)
     qtbot.waitUntil(lambda: len(delivered) == 2)
     assert delivered[1].mode == CaptureMode.REGION
     assert delivered[1].area == Rect(90, 90, 70, 50)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol, override
 
@@ -37,6 +38,26 @@ class WindowSource(Protocol):
         """Return the active window, if any."""
 
 
+@dataclass(frozen=True, slots=True)
+class _FrozenTarget:
+    """Copy discovery values so dismissal cannot change a selection target."""
+
+    title: str
+    bounds: Rect
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedCapture:
+    """One desktop frame and its matching targets, before input handoff."""
+
+    frozen: FrozenScreen
+    mode: CaptureMode
+    area: Rect | None = None
+    title: str = ""
+    windows: tuple[_FrozenTarget, ...] = ()
+    repeat_area: bool = True
+
+
 class CaptureService(QObject):
     """Produce ``Capture`` objects for every capture mode, including repeat."""
 
@@ -60,7 +81,8 @@ class CaptureService(QObject):
         self._last_mode: CaptureMode | None = None
         self._last_area: Rect | None = None
         self._last_title = ""
-        self._pending: Callable[[], None] | None = None
+        self._pending: Callable[[], _PreparedCapture] | None = None
+        self._prepared: _PreparedCapture | None = None
         self._starting = False
         self._cancelled_start = False
         self._handoff = QTimer(self)
@@ -90,21 +112,22 @@ class CaptureService(QObject):
 
     # Capture modes
 
-    def capture_region(self) -> None:
-        """Freeze every monitor and let the user drag a region or click a window."""
-        self._request(self._select_region)
+    def capture_region(self, *, freeze_first: bool = False) -> None:
+        """Select a region; hotkeys freeze before dismissing visible popups."""
+        self._request(self._prepare_region, freeze_first=freeze_first)
 
-    def _select_region(self) -> None:
-        """Freeze and show selection only after the previous input owner exits."""
-        try:
-            frozen = self._screens.freeze()
-            windows = list(self._windows.visible_windows(exclude=frozenset()))
-        except AppError as err:
-            self._fail(err)
-            return
-        if self._cancelled_start:
-            return
-        self._frozen = frozen
+    def _prepare_region(self) -> _PreparedCapture:
+        """Snapshot pixels and copy window targets without changing input owners."""
+        frozen = self._screens.freeze()
+        windows = tuple(
+            _FrozenTarget(window.title, window.bounds)
+            for window in self._windows.visible_windows(exclude=frozenset())
+        )
+        return _PreparedCapture(frozen, CaptureMode.REGION, windows=windows)
+
+    def _select_region(self, prepared: _PreparedCapture) -> None:
+        """Show the one frozen frame only after the previous input owner exits."""
+        self._frozen = prepared.frozen
         self._deactivated = False
         app = QApplication.instance()
         if isinstance(app, QApplication):
@@ -117,8 +140,8 @@ class CaptureService(QObject):
             overlay = SelectionOverlay(
                 ScreenGeometry.from_screen(screen),
                 screen,
-                frozen,
-                windows,
+                prepared.frozen,
+                prepared.windows,
                 show_magnifier=self._show_magnifier,
                 shared=shared,
             )
@@ -129,67 +152,68 @@ class CaptureService(QObject):
             overlay.show()
         self._activate_under_cursor()
 
-    def capture_fullscreen(self) -> None:
-        """Capture the monitor under the cursor after handing off input."""
-        self._request(self._capture_fullscreen)
+    def capture_fullscreen(self, *, freeze_first: bool = False) -> None:
+        """Capture the cursor monitor, optionally before popup dismissal."""
+        self._request(self._prepare_fullscreen, freeze_first=freeze_first)
 
-    def _capture_fullscreen(self) -> None:
-        """Capture the cursor monitor once no transient UI owns input."""
+    def _prepare_fullscreen(self) -> _PreparedCapture:
+        """Snapshot the cursor's monitor and its pixels before any focus changes."""
         screen = (
             QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
         )
         area = ScreenGeometry.from_screen(screen).physical
-        try:
-            frozen = self._screens.freeze()
-            image = frozen.crop(area)
-        except AppError as err:
-            self._fail(err)
-            return
-        area = area.rounded().intersected(frozen.bounds)
-        if self._emit(image, CaptureMode.FULLSCREEN, area, "Screen"):
-            self._last_area = None  # Repeat resolves the cursor's monitor again
+        return _PreparedCapture(
+            self._screens.freeze(),
+            CaptureMode.FULLSCREEN,
+            area,
+            "Screen",
+            repeat_area=False,
+        )
 
-    def capture_active_window(self) -> None:
-        """Capture the foreground window after handing off input."""
-        self._request(self._capture_active_window)
+    def capture_active_window(self, *, freeze_first: bool = False) -> None:
+        """Capture the foreground window, optionally before popup dismissal."""
+        self._request(self._prepare_active_window, freeze_first=freeze_first)
 
-    def _capture_active_window(self) -> None:
-        """Capture the foreground window once the request owns input."""
-        try:
-            frozen = self._screens.freeze()
-            window = self._windows.foreground()
-            if window is None:
-                msg = "There is no active window to capture"
-                raise CaptureError(msg)
-            image = frozen.crop(window.bounds)
-        except AppError as err:
-            self._fail(err)
-            return
-        area = window.bounds.rounded().intersected(frozen.bounds)
-        if self._emit(image, CaptureMode.WINDOW, area, window.title):
-            self._last_area = None  # Repeat resolves the foreground window again
+    def _prepare_active_window(self) -> _PreparedCapture:
+        """Snapshot foreground geometry and pixels before any focus changes."""
+        frozen = self._screens.freeze()
+        window = self._windows.foreground()
+        if window is None:
+            msg = "There is no active window to capture"
+            raise CaptureError(msg)
+        return _PreparedCapture(
+            frozen, CaptureMode.WINDOW, window.bounds, window.title, repeat_area=False
+        )
 
-    def repeat_last(self) -> None:
+    def repeat_last(self, *, freeze_first: bool = False) -> None:
         """Repeat the last capture without asking (UX-CAP-09)."""
-        self._request(self._repeat_last)
+        self._request(self._prepare_repeat, freeze_first=freeze_first)
 
-    def _repeat_last(self) -> None:
-        """Resolve repeat after completing the same input handoff as new captures."""
+    def _prepare_repeat(self) -> _PreparedCapture:
+        """Resolve repeat against the same desktop moment as a new capture."""
         mode, area = self._last_mode, self._last_area
         if mode is None:
-            self._select_region()
-        elif mode is CaptureMode.FULLSCREEN:
-            self._capture_fullscreen()
-        elif area is None:
-            self._capture_active_window()
-        else:
-            try:
-                frozen = self._screens.freeze()
-                image = frozen.crop(area)
-            except AppError as err:
-                self._fail(err)
-                return
-            self._emit(image, mode, area, self._last_title)
+            return self._prepare_region()
+        if mode is CaptureMode.FULLSCREEN:
+            return self._prepare_fullscreen()
+        if area is None:
+            return self._prepare_active_window()
+        return _PreparedCapture(self._screens.freeze(), mode, area, self._last_title)
+
+    def _start_prepared(self, prepared: _PreparedCapture | None) -> None:
+        """Use only the saved pixels and targets after input ownership settles."""
+        if prepared is None or self._cancelled_start:
+            return
+        if prepared.area is None:
+            self._select_region(prepared)
+            return
+        image = prepared.frozen.crop(prepared.area)
+        area = prepared.area.rounded().intersected(prepared.frozen.bounds)
+        if (
+            self._emit(image, prepared.mode, area, prepared.title)
+            and not prepared.repeat_area
+        ):
+            self._last_area = None  # Repeat resolves the current target again
 
     def cancel(self) -> None:
         """Close any open overlay without capturing."""
@@ -226,17 +250,21 @@ class CaptureService(QObject):
 
     # Internals
 
-    def _request(self, start: Callable[[], None]) -> None:
-        """Acquire capture input before freezing or showing any overlay.
+    def _request(
+        self, prepare: Callable[[], _PreparedCapture], *, freeze_first: bool
+    ) -> None:
+        """Reserve a session, snapshot hotkey content, then hand off Qt input.
 
-        Qt routes native input to active popups regardless of which window
-        is raised. A popup must close and its dispatch unwind before capture
-        begins; changing activation alone cannot transfer that ownership.
+        Hotkeys preserve the pixels the user requested before closing popups.
+        Tray commands keep the usual hide-before-freeze behavior. Both defer
+        selection and delivery until the current native/menu dispatch unwinds.
         """
         if self.is_selecting:
             self._activate_under_cursor()
             return
-        self._pending = start
+        self._pending = prepare
+        if freeze_first and not self._prepare_before_handoff(prepare):
+            return
         popup = QApplication.activePopupWidget()
         mouse, keyboard = QWidget.mouseGrabber(), QWidget.keyboardGrabber()
         # Close this application's popup stack through Qt, which releases its
@@ -257,10 +285,34 @@ class CaptureService(QObject):
         if self.is_selecting:
             self._handoff.start(0)
 
+    def _prepare_before_handoff(self, prepare: Callable[[], _PreparedCapture]) -> bool:
+        """Keep reservation and cancellation valid through synchronous capture."""
+        self._starting = True
+        self._cancelled_start = False
+        try:
+            self._prepared = self._prepare(prepare)
+            return self._prepared is not None
+        finally:
+            self._starting = False
+            if self._cancelled_start:
+                self._close_overlays()
+
+    def _prepare(
+        self, prepare: Callable[[], _PreparedCapture]
+    ) -> _PreparedCapture | None:
+        """Drop failed or reentrantly cancelled preparation before using its frame."""
+        try:
+            prepared = prepare()
+        except AppError as err:
+            self._fail(err)
+            return None
+        return None if self._cancelled_start else prepared
+
     def _start_pending(self) -> None:
         """Start one request only when Qt's previous input owner has released it."""
-        start, self._pending = self._pending, None
-        if start is None:
+        prepare, self._pending = self._pending, None
+        prepared, self._prepared = self._prepared, None
+        if prepare is None:
             return
         if (
             QApplication.activePopupWidget() is not None
@@ -274,7 +326,9 @@ class CaptureService(QObject):
         self._starting = True
         self._cancelled_start = False
         try:
-            start()
+            self._start_prepared(prepared or self._prepare(prepare))
+        except AppError as err:
+            self._fail(err)
         finally:
             self._starting = False
             if self._cancelled_start:
@@ -355,6 +409,7 @@ class CaptureService(QObject):
         self._handoff.stop()
         self._input_check.stop()
         self._pending = None
+        self._prepared = None
         if self._watching is not None:
             self._watching.removeEventFilter(self)
             self._watching = None

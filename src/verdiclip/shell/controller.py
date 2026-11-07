@@ -208,7 +208,7 @@ class AppController(QObject):
         handler = handlers.get(action)
         if handler is not None:
             self._workspace.cancel_drag()
-            handler()
+            handler(freeze_first=True)
 
     def _on_captured(self, capture: Capture) -> None:
         """Run every enabled after-capture action (UX-CAP-11..13)."""
