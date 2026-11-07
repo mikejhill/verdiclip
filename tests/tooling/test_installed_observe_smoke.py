@@ -634,8 +634,10 @@ def test_terminal_rejects_input_epoch_drift(
 @pytest.mark.parametrize(
     ("confirmed", "forced"), [(True, False), (True, True), (False, False)]
 )
-@pytest.mark.parametrize("case", ["success", "cancel-first", "cancel-interior"])
-def test_outer_success_cannot_hide_forced_or_unconfirmed_cleanup(  # noqa: PLR0913 - fixed cleanup/case matrix
+@pytest.mark.parametrize(
+    "case", ["success", "cancel-first", "cancel-interior", "parent-death-first"]
+)
+def test_outer_success_cannot_hide_forced_or_unconfirmed_cleanup(  # noqa: PLR0913, PLR0915 - fixed cleanup/case matrix
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     authored: Json,
@@ -727,13 +729,44 @@ def test_outer_success_cannot_hide_forced_or_unconfirmed_cleanup(  # noqa: PLR09
         return_value={"confirmed": confirmed, "forced": forced, "errors": []}
     )
     monkeypatch.setattr(smoke, "release_owner", cleanup)
+    witness = Mock()
+    if case == "parent-death-first":
+        control = Mock()
+        control.retirement_deadline = 6.0
+        control.failure_context.return_value = {"request_deadline": 6.0}
+        control.preparation_ready.return_value = True
+        control.before_observe.return_value = True
+        control.finish_if_held.side_effect = lambda: (
+            {"passed": True, "gui": {"exit_code": 17, "members": []}}
+            if control.before_observe.called
+            else None
+        )
+
+        def create(
+            _harness: object,
+            _support: object,
+            owners: dict[str, object],
+            **_kwargs: object,
+        ) -> Mock:
+            owners["witness"] = witness
+            return control
+
+        monkeypatch.setattr(
+            smoke, "death_control_module", lambda: SimpleNamespace(DeathControl=create)
+        )
     passed = confirmed and not forced
     assert smoke.outer(args) == int(not passed)
     result = smoke.read(args.output / "receipt.json")
     assert result["passed"] is passed
-    assert result["child"]["passed"] is True
+    if case == "parent-death-first":
+        assert result["parent_death"]["passed"] is True
+        assert "child" not in result
+        expected_cleanup = [witness, gui, fixture]
+    else:
+        assert result["child"]["passed"] is True
+        expected_cleanup = [gui, fixture]
     assert (args.output / "states" / "stop").read_bytes() == b""
-    assert [call.args[0] for call in cleanup.call_args_list] == [gui, fixture]
+    assert [call.args[0] for call in cleanup.call_args_list] == expected_cleanup
 
 
 class NativeBoundary:

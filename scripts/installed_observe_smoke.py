@@ -54,6 +54,7 @@ MAX_CREDIT_CHUNKS = 24
 CREDIT_PREFIX_BYTES = 4
 CREDIT_RECORD_BYTES = 512
 CREDIT_EVENT_FIELDS = 4
+DEATH_REFERENCE_BYTES = 900 * 640 * 3
 MARKER_COUNT = 4
 RGB_CHANNELS = 3
 MAX_CHANNEL = 255
@@ -118,9 +119,26 @@ def cancel_module() -> ModuleType:
 
 def case_index(case: str) -> int | None:
     """The only variants are success and two fixed protocol-wait cancellations."""
-    if case not in ("success", "cancel-first", "cancel-interior"):
+    if case not in ("success", "cancel-first", "cancel-interior", "parent-death-first"):
         raise ValueError("Unsupported owned observation case")
-    return {"success": None, "cancel-first": 0, "cancel-interior": 1}[case]
+    return {
+        "success": None,
+        "cancel-first": 0,
+        "cancel-interior": 1,
+        "parent-death-first": 0,
+    }[case]
+
+
+def death_control_module() -> ModuleType:
+    """Load only the fixed outer death-proof coordinator."""
+    path = Path(__file__).with_name("observe_death_control.py")
+    spec = importlib.util.spec_from_file_location("owned_death_control", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Copied death coordinator is missing")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def topology_module() -> ModuleType:
@@ -919,6 +937,93 @@ def cancel_credit(journal: Journal, facade: CancelFacade, hold: Json) -> None:
     hold["cancel_called_ns"] = time.monotonic_ns()
     facade.cancel()
     hold["cancel_returned_ns"] = time.monotonic_ns()
+    journal.check()
+
+
+def hold_parent_death(  # noqa: PLR0913, PLR0917 - fixed phase evidence
+    output: Path,
+    session: str,
+    generation: int,
+    observe_called_ns: int,
+    token: Json,
+    received_ns: int,
+    journal: Journal,
+) -> None:
+    """Publish only the authenticated wait and fixed no-grant path, never cancel."""
+    journal.check()
+    if (
+        not observe_called_ns
+        <= received_ns
+        <= time.monotonic_ns()
+        < observe_called_ns + 2_000_000_000
+    ):
+        raise RuntimeError("Late parent-death hold evidence")
+    write_handshake(
+        output / "death-held.json",
+        {
+            "schema": 1,
+            "session": session,
+            "hold": {
+                "session": session,
+                "generation": generation,
+                "observe_called_ns": observe_called_ns,
+                "token": token,
+                "wait_received_ns": received_ns,
+                "no_credit_issued": True,
+                "no_cancel_issued": True,
+                "harness_sha256": hashlib.sha256(
+                    Path(__file__).read_bytes()
+                ).hexdigest(),
+            },
+        },
+    )
+    journal.check()
+    if time.monotonic_ns() >= observe_called_ns + 2_000_000_000:
+        raise RuntimeError("Late parent-death hold publication")
+
+
+def freeze_death_reference(  # noqa: PLR0913, PLR0917 - independent frozen inputs
+    output: Path,
+    states: Path,
+    session: str,
+    initial: Json,
+    expected: Json,
+    before_root: bytes,
+    journal: Journal,
+) -> None:
+    """Transfer bounded fixture reference bytes to the surviving witness only."""
+    root = rect(initial["rect"])
+    if (root[2] - root[0], root[3] - root[1]) != (900, 640) or len(
+        before_root
+    ) != DEATH_REFERENCE_BYTES:
+        raise RuntimeError("Unexpected parent-death reference size")
+    fixture = latest(states)
+    if fixture_key(fixture) != expected:
+        raise RuntimeError("Parent-death fixture changed before reference handoff")
+    witness = output.parent / "death-witness"
+    target = witness / "before-root.rgb"
+    if target.exists():
+        raise RuntimeError("Duplicate parent-death reference")
+    journal.check()
+
+    def persist() -> None:
+        pending = target.with_suffix(".tmp")
+        pending.write_bytes(before_root)
+        pending.replace(target)
+
+    journal.call("reference.freeze_death", persist)
+    write_handshake(
+        output / "death-reference.json",
+        {
+            "schema": 1,
+            "session": session,
+            "fixture": fixture,
+            "expected": expected,
+            "reference_initial": initial,
+            "before_rgb_sha256": hashlib.sha256(before_root).hexdigest(),
+            "before_rgb_byte_count": len(before_root),
+        },
+    )
     journal.check()
 
 
@@ -2110,6 +2215,7 @@ def prepare_case(  # noqa: PLR0913, PLR0917 - explicit immutable handshake input
 
 def child(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - fixed owned executor lifecycle
     """All native references run here, never in the outer watchdog process."""
+    death_case = getattr(args, "case", "success") == "parent-death-first"
     held_index = case_index(getattr(args, "case", "success"))
     cancellation = cancel_module() if held_index is not None else None
     preparation_deadline = args.preparation_start + PREPARATION_SECONDS
@@ -2234,6 +2340,7 @@ def child(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - fixed owned
             generation, identity["epoch"], len(before_panel)
         )
         result["credit_public_events"] = credit_transcript.events
+        result["observe_called_ns"] = time.monotonic_ns()
         channel.observe(1, target)
 
     def grant_credit(value: int, raw: bytes) -> None:
@@ -2254,16 +2361,29 @@ def child(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - fixed owned
                 "cancel_returned_ns": None,
             }
             result["credit_hold"] = hold
+            if death_case:
+                hold_parent_death(
+                    args.output,
+                    args.session,
+                    generation,
+                    result["observe_called_ns"],
+                    token,
+                    received,
+                    journal,
+                )
+                return
             cancel_credit(journal, channel, hold)
             return
         credit_transcript.grant(value, raw, channel, journal)
 
-    def terminal(value: int, payload: bytes) -> None:
+    def terminal(value: int, payload: bytes) -> None:  # noqa: C901 - fixed success/cancel/death branches
         if value != generation or guard is None or target is None:
             raise RuntimeError("Unexpected observe terminal")
         receipt = json.loads(payload)
         result["terminal"] = receipt
         journal.check()
+        if death_case:
+            raise RuntimeError("Parent-death case unexpectedly reached GUI terminal")
         if held_index is not None:
             if (
                 result["first_failure"] is not None
@@ -2430,6 +2550,16 @@ def child(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - fixed owned
         before_root, before_panel = reference(
             journal, guard, args.states, expected, args.output, "before"
         )
+        if death_case:
+            freeze_death_reference(
+                args.output,
+                args.states,
+                args.session,
+                guard.initial,
+                expected,
+                before_root,
+                journal,
+            )
         selected = rect(expected["rect"])
         target = ObserveTarget(
             args.fixture_pid,
@@ -2634,6 +2764,7 @@ def outer(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912, PLR0915 - ow
         HelperCommand,
     )
 
+    death_case = getattr(args, "case", "success") == "parent-death-first"
     held_index = case_index(getattr(args, "case", "success"))
     output = args.output
     output.mkdir(parents=True, exist_ok=False)
@@ -2667,6 +2798,7 @@ def outer(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912, PLR0915 - ow
     peer_pid = None
     provisional_members: set[int] = set()
     temporary_profile: Json | None = None
+    death_control = None
     expected_launch = str(Path(sys.executable).resolve())
     result.update(
         contract="already-open-panel-explicit-ownership-v2",
@@ -2711,7 +2843,23 @@ def outer(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912, PLR0915 - ow
                 str(output),
             )
         )
+        if death_case:
+            death_control = death_control_module().DeathControl(
+                sys.modules[__name__],
+                module,
+                owners,
+                output=output,
+                executor=executor,
+                states=states,
+                wheel=args.wheel,
+                session=session,
+                started=started,
+                provenance=provenance,
+            )
         while time.monotonic() < deadline:
+            witness_prepared = (
+                death_control is None or death_control.preparation_ready()
+            )
             snapshot_started = time.monotonic()
             status = gui.snapshot()
             snapshot_finished = time.monotonic()
@@ -2725,6 +2873,7 @@ def outer(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912, PLR0915 - ow
             ready_path = executor / "preparation-ready.json"
             if (
                 case_start is None
+                and witness_prepared
                 and ready_path.exists()
                 and status["exit_code"] is None
             ):
@@ -2892,6 +3041,19 @@ def outer(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912, PLR0915 - ow
                         raise RuntimeError(  # noqa: TRY301 - no pixels authorized
                             "A provisional member was not the attested helper"
                         )
+                    if (
+                        death_control is not None
+                        and phase == "pre-observe"
+                        and temporary_profile is not None
+                        and not death_control.before_observe(
+                            profile,
+                            temporary_profile,
+                            temporary_profile["peer"],
+                            deadline,
+                        )
+                    ):
+                        time.sleep(0.01)
+                        continue
                     ack = serve_checkpoint(
                         executor,
                         session,
@@ -2912,6 +3074,24 @@ def outer(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912, PLR0915 - ow
                             )
                             peer_pid = peer["pid"]
                             result["attested_peer"] = peer
+            if death_control is not None:
+                death_proof = death_control.finish_if_held()
+                if death_proof is not None:
+                    deadline = min(deadline, death_control.retirement_deadline)
+                    result["parent_death"] = death_proof
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError("Late parent-death retirement")  # noqa: TRY301 - retain failure before outer cleanup
+                    (states / "stop").write_bytes(b"")
+                    while time.monotonic() < deadline:
+                        fs = fixture.snapshot()
+                        if fs["exit_code"] is not None and not fs["members"]:
+                            result["fixture_exit"] = fs
+                            result["passed"] = (
+                                fs["exit_code"] == 0 and time.monotonic() < deadline
+                            )
+                            break
+                        time.sleep(0.01)
+                    break
             if status["exit_code"] is not None and not status["members"]:
                 value = read(executor / "result.json")
                 result.update(child=value, gui=status)
@@ -2955,6 +3135,10 @@ def outer(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912, PLR0915 - ow
     except Exception as error:  # noqa: BLE001 - first failure before fallback
         result["first_failure"] = repr(error)
     finally:
+        if death_control is not None:
+            if death_control.retirement_deadline is not None:
+                deadline = min(deadline, death_control.retirement_deadline)
+            result["death_context"] = death_control.failure_context()
         result["cleanup"] = {
             name: release_owner(
                 owner,
@@ -2979,7 +3163,7 @@ def main() -> int:
     parser.add_argument("--fixture", type=Path)
     parser.add_argument(
         "--case",
-        choices=("success", "cancel-first", "cancel-interior"),
+        choices=("success", "cancel-first", "cancel-interior", "parent-death-first"),
         default="success",
     )
     parser.add_argument("--child", action="store_true")

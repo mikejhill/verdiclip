@@ -90,3 +90,37 @@ The original preparation, capture and cleanup budgets are unchanged.
 These are protocol-wait cancellation cases, not parent-death, blocked OS write,
 GUI responsiveness, full native Qt join, scrolling, or general-app qualification.
 The previous successful single-frame run and all earlier failures remain intact.
+
+## First held-credit parent-death experiment
+
+A separate owned witness process pins the actual GUI executor, the attested peer
+and its optional qualified console companion while they are alive. It retains
+process handles only, never helper or outer job handles. A fixed diagnostic exit
+code of 17 is used only for `TerminateProcess` on the actual GUI executor; it is
+not configurable. The venv launcher, peer, console and outer job are never killed
+to manufacture a successful verdict.
+
+The GUI validates its first public capacity token, writes source/session-bound
+no-grant and no-cancel metadata, then returns without issuing either operation.
+This establishes an authenticated protocol wait under the fixed harness source,
+not unavailable post-death worker counters or an OS blocked-read/write claim.
+The witness rechecks the same live identities and reference guards, then checks
+the conservative public-observe-call-plus-two-seconds bound immediately before
+the single death action. All original case and absolute limits still apply.
+
+The surviving witness independently validates the original frozen reference
+bytes and state before observe. A fixed private 1,728,000-byte full-root RGB file
+transfers fixture-only reference data; it is not production image transport.
+After death, the witness performs the original bounded post-reference sequence
+and requires exact full-root/full-panel pixels and unchanged state/geometry/input.
+Its own process uses explicitly verified PMv2 geometry without changing the target.
+
+Qualification requires retained executor/peer/console signals with unchanged
+identities, natural GUI outer-job emptiness while its job handle remains open,
+natural witness retirement and ordinary fixture retirement before fallback. The
+five-second retirement clock starts at the death request and remains capped by
+the original case/absolute deadlines. No dead-parent finally, cancel or terminal
+receipt is evidence. Emergency cleanup preserves failure and never upgrades it.
+This is one fixed owned-fixture containment proof, not parent-death equivalence
+to cancellation, scrolling support, GUI responsiveness, full native Qt join, or
+release readiness.
