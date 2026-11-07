@@ -38,4 +38,41 @@ These need an account owner; the workflows cannot do them.
 
 ## Before merging a release pull request
 
-Run the manual checklist at the end of [ux-contract.md](design/ux-contract.md) on a Windows machine: real `PrtSc` hotkeys, multi-monitor and mixed-DPI capture, clipboard pasting into other apps, printing, and theme switching.
+Automated repository checks are the normal release gate. Physical-machine smoke
+checks are ad hoc, required only for critical behavior that the relevant automated
+evidence cannot reliably verify. A release does not routinely require a person's
+laptop or completion of every item in the physical checklist.
+
+1. Require the final release head's CI and security checks to pass. Inspect all PR
+   review threads and code-scanning findings as described in
+   [CONTRIBUTING.md](../CONTRIBUTING.md). Preserve the exact-main verification gate
+   before publication; do not weaken coverage, latency or security requirements.
+2. Review the changed UX contracts and their automated evidence, including
+   interrupted/repeated flows, focused editors and the applicable Qt profiles.
+   Review light/dark snapshots for visible changes. Record the final commit, run
+   links, relevant results and any verification limits in the release PR.
+3. Retain the real desktop capture smoke required by CONTRIBUTING. A passing
+   `TestMssScreenSource::test_freeze` result from the exact candidate's hosted
+   Windows CI is valid evidence: this test captures the actual runner desktop.
+   Check the test result itself, not just the aggregate check. A locked-desktop
+   skip is not a pass; if needed, run the documented
+   `--require-interactive-capture` command on an available Windows desktop.
+   This automated native check does not require a physical-machine test by the
+   user, and does not prove physical key delivery or mixed-monitor behavior.
+4. For capture lifecycle changes, also retain the native popup/modal matrix and
+   any change-specific native/baseline qualification required by
+   [capture input ownership](design/capture-input.md). Simulated tab/hotkey tests
+   do not replace these native contracts.
+5. Assess whether a critical gap requires a physical smoke check using the
+   [checklist](design/ux-contract.md#manual-checklist). Examples include changed
+   physical hotkey registration, DPI/monitor integration not represented by the
+   automated matrix, an unresolved real-device regression, or a specifically
+   requested user acceptance check. Run the relevant cases, not the entire list
+   by default; state the risk and expected result before requesting a session.
+   Existing explicit user acceptance requirements and release holds still apply.
+
+When the affected behavior is covered reliably by CI and no critical physical
+integration gap is identified, record that assessment and proceed without a
+manual session. Never label simulated evidence as physical/native validation or
+claim an unperformed check passed. Expand reproducible automated coverage when
+practical; keep remaining limits explicit.

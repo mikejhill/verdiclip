@@ -41,8 +41,11 @@ that test with the prerequisite reason; unknown session state and capture
 errors still fail. Native pixel conversion, buffer detachment, handle reuse,
 and native error cleanup remain covered by deterministic tests on every run.
 
-Before merging capture changes or releasing, unlock/reconnect the Windows
-desktop and require the real smoke test to pass:
+Before merging capture changes or releasing, require a passed real smoke test
+on an available Windows desktop. The exact candidate's hosted Windows CI result
+counts when this test passed rather than skipped; no manual laptop session is
+needed for that automated evidence. If it has not passed, unlock/reconnect an
+available Windows desktop and run:
 
 ```bash
 uv run pytest tests/capture/test_grabber.py::TestMssScreenSource::test_freeze --require-interactive-capture -v

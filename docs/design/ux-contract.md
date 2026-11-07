@@ -170,10 +170,18 @@ so it can be adjusted immediately; the tool stays active for the next mark.
 
 ---
 
-## Manual checklist (run before each release)
+## Manual checklist
 
-Automation cannot press the physical `PrtSc` key system-wide or attach a
-second monitor at a different DPI. Check these by hand on Windows 11:
+These are ad hoc physical-machine checks for exceptional, critical gaps, not a
+mandatory suite before every release. Follow the
+[release qualification policy](../releasing.md#before-merging-a-release-pull-request)
+to select relevant cases. Automated CI is the primary verification path; a hosted
+native desktop test is not the same as a physical-key or real mixed-monitor test.
+
+Automation cannot press the physical `PrtSc` key or attach a second physical
+monitor at a different DPI. When changed behavior or an unresolved regression
+makes that gap critical, check the relevant cases by hand on Windows 11 and record
+what ran, what passed and what remains unverified:
 
 - [ ] `PrtSc`, `Ctrl+PrtSc`, `Alt+PrtSc`, `Shift+PrtSc` each trigger only their own action, and Windows' Snipping Tool does not also open (or the conflict notification appears if Windows owns `PrtSc`).
 - [ ] Two monitors at 100% and 150% scaling: overlay covers both, selection on each yields physical-resolution pixels matching what was on screen.
