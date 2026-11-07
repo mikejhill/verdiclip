@@ -605,3 +605,36 @@ def test_retirement_phase_cannot_hide_a_remaining_frozen_member(
             retiring=True,
             admitted={44, 45},
         )
+
+
+def test_cancel_retirement_requires_intentional_termination(prospective: Json) -> None:
+    """Only explicit cancellation mode permits a terminated helper, not outer force."""
+    value = retirement(prospective)
+    value["helper"].update(termination_requested=True, exit_code=1)
+    smoke.validate_temporary_retirement(value, prospective, cancelled=True)
+    with pytest.raises(RuntimeError):
+        smoke.validate_temporary_retirement(value, prospective)
+    value["helper"]["termination_requested"] = False
+    with pytest.raises(RuntimeError):
+        smoke.validate_temporary_retirement(value, prospective, cancelled=True)
+
+
+@pytest.mark.parametrize(
+    ("field", "bad"),
+    [
+        ("cleanup_confirmed", False),
+        ("cleanup_errors", ["failed"]),
+        ("remaining_pids", [44]),
+        ("failure", "timeout"),
+        ("exit_code", None),
+    ],
+)
+def test_cancel_never_waives_cleanup_evidence(
+    prospective: Json, field: str, bad: object
+) -> None:
+    """Intentional termination does not excuse late, incomplete or failed cleanup."""
+    value = retirement(prospective)
+    value["helper"].update(termination_requested=True, exit_code=1)
+    value["helper"][field] = bad
+    with pytest.raises(RuntimeError):
+        smoke.validate_temporary_retirement(value, prospective, cancelled=True)

@@ -67,3 +67,26 @@ The public `credit_required` signal carries one length-prefixed `frame_wait` rec
 Terminal credit snapshots encode event history as bounded arrays `[sequence, monotonic_ns, kind, chunk_index_or_null]` instead of repeating full token dictionaries. The full pending token remains in each snapshot. This keeps maximum late-cancellation evidence under the existing metadata budget. The original observation, terminal and frame identities remain independently bound by the retained sink.
 
 The successful uncredited installed-wheel receipts remain valid only for that earlier candidate. The current isolated success-harness candidate explicitly grants each public token and retains an independent bounded transcript. It checks all public wait/grant calls against the worker's exact wait/reservation event order, total bytes and original observation deadline before taking the retained image. Full-reference comparison and natural ownership cleanup remain required. This adaptation requires separate review and a fresh installed-wheel native proof. First/interior cancellation and parent-death experiments require separate reviewed harness evidence; portable tests alone do not qualify those native cases.
+
+## Fixed held-credit cancellation experiment
+
+The separate owned-fixture harness offers `cancel-first` and `cancel-interior`.
+They hold index 0 with zero accepted/granted bytes, or index 1 after exactly
+65,536 accepted/granted bytes. Each independently validates the announced token,
+records its receipt, and immediately calls public `cancel()` without a grant,
+sleep, artificial reader pause, or production hook. Successful prefix grants
+remain separate from the held cancellation record.
+
+Qualification requires the matching worker latch and final witness, no held
+reservation or later grant, cancellation ordering within the original observation
+deadline, a failed `cancelled` terminal, no admitted observation/frame, and rejected
+public `take_frame`. Partial observation metadata is retained as evidence, not an
+image. The pre/post independent full-root and full-panel reference, state, geometry,
+input, pinned process retirement and baseline-only checkpoints remain required.
+Only intentional helper termination is expected; cleanup errors, timeout, forced
+outer teardown, or non-natural executor/fixture retirement fail the experiment.
+The original preparation, capture and cleanup budgets are unchanged.
+
+These are protocol-wait cancellation cases, not parent-death, blocked OS write,
+GUI responsiveness, full native Qt join, scrolling, or general-app qualification.
+The previous successful single-frame run and all earlier failures remain intact.

@@ -1,4 +1,4 @@
-"""One fresh-wheel owned WPF observation; no scrolling or phase-cancel claims.
+"""One fresh-wheel WPF frame or fixed held-credit cancellation; no scrolling.
 
 Copy beside installed_channel_smoke.py and installed_runtime_smoke.py. The outer
 owner never captures pixels: an owned GUI/reference executor runs all possibly
@@ -102,6 +102,25 @@ def support() -> ModuleType:
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def cancel_module() -> ModuleType:
+    """Load the fixed independent cancellation validator, not a provider hook."""
+    path = Path(__file__).with_name("observe_credit_cancel.py")
+    spec = importlib.util.spec_from_file_location("owned_observe_cancel", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Copied cancellation validator is missing")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def case_index(case: str) -> int | None:
+    """The only variants are success and two fixed protocol-wait cancellations."""
+    if case not in ("success", "cancel-first", "cancel-interior"):
+        raise ValueError("Unsupported owned observation case")
+    return {"success": None, "cancel-first": 0, "cancel-interior": 1}[case]
 
 
 def topology_module() -> ModuleType:
@@ -883,6 +902,24 @@ class CreditFacade(Protocol):
         self, generation: int, request_id: int, chunk_index: int
     ) -> None:
         """Grant the current immutable token once."""
+
+
+class CancelFacade(Protocol):
+    """Cancellation proof can only call the public cancellation method."""
+
+    def cancel(self) -> None:
+        """Irreversibly cancel the current channel."""
+
+
+def cancel_credit(journal: Journal, facade: CancelFacade, hold: Json) -> None:
+    """Call cancel without a grant, sleep or logging between admission and call."""
+    if hold.get("cancel_called_ns") is not None:
+        raise RuntimeError("Held cancellation was already called")
+    journal.check()
+    hold["cancel_called_ns"] = time.monotonic_ns()
+    facade.cancel()
+    hold["cancel_returned_ns"] = time.monotonic_ns()
+    journal.check()
 
 
 def unique_credit_fields(pairs: list[tuple[str, object]]) -> Json:
@@ -1850,8 +1887,10 @@ def topology_child(args: argparse.Namespace) -> int:
         journal.stream.close()
 
 
-def validate_temporary_retirement(value: Json, profile: Json) -> None:
-    """Require explicit signaled original handles and natural production cleanup."""
+def validate_temporary_retirement(
+    value: Json, profile: Json, *, cancelled: bool = False
+) -> None:
+    """Require original signaled handles and the case-specific termination mode."""
     retired, helper = value["witness"], value["helper"]
     expected = {r["process_id"]: r for r in profile["records"]["processes"]}
     records = retired.get("processes", [])
@@ -1896,9 +1935,9 @@ def validate_temporary_retirement(value: Json, profile: Json) -> None:
         or helper.get("cleanup_confirmed") is not True
         or helper.get("closed") is not True
         or helper.get("producer_verified") is not True
-        or helper.get("termination_requested") is not False
+        or helper.get("termination_requested") is not cancelled
         or type(helper.get("exit_code")) is not int
-        or helper.get("exit_code") != 0
+        or helper.get("exit_code") != (1 if cancelled else 0)
         or helper.get("remaining_pids") != []
         or helper.get("cleanup_errors") != []
         or helper.get("failure") is not None
@@ -1914,6 +1953,8 @@ def serve_checkpoint(  # noqa: C901, PLR0913, PLR0917 - explicit fixed ownership
     profile: Json,
     deadline: float,
     temporary: Json | None = None,
+    *,
+    cancelled: bool = False,
 ) -> Json | None:
     """Only existing channel-attested helper identity may extend the baseline set."""
     path = output / f"ownership-{phase}-request.json"
@@ -1968,7 +2009,7 @@ def serve_checkpoint(  # noqa: C901, PLR0913, PLR0917 - explicit fixed ownership
         value = ownership_packet(
             read(output / "temporary-retired.json"), session, "retired"
         )
-        validate_temporary_retirement(value, temporary)
+        validate_temporary_retirement(value, temporary, cancelled=cancelled)
     begin = time.monotonic()
     if begin >= deadline:
         raise RuntimeError("Late ownership checkpoint")
@@ -2069,6 +2110,8 @@ def prepare_case(  # noqa: PLR0913, PLR0917 - explicit immutable handshake input
 
 def child(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - fixed owned executor lifecycle
     """All native references run here, never in the outer watchdog process."""
+    held_index = case_index(getattr(args, "case", "success"))
+    cancellation = cancel_module() if held_index is not None else None
     preparation_deadline = args.preparation_start + PREPARATION_SECONDS
     absolute_deadline = args.preparation_start + OUTER_SECONDS
     journal = Journal(args.output / "calls.jsonl", preparation_deadline)
@@ -2119,9 +2162,15 @@ def child(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - fixed owned
         "first_failure": None,
         "responsiveness_qualified": False,
         "case": "already-open-owned-wpf-explicit-ownership",
+        "credit_case": getattr(args, "case", "success"),
         "cold_startup_in_capture_latency": False,
         "preparation_start": args.preparation_start,
         "provenance": provenance,
+        "cancel_validator_sha256": hashlib.sha256(
+            Path(__file__).with_name("observe_credit_cancel.py").read_bytes()
+        ).hexdigest()
+        if held_index is not None
+        else None,
     }
     guard = None
     generation = 0
@@ -2190,6 +2239,23 @@ def child(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - fixed owned
     def grant_credit(value: int, raw: bytes) -> None:
         if credit_transcript is None or result["first_failure"] is not None:
             raise RuntimeError("Unexpected credit event outside successful observation")
+        if held_index is not None and len(credit_transcript.events) == held_index:
+            if "credit_hold" in result or cancellation is None:
+                raise RuntimeError("Duplicate held credit event")
+            received = time.monotonic_ns()
+            token = cancellation.parse_held_token(
+                value, raw, generation, identity["epoch"], len(before_panel), held_index
+            )
+            journal.check()
+            hold = {
+                "token": token,
+                "wait_received_ns": received,
+                "cancel_called_ns": None,
+                "cancel_returned_ns": None,
+            }
+            result["credit_hold"] = hold
+            cancel_credit(journal, channel, hold)
+            return
         credit_transcript.grant(value, raw, channel, journal)
 
     def terminal(value: int, payload: bytes) -> None:
@@ -2198,6 +2264,29 @@ def child(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - fixed owned
         receipt = json.loads(payload)
         result["terminal"] = receipt
         journal.check()
+        if held_index is not None:
+            if (
+                result["first_failure"] is not None
+                or cancellation is None
+                or credit_transcript is None
+            ):
+                raise RuntimeError("Missing cancellation proof")
+            result["credit_cancellation"] = cancellation.validate_cancel(
+                receipt,
+                result.get("credit_hold"),
+                credit_transcript.events,
+                identity,
+                held_index,
+                size=len(before_panel),
+            )
+            try:
+                channel.take_frame(value, 1)
+            except (ValueError, RuntimeError):
+                result["cancelled_take_rejected"] = True
+            else:
+                raise RuntimeError("Cancelled frame was transferable")
+            complete_reference(receipt)
+            return
         if result["first_failure"] is not None or not terminal_matches(
             receipt,
             {**expected, "reference_input_tick": guard.initial["input_tick"]},
@@ -2233,7 +2322,10 @@ def child(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - fixed owned
             return
         consumer_timer.stop()
         result["retained_pixels"] = evidence
-        receipt = consumer_receipt
+        complete_reference(consumer_receipt)
+
+    def complete_reference(receipt: Json) -> None:
+        """Both cases retain the same reference and explicit retirement gates."""
         if guard is None or target is None:
             raise RuntimeError("Missing retained reference guard")
         if baseline_pins is None:
@@ -2244,7 +2336,9 @@ def child(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - fixed owned
         if retired.get("retired") is not True:
             raise RuntimeError("Temporary retained handles have not retired")
         retirement = {"witness": retired, "helper": receipt["helper"]}
-        validate_temporary_retirement(retirement, temporary_profile)
+        validate_temporary_retirement(
+            retirement, temporary_profile, cancelled=held_index is not None
+        )
         result["temporary_retirement"] = retirement
         write_handshake(
             args.output / "temporary-retired.json",
@@ -2540,6 +2634,7 @@ def outer(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912, PLR0915 - ow
         HelperCommand,
     )
 
+    held_index = case_index(getattr(args, "case", "success"))
     output = args.output
     output.mkdir(parents=True, exist_ok=False)
     states = output / "states"
@@ -2553,6 +2648,12 @@ def outer(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912, PLR0915 - ow
         "fixture_sha256": hashlib.sha256(args.fixture.read_bytes()).hexdigest(),
         "harness_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "candidate_head": os.environ.get("QUALIFICATION_HEAD"),
+        "credit_case": getattr(args, "case", "success"),
+        "cancel_validator_sha256": hashlib.sha256(
+            Path(__file__).with_name("observe_credit_cancel.py").read_bytes()
+        ).hexdigest()
+        if held_index is not None
+        else None,
     }
     owners = {}
     started = time.monotonic()
@@ -2592,6 +2693,8 @@ def outer(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912, PLR0915 - ow
                     "-I",
                     str(Path(__file__).resolve()),
                     "--child",
+                    "--case",
+                    getattr(args, "case", "success"),
                     "--wheel",
                     str(args.wheel),
                     "--output",
@@ -2797,6 +2900,8 @@ def outer(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912, PLR0915 - ow
                         profile,
                         deadline,
                         temporary_profile,
+                        cancelled=case_index(getattr(args, "case", "success"))
+                        is not None,
                     )
                     if ack is not None:
                         checkpoints.append(ack)
@@ -2822,6 +2927,9 @@ def outer(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912, PLR0915 - ow
                     != profile["records"]["processes"]
                     or status["exit_code"] != 0
                     or value.get("passed") is not True
+                    or value.get("credit_case") != getattr(args, "case", "success")
+                    or value.get("cancel_validator_sha256")
+                    != result["cancel_validator_sha256"]
                     or value.get("case_start") != case_start
                     or value.get("case_deadline") != deadline
                 ):
@@ -2864,11 +2972,16 @@ def outer(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912, PLR0915 - ow
 
 
 def main() -> int:
-    """Fixed success case only; no entrypoint selectors or test launch overrides."""
+    """Fixed success/held-credit cases; no arbitrary launch or provider overrides."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--wheel", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--fixture", type=Path)
+    parser.add_argument(
+        "--case",
+        choices=("success", "cancel-first", "cancel-interior"),
+        default="success",
+    )
     parser.add_argument("--child", action="store_true")
     parser.add_argument("--topology-child", action="store_true")
     parser.add_argument("--diagnostic-deadline", type=float)

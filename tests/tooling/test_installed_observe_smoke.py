@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import hashlib
 import json
 from functools import partial
 from pathlib import Path
@@ -633,10 +634,12 @@ def test_terminal_rejects_input_epoch_drift(
 @pytest.mark.parametrize(
     ("confirmed", "forced"), [(True, False), (True, True), (False, False)]
 )
-def test_outer_success_cannot_hide_forced_or_unconfirmed_cleanup(
+@pytest.mark.parametrize("case", ["success", "cancel-first", "cancel-interior"])
+def test_outer_success_cannot_hide_forced_or_unconfirmed_cleanup(  # noqa: PLR0913 - fixed cleanup/case matrix
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     authored: Json,
+    case: str,
     *,
     confirmed: bool,
     forced: bool,
@@ -645,7 +648,10 @@ def test_outer_success_cannot_hide_forced_or_unconfirmed_cleanup(
     executable = tmp_path / "fixture.exe"
     executable.write_bytes(b"owned fixture stub, never executed")
     args = argparse.Namespace(
-        fixture=executable, wheel=tmp_path / "app.whl", output=tmp_path / "out"
+        fixture=executable,
+        wheel=tmp_path / "app.whl",
+        output=tmp_path / "out",
+        case=case,
     )
     fixture, gui, module = Mock(), Mock(), Mock()
     fixture.process.pid = 321
@@ -682,6 +688,16 @@ def test_outer_success_cannot_hide_forced_or_unconfirmed_cleanup(
             output / "result.json",
             {
                 "passed": True,
+                "credit_case": case,
+                "cancel_validator_sha256": (
+                    hashlib.sha256(
+                        Path(smoke.__file__)
+                        .with_name("observe_credit_cancel.py")
+                        .read_bytes()
+                    ).hexdigest()
+                    if case != "success"
+                    else None
+                ),
                 "case_start": 1.0,
                 "case_deadline": 16.0,
                 "ownership_profile": profile,
