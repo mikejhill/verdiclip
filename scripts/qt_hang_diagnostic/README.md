@@ -1,3 +1,6 @@
+> Historical CDB contract below. The active workflow now uses the separate
+> [Python-only target contract](target-contract.md), with no debugger initialization.
+
 # Isolated Windows Qt hang diagnosis
 
 Base: `ecb4a4cf675b701259ced8b18c1f5f4c1a32cdfa`. This branch only diagnoses the
