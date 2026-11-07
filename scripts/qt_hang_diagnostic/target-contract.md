@@ -75,3 +75,28 @@ The complete historical Windows suffix order was not retained, so this receipt
 must not claim to verify that unknown order. A pass remains non-reproduction,
 not resolution of the original hang. Source checks, phase journal, coverage,
 30/15/48-second budgets and the no-debugger contract are unchanged.
+
+## Predeclared batch, at most ten fresh processes
+
+The active workflow invokes a separate batch owner. It declares ten slots in
+advance, each with a new process and unique write-once result directory. The
+inner supervisor, original source/runtime/seed and 30/15/48-second bounds are
+unchanged. The separate outer supervisor allowance is 51 seconds per slot,
+plus one shared three-second cleanup confirmation cap, and 540 seconds for the
+entire batch. These cover diagnostic process startup/receipt retirement only;
+they never extend the inner test deadline. Windows process creation/inspection
+calls remain synchronous; the workflow's ten-minute step is a final external
+ceiling, not a promise that a native syscall is interruptible.
+
+Continuation requires natural supervisor exit and an empty outer job before
+any forced teardown, timely evidence checks and handle closure, exact runtime,
+source/session/collection/journal records, and successful target phases. Exit1
+is allowed for continuation only when the matching process and pytest receipts,
+complete journal, and retained log prove the unchanged below90% coverage-only
+failure. That exit remains1 for the overall workflow; it is never hidden.
+Any timeout, crash, malformed/missing evidence, extra failure or uncertain
+cleanup stops the batch. No slot is restarted. All results remain preserved.
+A late verdict write is separately marked terminal and cannot authorize another
+slot. Process-local state is fresh, but the runner, filesystem and caches warm
+across slots. Ten non-reproductions do not establish independence or resolve the
+original hang. This is a predeclared experiment, not adaptive retry.

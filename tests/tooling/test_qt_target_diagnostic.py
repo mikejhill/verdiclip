@@ -187,7 +187,7 @@ def test_child_and_parent_clock_regression(nodes: list[str], tmp_path: Path) -> 
 def test_active_workflow_has_no_debugger_path() -> None:
     """This is an explicit Python-only experiment, never automatic fallback."""
     workflow = (target.ROOT / ".github/workflows/qt-hang-diagnostic.yml").read_text()
-    assert "scripts/qt_target_diagnostic.py" in workflow
+    assert "scripts/qt_reproduction_batch.py" in workflow
     assert "preflight" not in workflow
     assert "cdb.exe" not in workflow
     assert "steps.debugger" not in workflow

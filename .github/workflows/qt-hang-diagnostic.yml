@@ -1,4 +1,4 @@
-name: Full-collection Qt 6.11.3 prefix diagnosis
+name: Predeclared Qt 6.11.3 reproduction batch
 
 on:
   push:
@@ -10,7 +10,7 @@ permissions:
 jobs:
   diagnose:
     runs-on: windows-2025
-    timeout-minutes: 5
+    timeout-minutes: 12
     env:
       PYTHONUTF8: "1"
       PYTHONUNBUFFERED: "1"
@@ -29,6 +29,7 @@ jobs:
           python-version: "3.13.17"
           enable-cache: false
       - name: Prepare unchanged failed sources and locked runtime
+        timeout-minutes: 2
         shell: pwsh
         run: |
           New-Item -ItemType Directory diagnostic-results | Out-Null
@@ -39,15 +40,15 @@ jobs:
           Copy-Item scripts/qt_hang_diagnostic/prefix.json diagnostic-results/
           git rev-parse HEAD | Set-Content diagnostic-results/diagnostic-head.txt
           Get-FileHash diagnostic-results/failed-source.zip -Algorithm SHA256 | Format-List | Out-File diagnostic-results/archive-sha256.txt
-      - name: One full collection and owned prefix, Python stacks only
-        timeout-minutes: 2
+      - name: At most ten predeclared fresh processes, stop on first unexpected outcome
+        timeout-minutes: 10
         shell: pwsh
         run: >-
-          .venv/Scripts/python.exe scripts/qt_target_diagnostic.py
-          --source failed-source --output diagnostic-results
+          .venv/Scripts/python.exe scripts/qt_reproduction_batch.py
+          --source failed-source --output diagnostic-results/batch
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: ${{ always() && !cancelled() }}
         with:
-          name: qt6113-target-python-diagnostic
+          name: qt6113-predeclared-batch
           path: diagnostic-results/
           if-no-files-found: error
