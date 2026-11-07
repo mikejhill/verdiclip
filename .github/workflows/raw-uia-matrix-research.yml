@@ -1,0 +1,121 @@
+name: Raw UIA matrix geometry research
+
+# Separate first-attempt research. Neither the earlier 125% failure nor PR 119 is qualified.
+on:
+  push:
+    branches: [diagnostic/raw-uia-125]
+
+permissions:
+  contents: read
+
+jobs:
+  raw-geometry:
+    if: >-
+      github.repository == 'mikejhill/verdiclip' &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/diagnostic/raw-uia-125'
+    name: Research only / original table-dark125 raw UIA property
+    runs-on: windows-2025
+    timeout-minutes: 9
+    env:
+      PYTHONUTF8: "1"
+      QUALIFICATION_HEAD: "bdb94e4e97bca35925530959a4c40348a5328995"
+      QUALIFICATION_TREE: "85a8393554c182c1d1b74c48da743b1e43d209ee"
+      WORKFLOW_HEAD: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: "false"
+        with:
+          ref: bdb94e4e97bca35925530959a4c40348a5328995
+          persist-credentials: false
+      - name: Verify fixed candidate and retain separate workflow identity
+        timeout-minutes: 1
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_RUN_ATTEMPT -ne '1') { throw 'This research permits no rerun' }
+          $head = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot read candidate head' }
+          $tree = (git rev-parse 'HEAD^{tree}').Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot read candidate tree' }
+          if ($head -ne $env:QUALIFICATION_HEAD) { throw 'Wrong candidate head' }
+          if ($tree -ne $env:QUALIFICATION_TREE) { throw 'Wrong candidate tree' }
+          if ($env:WORKFLOW_HEAD -eq $head) { throw 'Expected separate workflow identity' }
+          New-Item -ItemType Directory receipts | Out-Null
+          [ordered]@{
+            schema = 1
+            scope = 'raw property research only; no geometry/capture/release qualification'
+            candidate_sha = $head
+            candidate_tree = $tree
+            workflow_sha = $env:WORKFLOW_HEAD
+            workflow_ref = $env:GITHUB_WORKFLOW_REF
+            run_id = $env:GITHUB_RUN_ID
+            run_attempt = $env:GITHUB_RUN_ATTEMPT
+            runner_image = $env:ImageOS
+            runner_image_version = $env:ImageVersion
+            baseline = 'panel-twenty-second-evidence/table-dark125/raw'
+            baseline_source_sha = '007990db82b51776f2ecde276e0f9c8f49c10e89'
+            baseline_generated_html_sha256 = '01f3ab130dfd4606cb51a0e11299501322521e50ffaa945029662744fa6b0e5a'
+            baseline_browser_binary_sha256 = $null
+            browser_binary_equivalence_claimed = $false
+            requested_initial_vertical = 119
+            requested_initial_horizontal = 147
+            per_native_call_seconds = 3
+            helper_seconds = 30
+            matrix_seconds = 300
+            earlier_failures_preserved = $true
+          } | ConvertTo-Json | Set-Content -Encoding utf8 receipts/research-source.json
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          enable-cache: false
+          python-version: "3.13"
+      - name: Locked research dependencies
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          uv sync --locked
+          exit $LASTEXITCODE
+      - name: One original matrix raw-property attempt
+        timeout-minutes: 6
+        shell: pwsh
+        run: |
+          & .\.venv\Scripts\python.exe -m scripts.panel_matrix_feasibility --case table-dark125 --raw-geometry-diagnostic --output receipts/table-dark125
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: ${{ !cancelled() }}
+        with:
+          name: raw-uia-original-matrix-table-dark125
+          path: |
+            pyproject.toml
+            uv.lock
+            scripts/panel_*.py
+            scripts/panel_fixture/matrix.html
+            receipts/research-source.json
+            receipts/table-dark125/receipt.json
+            receipts/table-dark125/raw/receipt.json
+            receipts/table-dark125/raw/authored.html
+            receipts/table-dark125/raw/fixture.json
+            receipts/table-dark125/raw/probe-startup.json
+            receipts/table-dark125/raw/states/*.json
+            receipts/table-dark125/raw/probe/*.json
+            receipts/table-dark125/raw/probe/*.jsonl
+            receipts/table-dark125/raw/probe/before.png
+            receipts/table-dark125/raw/probe/after.png
+            receipts/table-dark125/raw/entry-readiness/reference-manifest.json
+            receipts/table-dark125/raw/entry-readiness/reference-outcome.json
+            receipts/table-dark125/raw/entry-readiness/reference/*.json
+            receipts/table-dark125/raw/entry-readiness/reference/*.jsonl
+            receipts/table-dark125/raw/entry-readiness/reference/reference.png
+            receipts/table-dark125/raw/entry-readiness/reference/root-first.png
+            receipts/table-dark125/raw/entry-readiness/reference/root-last.png
+            receipts/table-dark125/raw/exit-readiness/reference-manifest.json
+            receipts/table-dark125/raw/exit-readiness/reference-outcome.json
+            receipts/table-dark125/raw/exit-readiness/reference/*.json
+            receipts/table-dark125/raw/exit-readiness/reference/*.jsonl
+            receipts/table-dark125/raw/exit-readiness/reference/reference.png
+            receipts/table-dark125/raw/exit-readiness/reference/root-first.png
+            receipts/table-dark125/raw/exit-readiness/reference/root-last.png
+          if-no-files-found: error
+          retention-days: 14
