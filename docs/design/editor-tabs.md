@@ -92,7 +92,7 @@ worker, and the tabs code does not depend on its unvalidated prototype.
 | UX-TAB-01 | More than one document is admitted to an eligible workspace host | All captures remain available in labelled tabs; switching preserves each document's edits, selection, tool and viewport. |
 | UX-TAB-02 | A tab is reordered, detached or moved to another host | The exact editing session, undo/redo, output path and delivered state follow the tab. A failed attachment restores the source. |
 | UX-TAB-03 | A tab/window/global close asks about undelivered work | Save / Don't save / Cancel refer to that document; Cancel closes no other document. Enter at rest copies and closes only the active tab. |
-| UX-TAB-04 | A user navigates without a mouse | Ctrl+Tab / Ctrl+Shift+Tab, Ctrl+1…9, Ctrl+Shift+PgUp/PgDown, Ctrl+Shift+N, Ctrl+W and the Window menu expose switching, reorder, detach, close and move-to-window. |
+| UX-TAB-04 | A user navigates without a mouse | Ctrl+PgUp/PgDown (also Ctrl+Shift+Tab / Ctrl+Tab) switch tabs with wraparound. Ctrl+Shift+PgUp/PgDown move the active tab left/right, stopping at the ends. Ctrl+1…9, Ctrl+Shift+N, Ctrl+W and the Window menu expose direct selection, detach, close and move-to-window. See the [keyboard contract](ux-contract.md#editor-tabs) for focused-editor behavior. |
 | UX-TAB-05 | A warm tab is selected | Activation p95 stays below 50 ms on the declared reference fixture, without flattening, encoding or copying the image. |
 | UX-TAB-06 | A completed capture arrives while context is being preserved | No popup/dialog is dismissed; the existing active tab/focus is preserved and the incoming document remains accessible. |
 

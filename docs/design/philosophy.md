@@ -69,8 +69,10 @@ that does not make one of them faster or more correct is out of scope.
   (pixels, clipboard contents, files, window state) — never on private state.
 - Journeys also produce **snapshots** (`uv run poe ux-snapshots`) so a human
   can review each step visually.
-- Anything automation can't reach (real `PrtSc` key, multi-monitor DPI) is in
-  the manual checklist in the contract and run before each release.
+- Automated CI covers as much behavior as it can reliably verify. Physical-machine
+  checks (real `PrtSc` key, multi-monitor DPI) are exceptional, ad hoc checks for
+  critical gaps, selected from the contract's manual checklist under the
+  [release policy](../releasing.md#before-merging-a-release-pull-request).
 
 ### P3. One source of truth: the document model
 
@@ -205,4 +207,4 @@ Checked by journey tests (`@pytest.mark.ux_budget`) on the developer machine.
 | UX journeys | `tests/ux/` | Each `ux-contract.md` item, driven like a user, asserting on observable outcomes |
 | Platform | `tests/platform/` | ctypes adapters with the OS boundary faked |
 | Visual review | `uv run poe ux-snapshots`, `uv run poe ux-gallery` | Each journey step, and key screens in light and dark, as PNGs for a human eye |
-| Manual | `docs/design/ux-contract.md` § Manual checklist | Real hotkeys, multi-monitor, DPI, theme switching |
+| Physical smoke (exceptional) | `docs/design/ux-contract.md` § Manual checklist | Critical real-device gaps not reliably covered by automated evidence |

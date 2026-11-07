@@ -82,6 +82,8 @@ If Windows or another screenshot tool already owns `PrtSc`, VerdiClip tells you 
 | Copy / Paste marks | `Ctrl+C` / `Ctrl+V` |
 | Delete selection | `Delete` |
 | Print | `Ctrl+P` |
+| Previous / next tab | `Ctrl+PgUp` / `Ctrl+PgDown` (also `Ctrl+Shift+Tab` / `Ctrl+Tab`) |
+| Move tab left / right | `Ctrl+Shift+PgUp` / `Ctrl+Shift+PgDown` |
 | Zoom | `Ctrl+wheel` |
 | Actual size / Fit | `Ctrl+0` / `Ctrl+Shift+F` |
 | Pan | `Space`+drag |
@@ -155,7 +157,7 @@ uv run poe ux-snapshots  # Journeys plus a PNG per step in docs/ux/snapshots
 uv run poe ux-gallery    # Key screens in light and dark themes (docs/ux/gallery)
 ```
 
-`uv run poe check` is the quality gate: ruff (broad rule set), ty with every rule at error, and pytest with ≥ 90% branch coverage. Regenerate the README screenshots with `uv run python scripts/ux_gallery.py --readme-dir docs/images`. Before a release, also run the manual checklist at the end of the UX contract. See [CONTRIBUTING.md](https://github.com/mikejhill/verdiclip/blob/main/CONTRIBUTING.md) for commit conventions and releases.
+`uv run poe check` is the quality gate: ruff (broad rule set), ty with every rule at error, and pytest with ≥ 90% branch coverage. Regenerate the README screenshots with `uv run python scripts/ux_gallery.py --readme-dir docs/images`. Releases use automated verification, with physical smoke checks only for critical gaps; see the [release qualification policy](docs/releasing.md#before-merging-a-release-pull-request). See [CONTRIBUTING.md](https://github.com/mikejhill/verdiclip/blob/main/CONTRIBUTING.md) for commit conventions and releases.
 
 ## License
 

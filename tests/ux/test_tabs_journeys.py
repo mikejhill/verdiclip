@@ -56,7 +56,7 @@ def test_keyboard_switch_reorder_detach_and_close(
         QTest.keyClick(window.canvas, Qt.Key.Key_1, Qt.KeyboardModifier.ControlModifier)
         assert window.tab_bar.currentIndex() == 0
         QTest.keyClick(
-            window.canvas, Qt.Key.Key_Tab, Qt.KeyboardModifier.ControlModifier
+            window.canvas, Qt.Key.Key_PageDown, Qt.KeyboardModifier.ControlModifier
         )
         assert window.tab_bar.currentIndex() == 1
         QTest.keyClick(
@@ -65,6 +65,21 @@ def test_keyboard_switch_reorder_detach_and_close(
             Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier,
         )
         assert window.tab_bar.tabText(0) == "Capture two"
+        QTest.keyClick(
+            window.canvas,
+            Qt.Key.Key_PageDown,
+            Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier,
+        )
+        assert window.tab_bar.tabText(1) == "Capture two"
+        assert window.tab_bar.currentIndex() == 1
+        QTest.keyClick(
+            window.canvas, Qt.Key.Key_PageUp, Qt.KeyboardModifier.ControlModifier
+        )
+        assert window.tab_bar.currentIndex() == 0
+        QTest.keyClick(
+            window.canvas, Qt.Key.Key_Tab, Qt.KeyboardModifier.ControlModifier
+        )
+        assert window.tab_bar.currentIndex() == 1
         if snapshot_dir is not None:
             assert window.grab().save(str(snapshot_dir / f"tabs-{theme.value}.png"))
         QTest.keyClick(

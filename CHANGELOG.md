@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.13.3](https://github.com/mikejhill/verdiclip/compare/v0.13.2...v0.13.3) (2026-11-07)
+
+
+### Bug Fixes
+
+* support page-key tab shortcuts safely ([#121](https://github.com/mikejhill/verdiclip/issues/121)) ([3553133](https://github.com/mikejhill/verdiclip/commit/355313309d06a0c2e3aec101d7417fbb18823a1b))
+
+
+### Documentation
+
+* make physical release checks exceptional ([#123](https://github.com/mikejhill/verdiclip/issues/123)) ([63e32a4](https://github.com/mikejhill/verdiclip/commit/63e32a42348069d4aa8af2d9494eb0d54b96c3e9))
+
 ## [0.13.2](https://github.com/mikejhill/verdiclip/compare/v0.13.1...v0.13.2) (2026-11-07)
 
 

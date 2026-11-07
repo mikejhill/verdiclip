@@ -121,7 +121,9 @@ that prerequisite failure explicit. Unknown session state and capture errors
 are never treated as a successful test or converted into a skip.
 
 Physical key delivery, a second monitor at another DPI, and arbitrary external
-applications still need the release checklist. These tests establish the
+applications remain outside this matrix. Use the
+[release policy](../releasing.md#before-merging-a-release-pull-request) to decide
+when a critical gap needs an exceptional physical smoke check. These tests establish the
 owned-input invariant; they do not guarantee control over Windows' secure
 desktop or every external program's input behavior.
 

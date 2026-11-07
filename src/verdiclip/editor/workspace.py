@@ -381,7 +381,11 @@ class Workspace(QObject):
             slot = min(
                 max(index if index is not None else old, 0), len(source.pages) - 1
             )
-            source.tab_bar.moveTab(old, slot)
+            if old != slot:
+                # QTabWidget briefly removes the page while handling moveTab.
+                # Commit before focus loss can notify an incomplete tab stack.
+                page.canvas.editors.commit()
+                source.tab_bar.moveTab(old, slot)
             return True
         self._transferring = True
         try:
