@@ -289,3 +289,38 @@ A separate installed-wheel case exercises the exact bootstrap prefix with a
 fixture-only ready/wait suffix, retaining independent wheel attestation and the
 original MSS-capture case. This is not an enabled provider or evidence for every
 uv tool/uvx/Python runtime. Native results for these exact additions are pending.
+
+## Thirteenth experiment and retained failures
+
+Native run [42358072647](https://github.com/mikejhill/verdiclip/actions/runs/42358072647)
+at `274652aa368161b34d1748f53cd8e858e2f7655c` passes the exact installed
+bootstrap-prefix case alongside independent wheel/MSS capture and owned cleanup.
+Ordinary CI and CodeQL pass. The lifecycle proof hits its unchanged 45-second
+external watchdog without case receipts, and one Edge 100% collector hits its
+unchanged three-second startup limit. Both retain failure and confirm owned
+cleanup. Other modes retain their prior results, including the original strict
+nested failure. Neither timeout is a successful qualification.
+
+A real offscreen Qt reproduction identifies a lifecycle test-harness problem:
+both completion signals arrive, but QApplication.quit invokes the active window's
+intentional close veto, so its event loop never exits. The correction exits that
+event loop only after the existing terminal-plus-thread-finished gate. Active
+window close still cancels and vetoes closure. A subprocess regression covers
+both behaviors; bounded phase and exception diagnostics preserve future failures.
+The original native child had no diagnostic output, so this is a reproduced
+mechanism rather than a claim that its absent stderr established the cause.
+
+The browser startup cause remains unknown: the first flushed event follows
+imports and output setup, and no earlier diagnostic was retained. A fixed
+stdlib-only wrapper now records bounded import phases and exceptions in a
+sibling artifact. Those records do not satisfy or extend the original watchdog.
+There is no automatic retry, broader native permission or injected code.
+
+The next separate native collection covers authored conversation-light100 and
+nested-table-dark125 fixtures. Raw native acquisition runs before independent
+self-scroll reference pages at predetermined oracle positions. Physical geometry,
+DPR, width, theme, horizontal position and extent must match. Completed native
+calls, cleanup errors and final deadlines are checked before accepting process
+exit. Collection success is explicitly not raster-comparison or product success;
+fractional terminal phases cannot later be rounded away to manufacture a match.
+Existing colored fixtures and ordinary capture remain unchanged.

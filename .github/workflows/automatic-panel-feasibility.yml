@@ -78,6 +78,7 @@ jobs:
           path: |
             receipts/**/receipt.json
             receipts/**/fixture.json
+            receipts/**/probe-startup.json
             receipts/**/states/*.json
             receipts/**/probe/*.json
             receipts/**/probe/*.jsonl
@@ -227,5 +228,75 @@ jobs:
         with:
           name: native-owned-worker
           path: receipts/owned-worker/**/*.json
+          if-no-files-found: error
+          retention-days: 14
+
+  browser-matrix:
+    if: >-
+      github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
+      github.head_ref == 'feature/automatic-panel-capture' &&
+      github.event.pull_request.draft == true
+    name: Owned browser matrix / ${{ matrix.case }}
+    runs-on: windows-2025
+    timeout-minutes: 9
+    strategy:
+      fail-fast: false
+      matrix:
+        case: [conversation-light100, table-dark125]
+    env:
+      PYTHONUTF8: "1"
+      QUALIFICATION_HEAD: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: "false"
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          enable-cache: false
+          python-version: "3.13"
+      - name: Locked matrix dependencies
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          uv sync --locked
+          exit $LASTEXITCODE
+      - name: One conversation attempt with independent references
+        if: matrix.case == 'conversation-light100'
+        timeout-minutes: 6
+        shell: pwsh
+        run: |
+          & .\.venv\Scripts\python.exe -m scripts.panel_matrix_feasibility --case conversation-light100 --output receipts/conversation-light100
+          exit $LASTEXITCODE
+      - name: One table attempt with independent references
+        if: matrix.case == 'table-dark125'
+        timeout-minutes: 6
+        shell: pwsh
+        run: |
+          & .\.venv\Scripts\python.exe -m scripts.panel_matrix_feasibility --case table-dark125 --output receipts/table-dark125
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: ${{ !cancelled() }}
+        with:
+          name: owned-browser-matrix-${{ matrix.case }}
+          path: |
+            scripts/panel_*.py
+            scripts/panel_fixture/matrix.html
+            receipts/**/authored.html
+            receipts/**/receipt.json
+            receipts/**/fixture.json
+            receipts/**/reference-manifest.json
+            receipts/**/probe-startup.json
+            receipts/**/states/*.json
+            receipts/**/probe/*.json
+            receipts/**/probe/*.jsonl
+            receipts/**/probe/*.png
+            receipts/**/reference/*.json
+            receipts/**/reference/*.jsonl
+            receipts/**/reference/*.png
           if-no-files-found: error
           retention-days: 14

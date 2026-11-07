@@ -14,6 +14,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, cast, override
@@ -21,6 +22,8 @@ from typing import TYPE_CHECKING, cast, override
 from scripts.owned_pipe_smoke import GapStats, Message, ProtocolError, Session
 
 if TYPE_CHECKING:
+    from types import TracebackType
+
     from PySide6.QtCore import QCoreApplication
 
 CASES = (
@@ -31,6 +34,39 @@ CASES = (
     "timeout-post-create",
 )
 STALL_SECONDS = 0.5
+MAX_DIAGNOSTIC_PHASES = 64
+MAX_DIAGNOSTIC_ERRORS = 8
+
+
+class Diagnostics:
+    """Persist bounded phases/errors because the owned child has no inherited stderr."""
+
+    def __init__(self, output: Path) -> None:
+        self.output = output
+        self.lock = threading.Lock()
+        self.phases: list[str] = []
+        self.errors: list[str] = []
+
+    def record(self, phase: str, error: str | None = None) -> None:
+        """Retain at most 64 phases and 8 bounded errors, independent of success."""
+        with self.lock:
+            if len(self.phases) < MAX_DIAGNOSTIC_PHASES:
+                self.phases.append(phase[:128])
+            if error is not None and len(self.errors) < MAX_DIAGNOSTIC_ERRORS:
+                self.errors.append(error[:4096])
+            temporary = self.output / "diagnostic.tmp"
+            temporary.write_text(
+                json.dumps({"phases": self.phases, "errors": self.errors}),
+                encoding="utf-8",
+            )
+            temporary.replace(self.output / "diagnostic.json")
+
+
+def exit_after_retirement(gate: CompletionGate) -> None:
+    """Exit the GUI loop only after both proofs; do not ask windows to close."""
+    from PySide6.QtCore import QCoreApplication  # noqa: PLC0415
+
+    gate.complete(lambda: QCoreApplication.exit(0))
 
 
 class LaunchControl:
@@ -262,9 +298,26 @@ def run(output: Path) -> int:  # noqa: C901, PLR0915 - isolated Qt proof wiring
     from PySide6.QtGui import QCloseEvent, QPaintEvent  # noqa: PLC0415
     from PySide6.QtWidgets import QApplication, QWidget  # noqa: PLC0415
 
+    output.mkdir(parents=True, exist_ok=False)
+    diagnostics = Diagnostics(output)
+    diagnostics.record("gui-constructing")
+    previous_hook = sys.excepthook
+
+    def capture_exception(
+        kind: type[BaseException], value: BaseException, tb: object
+    ) -> None:
+        diagnostics.record(
+            "python-exception",
+            "".join(
+                traceback.format_exception(
+                    kind, value, cast("TracebackType | None", tb)
+                )
+            ),
+        )
+
+    sys.excepthook = capture_exception
     application = QApplication([])
     application.setQuitOnLastWindowClosed(False)
-    output.mkdir(parents=True, exist_ok=False)
 
     class Window(QWidget):
         def __init__(self) -> None:
@@ -305,16 +358,20 @@ def run(output: Path) -> int:  # noqa: C901, PLR0915 - isolated Qt proof wiring
 
         @Slot()
         def start(self) -> None:
+            diagnostics.record(f"{self.case}:worker-start")
             self.session = WorkerSession(
                 cast("QCoreApplication", self), self.directory, self.control, self.case
             )
+            diagnostics.record(f"{self.case}:session-created")
             self.session.start()
+            diagnostics.record(f"{self.case}:launch-returned")
 
         def quit(self) -> None:
             if self.session is None:
                 raise RuntimeError("Missing worker session")
             result = terminal_receipt(self.session, self.control, self.case)
             result["generation"] = self.generation
+            diagnostics.record(f"{self.case}:terminal-emitting")
             self.terminal.emit(self.generation, json.dumps(result))
             self.deleteLater()
             QThread.currentThread().quit()
@@ -326,13 +383,15 @@ def run(output: Path) -> int:  # noqa: C901, PLR0915 - isolated Qt proof wiring
 
         @Slot(int, str)
         def terminal(self, generation: int, receipt: str) -> None:
+            diagnostics.record(f"{generation}:terminal-received")
             self.gate.accept(generation, receipt)
-            self.gate.complete(application.quit)
+            exit_after_retirement(self.gate)
 
         @Slot()
         def stopped(self) -> None:
+            diagnostics.record(f"{self.gate.generation}:thread-finished")
             self.gate.thread_finished = True
-            self.gate.complete(application.quit)
+            exit_after_retirement(self.gate)
 
     window = Window()
     window.show()
@@ -366,7 +425,9 @@ def run(output: Path) -> int:  # noqa: C901, PLR0915 - isolated Qt proof wiring
             elif case.startswith("cancel-"):
                 cancel_timer.start(100)
             thread.start()
+            diagnostics.record(f"{case}:gui-exec-enter")
             application.exec()
+            diagnostics.record(f"{case}:gui-exec-return")
             cancel_timer.stop()
             cancel_timer.deleteLater()
             result = json.loads(gate.receipt or "{}")
@@ -379,6 +440,7 @@ def run(output: Path) -> int:  # noqa: C901, PLR0915 - isolated Qt proof wiring
                 result.get("passed")
                 and gate.delivered
                 and case_observed(case, control, window.paint.count)
+                and not diagnostics.errors
             )
             (output / f"{case}.json").write_text(json.dumps(result, indent=2))
             results.append(result)
@@ -400,6 +462,8 @@ def run(output: Path) -> int:  # noqa: C901, PLR0915 - isolated Qt proof wiring
             indent=2,
         )
     )
+    diagnostics.record("proof-return")
+    sys.excepthook = previous_hook
     return int(not passed)
 
 

@@ -256,13 +256,13 @@ def run_probe(
     os.environ["PYTHONPATH"] = os.pathsep.join(
         [str(ROOT), str(Path(sys.prefix) / "Lib/site-packages"), str(ROOT / "src")]
     )
-    probe_dir = output / "probe"
+    probe_dir = output.resolve(strict=True) / "probe"
     extra = probe_arguments(fixture, experiment)
     pid, handle = job.start(
         [
             str(base),
             "-m",
-            "scripts.panel_uia_probe",
+            "scripts.panel_probe_startup",
             "--x",
             str(round(fixture["click"][0])),
             "--y",

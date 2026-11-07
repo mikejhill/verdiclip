@@ -1,11 +1,17 @@
 """Portable lifecycle-worker cancellation and notification boundary tests."""
 
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 from scripts.owned_pipe_smoke import LatencyMetrics, Message, ProtocolError, Session
 from scripts.owned_worker_smoke import (
     CompletionGate,
+    Diagnostics,
     LaunchControl,
     WorkerSession,
     case_observed,
@@ -214,3 +220,81 @@ def test_delayed_cancel_observation_preserves_gui_request_time(
     report = session.latency.report()
     assert report["cancel_to_termination_request_ns"] == 500
     assert report["cancel_to_cleanup_confirmed_ns"] == 590
+
+
+def test_real_qt_completion_exits_despite_active_close_veto(tmp_path: Path) -> None:
+    """Real queued completion retires the GUI despite its live closeEvent veto."""
+    source = r"""
+import json, sys, threading
+from pathlib import Path
+from PySide6.QtCore import QObject, QThread, QTimer, Slot
+from PySide6.QtWidgets import QApplication, QWidget
+from scripts.owned_worker_smoke import (
+    CompletionGate, LaunchControl, exit_after_retirement,
+)
+app = QApplication([])
+app.setQuitOnLastWindowClosed(False)
+gate, control, events = CompletionGate(1), LaunchControl(), []
+release = threading.Event()
+class Window(QWidget):
+    def closeEvent(self, event):
+        control.cancel()
+        events.append("close-vetoed")
+        event.ignore()
+class Thread(QThread):
+    def run(self):
+        release.wait(1)
+class Receiver(QObject):
+    @Slot()
+    def terminal(self):
+        events.append("terminal")
+        gate.accept(1, "receipt")
+        exit_after_retirement(gate)
+    @Slot()
+    def finished(self):
+        events.append("thread-finished")
+        gate.thread_finished = True
+        exit_after_retirement(gate)
+window, thread, receiver = Window(), Thread(), Receiver()
+window.show()
+thread.finished.connect(receiver.finished)
+QTimer.singleShot(5, window.close)
+QTimer.singleShot(15, receiver.terminal)
+def release_worker():
+    events.append("still-running")
+    release.set()
+QTimer.singleShot(30, release_worker)
+thread.start()
+app.exec()
+assert gate.delivered and gate.thread_finished
+assert control.cancelled.is_set()
+expected = ["close-vetoed", "terminal", "still-running", "thread-finished"]
+assert events == expected, events
+Path(sys.argv[1]).write_text(json.dumps({"passed": True, "events": events}))
+window.hide()
+"""
+    receipt = tmp_path / "qt-retired.json"
+    env = dict(os.environ, QT_QPA_PLATFORM="offscreen")
+    result = subprocess.run(  # noqa: S603 - fixed test source in owned subprocess
+        [sys.executable, "-c", source, str(receipt)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(receipt.read_text())["passed"] is True
+
+
+def test_diagnostics_bound_phases_and_exceptions(tmp_path: Path) -> None:
+    """Failure evidence survives separately without an unbounded log stream."""
+    diagnostics = Diagnostics(tmp_path)
+    for _ in range(100):
+        diagnostics.record("phase" * 100, "exception" * 1000)
+    value = json.loads((tmp_path / "diagnostic.json").read_text())
+    assert len(value["phases"]) == 64
+    assert len(value["errors"]) == 8
+    assert all(len(item) <= 128 for item in value["phases"])
+    assert all(len(item) <= 4096 for item in value["errors"])
+    assert not (tmp_path / "diagnostic.tmp").exists()
