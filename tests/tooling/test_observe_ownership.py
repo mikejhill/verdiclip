@@ -237,6 +237,51 @@ def test_stable_checkpoint_requires_exact_phase_specific_members(
         "peer_schema": 2,
         "protocol_version": 1,
     }
+    peer_record = {
+        "requested_pid": 44,
+        "process_id": 44,
+        "creation_100ns": 2000,
+        "image_path": BASE,
+        "status": "available",
+        "errors": [],
+        "parent": {"pid": 12, "status": "available"},
+    }
+    temporary = {
+        "peer": peer,
+        "console": CONSOLE,
+        "records": {"processes": [peer_record]},
+        "roles": {"peer": 44},
+    }
+    retired = {
+        "witness": {
+            "retired": True,
+            "cleanup_errors": [],
+            "processes": [
+                {
+                    **peer_record,
+                    "status": "retired",
+                    "signaled": True,
+                    "retired": True,
+                    "identity_unchanged": True,
+                    "wait_result": 0,
+                    "observed_process_id": 44,
+                    "observed_creation_100ns": 2000,
+                }
+            ],
+        },
+        "helper": {
+            "pid": 44,
+            "cleanup_confirmed": True,
+            "closed": True,
+            "producer_verified": True,
+            "termination_requested": False,
+            "exit_code": 0,
+            "remaining_pids": [],
+            "cleanup_errors": [],
+            "failure": None,
+        },
+    }
+    smoke.write(tmp_path / "temporary-retired.json", packet("retired", retired))
     smoke.write(tmp_path / "peer-identity.json", packet("peer", peer))
     sent_peer = deepcopy(peer) if phase == "pre-observe" else None
     if failure == "wrong-peer":
@@ -263,14 +308,14 @@ def test_stable_checkpoint_requires_exact_phase_specific_members(
     gui.snapshot.side_effect = snapshot
     if failure is None:
         ack = smoke.serve_checkpoint(
-            tmp_path, SESSION, phase, gui, profile(records), 15.0
+            tmp_path, SESSION, phase, gui, profile(records), 15.0, temporary
         )
         assert ack is not None
         assert ack["snapshot"]["members"] == members
     else:
         with pytest.raises((ValueError, RuntimeError), match=r".+"):
             smoke.serve_checkpoint(
-                tmp_path, SESSION, phase, gui, profile(records), 15.0
+                tmp_path, SESSION, phase, gui, profile(records), 15.0, temporary
             )
         assert not (tmp_path / f"ownership-{phase}-ack.json").exists()
 
@@ -483,3 +528,36 @@ def test_retirement_allows_only_natural_baseline_shrink(members: set[int]) -> No
     seen = {44}
     smoke.track_temporary_member(members, {11, 12, 13}, seen, 44, retiring=True)
     assert seen == {44}
+
+
+def test_two_startup_members_remain_provisional_until_exact_roles_freeze() -> None:
+    """A companion allowance is not an identity attestation or observe permit."""
+    seen: set[int] = set()
+    baseline = {11, 12, 13}
+    smoke.track_temporary_member(
+        baseline | {44, 55}, baseline, seen, None, retiring=False
+    )
+    assert seen == {44, 55}
+    with pytest.raises(RuntimeError, match="Unexpected"):
+        smoke.track_temporary_member(
+            baseline | {44, 55}, baseline, seen, 44, retiring=False
+        )
+    smoke.track_temporary_member(
+        baseline | {44, 55}, baseline, seen, 44, retiring=False, admitted={44, 55}
+    )
+
+
+@pytest.mark.parametrize("members", [{44, 55, 66}, {44, 66}])
+def test_frozen_roles_never_admit_a_third_or_substitute_member(
+    members: set[int],
+) -> None:
+    """The bounded provisional allowance cannot authorize a late role."""
+    with pytest.raises(RuntimeError, match="Unexpected"):
+        smoke.track_temporary_member(
+            {11, 12, 13} | members,
+            {11, 12, 13},
+            {44, 55},
+            44,
+            retiring=False,
+            admitted={44, 55},
+        )

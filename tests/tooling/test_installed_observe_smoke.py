@@ -667,6 +667,8 @@ def test_outer_success_cannot_hide_forced_or_unconfirmed_cleanup(
         "request": {"pids": [654], "expected_base": "base"},
         "records": {"processes": [{"requested_pid": 654}]},
     }
+    temporary = {"roles": {"peer": 777}, "peer": {"pid": 777}}
+    monkeypatch.setattr(smoke, "serve_temporary", Mock(return_value=temporary))
     monkeypatch.setattr(smoke, "qualify_ownership", Mock(return_value=profile))
     monkeypatch.setattr(
         smoke,
@@ -683,6 +685,8 @@ def test_outer_success_cannot_hide_forced_or_unconfirmed_cleanup(
                 "case_start": 1.0,
                 "case_deadline": 16.0,
                 "ownership_profile": profile,
+                "temporary_profile": temporary,
+                "temporary_pin_cleanup": [],
                 "baseline_pin_cleanup": {
                     "processes": profile["records"]["processes"],
                     "cleanup_errors": [],

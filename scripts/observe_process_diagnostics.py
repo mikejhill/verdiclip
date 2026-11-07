@@ -24,6 +24,7 @@ MAX_ENTRIES = 4096
 ENUMERATION_SECONDS = 3.0
 NATIVE_CALL_SECONDS = 3.0
 PROFILE_PROCESS_COUNT = 3
+TEMPORARY_PROCESS_COUNT = 2
 IMAGE_BUFFER_CHARS = 32768
 MAX_IMAGE_CHARS = 1024
 MAX_ERROR_CHARS = 256
@@ -260,6 +261,49 @@ def validate_profile(  # noqa: PLR0913, PLR0917 - independent fixed ownership ex
     return MappingProxyType(
         {"launcher": launch, "executor": executor, "console": console}
     )
+
+
+def validate_temporary_profile(  # noqa: PLR0913, PLR0917 - fixed prospective peer expectations
+    records: Sequence[Json],
+    peer_pid: int,
+    executor_pid: int,
+    executor_creation: int,
+    expected_base_path: str,
+    expected_console_path: str,
+) -> Mapping[str, int]:
+    """Admit only a direct executor peer and its optional exact console child."""
+    peer, executor = profile_pid(peer_pid), profile_pid(executor_pid)
+    if type(executor_creation) is not int or not 0 < executor_creation < 2**64:
+        raise ValueError("Invalid retained executor creation time")
+    base_image = canonical_image(expected_base_path)
+    console_image = canonical_image(expected_console_path)
+    if not isinstance(records, (list, tuple)) or len(records) not in (
+        1,
+        TEMPORARY_PROCESS_COUNT,
+    ):
+        raise ValueError("Unknown temporary process profile")
+    identities: dict[int, tuple[str, int]] = {}
+    by_pid: dict[int, Json] = {}
+    for record in records:
+        pid, path, created = profile_record(record)
+        if pid in identities:
+            raise ValueError("Duplicate temporary profile PID")
+        identities[pid], by_pid[pid] = (path, created), record
+    if peer == executor or executor in identities or peer not in identities:
+        raise ValueError("Missing or overlapping temporary peer identity")
+    if identities[peer][0] != base_image:
+        raise ValueError("Unexpected full temporary peer image")
+    profile_child(by_pid[peer], identities[peer][1], executor, executor_creation)
+    roles = {"peer": peer}
+    if len(identities) == TEMPORARY_PROCESS_COUNT:
+        console = (set(identities) - {peer}).pop()
+        if identities[console][0] != console_image:
+            raise ValueError("Unexpected full temporary console image")
+        profile_child(
+            by_pid[console], identities[console][1], peer, identities[peer][1]
+        )
+        roles["console"] = console
+    return MappingProxyType(roles)
 
 
 class PinnedProcesses:
@@ -521,6 +565,67 @@ class PinnedProcesses:
         self._check()
         return {
             "processes": [pin.value() for pin in self.pins],
+            "cleanup_errors": list(self.cleanup_errors),
+        }
+
+    def _retired_pin(self, pin: Pin) -> Json:
+        evidence: Json = {
+            "observed_process_id": None,
+            "observed_creation_100ns": None,
+            "identity_unchanged": False,
+            "wait_result": None,
+            "signaled": False,
+            "retired": False,
+        }
+
+        def wait() -> int:
+            state = int(self.kernel.WaitForSingleObject(pin.handle, 0))
+            evidence["wait_result"] = state
+            if state not in (WAIT_OBJECT_0, WAIT_TIMEOUT):
+                raise native_error("WaitForSingleObject")
+            return state
+
+        try:
+            if (
+                pin.handle is None
+                or pin.process_id is None
+                or pin.creation_100ns is None
+            ):
+                raise RuntimeError("Original process identity pin is unavailable")  # noqa: TRY301 - keep per-PID failure evidence
+            evidence["observed_process_id"] = self._process_id(pin)
+            evidence["observed_creation_100ns"] = self._creation(pin)
+            if (
+                evidence["observed_process_id"] != pin.process_id
+                or pin.process_id != pin.requested_pid
+                or evidence["observed_creation_100ns"] != pin.creation_100ns
+            ):
+                raise StaleProcessError(  # noqa: TRY301 - never accept a reused PID
+                    "Original process identity changed before retirement"
+                )
+            evidence["identity_unchanged"] = True
+            state = self._query(pin, "WaitForSingleObject.retired", wait)
+            evidence["signaled"] = state == WAIT_OBJECT_0
+            evidence["retired"] = (
+                state == WAIT_OBJECT_0 and pin.status == "available" and not pin.errors
+            )
+        except Exception as error:  # noqa: BLE001 - preserve per-PID first failures
+            self._failed(pin, error)
+        value = {**pin.value(), **evidence}
+        if evidence["retired"]:
+            value["status"] = "retired"
+        return value
+
+    def retired(self) -> Json:
+        """Require original handles to signal without reopening or closing them."""
+        if self.closed:
+            raise RuntimeError("Process diagnostic pins are already closed")
+        self._check()
+        records = [self._retired_pin(pin) for pin in self.pins]
+        self._check()
+        return {
+            "retired": all(record["retired"] for record in records)
+            and not self.cleanup_errors,
+            "processes": records,
             "cleanup_errors": list(self.cleanup_errors),
         }
 

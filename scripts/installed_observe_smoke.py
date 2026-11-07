@@ -43,6 +43,7 @@ NATIVE_DPI = 96
 FIXED_VERTICAL = 119
 MAX_STATES = 256
 MAX_TOPOLOGY_PIDS = 8
+MAX_TEMPORARY_PIDS = 2
 PEER_SCHEMA = 2
 MARKER_COUNT = 4
 RGB_CHANNELS = 3
@@ -1154,6 +1155,170 @@ def qualify_ownership(  # noqa: PLR0913, PLR0917 - explicit fixed ownership scop
 OWNERSHIP_PHASES = ("pre-reference", "pre-observe", "post-terminal")
 
 
+def temporary_records(value: Json, peer: Json, baseline: Json) -> dict[str, int]:
+    """Validate exact prospective roles using independent baseline expectations."""
+    module = topology_module()
+    executor = baseline["roles"]["executor"]
+    original = next(
+        r for r in baseline["records"]["processes"] if r["process_id"] == executor
+    )
+    if (
+        value.get("peer") != peer
+        or value.get("console") != baseline["console"]
+        or value["records"].get("cleanup_errors", []) != []
+    ):
+        raise ValueError("Temporary profile identity or console expectation changed")
+    return dict(
+        module.validate_temporary_profile(
+            value["records"]["processes"],
+            peer["pid"],
+            executor,
+            original["creation_100ns"],
+            baseline["request"]["expected_base"],
+            baseline["console"],
+        )
+    )
+
+
+def acquire_temporary(
+    output: Path, session: str, peer: Json, baseline: Json, journal: Journal
+) -> tuple[Any, Json]:
+    """Pin the fixed temporary roles in the supervised GUI before observe."""
+    requested = time.monotonic()
+    write_handshake(
+        output / "temporary-request.json",
+        {
+            "schema": 1,
+            "session": session,
+            "request": {
+                "peer": peer,
+                "requested": requested,
+                "deadline": journal.deadline,
+            },
+        },
+    )
+    targets = ownership_packet(
+        wait_owned_file(output / "temporary-targets.json", journal), session, "targets"
+    )
+    ownership_interval(targets, requested, journal.deadline)
+    if (
+        set(targets) != {"peer", "pids", "deadline", "started", "finished", "snapshot"}
+        or targets["peer"] != peer
+        or targets["deadline"] != journal.deadline
+    ):
+        raise ValueError("Temporary targets changed")
+    pids = topology_pids(targets["pids"])
+    if not 1 <= len(pids) <= MAX_TEMPORARY_PIDS or peer["pid"] not in pids:
+        raise ValueError("Temporary target set invalid")
+    module = journal.call("temporary.import", topology_module)
+    journal.check()
+    pins = module.PinnedProcesses(pids, journal.deadline, journal)
+    try:
+        value = {
+            "peer": peer,
+            "console": baseline["console"],
+            "records": pins.collect(),
+        }
+        value["roles"] = temporary_records(value, peer, baseline)
+        if set(value["roles"].values()) != set(pids):
+            raise RuntimeError("Collected temporary identities differ from targets")  # noqa: TRY301 - close pins on failed admission
+        journal.check()
+        write_handshake(
+            output / "temporary-pinned.json",
+            {"schema": 1, "session": session, "profile": value},
+        )
+    except BaseException as error:
+        try:
+            pins.close()
+        except Exception as cleanup_error:  # noqa: BLE001 - preserve primary
+            error.add_note(f"Temporary pin cleanup failed: {cleanup_error!r}")
+        raise
+    else:
+        return pins, value
+
+
+def serve_temporary(  # noqa: PLR0913, PLR0917 - fixed handshake
+    output: Path,
+    session: str,
+    gui: Owner,
+    baseline: Json,
+    seen: set[int],
+    deadline: float,
+) -> Json | None:
+    """Select bounded targets only; this exchange never authorizes observation."""
+    path = output / "temporary-request.json"
+    if not path.exists():
+        return None
+    request = ownership_packet(read(path), session, "request")
+    peer = ownership_packet(read(output / "peer-identity.json"), session, "peer")
+    if (
+        set(request) != {"peer", "requested", "deadline"}
+        or request["peer"] != peer
+        or request["deadline"] != deadline
+        or type(peer.get("pid")) is not int
+        or not 0 < peer["pid"] < 2**32
+        or peer.get("executable") != baseline["request"]["expected_base"]
+        or peer.get("protocol_version") != 1
+        or peer.get("peer_schema") != PEER_SCHEMA
+        or not isinstance(peer.get("epoch"), str)
+        or re.fullmatch(r"[0-9a-f]{32}", peer["epoch"]) is None
+    ):
+        raise ValueError("Temporary request lacks exact channel identity")
+    ownership_interval(
+        {"started": request["requested"], "finished": request["requested"]},
+        deadline - CASE_SECONDS,
+        deadline,
+    )
+    target_path = output / "temporary-targets.json"
+    if not target_path.exists():
+        begin = time.monotonic()
+        if begin >= deadline:
+            raise RuntimeError("Late temporary target snapshot")
+        status = gui.snapshot()
+        end = time.monotonic()
+        base = set(baseline["request"]["pids"])
+        extra = set(topology_pids(status["members"])) - base
+        if (
+            end >= deadline
+            or status["exit_code"] is not None
+            or not base <= set(topology_pids(status["members"]))
+            or not 1 <= len(extra) <= MAX_TEMPORARY_PIDS
+            or peer["pid"] not in extra
+            or seen - extra
+        ):
+            raise RuntimeError("Temporary target membership/history changed")
+        write_handshake(
+            target_path,
+            {
+                "schema": 1,
+                "session": session,
+                "targets": {
+                    "peer": peer,
+                    "pids": sorted(extra),
+                    "deadline": deadline,
+                    "started": begin,
+                    "finished": end,
+                    "snapshot": status,
+                },
+            },
+        )
+    pinned = output / "temporary-pinned.json"
+    if not pinned.exists():
+        return None
+    value = ownership_packet(read(pinned), session, "profile")
+    roles = temporary_records(value, peer, baseline)
+    targets = ownership_packet(read(target_path), session, "targets")
+    if (
+        value.get("roles") != roles
+        or set(roles.values()) != set(targets["pids"])
+        or seen - set(roles.values())
+    ):
+        raise RuntimeError("Frozen temporary roles or history changed")
+    if time.monotonic() >= deadline:
+        raise RuntimeError("Late temporary role admission")
+    return value
+
+
 def ownership_checkpoint(  # noqa: PLR0913, PLR0917 - explicit fixed ownership scope
     output: Path,
     session: str,
@@ -1162,6 +1327,7 @@ def ownership_checkpoint(  # noqa: PLR0913, PLR0917 - explicit fixed ownership s
     pins: BaselinePins,
     profile: Json,
     journal: Journal,
+    temporary: Json | None = None,
 ) -> None:
     """A stable-phase exact membership observation precedes pixels or admission."""
     if phase not in OWNERSHIP_PHASES:
@@ -1188,7 +1354,9 @@ def ownership_checkpoint(  # noqa: PLR0913, PLR0917 - explicit fixed ownership s
     if phase == "pre-observe":
         if peer is None or not peer:
             raise ValueError("Pre-observe lacks attested helper identity")
-        wanted.add(peer["pid"])
+        wanted.update(
+            temporary["roles"].values() if temporary is not None else [peer["pid"]]
+        )
     if (
         response["phase"] != phase
         or response["deadline"] != journal.deadline
@@ -1205,15 +1373,16 @@ def ownership_checkpoint(  # noqa: PLR0913, PLR0917 - explicit fixed ownership s
     journal.check()
 
 
-def track_temporary_member(
+def track_temporary_member(  # noqa: PLR0913 - bounded ownership inputs
     members: set[int],
     baseline: set[int],
     seen: set[int],
     peer_pid: int | None,
     *,
     retiring: bool,
+    admitted: set[int] | None = None,
 ) -> None:
-    """One provisional PID must later be the channel-attested direct producer."""
+    """At most two provisional PIDs must become exactly the pinned temporary roles."""
     if not retiring and not baseline <= members:
         raise RuntimeError("A retained baseline process disappeared")
     extra = members - baseline
@@ -1221,7 +1390,8 @@ def track_temporary_member(
         # Post-terminal cleanup no longer retains an authenticated helper identity.
         raise RuntimeError("Unexpected process after helper retirement")
     seen.update(extra)
-    if len(seen) > 1 or (peer_pid is not None and seen - {peer_pid}):
+    allowed = admitted if admitted is not None else {peer_pid}
+    if len(seen) > MAX_TEMPORARY_PIDS or (peer_pid is not None and seen - allowed):
         raise RuntimeError("Unexpected process during the attested helper lifecycle")
 
 
@@ -1367,8 +1537,70 @@ def topology_child(args: argparse.Namespace) -> int:
         journal.stream.close()
 
 
-def serve_checkpoint(  # noqa: PLR0913, PLR0917 - explicit fixed ownership scope
-    output: Path, session: str, phase: str, gui: Owner, profile: Json, deadline: float
+def validate_temporary_retirement(value: Json, profile: Json) -> None:
+    """Require explicit signaled original handles and natural production cleanup."""
+    retired, helper = value["witness"], value["helper"]
+    expected = {r["process_id"]: r for r in profile["records"]["processes"]}
+    records = retired.get("processes", [])
+    if (
+        retired.get("retired") is not True
+        or retired.get("cleanup_errors") != []
+        or len(records) != len(expected)
+        or set(topology_pids([r.get("requested_pid") for r in records]))
+        != set(expected)
+    ):
+        raise RuntimeError("Temporary retirement witness incomplete")
+    for record in records:
+        original = expected[record["requested_pid"]]
+        if (
+            record.get("signaled") is not True
+            or record.get("identity_unchanged") is not True
+            or record.get("retired") is not True
+            or type(record.get("wait_result")) is not int
+            or record.get("wait_result") != 0
+            or any(
+                type(record.get(k)) is not int
+                for k in (
+                    "process_id",
+                    "creation_100ns",
+                    "observed_process_id",
+                    "observed_creation_100ns",
+                )
+            )
+            or record.get("observed_process_id") != original["process_id"]
+            or record.get("observed_creation_100ns") != original["creation_100ns"]
+            or record.get("errors") != []
+            or record.get("status") != "retired"
+            or any(
+                record.get(k) != original[k]
+                for k in ("process_id", "creation_100ns", "image_path")
+            )
+        ):
+            raise RuntimeError("Temporary handle retirement is not proven")
+    if (
+        type(helper.get("pid")) is not int
+        or helper.get("pid") != profile["peer"]["pid"]
+        or helper.get("cleanup_confirmed") is not True
+        or helper.get("closed") is not True
+        or helper.get("producer_verified") is not True
+        or helper.get("termination_requested") is not False
+        or type(helper.get("exit_code")) is not int
+        or helper.get("exit_code") != 0
+        or helper.get("remaining_pids") != []
+        or helper.get("cleanup_errors") != []
+        or helper.get("failure") is not None
+    ):
+        raise RuntimeError("Production helper did not retire naturally")
+
+
+def serve_checkpoint(  # noqa: C901, PLR0913, PLR0917 - explicit fixed ownership scope
+    output: Path,
+    session: str,
+    phase: str,
+    gui: Owner,
+    profile: Json,
+    deadline: float,
+    temporary: Json | None = None,
 ) -> Json | None:
     """Only existing channel-attested helper identity may extend the baseline set."""
     path = output / f"ownership-{phase}-request.json"
@@ -1403,9 +1635,23 @@ def serve_checkpoint(  # noqa: PLR0913, PLR0917 - explicit fixed ownership scope
             or re.fullmatch(r"[0-9a-f]{32}", peer["epoch"]) is None
         ):
             raise ValueError("Temporary member is not the attested direct helper")
-        wanted.add(peer["pid"])
+        wanted.update(
+            temporary["roles"].values() if temporary is not None else [peer["pid"]]
+        )
     elif request["peer"] is not None:
         raise ValueError("Unexpected temporary peer at baseline checkpoint")
+    if phase == "pre-observe" and (
+        temporary is None
+        or temporary_records(temporary, request["peer"], profile) != temporary["roles"]
+    ):
+        raise RuntimeError("Missing pinned temporary profile")
+    if phase == "post-terminal":
+        if temporary is None:
+            raise RuntimeError("Missing frozen temporary profile")
+        value = ownership_packet(
+            read(output / "temporary-retired.json"), session, "retired"
+        )
+        validate_temporary_retirement(value, temporary)
     begin = time.monotonic()
     if begin >= deadline:
         raise RuntimeError("Late ownership checkpoint")
@@ -1570,6 +1816,8 @@ def child(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - fixed owned
     submitted = False
     baseline_pins = None
     baseline_profile: Json = {}
+    temporary_pins = None
+    temporary_profile: Json = {}
 
     def identified(value: int, payload: bytes) -> None:
         if value != generation or identity:
@@ -1581,7 +1829,7 @@ def child(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - fixed owned
         )
 
     def ready(value: int) -> None:
-        nonlocal submitted
+        nonlocal submitted, temporary_pins, temporary_profile
         if value != generation or submitted or target is None or guard is None:
             raise RuntimeError("Unexpected observe ready")
         journal.call("reference.before_observe", guard.check)
@@ -1589,6 +1837,9 @@ def child(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - fixed owned
             raise RuntimeError("Fixture changed before observe")
         if baseline_pins is None:
             raise RuntimeError("Missing retained baseline ownership")
+        temporary_pins, temporary_profile = acquire_temporary(
+            args.output, args.session, identity, baseline_profile, journal
+        )
         ownership_checkpoint(
             args.output,
             args.session,
@@ -1597,7 +1848,15 @@ def child(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - fixed owned
             baseline_pins,
             baseline_profile,
             journal,
+            temporary_profile,
         )
+        current = temporary_pins.observe()
+        if (
+            current["cleanup_errors"]
+            or current["processes"] != temporary_profile["records"]["processes"]
+        ):
+            raise RuntimeError("Temporary identity changed before observe")
+        result["temporary_profile"] = temporary_profile
         journal.call("reference.after_ownership", guard.check)
         submitted = True
         channel.observe(1, target)
@@ -1618,6 +1877,22 @@ def child(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - fixed owned
             raise RuntimeError("Observe terminal does not match independent reference")
         if baseline_pins is None:
             raise RuntimeError("Missing retained baseline ownership")
+        if temporary_pins is None:
+            raise RuntimeError("Missing retained temporary handles")
+        retired = temporary_pins.retired()
+        if retired.get("retired") is not True:
+            raise RuntimeError("Temporary retained handles have not retired")
+        retirement = {"witness": retired, "helper": receipt["helper"]}
+        validate_temporary_retirement(retirement, temporary_profile)
+        result["temporary_retirement"] = retirement
+        write_handshake(
+            args.output / "temporary-retired.json",
+            {
+                "schema": 1,
+                "session": args.session,
+                "retired": retirement,
+            },
+        )
         ownership_checkpoint(
             args.output,
             args.session,
@@ -1735,6 +2010,16 @@ def child(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - fixed owned
         code = app.exec()
     finally:
         sys.excepthook = old_hook
+        if temporary_pins is not None:
+            try:
+                errors = temporary_pins.close()
+                result["temporary_pin_cleanup"] = errors
+                if errors:
+                    result["passed"] = False
+                    result["first_failure"] = result["first_failure"] or repr(errors)
+            except Exception as error:  # noqa: BLE001 - continue baseline cleanup
+                result["passed"] = False
+                result["first_failure"] = result["first_failure"] or repr(error)
         if baseline_pins is not None:
             try:
                 final_pins = baseline_pins.finish()
@@ -1916,6 +2201,7 @@ def outer(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912, PLR0915 - ow
     checkpoints: list[Json] = []
     peer_pid = None
     provisional_members: set[int] = set()
+    temporary_profile: Json | None = None
     expected_launch = str(Path(sys.executable).resolve())
     result.update(
         contract="already-open-panel-explicit-ownership-v2",
@@ -2048,7 +2334,10 @@ def outer(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912, PLR0915 - ow
                         "provisional_before": sorted(provisional_members),
                         "provisional_union": sorted(
                             provisional_members
-                            | (set(status["members"]) - set(profile["request"]["pids"]))
+                            | (
+                                set(topology_pids(status["members"]))
+                                - set(profile["request"]["pids"])
+                            )
                         ),
                         "peer_pid": peer_pid,
                         "completed_phases": [item["phase"] for item in checkpoints],
@@ -2058,11 +2347,14 @@ def outer(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912, PLR0915 - ow
                     }
                     try:
                         track_temporary_member(
-                            set(status["members"]),
+                            set(topology_pids(status["members"])),
                             set(profile["request"]["pids"]),
                             provisional_members,
                             peer_pid,
                             retiring=len(checkpoints) == len(OWNERSHIP_PHASES),
+                            admitted=set(temporary_profile["roles"].values())
+                            if temporary_profile is not None
+                            else None,
                         )
                     except Exception as error:
                         context["failure_time"] = time.monotonic()
@@ -2109,19 +2401,38 @@ def outer(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912, PLR0915 - ow
                         raise
                 if len(checkpoints) < len(OWNERSHIP_PHASES):
                     phase = OWNERSHIP_PHASES[len(checkpoints)]
+                    if phase == "pre-observe" and temporary_profile is None:
+                        temporary_profile = serve_temporary(
+                            executor,
+                            session,
+                            gui,
+                            profile,
+                            provisional_members,
+                            deadline,
+                        )
+                        if temporary_profile is not None:
+                            peer_pid = temporary_profile["peer"]["pid"]
+                            result["temporary_profile"] = temporary_profile
                     if (
                         phase == "pre-observe"
                         and (executor / "ownership-pre-observe-request.json").exists()
-                    ):
-                        candidate_peer = ownership_packet(
-                            read(executor / "peer-identity.json"), session, "peer"
+                        and (
+                            temporary_profile is None
+                            or provisional_members
+                            - set(temporary_profile["roles"].values())
                         )
-                        if provisional_members - {candidate_peer.get("pid")}:
-                            raise RuntimeError(  # noqa: TRY301 - no pixels authorized
-                                "A provisional member was not the attested helper"
-                            )
+                    ):
+                        raise RuntimeError(  # noqa: TRY301 - no pixels authorized
+                            "A provisional member was not the attested helper"
+                        )
                     ack = serve_checkpoint(
-                        executor, session, phase, gui, profile, deadline
+                        executor,
+                        session,
+                        phase,
+                        gui,
+                        profile,
+                        deadline,
+                        temporary_profile,
                     )
                     if ack is not None:
                         checkpoints.append(ack)
@@ -2138,6 +2449,8 @@ def outer(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912, PLR0915 - ow
                 if (
                     case_start is None
                     or len(checkpoints) != len(OWNERSHIP_PHASES)
+                    or value.get("temporary_profile") != temporary_profile
+                    or value.get("temporary_pin_cleanup") != []
                     or value.get("ownership_profile") != profile
                     or not isinstance(value.get("baseline_pin_cleanup"), dict)
                     or value["baseline_pin_cleanup"].get("cleanup_errors") != []

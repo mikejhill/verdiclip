@@ -962,3 +962,350 @@ def test_reused_retained_process_cannot_refresh_a_previously_valid_profile(
             changed, 11, 22, LAUNCH_PATH, BASE_PATH, CONSOLE_PATH
         )
     pins.finish()
+
+
+def temporary_records() -> list[dict[str, Any]]:
+    """Only the expected peer and its optional console have prospective roles."""
+    return [
+        {
+            "requested_pid": pid,
+            "process_id": pid,
+            "creation_100ns": created,
+            "image_path": path,
+            "status": "available",
+            "errors": [],
+            "parent": {"status": "available", "pid": parent},
+        }
+        for pid, created, path, parent in (
+            (44, 200, BASE_PATH, 22),
+            (45, 201, CONSOLE_PATH, 44),
+        )
+    ]
+
+
+@pytest.mark.parametrize("count", [1, 2])
+def test_temporary_profile_is_exact_and_immutable(count: int) -> None:
+    """One direct peer is mandatory; a second process can only be its console."""
+    records = temporary_records()[:count]
+    roles = diagnostic.validate_temporary_profile(
+        records, 44, 22, 199, BASE_PATH, CONSOLE_PATH
+    )
+    assert dict(roles) == ({"peer": 44} if count == 1 else {"peer": 44, "console": 45})
+    with pytest.raises(TypeError):
+        cast("MutableMapping[str, int]", roles)["peer"] = 99
+    records[0]["requested_pid"] = 99
+    assert roles["peer"] == 44
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("peer_pid", True),
+        ("peer_pid", 0),
+        ("peer_pid", 2**32),
+        ("executor_pid", False),
+        ("executor_pid", -1),
+        ("executor_creation", False),
+        ("executor_creation", 0),
+        ("executor_creation", -1),
+        ("executor_creation", 199.0),
+        ("executor_creation", 2**64),
+        ("executor_creation", float("nan")),
+    ],
+)
+def test_temporary_profile_requires_strict_external_identity(
+    field: str, value: object
+) -> None:
+    """Bool, overflow, and ambiguous executor lifetime expectations are rejected."""
+    arguments: dict[str, Any] = {
+        "peer_pid": 44,
+        "executor_pid": 22,
+        "executor_creation": 199,
+        "expected_base_path": BASE_PATH,
+        "expected_console_path": CONSOLE_PATH,
+    }
+    arguments[field] = value
+    with pytest.raises(ValueError, match=r".+"):
+        diagnostic.validate_temporary_profile(temporary_records(), **arguments)
+
+
+@pytest.mark.parametrize("index", [0, 1])
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("status", "stale"),
+        ("status", "unavailable"),
+        ("errors", ["native failure"]),
+        ("process_id", 99),
+        ("creation_100ns", True),
+        ("creation_100ns", 0),
+        ("creation_100ns", float("inf")),
+        ("parent", {"status": "unavailable"}),
+    ],
+)
+def test_temporary_profile_rejects_bad_peer_or_console_evidence(
+    index: int, field: str, value: object
+) -> None:
+    """Every retained member, not just the peer, needs clean available identity."""
+    records = temporary_records()
+    records[index][field] = value
+    with pytest.raises(ValueError, match=r".+"):
+        diagnostic.validate_temporary_profile(
+            records, 44, 22, 199, BASE_PATH, CONSOLE_PATH
+        )
+
+
+@pytest.mark.parametrize(
+    ("index", "image"),
+    [
+        (0, r"D:\other\python.exe"),
+        (1, r"D:\other\conhost.exe"),
+        (0, "python.exe"),
+        (1, "conhost.exe"),
+        (0, r"\\?\C:\Python313\python.exe"),
+        (1, r"C:\Windows\System32\cmd.exe"),
+    ],
+)
+def test_temporary_profile_never_uses_basename_or_unknown_console(
+    index: int, image: str
+) -> None:
+    """Both images must match independent complete paths without prefix stripping."""
+    records = temporary_records()
+    records[index]["image_path"] = image
+    with pytest.raises(ValueError, match=r"image|path"):
+        diagnostic.validate_temporary_profile(
+            records, 44, 22, 199, BASE_PATH, CONSOLE_PATH
+        )
+
+
+@pytest.mark.parametrize(
+    ("index", "parent", "creation"),
+    [
+        (0, 11, 200),
+        (0, 44, 200),
+        (0, 22, 198),
+        (1, 22, 201),
+        (1, 11, 201),
+        (1, 44, 199),
+    ],
+)
+def test_temporary_children_must_match_direct_parent_and_creation_order(
+    index: int, parent: int, creation: int
+) -> None:
+    """The peer is the executor's child and the console is the peer's child."""
+    records = temporary_records()
+    records[index]["parent"]["pid"] = parent
+    records[index]["creation_100ns"] = creation
+    with pytest.raises(ValueError, match="parent or creation"):
+        diagnostic.validate_temporary_profile(
+            records, 44, 22, 199, BASE_PATH, CONSOLE_PATH
+        )
+
+
+def test_temporary_equal_creation_ticks_and_full_path_normalization_are_supported() -> (
+    None
+):
+    """Same native clock ticks are allowed without weakening full-image matching."""
+    records = temporary_records()
+    for record in records:
+        record["creation_100ns"] = 199
+    records[0]["image_path"] = "c:/Python313/./PYTHON.EXE"
+    assert dict(
+        diagnostic.validate_temporary_profile(
+            records, 44, 22, 199, BASE_PATH, CONSOLE_PATH
+        )
+    ) == {"peer": 44, "console": 45}
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "empty",
+        "third",
+        "duplicate",
+        "missing-peer",
+        "executor-member",
+        "same-peer-executor",
+    ],
+)
+def test_temporary_profile_cannot_hide_extras_or_overlap_executor(case: str) -> None:
+    """No third member, duplicate, missing peer, or baseline PID is admitted."""
+    records = temporary_records()
+    executor = 22
+    if case == "empty":
+        records.clear()
+    elif case == "third":
+        records.append({**records[1], "requested_pid": 46, "process_id": 46})
+    elif case == "duplicate":
+        records[1] = dict(records[0])
+    elif case == "missing-peer":
+        records.pop(0)
+    elif case == "executor-member":
+        records[1].update(requested_pid=22, process_id=22)
+    else:
+        executor = 44
+    with pytest.raises(ValueError, match=r"profile|identity"):
+        diagnostic.validate_temporary_profile(
+            records, 44, executor, 199, BASE_PATH, CONSOLE_PATH
+        )
+
+
+def test_retired_requires_explicit_signal_from_every_original_handle(
+    kernel: Kernel,
+) -> None:
+    """A live peer or console is not retired; exit proof never reopens either PID."""
+    journal = Journal()
+    pins = diagnostic.PinnedProcesses((11, 22), 10.0, journal)
+    pins.collect()
+    initial_calls = len(kernel.calls)
+    kernel.exited.add(11)
+    partial = pins.retired()
+    assert partial["retired"] is False
+    assert partial["cleanup_errors"] == []
+    first, second = partial["processes"]
+    assert first["status"] == "retired"
+    assert first["retired"] is True
+    assert first["signaled"] is True
+    assert first["wait_result"] == 0
+    assert second["retired"] is False
+    assert second["signaled"] is False
+    assert second["wait_result"] == 258
+    assert second["errors"] == []
+    kernel.exited.add(22)
+    final = pins.retired()
+    assert final["retired"] is True
+    for row in final["processes"]:
+        assert row["observed_process_id"] == row["process_id"] == row["requested_pid"]
+        assert row["observed_creation_100ns"] == row["creation_100ns"]
+        assert row["identity_unchanged"] is True
+        assert row["signaled"] is True
+        assert row["retired"] is True
+        assert row["wait_result"] == 0
+        assert row["status"] == "retired"
+        assert row["errors"] == []
+    assert [name for name, _args in kernel.calls[initial_calls:]] == (
+        ["GetProcessId", "GetProcessTimes", "WaitForSingleObject"] * 4
+    )
+    assert [pin.handle for pin in pins.pins] == [1011, 1022]
+    assert kernel.OpenProcess.call_count == 2
+    kernel.CreateToolhelp32Snapshot.assert_called_once()
+    kernel.CloseHandle.assert_called_once_with(900)
+    assert journal.names.count("topology.WaitForSingleObject.retired.11") == 2
+    pins.close()
+    pins.close()
+    assert [call.args[0] for call in kernel.CloseHandle.call_args_list] == [
+        900,
+        1011,
+        1022,
+    ]
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "pid-changed",
+        "creation-changed",
+        "wait-error",
+        "identity-error",
+        "missing-pin",
+        "prior-stale",
+    ],
+)
+def test_retirement_cannot_substitute_stale_or_unreadable_identity(
+    kernel: Kernel, case: str
+) -> None:
+    """Signaling alone is insufficient without the original clean retained identity."""
+    if case == "missing-pin":
+        kernel.fail.add(("OpenProcess", 11))
+    pins = diagnostic.PinnedProcesses((11, 22), 10.0, Journal())
+    kernel.exited.update({11, 22})
+    if case == "pid-changed":
+        kernel.actual_pids[11] = 99
+    elif case == "creation-changed":
+        kernel.created[11] = 999
+    elif case == "wait-error":
+        kernel.fail.add(("WaitForSingleObject", 11))
+    elif case == "identity-error":
+        kernel.fail.add(("GetProcessTimes", 11))
+    elif case == "prior-stale":
+        pins.observe()
+    before_errors = list(pins.pins[0].errors)
+    result = pins.retired()
+    assert result["retired"] is False
+    assert result["processes"][0]["retired"] is False
+    assert result["processes"][0]["errors"][: len(before_errors)] == before_errors
+    if case == "prior-stale":
+        assert result["processes"][0]["identity_unchanged"] is True
+        assert result["processes"][0]["signaled"] is True
+    else:
+        assert result["processes"][1]["retired"] is True
+    pins.close()
+
+
+@pytest.mark.parametrize(
+    "api", ["GetProcessId", "GetProcessTimes", "WaitForSingleObject.retired"]
+)
+@pytest.mark.parametrize("phase", ["before", "after"])
+def test_retirement_logging_failure_never_yields_exit_admission(
+    kernel: Kernel, api: str, phase: str
+) -> None:
+    """A failed journal leaves retirement false and the original handle open."""
+    journal = Journal()
+    pins = diagnostic.PinnedProcesses((11,), 10.0, journal)
+    kernel.exited.add(11)
+    getattr(journal, phase).add(f"topology.{api}.11")
+    result = pins.retired()
+    assert result["retired"] is False
+    assert result["processes"][0]["retired"] is False
+    assert "journal" in result["processes"][0]["errors"][0]
+    assert pins.pins[0].handle == 1011
+    kernel.CloseHandle.assert_not_called()
+    pins.close()
+    kernel.CloseHandle.assert_called_once_with(1011)
+
+
+def test_retirement_preserves_primary_native_failure_when_error_logging_fails(
+    kernel: Kernel,
+) -> None:
+    """A journal error must not conceal the first failed native identity read."""
+    journal = Journal()
+    pins = diagnostic.PinnedProcesses((11,), 10.0, journal)
+    kernel.exited.add(11)
+    kernel.fail.add(("GetProcessTimes", 11))
+    journal.mask_error = True
+    result = pins.retired()
+    assert result["retired"] is False
+    assert "GetProcessTimes failed" in result["processes"][0]["errors"][0]
+    pins.close()
+
+
+def test_retirement_cannot_hide_prior_cleanup_failure(kernel: Kernel) -> None:
+    """Aggregate retirement is false when any previously owned close was unconfirmed."""
+    pins = diagnostic.PinnedProcesses((11,), 10.0, Journal())
+    kernel.fail.add(("CloseHandle", 0))
+    pins.collect()
+    kernel.exited.add(11)
+    result = pins.retired()
+    assert result["processes"][0]["retired"] is True
+    assert result["cleanup_errors"]
+    assert result["retired"] is False
+    pins.close()
+
+
+def test_retirement_obeys_original_deadline_and_rejects_closed_owner(
+    kernel: Kernel,
+) -> None:
+    """Retirement neither extends the original budget nor recovers a closed pin."""
+    pins = diagnostic.PinnedProcesses((11,), 10.0, Journal())
+    kernel.exited.add(11)
+    before = len(kernel.calls)
+    kernel.now = 10.0
+    with pytest.raises(RuntimeError, match="deadline"):
+        pins.retired()
+    assert len(kernel.calls) == before
+    assert pins.pins[0].handle == 1011
+    pins.close()
+    with pytest.raises(RuntimeError, match="closed"):
+        pins.retired()
+    kernel.OpenProcess.assert_called_once()
+    kernel.CloseHandle.assert_called_once_with(1011)

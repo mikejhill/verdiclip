@@ -646,3 +646,32 @@ cleanup with its tighter deadline, including on partial launch failure. No
 pre-observe acknowledgment is sent after rejection. Later-phase failures retain
 context only. Diagnostic completion never changes the original failure, and
 partial evidence is acceptable without extending any budget or retrying.
+
+### Prospective temporary helper ownership profile (research only)
+
+The prior two-extra-process failures remain failed. The next fixture profile
+permits only the production channel's kernel-attested direct helper plus zero
+or one console companion. At most two historical provisional extra PIDs may be
+observed during startup. This provisional state never authorizes observation.
+A third or previously disappeared unknown PID rejects the case.
+
+The outer owner sends a fixed exact current target set to the existing supervised
+GUI executor. It pins those processes and verifies live identities, full image
+paths, creation ordering and bounded parent metadata. The helper must match the
+channel identity and independently expected base interpreter, with the retained
+executor as parent. A companion must match the independently API-derived
+SystemDirectory/conhost.exe and name that helper as parent. The outer owner
+corroborates the exact current job membership while the pins remain held, before
+issuing the existing pre-observe acknowledgment. The executor rechecks those
+same handles after acknowledgment and before observation. Session and peer epoch
+are bound through the fixed receipts. No role can be added or substituted later.
+
+The retained helper and companion handles must explicitly signal at retirement,
+with unchanged PID and creation identity. Generic stale records are insufficient.
+Production helper cleanup must also be natural and confirmed, followed by exact
+baseline-only outer job membership. The temporary pins are closed before executor
+exit; baseline pins retain their separate live pre-exit checks. Natural launcher
+exit and an empty outer job remain required for final success. All existing
+preparation, case, call, helper, reference, observation and cleanup deadlines are
+unchanged. This is a prospective owned-fixture experiment, not a relaxation of
+production ownership or retrospective qualification of earlier snapshots.

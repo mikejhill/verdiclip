@@ -523,7 +523,7 @@ def test_outer_latches_rejection_before_diagnostics_and_retains_tight_cleanup(  
     fixture.process.pid = 321
     fixture.snapshot.return_value = {"exit_code": None, "members": [321]}
     gui.process.pid = 654
-    rejected: Json = {"exit_code": None, "members": [654, 777, 778]}
+    rejected: Json = {"exit_code": None, "members": [654, 777, 778, 779]}
     gui.snapshot.side_effect = [{"exit_code": None, "members": [654]}, rejected]
     module.ExternalOwner.side_effect = [fixture, gui, diagnostic]
     module.verify_wheel.return_value = {"executable": BASE}
@@ -554,10 +554,13 @@ def test_outer_latches_rejection_before_diagnostics_and_retains_tight_cleanup(  
 
     def inspect(*_args: object, **kwargs: Any) -> Json:  # noqa: ANN401 - inspect callback protocol includes callable monitor
         frozen = smoke.read(args.output / "membership-failure.json")
-        assert frozen["snapshot"] == {"exit_code": None, "members": [654, 777, 778]}
+        assert frozen["snapshot"] == {
+            "exit_code": None,
+            "members": [654, 777, 778, 779],
+        }
         assert frozen["completed_phases"] == ["pre-reference"]
         assert frozen["provisional_before"] == []
-        assert frozen["provisional_union"] == [777, 778]
+        assert frozen["provisional_union"] == [777, 778, 779]
         assert frozen["failure_time"] == 1.0
         assert frozen["case_deadline"] == 16.0
         assert (args.output / "executor" / "case-start.json").exists()
@@ -567,7 +570,7 @@ def test_outer_latches_rejection_before_diagnostics_and_retains_tight_cleanup(  
         request = smoke.read(
             args.output / "startup-diagnostics" / "topology-request.json"
         )
-        assert request["pids"] == [777, 778]
+        assert request["pids"] == [777, 778, 779]
         kwargs["monitor"]()
         rejected["members"].clear()
         raise OSError("later inspection failed")
@@ -582,7 +585,7 @@ def test_outer_latches_rejection_before_diagnostics_and_retains_tight_cleanup(  
     assert result["first_failure"] == repr(
         RuntimeError("Unexpected process during the attested helper lifecycle")
     )
-    assert result["membership_failure"]["snapshot"]["members"] == [654, 777, 778]
+    assert result["membership_failure"]["snapshot"]["members"] == [654, 777, 778, 779]
     assert result["startup_diagnostics"]["status"] == "unavailable"
     assert "later inspection failed" in result["startup_diagnostics"]["error"]
     diagnostic.start.assert_called_once()
