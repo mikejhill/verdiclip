@@ -621,3 +621,100 @@ def test_real_discovery_emitter_to_wheel_validator(
     records[-1]["monotonic"] = 0.1
     with pytest.raises(RuntimeError, match="Wheel event time invalid"):
         supervisor.validate_log(records, 0.0, 0.4, finished=True)
+
+
+@pytest.mark.parametrize("change", ["vertical", "horizontal", "geometry", "guard"])
+def test_capture_failure_retains_native_pair(tmp_path: Path, change: str) -> None:
+    """Real JSONL emissions retain rejected UIA samples without an extra send/read."""
+    from types import SimpleNamespace  # noqa: PLC0415 - native seams
+
+    candidate = probe.WheelProbe(argparse.Namespace(output=tmp_path / "probe"))
+    identity = Structure(1, 2, 3, "Chrome", (0, 0, 10, 10), offscreen=False)
+    candidate.identity, candidate.initial = identity, STATE
+    after_identity = (
+        replace(identity, rect=(0, -1, 10, 9)) if change == "geometry" else identity
+    )
+    after_state = (
+        replace(STATE, **{change: 11})
+        if change in ("vertical", "horizontal")
+        else STATE
+    )
+    identities = iter([identity, after_identity])
+    states = iter([STATE, after_state])
+    reads: list[ScrollState] = []
+
+    def state() -> ScrollState:
+        value = next(states)
+        reads.append(value)
+        return value
+
+    candidate.uia = cast(
+        "probe.PanelUia",
+        SimpleNamespace(
+            target=object(),
+            structure=lambda _: next(identities),
+            read_state=state,
+        ),
+    )
+    api = FakeApi()
+    candidate.wheel = probe.WheelWriter(api, 1, 1)
+
+    def grab(_rect: object) -> object:
+        api.blocked = change == "guard"
+        return SimpleNamespace(rgb=bytes(300))
+
+    source = cast("mss.MSS", SimpleNamespace(grab=grab))
+    try:
+        with pytest.raises(RuntimeError, match="changed"):
+            candidate.stable(source)
+    finally:
+        candidate.log.close()
+    records = supervisor.events(tmp_path / "probe/calls.jsonl")
+    pair = [record for record in records if record["event"] == "wheel_capture_sample"]
+    assert [record["phase"] for record in pair] == ["before", "after"]
+    assert [record["sample"] for record in pair] == [1, 1]
+    assert pair[0]["monotonic"] <= pair[1]["monotonic"]
+    assert pair[0]["state"]["vertical"] == STATE.vertical
+    if change in ("vertical", "horizontal"):
+        assert pair[1]["state"][change] == 11
+        assert len(reads) == 2
+    else:
+        assert pair[1]["state"] is None
+        assert len(reads) == 1
+    assert pair[1]["structure"] == (
+        None
+        if change == "guard"
+        else {
+            "pid": after_identity.pid,
+            "hwnd": after_identity.hwnd,
+            "control_type": after_identity.control_type,
+            "framework": after_identity.framework,
+            "rect": list(after_identity.rect),
+            "offscreen": False,
+        }
+    )
+    assert not api.sent
+
+
+def test_capture_evidence_bound_precedes_grab(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Diagnostic storage is capped independently of wall-clock progress."""
+    from types import SimpleNamespace  # noqa: PLC0415 - native seams
+
+    candidate = object.__new__(probe.WheelProbe)
+    identity = Structure(1, 2, 3, "Chrome", (0, 0, 10, 10), offscreen=False)
+    candidate.identity, candidate.initial = identity, STATE
+    candidate.capture_samples = probe.MAX_CAPTURE_SAMPLES
+    candidate.uia = cast(
+        "probe.PanelUia",
+        SimpleNamespace(
+            target=object(),
+            structure=lambda _: identity,
+            read_state=lambda: STATE,
+        ),
+    )
+    api = FakeApi()
+    candidate.wheel = probe.WheelWriter(api, 1, 1)
+    monkeypatch.setattr(candidate, "emit", lambda _: pytest.fail("Bounded before log"))
+    with pytest.raises(RuntimeError, match="sample bound"):
+        candidate.stable(cast("mss.MSS", object()))
+    assert not api.sent

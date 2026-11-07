@@ -27,6 +27,7 @@ MAX_WRITES = 40
 CALL_SECONDS = 3
 SESSION_SECONDS = 90
 SETTLE_SECONDS = 2
+MAX_CAPTURE_SAMPLES = 1024
 _SIGNED_MIN = -(2**15)
 _SIGNED_MAX = 2**15 - 1
 _MODIFIERS = (0x01, 0x02, 0x04, 0x05, 0x06, 0x10, 0x11, 0x12, 0x5B, 0x5C)
@@ -192,21 +193,55 @@ class WheelProbe(Probe):
                 raise RuntimeError("Wheel changed target geometry or nonvertical state")
             if not 0 <= state.vertical <= FULL_PERCENT:
                 raise RuntimeError("Invalid wheel readback")
+            sample = getattr(self, "capture_samples", 0) + 1
+            if sample > MAX_CAPTURE_SAMPLES:
+                raise RuntimeError("Wheel capture evidence sample bound")
+            self.capture_samples = sample
+            self.emit(
+                {
+                    "event": "wheel_capture_sample",
+                    "sample": sample,
+                    "phase": "before",
+                    "structure": asdict(identity),
+                    "state": asdict(state),
+                }
+            )
             left, top, right, bottom = identity.rect
             self.emit({"event": "call_start", "name": "wheel.capture"})
-            pixels = source.grab(
-                {
-                    "left": left,
-                    "top": top,
-                    "width": right - left,
-                    "height": bottom - top,
-                }
-            ).rgb
-            self.wheel.api.check()
-            if (
-                self.uia.structure(self.uia.target) != identity
-                or self.uia.read_state() != state
-            ):
+            after_identity = None
+            after_state = None
+            try:
+                pixels = source.grab(
+                    {
+                        "left": left,
+                        "top": top,
+                        "width": right - left,
+                        "height": bottom - top,
+                    }
+                ).rgb
+                self.wheel.api.check()
+                after_identity = self.uia.structure(self.uia.target)
+                # Preserve the original short circuit: a geometry/identity failure
+                # must not cause another native state read merely for diagnostics.
+                if after_identity == identity:
+                    after_state = self.uia.read_state()
+            finally:
+                self.emit(
+                    {
+                        "event": "wheel_capture_sample",
+                        "sample": sample,
+                        "phase": "after",
+                        "structure": (
+                            asdict(after_identity)
+                            if after_identity is not None
+                            else None
+                        ),
+                        "state": asdict(after_state)
+                        if after_state is not None
+                        else None,
+                    }
+                )
+            if after_identity != identity or after_state != state:
                 raise RuntimeError("State changed across wheel capture")
             self.emit({"event": "call_end", "name": "wheel.capture"})
             if time.monotonic() - start >= SETTLE_SECONDS:
