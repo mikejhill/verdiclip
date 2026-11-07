@@ -138,10 +138,16 @@ def test_prechecks_reject_before_allocation(
 
 
 @pytest.mark.parametrize(
-    "data", [b"", bytearray(b"x"), b"x" * 19, b"x" * (MAX_READ_BYTES + 1)]
+    "data",
+    [b"", bytearray(b"x"), b"x" * 19, b"x" * (MAX_READ_BYTES + 1)],
+    ids=["empty", "mutable", "exceeds-frame", "exceeds-chunk"],
 )
-def test_invalid_feed_discards_and_latches_failure(data: bytes) -> None:
+def test_invalid_feed_discards_and_latches_failure(
+    data: bytes, request: pytest.FixtureRequest
+) -> None:
     """No bad chunk can grow the allocation or leave a partially usable sink."""
+    # Pytest exports this ID to PYTEST_CURRENT_TEST, including on Windows.
+    assert len(request.node.nodeid) < 200
     sink = retained.FrameSink(IDENTITY, lambda: None)
     with pytest.raises(retained.RetainedFrameError, match="chunk"):
         sink.feed(data)
@@ -442,7 +448,9 @@ def test_seal_requires_full_reserved_identity(
 
 @pytest.mark.parametrize("operation", ["seal", "authorize", "take"])
 @pytest.mark.parametrize(
-    "receipt", [b"", b"different", bytearray(RECEIPT), b"x" * (MAX_MESSAGE_BYTES + 1)]
+    "receipt",
+    [b"", b"different", bytearray(RECEIPT), b"x" * (MAX_MESSAGE_BYTES + 1)],
+    ids=["empty", "different", "mutable", "oversized"],
 )
 def test_receipt_binding_is_exact_and_bounded(
     vault: retained.FrameVault, operation: str, receipt: bytes

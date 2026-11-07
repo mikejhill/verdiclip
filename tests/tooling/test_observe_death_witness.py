@@ -395,9 +395,17 @@ def test_cleanup_attempts_every_resource_and_downgrades(
     smoke.write_handshake.assert_called_once()
 
 
-@pytest.mark.parametrize("raw", [b"[]", b'{"a":1,"a":2}', b" " * 131_073])
-def test_packet_limits(tmp_path: Path, raw: bytes) -> None:
+@pytest.mark.parametrize(
+    "raw",
+    [b"[]", b'{"a":1,"a":2}', b" " * 131_073],
+    ids=["non-object", "duplicate-key", "oversized"],
+)
+def test_packet_limits(
+    tmp_path: Path, raw: bytes, request: pytest.FixtureRequest
+) -> None:
     """Immutable packet reads have strict size, shape and duplicate-key limits."""
+    # Keep large test inputs out of Windows environment-variable-backed IDs.
+    assert len(request.node.nodeid) < 200
     path = tmp_path / "packet.json"
     path.write_bytes(raw)
     with pytest.raises(ValueError, match="witness"):
