@@ -227,6 +227,19 @@ def result_for(prepared: SimpleNamespace) -> Json:
             "before_ns": 101_300_000_000,
             "after_ns": 101_400_000_000,
         },
+        "executor_retirement": {
+            "pre_action_identity": {
+                "pid": 11,
+                "created": 1245,
+                "image": "C:\\Python\\python.exe",
+            },
+            "observed_process_id": 11,
+            "observed_creation_100ns": 1245,
+            "wait_result": 0,
+            "signaled": True,
+            "exit_code": 17,
+            "observed_ns": 101_450_000_000,
+        },
         "retirement": {"retired": True, "cleanup_errors": [], "processes": records},
         "reference": {
             "root_sha256": "c" * 64,
@@ -716,3 +729,54 @@ def test_live_pinned_schema_rejects_invented_cleanup_field(
         value.before_observe(
             prepared.profile, prepared.temporary, prepared.identity, 115.0
         )
+
+
+@pytest.mark.parametrize(
+    ("field", "bad"),
+    [
+        ("observed_process_id", 12),
+        ("observed_creation_100ns", 1246),
+        ("wait_result", False),
+        ("wait_result", 258),
+        ("signaled", 1),
+        ("signaled", False),
+        ("exit_code", 0),
+        ("exit_code", 17.0),
+        ("observed_ns", True),
+        ("observed_ns", 101_399_999_999),
+        ("observed_ns", 101_500_000_001),
+        ("pre_action_identity", {"pid": 11, "created": 1245, "image": "wrong"}),
+    ],
+)
+def test_executor_retirement_requires_exact_frozen_identity_and_signal(
+    prepared: SimpleNamespace, field: str, bad: object
+) -> None:
+    """Post-exit evidence cannot substitute an image, process, state or timestamp."""
+    value = prepared.value
+    publish_hold(prepared)
+    arrange_result(prepared)
+    assert value.finish_if_held()["passed"]
+    result = result_for(prepared)
+    result["executor_retirement"][field] = bad
+    with pytest.raises(ValueError, match=r"Death|death|executor"):
+        value._admit_result(result, int(value.retirement_deadline * 1e9))
+
+
+@pytest.mark.parametrize("fault", ["missing", "extra", "missing-image"])
+def test_executor_retirement_schema_is_not_optional(
+    prepared: SimpleNamespace, fault: str
+) -> None:
+    """An old receipt or unlabelled pre-action image cannot pass the new contract."""
+    value = prepared.value
+    publish_hold(prepared)
+    arrange_result(prepared)
+    assert value.finish_if_held()["passed"]
+    result = result_for(prepared)
+    if fault == "missing":
+        del result["executor_retirement"]
+    elif fault == "extra":
+        result["executor_retirement"]["image"] = "not a post-exit query"
+    else:
+        del result["executor_retirement"]["pre_action_identity"]["image"]
+    with pytest.raises(ValueError, match="Death"):
+        value._admit_result(result, int(value.retirement_deadline * 1e9))

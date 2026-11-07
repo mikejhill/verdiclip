@@ -19,6 +19,7 @@ import os
 import re
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 from typing import Any, cast
@@ -28,6 +29,7 @@ DEATH_CODE = 17
 ROOT_BYTES = 1_728_000
 NANOSECOND = 1_000_000_000
 WAIT_TIMEOUT = 258
+WAIT_FAILED = 0xFFFFFFFF
 PROCESS_RIGHTS = 0x00101001
 MAX_JSON = 131_072
 MAX_IMAGE_CHARS = 1024
@@ -197,11 +199,32 @@ def read_reference(output: Path, begin: Json, smoke: Any) -> tuple[bytes, bytes]
     return root, cast("bytes", panel)
 
 
+@dataclass(frozen=True, slots=True)
+class _LiveIdentity:
+    """Immutable evidence from a successful verification before the fixed action."""
+
+    pid: int
+    created: int
+    image: str
+    verified_ns: int
+
+
+def _native_failure(label: str) -> RuntimeError:
+    code = getattr(c, "get_last_error", lambda: 0)()
+    return RuntimeError(f"{label} failed (GetLastError={code})")
+
+
 class ExecutorHandle:
     """Retained executor handle; no other role receives terminate rights."""
 
     def __init__(self, kernel: Any, journal: Any, record: Json) -> None:
-        self.kernel, self.journal, self.record = kernel, journal, record
+        self.kernel, self.journal = kernel, journal
+        self.record = dict(record)
+        self._original_handle: int | None = None
+        self._closed = False
+        self._live_identity: _LiveIdentity | None = None
+        self._action_finished_ns: int | None = None
+        self._retirement_attempted = False
         self.handle: int | None = None
         self.attempted = False
         self.action: Json = {
@@ -219,10 +242,10 @@ class ExecutorHandle:
                 )
                 if not handle:
                     raise RuntimeError("Executor OpenProcess failed")  # noqa: TRY301 - retain acquired handle
-                self.handle = handle
+                self.handle = self._original_handle = handle
 
             self.journal.call("death.executor.OpenProcess", acquire)
-            self.verify(live=True)
+            self.verify_live()
         except BaseException as primary:
             try:
                 self.close()
@@ -252,8 +275,11 @@ class ExecutorHandle:
             fn = getattr(self.kernel, name)
             fn.argtypes, fn.restype = args, result
 
-    def verify(self, *, live: bool) -> Json:
+    def verify_live(self) -> Json:
         """Recheck the same handle's PID, creation, full image and liveness."""
+        self._owned_handle()
+        if self.attempted:
+            raise RuntimeError("Executor live verification follows death attempt")
 
         def inspect() -> Json:
             times = [c.c_uint64() for _ in range(4)]
@@ -263,11 +289,11 @@ class ExecutorHandle:
             if not self.kernel.GetProcessTimes(
                 self.handle, *(c.byref(t) for t in times)
             ):
-                raise RuntimeError("Executor creation query failed")
+                raise _native_failure("Executor creation query")
             if not self.kernel.QueryFullProcessImageNameW(
                 self.handle, 0, image, c.byref(size)
             ):
-                raise RuntimeError("Executor image query failed")
+                raise _native_failure("Executor image query")
             if not 0 < size.value <= MAX_IMAGE_CHARS:
                 raise RuntimeError("Executor image query bound exceeded")
             value = {
@@ -286,16 +312,97 @@ class ExecutorHandle:
                 ntpath.normcase(expected["image"]),
             ):
                 raise RuntimeError("Executor retained identity changed")
-            if live and self.kernel.WaitForSingleObject(self.handle, 0) != WAIT_TIMEOUT:
+            if self.kernel.WaitForSingleObject(self.handle, 0) != WAIT_TIMEOUT:
                 raise RuntimeError("Executor no longer live")
             return value
 
-        return self.journal.call("death.executor.identity", inspect)
+        value = self.journal.call("death.executor.identity", inspect)
+        self._live_identity = _LiveIdentity(
+            value["pid"], value["created"], value["image"], time.monotonic_ns()
+        )
+        return value
+
+    def _owned_handle(self) -> int:
+        if (
+            self._closed
+            or type(self.handle) is not int
+            or self.handle <= 0
+            or self.handle != self._original_handle
+        ):
+            raise RuntimeError("Executor original retained handle is unavailable")
+        return self.handle
+
+    def verify_retired(self) -> Json:
+        """Verify the continuously held process object, never its post-exit image."""
+        handle = self._owned_handle()
+        live = self._live_identity
+        action_finished = self._action_finished_ns
+        if (
+            live is None
+            or action_finished is None
+            or self._retirement_attempted
+            or live.verified_ns > action_finished
+        ):
+            raise RuntimeError(
+                "Executor lacks successful original action/live evidence"
+            )
+        self._retirement_attempted = True
+        deadline_ns = int(self.journal.deadline * NANOSECOND)
+
+        def inspect() -> Json:
+            check_time(deadline_ns)
+            pid = self.kernel.GetProcessId(handle)
+            if not pid:
+                raise _native_failure("Executor retired PID query")
+            times = [c.c_uint64() for _ in range(4)]
+            if not self.kernel.GetProcessTimes(handle, *(c.byref(t) for t in times)):
+                raise _native_failure("Executor retired creation query")
+            if (
+                type(pid) is not int
+                or pid != live.pid
+                or times[0].value != live.created
+            ):
+                raise RuntimeError("Executor retired PID or creation changed")
+            state = self._retired_wait(handle)
+            code = c.c_uint32()
+            if not self.kernel.GetExitCodeProcess(handle, c.byref(code)):
+                raise _native_failure("Executor retired exit query")
+            if code.value != DEATH_CODE:
+                raise RuntimeError("Executor diagnostic exit status differs")
+            observed = check_time(deadline_ns)
+            if observed < action_finished:
+                raise RuntimeError("Executor retirement precedes its action")
+            return {
+                "pre_action_identity": {
+                    "pid": live.pid,
+                    "created": live.created,
+                    "image": live.image,
+                },
+                "observed_process_id": pid,
+                "observed_creation_100ns": times[0].value,
+                "wait_result": state,
+                "signaled": True,
+                "exit_code": code.value,
+                "observed_ns": observed,
+            }
+
+        return self.journal.call("death.executor.retired", inspect)
+
+    def _retired_wait(self, handle: int) -> int:
+        state = self.kernel.WaitForSingleObject(handle, 0)
+        if state == WAIT_FAILED:
+            raise _native_failure("Executor retired wait")
+        if type(state) is not int or state != 0:
+            raise RuntimeError("Executor retained process is not signaled")
+        return state
 
     def terminate(self, admission_ns: int) -> Json:
         """Make one fixed action, bracketing the native call with admission checks."""
         if self.attempted or self.handle is None:
             raise RuntimeError("Executor death action cannot be retried")
+        self._owned_handle()
+        if self._live_identity is None:
+            raise RuntimeError("Executor lacks verified pre-action identity")
         self.attempted = True
 
         def action() -> None:
@@ -309,11 +416,14 @@ class ExecutorHandle:
                 raise RuntimeError("Executor termination failed or uncertain")
 
         self.journal.call("death.executor.TerminateProcess", action)
+        self._action_finished_ns = self.action["after_ns"]
         return dict(self.action)
 
     def close(self) -> None:
         """Release once even when logging or original deadline checking fails."""
-        handle, self.handle = self.handle, None
+        handle, self._original_handle = self._original_handle, None
+        self.handle = None
+        self._closed = True
         if handle is None:
             return
 
@@ -528,20 +638,20 @@ class Witness:
         journal.deadline = retirement_ns / NANOSECOND
         self.pins.deadline = journal.deadline
         check_pins(self.pins, expected_records)
-        self.executor.verify(live=True)
+        self.executor.verify_live()
         journal.call("death.reference.prekill", self.guard.check)
         _exact(smoke.fixture_key(smoke.latest(args.states)), begin["expected"])
         check_time(admission_ns)
         self.result["action"] = self.executor.terminate(admission_ns)
         retired = wait_retired(self.pins, journal, retirement_ns)
+        self.result["retirement"] = retired
         executor_exit = next(
             r["exit_code"]
             for r in retired["processes"]
             if r["process_id"] == roles["executor"]
         )
         _exact(executor_exit, DEATH_CODE)
-        self.executor.verify(live=False)
-        self.result["retirement"] = retired
+        self.result["executor_retirement"] = self.executor.verify_retired()
         after_root, after_panel = smoke.reference(
             journal,
             self.guard,

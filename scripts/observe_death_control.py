@@ -541,6 +541,7 @@ class DeathControl:
             "retirement_deadline_ns",
             "action",
             "retirement",
+            "executor_retirement",
             "reference",
         }:
             raise ValueError("Death result fields differ")
@@ -578,6 +579,32 @@ class DeathControl:
                 "returned": True,
                 "before_ns": before,
                 "after_ns": after,
+            },
+        )
+        executor = next(
+            record
+            for record in self.pinned["records"]["processes"]
+            if record["process_id"] == self.pinned["roles"]["executor"]
+        )
+        executor_retirement = result.get("executor_retirement", {})
+        observed = executor_retirement.get("observed_ns")
+        if type(observed) is not int or not after <= observed <= completed:
+            raise ValueError("Late or invalid executor retirement")
+        _same(
+            executor_retirement,
+            {
+                # The image is frozen live evidence, not a post-exit image query.
+                "pre_action_identity": {
+                    "pid": executor["process_id"],
+                    "created": executor["creation_100ns"],
+                    "image": executor["image_path"],
+                },
+                "observed_process_id": executor["process_id"],
+                "observed_creation_100ns": executor["creation_100ns"],
+                "wait_result": 0,
+                "signaled": True,
+                "exit_code": DEATH_EXIT,
+                "observed_ns": observed,
             },
         )
         retired = result.get("retirement", {})

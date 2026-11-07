@@ -45,6 +45,7 @@ class WireKernel(Kernel):
         self.created = {21: 123, 22: 124, 23: 125}
         self.actions: list[tuple[int, int]] = []
         self.raw_calls: list[tuple[str, tuple[Any, ...]]] = []
+        self.post_exit_image_calls: list[int] = []
         self.functions["TerminateProcess"] = Mock(side_effect=self.terminate)
         self.functions["GetExitCodeProcess"] = Mock(side_effect=self.exit_code)
 
@@ -52,6 +53,10 @@ class WireKernel(Kernel):
     def invoke(self, name: str, *args: Any) -> int:
         """Permit only exact executor terminate rights and retained bounded waits."""
         self.raw_calls.append((name, args))
+        if name == "QueryFullProcessImageNameW" and self.actions:
+            self.post_exit_image_calls.append(args[0])
+            self.last_error = 6
+            return 0
         if name == "OpenProcess" and args[0] == witness.PROCESS_RIGHTS:
             assert args[1:] == (0, 21)
             return 10_021
@@ -182,6 +187,22 @@ def mutate_wire(path: Path, packet: Json, mutation: str) -> Json:  # noqa: C901,
             result["reference"]["root_sha256"] = "0" * 64
         elif mutation == "request_changed":
             result["request"]["hold"]["no_credit_issued"] = False
+        elif mutation == "executor_missing":
+            result.pop("executor_retirement")
+        elif mutation == "executor_extra":
+            result["executor_retirement"]["fresh_image"] = IMAGE
+        elif mutation == "executor_bool":
+            result["executor_retirement"]["wait_result"] = False
+        elif mutation == "executor_image":
+            result["executor_retirement"]["pre_action_identity"]["image"] = (
+                "C:\\wrong.exe"
+            )
+        elif mutation == "executor_created":
+            result["executor_retirement"]["observed_creation_100ns"] += 1
+        elif mutation == "executor_late":
+            result["executor_retirement"]["observed_ns"] = result[
+                "retirement_deadline_ns"
+            ]
     return packet
 
 
@@ -207,6 +228,12 @@ def mutate_wire(path: Path, packet: Json, mutation: str) -> Json:  # noqa: C901,
         "late_action",
         "reference_drift",
         "request_changed",
+        "executor_missing",
+        "executor_extra",
+        "executor_bool",
+        "executor_image",
+        "executor_created",
+        "executor_late",
     ],
 )
 def test_actual_death_wire_lifecycle(  # noqa: C901, PLR0915 - complete fixed wire lifecycle regression
@@ -393,7 +420,7 @@ def test_actual_death_wire_lifecycle(  # noqa: C901, PLR0915 - complete fixed wi
         assert not coordinator.before_observe(baseline, temporary, identity, 115.1)
         await_file(coordinator.output / "death-pinned.json", finished)
         if mutation.startswith("collect_"):
-            with pytest.raises(ValueError, match=r"Death|death"):
+            with pytest.raises(ValueError, match=r"Death|death|executor retirement"):
                 coordinator.before_observe(baseline, temporary, identity, 115.1)
             assert not api.actions
             return
@@ -433,6 +460,12 @@ def test_actual_death_wire_lifecycle(  # noqa: C901, PLR0915 - complete fixed wi
             assert result is not None
             assert result["passed"] is True
             assert result["result"]["passed"] is True
+            assert result["result"]["executor_retirement"]["pre_action_identity"] == {
+                "pid": 21,
+                "created": 123,
+                "image": IMAGE,
+            }
+            assert result["result"]["executor_retirement"]["exit_code"] == 17
             assert set(result["result"]["retirement"]) == {
                 "retired",
                 "processes",
@@ -471,10 +504,11 @@ def test_actual_death_wire_lifecycle(  # noqa: C901, PLR0915 - complete fixed wi
                 coordinator.finish_if_held()
             assert coordinator.failed
         else:
-            with pytest.raises(ValueError, match=r"Death|death"):
+            with pytest.raises(ValueError, match=r"Death|death|executor retirement"):
                 coordinator.finish_if_held()
             assert coordinator.failed
         assert api.actions == [(10_021, 17)]
+        assert api.post_exit_image_calls == []
         witness_owner.emergency.assert_not_called()
         gui_owner.emergency.assert_not_called()
         guard.close.assert_called_once()

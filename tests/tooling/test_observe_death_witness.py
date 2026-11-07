@@ -411,6 +411,7 @@ def test_packet_limits(tmp_path: Path, raw: bytes) -> None:
         "post_reference",
         "pins",
         "exit_status",
+        "executor_retired",
         "late_reference",
         "guard_logger",
         "late_predeath",
@@ -511,6 +512,10 @@ def test_full_surviving_lifecycle(  # noqa: C901, PLR0912, PLR0915 - full fixed 
             setattr(code._obj, "value", 0),
             1,
         )[1]
+    elif fault == "executor_retired":
+        api.GetProcessId.side_effect = lambda _handle: (
+            22 if api.TerminateProcess.called else 21
+        )
     elif fault == "late_reference":
 
         def late(*_args: object) -> tuple[bytes, bytes]:
@@ -552,6 +557,9 @@ def test_full_surviving_lifecycle(  # noqa: C901, PLR0912, PLR0915 - full fixed 
         user.SetThreadDpiAwarenessContext.assert_any_call(4)
     else:
         assert owner.result["passed"] is False
+    if fault in {"exit_status", "executor_retired"}:
+        assert owner.result["retirement"]["retired"] is True
+        assert "executor_retirement" not in owner.result
     if fault == "late_predeath":
         api.TerminateProcess.assert_not_called()
     if fault != "provenance":
@@ -633,3 +641,170 @@ def test_cleanup_logging_failure_still_closes_stream(
     assert owner.run() == 1
     assert owner.journal.stream.closed
     assert "late close" in owner.result["cleanup_errors"][0]
+
+
+def test_retired_executor_uses_frozen_live_identity_and_no_image(
+    clock: list[int],
+) -> None:
+    """An exited process image API may fail without being queried by retirement."""
+    assert clock[0] == NOW
+    api, log = kernel(), journal()
+    original = executor_record()
+    handle = witness.ExecutorHandle(api, log, original)
+    returned = handle.verify_live()
+    returned["image"] = "mutable public value"
+    original["image_path"] = "mutable input value"
+    handle.terminate(NOW + 1)
+    live_queries = api.QueryFullProcessImageNameW.call_count
+    api.QueryFullProcessImageNameW.side_effect = OSError(
+        6, "post-exit image unavailable"
+    )
+    api.WaitForSingleObject.return_value = 0
+    actual = handle.verify_retired()
+    assert actual == {
+        "pre_action_identity": {
+            "pid": 21,
+            "created": 123,
+            "image": executor_record()["image_path"],
+        },
+        "observed_process_id": 21,
+        "observed_creation_100ns": 123,
+        "wait_result": 0,
+        "signaled": True,
+        "exit_code": 17,
+        "observed_ns": NOW,
+    }
+    assert api.QueryFullProcessImageNameW.call_count == live_queries
+    api.OpenProcess.assert_called_once()
+    api.TerminateProcess.assert_called_once_with(500, 17)
+    with pytest.raises(RuntimeError, match="live verification follows"):
+        handle.verify_live()
+    with pytest.raises(RuntimeError, match="successful original action/live"):
+        handle.verify_retired()
+    handle.close()
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "unattempted",
+        "failed_action",
+        "no_live",
+        "closed",
+        "replaced",
+        "reopened",
+        "pid_zero",
+        "pid_bool",
+        "pid_changed",
+        "creation",
+        "time_query",
+        "wait_live",
+        "wait_failed",
+        "wait_bool",
+        "exit_query",
+        "wrong_exit",
+        "deadline_before",
+        "deadline_after",
+        "time_reversed",
+        "live_stamp",
+        "journal_after",
+    ],
+)
+def test_retired_executor_rejects_invalid_lifetime(  # noqa: C901, PLR0912, PLR0915 - explicit post-exit fault matrix
+    fault: str, clock: list[int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No identity, action, handle, wait, status or timing failure can be retried."""
+    api, log = kernel(), journal()
+    monkeypatch.setattr(witness.c, "get_last_error", lambda: 1234, raising=False)
+    handle = witness.ExecutorHandle(api, log, executor_record())
+    if fault == "failed_action":
+        api.TerminateProcess.return_value = 0
+        with pytest.raises(RuntimeError, match="termination failed"):
+            handle.terminate(NOW + 1)
+    elif fault != "unattempted":
+        handle.terminate(NOW + 1)
+    api.WaitForSingleObject.return_value = 0
+    image_queries = api.QueryFullProcessImageNameW.call_count
+    if fault == "no_live":
+        handle._live_identity = None
+    elif fault == "closed":
+        handle.close()
+    elif fault == "replaced":
+        handle.handle = 501
+    elif fault == "reopened":
+        handle.close()
+        handle.handle = 500
+    elif fault == "pid_zero":
+        api.GetProcessId.return_value = 0
+    elif fault == "pid_bool":
+        api.GetProcessId.return_value = True
+    elif fault == "pid_changed":
+        api.GetProcessId.return_value = 22
+    elif fault == "creation":
+        api.GetProcessTimes.side_effect = lambda _handle, *_args: 1
+    elif fault == "time_query":
+        api.GetProcessTimes.side_effect = None
+        api.GetProcessTimes.return_value = 0
+    elif fault == "wait_live":
+        api.WaitForSingleObject.return_value = witness.WAIT_TIMEOUT
+    elif fault == "wait_failed":
+        api.WaitForSingleObject.return_value = witness.WAIT_FAILED
+    elif fault == "wait_bool":
+        api.WaitForSingleObject.return_value = False
+    elif fault == "exit_query":
+        api.GetExitCodeProcess.side_effect = None
+        api.GetExitCodeProcess.return_value = 0
+    elif fault == "wrong_exit":
+        api.GetExitCodeProcess.side_effect = lambda _handle, code: (
+            setattr(code._obj, "value", 0),
+            1,
+        )[1]
+    elif fault == "deadline_before":
+        clock[0] = 115_000_000_000
+    elif fault == "deadline_after":
+        original_exit = api.GetExitCodeProcess.side_effect
+
+        def late_exit(*args: object) -> int:
+            result = original_exit(*args)
+            clock[0] = 115_000_000_000
+            return int(result)
+
+        api.GetExitCodeProcess.side_effect = late_exit
+    elif fault == "time_reversed":
+        clock[0] -= 1
+    elif fault == "live_stamp":
+        handle._action_finished_ns = NOW - 1
+    elif fault == "journal_after":
+
+        def late_journal(_name: str, operation: Any) -> None:  # noqa: ANN401 - fake logger boundary
+            operation()
+            raise RuntimeError("journal after failure")
+
+        log.call.side_effect = late_journal
+    with pytest.raises(RuntimeError, match=r"Executor|deadline|journal") as error:
+        handle.verify_retired()
+    if fault in {"pid_zero", "time_query", "wait_failed", "exit_query"}:
+        assert "GetLastError=1234" in str(error.value)
+    assert api.QueryFullProcessImageNameW.call_count == image_queries
+    api.OpenProcess.assert_called_once()
+    assert api.TerminateProcess.call_count == (0 if fault == "unattempted" else 1)
+    handle.close()
+    handle.close()
+    api.CloseHandle.assert_called_once_with(500)
+    assert handle.handle is None
+
+
+def test_live_image_error_is_captured_before_any_action(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Retirement changes do not relax mandatory successful live image evidence."""
+    api = kernel()
+    api.QueryFullProcessImageNameW.side_effect = None
+    api.QueryFullProcessImageNameW.return_value = 0
+    monkeypatch.setattr(witness.c, "get_last_error", lambda: 5, raising=False)
+    with pytest.raises(
+        RuntimeError, match=r"Executor image query failed.*GetLastError=5"
+    ):
+        witness.ExecutorHandle(api, journal(), executor_record())
+    api.TerminateProcess.assert_not_called()
+    api.CloseHandle.assert_called_once_with(500)
