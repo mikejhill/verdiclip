@@ -226,8 +226,24 @@ def events(path: Path) -> list[Json]:
     ]
 
 
+def probe_arguments(fixture: Json, experiment: str) -> list[str]:
+    """Choose an explicit, separate bounded experiment without fallbacks."""
+    extra = (
+        ["--settle-discovery"] if fixture["kind"] == "owned-edge" else ["--full-sweep"]
+    )
+    if experiment == "clipping":
+        extra = ["--clipping-diagnostic"]
+    elif experiment == "seam":
+        extra = ["--seam-sweep"]
+    elif experiment == "msaa":
+        extra = ["--settle-discovery", "--msaa-diagnostic"]
+    elif experiment != "standard":
+        raise ValueError("Unknown owned-fixture experiment")
+    return extra
+
+
 def run_probe(
-    job: OwnedJob, fixture: Json, output: Path, *, clipping_diagnostic: bool = False
+    job: OwnedJob, fixture: Json, output: Path, *, experiment: str = "standard"
 ) -> Json:
     """Bound startup, every logged native call, and total helper lifetime."""
     manifest = output / "fixture.json"
@@ -239,11 +255,7 @@ def run_probe(
         [str(ROOT), str(Path(sys.prefix) / "Lib/site-packages"), str(ROOT / "src")]
     )
     probe_dir = output / "probe"
-    extra = (
-        ["--settle-discovery"] if fixture["kind"] == "owned-edge" else ["--full-sweep"]
-    )
-    if clipping_diagnostic:
-        extra = ["--clipping-diagnostic"]
+    extra = probe_arguments(fixture, experiment)
     pid, handle = job.start(
         [
             str(base),
@@ -483,15 +495,23 @@ def full_width_oracle(fixture: Json, output: Path, state_dir: Path) -> Json:
     return compare_reference(frames, images["stitched"])
 
 
-def verify_result(result: Json, output: Path, state_dir: Path, fixture: Json) -> None:
-    """Keep read-only discovery distinct from actual pixel checkpoint success."""
-    if any(
-        record["event"] == "call_end"
-        and record["seconds"] > NATIVE_CALL_DEADLINE_SECONDS
-        for record in events(output / "probe/calls.jsonl")
-    ):
-        raise RuntimeError("Completed native call exceeded three seconds")
-    if result.get("clipping_diagnostic"):
+def verify_diagnostic(result: Json, output: Path) -> None:
+    """Diagnostic completion never implies capture qualification."""
+    if result.get("msaa_diagnostic"):
+        report = json.loads(
+            (output / "probe/manifest.json").read_text(encoding="utf-8")
+        )
+        result["diagnostic"] = report
+        _require_probe_success(result["helper"]["exit_code"])
+        result["diagnostic_completed"] = (
+            report.get("msaa_diagnostic_completed") is True
+            and report.get("read_only_unchanged") is True
+            and load_pixels(output / "probe/before.png")
+            == load_pixels(output / "probe/after.png")
+        )
+        if not result["diagnostic_completed"]:
+            raise RuntimeError("Read-only MSAA diagnostic incomplete")
+    elif result.get("clipping_diagnostic"):
         report = json.loads(
             (output / "probe/manifest.json").read_text(encoding="utf-8")
         )
@@ -506,6 +526,18 @@ def verify_result(result: Json, output: Path, state_dir: Path, fixture: Json) ->
         )
         if not result["diagnostic_completed"]:
             raise RuntimeError("Clipping diagnostic or restoration incomplete")
+
+
+def verify_result(result: Json, output: Path, state_dir: Path, fixture: Json) -> None:
+    """Keep read-only discovery distinct from actual pixel checkpoint success."""
+    if any(
+        record["event"] == "call_end"
+        and record["seconds"] > NATIVE_CALL_DEADLINE_SECONDS
+        for record in events(output / "probe/calls.jsonl")
+    ):
+        raise RuntimeError("Completed native call exceeded three seconds")
+    if result.get("msaa_diagnostic") or result.get("clipping_diagnostic"):
+        verify_diagnostic(result, output)
     elif result.get("full_sweep"):
         result["oracle"] = full_sweep_oracle(fixture, output)
         _require_probe_success(result["helper"]["exit_code"])
@@ -535,8 +567,8 @@ def verify_result(result: Json, output: Path, state_dir: Path, fixture: Json) ->
             )
 
 
-def main() -> int:
-    """Run one first-attempt-only case, preserving operation and cleanup errors."""
+def parse_arguments() -> tuple[argparse.Namespace, str]:
+    """Reject experiments outside their explicitly owned fixture scope."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--case",
@@ -551,10 +583,30 @@ def main() -> int:
     )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--wpf-executable", type=Path)
-    parser.add_argument("--clipping-diagnostic", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--clipping-diagnostic", action="store_true")
+    mode.add_argument("--msaa-diagnostic", action="store_true")
+    mode.add_argument("--seam-sweep", action="store_true")
     args = parser.parse_args()
     if args.clipping_diagnostic and args.case != "wpf-nested":
         parser.error("Clipping diagnostic requires the owned nested WPF fixture")
+    if args.msaa_diagnostic and not args.case.startswith("edge-"):
+        parser.error("MSAA diagnostic requires an owned Edge fixture")
+    if args.seam_sweep and not args.case.startswith("wpf-"):
+        parser.error("First seam experiment requires an owned WPF fixture")
+    experiment = "standard"
+    if args.clipping_diagnostic:
+        experiment = "clipping"
+    elif args.msaa_diagnostic:
+        experiment = "msaa"
+    elif args.seam_sweep:
+        experiment = "seam"
+    return args, experiment
+
+
+def main() -> int:
+    """Run one first-attempt-only case, preserving operation and cleanup errors."""
+    args, experiment = parse_arguments()
     args.output.mkdir(parents=True, exist_ok=False)
     result: Json = {
         "case": args.case,
@@ -564,6 +616,8 @@ def main() -> int:
         "read_only_discovery": False,
         "full_sweep": args.case.startswith("wpf-") and not args.clipping_diagnostic,
         "clipping_diagnostic": args.clipping_diagnostic,
+        "msaa_diagnostic": args.msaa_diagnostic,
+        "seam_sweep": args.seam_sweep,
         "diagnostic_completed": False,
     }
     fixture_job = None
@@ -598,7 +652,7 @@ def main() -> int:
             probe_job,
             fixture,
             args.output,
-            clipping_diagnostic=args.clipping_diagnostic,
+            experiment=experiment,
         )
         verify_result(result, args.output, state_dir, fixture)
     except Exception as error:  # noqa: BLE001 - preserve first diagnostic failure

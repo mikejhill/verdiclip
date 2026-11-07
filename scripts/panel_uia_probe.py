@@ -16,11 +16,14 @@ import sys
 import time
 from dataclasses import asdict, replace
 from pathlib import Path
+from typing import Any
 
 import mss
 import mss.tools
 from scripts.panel_clipping_diagnostic import ClippingDiagnostic, validate_fixture
 from scripts.panel_full_sweep import FullSweep
+from scripts.panel_msaa_probe import probe_msaa
+from scripts.panel_seam_candidate import SeamSweep
 from scripts.panel_uia import MAX_ANCESTORS, PanelUia, Point, ScrollState, Structure
 from scripts.panel_viewport import midpoint_percent, viewport_rect
 
@@ -367,23 +370,70 @@ class Probe:
             ):
                 raise RuntimeError("Fixture not wholly on one monitor")
             before = self.frame(source, "before")
-            if getattr(self.args, "clipping_diagnostic", False):
-                validate_fixture(fixture)
-                self.check_viewport_point(viewport)
-                ClippingDiagnostic(self, source, viewport, before, started).run()
-            elif getattr(self.args, "full_sweep", False):
-                self.check_viewport_point(viewport)
-                FullSweep(self, source, viewport, before, started).run()
-            elif not self.args.inspect_only:
-                mid = midpoint_percent(
-                    self.initial.vertical_view, viewport[3] - viewport[1]
-                )
-                for name, percent in (("top", 0.0), ("mid", mid), ("bottom", 100.0)):
-                    self.seek(percent)
-                    self.frame(source, name)
-                self.seek(self.initial.vertical)
-                self.frame(source, "restore")
-                self.report["restored"] = True
+            self.run_selected_experiment(fixture, source, before, viewport, started)
+
+    def run_selected_experiment(
+        self,
+        fixture: dict[str, Any],
+        source: mss.MSS,
+        before: ScrollFrame,
+        viewport: tuple[int, int, int, int],
+        started: float,
+    ) -> None:
+        """Keep independent experiments explicit; never fallback between them."""
+        if self.initial is None:
+            raise RuntimeError("Experiment requires acknowledged initial state")
+        if getattr(self.args, "msaa_diagnostic", False):
+            self.read_msaa(fixture, source, before)
+        elif getattr(self.args, "seam_sweep", False):
+            self.check_viewport_point(viewport)
+            SeamSweep(self, source, viewport, before, started).run()
+        elif getattr(self.args, "clipping_diagnostic", False):
+            validate_fixture(fixture)
+            self.check_viewport_point(viewport)
+            ClippingDiagnostic(self, source, viewport, before, started).run()
+        elif getattr(self.args, "full_sweep", False):
+            self.check_viewport_point(viewport)
+            FullSweep(self, source, viewport, before, started).run()
+        elif not self.args.inspect_only:
+            mid = midpoint_percent(
+                self.initial.vertical_view, viewport[3] - viewport[1]
+            )
+            for name, percent in (("top", 0.0), ("mid", mid), ("bottom", 100.0)):
+                self.seek(percent)
+                self.frame(source, name)
+            self.seek(self.initial.vertical)
+            self.frame(source, "restore")
+            self.report["restored"] = True
+
+    def read_msaa(
+        self, fixture: dict[str, Any], source: mss.MSS, before: ScrollFrame
+    ) -> None:
+        """Inspect only the owned browser; never scroll, including on failure."""
+        if fixture.get("kind") != "owned-edge" or self.identity is None:
+            raise RuntimeError("MSAA diagnostic requires the owned browser")
+        self.report["restoration_prohibited"] = True
+
+        def guard() -> None:
+            self.validate()
+
+        self.report["msaa"] = probe_msaa(
+            self.identity.rect,
+            frozenset(fixture["owned_process_ids"]),
+            int(fixture["root_hwnd"]),
+            guard,
+            self.emit,
+        )
+        after = self.frame(source, "after")
+        self.validate()
+        self.report["read_only_unchanged"] = (
+            after == before and self.last == self.initial
+        )
+        if not self.report["msaa"]["diagnostic_completed"]:
+            raise RuntimeError("MSAA diagnostic stopped; inspect first provider error")
+        if not self.report["read_only_unchanged"]:
+            raise RuntimeError("Read-only MSAA diagnostic observed changed state")
+        self.report["msaa_diagnostic_completed"] = True
 
     def check_viewport_point(self, viewport: tuple[int, int, int, int]) -> None:
         """Do not admit a scrollbar click to either guarded WPF experiment."""
@@ -415,7 +465,8 @@ class Probe:
     def restore_after_failure(self) -> None:
         """Do not overwrite first failure with a secondary restoration failure."""
         if (
-            self.uncertain
+            getattr(getattr(self, "args", None), "msaa_diagnostic", False)
+            or self.uncertain
             or self.report.get("full_sweep_deadline_exceeded")
             or self.report.get("restoration_prohibited")
             or self.initial is None
@@ -444,6 +495,8 @@ def main() -> int:
     mode.add_argument("--inspect-only", action="store_true")
     mode.add_argument("--full-sweep", action="store_true")
     mode.add_argument("--clipping-diagnostic", action="store_true")
+    mode.add_argument("--msaa-diagnostic", action="store_true")
+    mode.add_argument("--seam-sweep", action="store_true")
     parser.add_argument("--settle-discovery", action="store_true")
     return Probe(parser.parse_args()).run()
 

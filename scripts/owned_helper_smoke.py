@@ -254,6 +254,58 @@ def prove_explicit_cleanup(directory: Path) -> dict[str, object]:
         helper.close()
 
 
+def prove_unconfirmed_release(directory: Path) -> dict[str, object]:
+    """Witness watchdog cleanup without upgrading its deliberately uncertain receipt."""
+    helper = OwnedHelper()
+    witnesses: list[ProcessWitness] = []
+    try:
+        helper.start(command(("--worker", str(directory)), directory))
+        receipt = ready(helper, directory)
+        child = receipt.get("descendant_pid")
+        if type(child) is not int or child <= 0:
+            raise RuntimeError("Descendant fixture missing")
+        pids = [receipt_pid(receipt), child]
+        membership = helper.poll().remaining_pids
+        require(
+            condition=membership is not None and all(pid in membership for pid in pids),
+            message="Watchdog witnesses are not contained in the exact job",
+        )
+        witness = ProcessWitness(pids)
+        witnesses.append(witness)
+        status = helper.release_unconfirmed("watchdog proof")
+        require(
+            condition=status.closed
+            and not status.cleanup_confirmed
+            and status.termination_requested
+            and status.remaining_pids is None,
+            message="Watchdog release incorrectly claimed confirmed cleanup",
+        )
+        deadline = time.monotonic() + _DEADLINE_SECONDS
+        while not witness.all_exited() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        require(
+            condition=witness.all_exited(),
+            message="A helper survived watchdog handle release",
+        )
+        require(
+            condition=helper.poll() == status
+            and helper.close() == status
+            and helper.release_unconfirmed("late watchdog") == status,
+            message="Watchdog uncertainty did not remain latched",
+        )
+        return {
+            "passed": True,
+            "witnessed_pids": pids,
+            "processes_exited": True,
+            "cleanup": asdict(status),
+        }
+    finally:
+        helper.release_unconfirmed("Smoke fixture cleanup")
+        for witness in witnesses:
+            # Fallback cleanup runs only after the pass/fail decision above.
+            witness.close()
+
+
 def prove_startup_failures(directory: Path) -> dict[str, object]:
     """Cover both CreateProcess failure and exit before producing ready evidence."""
     absent = HelperCommand(str(directory / "absent-helper.exe"), (), str(directory))
@@ -314,10 +366,17 @@ def main() -> int:
     try:
         with tempfile.TemporaryDirectory(prefix="owned-helper-") as temporary:
             root = Path(temporary)
-            for name in ("cleanup", "startup", "parent-ready", "parent-starting"):
+            for name in (
+                "cleanup",
+                "startup",
+                "parent-ready",
+                "parent-starting",
+                "watchdog",
+            ):
                 (root / name).mkdir()
             report["explicit_cleanup"] = prove_explicit_cleanup(root / "cleanup")
             report["startup_failures"] = prove_startup_failures(root / "startup")
+            report["watchdog_release"] = prove_unconfirmed_release(root / "watchdog")
             report["parent_death"] = prove_parent_death(
                 root / "parent-ready", before_ready=False
             )

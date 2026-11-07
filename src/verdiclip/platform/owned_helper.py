@@ -262,6 +262,22 @@ class OwnedHelper:
             return self.status
         return self.poll()
 
+    def release_unconfirmed(self, reason: str) -> HelperStatus:
+        """End a cleanup watchdog without pretending that process death was proved.
+
+        Termination remains job-wide and nonblocking. Discard cached membership,
+        close remaining handles once, and permanently retain the uncertainty.
+        An already closed lifetime, including confirmed cleanup, is unchanged.
+        """
+        if self._closed:
+            return self.status
+        self._fail(reason)
+        self._cleanup_errors.append(f"Cleanup unconfirmed: {reason}")
+        self._members = None
+        self.terminate()
+        self._finish()
+        return self.status
+
     def _finish(self) -> None:
         if self._process is not None:
             process, self._process = self._process, None

@@ -147,3 +147,41 @@ and an interior reference, preserving all observations. It is additional evidenc
 not a replacement for the failing full-sweep gate. Absolute integer target
 percentages reduce accumulated rounding but cannot make every WPF offset exactly
 integral under the provider's floating-point calculation.
+
+## Seventh and eighth experiments
+
+Native run [42353365112](https://github.com/mikejhill/verdiclip/actions/runs/42353365112)
+at `9b37fd2d43326ed9ecd56baaab96f0918be50a5c` retains the strict nested
+failure and adds fixed clipping controls. Exact offset 503 still produces two
+clipped mismatch rows; all neighboring 504 percentage variants produce three.
+Offset 505 matches its interior reference exactly. This rules out accumulated
+percentage rounding as a sufficient fix. No admission threshold changed.
+
+Native run [42354040558](https://github.com/mikejhill/verdiclip/actions/runs/42354040558)
+at `14bd544c90936fd746749f0922ada3cd94d79536` adds independent full-width
+reference reconstruction: both successful WPF composites pass all 718,301 RGB
+pixels, including labels and seams. The reference uses fixture-state offsets and
+whole authored row bands from their most central raw views, never stitcher motion.
+The native helper ownership smoke also passes direct producer identity, contained
+descendant cleanup, startup failures and owner death before/after readiness.
+Ordinary CI and CodeQL pass. These are component proofs, not product integration.
+
+## Separate next experiments
+
+The strict matcher remains unchanged. A fixture-only seam candidate verifies an
+exact full-width corridor of max(24, ceil(H/4)) rows centered on the actual splice,
+searches every positive displacement up to half a viewport, and requires unique,
+observably moving evidence. No color tolerance, adaptive corridor or output
+padding is permitted. Native displacement, endpoints, restoration and both
+independent output oracles remain mandatory. This is a changed static-content
+acceptance contract: sticky or changing content outside the corridor can escape
+detection. Explicit tests retain those limitations. It is not a generic browser
+solution or a released product policy.
+
+A separate read-only MSAA experiment asks whether native accessibility exposes
+real scrollbar geometry for nested browser panels. It reads only a fixed bounded
+set of rail points derived from the settled UIA outer bounds, never fixture crop
+metadata. Ownership and input guards surround provider calls, all native and COM
+cleanup calls share the watchdog, and failure never permits restoration writes.
+Diagnostic completion requires unchanged original state/pixels; it does not mean
+that a usable scrollbar was found.

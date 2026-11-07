@@ -142,6 +142,10 @@ class FullSweep:
             raise RuntimeError("Derived full sweep extent exceeds safety limit")
         return height, scroll_range, distance
 
+    def _make_stitcher(self) -> ScrollStitcher:
+        """Keep the strict stitcher unless an explicit fixture experiment overrides."""
+        return ScrollStitcher()
+
     def run(self) -> None:
         """Sweep, verify endpoint and top, restore, then publish one composite."""
         probe = self.probe
@@ -151,7 +155,7 @@ class FullSweep:
             raise RuntimeError("Invalid initial scroll state")
         height, scroll_range, distance = self.guidance(initial.vertical_view)
         top = self.capture(0.0, "top")
-        stitcher = ScrollStitcher()
+        stitcher = self._make_stitcher()
         stitcher.append(self.content(top))
         position = 0.0
         bottom = top

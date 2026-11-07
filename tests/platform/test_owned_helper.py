@@ -475,3 +475,87 @@ def test_native_job_overflow_and_wait_error(
     kernel.wait = 0xFFFFFFFF
     with pytest.raises(OSError, match="fake native error"):
         api.exit_code(20)
+
+
+@pytest.mark.parametrize(
+    ("exit_code", "members"),
+    [(None, (101,)), (0, (102,)), (None, ())],
+)
+def test_watchdog_releases_pending_or_stale_membership(
+    exit_code: int | None, members: tuple[int, ...]
+) -> None:
+    """A stalled process or stale empty membership cannot retain handles forever."""
+    helper, api = running()
+    helper.verify_ready(101, _EXE)
+    api.code, api.live = exit_code, members
+    pending = helper.close()
+    assert not pending.closed
+    assert not pending.cleanup_confirmed
+    status = helper.release_unconfirmed("Cleanup watchdog expired")
+    assert status.closed
+    assert status.termination_requested
+    assert not status.cleanup_confirmed
+    assert status.remaining_pids is None
+    assert status.failure == "Cleanup watchdog expired"
+    assert status.cleanup_errors == ("Cleanup unconfirmed: Cleanup watchdog expired",)
+    assert api.closed == [21, 20, 10]
+    assert api.calls.count("terminate") == 1
+    calls = list(api.calls)
+    assert helper.release_unconfirmed("Another deadline") == status
+    assert helper.poll() == status
+    assert helper.close() == status
+    assert helper.terminate() == status
+    assert helper.verify_ready(101, _EXE) == status
+    assert api.calls == calls
+
+
+@pytest.mark.parametrize("operation", ["terminate", "close_20", "close_10"])
+def test_watchdog_retains_native_release_errors(operation: str) -> None:
+    """Failed kill or close calls remain visible and are never retried by polling."""
+    helper, api = running()
+    api.fail.add(operation)
+    status = helper.release_unconfirmed("Cleanup deadline")
+    assert status.closed
+    assert not status.cleanup_confirmed
+    assert status.termination_requested
+    assert status.failure == "Cleanup deadline"
+    assert len(status.cleanup_errors) == 2
+    assert sorted(api.closed) == [10, 20, 21]
+    calls = list(api.calls)
+    assert helper.release_unconfirmed("Again") == status
+    assert helper.poll() == status
+    assert helper.close() == status
+    assert api.calls == calls
+
+
+def test_watchdog_does_not_downgrade_confirmed_cleanup() -> None:
+    """A delayed watchdog callback cannot replace an already confirmed outcome."""
+    helper, api = running()
+    helper.verify_ready(101, _EXE)
+    api.code, api.live = 0, ()
+    status = helper.poll()
+    assert status.cleanup_confirmed
+    assert status.closed
+    calls = list(api.calls)
+    assert helper.release_unconfirmed("Late timer") == status
+    assert api.calls == calls
+
+
+def test_watchdog_preserves_earlier_failure_and_handles_no_launch() -> None:
+    """Retain the original failure while recording the later cleanup uncertainty."""
+    helper, api = running()
+    helper.verify_ready(999, _EXE)
+    earlier = helper.status.failure
+    status = helper.release_unconfirmed("Cleanup deadline")
+    assert status.failure == earlier
+    assert status.cleanup_errors == ("Cleanup unconfirmed: Cleanup deadline",)
+    assert api.calls.count("terminate") == 1
+    untouched = FakeApi()
+    idle = OwnedHelper(untouched)
+    result = idle.release_unconfirmed("Startup deadline")
+    assert result.closed
+    assert not result.cleanup_confirmed
+    assert idle.close() == result
+    assert untouched.calls == []
+    with pytest.raises(RuntimeError, match="restarted"):
+        idle.start(_COMMAND)
