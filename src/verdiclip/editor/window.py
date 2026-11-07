@@ -758,13 +758,17 @@ class EditorWindow(QMainWindow):
 
     def _build_tab_actions(self) -> None:
         """Build window-scoped tab commands separately from document tools."""
-        self._add_action("next_tab", "Next tab", "Ctrl+Tab", lambda: self._cycle_tab(1))
-        self._add_action(
-            "previous_tab",
-            "Previous tab",
-            "Ctrl+Shift+Tab",
-            lambda: self._cycle_tab(-1),
-        )
+        for name, label, keys, step in (
+            ("next_tab", "Next tab", ("Ctrl+Tab", "Ctrl+PgDown"), 1),
+            ("previous_tab", "Previous tab", ("Ctrl+Shift+Tab", "Ctrl+PgUp"), -1),
+        ):
+            action = self._add_action(
+                name, label, keys[0], lambda direction=step: self._cycle_tab(direction)
+            )
+            action.setShortcuts([QKeySequence(key) for key in keys])
+            native = QKeySequence.SequenceFormat.NativeText
+            shortcuts = " / ".join(key.toString(native) for key in action.shortcuts())
+            action.setToolTip(f"{label} ({shortcuts})")
         self._add_action(
             "detach_tab",
             "Move tab to new window",
