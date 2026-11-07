@@ -447,7 +447,8 @@ def test_native_capture_input_ownership(
         assert run.errors == [], (
             f"{scenario}/{outcome}: {run.errors}; frames={source.frames}"
         )
-        assert source.frames == [{"popup": "none", "gui_thread": True}]
+        expected_popup = "QMenu" if scenario in {"tray", "tray-exec"} else "none"
+        assert source.frames == [{"popup": expected_popup, "gui_thread": True}]
         assert QApplication.activePopupWidget() is None
     finally:
         run.save_and_close(tmp_path, scenario, source)

@@ -226,7 +226,7 @@ class _NativeHotkeyFilter(QAbstractNativeEventFilter):
     def nativeEventFilter(
         self, event_type: QByteArray | bytes | bytearray | memoryview, message: int
     ) -> tuple[bool, int]:
-        """Consume recognized Windows generic hotkey messages."""
+        """Consume recognized window and thread hotkey messages."""
         event_bytes = (
             event_type.data()
             if isinstance(event_type, QByteArray)
@@ -234,7 +234,12 @@ class _NativeHotkeyFilter(QAbstractNativeEventFilter):
         )
         # Qt passes a shiboken VoidPtr, whose truth test raises; compare as int
         address = int(message)
-        if event_bytes != b"windows_generic_MSG" or address == 0:
+        # Qt can expose registered hotkeys through either its generic message
+        # loop or its dispatcher window. Accept both native event categories.
+        if (
+            event_bytes not in {b"windows_generic_MSG", b"windows_dispatcher_MSG"}
+            or address == 0
+        ):
             return False, 0
         native_message = ctypes.wintypes.MSG.from_address(address)
         if native_message.message != _WM_HOTKEY:
