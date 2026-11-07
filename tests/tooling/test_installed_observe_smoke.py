@@ -1318,6 +1318,11 @@ def test_outer_preparation_failure_never_publishes_case_start(  # noqa: PLR0915 
     monkeypatch.setattr(smoke.uuid, "uuid4", lambda: SimpleNamespace(hex="a" * 32))
     cleanup = Mock(return_value={"confirmed": True, "forced": False, "errors": []})
     monkeypatch.setattr(smoke, "release_owner", cleanup)
+    monkeypatch.setattr(
+        smoke,
+        "diagnose_topology",
+        Mock(side_effect=RuntimeError("diagnostic unavailable")),
+    )
     assert smoke.outer(args) == 1
     result = original_read(args.output / "receipt.json")
     assert result["passed"] is False
@@ -1335,8 +1340,15 @@ def test_outer_preparation_failure_never_publishes_case_start(  # noqa: PLR0915 
             "executor_pid": 654,
             "gui_launch_pid": 654,
             "gui_snapshot": {"exit_code": None, "members": [654, 765]},
+            "gui_snapshot_started": 1.0,
+            "gui_snapshot_finished": 1.0,
         }
         fixture.snapshot.assert_not_called()
+        assert (
+            result["first_failure"]
+            == "RuntimeError('Prepared executor no longer solely owned/alive')"
+        )
+        assert result["topology_error"] == "RuntimeError('diagnostic unavailable')"
     if failure == "wrong-job":
         assert result["preparation_ownership"]["fixture_launch_pid"] == 321
         assert result["preparation_ownership"]["fixture_snapshot"] == {
@@ -1403,3 +1415,241 @@ def test_preparation_executor_pid_is_required(authored: Json) -> None:
     del value["executor_pid"]
     with pytest.raises(ValueError, match="fields"):
         smoke.preparation_receipt(value, "a" * 32, 321, 0.0, 3.0)
+
+
+@pytest.mark.parametrize(
+    "pids", [[], list(range(1, 10)), [1, 1], [True], [1.0], [0], [-1], [2**32], "1"]
+)
+def test_topology_pid_scope_is_strictly_bounded(pids: object) -> None:
+    """Only one to eight unique positive uint32 targets may be inspected."""
+    with pytest.raises(ValueError, match="PID"):
+        smoke.topology_pids(pids)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("schema", True),
+        ("session", "other"),
+        ("deadline", 11.0),
+        ("original_snapshot_time", float("nan")),
+        ("original_snapshot_time", -1.0),
+        ("original_snapshot_time", 3.0),
+    ],
+)
+def test_topology_request_never_changes_scope_or_budget(
+    key: str, value: object
+) -> None:
+    """Diagnostics cannot add time or switch sessions after the original failure."""
+    request = {
+        "schema": 1,
+        "session": "a" * 32,
+        "pids": [1, 2],
+        "original_snapshot_time": 1.0,
+        "deadline": 10.0,
+    }
+    request[key] = value
+    with pytest.raises(ValueError, match=r".+"):
+        smoke.topology_request(request, "a" * 32, 10.0, 2.0)
+
+
+@pytest.mark.parametrize(
+    "failure", [None, "missing-ack", "late-ack", "wrong-session", "collect-error"]
+)
+def test_child_diagnostic_keeps_pins_until_membership_then_releases(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failure: str | None
+) -> None:
+    """Actual child handshake always releases pins, without starting capture."""
+    clock = [2.0]
+    monkeypatch.setattr(smoke.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(smoke.time, "sleep", lambda _: clock.__setitem__(0, 10.0))
+    request = {
+        "schema": 1,
+        "session": "a" * 32,
+        "pids": [1, 2],
+        "original_snapshot_time": 1.0,
+        "deadline": 10.0,
+    }
+    smoke.write(tmp_path / "topology-request.json", request)
+    pins = Mock()
+    pins.close.return_value = []
+    pins.collect.return_value = {
+        "processes": [{"requested_pid": 1}, {"requested_pid": 2}]
+    }
+    pins.finish.return_value = {
+        "processes": [{"requested_pid": 1}, {"requested_pid": 2}],
+        "cleanup_errors": [],
+    }
+    if failure == "collect-error":
+        pins.collect.side_effect = OSError("inspection failed")
+    module = SimpleNamespace(PinnedProcesses=Mock(return_value=pins))
+    monkeypatch.setattr(smoke, "topology_module", lambda: module)
+    original = smoke.write_handshake
+
+    def publish(path: Path, value: Json) -> None:
+        original(path, value)
+        if path.name != "topology-pinned.json":
+            return
+        pins.close.assert_not_called()
+        pins.finish.assert_not_called()
+        if failure == "missing-ack":
+            return
+        original(
+            tmp_path / "topology-membership.json",
+            {
+                "schema": 1,
+                "session": "other" if failure == "wrong-session" else "a" * 32,
+                "pids": [1, 2],
+                "membership": {
+                    "started": 2.0,
+                    "finished": 2.0,
+                    "snapshot": {"exit_code": None, "members": [1, 2]},
+                },
+            },
+        )
+        if failure == "late-ack":
+            clock[0] = 10.0
+
+    monkeypatch.setattr(smoke, "write_handshake", publish)
+    journal = smoke.Journal(tmp_path / "calls.jsonl", 10.0)
+    try:
+        if failure is None:
+            smoke.collect_topology(tmp_path, "a" * 32, journal)
+            pins.finish.assert_called_once_with()
+            assert (tmp_path / "topology-result.json").exists()
+        else:
+            with pytest.raises((ValueError, RuntimeError, OSError), match=r".+"):
+                smoke.collect_topology(tmp_path, "a" * 32, journal)
+            pins.finish.assert_not_called()
+            assert not (tmp_path / "topology-result.json").exists()
+        pins.close.assert_called_once_with()
+        assert not (tmp_path / "case-start.json").exists()
+    finally:
+        journal.stream.close()
+
+
+@pytest.mark.parametrize(
+    "failure", [None, "wrong-target", "late-snapshot", "late-final", "late-call"]
+)
+def test_outer_diagnostic_has_one_temporal_membership_snapshot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failure: str | None
+) -> None:
+    """Pins are reported before a single later snapshot, never a case admission."""
+    clock = [2.0]
+    monkeypatch.setattr(smoke.time, "monotonic", lambda: clock[0])
+    log(tmp_path / "calls.jsonl", [event("process", 0.0)])
+    gui = Mock()
+
+    def snapshot() -> Json:
+        if failure == "late-snapshot":
+            clock[0] = 10.0
+        return {"exit_code": None, "members": [1, 2]}
+
+    gui.snapshot.side_effect = snapshot
+    original = smoke.write_handshake
+
+    def publish(path: Path, value: Json) -> None:
+        original(path, value)
+        if path.name == "topology-request.json":
+            original(
+                tmp_path / "topology-pinned.json",
+                {
+                    "schema": 1,
+                    "session": "a" * 32,
+                    "pids": [1, 2],
+                    "collected": {
+                        "processes": [
+                            {"requested_pid": 1},
+                            {"requested_pid": 3 if failure == "wrong-target" else 2},
+                        ]
+                    },
+                },
+            )
+        elif path.name == "topology-membership.json":
+            original(
+                tmp_path / "topology-result.json",
+                {
+                    "schema": 1,
+                    "session": "a" * 32,
+                    "pids": [1, 2],
+                    "final": {
+                        "processes": [{"requested_pid": 1}, {"requested_pid": 2}],
+                        "cleanup_errors": [],
+                    },
+                },
+            )
+            if failure == "late-final":
+                clock[0] = 10.0
+            if failure == "late-call":
+                clock[0] = 4.0
+                log(
+                    tmp_path / "calls.jsonl",
+                    [
+                        event("process", 0.0),
+                        event("call_start", 1.0, "topology.CloseHandle.1"),
+                        event("call_end", 4.0, "topology.CloseHandle.1"),
+                    ],
+                )
+
+    monkeypatch.setattr(smoke, "write_handshake", publish)
+    status = {"exit_code": None, "members": [1, 2]}
+    if failure is None:
+        result = smoke.diagnose_topology(
+            tmp_path, "a" * 32, status, 1.0, gui, 0.0, 10.0
+        )
+        assert result["original_snapshot"] == status
+        assert result["later_membership"]["snapshot"] == status
+        assert result["final"]["cleanup_errors"] == []
+    else:
+        with pytest.raises((ValueError, RuntimeError), match=r".+"):
+            smoke.diagnose_topology(tmp_path, "a" * 32, status, 1.0, gui, 0.0, 10.0)
+    assert gui.snapshot.call_count == (0 if failure == "wrong-target" else 1)
+    assert not (tmp_path / "case-start.json").exists()
+
+
+def test_diagnostic_call_errors_never_change_normal_watchdog_admission(
+    tmp_path: Path,
+) -> None:
+    """Only paired topology errors are evidence during an already-failed case."""
+    path = tmp_path / "calls.jsonl"
+    log(
+        path,
+        [
+            event("process", 0),
+            event("call_start", 1, "topology.open"),
+            event("call_error", 1.1, "topology.open"),
+        ],
+    )
+    smoke.validate_calls(
+        path, 0.0, lambda: 2.0, finished=False, diagnostic=True, deadline=10.0
+    )
+    with pytest.raises(RuntimeError, match="failure"):
+        smoke.validate_calls(path, 0.0, lambda: 2.0, finished=False, deadline=10.0)
+    log(
+        path,
+        [
+            event("process", 0),
+            event("call_start", 1, "reference.pin"),
+            event("call_error", 1.1, "reference.pin"),
+        ],
+    )
+    with pytest.raises(RuntimeError, match="failure"):
+        smoke.validate_calls(
+            path, 0.0, lambda: 2.0, finished=False, diagnostic=True, deadline=10.0
+        )
+
+
+@pytest.mark.parametrize(
+    "records",
+    [
+        [],
+        [{"requested_pid": True}],
+        [{"requested_pid": 1}, {"requested_pid": 1}],
+        [{"requested_pid": 3}],
+        [None],
+    ],
+)
+def test_topology_records_cannot_add_or_alias_requested_pids(records: object) -> None:
+    """Boolean aliases, duplicates and unrelated records do not enter diagnostics."""
+    with pytest.raises(ValueError, match=r".+"):
+        smoke.topology_targets({"processes": records}, (1, 2))

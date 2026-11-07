@@ -578,3 +578,16 @@ it cannot turn forced retirement or a prior failure into success. Preparation
 start, ready, case start and both deadlines are retained separately. There are no
 retries, clock resets, deadline extensions or production behavior changes. Native
 qualification of this revised experiment remains pending until an exact-head run.
+
+A rejected non-singleton executor tree may receive one diagnostic request for at
+most eight exact PIDs from its original owned-job snapshot. The original failure
+and membership predicate remain unchanged. Inside the supervised executor,
+query-limited process handles remain pinned across a later outer-owned membership
+snapshot. Kernel image, creation and liveness evidence is collected only for those
+PIDs. A single bounded documented Toolhelp scan copies only requested PID/parent
+PID fields; unrelated process records are never retained. Parent identifiers are
+snapshot metadata, not ancestry authorization. The original and later membership
+observations are explicitly temporal evidence, not retroactive proof about the
+original handles. No owning job handle is shared. All work and handshakes remain
+within the original preparation and native-call deadlines; errors or missing
+metadata cannot admit capture or replace the original singleton failure.

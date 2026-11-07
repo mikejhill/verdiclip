@@ -596,6 +596,7 @@ jobs:
           Copy-Item scripts/installed_runtime_smoke.py "$proof\installed_runtime_smoke.py"
           Copy-Item scripts/installed_channel_smoke.py "$proof\installed_channel_smoke.py"
           Copy-Item scripts/installed_observe_smoke.py "$proof\installed_observe_smoke.py"
+          Copy-Item scripts/observe_process_diagnostics.py "$proof\observe_process_diagnostics.py"
           Copy-Item .tmp/observe-fixture "$proof\fixture" -Recurse
           $outside = New-Item -ItemType Directory -Path "$proof\outside checkout"
           $target = Join-Path $env:GITHUB_WORKSPACE 'receipts/installed-observe'
@@ -616,6 +617,7 @@ jobs:
           name: installed-wheel-owned-observe
           path: |
             scripts/installed_observe_smoke.py
+            scripts/observe_process_diagnostics.py
             scripts/installed_channel_smoke.py
             scripts/installed_runtime_smoke.py
             scripts/panel_fixture/Program.cs

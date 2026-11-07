@@ -42,6 +42,7 @@ RECT_FIELDS = 4
 NATIVE_DPI = 96
 FIXED_VERTICAL = 119
 MAX_STATES = 256
+MAX_TOPOLOGY_PIDS = 8
 MARKER_COUNT = 4
 RGB_CHANNELS = 3
 MAX_CHANNEL = 255
@@ -90,6 +91,225 @@ def support() -> ModuleType:
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def topology_module() -> ModuleType:
+    """Load only the fixed copied owned-process diagnostic sidecar."""
+    path = Path(__file__).with_name("observe_process_diagnostics.py")
+    spec = importlib.util.spec_from_file_location("owned_observe_topology", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Copied topology diagnostic is missing")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def topology_pids(value: object) -> tuple[int, ...]:
+    """Never inspect more than eight distinct positive uint32 process IDs."""
+    if (
+        not isinstance(value, list)
+        or not 1 <= len(value) <= MAX_TOPOLOGY_PIDS
+        or any(type(pid) is not int or not 0 < pid < 2**32 for pid in value)
+        or len(set(value)) != len(value)
+    ):
+        raise ValueError("Invalid bounded topology PID list")
+    return tuple(int(pid) for pid in value)
+
+
+def topology_request(
+    value: Json, session: str, deadline: float, now: float
+) -> tuple[int, ...]:
+    """An immutable diagnostic request cannot extend the original preparation."""
+    if set(value) != {
+        "schema",
+        "session",
+        "pids",
+        "original_snapshot_time",
+        "deadline",
+    }:
+        raise ValueError("Topology request fields differ")
+    stamp = value["original_snapshot_time"]
+    if (
+        type(value["schema"]) is not int
+        or value["schema"] != 1
+        or value["session"] != session
+        or value["deadline"] != deadline
+        or type(stamp) not in (int, float)
+        or not math.isfinite(stamp)
+        or not deadline - PREPARATION_SECONDS <= stamp <= now < deadline
+    ):
+        raise ValueError("Topology request identity/timing invalid")
+    return topology_pids(value["pids"])
+
+
+def topology_envelope(
+    value: Json, session: str, pids: tuple[int, ...], field: str
+) -> Json:
+    """Match one fixed diagnostic response to exactly the requested targets."""
+    if (
+        set(value) != {"schema", "session", "pids", field}
+        or type(value["schema"]) is not int
+        or value["schema"] != 1
+        or value["session"] != session
+        or topology_pids(value["pids"]) != pids
+        or not isinstance(value[field], dict)
+    ):
+        raise ValueError("Topology response identity/schema differs")
+    return value[field]
+
+
+def topology_targets(value: Json, pids: tuple[int, ...]) -> None:
+    """No missing, repeated or unrequested process record enters evidence."""
+    records = value.get("processes")
+    if not isinstance(records, list) or any(not isinstance(r, dict) for r in records):
+        raise ValueError("Invalid topology process records")
+    reported = topology_pids([r.get("requested_pid") for r in records])
+    if set(reported) != set(pids):
+        raise ValueError("Pinned topology targets differ")
+
+
+def collect_topology(output: Path, session: str, journal: Journal) -> None:
+    """Metadata-only evidence; pins survive the later outer membership snapshot."""
+    request = read(output / "topology-request.json")
+    pids = topology_request(request, session, journal.deadline, time.monotonic())
+    module = journal.call("topology.import", topology_module)
+    pins = module.PinnedProcesses(pids, journal.deadline, journal)
+    try:
+        collected = pins.collect()
+        journal.check()
+        write_handshake(
+            output / "topology-pinned.json",
+            {
+                "schema": 1,
+                "session": session,
+                "pids": list(pids),
+                "collected": collected,
+            },
+        )
+        ack_path = output / "topology-membership.json"
+        while not ack_path.exists():
+            journal.check()
+            time.sleep(0.01)
+        ack = topology_envelope(read(ack_path), session, pids, "membership")
+        begin, end = ack["started"], ack["finished"]
+        now = time.monotonic()
+        if (
+            any(
+                type(t) not in (int, float) or not math.isfinite(t)
+                for t in (begin, end)
+            )
+            or not request["original_snapshot_time"]
+            <= begin
+            <= end
+            <= now
+            < journal.deadline
+        ):
+            raise ValueError("Topology membership acknowledgment timing invalid")
+        journal.check()
+        final = pins.finish()
+        journal.check()
+        write_handshake(
+            output / "topology-result.json",
+            {"schema": 1, "session": session, "pids": list(pids), "final": final},
+        )
+    finally:
+        primary = sys.exception()
+        try:
+            cleanup_errors = pins.close()
+            if cleanup_errors:
+                write_handshake(
+                    output / "topology-cleanup.json",
+                    {
+                        "schema": 1,
+                        "session": session,
+                        "pids": list(pids),
+                        "cleanup_errors": cleanup_errors,
+                    },
+                )
+        except Exception as cleanup_error:
+            if primary is None:
+                raise
+            primary.add_note(f"Topology cleanup evidence failed: {cleanup_error!r}")
+
+
+def diagnose_topology(  # noqa: PLR0913, PLR0917 - explicit fixed diagnostic scope
+    output: Path,
+    session: str,
+    status: Json,
+    snapshot_time: float,
+    gui: Owner,
+    started: float,
+    deadline: float,
+) -> Json:
+    """Observe the rejected tree without changing the original failure/admission."""
+    pids = topology_pids(status["members"])
+    request = {
+        "schema": 1,
+        "session": session,
+        "pids": list(pids),
+        "original_snapshot_time": snapshot_time,
+        "deadline": deadline,
+    }
+    topology_request(request, session, deadline, time.monotonic())
+    write_handshake(output / "topology-request.json", request)
+    result: Json = {"request": request, "original_snapshot": status}
+    acknowledged = False
+    while time.monotonic() < deadline:
+        validate_calls(
+            output / "calls.jsonl",
+            started,
+            time.monotonic,
+            finished=False,
+            deadline=deadline,
+            diagnostic=True,
+        )
+        pinned_path = output / "topology-pinned.json"
+        if not acknowledged and pinned_path.exists():
+            collected = topology_envelope(read(pinned_path), session, pids, "collected")
+            topology_targets(collected, pids)
+            result["collected"] = collected
+            if time.monotonic() >= deadline:
+                raise RuntimeError("Late topology pin evidence")
+            begin = time.monotonic()
+            later = gui.snapshot()
+            end = time.monotonic()
+            result["later_membership"] = {
+                "started": begin,
+                "finished": end,
+                "snapshot": later,
+            }
+            if end >= deadline:
+                raise RuntimeError("Late topology membership snapshot")
+            write_handshake(
+                output / "topology-membership.json",
+                {
+                    "schema": 1,
+                    "session": session,
+                    "pids": list(pids),
+                    "membership": result["later_membership"],
+                },
+            )
+            acknowledged = True
+        final_path = output / "topology-result.json"
+        if acknowledged and final_path.exists():
+            result["final"] = topology_envelope(
+                read(final_path), session, pids, "final"
+            )
+            topology_targets(result["final"], pids)
+            validate_calls(
+                output / "calls.jsonl",
+                started,
+                time.monotonic,
+                finished=False,
+                deadline=deadline,
+                diagnostic=True,
+            )
+            if time.monotonic() >= deadline:
+                raise RuntimeError("Late topology final evidence")
+            return result
+        time.sleep(0.01)
+    raise RuntimeError("Topology diagnosis exceeded original preparation deadline")
 
 
 def rect(value: object) -> tuple[int, int, int, int]:
@@ -693,7 +913,14 @@ def prepare_case(  # noqa: PLR0913, PLR0917 - explicit immutable handshake input
     handoff_path = output / "case-start.json"
     while not handoff_path.exists():
         journal.check()
+        if (output / "topology-request.json").exists():
+            collect_topology(output, session, journal)
+            raise RuntimeError(
+                "Topology recorded; original ownership rejection remains"
+            )
         time.sleep(0.01)
+    if (output / "topology-request.json").exists():
+        raise RuntimeError("Conflicting capture and diagnostic requests")
     handoff = read(handoff_path)
     deadline = case_handoff(handoff, session, ready_time, started, time.monotonic())
     journal.deadline = deadline  # Exactly one transition, never a reset.
@@ -909,13 +1136,14 @@ def child(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - fixed owned
     return 0 if code == 0 and result.get("passed") is True else 1
 
 
-def validate_calls(  # noqa: C901, PLR0912 - explicit watchdog event parser
+def validate_calls(  # noqa: C901, PLR0912, PLR0913 - explicit watchdog event parser
     path: Path,
     started: float,
     clock: Callable[[], float],
     *,
     finished: bool,
     deadline: float | None = None,
+    diagnostic: bool = False,
 ) -> None:
     """Externally reject missing startup, blocked calls and late completed calls."""
     until = started + CASE_SECONDS if deadline is None else deadline
@@ -960,7 +1188,14 @@ def validate_calls(  # noqa: C901, PLR0912 - explicit watchdog event parser
         elif record["event"] == "call_start" and pending is None:
             pending = record
         elif (
-            record["event"] == "call_end"
+            (
+                record["event"] == "call_end"
+                or (
+                    diagnostic
+                    and record["event"] == "call_error"
+                    and str(record["name"]).startswith("topology.")
+                )
+            )
             and pending
             and pending["name"] == record["name"]
         ):
@@ -1090,7 +1325,9 @@ def outer(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912, PLR0915 - ow
             )
         )
         while time.monotonic() < deadline:
+            snapshot_started = time.monotonic()
             status = gui.snapshot()
+            snapshot_finished = time.monotonic()
             validate_calls(
                 executor / "calls.jsonl",
                 started,
@@ -1117,9 +1354,27 @@ def outer(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912, PLR0915 - ow
                     "executor_pid": prepared["executor_pid"],
                     "gui_launch_pid": None if gui.process is None else gui.process.pid,
                     "gui_snapshot": status,
+                    "gui_snapshot_started": snapshot_started,
+                    "gui_snapshot_finished": snapshot_finished,
                 }
                 if gui.process is None or status["members"] != [gui.process.pid]:
-                    raise RuntimeError("Prepared executor no longer solely owned/alive")  # noqa: TRY301 - first failure
+                    original = RuntimeError(
+                        "Prepared executor no longer solely owned/alive"
+                    )
+                    result["first_failure"] = repr(original)
+                    try:
+                        result["topology"] = diagnose_topology(
+                            executor,
+                            session,
+                            status,
+                            snapshot_finished,
+                            gui,
+                            started,
+                            deadline,
+                        )
+                    except Exception as diagnostic_error:  # noqa: BLE001 - preserve original rejection
+                        result["topology_error"] = repr(diagnostic_error)[:2048]
+                    raise original  # noqa: TRY301 - unchanged primary ownership rejection
                 fixture_state = fixture.snapshot()
                 result["preparation_ownership"].update(
                     fixture_launch_pid=fixture.process.pid,
