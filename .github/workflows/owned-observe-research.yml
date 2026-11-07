@@ -19,8 +19,8 @@ jobs:
     timeout-minutes: 7
     env:
       PYTHONUTF8: "1"
-      QUALIFICATION_HEAD: "92ef74a059057fbd06b7158fe328ba6e6c33ff43"
-      QUALIFICATION_TREE: "9c029567b45c5b77bd57a6a6f46c5da4b9387bc4"
+      QUALIFICATION_HEAD: "2d0cb4be43a51dbee038f2d65f7347ba5bb19231"
+      QUALIFICATION_TREE: "fd934595b829e7d148a56cdd896cc0d2cb423e96"
       WORKFLOW_HEAD: ${{ github.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -29,7 +29,7 @@ jobs:
           GIT_CONFIG_KEY_0: core.autocrlf
           GIT_CONFIG_VALUE_0: "false"
         with:
-          ref: 92ef74a059057fbd06b7158fe328ba6e6c33ff43
+          ref: 2d0cb4be43a51dbee038f2d65f7347ba5bb19231
           persist-credentials: false
       - name: Assert fixed source and retain separate workflow identity
         timeout-minutes: 1
