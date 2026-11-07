@@ -9,13 +9,16 @@ Run under an external process watchdog. No QThread termination or GUI waits.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
+import os
 import sys
 import tempfile
 import threading
 import time
 import traceback
 from collections.abc import Callable
+from ctypes import wintypes
 from pathlib import Path
 from typing import TYPE_CHECKING, cast, override
 
@@ -285,6 +288,31 @@ def terminal_receipt(
     return result
 
 
+def proof_identity() -> dict[str, object]:
+    """Record actual GUI process identity, not just the outer venv launcher PID."""
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.GetCurrentProcess.argtypes = []
+    kernel.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.LPWSTR,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    kernel.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    size = wintypes.DWORD(4096)
+    image = ctypes.create_unicode_buffer(size.value)
+    if not kernel.QueryFullProcessImageNameW(
+        kernel.GetCurrentProcess(), 0, image, ctypes.byref(size)
+    ):
+        raise OSError("Could not inspect proof process kernel image")
+    return {
+        "proof_pid": os.getpid(),
+        "proof_executable": sys.executable,
+        "proof_kernel_image": image.value,
+    }
+
+
 def run(output: Path) -> int:  # noqa: C901, PLR0915 - isolated Qt proof wiring
     """Create a visible GUI and retain workers until terminal plus thread.finished."""
     from PySide6.QtCore import (  # noqa: PLC0415
@@ -455,6 +483,7 @@ def run(output: Path) -> int:  # noqa: C901, PLR0915 - isolated Qt proof wiring
         json.dumps(
             {
                 "passed": passed,
+                **proof_identity(),
                 "cases": results,
                 "limitations": "Synthetic stalls; not interruptible native launch. "
                 "An external watchdog is required for genuinely stuck calls.",

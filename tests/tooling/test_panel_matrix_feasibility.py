@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from scripts import panel_feasibility
 from scripts import panel_matrix_feasibility as matrix
 from scripts.panel_fixture_matrix import MatrixCase
 from scripts.panel_fixture_server import FixtureServer
@@ -226,3 +227,38 @@ def test_border_observation_ownership_brackets_grab(
     index = calls.index("grab")
     assert calls[index - 2 : index] == ["guard", "foreground"]
     assert calls[index + 1 : index + 3] == ["guard", "foreground"]
+
+
+def test_matrix_calls_real_browser_experiment_routing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exercise actual run_probe allowlist; fake only native execution/verification."""
+    launched: list[list[str]] = []
+
+    class Job:
+        def start(self, arguments: list[str], _directory: Path) -> tuple[int, int]:
+            launched.append(arguments)
+            return 101, 202
+
+        def wait(self, _handle: int, _milliseconds: int) -> int:
+            return 0
+
+    # No replacement of run_probe/probe_arguments: the old caller typo must fail
+    # at the real fixed allowlist before any simulated helper launch.
+    assert matrix.run_probe is panel_feasibility.run_probe
+    monkeypatch.setattr(
+        matrix, "verify_raw", lambda _output, _initial: {"verified": True}
+    )
+    receipt: dict[str, Any] = {
+        "acquisition": {"kind": "owned-edge", "click": [50, 60], "pid": 123},
+        "oracle_only": {"initial": {}},
+    }
+    matrix.collect_session(
+        MatrixCase("conversation"), cast("OwnedJob", Job()), tmp_path, receipt
+    )
+    assert len(launched) == 1
+    assert "--browser-sequence" in launched[0]
+    assert "--settle-discovery" in launched[0]
+    assert "--full-sweep" not in launched[0]
+    assert receipt["helper"]["exit_code"] == 0
+    assert receipt["raw_diagnostic"] == {"verified": True}

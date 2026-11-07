@@ -324,3 +324,22 @@ calls, cleanup errors and final deadlines are checked before accepting process
 exit. Collection success is explicitly not raster-comparison or product success;
 fractional terminal phases cannot later be rounded away to manufacture a match.
 Existing colored fixtures and ordinary capture remain unchanged.
+
+## Fourteenth experiment
+
+Native run [42359107328](https://github.com/mikejhill/verdiclip/actions/runs/42359107328)
+at `465d420fd79f8d52d07f62325bf5a66d2c4084ef` completes all five inner
+lifecycle cases, including GUI paint/heartbeat witnesses during synthetic stalls,
+expected cancellation and all thread exits. The outer supervisor still fails:
+one owned process remains immediately after the launcher exits. Its identity
+was not recorded, so console teardown is not an established explanation. The
+next supervisor retains read-only same-job kernel identity and exit witnesses,
+and permits only natural empty-job evidence within the original 45-second total
+deadline. Forced cleanup never qualifies success.
+
+Both realistic matrix cases stop before helper launch because the caller used
+the command-line flag spelling instead of the existing internal experiment token.
+The narrow correction uses the unchanged internal allowlist; a regression now
+executes real routing rather than mocking the router. No watchdog or retry changes
+accompany it. Ordinary CI, CodeQL and both original browser raw sequences pass.
+The new matrix references and complete outer lifecycle cleanup remain unqualified.

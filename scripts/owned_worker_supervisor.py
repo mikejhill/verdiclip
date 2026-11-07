@@ -1,15 +1,18 @@
 """Bounded external owner of the inert GUI proof, not product orchestration.
 
-Only this owned job is retired. A timeout, nonzero exit or surviving descendant
+Only this owned job is retired. A timeout, nonzero exit or descendant surviving
+the original deadline
 always fails qualification, even if forced cleanup subsequently succeeds.
 """
 
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import sys
 import time
+from ctypes import wintypes
 from pathlib import Path
 
 from scripts.owned_worker_smoke import CASES
@@ -17,6 +20,148 @@ from scripts.panel_owned_job import OwnedJob
 
 TIMEOUT_SECONDS = 45.0
 MAX_RECEIPT_BYTES = 131_072
+
+
+MAX_RESIDUALS = 256
+IMAGE_CHARS = 4096
+DRAIN_POLL_SECONDS = 0.01
+WAIT_TIMEOUT = 258
+
+
+class ResidualObserver:
+    """Read-only kernel witnesses pinned to verified members of one owned job."""
+
+    def __init__(self, job: OwnedJob) -> None:
+        self.job = job
+        self.api = job.api
+        self.handles: dict[int, int] = {}
+        for name, arguments, result in (
+            (
+                "OpenProcess",
+                [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD],
+                wintypes.HANDLE,
+            ),
+            (
+                "IsProcessInJob",
+                [wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL)],
+                wintypes.BOOL,
+            ),
+            (
+                "QueryFullProcessImageNameW",
+                [
+                    wintypes.HANDLE,
+                    wintypes.DWORD,
+                    wintypes.LPWSTR,
+                    ctypes.POINTER(wintypes.DWORD),
+                ],
+                wintypes.BOOL,
+            ),
+        ):
+            function = getattr(self.api, name)
+            function.argtypes, function.restype = arguments, result
+
+    def open(self, pid: int) -> None:
+        """Pin identity, then reject PID reuse before reading image or exit state."""
+        if pid in self.handles:
+            return
+        if len(self.handles) >= MAX_RESIDUALS:
+            raise RuntimeError("Residual witness bound exceeded")
+        handle = self.api.OpenProcess(0x00101000, 0, pid)  # QUERY_LIMITED + SYNCHRONIZE
+        if not handle:
+            raise OSError("Could not open residual process read-only")
+        self.handles[pid] = handle
+        member = wintypes.BOOL()
+        if not self.api.IsProcessInJob(handle, self.job.handle, ctypes.byref(member)):
+            raise OSError("Could not verify residual job membership")
+        if not member.value:
+            raise RuntimeError("Residual PID no longer belongs to owned job")
+
+    def snapshot(self, pid: int) -> dict[str, object]:
+        """Capture kernel image plus zero-wait exit evidence through the same handle."""
+        handle = self.handles[pid]
+        size = wintypes.DWORD(IMAGE_CHARS)
+        image = ctypes.create_unicode_buffer(IMAGE_CHARS)
+        if not self.api.QueryFullProcessImageNameW(
+            handle, 0, image, ctypes.byref(size)
+        ):
+            raise OSError("Could not inspect residual kernel image")
+        wait = self.api.WaitForSingleObject(handle, 0)
+        if wait not in (0, WAIT_TIMEOUT):
+            raise OSError("Could not inspect residual exit state")
+        code = wintypes.DWORD()
+        if not self.api.GetExitCodeProcess(handle, ctypes.byref(code)):
+            raise OSError("Could not inspect residual exit code")
+        return {
+            "pid": pid,
+            "image": image.value,
+            "exited": wait == 0,
+            "exit_code": code.value if wait == 0 else None,
+        }
+
+    def close(self) -> list[str]:
+        """Close every inspection handle, including failed membership checks."""
+        errors = []
+        for handle in self.handles.values():
+            try:
+                if not self.api.CloseHandle(handle):
+                    errors.append("Could not close residual inspection handle")
+            except Exception as error:  # noqa: BLE001 - attempt every retained handle
+                errors.append(repr(error))
+        self.handles.clear()
+        return errors
+
+
+def drain_naturally(
+    job: OwnedJob, initial: list[int], deadline: float
+) -> dict[str, object]:
+    """Observe natural retirement within the original deadline, never terminate here."""
+    result: dict[str, object] = {
+        "initial_pids": initial,
+        "final_pids": initial,
+        "initial_witnesses": [],
+        "final_witnesses": [],
+        "natural_empty": False,
+        "elapsed_seconds": 0.0,
+        "errors": [],
+    }
+    if not initial:
+        result["natural_empty"] = True
+        return result
+    started = time.monotonic()
+    observer: ResidualObserver | None = None
+    errors: list[str] = []
+    first: list[dict[str, object]] = []
+    try:
+        observer = ResidualObserver(job)
+        pids = initial
+        while pids and time.monotonic() < deadline:
+            for pid in pids:
+                if pid not in observer.handles:
+                    observer.open(pid)
+                    first.append(observer.snapshot(pid))
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(min(DRAIN_POLL_SECONDS, max(0.0, deadline - time.monotonic())))
+            pids = job.pids()
+            result["final_pids"] = pids
+        final = [observer.snapshot(pid) for pid in observer.handles]
+        result["final_witnesses"] = final
+        result["natural_empty"] = (
+            not pids
+            and all(item["exited"] is True for item in final)
+            and time.monotonic() < deadline
+        )
+    except Exception as error:  # noqa: BLE001 - retain partial observations and uncertainty
+        errors.append(repr(error))
+    finally:
+        result["initial_witnesses"] = first
+        if observer is not None:
+            errors.extend(observer.close())
+        result["elapsed_seconds"] = time.monotonic() - started
+        result["errors"] = errors
+        if errors or time.monotonic() >= deadline:
+            result["natural_empty"] = False
+    return result
 
 
 def read_proof(path: Path) -> bool:
@@ -85,7 +230,9 @@ def supervise(output: Path, repository: Path) -> int:  # noqa: C901 - explicit f
         else:
             pids = job.pids()
             result["pre_cleanup_pids"] = pids
-            if pids:
+            drain = drain_naturally(job, pids, deadline)
+            result["natural_drain"] = drain
+            if not drain["natural_empty"]:
                 result["failure"] = "proof-surviving-descendants"
             elif not read_proof(output / "proof" / "receipt.json"):
                 result["failure"] = "proof-receipt-failed"

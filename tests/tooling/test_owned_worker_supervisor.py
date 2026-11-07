@@ -51,6 +51,9 @@ def test_supervisor_requires_exit_and_natural_empty_job(
     job.pids.return_value = members
     job.close.return_value = {"confirmed": True}
     monkeypatch.setattr(supervisor, "OwnedJob", lambda: job)
+    monkeypatch.setattr(
+        supervisor, "drain_naturally", lambda *_: {"natural_empty": not members}
+    )
     read = Mock(return_value=True)
     monkeypatch.setattr(supervisor, "read_proof", read)
     result = supervisor.supervise(output, tmp_path)
@@ -159,3 +162,133 @@ def test_evidence_read_cannot_cross_admission_deadline(
     assert receipt["passed"] == (finished < 45)
     expected = "proof-deadline-exceeded" if finished >= 45 else None
     assert receipt["failure"] == expected
+
+
+@pytest.mark.parametrize("leaks", [False, True])
+def test_natural_drain_observes_without_terminating(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    leaks: bool,
+) -> None:
+    """A naturally exiting residual passes; an actual leak reaches the same deadline."""
+    now = [0.0]
+    monkeypatch.setattr(supervisor.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(
+        supervisor.time, "sleep", lambda delay: now.__setitem__(0, now[0] + delay)
+    )
+    observer = Mock()
+    observer.handles = {}
+    observer.open.side_effect = lambda pid: observer.handles.update({pid: 88})
+    observer.snapshot.side_effect = lambda pid: {
+        "pid": pid,
+        "image": "owned.exe",
+        "exited": True,
+    }
+    observer.close.return_value = []
+    monkeypatch.setattr(supervisor, "ResidualObserver", lambda _: observer)
+    job = Mock()
+    job.pids.return_value = [77] if leaks else []
+    result = supervisor.drain_naturally(job, [77], 0.02)
+    assert result["natural_empty"] is not leaks
+    assert result["initial_pids"] == [77]
+    assert result["final_pids"] == ([77] if leaks else [])
+    assert result["initial_witnesses"] == [
+        {"pid": 77, "image": "owned.exe", "exited": True}
+    ]
+    observer.close.assert_called_once()
+    job.close.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", ["reuse", "query", "open"])
+def test_residual_identity_uncertainty_closes_handle_and_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    """A PID must still belong to the owned job before identity is inspected."""
+    job = Mock()
+    job.handle = 1
+    job.api.OpenProcess.return_value = 0 if failure == "open" else 88
+    job.api.IsProcessInJob.return_value = failure != "query"
+    observer = supervisor.ResidualObserver(job)
+    monkeypatch.setattr(supervisor, "ResidualObserver", lambda _: observer)
+    result = supervisor.drain_naturally(job, [77], supervisor.time.monotonic() + 1)
+    assert result["natural_empty"] is False
+    assert result["errors"]
+    job.api.QueryFullProcessImageNameW.assert_not_called()
+    if failure == "open":
+        job.api.CloseHandle.assert_not_called()
+    else:
+        job.api.CloseHandle.assert_called_once_with(88)
+    assert not observer.handles
+
+
+def test_final_residual_snapshot_cannot_cross_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Slow kernel evidence after natural emptiness cannot extend admission."""
+    now = [0.0]
+    monkeypatch.setattr(supervisor.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(supervisor.time, "sleep", lambda _: None)
+    observer = Mock()
+    observer.handles = {}
+    observer.open.side_effect = lambda pid: observer.handles.update({pid: 88})
+    calls = [0]
+
+    def snapshot(pid: int) -> dict[str, int]:
+        calls[0] += 1
+        if calls[0] == 2:
+            now[0] = 45.0
+        return {"pid": pid, "exited": True}
+
+    observer.snapshot.side_effect = snapshot
+    observer.close.return_value = []
+    monkeypatch.setattr(supervisor, "ResidualObserver", lambda _: observer)
+    job = Mock()
+    job.pids.return_value = []
+    result = supervisor.drain_naturally(job, [77], 45)
+    assert result["final_pids"] == []
+    assert result["natural_empty"] is False
+    observer.close.assert_called_once()
+
+
+def test_all_residual_handles_close_after_one_close_error() -> None:
+    """One close failure cannot prevent attempting the other pinned handles."""
+    job = Mock()
+    observer = supervisor.ResidualObserver(job)
+    observer.handles = {1: 10, 2: 20}
+    job.api.CloseHandle.side_effect = [OSError("close failed"), True]
+    assert observer.close()
+    assert job.api.CloseHandle.call_count == 2
+    assert not observer.handles
+
+
+def test_residual_snapshot_pins_same_job_image_and_exit() -> None:
+    """Read-only handle identity is checked before kernel image and exit reads."""
+    job = Mock()
+    job.handle = 1
+    job.api.OpenProcess.return_value = 88
+
+    def membership(_handle: int, _job: int, member: object) -> bool:
+        member._obj.value = 1  # ty: ignore[unresolved-attribute] - ctypes byref
+        return True
+
+    def image(_handle: int, _flags: int, buffer: object, _size: object) -> bool:
+        buffer.value = "C:\\Windows\\owned.exe"  # ty: ignore[unresolved-attribute]
+        return True
+
+    job.api.IsProcessInJob.side_effect = membership
+    job.api.QueryFullProcessImageNameW.side_effect = image
+    job.api.WaitForSingleObject.return_value = 0
+    job.api.GetExitCodeProcess.return_value = True
+    observer = supervisor.ResidualObserver(job)
+    observer.open(77)
+    witness = observer.snapshot(77)
+    assert witness == {
+        "pid": 77,
+        "image": "C:\\Windows\\owned.exe",
+        "exited": True,
+        "exit_code": 0,
+    }
+    job.api.OpenProcess.assert_called_once_with(0x00101000, 0, 77)
+    job.api.WaitForSingleObject.assert_called_once_with(88, 0)
+    assert observer.close() == []

@@ -251,7 +251,7 @@ def collect_session(
     manifest, oracle = receipt["acquisition"], receipt["oracle_only"]
     if case.reference_offset is None:
         receipt["helper"] = run_probe(
-            helper_job, manifest, output, experiment="browser-sequence"
+            helper_job, manifest, output, experiment="browser"
         )
         if receipt["helper"]["exit_code"] != 0:
             raise RuntimeError("Matrix raw helper failed")
