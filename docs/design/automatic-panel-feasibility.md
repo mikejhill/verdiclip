@@ -521,3 +521,32 @@ This is one pose of an authored fixture. It tests containment of observed
 panel-attributable paint, not invisible or occluded content, all scroll positions,
 a universal CSS transform, or a completed scrolling capture. No product code
 changes another application's opacity or visibility. Native results are pending.
+
+### Owned opacity paint-control revision: fixed two-pixel strips
+
+The original `3d9ad1b` table125 experiment remains **failed** under its
+one-pixel-edge observability contract. Its native rectangle was
+`[114,157,765,545]`; exact opacity `1 → 0 → 1` full-root differences occupied
+`[115,158,765,545]`. No changed pixel was outside the native rectangle, and
+restored full-root pixels and observed native identity/state were unchanged.
+The left/top geometric scanlines did not change, so their original one-pixel
+inset negative controls could not qualify. This is not evidence of clipping.
+
+A separately reviewed revision, `fixed-two-pixel-strips-v2`, declares its
+controls before capture. The independently selected native rectangle R is
+unchanged, at least four pixels wide and high, and retains every source pixel.
+Require nonempty exact RGB difference support in each fixed two-pixel boundary
+strip and each 2×2 corner. Independently test all four rectangles formed by
+moving exactly one edge of R inward by two pixels; each must exclude observed
+support. Retain exact support bounds/count, strip counts, corner observations,
+and negative-control results. Never choose R from these diagnostics.
+
+This revision detects those **two-pixel cuts**, not every one-pixel geometric
+reduction. Zero or one unchanged background pixel at an edge can pass; two
+empty boundary pixels cannot. It does not prove invisible or equal-background
+content. A single changed channel outside full R still fails, as do altered
+A/A′ pixels, identity, native geometry/state, or ownership. No color tolerance,
+adaptive band, retry, fitted origin, source crop or deadline change is allowed.
+This remains one fixed owned table125 pose, not complete-scroll qualification,
+a replacement of the existing matrix oracle, or product behavior. Fresh native
+qualification of this revision is required; prior failure is not reclassified.

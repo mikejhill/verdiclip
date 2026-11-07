@@ -44,18 +44,21 @@ def test_exact_support_including_single_channel_blended_edge() -> None:
     result = oracle.paint_support(painted(), image(), painted(), ROOT, SELECTED)
     assert result.changed_pixels == 16
     assert result.bounds == SELECTED
-    assert result.edge_counts == (4, 4, 4, 4)
+    assert result.edge_counts == (8, 8, 8, 8)
+    assert result.inset_rejected == (True,) * 4
+    assert result.revision == "fixed-two-pixel-strips-v2"
+    assert result.boundary_pixels == 2
     assert result.corner_observed == (True,) * 4
 
 
 @pytest.mark.parametrize(
     "rect", [(0, -2, 3, 2), (-1, -1, 3, 2), (-1, -2, 2, 2), (-1, -2, 3, 1)]
 )
-def test_every_one_pixel_inset_rejects_observed_paint(
+def test_subminimum_selected_rectangle_rejected(
     rect: tuple[int, int, int, int],
 ) -> None:
     """Every one pixel inset rejects observed paint."""
-    with pytest.raises(ValueError, match="outside selected"):
+    with pytest.raises(ValueError, match="fixed control geometry"):
         oracle.paint_support(painted(), image(), painted(), ROOT, rect)
 
 
@@ -544,3 +547,100 @@ def test_other_pane_cannot_share_target_fingerprint(pane: str) -> None:
     states[0]["state"][pane]["vertical"] += 1
     with pytest.raises(RuntimeError, match="overlaps"):
         supervisor.target_association(states[0], child["native_scroll_state"])
+
+
+def control_image(
+    margins: tuple[int, int, int, int], *, gap_corner: bool = False
+) -> Pixels:
+    """Eight-square root with fixed six-square R and predetermined empty margins."""
+    left, top, right, bottom = margins
+    data = bytearray(8 * 8 * 3)
+    for y in range(1 + top, 7 - bottom):
+        for x in range(1 + left, 7 - right):
+            if gap_corner and x < 3 and y < 3:
+                continue
+            data[(y * 8 + x) * 3] = (
+                1  # A one-channel difference is sufficient evidence.
+            )
+    return Pixels(8, 8, bytes(data))
+
+
+@pytest.mark.parametrize(
+    "margins",
+    [
+        (0, 0, 0, 0),
+        (1, 1, 1, 1),
+        (1, 0, 0, 0),
+        (0, 1, 0, 0),
+        (0, 0, 1, 0),
+        (0, 0, 0, 1),
+    ],
+)
+def test_fixed_two_pixel_control_allows_zero_or_one_empty_margin(
+    margins: tuple[int, int, int, int],
+) -> None:
+    """Unchanged geometric background is retained, never cropped from R."""
+    visible = control_image(margins)
+    transparent = Pixels(8, 8, bytes(8 * 8 * 3))
+    selected = (1, 1, 7, 7)
+    result = oracle.paint_support(visible, transparent, visible, (0, 0, 8, 8), selected)
+    assert selected == (1, 1, 7, 7)
+    assert all(result.edge_counts)
+    assert all(result.corner_observed)
+    assert result.inset_rejected == (True,) * 4
+    left, top, right, bottom = margins
+    assert result.bounds == (1 + left, 1 + top, 7 - right, 7 - bottom)
+    assert result.changed_pixels == (6 - left - right) * (6 - top - bottom)
+
+
+@pytest.mark.parametrize(
+    "margins", [(2, 0, 0, 0), (0, 2, 0, 0), (0, 0, 2, 0), (0, 0, 0, 2)]
+)
+def test_two_empty_pixel_margin_fails_each_fixed_strip(
+    margins: tuple[int, int, int, int],
+) -> None:
+    """No adaptive widening may rescue an unobservable two-pixel boundary strip."""
+    visible = control_image(margins)
+    with pytest.raises(ValueError, match="edge is unobservable"):
+        oracle.paint_support(
+            visible, Pixels(8, 8, bytes(192)), visible, (0, 0, 8, 8), (1, 1, 7, 7)
+        )
+
+
+def test_two_by_two_corner_gap_rejects_despite_all_edges_observable() -> None:
+    """A missing corner is not rescued by support farther along its edges."""
+    visible = control_image((0, 0, 0, 0), gap_corner=True)
+    with pytest.raises(ValueError, match="corner"):
+        oracle.paint_support(
+            visible, Pixels(8, 8, bytes(192)), visible, (0, 0, 8, 8), (1, 1, 7, 7)
+        )
+
+
+@pytest.mark.parametrize("point", [(0, 3), (3, 0), (7, 3), (3, 7)])
+def test_one_channel_one_level_outside_r_still_rejects(point: tuple[int, int]) -> None:
+    """The wider observability strips introduce no outside-pixel tolerance."""
+    visible = control_image((1, 1, 1, 1))
+    data = bytearray(visible.rgb)
+    x, y = point
+    data[(y * 8 + x) * 3 + 1] = 1
+    changed = Pixels(8, 8, bytes(data))
+    with pytest.raises(ValueError, match="outside selected"):
+        oracle.paint_support(
+            changed, Pixels(8, 8, bytes(192)), changed, (0, 0, 8, 8), (1, 1, 7, 7)
+        )
+
+
+def test_two_pixel_cuts_independently_exclude_observed_support() -> None:
+    """Each predeclared inset rectangle loses an observed pixel independently."""
+    visible = control_image((1, 1, 1, 1))
+    result = oracle.paint_support(
+        visible, Pixels(8, 8, bytes(192)), visible, (0, 0, 8, 8), (1, 1, 7, 7)
+    )
+    points = [
+        (i % 8, i // 8) for i in range(64) if visible.rgb[i * 3 : i * 3 + 3] != bytes(3)
+    ]
+    cuts = ((3, 1, 7, 7), (1, 3, 7, 7), (1, 1, 5, 7), (1, 1, 7, 5))
+    independently_rejected = tuple(
+        any(not (a <= x < c and b <= y < d) for x, y in points) for a, b, c, d in cuts
+    )
+    assert independently_rejected == result.inset_rejected == (True,) * 4

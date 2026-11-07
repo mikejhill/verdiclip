@@ -523,9 +523,13 @@ jobs:
           path: |
             scripts/panel_*.py
             scripts/panel_fixture/matrix.html
-            receipts/paint-table125/**/*.json
-            receipts/paint-table125/**/*.jsonl
-            receipts/paint-table125/**/*.png
+            receipts/paint-table125/receipt.json
+            receipts/paint-table125/fixture.json
+            receipts/paint-table125/paint-phase.json
+            receipts/paint-table125/states/*.json
+            receipts/paint-table125/probe/*.json
+            receipts/paint-table125/probe/*.jsonl
+            receipts/paint-table125/probe/*.png
             receipts/paint-table125/authored.html
           if-no-files-found: error
           retention-days: 14
