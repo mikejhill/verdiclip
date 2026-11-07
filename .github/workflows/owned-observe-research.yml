@@ -3,7 +3,7 @@ name: Owned observation bounded research
 # This workflow is separate from PR 119 and does not qualify the unresolved Qt CI failure.
 on:
   push:
-    branches: [research/held-credit-cancel]
+    branches: [research/held-credit-parent-death]
 
 permissions:
   contents: read
@@ -13,14 +13,14 @@ jobs:
     if: >-
       github.repository == 'mikejhill/verdiclip' &&
       github.event_name == 'push' &&
-      github.ref == 'refs/heads/research/held-credit-cancel'
-    name: Research only / expected held-credit cancellations
+      github.ref == 'refs/heads/research/held-credit-parent-death'
+    name: Research only / held-credit parent-death containment
     runs-on: windows-2025
     timeout-minutes: 7
     env:
       PYTHONUTF8: "1"
-      QUALIFICATION_HEAD: "9fb63f477e61faa9d1423578bb7152997d2a6216"
-      QUALIFICATION_TREE: "05dcb2f0637bf5c19304857d1e7152fd219e5d57"
+      QUALIFICATION_HEAD: "1f1b54311f16684bff4402e78f6bf9304a66003c"
+      QUALIFICATION_TREE: "7e87cf34e78a25844ab753cf828e91ab21853110"
       WORKFLOW_HEAD: ${{ github.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -29,7 +29,7 @@ jobs:
           GIT_CONFIG_KEY_0: core.autocrlf
           GIT_CONFIG_VALUE_0: "false"
         with:
-          ref: 9fb63f477e61faa9d1423578bb7152997d2a6216
+          ref: 1f1b54311f16684bff4402e78f6bf9304a66003c
           persist-credentials: false
       - name: Assert fixed source and retain separate workflow identity
         timeout-minutes: 1
@@ -43,7 +43,7 @@ jobs:
           New-Item -ItemType Directory -Force receipts | Out-Null
           [ordered]@{
             schema = 1
-            scope = 'expected cancellation proof, not successful capture; no release or ordinary CI qualification'
+            scope = 'expected parent-death containment, not successful capture; no release or ordinary CI qualification'
             candidate_sha = $head
             candidate_tree = $tree
             workflow_sha = $env:WORKFLOW_HEAD
@@ -64,7 +64,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           dotnet build scripts/panel_fixture/PanelFixture.csproj --configuration Release --output .tmp/observe-fixture
           exit $LASTEXITCODE
-      - name: Fresh-wheel first and interior cancellation, stop on failure
+      - name: Fresh-wheel fixed parent-death proof, no retries
         timeout-minutes: 3
         shell: pwsh
         run: |
@@ -89,35 +89,35 @@ jobs:
           Copy-Item scripts/installed_observe_smoke.py "$proof\installed_observe_smoke.py"
           Copy-Item scripts/observe_process_diagnostics.py "$proof\observe_process_diagnostics.py"
           Copy-Item scripts/observe_credit_cancel.py "$proof\observe_credit_cancel.py"
+          Copy-Item scripts/observe_death_control.py "$proof\observe_death_control.py"
+          Copy-Item scripts/observe_death_witness.py "$proof\observe_death_witness.py"
           Copy-Item .tmp/observe-fixture "$proof\fixture" -Recurse
           $outside = New-Item -ItemType Directory -Path "$proof\outside checkout"
-          # Each fixed case starts fresh owned processes and retains its own original budgets.
-          # A zero exit means expected cancellation was proved, never successful capture.
-          foreach ($case in @('cancel-first', 'cancel-interior')) {
-            $caseOutput = Join-Path $proof ('receipts-' + $case)
-            $target = Join-Path $env:GITHUB_WORKSPACE ('receipts/' + $case)
-            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
-            $proofExit = 1
-            Push-Location $outside.FullName
-            try {
-              & $python "$proof\installed_observe_smoke.py" --case $case --wheel $wheel --fixture "$proof\fixture\PanelFixture.exe" --output $caseOutput
-              $proofExit = $LASTEXITCODE
-            } finally {
-              Pop-Location
-              if (Test-Path $caseOutput) { Copy-Item $caseOutput $target -Recurse }
-            }
-            if ($proofExit -ne 0) { exit $proofExit }
+          # Zero exit proves this expected death outcome, never a successful capture.
+          $caseOutput = Join-Path $proof 'receipts-parent-death-first'
+          $target = Join-Path $env:GITHUB_WORKSPACE 'receipts/parent-death-first'
+          New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
+          $proofExit = 1
+          Push-Location $outside.FullName
+          try {
+            & $python "$proof\installed_observe_smoke.py" --case parent-death-first --wheel $wheel --fixture "$proof\fixture\PanelFixture.exe" --output $caseOutput
+            $proofExit = $LASTEXITCODE
+          } finally {
+            Pop-Location
+            if (Test-Path $caseOutput) { Copy-Item $caseOutput $target -Recurse }
           }
-          exit 0
+          exit $proofExit
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: ${{ !cancelled() }}
         with:
-          name: research-installed-wheel-held-credit-cancel
+          name: research-installed-wheel-held-credit-parent-death
           path: |
             receipts/research-source.json
             scripts/installed_observe_smoke.py
             scripts/observe_process_diagnostics.py
             scripts/observe_credit_cancel.py
+            scripts/observe_death_control.py
+            scripts/observe_death_witness.py
             scripts/installed_channel_smoke.py
             scripts/installed_runtime_smoke.py
             scripts/panel_fixture/Program.cs
@@ -128,25 +128,24 @@ jobs:
             src/verdiclip/platform/helper_protocol.py
             src/verdiclip/platform/helper_runtime.py
             src/verdiclip/platform/helper_bootstrap.py
-            receipts/cancel-first/receipt.json
-            receipts/cancel-first/membership-failure.json
-            receipts/cancel-first/failure-phase-evidence.json
-            receipts/cancel-first/startup-diagnostics/*.json
-            receipts/cancel-first/startup-diagnostics/*.jsonl
-            receipts/cancel-first/executor/*.json
-            receipts/cancel-first/executor/*.jsonl
-            receipts/cancel-first/executor/*.png
-            receipts/cancel-first/states/*.json
-            receipts/cancel-first/states/diagnostics/*.json
-            receipts/cancel-interior/receipt.json
-            receipts/cancel-interior/membership-failure.json
-            receipts/cancel-interior/failure-phase-evidence.json
-            receipts/cancel-interior/startup-diagnostics/*.json
-            receipts/cancel-interior/startup-diagnostics/*.jsonl
-            receipts/cancel-interior/executor/*.json
-            receipts/cancel-interior/executor/*.jsonl
-            receipts/cancel-interior/executor/*.png
-            receipts/cancel-interior/states/*.json
-            receipts/cancel-interior/states/diagnostics/*.json
+            receipts/parent-death-first/receipt.json
+            receipts/parent-death-first/membership-failure.json
+            receipts/parent-death-first/failure-phase-evidence.json
+            receipts/parent-death-first/startup-diagnostics/*.json
+            receipts/parent-death-first/startup-diagnostics/*.jsonl
+            receipts/parent-death-first/executor/*.json
+            receipts/parent-death-first/executor/*.jsonl
+            receipts/parent-death-first/executor/*.png
+            receipts/parent-death-first/states/*.json
+            receipts/parent-death-first/states/diagnostics/*.json
+            receipts/parent-death-first/death-witness/death-ready.json
+            receipts/parent-death-first/death-witness/death-begin.json
+            receipts/parent-death-first/death-witness/death-pinned.json
+            receipts/parent-death-first/death-witness/death-kill-request.json
+            receipts/parent-death-first/death-witness/death-result.json
+            receipts/parent-death-first/death-witness/death-calls.jsonl
+            receipts/parent-death-first/death-witness/before-root.rgb
+            receipts/parent-death-first/death-witness/after-death-??.json
+            receipts/parent-death-first/death-witness/after-death-root.png
           if-no-files-found: error
           retention-days: 14
