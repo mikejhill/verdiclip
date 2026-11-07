@@ -13,7 +13,7 @@ against these immutable source trees, on disposable Windows 2025 runners:
 - 0.12.1: `a1c6bbe488284cf5f5b4ed7a8b1e30181e0f62ed`.
 - 0.13.1: `1f73bde2b6ab5ab2324ce8079159004ee2713d3a`.
 
-Each source uses Python 3.13 and separate Qt 6.11.2 / 6.12.0 jobs. Every observation
+Each source uses Python 3.13 and separate Qt 6.11.3 / 6.12.0 jobs. Every observation
 is a fresh process. Imported grabber, overlay, service, hotkey and controller files
 must match the selected checkout's committed bytes. The harness never patches the
 historical product source. No failed observation is rerun. Fixed cases continue after ordinary failures only when independent input cleanup

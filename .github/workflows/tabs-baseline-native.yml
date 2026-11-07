@@ -18,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        qt: ["6.11.2", "6.12.0"]
+        qt: ["6.11.3", "6.12.0"]
     env:
       PYTHONUTF8: "1"
       QT_QPA_PLATFORM: windows
