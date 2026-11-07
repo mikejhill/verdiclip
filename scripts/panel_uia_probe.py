@@ -19,6 +19,7 @@ from pathlib import Path
 
 import mss
 import mss.tools
+from scripts.panel_clipping_diagnostic import ClippingDiagnostic, validate_fixture
 from scripts.panel_full_sweep import FullSweep
 from scripts.panel_uia import MAX_ANCESTORS, PanelUia, Point, ScrollState, Structure
 from scripts.panel_viewport import midpoint_percent, viewport_rect
@@ -366,12 +367,12 @@ class Probe:
             ):
                 raise RuntimeError("Fixture not wholly on one monitor")
             before = self.frame(source, "before")
-            if getattr(self.args, "full_sweep", False):
-                if not (
-                    viewport[0] <= self.args.x < viewport[2]
-                    and viewport[1] <= self.args.y < viewport[3]
-                ):
-                    raise RuntimeError("Selected point lies outside native viewport")
+            if getattr(self.args, "clipping_diagnostic", False):
+                validate_fixture(fixture)
+                self.check_viewport_point(viewport)
+                ClippingDiagnostic(self, source, viewport, before, started).run()
+            elif getattr(self.args, "full_sweep", False):
+                self.check_viewport_point(viewport)
                 FullSweep(self, source, viewport, before, started).run()
             elif not self.args.inspect_only:
                 mid = midpoint_percent(
@@ -383,6 +384,14 @@ class Probe:
                 self.seek(self.initial.vertical)
                 self.frame(source, "restore")
                 self.report["restored"] = True
+
+    def check_viewport_point(self, viewport: tuple[int, int, int, int]) -> None:
+        """Do not admit a scrollbar click to either guarded WPF experiment."""
+        if not (
+            viewport[0] <= self.args.x < viewport[2]
+            and viewport[1] <= self.args.y < viewport[3]
+        ):
+            raise RuntimeError("Selected point lies outside native viewport")
 
     def run(self) -> int:
         """Preserve first failure; restore only when every guard still agrees."""
@@ -434,6 +443,7 @@ def main() -> int:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--inspect-only", action="store_true")
     mode.add_argument("--full-sweep", action="store_true")
+    mode.add_argument("--clipping-diagnostic", action="store_true")
     parser.add_argument("--settle-discovery", action="store_true")
     return Probe(parser.parse_args()).run()
 

@@ -125,3 +125,25 @@ unchanged. Browser work is researching full-frame output with static chrome
 excluded only from alignment; clean CSS viewport access is not a prerequisite.
 Experimental framing rules still have adversarial qualification gaps and are
 not included in production. This draft must not be merged or released yet.
+
+## Sixth experiment
+
+Head `dab833f5dd3105d3b949eb6c263ee85180c33b48`, native run
+[42352790553](https://github.com/mikejhill/verdiclip/actions/runs/42352790553).
+Complete borderless and bordered WPF sweeps both produce the identical
+493 by 1,457 pixel image. Every independent scanline check passes, the original
+full frame restores exactly, and all owned processes retire. Helper duration is
+approximately seven seconds. Ordinary CI and CodeQL pass at this exact head.
+Both browser sparse checkpoints pass, including the corrected fractional oracle.
+
+The nested complete sweep correctly fails. In the fifth forward transition,
+offsets approximately 504 to 630 pixels, the clipped "24" glyph differs in 27
+pixels at the old viewport's final three rows. The existing one-row boundary
+allowance does not admit this mismatch. The before/restore frames are identical,
+cleanup succeeds, and no composite is published. No tolerance is widened.
+
+A separate bounded clipping diagnostic will compare predetermined nearby offsets
+and an interior reference, preserving all observations. It is additional evidence,
+not a replacement for the failing full-sweep gate. Absolute integer target
+percentages reduce accumulated rounding but cannot make every WPF offset exactly
+integral under the provider's floating-point calculation.

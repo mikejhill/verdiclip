@@ -225,7 +225,9 @@ def events(path: Path) -> list[Json]:
     ]
 
 
-def run_probe(job: OwnedJob, fixture: Json, output: Path) -> Json:
+def run_probe(
+    job: OwnedJob, fixture: Json, output: Path, *, clipping_diagnostic: bool = False
+) -> Json:
     """Bound startup, every logged native call, and total helper lifetime."""
     manifest = output / "fixture.json"
     write(manifest, fixture)
@@ -239,6 +241,8 @@ def run_probe(job: OwnedJob, fixture: Json, output: Path) -> Json:
     extra = (
         ["--settle-discovery"] if fixture["kind"] == "owned-edge" else ["--full-sweep"]
     )
+    if clipping_diagnostic:
+        extra = ["--clipping-diagnostic"]
     pid, handle = job.start(
         [
             str(base),
@@ -476,7 +480,22 @@ def verify_result(result: Json, output: Path, state_dir: Path, fixture: Json) ->
         for record in events(output / "probe/calls.jsonl")
     ):
         raise RuntimeError("Completed native call exceeded three seconds")
-    if result.get("full_sweep"):
+    if result.get("clipping_diagnostic"):
+        report = json.loads(
+            (output / "probe/manifest.json").read_text(encoding="utf-8")
+        )
+        result["diagnostic"] = report
+        _require_probe_success(result["helper"]["exit_code"])
+        result["diagnostic_completed"] = (
+            report.get("clipping_diagnostic_completed") is True
+            and report.get("restored") is True
+            and load_pixels(output / "probe/before.png")
+            == load_pixels(output / "probe/restore.png")
+            and not (output / "probe/stitched.png").exists()
+        )
+        if not result["diagnostic_completed"]:
+            raise RuntimeError("Clipping diagnostic or restoration incomplete")
+    elif result.get("full_sweep"):
         result["oracle"] = full_sweep_oracle(fixture, output)
         _require_probe_success(result["helper"]["exit_code"])
         result["checkpoint_passed"] = result["oracle"]["passed"]
@@ -518,7 +537,10 @@ def main() -> int:
     )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--wpf-executable", type=Path)
+    parser.add_argument("--clipping-diagnostic", action="store_true")
     args = parser.parse_args()
+    if args.clipping_diagnostic and args.case != "wpf-nested":
+        parser.error("Clipping diagnostic requires the owned nested WPF fixture")
     args.output.mkdir(parents=True, exist_ok=False)
     result: Json = {
         "case": args.case,
@@ -526,7 +548,8 @@ def main() -> int:
         "cleanup": {},
         "checkpoint_passed": False,
         "read_only_discovery": False,
-        "full_sweep": args.case.startswith("wpf-"),
+        "full_sweep": args.case.startswith("wpf-") and not args.clipping_diagnostic,
+        "clipping_diagnostic": args.clipping_diagnostic,
         "diagnostic_completed": False,
     }
     fixture_job = None
@@ -557,7 +580,12 @@ def main() -> int:
                 "1.25" if args.case == "edge-125" else "1",
             )
         result["fixture"] = fixture
-        result["helper"] = run_probe(probe_job, fixture, args.output)
+        result["helper"] = run_probe(
+            probe_job,
+            fixture,
+            args.output,
+            clipping_diagnostic=args.clipping_diagnostic,
+        )
         verify_result(result, args.output, state_dir, fixture)
     except Exception as error:  # noqa: BLE001 - preserve first diagnostic failure
         result["first_failure"] = repr(error)
