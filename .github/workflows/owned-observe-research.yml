@@ -3,7 +3,7 @@ name: Owned observation bounded research
 # This workflow is separate from PR 119 and does not qualify the unresolved Qt CI failure.
 on:
   push:
-    branches: [research/one-frame-credit]
+    branches: [research/held-credit-cancel]
 
 permissions:
   contents: read
@@ -13,14 +13,14 @@ jobs:
     if: >-
       github.repository == 'mikejhill/verdiclip' &&
       github.event_name == 'push' &&
-      github.ref == 'refs/heads/research/one-frame-credit'
-    name: Research only / installed wheel owned WPF observation
+      github.ref == 'refs/heads/research/held-credit-cancel'
+    name: Research only / expected held-credit cancellations
     runs-on: windows-2025
     timeout-minutes: 7
     env:
       PYTHONUTF8: "1"
-      QUALIFICATION_HEAD: "d2556f987aeadf13d2fa9c076af2b3f8b57d9293"
-      QUALIFICATION_TREE: "2e117a79dbc2c2962e3ed936b65da4bc6640915c"
+      QUALIFICATION_HEAD: "9fb63f477e61faa9d1423578bb7152997d2a6216"
+      QUALIFICATION_TREE: "05dcb2f0637bf5c19304857d1e7152fd219e5d57"
       WORKFLOW_HEAD: ${{ github.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -29,7 +29,7 @@ jobs:
           GIT_CONFIG_KEY_0: core.autocrlf
           GIT_CONFIG_VALUE_0: "false"
         with:
-          ref: d2556f987aeadf13d2fa9c076af2b3f8b57d9293
+          ref: 9fb63f477e61faa9d1423578bb7152997d2a6216
           persist-credentials: false
       - name: Assert fixed source and retain separate workflow identity
         timeout-minutes: 1
@@ -43,7 +43,7 @@ jobs:
           New-Item -ItemType Directory -Force receipts | Out-Null
           [ordered]@{
             schema = 1
-            scope = 'bounded ownership research; not release or ordinary CI qualification'
+            scope = 'expected cancellation proof, not successful capture; no release or ordinary CI qualification'
             candidate_sha = $head
             candidate_tree = $tree
             workflow_sha = $env:WORKFLOW_HEAD
@@ -64,7 +64,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           dotnet build scripts/panel_fixture/PanelFixture.csproj --configuration Release --output .tmp/observe-fixture
           exit $LASTEXITCODE
-      - name: Fresh-wheel single observation, no retries
+      - name: Fresh-wheel first and interior cancellation, stop on failure
         timeout-minutes: 3
         shell: pwsh
         run: |
@@ -88,28 +88,36 @@ jobs:
           Copy-Item scripts/installed_channel_smoke.py "$proof\installed_channel_smoke.py"
           Copy-Item scripts/installed_observe_smoke.py "$proof\installed_observe_smoke.py"
           Copy-Item scripts/observe_process_diagnostics.py "$proof\observe_process_diagnostics.py"
+          Copy-Item scripts/observe_credit_cancel.py "$proof\observe_credit_cancel.py"
           Copy-Item .tmp/observe-fixture "$proof\fixture" -Recurse
           $outside = New-Item -ItemType Directory -Path "$proof\outside checkout"
-          $target = Join-Path $env:GITHUB_WORKSPACE 'receipts/installed-observe'
-          New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
-          $proofExit = 1
-          Push-Location $outside.FullName
-          try {
-            & $python "$proof\installed_observe_smoke.py" --wheel $wheel --fixture "$proof\fixture\PanelFixture.exe" --output "$proof\receipts"
-            $proofExit = $LASTEXITCODE
-          } finally {
-            Pop-Location
-            if (Test-Path "$proof\receipts") { Copy-Item "$proof\receipts" $target -Recurse }
+          # Each fixed case starts fresh owned processes and retains its own original budgets.
+          # A zero exit means expected cancellation was proved, never successful capture.
+          foreach ($case in @('cancel-first', 'cancel-interior')) {
+            $caseOutput = Join-Path $proof ('receipts-' + $case)
+            $target = Join-Path $env:GITHUB_WORKSPACE ('receipts/' + $case)
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
+            $proofExit = 1
+            Push-Location $outside.FullName
+            try {
+              & $python "$proof\installed_observe_smoke.py" --case $case --wheel $wheel --fixture "$proof\fixture\PanelFixture.exe" --output $caseOutput
+              $proofExit = $LASTEXITCODE
+            } finally {
+              Pop-Location
+              if (Test-Path $caseOutput) { Copy-Item $caseOutput $target -Recurse }
+            }
+            if ($proofExit -ne 0) { exit $proofExit }
           }
-          exit $proofExit
+          exit 0
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: ${{ !cancelled() }}
         with:
-          name: research-installed-wheel-one-frame-credit
+          name: research-installed-wheel-held-credit-cancel
           path: |
             receipts/research-source.json
             scripts/installed_observe_smoke.py
             scripts/observe_process_diagnostics.py
+            scripts/observe_credit_cancel.py
             scripts/installed_channel_smoke.py
             scripts/installed_runtime_smoke.py
             scripts/panel_fixture/Program.cs
@@ -120,15 +128,25 @@ jobs:
             src/verdiclip/platform/helper_protocol.py
             src/verdiclip/platform/helper_runtime.py
             src/verdiclip/platform/helper_bootstrap.py
-            receipts/installed-observe/receipt.json
-            receipts/installed-observe/membership-failure.json
-            receipts/installed-observe/failure-phase-evidence.json
-            receipts/installed-observe/startup-diagnostics/*.json
-            receipts/installed-observe/startup-diagnostics/*.jsonl
-            receipts/installed-observe/executor/*.json
-            receipts/installed-observe/executor/*.jsonl
-            receipts/installed-observe/executor/*.png
-            receipts/installed-observe/states/*.json
-            receipts/installed-observe/states/diagnostics/*.json
+            receipts/cancel-first/receipt.json
+            receipts/cancel-first/membership-failure.json
+            receipts/cancel-first/failure-phase-evidence.json
+            receipts/cancel-first/startup-diagnostics/*.json
+            receipts/cancel-first/startup-diagnostics/*.jsonl
+            receipts/cancel-first/executor/*.json
+            receipts/cancel-first/executor/*.jsonl
+            receipts/cancel-first/executor/*.png
+            receipts/cancel-first/states/*.json
+            receipts/cancel-first/states/diagnostics/*.json
+            receipts/cancel-interior/receipt.json
+            receipts/cancel-interior/membership-failure.json
+            receipts/cancel-interior/failure-phase-evidence.json
+            receipts/cancel-interior/startup-diagnostics/*.json
+            receipts/cancel-interior/startup-diagnostics/*.jsonl
+            receipts/cancel-interior/executor/*.json
+            receipts/cancel-interior/executor/*.jsonl
+            receipts/cancel-interior/executor/*.png
+            receipts/cancel-interior/states/*.json
+            receipts/cancel-interior/states/diagnostics/*.json
           if-no-files-found: error
           retention-days: 14
