@@ -1,0 +1,50 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Owned VerdiClip panel fixture</title>
+<style>
+html, body { margin: 0; background: #112233; overflow: hidden; }
+#outer { position: absolute; left: 36px; top: 32px; width: 480px; height: 430px;
+  overflow: scroll; border: 2px solid #f901a7; }
+#inner { width: 330px; height: 260px; overflow: scroll; border: 2px solid #17c5e9; }
+#sibling { position: absolute; left: 550px; top: 32px; width: 180px; height: 430px;
+  overflow: scroll; border: 2px solid orange; }
+.outer-content { width: 760px; padding: 24px 0 0 24px; }
+.rows { width: 760px; }
+.row { box-sizing: border-box; height: 31px; border-top: 1px solid white;
+  font: 15px 'Segoe UI'; color: black; padding: 4px 60px; white-space: nowrap; }
+</style>
+<div id="outer" role="region" aria-label="Owned outer panel">
+  <div class="outer-content"><div id="inner" role="region" aria-label="Owned inner panel"><div class="rows">ROWS</div></div><div class="rows">ROWS</div></div>
+</div>
+<div id="sibling" role="region" aria-label="Owned sibling panel"><div class="rows">ROWS</div></div>
+<script>
+// Authored fixture code, loaded with this local page, never injected or used by
+// VerdiClip. Synthetic offsets/geometry provide an independent native UIA oracle.
+const target = document.querySelector('#inner');
+const outer = document.querySelector('#outer');
+const sibling = document.querySelector('#sibling');
+let sequence = 0;
+function state(element) {
+  const r = element.getBoundingClientRect();
+  return {vertical: element.scrollTop, horizontal: element.scrollLeft,
+    viewport_height: element.clientHeight, viewport_width: element.clientWidth,
+    extent_height: element.scrollHeight, extent_width: element.scrollWidth,
+    rect: [r.left, r.top, r.right, r.bottom],
+    border: [element.clientLeft, element.clientTop]};
+}
+let initialized = false;
+function report() {
+  if (!initialized || sequence >= 256) return;
+  fetch('state', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({sequence: sequence++, dpr: devicePixelRatio,
+      state: {target: state(target), outer: state(outer), sibling: state(sibling)}})});
+}
+requestAnimationFrame(() => requestAnimationFrame(() => {
+  target.scrollTop = 119; target.scrollLeft = 47;
+  sibling.scrollTop = 93; sibling.scrollLeft = 27;
+  outer.scrollLeft = 11;
+  initialized = true;
+  report();
+}));
+for (const element of [target, outer, sibling]) element.addEventListener('scroll', report);
+</script>

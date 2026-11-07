@@ -1,0 +1,70 @@
+name: Automatic panel native feasibility
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  provider:
+    if: >-
+      github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
+      github.head_ref == 'feature/automatic-panel-capture' &&
+      github.event.pull_request.draft == true
+    name: First provider probe / ${{ matrix.case }}
+    runs-on: windows-2025
+    timeout-minutes: 6
+    strategy:
+      fail-fast: false
+      matrix:
+        case: [wpf-borderless, wpf-bordered, wpf-nested, edge-100, edge-125]
+    env:
+      PYTHONUTF8: "1"
+      QUALIFICATION_HEAD: ${{ github.event.pull_request.head.sha }}
+      PROBE_CASE: ${{ matrix.case }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: "false"
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          enable-cache: false
+          python-version: "3.13"
+      - name: Locked probe dependencies
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          uv sync --locked
+          exit $LASTEXITCODE
+      - name: Precompile the owned WPF fixture
+        if: startsWith(matrix.case, 'wpf-')
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          dotnet build scripts/panel_fixture/PanelFixture.csproj --configuration Release --output .tmp/panel-fixture
+          exit $LASTEXITCODE
+      - name: One bounded attempt, no automatic rerun
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          uv run --no-sync python -m scripts.panel_feasibility --case $env:PROBE_CASE --output "receipts/$env:PROBE_CASE" --wpf-executable .tmp/panel-fixture/PanelFixture.exe
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: ${{ !cancelled() }}
+        with:
+          name: first-panel-provider-${{ matrix.case }}
+          path: |
+            receipts/**/receipt.json
+            receipts/**/fixture.json
+            receipts/**/states/*.json
+            receipts/**/probe/*.json
+            receipts/**/probe/*.jsonl
+            receipts/**/probe/*.png
+          if-no-files-found: error
+          retention-days: 14
