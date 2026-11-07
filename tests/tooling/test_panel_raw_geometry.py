@@ -243,12 +243,13 @@ def test_failed_cleanup_without_prior_failure_rejects() -> None:
     api.VariantClear.assert_called_once()
 
 
-def test_raw_mode_has_no_discovery_retry() -> None:
+def test_raw_mode_declares_bounded_accessibility_readiness() -> None:
     """New mode is separate from historical sparse/browser qualification."""
     from scripts.panel_feasibility import probe_arguments  # noqa: PLC0415
 
     assert probe_arguments({"kind": "owned-edge"}, "raw-geometry") == [
-        "--raw-geometry-diagnostic"
+        "--settle-discovery",
+        "--raw-geometry-diagnostic",
     ]
 
 

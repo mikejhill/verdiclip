@@ -282,7 +282,7 @@ def probe_arguments(fixture: Json, experiment: str) -> list[str]:
         ["--settle-discovery"] if fixture["kind"] == "owned-edge" else ["--full-sweep"]
     )
     if experiment == "raw-geometry":
-        extra = ["--raw-geometry-diagnostic"]
+        extra = ["--settle-discovery", "--raw-geometry-diagnostic"]
     elif experiment == "clipping":
         extra = ["--clipping-diagnostic"]
     elif experiment == "seam":

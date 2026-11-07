@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import ctypes as c
 import json
+import math
 import os
 import sys
 import time
@@ -126,6 +127,32 @@ class Probe:
         # earlier instant and must never rewind nested native-call evidence.
         self.log.write(json.dumps({**event, "monotonic": time.monotonic()}) + "\n")
         self.log.flush()
+        if event.get("event") == "call_start":
+            self.raw_readiness_deadline()
+        if (
+            getattr(self.args, "raw_geometry_diagnostic", False)
+            and event.get("event") == "call_end"
+        ):
+            duration: Any = event.get("seconds")
+            if (
+                type(duration) not in (int, float)
+                or not math.isfinite(duration)
+                or not 0 <= duration < RAW_CALL_SECONDS
+            ):
+                raise RuntimeError("Raw readiness native call duration invalid or >=3s")
+
+    def raw_readiness_deadline(self) -> None:
+        """Never reset the raw helper budget while waiting for accessibility."""
+        if not getattr(self.args, "raw_geometry_diagnostic", False):
+            return
+        now = time.monotonic()
+        if (
+            not math.isfinite(now)
+            or now < self.raw_clock_floor
+            or now >= self.raw_deadline
+        ):
+            raise RuntimeError("Raw readiness original helper deadline/regression")
+        self.raw_clock_floor = now
 
     def validate(self) -> ScrollState:
         """Check ownership and unchanged geometry/extent/acknowledged state."""
@@ -270,11 +297,26 @@ class Probe:
         ):
             raise RuntimeError("Invalid/oversized fixture rectangle or point")
 
+    def readiness_guard(self) -> None:
+        """Bound each raw readiness guard before admitting another native read."""
+        self.raw_readiness_deadline()
+        if self.guard is None:
+            raise RuntimeError("Missing readiness guard")
+        started = time.monotonic()
+        self.guard.check()
+        if getattr(self.args, "raw_geometry_diagnostic", False):
+            elapsed = time.monotonic() - started
+            if not math.isfinite(elapsed) or not 0 <= elapsed < RAW_CALL_SECONDS:
+                raise RuntimeError("Raw readiness guard exceeded three seconds")
+        self.raw_readiness_deadline()
+
     def discovery_observation(self, name: str) -> Structure:
         """Retain each cold/delayed read, including failures before selection."""
         if self.uia is None or self.guard is None:
             raise RuntimeError("Probe not initialized")
-        self.guard.check()
+        self.raw_readiness_deadline()
+        self.readiness_guard()
+        self.raw_readiness_deadline()
         observation: dict[str, object] = {
             "name": name,
             "monotonic": time.monotonic(),
@@ -282,8 +324,11 @@ class Probe:
         self.report[f"discovery_{name}"] = observation
         self.emit({"event": "discovery_start", **observation})
         try:
+            self.raw_readiness_deadline()
             target = self.uia.discover(self.args.x, self.args.y)
-            self.guard.check()
+            self.raw_readiness_deadline()
+            self.readiness_guard()
+            self.raw_readiness_deadline()
             observation["target"] = asdict(target)
         except Exception as error:
             observation["error"] = repr(error)
@@ -321,19 +366,31 @@ class Probe:
             ):
                 raise
         # No scroll has occurred. Preserve the same client, root and input epoch.
+        self.raw_readiness_deadline()
         deadline = time.monotonic() + DISCOVERY_DELAY_SECONDS
         while True:
-            self.guard.check()
+            self.raw_readiness_deadline()
+            self.readiness_guard()
+            self.raw_readiness_deadline()
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
             time.sleep(min(DISCOVERY_GUARD_INTERVAL_SECONDS, remaining))
+        self.raw_readiness_deadline()
         self.uia.ancestors.clear()
         return self.discovery_observation("delayed")
 
     def execute(self) -> None:
         """Validate explicit owned-fixture identity before the first write."""
         started = time.monotonic()
+        if getattr(self.args, "raw_geometry_diagnostic", False):
+            self.raw_deadline = started + 30.0
+            self.raw_clock_floor = started
+            self.report["accessibility_readiness_mode"] = (
+                "cold-then-one-guarded-1s-final-observation"
+                if self.args.settle_discovery
+                else "immediate-only"
+            )
         fixture = json.loads(
             Path(self.args.fixture_manifest).read_text(encoding="utf-8")
         )
@@ -598,8 +655,6 @@ def main() -> int:
     mode.add_argument("--browser-sequence", action="store_true")
     parser.add_argument("--settle-discovery", action="store_true")
     args = parser.parse_args()
-    if args.raw_geometry_diagnostic and args.settle_discovery:
-        parser.error("Raw geometry permits no discovery retry")
     return Probe(args).run()
 
 
