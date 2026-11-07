@@ -83,7 +83,7 @@ is allowed.
   repeat, cursor behavior, and tab presentation are not reimplemented.
 - One new owned child process per scrolling session, launched directly as the
   application/Python module. No PowerShell, runtime compiler, broker, persistent
-  process, readiness warm-up, or broad compatibility layer. Native UIA is called
+  process, background readiness warm-up, or broad compatibility layer. Native UIA is called
   only in the helper's windowless MTA. A small explicit ctypes COM adapter uses
   documented UIAutomationCore interfaces and is tested independently.
 - The parent uses asynchronous `QProcess` signals and a bounded line-delimited
@@ -109,6 +109,10 @@ is allowed.
   foreground/target HWND and PID identity, bounds, screen layout, visibility and
   occlusion. UIA target identity is retained in-process; no fuzzy title matching.
   Only the chosen target's ancestor chain is traversed (maximum 32 levels).
+  A cold browser accessibility tree may expose only shell panes. After ordinary
+  no-pattern chain exhaustion, one bounded one-second read-only settling
+  observation may repeat discovery with the same client and input epoch. No
+  provider-error retries, polling extensions or writes before target validation.
   Scrollbar discovery is bounded to the selected subtree (maximum 64 nodes).
 - Temporarily register unmodified Escape with the existing native hotkey owner.
   Registration must succeed before the first scroll; release it on every exit.
@@ -153,13 +157,23 @@ of invented output rows. A provider that jumps in noncontinuous logical/item
 units or unexpectedly advances a whole repeated period is unsupported. Failure to
 obtain an unambiguous overlap stops capture. There is no gap interpolation.
 
-The stitcher compares complete content-width scanlines, excluding only separately
-identified scrollbar strips. It requires a unique contiguous overlap of at least
-one quarter of the viewport (and at least 24 rows). Stationary/dynamic regions,
-no-progress frames, missing overlap, or multiple plausible displacements are
-failures. The first frame contributes its full height; each later frame
-contributes exactly the bottom rows after the measured overlap. The final clipped
-step uses this same rule, so the bottom is never rounded to a whole-page count.
+The stitcher compares complete content-width scanlines in the overlap interior.
+Native WPF evidence shows viewport-edge glyph clipping can alter the first
+scanline by up to 3/255 even after an exact integral scroll. Accordingly, exactly
+one scanline at each end of the overlap is excluded from alignment evidence,
+not from output. Every interior channel must match exactly, with no color
+threshold or percentage-guided disambiguation. The verified interior must be at
+least one quarter of the viewport (and at least 24 rows), and exactly one
+candidate displacement may satisfy it. No-progress and ambiguous/repeating
+content fail. A one-pixel edge change cannot always be distinguished from
+clipping; this explicit limitation replaces the prior exact-boundary claim.
+
+Splice at the midpoint of verified overlap: retain the existing composite before
+the seam and use the new frame after it. This avoids both viewport-clipped edges
+at internal seams. Output height must increase by exactly the measured physical
+displacement; no interpolation, missing rows or duplicate rows. The initial top
+and final bottom edges are retained from their endpoint frames. Keep the original
+exact-overlap diagnostic alongside boundary-aware results in qualification.
 
 Completion needs all of:
 

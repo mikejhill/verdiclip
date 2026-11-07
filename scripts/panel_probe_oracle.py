@@ -77,6 +77,20 @@ def overlap_displacements(first: Pixels, second: Pixels) -> list[int]:
     ]
 
 
+def interior_overlap_displacements(first: Pixels, second: Pixels) -> list[int]:
+    """Independent boundary-aware oracle; all verified interior bytes are exact."""
+    if (first.width, first.height) != (second.width, second.height):
+        raise ValueError("Frame dimensions changed")
+    stride = first.width * RGB_CHANNELS
+    minimum = max(24, (first.height + 3) // 4)
+    return [
+        shift
+        for shift in range(1, first.height - minimum - 1)
+        if first.rgb[(shift + 1) * stride : (first.height - 1) * stride]
+        == second.rgb[stride : (first.height - shift - 1) * stride]
+    ]
+
+
 def row_color(index: int) -> bytes:
     """Return the independently known color for one authored synthetic row."""
     return bytes(32 + index * multiplier % 190 for multiplier in (53, 29, 71))

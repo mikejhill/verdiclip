@@ -10,7 +10,7 @@ EXPECTED_FRAMES = frozenset({"before", "top", "mid", "bottom", "restore"})
 def checkpoint_passed(oracle: Mapping[str, object]) -> bool:
     """Reject incomplete or contradictory independent synthetic evidence."""
     checks = oracle.get("frame_checks")
-    shifts = oracle.get("top_mid_displacements")
+    shifts = oracle.get("top_mid_interior_displacements")
     if not isinstance(checks, dict) or set(checks) != EXPECTED_FRAMES:
         return False
     if any(

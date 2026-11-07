@@ -51,3 +51,25 @@ Delayed readiness is a hypothesis this experiment tests. The design's exclusion
 of product readiness warm-up remains unchanged pending evidence and review.
 A completed read-only experiment has `diagnostic_completed: true` but never
 `checkpoint_passed: true`; neither indicates browser capture support.
+
+## Third experiment and design decision
+
+Head `2ef7694ad1c9516354173696bcd01359ec886372`, native run
+[42349794928](https://github.com/mikejhill/verdiclip/actions/runs/42349794928).
+Both Edge variants expose only shell panes initially, then the correct inner
+ScrollPattern after the single guarded one-second delay. Diagnostic completion
+is not capture qualification. Actual browser scrolling remains the next gate.
+
+WPF nested passes. Other WPF cases now report exactly 206 pixels, yet retain the
+same 78 channel differences, **all on the first scanline of the new viewport**.
+Every other overlap scanline is exact. Independent analysis confirms viewport
+boundary clipping rather than fractional-motion error. Repeated arithmetic
+changes are not an appropriate remedy.
+
+The next candidate explicitly changes the design: ignore exactly one overlap
+boundary scanline at each end only for alignment, require exact full-width
+interior equality and a unique displacement, and splice inside the verified
+interior. Minimum evidence applies after excluding the two scanlines. Preserve
+exact-overlap diagnostics. This is a real acceptance-rule change with a recorded
+one-pixel-edge ambiguity limit, not a claim that prior exact-boundary checks pass.
+The pure stitcher is tested independently before any product path is wired.

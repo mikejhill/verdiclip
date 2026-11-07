@@ -23,6 +23,7 @@ from scripts.panel_probe_oracle import (
     Pixels,
     color_bounds,
     inspect_rows,
+    interior_overlap_displacements,
     overlap_displacements,
 )
 
@@ -229,13 +230,12 @@ def run_probe(job: OwnedJob, fixture: Json, output: Path) -> Json:
         [str(ROOT), str(Path(sys.prefix) / "Lib/site-packages"), str(ROOT / "src")]
     )
     probe_dir = output / "probe"
-    read_only = fixture["kind"] == "owned-edge"
-    module = "scripts.panel_edge_readiness" if read_only else "scripts.panel_uia_probe"
+    extra = ["--settle-discovery"] if fixture["kind"] == "owned-edge" else []
     pid, handle = job.start(
         [
             str(base),
             "-m",
-            module,
+            "scripts.panel_uia_probe",
             "--x",
             str(round(fixture["click"][0])),
             "--y",
@@ -246,6 +246,7 @@ def run_probe(job: OwnedJob, fixture: Json, output: Path) -> Json:
             str(manifest),
             "--output",
             str(probe_dir),
+            *extra,
         ],
         ROOT,
     )
@@ -360,6 +361,11 @@ def oracle(fixture: Json, states: list[Json], output: Path) -> Json:
         "top_mid_displacements": overlap_displacements(frames["top"], frames["mid"])
         if "top" in frames and "mid" in frames
         else [],
+        "top_mid_interior_displacements": interior_overlap_displacements(
+            frames["top"], frames["mid"]
+        )
+        if "top" in frames and "mid" in frames
+        else [],
         "sibling_outer_unchanged": unchanged,
         "horizontal_unchanged": horizontal,
         "original_state_restored": restored_state,
@@ -389,18 +395,19 @@ def verify_result(result: Json, output: Path, state_dir: Path, fixture: Json) ->
         for record in events(output / "probe/calls.jsonl")
     ):
         raise RuntimeError("Completed native call exceeded three seconds")
-    _require_probe_success(result["helper"]["exit_code"])
     if result["read_only_discovery"]:
         report = json.loads(
             (output / "probe/manifest.json").read_text(encoding="utf-8")
         )
         result["discovery"] = report
+        _require_probe_success(result["helper"]["exit_code"])
         result["diagnostic_completed"] = report.get("diagnostic_completed") is True
         if not result["diagnostic_completed"]:
             raise RuntimeError("Read-only discovery experiment incomplete")
     else:
         time.sleep(0.15)
         result["oracle"] = oracle(fixture, snapshots(state_dir), output)
+        _require_probe_success(result["helper"]["exit_code"])
         result["checkpoint_passed"] = checkpoint_passed(result["oracle"])
         if not result["checkpoint_passed"]:
             raise RuntimeError(
@@ -431,7 +438,7 @@ def main() -> int:
         "first_failure": None,
         "cleanup": {},
         "checkpoint_passed": False,
-        "read_only_discovery": args.case.startswith("edge-"),
+        "read_only_discovery": False,
         "diagnostic_completed": False,
     }
     fixture_job = None

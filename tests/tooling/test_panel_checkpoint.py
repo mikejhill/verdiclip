@@ -14,7 +14,7 @@ def evidence() -> dict[str, Any]:
     return {
         "complete": True,
         "frame_checks": {name: {"matches": True} for name in EXPECTED_FRAMES},
-        "top_mid_displacements": [120],
+        "top_mid_interior_displacements": [120],
         "sibling_outer_unchanged": True,
         "horizontal_unchanged": True,
         "original_state_restored": True,
@@ -47,7 +47,7 @@ def test_missing_ambiguous_or_invalid_overlap_fails(
     evidence: dict[str, Any], shifts: object
 ) -> None:
     """A single positive integer pixel displacement is required."""
-    evidence["top_mid_displacements"] = shifts
+    evidence["top_mid_interior_displacements"] = shifts
     assert not checkpoint_passed(evidence)
 
 

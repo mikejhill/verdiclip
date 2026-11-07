@@ -1,7 +1,8 @@
 """Supervised Windows-only UIA feasibility probe; never product capture code.
 
 Run only against an owned fixture with a hard-timeout process supervisor. Output
-must be a new directory. No retries, stitching, automatic fallback or GUI.
+must be a new directory. No write retries, stitching, automatic fallback or GUI.
+Explicit discovery settling permits one guarded read-only delayed observation.
 """
 
 from __future__ import annotations
@@ -17,12 +18,14 @@ from pathlib import Path
 
 import mss
 import mss.tools
-from scripts.panel_uia import PanelUia, Point, ScrollState, Structure
+from scripts.panel_uia import MAX_ANCESTORS, PanelUia, Point, ScrollState, Structure
 from scripts.panel_viewport import midpoint_percent, viewport_rect
 
 MAX_PIXELS = 16_000_000
 SETTLE_SECONDS = 2
 STABLE_SAMPLES = 3
+DISCOVERY_DELAY_SECONDS = 1.0
+DISCOVERY_GUARD_INTERVAL_SECONDS = 0.05
 FULL_PERCENT = 100
 
 
@@ -235,6 +238,61 @@ class Probe:
         ):
             raise RuntimeError("Invalid/oversized fixture rectangle or point")
 
+    def discovery_observation(self, name: str) -> Structure:
+        """Retain each cold/delayed read, including failures before selection."""
+        if self.uia is None or self.guard is None:
+            raise RuntimeError("Probe not initialized")
+        self.guard.check()
+        observation: dict[str, object] = {
+            "name": name,
+            "monotonic": time.monotonic(),
+        }
+        self.report[f"discovery_{name}"] = observation
+        self.emit({"event": "discovery_start", **observation})
+        try:
+            target = self.uia.discover(self.args.x, self.args.y)
+            self.guard.check()
+            observation["target"] = asdict(target)
+        except Exception as error:
+            observation["error"] = repr(error)
+            raise
+        else:
+            return target
+        finally:
+            observation["ancestors"] = [asdict(item) for item in self.uia.ancestors]
+            self.emit({"event": "discovery_observation", **observation})
+
+    def discover_target(self) -> Structure:
+        """Optionally settle one normal cold miss; never retry native errors."""
+        if self.uia is None or self.guard is None:
+            raise RuntimeError("Probe not initialized")
+        if not self.args.settle_discovery:
+            return self.uia.discover(self.args.x, self.args.y)
+        try:
+            return self.discovery_observation("cold")
+        except OSError as error:
+            count = len(self.uia.ancestors)
+            if not (
+                self.uia.target is None
+                and 1 <= count <= MAX_ANCESTORS
+                and str(error)
+                == (
+                    "No vertical ScrollPattern: ancestor chain ended after "
+                    f"{count} nodes"
+                )
+            ):
+                raise
+        # No scroll has occurred. Preserve the same client, root and input epoch.
+        deadline = time.monotonic() + DISCOVERY_DELAY_SECONDS
+        while True:
+            self.guard.check()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(DISCOVERY_GUARD_INTERVAL_SECONDS, remaining))
+        self.uia.ancestors.clear()
+        return self.discovery_observation("delayed")
+
     def execute(self) -> None:
         """Validate explicit owned-fixture identity before the first write."""
         fixture = json.loads(
@@ -250,7 +308,7 @@ class Probe:
         if root_pid.value != self.args.expected_pid:
             raise RuntimeError("Root PID differs from expected owned fixture")
         self.uia = PanelUia(self.emit)
-        self.identity = self.uia.discover(self.args.x, self.args.y)
+        self.identity = self.discover_target()
         self.guard.check()
         self.report["target"] = asdict(self.identity)
         self.emit({"event": "discovered_target", **asdict(self.identity)})
@@ -339,6 +397,7 @@ def main() -> int:
     parser.add_argument("--fixture-manifest", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--inspect-only", action="store_true")
+    parser.add_argument("--settle-discovery", action="store_true")
     return Probe(parser.parse_args()).run()
 
 
