@@ -237,6 +237,8 @@ def probe_arguments(fixture: Json, experiment: str) -> list[str]:
         extra = ["--seam-sweep"]
     elif experiment == "msaa":
         extra = ["--settle-discovery", "--msaa-diagnostic"]
+    elif experiment == "browser":
+        extra = ["--settle-discovery", "--browser-sequence"]
     elif experiment != "standard":
         raise ValueError("Unknown owned-fixture experiment")
     return extra
@@ -528,6 +530,32 @@ def verify_diagnostic(result: Json, output: Path) -> None:
             raise RuntimeError("Clipping diagnostic or restoration incomplete")
 
 
+def verify_browser_sequence(
+    result: Json, output: Path, state_dir: Path, fixture: Json
+) -> None:
+    """Verify raw evidence and controls, never claim a stitched browser capture."""
+    report = json.loads((output / "probe/manifest.json").read_text(encoding="utf-8"))
+    result["diagnostic"] = report
+    _require_probe_success(result["helper"]["exit_code"])
+    time.sleep(0.15)
+    observed = oracle(fixture, snapshots(state_dir), output)
+    result["raw_frame_oracle"] = observed
+    result["diagnostic_completed"] = (
+        report.get("browser_sequence_completed") is True
+        and report.get("restored") is True
+        and not (output / "probe/stitched.png").exists()
+        and observed["complete"]
+        and observed["sibling_outer_unchanged"]
+        and observed["horizontal_unchanged"]
+        and observed["original_state_restored"]
+        and observed["original_pixels_restored"]
+        and bool(observed["frame_checks"])
+        and all(check["matches"] for check in observed["frame_checks"].values())
+    )
+    if not result["diagnostic_completed"]:
+        raise RuntimeError("Browser raw sequence or independent controls incomplete")
+
+
 def verify_result(result: Json, output: Path, state_dir: Path, fixture: Json) -> None:
     """Keep read-only discovery distinct from actual pixel checkpoint success."""
     if any(
@@ -536,7 +564,9 @@ def verify_result(result: Json, output: Path, state_dir: Path, fixture: Json) ->
         for record in events(output / "probe/calls.jsonl")
     ):
         raise RuntimeError("Completed native call exceeded three seconds")
-    if result.get("msaa_diagnostic") or result.get("clipping_diagnostic"):
+    if result.get("browser_sequence"):
+        verify_browser_sequence(result, output, state_dir, fixture)
+    elif result.get("msaa_diagnostic") or result.get("clipping_diagnostic"):
         verify_diagnostic(result, output)
     elif result.get("full_sweep"):
         result["oracle"] = full_sweep_oracle(fixture, output)
@@ -587,6 +617,7 @@ def parse_arguments() -> tuple[argparse.Namespace, str]:
     mode.add_argument("--clipping-diagnostic", action="store_true")
     mode.add_argument("--msaa-diagnostic", action="store_true")
     mode.add_argument("--seam-sweep", action="store_true")
+    mode.add_argument("--browser-sequence", action="store_true")
     args = parser.parse_args()
     if args.clipping_diagnostic and args.case != "wpf-nested":
         parser.error("Clipping diagnostic requires the owned nested WPF fixture")
@@ -594,6 +625,8 @@ def parse_arguments() -> tuple[argparse.Namespace, str]:
         parser.error("MSAA diagnostic requires an owned Edge fixture")
     if args.seam_sweep and not args.case.startswith("wpf-"):
         parser.error("First seam experiment requires an owned WPF fixture")
+    if args.browser_sequence and not args.case.startswith("edge-"):
+        parser.error("Browser sequence requires an owned Edge fixture")
     experiment = "standard"
     if args.clipping_diagnostic:
         experiment = "clipping"
@@ -601,6 +634,8 @@ def parse_arguments() -> tuple[argparse.Namespace, str]:
         experiment = "msaa"
     elif args.seam_sweep:
         experiment = "seam"
+    elif args.browser_sequence:
+        experiment = "browser"
     return args, experiment
 
 
@@ -618,6 +653,7 @@ def main() -> int:
         "clipping_diagnostic": args.clipping_diagnostic,
         "msaa_diagnostic": args.msaa_diagnostic,
         "seam_sweep": args.seam_sweep,
+        "browser_sequence": args.browser_sequence,
         "diagnostic_completed": False,
     }
     fixture_job = None

@@ -14,6 +14,8 @@ from scripts.owned_pipe_smoke import (
     MAX_MESSAGE_BYTES,
     MAX_REQUESTS,
     Decoder,
+    GapStats,
+    LatencyMetrics,
     Message,
     ProtocolError,
     Session,
@@ -252,6 +254,7 @@ def test_cancel_does_not_enqueue_protocol_operation() -> None:
     """Cancellation remains possible while the child is blocked in ReadFile."""
     failures = []
     fake = SimpleNamespace(_fail=failures.append)
+    fake.latency = LatencyMetrics()
     Session.cancel(cast("Session", fake))
     assert failures == ["cancelled"]
 
@@ -269,6 +272,7 @@ def test_clean_exit_before_queued_final_bytes_keeps_command_deadline() -> None:
         failure=None,
         _deadline=lambda: None,
     )
+    fake.latency = LatencyMetrics()
     Session._poll(cast("Session", fake))
     assert calls == ["read"]
     assert fake.phase == "command"
@@ -294,6 +298,7 @@ def test_final_bytes_drained_before_cleanup_completion() -> None:
         calls.append("read")
 
     fake._readable = read
+    fake.latency = LatencyMetrics()
     Session._poll(cast("Session", fake))
     assert calls[-1] == "finish"
     assert calls[0] == "read"
@@ -353,6 +358,7 @@ def test_cleanup_poll_cannot_win_expired_deadline(
     fake._finish = finish
     fake._deadline = lambda: Session._deadline(cast("Session", fake))
     monkeypatch.setattr("scripts.owned_pipe_smoke.time.monotonic", lambda: 5)
+    fake.latency = LatencyMetrics()
     Session._poll(cast("Session", fake))
     assert calls == ["release", "finish"]
     assert fake.cleanup_failure == "cleanup-timeout"
@@ -373,9 +379,11 @@ def test_retired_child_without_qt_eof_is_not_success() -> None:
         _readable=lambda: calls.append("read"),
         _finish=lambda: calls.append("finish"),
     )
+    fake.latency = LatencyMetrics()
     Session._poll(cast("Session", fake))
     assert calls == ["read"]
     fake.eof = True
+    fake.latency = LatencyMetrics()
     Session._poll(cast("Session", fake))
     assert calls[-1] == "finish"
 
@@ -403,6 +411,7 @@ def test_nonzero_exit_after_finished_reply_is_failure() -> None:
         calls.append(reason)
 
     fake._fail = fail
+    fake.latency = LatencyMetrics()
     Session._poll(cast("Session", fake))
     assert calls == ["unexpected-exit", "finish"]
 
@@ -467,3 +476,186 @@ def test_wrong_peer_fixture_spawns_only_contained_child(
     assert flags == 0x08000000
     assert close_fds is True
     assert calls[1] == 60
+
+
+def test_latency_gap_stats_include_blocked_first_heartbeat() -> None:
+    """Arming before startup ensures a blocking callback appears in the first gap."""
+    heartbeat = GapStats()
+    heartbeat.tick(0)
+    heartbeat.tick(75_000_000)
+    heartbeat.tick(85_000_000)
+    assert heartbeat.report() == {
+        "count": 2,
+        "first_gap_ns": 75_000_000,
+        "maximum_gap_ns": 75_000_000,
+        "mean_gap_ns": 42_500_000,
+    }
+
+
+def test_latency_gap_storage_is_constant_space() -> None:
+    """Longer waits grow counters, not a list of event-loop samples."""
+    gaps = GapStats()
+    for instant in range(10000):
+        gaps.tick(instant * 10_000_000)
+    assert gaps.count == 9999
+    assert gaps.maximum_ns == 10_000_000
+    assert len(vars(gaps)) == 5
+
+
+def test_latency_spans_record_exceptions_without_changing_them(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Timing a failed native call cannot swallow or replace its failure."""
+    now = iter([100, 175])
+    monkeypatch.setattr(
+        "scripts.owned_pipe_smoke.time.perf_counter_ns", lambda: next(now)
+    )
+    metrics = LatencyMetrics()
+    with (
+        pytest.raises(RuntimeError, match="native failure"),
+        metrics.measure("helper_start"),
+    ):
+        raise RuntimeError("native failure")
+    spans = metrics.report()["spans_ns"]
+    assert isinstance(spans, dict)
+    assert spans["helper_start"] == 75
+
+
+def test_latency_first_transitions_keep_cancel_and_cleanup_timing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repeated error callbacks cannot reset the measured cleanup interval."""
+    now = iter([10, 12, 15, 20, 40, 45])
+    monkeypatch.setattr(
+        "scripts.owned_pipe_smoke.time.perf_counter_ns", lambda: next(now)
+    )
+    metrics = LatencyMetrics()
+    for mark in (
+        "cancel_requested",
+        "cleanup_started",
+        "termination_requested",
+        "cleanup_started",
+        "cleanup_confirmed",
+        "terminal",
+    ):
+        metrics.mark(mark)
+    report = metrics.report()
+    assert report["cancel_to_termination_request_ns"] == 5
+    assert report["cancel_to_cleanup_confirmed_ns"] == 30
+    assert report["cleanup_to_confirmed_ns"] == 28
+    assert report["cleanup_to_terminal_ns"] == 33
+    assert report["observation_only"] is True
+
+
+def test_latency_missing_confirmed_cleanup_stays_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cleanup timeout must not create a zero-duration successful cleanup sample."""
+    now = iter([10, 60])
+    monkeypatch.setattr(
+        "scripts.owned_pipe_smoke.time.perf_counter_ns", lambda: next(now)
+    )
+    metrics = LatencyMetrics()
+    metrics.mark("cleanup_started")
+    metrics.mark("terminal")
+    report = metrics.report()
+    assert report["cleanup_to_confirmed_ns"] is None
+    assert report["cleanup_to_terminal_ns"] == 50
+    assert report["cancel_to_cleanup_confirmed_ns"] is None
+
+
+def test_latency_names_have_fixed_bounds() -> None:
+    """Arbitrary metric keys cannot grow instrumentation state indefinitely."""
+    metrics = LatencyMetrics()
+    with (
+        pytest.raises(ValueError, match="Unknown latency span"),
+        metrics.measure("unbounded-key"),
+    ):
+        pytest.fail("Unknown span entered")
+    with pytest.raises(ValueError, match="Unknown latency transition"):
+        metrics.mark("unbounded-key")
+    assert not metrics.spans
+    assert not metrics.marks
+
+
+def test_start_callback_span_and_first_heartbeat_capture_launch_stall(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Instrumenting the callback observes blocking work without changing its path."""
+    clock = [0]
+    monkeypatch.setattr(
+        "scripts.owned_pipe_smoke.time.perf_counter_ns", lambda: clock[0]
+    )
+    metrics = LatencyMetrics()
+    metrics.heartbeat.tick(0)
+
+    def start() -> None:
+        with metrics.measure("helper_start"):
+            clock[0] += 45_000_000
+        clock[0] += 5_000_000
+
+    fake = SimpleNamespace(latency=metrics, _start=start, done=False)
+    Session.start(cast("Session", fake))
+    Session._heartbeat(cast("Session", fake))
+    assert metrics.spans == {"helper_start": 45_000_000, "start_callback": 50_000_000}
+    assert metrics.heartbeat.maximum_ns == 50_000_000
+
+
+def test_ready_verification_span_keeps_identity_admission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Record the existing verify_ready call without bypassing its result."""
+    clock = [0]
+    monkeypatch.setattr(
+        "scripts.owned_pipe_smoke.time.perf_counter_ns", lambda: clock[0]
+    )
+    sent = []
+
+    def verify(_pid: int, _executable: str) -> SimpleNamespace:
+        clock[0] += 3_000_000
+        return SimpleNamespace(producer_verified=True)
+
+    metrics = LatencyMetrics()
+    fake = SimpleNamespace(
+        phase="startup",
+        verified_pid=123,
+        case="fragmented",
+        latency=metrics,
+        helper=SimpleNamespace(verify_ready=verify),
+        _check_operation_deadline=lambda: None,
+        _send=sent.append,
+    )
+    Session._message(
+        cast("Session", fake),
+        Message("ready", 0, {"pid": 123, "executable": "C:\\owned-python.exe"}),
+    )
+    assert metrics.spans["verify_ready"] == 3_000_000
+    assert sent == [{"operation": "ping"}]
+
+
+def test_latency_kernel_retirement_before_buffered_final_reply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Retirement observed before protocol cleanup is not negative latency."""
+    now = iter([10, 20, 30])
+    monkeypatch.setattr(
+        "scripts.owned_pipe_smoke.time.perf_counter_ns", lambda: next(now)
+    )
+    metrics = LatencyMetrics()
+    metrics.mark("cleanup_confirmed")
+    metrics.mark("cleanup_started")
+    metrics.mark("terminal")
+    report = metrics.report()
+    assert report["cleanup_to_confirmed_ns"] is None
+    assert report["cleanup_to_terminal_ns"] == 10
+    assert report["transition_ordering"] == {
+        "cancel_requested_to_termination_requested": "missing_observation",
+        "cancel_requested_to_cleanup_confirmed": "missing_observation",
+        "cleanup_started_to_cleanup_confirmed": "end_observed_before_start",
+        "cleanup_started_to_terminal": "in_order",
+    }
+    assert metrics.marks == {
+        "cleanup_confirmed": 10,
+        "cleanup_started": 20,
+        "terminal": 30,
+    }

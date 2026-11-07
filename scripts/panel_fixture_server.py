@@ -78,7 +78,7 @@ class FixtureServer:
 
             @override
             def log_message(self, format: str, *args: object) -> None:
-                del format, args
+                pass
 
         return Handler
 

@@ -208,3 +208,26 @@ messages, oversized/duplicate/wrong-ID replies, startup/command timeout,
 cancellation and a contained wrong-peer descendant. Positive completion requires
 clean EOF, zero producer exit and confirmed cleanup. Deadlines are checked at
 admission as well as by timers. This experiment has no UIA, images or product UI.
+
+## Tenth experiment and next evidence
+
+Native run [42355411137](https://github.com/mikejhill/verdiclip/actions/runs/42355411137)
+at `253876a301d545182d0116537243476c357c9a30` passes all eight inert pipe
+cases on Windows with Qt 6.11.2. Actual kernel peer identity is verified, the
+contained wrong peer is rejected, positive completion sees clean EOF and zero
+exit, and every case confirms whole-job cleanup. Existing panel results remain
+consistent, including the separately retained strict nested failure. Ordinary CI
+and CodeQL pass. No product transport is enabled.
+
+The next batch records constant-space event-loop/startup/cancellation latency
+observations without inventing a responsiveness guarantee. Reversed observation
+order produces a null duration and explicit ordering, not a negative or fake zero.
+A fresh installed-wheel test runs a copied script outside the checkout, verifies
+explicit isolated package origins/versions and poison-path controls, initializes
+MSS without Qt in the helper, and retains metadata only for a 16-by-16 sample.
+
+A separate browser collector retains an overlapping sequence of full outer
+frames with fixed quarter/half-view offsets and exact endpoint/top/restoration
+controls. It produces no stitched result and uses no image heuristic or NumPy.
+Independent fixture row/state checks verify raw evidence; complete browser image
+assembly remains a separate offline investigation with explicit ambiguity limits.

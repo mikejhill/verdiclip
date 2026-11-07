@@ -20,6 +20,7 @@ from typing import Any
 
 import mss
 import mss.tools
+from scripts.panel_browser_sequence import BrowserSequence
 from scripts.panel_clipping_diagnostic import ClippingDiagnostic, validate_fixture
 from scripts.panel_full_sweep import FullSweep
 from scripts.panel_msaa_probe import probe_msaa
@@ -381,9 +382,11 @@ class Probe:
         started: float,
     ) -> None:
         """Keep independent experiments explicit; never fallback between them."""
-        if self.initial is None:
+        if self.initial is None or self.identity is None:
             raise RuntimeError("Experiment requires acknowledged initial state")
-        if getattr(self.args, "msaa_diagnostic", False):
+        if getattr(self.args, "browser_sequence", False):
+            BrowserSequence(self, source, self.identity.rect, before, started).run()
+        elif getattr(self.args, "msaa_diagnostic", False):
             self.read_msaa(fixture, source, before)
         elif getattr(self.args, "seam_sweep", False):
             self.check_viewport_point(viewport)
@@ -497,6 +500,7 @@ def main() -> int:
     mode.add_argument("--clipping-diagnostic", action="store_true")
     mode.add_argument("--msaa-diagnostic", action="store_true")
     mode.add_argument("--seam-sweep", action="store_true")
+    mode.add_argument("--browser-sequence", action="store_true")
     parser.add_argument("--settle-discovery", action="store_true")
     return Probe(parser.parse_args()).run()
 

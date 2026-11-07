@@ -21,6 +21,8 @@ import sys
 import tempfile
 import time
 import uuid
+from collections.abc import Generator
+from contextlib import contextmanager
 from ctypes import wintypes as w
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -58,6 +60,111 @@ _BOOTSTRAP = (
     "import runpy,sys;sys.path.insert(0,sys.argv[1]);"
     "sys.argv=sys.argv[2:];runpy.run_path(sys.argv[0],run_name='__main__')"
 )
+
+
+@dataclass
+class GapStats:
+    """Constant-space event-loop gap observations, not a responsiveness promise."""
+
+    last_ns: int | None = None
+    count: int = 0
+    total_ns: int = 0
+    maximum_ns: int = 0
+    first_ns: int | None = None
+
+    def tick(self, now_ns: int) -> None:
+        """Include delayed timer delivery instead of resetting away its stall."""
+        if self.last_ns is not None:
+            elapsed = now_ns - self.last_ns
+            self.count += 1
+            self.total_ns += elapsed
+            self.maximum_ns = max(self.maximum_ns, elapsed)
+            if self.first_ns is None:
+                self.first_ns = elapsed
+        self.last_ns = now_ns
+
+    def report(self) -> dict[str, int | None]:
+        """Summarize bounded counters without retaining individual samples."""
+        return {
+            "count": self.count,
+            "first_gap_ns": self.first_ns,
+            "maximum_gap_ns": self.maximum_ns,
+            "mean_gap_ns": self.total_ns // self.count if self.count else None,
+        }
+
+
+class LatencyMetrics:
+    """Measurements use perf_counter_ns, separate from unchanged safety clocks."""
+
+    SPANS = ("start_callback", "helper_start", "verify_ready", "cancel_callback")
+    MARKS = (
+        "cancel_requested",
+        "termination_requested",
+        "cleanup_started",
+        "terminal",
+        "cleanup_confirmed",
+    )
+
+    def __init__(self) -> None:
+        self.spans: dict[str, int] = {}
+        self.marks: dict[str, int] = {}
+        self.heartbeat = GapStats()
+        self.poll = GapStats()
+
+    @contextmanager
+    def measure(self, name: str) -> Generator[None]:
+        """Retain a fixed named span even when its measured action fails."""
+        if name not in self.SPANS:
+            raise ValueError("Unknown latency span")
+        started = time.perf_counter_ns()
+        try:
+            yield
+        finally:
+            self.spans.setdefault(name, time.perf_counter_ns() - started)
+
+    def mark(self, name: str) -> None:
+        """Latch the first transition; repeated failures cannot reset elapsed time."""
+        if name not in self.MARKS:
+            raise ValueError("Unknown latency transition")
+        self.marks.setdefault(name, time.perf_counter_ns())
+
+    def report(self) -> dict[str, object]:
+        """Publish missing observations as null rather than invented zero latency."""
+        ordering: dict[str, str] = {}
+
+        def elapsed(start: str, end: str) -> int | None:
+            key = f"{start}_to_{end}"
+            if start not in self.marks or end not in self.marks:
+                ordering[key] = "missing_observation"
+                return None
+            duration = self.marks[end] - self.marks[start]
+            if duration < 0:
+                # Kernel retirement can precede protocol cleanup when the final
+                # reply is still buffered. Preserve timestamps, not a fake zero.
+                ordering[key] = "end_observed_before_start"
+                return None
+            ordering[key] = "in_order"
+            return duration
+
+        return {
+            "units": "nanoseconds",
+            "observation_only": True,
+            "spans_ns": {name: self.spans.get(name) for name in self.SPANS},
+            "heartbeat": self.heartbeat.report(),
+            "poll": self.poll.report(),
+            "timer_interval_ms": POLL_MS,
+            "heartbeat_armed_before_start_callback": True,
+            "poll_timer_starts_after_helper_start": True,
+            "cancel_to_termination_request_ns": elapsed(
+                "cancel_requested", "termination_requested"
+            ),
+            "cancel_to_cleanup_confirmed_ns": elapsed(
+                "cancel_requested", "cleanup_confirmed"
+            ),
+            "cleanup_to_confirmed_ns": elapsed("cleanup_started", "cleanup_confirmed"),
+            "cleanup_to_terminal_ns": elapsed("cleanup_started", "terminal"),
+            "transition_ordering": ordering,
+        }
 
 
 class ProtocolError(ValueError):
@@ -388,6 +495,7 @@ class Session:
         from PySide6.QtNetwork import QLocalServer  # noqa: PLC0415
 
         self.application, self.case, self.directory = application, case, directory
+        self.latency = LatencyMetrics()
         self.helper = OwnedHelper()
         self.api = NativePipe()
         self.decoder, self.flight = Decoder(), SingleFlight()
@@ -416,8 +524,18 @@ class Session:
         self.cancel_timer = QTimer(application)
         self.cancel_timer.setSingleShot(True)
         self.cancel_timer.timeout.connect(self.cancel)
+        self.heartbeat_timer = QTimer(application)
+        self.heartbeat_timer.setInterval(POLL_MS)
+        self.heartbeat_timer.timeout.connect(self._heartbeat)
+        self.latency.heartbeat.tick(time.perf_counter_ns())
+        self.heartbeat_timer.start()
 
     def start(self) -> None:
+        """Time the existing Qt startup callback without moving work or deadlines."""
+        with self.latency.measure("start_callback"):
+            self._start()
+
+    def _start(self) -> None:
         """Listen before spawning the direct contained helper, with no Qt waits."""
         try:
             require(
@@ -441,13 +559,16 @@ class Session:
                 ),
                 self.directory,
             )
-            self.helper.start(command)
+            with self.latency.measure("helper_start"):
+                self.helper.start(command)
+            self.latency.poll.tick(time.perf_counter_ns())
             self.poll_timer.start()
             self.deadline_timer.start()
             if self.helper.status.failure is not None:
                 self._fail("startup-failed")
         except Exception as error:  # noqa: BLE001 - native experiment boundary
             self._fail(f"startup-error:{error}")
+            self.latency.poll.tick(time.perf_counter_ns())
             self.poll_timer.start()
             self.deadline_timer.start()
 
@@ -523,7 +644,9 @@ class Session:
                 or not isinstance(executable, str)
             ):
                 raise ProtocolError("invalid-ready")
-            if not self.helper.verify_ready(pid, executable).producer_verified:
+            with self.latency.measure("verify_ready"):
+                ready_status = self.helper.verify_ready(pid, executable)
+            if not ready_status.producer_verified:
                 raise ProtocolError("unverified-producer")
             self._send({"operation": "ping"})
             if self.case == "cancel":
@@ -567,9 +690,12 @@ class Session:
 
     def cancel(self) -> None:
         """Cancellation is out-of-band retirement, never a queued child command."""
-        self._fail("cancelled")
+        self.latency.mark("cancel_requested")
+        with self.latency.measure("cancel_callback"):
+            self._fail("cancelled")
 
     def _cleanup(self) -> None:
+        self.latency.mark("cleanup_started")
         self.phase = "cleanup"
         self.phase_deadline = time.monotonic() + CLEANUP_MS / 1000
         self.server.close()
@@ -581,14 +707,22 @@ class Session:
             self.failure = reason
         if self.phase != "cleanup":
             self._cleanup()
+        self.latency.mark("termination_requested")
         self.helper.terminate()
         if self.socket is not None:
             self.socket.abort()
 
+    def _heartbeat(self) -> None:
+        if not self.done:
+            self.latency.heartbeat.tick(time.perf_counter_ns())
+
     def _poll(self) -> None:
+        self.latency.poll.tick(time.perf_counter_ns())
         if self.done or self._deadline():
             return
         status = self.helper.poll()
+        if status.cleanup_confirmed:
+            self.latency.mark("cleanup_confirmed")
         if status.exit_code is not None:
             self._readable()
         if self.failure is None and (
@@ -626,6 +760,7 @@ class Session:
         self.poll_timer.stop()
         self.deadline_timer.stop()
         self.cancel_timer.stop()
+        self.heartbeat_timer.stop()
         self.server.close()
         if self.socket is not None:
             self.socket.close()
@@ -634,6 +769,10 @@ class Session:
         self.poll_timer.deleteLater()
         self.deadline_timer.deleteLater()
         self.cancel_timer.deleteLater()
+        self.heartbeat_timer.deleteLater()
+        if self.helper.status.cleanup_confirmed:
+            self.latency.mark("cleanup_confirmed")
+        self.latency.mark("terminal")
         self.application.quit()
 
     def result(self) -> dict[str, object]:
@@ -672,6 +811,7 @@ class Session:
             "clean_eof_observed": self.eof and not self.decoder.buffer,
             "socket_access": "UserAccessOption",
             "helper": asdict(self.helper.status),
+            "latency": self.latency.report(),
         }
 
 
@@ -682,7 +822,7 @@ def parent(output: Path) -> int:
     output.mkdir(parents=True, exist_ok=False)
     application = QCoreApplication([])
     results = []
-    for case in CASES:
+    for case_index, case in enumerate(CASES):
         with tempfile.TemporaryDirectory(
             prefix="verdiclip-pipe-proof-", ignore_cleanup_errors=True
         ) as temporary:
@@ -690,6 +830,10 @@ def parent(output: Path) -> int:
             QTimer.singleShot(0, session.start)
             application.exec()
             result = session.result()
+            result["launch_order"] = case_index
+            result["launch_context"] = (
+                "first-in-process" if case_index == 0 else "later-in-process"
+            )
             results.append(result)
             (output / f"{case}.json").write_text(
                 json.dumps(result, indent=2), encoding="utf-8"
@@ -702,6 +846,11 @@ def parent(output: Path) -> int:
             {
                 "passed": passed,
                 "qt_version": qVersion(),
+                "latency_note": (
+                    "Observation only; first launch in this process is labeled, "
+                    "but OS cache state is not controlled. "
+                    "Deadlines and admission gates are unchanged."
+                ),
                 "python": sys.version,
                 "pid": os.getpid(),
                 "cases": results,

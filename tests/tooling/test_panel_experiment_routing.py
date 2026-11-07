@@ -23,6 +23,7 @@ if TYPE_CHECKING:
         ("clipping", ["--clipping-diagnostic"]),
         ("seam", ["--seam-sweep"]),
         ("msaa", ["--settle-discovery", "--msaa-diagnostic"]),
+        ("browser", ["--settle-discovery", "--browser-sequence"]),
     ],
 )
 def test_explicit_probe_modes(experiment: str, expected: list[str]) -> None:
@@ -76,6 +77,49 @@ def test_msaa_diagnostic_requires_unchanged_read_only_evidence(
     }
     if failure is not None:
         with pytest.raises(RuntimeError, match="MSAA diagnostic"):
+            supervisor.verify_result(result, tmp_path, tmp_path, {})
+    else:
+        supervisor.verify_result(result, tmp_path, tmp_path, {})
+        assert result["diagnostic_completed"] is True
+    assert result["checkpoint_passed"] is False
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [None, "complete", "horizontal_unchanged", "original_state_restored", "rows"],
+)
+def test_browser_sequence_requires_independent_raw_controls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str | None
+) -> None:
+    """A safe raw sequence is not advertised as a complete stitched image."""
+    directory = tmp_path / "probe"
+    directory.mkdir()
+    (directory / "manifest.json").write_text(
+        json.dumps({"browser_sequence_completed": True, "restored": True}),
+        encoding="utf-8",
+    )
+    observed = {
+        "complete": True,
+        "sibling_outer_unchanged": True,
+        "horizontal_unchanged": True,
+        "original_state_restored": True,
+        "original_pixels_restored": True,
+        "frame_checks": {"top": {"matches": True}},
+    }
+    if failure == "rows":
+        observed["frame_checks"] = {"top": {"matches": False}}
+    elif failure is not None:
+        observed[failure] = False
+    monkeypatch.setattr(supervisor, "oracle", lambda *_: observed)
+    monkeypatch.setattr(supervisor, "snapshots", lambda _: [])
+    monkeypatch.setattr(supervisor.time, "sleep", lambda _: None)
+    result: dict[str, Any] = {
+        "browser_sequence": True,
+        "helper": {"exit_code": 0},
+        "checkpoint_passed": False,
+    }
+    if failure is not None:
+        with pytest.raises(RuntimeError, match="Browser raw sequence"):
             supervisor.verify_result(result, tmp_path, tmp_path, {})
     else:
         supervisor.verify_result(result, tmp_path, tmp_path, {})

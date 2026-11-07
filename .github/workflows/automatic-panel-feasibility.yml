@@ -30,6 +30,8 @@ jobs:
           - {case: wpf-nested, mode: seam-sweep}
           - {case: edge-100, mode: msaa-diagnostic}
           - {case: edge-125, mode: msaa-diagnostic}
+          - {case: edge-100, mode: browser-sequence}
+          - {case: edge-125, mode: browser-sequence}
     env:
       PYTHONUTF8: "1"
       QUALIFICATION_HEAD: ${{ github.event.pull_request.head.sha }}
@@ -66,7 +68,7 @@ jobs:
         shell: pwsh
         run: |
           $extra = @()
-          if ($env:PROBE_MODE -in @('clipping-diagnostic', 'seam-sweep', 'msaa-diagnostic')) { $extra += "--$env:PROBE_MODE" }
+          if ($env:PROBE_MODE -in @('clipping-diagnostic', 'seam-sweep', 'msaa-diagnostic', 'browser-sequence')) { $extra += "--$env:PROBE_MODE" }
           uv run --no-sync python -m scripts.panel_feasibility --case $env:PROBE_CASE --output "receipts/$env:PROBE_CASE" --wpf-executable .tmp/panel-fixture/PanelFixture.exe @extra
           exit $LASTEXITCODE
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
@@ -131,5 +133,62 @@ jobs:
         with:
           name: native-owned-helper
           path: receipts/owned-helper/owned-helper.json
+          if-no-files-found: error
+          retention-days: 14
+
+  installed-runtime:
+    if: >-
+      github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
+      github.head_ref == 'feature/automatic-panel-capture' &&
+      github.event.pull_request.draft == true
+    name: Installed wheel helper runtime
+    runs-on: windows-2025
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          enable-cache: false
+          python-version: "3.13"
+      - name: Build exact wheel and prove isolated installed bootstrap
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          uv build --wheel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $wheels = @(Get-ChildItem dist -Filter *.whl)
+          if ($wheels.Count -ne 1) { throw 'Expected exactly one built wheel' }
+          $wheel = $wheels[0].FullName
+          $proof = Join-Path $env:RUNNER_TEMP ("VerdiClip Runtime Café " + [guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $proof | Out-Null
+          uv export --locked --no-dev --no-emit-project --no-hashes --output-file "$proof\constraints.txt"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          uv venv --python 3.13 "$proof\venv"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $python = "$proof\venv\Scripts\python.exe"
+          uv pip install --python $python --constraint "$proof\constraints.txt" $wheel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item scripts/installed_runtime_smoke.py "$proof\installed_runtime_smoke.py"
+          $outside = New-Item -ItemType Directory -Path "$proof\outside checkout"
+          $receiptTarget = Join-Path $env:GITHUB_WORKSPACE 'receipts/installed-runtime'
+          New-Item -ItemType Directory -Force -Path (Split-Path -Parent $receiptTarget) | Out-Null
+          $proofExit = 1
+          Push-Location $outside.FullName
+          try {
+            & $python "$proof\installed_runtime_smoke.py" --wheel $wheel --output "$proof\receipts"
+            $proofExit = $LASTEXITCODE
+          } finally {
+            Pop-Location
+            if (Test-Path "$proof\receipts") { Copy-Item "$proof\receipts" $receiptTarget -Recurse }
+          }
+          exit $proofExit
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: ${{ !cancelled() }}
+        with:
+          name: installed-wheel-runtime
+          path: receipts/installed-runtime/*.json
           if-no-files-found: error
           retention-days: 14
