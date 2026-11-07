@@ -45,6 +45,5 @@ def midpoint_percent(view_percent: float, physical_height: int) -> float:
     if not 0 < view_percent < FULL_PERCENT or physical_height < MIN_HEIGHT:
         raise ValueError("Invalid viewport for step guidance")
     distance = physical_height // 2
-    return min(
-        50.0, distance / physical_height * view_percent * 100 / (100 - view_percent)
-    )
+    scroll_range = physical_height * (FULL_PERCENT - view_percent) / view_percent
+    return min(50.0, distance * FULL_PERCENT / scroll_range)

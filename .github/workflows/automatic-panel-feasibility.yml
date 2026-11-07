@@ -12,7 +12,7 @@ jobs:
       github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
       github.head_ref == 'feature/automatic-panel-capture' &&
       github.event.pull_request.draft == true
-    name: First provider probe / ${{ matrix.case }}
+    name: Panel feasibility or read-only browser discovery / ${{ matrix.case }}
     runs-on: windows-2025
     timeout-minutes: 6
     strategy:

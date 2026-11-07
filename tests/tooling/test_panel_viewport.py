@@ -55,3 +55,11 @@ def test_invalid_step_guidance_fails(view: float, height: int) -> None:
     """No division by zero or zero step."""
     with pytest.raises(ValueError, match="Invalid viewport"):
         midpoint_percent(view, height)
+
+
+def test_retained_wpf_percent_roundtrip_preserves_integral_request() -> None:
+    """Avoid extra rounding through distance/height before computing percent."""
+    view = 28.345916266300616
+    percent = midpoint_percent(view, 413)
+    assert percent * 1044 / 100 == 206.0
+    assert percent / 100 * 1044 == 206.0

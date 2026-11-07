@@ -158,7 +158,7 @@ def edge_fixture(
             "--no-default-browser-check",
             "--disable-sync",
             f"--user-data-dir={output / 'edge-profile'}",
-            "--window-size=900,640",
+            "--window-size=760,520",
             "--window-position=40,40",
             f"--force-device-scale-factor={scale}",
             "--app=" + server.url,
@@ -229,11 +229,13 @@ def run_probe(job: OwnedJob, fixture: Json, output: Path) -> Json:
         [str(ROOT), str(Path(sys.prefix) / "Lib/site-packages"), str(ROOT / "src")]
     )
     probe_dir = output / "probe"
+    read_only = fixture["kind"] == "owned-edge"
+    module = "scripts.panel_edge_readiness" if read_only else "scripts.panel_uia_probe"
     pid, handle = job.start(
         [
             str(base),
             "-m",
-            "scripts.panel_uia_probe",
+            module,
             "--x",
             str(round(fixture["click"][0])),
             "--y",
@@ -379,6 +381,33 @@ def _require_probe_success(exit_code: int) -> None:
         raise RuntimeError("Probe returned failure; first provider error retained")
 
 
+def verify_result(result: Json, output: Path, state_dir: Path, fixture: Json) -> None:
+    """Keep read-only discovery distinct from actual pixel checkpoint success."""
+    if any(
+        record["event"] == "call_end"
+        and record["seconds"] > NATIVE_CALL_DEADLINE_SECONDS
+        for record in events(output / "probe/calls.jsonl")
+    ):
+        raise RuntimeError("Completed native call exceeded three seconds")
+    _require_probe_success(result["helper"]["exit_code"])
+    if result["read_only_discovery"]:
+        report = json.loads(
+            (output / "probe/manifest.json").read_text(encoding="utf-8")
+        )
+        result["discovery"] = report
+        result["diagnostic_completed"] = report.get("diagnostic_completed") is True
+        if not result["diagnostic_completed"]:
+            raise RuntimeError("Read-only discovery experiment incomplete")
+    else:
+        time.sleep(0.15)
+        result["oracle"] = oracle(fixture, snapshots(state_dir), output)
+        result["checkpoint_passed"] = checkpoint_passed(result["oracle"])
+        if not result["checkpoint_passed"]:
+            raise RuntimeError(
+                "Independent panel checkpoint failed; inspect retained oracle"
+            )
+
+
 def main() -> int:
     """Run one first-attempt-only case, preserving operation and cleanup errors."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -402,6 +431,8 @@ def main() -> int:
         "first_failure": None,
         "cleanup": {},
         "checkpoint_passed": False,
+        "read_only_discovery": args.case.startswith("edge-"),
+        "diagnostic_completed": False,
     }
     fixture_job = None
     probe_job = None
@@ -432,22 +463,7 @@ def main() -> int:
             )
         result["fixture"] = fixture
         result["helper"] = run_probe(probe_job, fixture, args.output)
-        if any(
-            record["event"] == "call_end"
-            and record["seconds"] > NATIVE_CALL_DEADLINE_SECONDS
-            for record in events(args.output / "probe/calls.jsonl")
-        ):
-            raise RuntimeError(  # noqa: TRY301 - terminal diagnostic boundary
-                "Completed native call exceeded three seconds"
-            )
-        time.sleep(0.15)
-        result["oracle"] = oracle(fixture, snapshots(state_dir), args.output)
-        result["checkpoint_passed"] = checkpoint_passed(result["oracle"])
-        _require_probe_success(result["helper"]["exit_code"])
-        if not result["checkpoint_passed"]:
-            raise RuntimeError(  # noqa: TRY301 - terminal diagnostic boundary
-                "Independent panel checkpoint failed; inspect retained oracle"
-            )
+        verify_result(result, args.output, state_dir, fixture)
     except Exception as error:  # noqa: BLE001 - preserve first diagnostic failure
         result["first_failure"] = repr(error)
     finally:
@@ -464,6 +480,11 @@ def main() -> int:
                 result["cleanup"]["server"] = {"confirmed": False, "error": repr(error)}
         result["checkpoint_passed"] = (
             result["checkpoint_passed"]
+            and result["first_failure"] is None
+            and all(v["confirmed"] for v in result["cleanup"].values())
+        )
+        result["diagnostic_completed"] = (
+            result["diagnostic_completed"]
             and result["first_failure"] is None
             and all(v["confirmed"] for v in result["cleanup"].values())
         )
