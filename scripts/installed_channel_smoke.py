@@ -29,6 +29,7 @@ from verdiclip.capture import (
     observe_native,
     observe_protocol,
     observe_provider,
+    retained_frame,
     scroll_stitch,
 )
 from verdiclip.platform import (
@@ -99,6 +100,7 @@ def verify_wheel(wheel: Path) -> dict[str, object]:
         observe_protocol,
         observe_native,
         observe_provider,
+        retained_frame,
     )
     with zipfile.ZipFile(wheel) as archive:
         for loaded in loaded_modules:

@@ -33,6 +33,13 @@ from verdiclip.capture.observe_protocol import (
     ObservePairing,
     ObserveTarget,
 )
+from verdiclip.capture.retained_frame import (
+    FrameSink,
+    FrameState,
+    FrameVault,
+    VerifiedCandidate,
+    VerifiedFrame,
+)
 from verdiclip.platform.helper_bootstrap import peer_arguments
 from verdiclip.platform.helper_peer import (
     OBSERVE_NS,
@@ -124,6 +131,9 @@ class _Worker(QObject):
     ) -> None:
         super().__init__()
         self.generation, self.runtime, self.cancelled = generation, runtime, cancelled
+        self.vault = FrameVault(generation, cancelled)
+        self.pixel_sink: FrameSink | None = None
+        self.pixel_candidate: VerifiedCandidate | None = None
         self.helper: OwnedHelper | None = None
         self.frame_server: QLocalServer | None = None
         self.frame_socket: QLocalSocket | None = None
@@ -160,7 +170,24 @@ class _Worker(QObject):
         self.launch_returned = False
         self.done = False
 
+    def _publish_stamp(self) -> None:
+        if self.deadline > 0:
+            effective = (
+                self.deadline
+                if self.phase == "retiring"
+                else min(self.deadline, self.session_deadline)
+            )
+            self.vault.publish_stamp(self.phase, effective)
+
+    def _discard_pixels(self) -> None:
+        if self.pixel_sink is not None:
+            self.pixel_sink.discard()
+            self.pixel_sink = None
+        self.pixel_candidate = None
+        self.vault.invalidate()
+
     def _admit(self) -> None:
+        self._publish_stamp()
         if self.cancelled.is_set():
             _reject("cancelled")
         if self.phase != "retiring" and self.observe_deadline_ns is not None:
@@ -290,6 +317,7 @@ class _Worker(QObject):
             self._admit()
             self.phase = "ready"
             self.deadline = self.session_deadline
+            self._publish_stamp()
 
     @Slot()
     def _frame_disconnected(self) -> None:
@@ -354,6 +382,13 @@ class _Worker(QObject):
                 if not data:
                     break
                 self.observe_pairing.feed(data)
+                if self.pixel_sink is None:
+                    if self.observe_metadata is None:
+                        _reject("missing-pixel-metadata")
+                    identity = self.observe_metadata.frame_identity()
+                    self.vault.begin(identity)
+                    self.pixel_sink = FrameSink(identity, self._admit)
+                self.pixel_sink.feed(data)
                 self.frame_bytes += len(data)
                 if self.frame_first_byte_ns is None:
                     self.frame_first_byte_ns = time.monotonic_ns()
@@ -376,6 +411,13 @@ class _Worker(QObject):
             return
         if self.frame_disconnected and self.observe_pairing.payload_ready:
             header = self.observe_pairing.eof()
+            self._admit()
+            if self.pixel_sink is None or self.observe_metadata is None:
+                _reject("missing-retained-pixels")
+            self.pixel_candidate = self.pixel_sink.freeze(
+                header, self.observe_metadata.canonical
+            )
+            self.pixel_sink = None
             self._admit()
             self.frame_validated_ns = (
                 self.observe_clock.check() if self.observe_clock is not None else None
@@ -447,6 +489,7 @@ class _Worker(QObject):
         self.phase = "busy"
         if not self.observe_consumed:
             self.deadline = time.monotonic() + _COMMAND_SECONDS
+        self._publish_stamp()
 
     @Slot()
     def finish(self) -> None:
@@ -525,6 +568,7 @@ class _Worker(QObject):
                 )
             self.phase = "retiring"
             self.deadline = time.monotonic() + _CLEANUP_SECONDS
+            self._publish_stamp()
         elif self.observe_consumed:
             if (
                 self.observe_pairing is None
@@ -543,6 +587,7 @@ class _Worker(QObject):
             self.pending_reply = (self.caller_id, payload)
             self.phase = "ready"
             self.deadline = self.session_deadline
+            self._publish_stamp()
 
     @Slot()
     def _readable(self) -> None:  # noqa: C901 - validate complete bounded control batch
@@ -604,9 +649,11 @@ class _Worker(QObject):
         if self.failure is None:
             self.failure = reason or "channel-failure"
         self.pending_reply = None
+        self._discard_pixels()
         if self.phase != "retiring":
             self.phase = "retiring"
             self.deadline = time.monotonic() + _CLEANUP_SECONDS
+            self._publish_stamp()
         if self.frame_server is not None:
             self.frame_server.close()
         if self.server is not None:
@@ -679,12 +726,22 @@ class _Worker(QObject):
             and self.frame_bytes == self.observe_metadata.frame_identity().payload_bytes
         )
 
-    def _terminal(self) -> None:  # noqa: C901 - final independent cleanup gates
+    def _terminal(self) -> None:
+        try:
+            self._terminal_impl()
+        except BaseException:
+            self._discard_pixels()
+            raise
+
+    def _terminal_impl(self) -> None:  # noqa: C901, PLR0912, PLR0915 - final independent cleanup gates
         if self.done or not self.launch_returned:
             return
         if self.cancelled.is_set():
             self.failure = self.failure or "cancelled"
         self.done = True
+        if self.pixel_sink is not None:
+            self.pixel_sink.discard()
+            self.pixel_sink = None
         if self.timer is not None:
             self.timer.stop()
         if self.frame_server is not None:
@@ -741,6 +798,21 @@ class _Worker(QObject):
             if self.observe_consumed:
                 observation_receipt["observation"] = None
             serialized = _serialized(receipt)
+        if receipt["passed"] and self.observe_consumed:
+            try:
+                if self.pixel_candidate is None:
+                    _reject("missing-retained-candidate")
+                self.vault.seal(self.pixel_candidate, serialized)
+                self.pixel_candidate = None
+                self._admit()
+            except Exception as error:  # noqa: BLE001 - never publish partial pixels
+                self._discard_pixels()
+                self.failure = self.failure or str(error)
+                receipt.update(passed=False, failure=self.failure)
+                observation_receipt["observation"] = None
+                serialized = _serialized(receipt)
+        else:
+            self._discard_pixels()
         self.terminal.emit(self.generation, serialized)
         self.deleteLater()
         QThread.currentThread().quit()
@@ -768,10 +840,17 @@ class _Lifetime(QObject):
         self.generation, self.cancelled = generation, cancelled
         self.worker_thread = QThread()
         self.worker = _Worker(generation, runtime, cancelled)
+        self.vault = self.worker.vault
+        self.expiry_timer = QTimer(self)
+        self.expiry_timer.setInterval(_POLL_MS)
+        self.expiry_timer.timeout.connect(self._expiry)
+        self.expiry_timer.start()
         self.worker.moveToThread(self.worker_thread)
         self.receipt: bytes | None = None
         self.stopped = False
         self.completed = False
+        self._released = False
+        self._missing_receipt = False
         self.worker_thread.started.connect(self.worker.start)
         queued = Qt.ConnectionType.QueuedConnection
         self.request.connect(self.worker.submit, queued)
@@ -788,15 +867,20 @@ class _Lifetime(QObject):
     @Slot()
     def abandon(self) -> None:
         """Deletion of the GUI facade is cancellation, never thread destruction."""
+        self.vault.invalidate()
+        self.cancelled.set()
         if not self.completed:
-            self.cancelled.set()
             self.cancellation.emit()
+        self._release_if_disposed()
 
     @Slot(int, bytes)
     def _retired(self, generation: int, receipt: bytes) -> None:
         if generation == self.generation and self.receipt is None:
             self.receipt = receipt
             self._complete()
+        else:
+            self.vault.invalidate()
+            self._release_if_disposed()
 
     @Slot()
     def _stopped(self) -> None:
@@ -806,11 +890,66 @@ class _Lifetime(QObject):
     def _complete(self) -> None:
         if self.receipt is None or not self.stopped or self.completed:
             return
+        if (
+            self.worker.observe_consumed
+            and json.loads(self.receipt).get("passed") is True
+        ):
+            try:
+                self.vault.authorize(self.receipt)
+            except Exception:  # noqa: BLE001 - metadata mismatch prevents publication
+                self.vault.invalidate()
+                value = json.loads(self.receipt)
+                value.update(
+                    passed=False,
+                    failure=value.get("failure") or "retained-frame-unavailable",
+                )
+                if "observe" in value:
+                    value["observe"]["observation"] = None
+                self.receipt = _serialized(value)
         self.completed = True
-        _RETAINED.discard(self)
         self.worker_thread.deleteLater()
         self.terminal.emit(self.generation, self.receipt)
-        self.deleteLater()
+        self._release_if_disposed()
+
+    def _release_if_disposed(self) -> None:
+        if self._released:
+            return
+        if (
+            self._missing_receipt
+            and self.worker.helper is not None
+            and not self.worker.helper.status.closed
+        ):
+            # Missing metadata is not evidence that native ownership was released.
+            self.expiry_timer.stop()
+            return
+        if (
+            self.completed
+            and self.stopped
+            and self.vault.state
+            in (FrameState.EMPTY, FrameState.INVALID, FrameState.TAKEN)
+        ):
+            self._released = True
+            self.expiry_timer.stop()
+            _RETAINED.discard(self)
+            self.deleteLater()
+
+    @Slot()
+    def _expiry(self) -> None:
+        if self._released:
+            return
+        stamp = self.vault.stamp()
+        expired = stamp is not None and self.vault.expire(
+            stamp.revision, time.monotonic()
+        )
+        missing = self.stopped and self.receipt is None and (expired or stamp is None)
+        if missing:
+            self._missing_receipt = True
+            self.vault.invalidate()
+            self.receipt = _serialized(
+                {"passed": False, "failure": "missing-terminal-receipt"}
+            )
+            self._complete()
+        self._release_if_disposed()
 
 
 class HelperChannel(QObject):
@@ -831,6 +970,8 @@ class HelperChannel(QObject):
         self._state = "idle"
         self._cancelled = threading.Event()
         self._lifetime: _Lifetime | None = None
+        self._vault: FrameVault | None = None
+        self._terminal_receipt: bytes | None = None
         self._last_caller = 0
         self._observe_consumed = False
 
@@ -846,6 +987,7 @@ class HelperChannel(QObject):
         self._generation += 1
         self._state = "starting"
         self._lifetime = _Lifetime(self._generation, runtime, self._cancelled)
+        self._vault = self._lifetime.vault
         queued = Qt.ConnectionType.QueuedConnection
         self._request.connect(self._lifetime.request)
         self._cancel.connect(self._lifetime.cancellation)
@@ -919,7 +1061,11 @@ class HelperChannel(QObject):
     def cancel(self) -> None:
         """Latch before the queued wake; retain ownership until retirement."""
         self._affinity()
+        if self._vault is not None:
+            self._vault.invalidate()
         if self._state in ("idle", "terminal") or self._cancelled.is_set():
+            if self._lifetime is not None:
+                self._lifetime._release_if_disposed()
             return
         self._cancelled.set()
         self._state = "closing"
@@ -957,9 +1103,10 @@ class HelperChannel(QObject):
     @Slot(int, bytes)
     def _retired(self, generation: int, receipt: bytes) -> None:
         if generation != self._generation or self._state == "terminal":
+            if self._vault is not None:
+                self._vault.invalidate()
             return
         self._state = "terminal"
-        self._lifetime = None
         if self._cancelled.is_set():
             value = json.loads(receipt)
             value["passed"] = False
@@ -967,4 +1114,34 @@ class HelperChannel(QObject):
             if "observe" in value:
                 value["observe"]["observation"] = None
             receipt = _serialized(value)
+        if self._observe_consumed and json.loads(receipt).get("passed") is True:
+            value = json.loads(receipt)
+            try:
+                if self._vault is None:
+                    _reject("Missing retained frame vault")
+                self._vault.check_authorized(receipt)
+            except Exception:  # noqa: BLE001 - queued delivery cannot publish stale success
+                if self._vault is not None:
+                    self._vault.invalidate()
+                value.update(passed=False, failure="retained-frame-unavailable")
+                if "observe" in value:
+                    value["observe"]["observation"] = None
+                receipt = _serialized(value)
+        self._terminal_receipt = receipt
         self.terminal.emit(generation, receipt)
+
+    def take_frame(self, generation: int, request_id: int) -> VerifiedFrame:
+        """Transfer one qualified immutable frame; cancellation cannot revoke a take."""
+        self._affinity()
+        if (
+            self._state != "terminal"
+            or self._vault is None
+            or self._terminal_receipt is None
+            or json.loads(self._terminal_receipt).get("passed") is not True
+        ):
+            raise RuntimeError("No qualified retained frame")
+        try:
+            return self._vault.take(generation, request_id, self._terminal_receipt)
+        finally:
+            if self._lifetime is not None:
+                self._lifetime._release_if_disposed()

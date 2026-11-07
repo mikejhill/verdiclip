@@ -407,6 +407,7 @@ def channel_wheel(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         smoke.observe_protocol,
         smoke.observe_native,
         smoke.observe_provider,
+        smoke.retained_frame,
     )
     wheel = tmp_path / "fixture.whl"
     with zipfile.ZipFile(wheel, "w") as archive:
@@ -452,6 +453,7 @@ def test_channel_verifier_checks_all_fixed_loaded_files(channel_wheel: Path) -> 
         "observe_protocol",
         "observe_native",
         "observe_provider",
+        "retained_frame",
     ],
 )
 @pytest.mark.parametrize("failure", ["mixed-origin", "missing-wheel", "wrong-bytes"])

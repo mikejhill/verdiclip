@@ -19,12 +19,13 @@ import math
 import os
 import re
 import sys
+import threading
 import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Protocol, cast
+from typing import Any, Protocol, cast, override
 
 PREPARATION_SECONDS = 10.0
 OUTER_SECONDS = 25.0
@@ -865,6 +866,113 @@ def terminal_matches(
         and guard["capture_rect"] == expected["rect"]
         and guard["input_tick"] == expected.get("reference_input_tick")
     )
+
+
+def compare_retained_frame(
+    frame: object, reference_rgb: bytes, receipt: bytes, expected_rect: tuple[int, ...]
+) -> Json:
+    """Compare every retained byte off the GUI thread, without fitting a crop."""
+    from verdiclip.capture.observe_protocol import (  # noqa: PLC0415 - installed consumer
+        Observation,
+    )
+    from verdiclip.capture.retained_frame import (  # noqa: PLC0415 - installed consumer
+        VerifiedFrame,
+    )
+
+    if threading.current_thread() is threading.main_thread():
+        raise RuntimeError("Retained comparison requires the independent consumer")
+    if type(frame) is not VerifiedFrame or type(reference_rgb) is not bytes:
+        raise ValueError("Expected immutable retained frame and reference")
+    observation = Observation.parse(frame.observation)
+    identity = frame.identity
+    bounds = (
+        identity.x,
+        identity.y,
+        identity.x + identity.width,
+        identity.y + identity.height,
+    )
+    if (
+        bounds != expected_rect
+        or identity != observation.frame_identity()
+        or frame.receipt_sha256 != hashlib.sha256(receipt).digest()
+        or json.loads(frame.observation)
+        != json.loads(receipt)["observe"]["observation"]
+        or len(reference_rgb) != identity.payload_bytes
+        or frame.rgb != reference_rgb
+    ):
+        raise ValueError("Retained full-panel bytes or identity differ from reference")
+    return {
+        "full_rgb_exact": True,
+        "bytes": len(reference_rgb),
+        "rect": list(bounds),
+        "consumer_off_gui": True,
+        "receipt_sha256": frame.receipt_sha256.hex(),
+    }
+
+
+class RetainedConsumer(threading.Thread):
+    """One supervised fixture-only consumer; output contains no image references."""
+
+    def __init__(
+        self,
+        frame: object,
+        reference_rgb: bytes,
+        receipt: bytes,
+        expected_rect: tuple[int, ...],
+    ) -> None:
+        super().__init__(name="owned-retained-pixel-consumer", daemon=False)
+        self.inputs: tuple[object, bytes, bytes, tuple[int, ...]] | None = (
+            frame,
+            reference_rgb,
+            receipt,
+            expected_rect,
+        )
+        self.result: Json | None = None
+        self.error: str | None = None
+
+    def begin(self, journal: Journal) -> float:
+        """Start under the existing call/case limits, retaining failure evidence."""
+        try:
+            journal.check()
+            started = time.monotonic()
+            journal.emit("call_start", "retained.compare")
+            journal.check()
+            if time.monotonic() - started >= CALL_SECONDS:
+                raise RuntimeError("Retained comparison exceeded3s before start")  # noqa: TRY301 - discard untransferred inputs
+            self.start()
+        except BaseException:
+            self.inputs = None
+            raise
+        return started
+
+    def poll(self, journal: Journal, started: float) -> Json | None:
+        """Admit completed comparison only before the original fixed deadlines."""
+        journal.check()
+        if time.monotonic() - started >= CALL_SECONDS:
+            raise RuntimeError("Retained comparison exceeded3s")
+        if self.is_alive():
+            return None
+        self.join(timeout=0)
+        journal.emit("call_end", "retained.compare")
+        journal.check()
+        if time.monotonic() - started >= CALL_SECONDS:
+            raise RuntimeError("Retained comparison exceeded3s")
+        if self.error is not None or self.result is None:
+            raise RuntimeError(f"Retained comparison failed: {self.error}")
+        return self.result
+
+    @override
+    def run(self) -> None:
+        """Drop input aliases before completion; retain no traceback."""
+        inputs, self.inputs = self.inputs, None
+        try:
+            if inputs is None:
+                raise RuntimeError("Missing retained consumer inputs")  # noqa: TRY301 - bounded worker failure
+            self.result = compare_retained_frame(*inputs)
+        except BaseException as error:  # noqa: BLE001 - bounded diagnostic, no traceback pixels
+            self.error = repr(error)[:2048]
+        finally:
+            inputs = None
 
 
 class BaselinePins(Protocol):
@@ -1818,6 +1926,10 @@ def child(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - fixed owned
     baseline_profile: Json = {}
     temporary_pins = None
     temporary_profile: Json = {}
+    consumer: RetainedConsumer | None = None
+    consumer_started = 0.0
+    consumer_receipt: Json = {}
+    consumer_timer = QTimer(window)
 
     def identified(value: int, payload: bytes) -> None:
         if value != generation or identity:
@@ -1875,6 +1987,33 @@ def child(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - fixed owned
             identity,
         ):
             raise RuntimeError("Observe terminal does not match independent reference")
+        nonlocal consumer, consumer_started, consumer_receipt
+        frame = channel.take_frame(value, 1)
+        try:
+            channel.take_frame(value, 1)
+        except (ValueError, RuntimeError):
+            result["second_take_rejected"] = True
+        else:
+            raise RuntimeError("Retained frame was transferable twice")
+        consumer_receipt = receipt
+        consumer = RetainedConsumer(
+            frame, before_panel, payload, rect(expected["rect"])
+        )
+        frame = None
+        consumer_started = consumer.begin(journal)
+        consumer_timer.start(1)
+
+    def consumed() -> None:
+        if consumer is None:
+            raise RuntimeError("Missing retained consumer")
+        evidence = consumer.poll(journal, consumer_started)
+        if evidence is None:
+            return
+        consumer_timer.stop()
+        result["retained_pixels"] = evidence
+        receipt = consumer_receipt
+        if guard is None or target is None:
+            raise RuntimeError("Missing retained reference guard")
         if baseline_pins is None:
             raise RuntimeError("Missing retained baseline ownership")
         if temporary_pins is None:
@@ -1921,7 +2060,7 @@ def child(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - fixed owned
                 "full_root_sha256": hashlib.sha256(before_root).hexdigest(),
                 "pre_post_exact": True,
             },
-            generation=value,
+            generation=generation,
         )
         app.exit(0)
 
@@ -1992,6 +2131,7 @@ def child(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - fixed owned
             raise RuntimeError("Channel launch exceeded3s")
 
     def failed(_type: object, error: BaseException, _trace: object) -> None:
+        consumer_timer.stop()
         if result["first_failure"] is None:
             result["first_failure"] = repr(error)
         write(args.output / "diagnostic.json", result)
@@ -2000,6 +2140,7 @@ def child(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - fixed owned
         else:
             app.exit(1)
 
+    consumer_timer.timeout.connect(consumed)
     channel.identity.connect(identified)
     channel.ready.connect(ready)
     channel.terminal.connect(terminal)
