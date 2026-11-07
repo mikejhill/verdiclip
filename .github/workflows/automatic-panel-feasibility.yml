@@ -192,3 +192,40 @@ jobs:
           path: receipts/installed-runtime/*.json
           if-no-files-found: error
           retention-days: 14
+
+  owned-worker:
+    if: >-
+      github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
+      github.head_ref == 'feature/automatic-panel-capture' &&
+      github.event.pull_request.draft == true
+    name: Native lifecycle worker responsiveness
+    runs-on: windows-2025
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          enable-cache: false
+          python-version: "3.13"
+      - name: Locked dependencies
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          uv sync --locked
+          exit $LASTEXITCODE
+      - name: Prove GUI responsiveness under owned lifecycle stalls
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          & .\.venv\Scripts\python.exe -m scripts.owned_worker_supervisor --output receipts/owned-worker
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: ${{ !cancelled() }}
+        with:
+          name: native-owned-worker
+          path: receipts/owned-worker/**/*.json
+          if-no-files-found: error
+          retention-days: 14

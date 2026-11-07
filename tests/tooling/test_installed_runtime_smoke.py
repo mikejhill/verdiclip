@@ -15,6 +15,11 @@ from scripts import installed_runtime_smoke as smoke
 
 from verdiclip.platform.owned_helper import HelperCommand, HelperStatus
 
+_PRIMITIVE_BYTES = {
+    module.__name__: Path(module.__file__).read_bytes()
+    for module in (smoke.helper_runtime, smoke.helper_bootstrap)
+}
+
 
 @pytest.fixture
 def installed(
@@ -28,6 +33,8 @@ def installed(
         ),
         "verdiclip/platform/__init__.py": "",
         "verdiclip/platform/owned_helper.py": "# Fixture.\n",
+        "verdiclip/platform/helper_runtime.py": "# Runtime fixture.\n",
+        "verdiclip/platform/helper_bootstrap.py": "# Bootstrap fixture.\n",
         "mss/__init__.py": "__version__='10.2.0'\n",
         "verdiclip-1.2.3.dist-info/METADATA": "Name: verdiclip\nVersion: 1.2.3\n",
         "mss-10.2.0.dist-info/METADATA": "Name: mss\nVersion: 10.2.0\n",
@@ -56,6 +63,16 @@ def installed(
         version = "1.2.3" if name == "verdiclip" else "10.2.0"
         return PathDistribution(root / f"{name}-{version}.dist-info")
 
+    for module in (smoke.helper_runtime, smoke.helper_bootstrap):
+        monkeypatch.setattr(
+            module,
+            "__file__",
+            str(
+                root
+                / "verdiclip/platform"
+                / (module.__name__.rsplit(".", 1)[1] + ".py")
+            ),
+        )
     monkeypatch.setattr(smoke.metadata, "distribution", distribution)
     runtime = smoke.inspect_runtime(wheel)
     return root, wheel, runtime
@@ -425,3 +442,189 @@ def test_late_cleanup_confirmation_cannot_pass(
     else:
         with pytest.raises(RuntimeError, match="cleanup deadline expired"):
             smoke.close_with_deadline(helper)
+
+
+def test_exact_primitive_case_uses_production_argv(
+    installed: tuple[Path, Path, smoke.InstalledRuntime],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fixture preserves exact production code before its ready suffix."""
+    root, _, runtime = installed
+    manifest = smoke.helper_runtime.RuntimeManifest(
+        runtime.executable,
+        runtime.roots,
+        (
+            dict(runtime.origins)["verdiclip"],
+            dict(runtime.origins)["mss"],
+            str(root / "verdiclip/platform/helper_bootstrap.py"),
+        ),
+        ("1.2.3", "10.2.0"),
+        runtime.python_version,
+        runtime.pointer_bits,
+    )
+    commands: list[tuple[str, tuple[str, ...], str]] = []
+    releases: list[str] = []
+
+    class Proof:
+        def start(self, command: tuple[str, tuple[str, ...], str]) -> HelperStatus:
+            """Record exact production argv without creating any native process."""
+            commands.append(command)
+            Path(command[1][-1]).write_text(
+                json.dumps(
+                    {"passed": True, "pid": 101, "executable": runtime.executable}
+                ),
+                encoding="utf-8",
+            )
+            return status(closed=False)
+
+        def poll(self) -> HelperStatus:
+            """Prove natural exit without a termination request."""
+            return replace(status(closed=True), termination_requested=False)
+
+        def verify_ready(self, pid: int, executable: str) -> HelperStatus:
+            """Record the ready identity verified by native ownership in CI."""
+            assert pid == 101
+            assert executable == runtime.executable
+            return status(closed=False)
+
+        def close(self) -> HelperStatus:
+            """Request the normal bounded cleanup path."""
+            return status(closed=True)
+
+        def release_unconfirmed(self, reason: str) -> None:
+            """Record the unconditional final resource-release fallback."""
+            releases.append(reason)
+
+    monkeypatch.setattr(smoke.sys, "platform", "win32")
+    monkeypatch.setattr(smoke.helper_runtime, "inspect_runtime", lambda: manifest)
+    monkeypatch.setattr(smoke, "OwnedHelper", Proof)
+    # HelperCommand is a Windows-native path validator; this portable test only
+    # verifies orchestration using a transparent stand-in for that tested class.
+    monkeypatch.setattr(
+        smoke,
+        "HelperCommand",
+        lambda executable, arguments, directory: (executable, arguments, directory),
+    )
+    result = smoke.run_primitives_native(runtime)
+    assert result["passed"] is True
+    assert result["exact_bootstrap_prefix"] is True
+    argv = commands[0][1]
+    proof = smoke.helper_bootstrap.proof_arguments(manifest.serialize())
+    assert argv[:3] == proof[:3]
+    assert argv[3] == proof[3] + smoke._PRIMITIVE_READY
+    assert argv[4] == proof[4]
+    assert len(releases) == 1
+    with pytest.raises(ValueError, match="independent wheel"):
+        smoke.admit_primitive_manifest(
+            replace(manifest, pointer_bits=32 if manifest.pointer_bits == 64 else 64),
+            runtime,
+        )
+
+
+@pytest.mark.parametrize("failure", ["python", "version", "gui"])
+def test_primitive_suffix_cannot_publish_after_failed_verification(
+    installed: tuple[Path, Path, smoke.InstalledRuntime], tmp_path: Path, failure: str
+) -> None:
+    """Real isolated execution never reaches the ready suffix after proof failure."""
+    root, _, runtime = installed
+    for module in (smoke.helper_runtime, smoke.helper_bootstrap):
+        target = root / "verdiclip/platform" / Path(module.__file__).name
+        target.write_bytes(_PRIMITIVE_BYTES[module.__name__])
+    manifest = smoke.helper_runtime.RuntimeManifest(
+        runtime.executable,
+        runtime.roots,
+        (
+            dict(runtime.origins)["verdiclip"],
+            dict(runtime.origins)["mss"],
+            str(root / "verdiclip/platform/helper_bootstrap.py"),
+        ),
+        ("1.2.3", "10.2.0"),
+        runtime.python_version,
+        runtime.pointer_bits,
+    )
+    if failure == "python":
+        manifest = replace(manifest, python_version=(3, 99, 0))
+    elif failure == "version":
+        manifest = replace(manifest, versions=("9.9.9", "10.2.0"))
+    else:
+        (root / "mss/__init__.py").write_bytes(
+            b"import sys\nsys.modules['PySide6']=object()\n__version__='10.2.0'\n"
+        )
+    arguments = smoke.helper_bootstrap.proof_arguments(manifest.serialize())
+    receipt = tmp_path / "must-not-exist.json"
+    result = subprocess.run(  # noqa: S603 - fixed production proof plus authored fixture suffix
+        [
+            runtime.executable,
+            *arguments[:3],
+            arguments[3] + smoke._PRIMITIVE_READY,
+            *arguments[4:],
+            str(receipt),
+        ],
+        check=False,
+        capture_output=True,
+        timeout=10,
+    )
+    assert result.returncode != 0
+    assert not receipt.exists()
+
+
+def test_second_case_failure_cannot_preserve_overall_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep original capture evidence but fail the combined native gate."""
+    monkeypatch.setattr(
+        smoke.sys,
+        "argv",
+        ["smoke", "--wheel", "fixture.whl", "--output", str(tmp_path)],
+    )
+    monkeypatch.setattr(smoke, "inspect_runtime", lambda _wheel: object())
+    monkeypatch.setattr(
+        smoke,
+        "run_native",
+        lambda _runtime: {"passed": True, "child": {"capture": True}},
+    )
+
+    def fail(_runtime: object) -> None:
+        raise RuntimeError("production proof failed")
+
+    monkeypatch.setattr(smoke, "run_primitives_native", fail)
+    assert smoke.main() == 1
+    report = json.loads(
+        (tmp_path / "installed-runtime.json").read_text(encoding="utf-8")
+    )
+    assert report["passed"] is False
+    assert report["production_primitives"] == {"passed": False}
+    assert report["child"]["capture"] is True
+    assert report["failure"] == "production proof failed"
+
+
+@pytest.mark.parametrize("missing", ["helper_runtime", "helper_bootstrap"])
+def test_old_wheel_cannot_attest_extra_installed_primitives(
+    installed: tuple[Path, Path, smoke.InstalledRuntime], missing: str
+) -> None:
+    """Extra files on disk cannot replace required primitive entries in the wheel."""
+    root, wheel, _ = installed
+    name = f"verdiclip/platform/{missing}.py"
+    assert (root / name).is_file()
+    with zipfile.ZipFile(wheel) as archive:
+        entries = {
+            entry: archive.read(entry) for entry in archive.namelist() if entry != name
+        }
+    with zipfile.ZipFile(wheel, "w") as archive:
+        for entry, payload in entries.items():
+            archive.writestr(entry, payload)
+    with pytest.raises(ValueError, match="missing required helper"):
+        smoke.inspect_runtime(wheel)
+
+
+@pytest.mark.parametrize("module", [smoke.helper_runtime, smoke.helper_bootstrap])
+def test_independent_inspection_rejects_mixed_primitive_origin(
+    installed: tuple[Path, Path, smoke.InstalledRuntime],
+    monkeypatch: pytest.MonkeyPatch,
+    module: object,
+) -> None:
+    """Do not trust the production inspector to attest its own loaded location."""
+    root, wheel, _ = installed
+    monkeypatch.setattr(module, "__file__", str(root / "verdiclip/__init__.py"))
+    with pytest.raises(ValueError, match="runtime primitive origin"):
+        smoke.inspect_runtime(wheel)

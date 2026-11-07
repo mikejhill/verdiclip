@@ -1,4 +1,4 @@
-"""Fixture-only installed-wheel helper gate; no product bootstrap is introduced.
+"""Installed-wheel gates for independent capture and exact runtime primitives.
 
 Copy this script outside the checkout, run it using the fresh wheel environment:
 python installed_runtime_smoke.py --wheel <exact.whl> --output <receipts>
@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 import mss
 
 import verdiclip
-from verdiclip.platform import owned_helper
+from verdiclip.platform import helper_bootstrap, helper_runtime, owned_helper
 from verdiclip.platform.owned_helper import HelperCommand, HelperStatus, OwnedHelper
 
 if TYPE_CHECKING:
@@ -223,7 +223,12 @@ def wheel_package_matches(wheel: Path, root: Path, version: str) -> None:
     count = 0
     with zipfile.ZipFile(wheel) as archive:
         names = archive.namelist()
-        required = {"verdiclip/__init__.py", "verdiclip/platform/owned_helper.py"}
+        required = {
+            "verdiclip/__init__.py",
+            "verdiclip/platform/owned_helper.py",
+            "verdiclip/platform/helper_runtime.py",
+            "verdiclip/platform/helper_bootstrap.py",
+        }
         if not required.issubset(names):
             raise ValueError("Wheel is missing required helper package files")
         metadata_names = [
@@ -296,6 +301,16 @@ def inspect_runtime(wheel: Path) -> InstalledRuntime:
     dependency_root, dependency_version = distribution_root("mss", dependency)
     if helper != (app_root / "verdiclip/platform/owned_helper.py").resolve(strict=True):
         raise ValueError("Loaded helper origin is not inside the installed wheel")
+    for module in (helper_runtime, helper_bootstrap):
+        expected = (
+            app_root
+            / "verdiclip/platform"
+            / (module.__name__.rsplit(".", 1)[1] + ".py")
+        )
+        if Path(module.__file__).resolve(strict=True) != expected.resolve(strict=True):
+            raise ValueError(
+                "Loaded runtime primitive origin is not inside the installed wheel"
+            )
     if app_version != verdiclip.VERSION or mss.__version__ != dependency_version:
         raise ValueError("Loaded module versions disagree with installed metadata")
     executable = getattr(sys, "_base_executable", None)
@@ -475,6 +490,92 @@ def run_native(runtime: InstalledRuntime) -> dict[str, object]:
             helper.release_unconfirmed("Installed-runtime fixture cleanup deadline")
 
 
+def admit_primitive_manifest(
+    manifest: helper_runtime.RuntimeManifest, runtime: InstalledRuntime
+) -> None:
+    """Cross-check production inspection against the independent wheel check."""
+    origins = dict(runtime.origins)
+    if (
+        manifest.executable != runtime.executable
+        or manifest.roots != runtime.roots
+        or manifest.origins[:2] != (origins["verdiclip"], origins["mss"])
+        or manifest.versions != tuple(value for _, value in runtime.versions)
+        or manifest.python_version != runtime.python_version
+        or manifest.pointer_bits != runtime.pointer_bits
+    ):
+        raise ValueError(
+            "Production manifest differs from independent wheel inspection"
+        )
+
+
+# Fixture-only suffix runs only after the exact production bootstrap returns.
+# It supplies a ready handshake so OwnedHelper does not admit a pre-ready exit.
+_PRIMITIVE_READY = r"""
+import os
+import time
+receipt = Path(sys.argv[2])
+pending = receipt.with_suffix(".tmp")
+pending.write_text(json.dumps({"passed": True, "pid": os.getpid(),
+    "executable": sys.executable}), encoding="utf-8")
+pending.replace(receipt)
+time.sleep(30)
+"""
+
+
+def run_primitives_native(runtime: InstalledRuntime) -> dict[str, object]:
+    """Exercise the exact production bootstrap with a fixture-only ready suffix."""
+    if sys.platform != "win32":
+        raise RuntimeError("Production runtime proof requires Windows")
+    manifest = helper_runtime.inspect_runtime()
+    admit_primitive_manifest(manifest, runtime)
+    helper = OwnedHelper()
+    with tempfile.TemporaryDirectory(
+        prefix="production runtime å-", ignore_cleanup_errors=True
+    ) as temporary:
+        cwd, environment, markers = poison_paths(Path(temporary))
+        arguments = helper_bootstrap.proof_arguments(manifest.serialize())
+        receipt_path = Path(temporary) / "production-ready.json"
+        command = HelperCommand(
+            manifest.executable,
+            (
+                *arguments[:3],
+                arguments[3] + _PRIMITIVE_READY,
+                *arguments[4:],
+                str(receipt_path),
+            ),
+            str(cwd),
+        )
+        try:
+            start_with_environment(helper, command, environment)
+            receipt = child_receipt(receipt_path, helper)
+            pid, executable = receipt.get("pid"), receipt.get("executable")
+            if (
+                receipt.get("passed") is not True
+                or type(pid) is not int
+                or not isinstance(executable, str)
+            ):
+                raise ValueError("Production proof omitted its ready identity")
+            if not helper.verify_ready(pid, executable).producer_verified:
+                raise RuntimeError("Production proof is not the direct owned producer")
+            status = close_with_deadline(helper)
+            if any(marker.exists() for marker in markers):
+                raise RuntimeError("Production proof executed a poisoned startup hook")
+            return {
+                "passed": True,
+                "manifest": json.loads(manifest.serialize()),
+                "bootstrap_sha256": hashlib.sha256(
+                    helper_bootstrap.BOOTSTRAP_SOURCE.encode("utf-8")
+                ).hexdigest(),
+                "exact_bootstrap_prefix": True,
+                "fixture_ready_suffix": True,
+                "child": receipt,
+                "poison_controls_passed": True,
+                "cleanup": asdict(status),
+            }
+        finally:
+            helper.release_unconfirmed("Production runtime proof cleanup deadline")
+
+
 def main() -> int:
     """Require an actual wheel installation and write a metadata-only receipt."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -493,10 +594,15 @@ def main() -> int:
     }
     passed = False
     try:
-        result = run_native(inspect_runtime(args.wheel))
+        runtime = inspect_runtime(args.wheel)
+        result = run_native(runtime)
         report.update(result)
-        passed = result.get("passed") is True
+        report["production_primitives"] = {"passed": False}
+        primitives = run_primitives_native(runtime)
+        report["production_primitives"] = primitives
+        passed = result.get("passed") is True and primitives.get("passed") is True
     except Exception as error:  # noqa: BLE001 - retain native failure evidence
+        report["passed"] = False
         report["failure"] = str(error)
     (output / "installed-runtime.json").write_text(
         json.dumps(report, indent=2), encoding="utf-8"

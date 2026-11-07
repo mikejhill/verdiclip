@@ -231,3 +231,61 @@ frames with fixed quarter/half-view offsets and exact endpoint/top/restoration
 controls. It produces no stitched result and uses no image heuristic or NumPy.
 Independent fixture row/state checks verify raw evidence; complete browser image
 assembly remains a separate offline investigation with explicit ambiguity limits.
+
+## Eleventh experiment
+
+Native run [42356727601](https://github.com/mikejhill/verdiclip/actions/runs/42356727601)
+at `4ee73c4fd191b20d0c654b4ba7a48e1763993eea` passes both complete
+browser raw-sequence collectors, the fresh installed-wheel runtime proof and all
+eight inert pipe cases. The separate seam sweeps continue to pass; the original
+strict nested failure remains visible. CodeQL passes. Ordinary CI found a new
+Windows-only test-fixture newline mismatch, not a runtime failure: text writes
+translated LF while the synthetic wheel retained original bytes. The subsequent
+fixture-only correction preserves exact-byte validation and explicitly tests
+rejection of newline-only installed mutations.
+
+The installed proof covers a fresh wheel in an outside-checkout Unicode-path
+Windows x64 Python 3.13.17 environment, isolated/no-site helper startup without
+Qt, MSS capture, poisoned search-path controls and confirmed owned cleanup. It
+does not qualify every installer, Python version or frozen distribution.
+Measured helper launch took 2.050 ms first-in-process and 1.673–1.816 ms later;
+maximum heartbeat/poll gaps were 11.023/11.239 ms with 10 ms timers. Cancellation
+requested termination promptly and confirmed cleanup after 6.137 ms in that
+case. These QCoreApplication observations are neither a cold-cache guarantee
+nor a rendered-GUI responsiveness qualification. A separate lifecycle-worker
+experiment must cover slow launch and cancellation before product integration.
+
+Offline browser research retained every full outer frame and used only native
+state plus observed pixels for alignment. Both datasets contain 16 frames and
+13 distinct poses. A conservative candidate produced full-width 334 by 1,476
+and 417 by 1,844 experimental images with source-row provenance. Its rail model
+requires every pixel to match a static background or rigidly translated thumb;
+every modeled background pixel had at least nine distinct revealing poses.
+An independent review reproduced and corrected an omitted-frame accounting
+hole, verified the retained frame/provenance counts and rejected small
+low-contrast mutations previously missed by the earlier candidate.
+
+A separate fixture-only body reference found zero differences over 458,955
+pixels at 100% and 715,260 integer-interior pixels at 125%. Fractional boundary
+pixels at 125% are not covered by that reference. The candidate still has
+explicit stationary-cap, boundary-row and semantically ambiguous widget
+limitations. Static appearance does not prove that hidden content is recovered.
+Total decoded-memory admission and realistic adversarial content qualification
+remain required before adopting any of this scratch implementation. None of
+these results enables a product scrolling command or qualifies a release.
+
+The next isolated proof assigns helper, pipe and timers to one lifecycle thread,
+with queued immutable terminal evidence to a visible GUI. Fixed synthetic stalls
+exercise cancellation before creation, after native return and after the startup
+deadline. Heartbeat and paint witnesses must occur inside each stall; original
+GUI cancellation timestamps remain attached to retirement measurements. An
+external owned-job supervisor bounds the experiment and rejects forced teardown
+as successful proof. These delays release the GIL and do not make a genuinely
+stuck native API interruptible.
+
+Unused runtime-manifest/bootstrap primitives derive identity from already-loaded
+packages and installed distribution metadata, independent of installer brand.
+A separate installed-wheel case exercises the exact bootstrap prefix with a
+fixture-only ready/wait suffix, retaining independent wheel attestation and the
+original MSS-capture case. This is not an enabled provider or evidence for every
+uv tool/uvx/Python runtime. Native results for these exact additions are pending.
