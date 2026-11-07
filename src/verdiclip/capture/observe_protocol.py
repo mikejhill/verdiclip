@@ -343,12 +343,13 @@ class Observation:
 class ObservePairing:
     """One-shot metadata/header/body/EOF verification, with no pixel retention.
 
-    Construct before request serialization/write. No progress extends the fixed
+    Construct before request serialization/write or supply its original deadline.
+    No progress extends the fixed
     two-second deadline. EOF is a trusted transport event, never inferred from
     payload length. Caller must backpressure body reads until payload_ready.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - explicit original deadline and clock contract
         self,
         target: ObserveTarget,
         epoch: str,
@@ -356,6 +357,7 @@ class ObservePairing:
         *,
         clock: Callable[[], float],
         cancelled: Callable[[], bool],
+        deadline: float | None = None,
     ) -> None:
         if type(target) is not ObserveTarget:
             _bad("Expected immutable target")
@@ -364,7 +366,15 @@ class ObservePairing:
         self._request_id = _integer(request_id, 1, MAX_REQUESTS - 1)
         self._clock, self._cancelled = clock, cancelled
         self._last_time = self._time()
-        self._deadline = self._last_time + OBSERVE_SECONDS
+        if deadline is not None and (
+            (type(deadline) is not int and type(deadline) is not float)
+            or not math.isfinite(deadline)
+            or not self._last_time < deadline <= self._last_time + OBSERVE_SECONDS
+        ):
+            _bad("Invalid original observe deadline")
+        self._deadline = (
+            self._last_time + OBSERVE_SECONDS if deadline is None else deadline
+        )
         self._failure: str | None = None
         self._done = False
         self._metadata: Observation | None = None

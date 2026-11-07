@@ -576,3 +576,34 @@ def test_processing_exception_remains_terminal(
     with pytest.raises(protocol.ObservationError, match="RuntimeError"):
         state.check()
     assert state.failure == "RuntimeError"
+
+
+@pytest.mark.parametrize(
+    "deadline", [True, float("nan"), float("inf"), 9.0, 10.0, 12.001]
+)
+def test_pairing_rejects_invalid_original_deadline(
+    target: protocol.ObserveTarget, deadline: float
+) -> None:
+    """An earlier facade timestamp is required rather than a worker receipt reset."""
+    with pytest.raises(protocol.ObservationError, match="original observe deadline"):
+        protocol.ObservePairing(
+            target,
+            "a" * 32,
+            1,
+            clock=lambda: 10.0,
+            cancelled=lambda: False,
+            deadline=deadline,
+        )
+
+
+def test_pairing_preserves_short_remaining_original_budget(
+    target: protocol.ObserveTarget,
+) -> None:
+    """Queue delay consumes time, leaving only the original deadline remainder."""
+    clock = Mock(return_value=10.0)
+    state = protocol.ObservePairing(
+        target, "a" * 32, 1, clock=clock, cancelled=lambda: False, deadline=10.1
+    )
+    clock.return_value = 10.1
+    with pytest.raises(protocol.ObservationError, match="deadline"):
+        state.header(b"x")

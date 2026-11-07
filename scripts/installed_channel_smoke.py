@@ -24,6 +24,13 @@ import shiboken6
 from PySide6.QtCore import QCoreApplication, QTimer
 from PySide6.QtWidgets import QApplication, QWidget
 
+from verdiclip.capture import (
+    frame_envelope,
+    observe_native,
+    observe_protocol,
+    observe_provider,
+    scroll_stitch,
+)
 from verdiclip.platform import (
     helper_bootstrap,
     helper_channel,
@@ -81,15 +88,27 @@ def verify_wheel(wheel: Path) -> dict[str, object]:
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     runtime = module.inspect_runtime(wheel)
-    root = Path(runtime.origins[0][1]).parent / "platform"
-    for loaded in (helper_channel, helper_peer, helper_protocol, helper_bootstrap):
-        name = loaded.__name__.rsplit(".", 1)[1]
-        if Path(loaded.__file__).resolve() != (root / f"{name}.py").resolve():
-            raise RuntimeError("Channel module came from outside the verified wheel")
+    root = Path(runtime.origins[0][1]).parent.parent
+    loaded_modules = (
+        helper_channel,
+        helper_peer,
+        helper_protocol,
+        helper_bootstrap,
+        scroll_stitch,
+        frame_envelope,
+        observe_protocol,
+        observe_native,
+        observe_provider,
+    )
     with zipfile.ZipFile(wheel) as archive:
-        for name in ("helper_channel", "helper_peer", "helper_protocol"):
-            expected = f"verdiclip/platform/{name}.py"
-            if archive.read(expected) != (root / f"{name}.py").read_bytes():
+        for loaded in loaded_modules:
+            relative = loaded.__name__.replace(".", "/") + ".py"
+            expected = (root / relative).resolve(strict=True)
+            if Path(loaded.__file__).resolve(strict=True) != expected:
+                raise RuntimeError(
+                    "Channel module came from outside the verified wheel"
+                )
+            if archive.read(relative) != expected.read_bytes():
                 raise ValueError("Wheel lacks the exact loaded channel primitives")
     return cast("dict[str, object]", asdict(runtime))
 

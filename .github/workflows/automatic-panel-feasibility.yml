@@ -78,6 +78,8 @@ jobs:
           path: |
             receipts/**/receipt.json
             receipts/**/fixture.json
+            receipts/**/edge-entry.json
+            receipts/**/edge-entry.png
             receipts/**/probe-startup.json
             receipts/**/states/*.json
             receipts/**/probe/*.json
@@ -413,6 +415,8 @@ jobs:
             receipts/**/owned-wheel.html
             receipts/**/receipt.json
             receipts/**/fixture.json
+            receipts/**/edge-entry.json
+            receipts/**/edge-entry.png
             receipts/**/states/*.json
             receipts/**/probe/*.json
             receipts/**/probe/*.jsonl
@@ -477,6 +481,8 @@ jobs:
             scripts/panel_identity_feasibility.py
             receipts/**/receipt.json
             receipts/**/fixture.json
+            receipts/**/edge-entry.json
+            receipts/**/edge-entry.png
             receipts/**/states/*.json
             receipts/**/probe/*.json
             receipts/**/probe/*.jsonl

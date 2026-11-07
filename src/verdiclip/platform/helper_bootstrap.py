@@ -26,7 +26,7 @@ payload = sys.argv[1]
 if len(payload) > 16384 or len(payload.encode("utf-8")) > 16384:
     raise ValueError("Runtime manifest exceeds byte bound")
 data = json.loads(payload)
-if (not isinstance(data, dict) or data.get("schema_version") != 2
+if (not isinstance(data, dict) or data.get("schema_version") != 3
     or data.get("python_version") != list(sys.version_info[:3])
     or data.get("pointer_bits") != struct.calcsize("P") * 8
     or type(data.get("executable")) is not str
@@ -74,7 +74,7 @@ PEER_BOOTSTRAP_SOURCE = (
 
 
 def peer_arguments(runtime_payload: str, launch_payload: str) -> tuple[str, ...]:
-    """Build only the fixed inert peer invocation; launch fields remain argv data."""
+    """Build only the fixed peer invocation; launch fields remain argv data."""
     deserialize_manifest(runtime_payload)
     helper_peer.deserialize_launch(launch_payload)
     return ("-I", "-S", "-c", PEER_BOOTSTRAP_SOURCE, runtime_payload, launch_payload)

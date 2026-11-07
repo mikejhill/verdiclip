@@ -26,11 +26,37 @@ from typing import TYPE_CHECKING
 import mss
 
 import verdiclip
-from verdiclip.platform import helper_bootstrap, helper_runtime, owned_helper
+from verdiclip.capture import (
+    frame_envelope,
+    observe_native,
+    observe_protocol,
+    observe_provider,
+    scroll_stitch,
+)
+from verdiclip.platform import (
+    helper_bootstrap,
+    helper_peer,
+    helper_protocol,
+    helper_runtime,
+    owned_helper,
+)
 from verdiclip.platform.owned_helper import HelperCommand, HelperStatus, OwnedHelper
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+
+# Independent fixed list, not imported from the production manifest registry.
+_FIXED_RUNTIME_MODULES = (
+    helper_bootstrap,
+    helper_peer,
+    helper_protocol,
+    scroll_stitch,
+    frame_envelope,
+    observe_protocol,
+    observe_native,
+    observe_provider,
+)
+_VERIFIED_MODULES = (helper_runtime, *_FIXED_RUNTIME_MODULES)
 
 _DEADLINE = 8.0
 _EXPECTED_CHANNEL_BYTES = 16 * 16 * 3
@@ -228,6 +254,10 @@ def wheel_package_matches(wheel: Path, root: Path, version: str) -> None:
             "verdiclip/platform/owned_helper.py",
             "verdiclip/platform/helper_runtime.py",
             "verdiclip/platform/helper_bootstrap.py",
+            *(
+                module.__name__.replace(".", "/") + ".py"
+                for module in _VERIFIED_MODULES
+            ),
         }
         if not required.issubset(names):
             raise ValueError("Wheel is missing required helper package files")
@@ -301,12 +331,8 @@ def inspect_runtime(wheel: Path) -> InstalledRuntime:
     dependency_root, dependency_version = distribution_root("mss", dependency)
     if helper != (app_root / "verdiclip/platform/owned_helper.py").resolve(strict=True):
         raise ValueError("Loaded helper origin is not inside the installed wheel")
-    for module in (helper_runtime, helper_bootstrap):
-        expected = (
-            app_root
-            / "verdiclip/platform"
-            / (module.__name__.rsplit(".", 1)[1] + ".py")
-        )
+    for module in _VERIFIED_MODULES:
+        expected = app_root / (module.__name__.replace(".", "/") + ".py")
         if Path(module.__file__).resolve(strict=True) != expected.resolve(strict=True):
             raise ValueError(
                 "Loaded runtime primitive origin is not inside the installed wheel"
@@ -498,7 +524,20 @@ def admit_primitive_manifest(
     if (
         manifest.executable != runtime.executable
         or manifest.roots != runtime.roots
-        or manifest.origins[:2] != (origins["verdiclip"], origins["mss"])
+        or manifest.origins
+        != (
+            origins["verdiclip"],
+            origins["mss"],
+            *(
+                str(
+                    (
+                        Path(origins["verdiclip"]).parent.parent
+                        / (module.__name__.replace(".", "/") + ".py")
+                    ).resolve(strict=True)
+                )
+                for module in _FIXED_RUNTIME_MODULES
+            ),
+        )
         or manifest.versions != tuple(value for _, value in runtime.versions)
         or manifest.python_version != runtime.python_version
         or manifest.pointer_bits != runtime.pointer_bits

@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import mss
+import mss.tools
 from PySide6.QtGui import QImage
 from scripts.panel_checkpoint import checkpoint_passed
 from scripts.panel_complete_reference import associate_frames, compare_reference
@@ -40,6 +41,7 @@ HELPER_DEADLINE_SECONDS = 30
 NATIVE_CALL_DEADLINE_SECONDS = 3
 OFFSET_PERCENT_TOLERANCE = 0.2
 NATIVE_ORACLE_DPI = 96
+MAX_ENTRY_PIXELS = 2_000_000
 
 
 def write(path: Path, value: object) -> None:
@@ -145,6 +147,40 @@ class NativeWindow:
         return {"root_hwnd": hwnd, "pid": pid.value, "allowed_rect": list(rect)}
 
 
+def retain_edge_entry(
+    output: Path, image: Pixels, owner: Json, state: Json, started: float
+) -> None:
+    """Persist the original owned grab before its border assertion, with no retry.
+
+    Only already-read foreground/geometry and authored display evidence is used.
+    Monitor DPI, occlusion and presentation readiness are not inferred.
+    """
+    if image.width * image.height > MAX_ENTRY_PIXELS:
+        raise RuntimeError("Owned entry evidence exceeds pixel bound")
+    mss.tools.to_png(
+        image.rgb, (image.width, image.height), output=str(output / "edge-entry.png")
+    )
+    write(
+        output / "edge-entry.json",
+        {
+            "root_hwnd": owner["root_hwnd"],
+            "pid": owner["pid"],
+            "requested_rect": owner["allowed_rect"],
+            "captured_dimensions": [image.width, image.height],
+            "foreground_verified_before_capture": True,
+            "foreground_rechecked_after_capture": False,
+            "observer_dpi_awareness": "per-monitor-v2",
+            "authored_dpr": state["dpr"],
+            "authored_sequence": state["sequence"],
+            "physical_monitor_dpi_measured": False,
+            "capture_started_monotonic": started,
+            "evidence_recorded_monotonic": time.monotonic(),
+            "rgb_sha256": hashlib.sha256(image.rgb).hexdigest(),
+            "border_oracle_evaluated": False,
+        },
+    )
+
+
 def edge_fixture(
     job: OwnedJob, server: FixtureServer, output: Path, scale: str
 ) -> Json:
@@ -178,13 +214,27 @@ def edge_fixture(
     owner = native.foreground(job.pids())
     left, top, right, bottom = owner["allowed_rect"]
     with mss.MSS() as source:
+        capture_started = time.monotonic()
         shot = source.grab(
             {"left": left, "top": top, "width": right - left, "height": bottom - top}
         )
+        image = Pixels(shot.width, shot.height, shot.rgb)
+        persistence_failure = None
+        try:
+            retain_edge_entry(output, image, owner, state, capture_started)
+        except Exception as error:  # noqa: BLE001 - preserve a primary oracle failure
+            persistence_failure = error
         # A cyan border exists only around this authored page's inner target.
-        x1, y1, x2, y2 = color_bounds(
-            Pixels(shot.width, shot.height, shot.rgb), bytes((23, 197, 233))
-        )
+        try:
+            x1, y1, x2, y2 = color_bounds(image, bytes((23, 197, 233)))
+        except Exception as error:
+            if persistence_failure is not None:
+                error.add_note(
+                    f"Entry evidence persistence failed: {persistence_failure!r}"
+                )
+            raise
+        if persistence_failure is not None:
+            raise persistence_failure
     border = [left + x1, top + y1, left + x2, top + y2]
     dpr = float(state["dpr"])
     target = state["state"]["target"]

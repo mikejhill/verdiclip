@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import gc
 import json
 import threading
 import time
@@ -23,6 +24,7 @@ from PySide6.QtCore import (
 )
 from pytestqt.qtbot import QtBot
 
+from verdiclip.capture.frame_envelope import header_for_rgb
 from verdiclip.platform import helper_channel as channel
 from verdiclip.platform.helper_protocol import Message, ProtocolError, encode
 from verdiclip.platform.helper_runtime import RuntimeManifest
@@ -41,6 +43,7 @@ def runtime(tmp_path: Path) -> RuntimeManifest:
             str(tmp_path / "c"),
             str(tmp_path / "d"),
             str(tmp_path / "e"),
+            *(str(tmp_path / name) for name in ("f", "g", "h", "i", "j")),
         ),
         ("1", "2"),
         (3, 13, 1),
@@ -188,6 +191,7 @@ def test_cancel_during_ready_verification_blocks_send(worker: channel._Worker) -
                     "executable": "owned",
                     "epoch": worker.epoch,
                     "protocol_version": 1,
+                    "peer_schema": 2,
                 },
             )
         )
@@ -253,6 +257,7 @@ def test_retirement_waits_for_clean_eof(
     worker._poll()
     terminal.assert_not_called()
     worker.eof = True
+    worker.frame_eof = True
     worker._poll()
     terminal.assert_called_once()
 
@@ -323,6 +328,7 @@ def test_nonzero_exit_after_finish_is_failure(
     """Protocol completion cannot launder a failed producer exit."""
     worker.phase = "retiring"
     worker.eof = True
+    worker.frame_eof = True
     worker.helper = Mock()
     worker.helper.poll.return_value = helper_status(retired=True, exit_code=9)
     monkeypatch.setattr(worker, "_terminal", Mock())
@@ -361,10 +367,18 @@ def test_partial_trailing_frame_fails_before_reply(worker: channel._Worker) -> N
 def test_lifetime_requires_both_notifications_and_latches_before_emit(
     runtime: RuntimeManifest,
     qapp: QCoreApplication,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Duplicate terminal and reentrant completion cannot release twice."""
+    """Test the completion latch without moving an owner to an unstarted thread."""
     del qapp
+    # This state-only seam keeps deferred deletion on the active GUI loop.
+    # The separate real-QThread roundtrip still exercises actual affinity.
+    monkeypatch.setattr(channel._Worker, "moveToThread", lambda _self, _thread: None)
     lifetime = channel._Lifetime(3, runtime, threading.Event())
+    assert lifetime.worker.thread() == QThread.currentThread()
+    destroyed = []
+    lifetime.worker.destroyed.connect(lambda: destroyed.append("worker"))
+    lifetime.worker_thread.destroyed.connect(lambda: destroyed.append("thread"))
     events = []
     lifetime.terminal.connect(lambda *_: (events.append(True), lifetime._complete()))
     lifetime._retired(2, b"wrong")
@@ -374,7 +388,10 @@ def test_lifetime_requires_both_notifications_and_latches_before_emit(
     lifetime._stopped()
     assert events == [True]
     assert lifetime not in channel._RETAINED
-    lifetime.worker.deleteLater()  # Never started in this state-only test.
+    lifetime.worker.deleteLater()  # GUI affinity in this state-only test.
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    gc.collect()
+    assert sorted(destroyed) == ["thread", "worker"]
 
 
 def test_real_qt_worker_roundtrip_uses_only_private_fake_boundary(  # noqa: C901 - complete fake peer
@@ -400,7 +417,6 @@ def test_real_qt_worker_roundtrip_uses_only_private_fake_boundary(  # noqa: C901
             self.data = b""
             self.decoder = channel.Decoder()
             self.status = helper_status()
-            shared["peer"] = self
             affinities.append(QThread.currentThread())
 
         def setSocketOptions(self, _option: object) -> None:  # noqa: N802
@@ -409,7 +425,8 @@ def test_real_qt_worker_roundtrip_uses_only_private_fake_boundary(  # noqa: C901
         def setMaxPendingConnections(self, _count: int) -> None:  # noqa: N802
             pass
 
-        def listen(self, _name: str) -> bool:
+        def listen(self, name: str) -> bool:
+            shared["frame" if name.endswith("-frame") else "peer"] = self
             return True
 
         def nextPendingConnection(self) -> Peer:  # noqa: N802
@@ -445,6 +462,7 @@ def test_real_qt_worker_roundtrip_uses_only_private_fake_boundary(  # noqa: C901
 
         def end(self) -> None:
             self.status = helper_status(retired=True, exit_code=0)
+            shared["frame"].disconnected.emit()
             self.disconnected.emit()
 
         def close(self) -> None:
@@ -471,9 +489,11 @@ def test_real_qt_worker_roundtrip_uses_only_private_fake_boundary(  # noqa: C901
                         "executable": "fake",
                         "epoch": epochs[0],
                         "protocol_version": 1,
+                        "peer_schema": 2,
                     },
                 )
             )
+            QTimer.singleShot(0, shared["frame"].newConnection.emit)
             QTimer.singleShot(0, self.peer.newConnection.emit)
 
         def poll(self) -> HelperStatus:
@@ -583,7 +603,7 @@ def test_terminal_work_cannot_cross_cleanup_admission_deadline(
     monkeypatch.setattr(channel.time, "monotonic", lambda: now[0])
     worker.deadline = 10
     worker.phase = "retiring"
-    worker.finish_requested = worker.eof = True
+    worker.finish_requested = worker.eof = worker.frame_eof = True
     worker.helper = Mock()
     worker.helper.status = helper_status(retired=True, exit_code=0)
     worker.socket = Mock()
@@ -680,6 +700,7 @@ def test_ready_epoch_mismatch_precedes_producer_validation(
                     "executable": "owned",
                     "epoch": "f" * 32,
                     "protocol_version": 1,
+                    "peer_schema": 2,
                 },
             )
         )
@@ -762,6 +783,7 @@ def test_verified_flag_does_not_admit_failed_lifetime(
                     "executable": "owned",
                     "epoch": worker.epoch,
                     "protocol_version": 1,
+                    "peer_schema": 2,
                 },
             )
         )
@@ -792,14 +814,23 @@ def synchronous_peer(worker: channel._Worker) -> tuple[Mock, Mock]:
     helper.poll.return_value = helper.status
     helper.verify_ready.return_value = helper.status
     worker.socket, worker.helper = socket, helper
+    worker.frame_socket = Mock()
+    worker.frame_socket.bytesAvailable.return_value = 0
     return socket, helper
 
 
 def feed_peer(worker: channel._Worker, socket: Mock, message: Message) -> None:
     """Deliver one exact batch through the real decoder and callback admission."""
     payload = encode(message)
-    socket.bytesAvailable.side_effect = [len(payload), 0, 0]
-    socket.read.return_value = QByteArray(payload)
+    pending = bytearray(payload)
+    socket.bytesAvailable.side_effect = lambda: len(pending)
+
+    def read(size: int) -> QByteArray:
+        data = bytes(pending[:size])
+        del pending[:size]
+        return QByteArray(data)
+
+    socket.read.side_effect = read
     worker._readable()
     socket.bytesAvailable.side_effect = None
     socket.bytesAvailable.return_value = 0
@@ -822,6 +853,7 @@ def test_direct_callbacks_complete_verified_roundtrip(worker: channel._Worker) -
         "executable": "fake",
         "epoch": worker.epoch,
         "protocol_version": 1,
+        "peer_schema": 2,
     }
     feed_peer(worker, socket, Message("ready", 0, identity))
     assert identities == [(1, identity)]
@@ -883,7 +915,10 @@ def test_start_resource_admission_and_failure_cleanup(
     if failure == "cancel-before":
         builder.assert_not_called()
     else:
-        server.setMaxPendingConnections.assert_called_once_with(1)
+        assert server.setMaxPendingConnections.call_count == (
+            1 if failure == "listen" else 2
+        )
+        server.setMaxPendingConnections.assert_called_with(1)
 
 
 @pytest.mark.parametrize(
@@ -991,6 +1026,7 @@ def test_protocol_failures_preserve_no_success(
             "executable": "fake",
             "epoch": worker.epoch,
             "protocol_version": 1,
+            "peer_schema": 2,
         }
         if mode == "invalid-ready":
             payload["extra"] = 1
@@ -1135,3 +1171,595 @@ def test_facade_wrong_thread_and_repeated_start_never_launch(
     with pytest.raises(RuntimeError, match="owning thread"):
         facade.start(runtime)
     lifetime.assert_not_called()
+
+
+def observe_value(
+    worker: channel._Worker, width: int = 4, height: int = 3
+) -> channel.Observation:
+    """Independent exact schema for a full-panel binary transport test."""
+    return channel.Observation.parse(
+        json.dumps(
+            {
+                "observation_schema": 1,
+                "epoch": worker.epoch,
+                "request_id": 1,
+                "frame_id": 1,
+                "target": {
+                    "pid": 7,
+                    "process_created_100ns": 1234,
+                    "hwnd": 99,
+                    "point": [1, 1],
+                    "framework": "WPF",
+                    "runtime_id": [1, 2],
+                },
+                "guard": {
+                    "foreground_hwnd": 99,
+                    "foreground_pid": 7,
+                    "input_tick": 123,
+                    "root_client_rect": [0, 0, 1024, 512],
+                    "target_rect": [0, 0, width, height],
+                    "capture_rect": [0, 0, width, height],
+                    "dpi": [96, 96],
+                    "monitors": [[1, 0, 0, 1024, 512, True]],
+                    "visibility_evidence": {
+                        "scope": "owned-wpf-fixture-external-check-v1",
+                        "root_visible": True,
+                        "root_minimized": False,
+                        "root_cloaked": False,
+                        "external_intersection_count": 0,
+                        "point_root_checks": 6,
+                        "internal_overlay_assessment": "fixture-assumption-only",
+                    },
+                },
+                "scroll": {
+                    "horizontal": -1,
+                    "vertical": 0,
+                    "horizontal_view": 100,
+                    "vertical_view": 25,
+                    "horizontal_scrollable": False,
+                    "vertical_scrollable": True,
+                },
+                "settled": {"samples": 3, "quiet_ns": 200000000},
+            }
+        ).encode()
+    )
+
+
+def buffered_socket() -> tuple[Mock, bytearray]:
+    """Use actual bounded QByteArray reads with explicit buffered-disconnect order."""
+    data = bytearray()
+    socket = Mock()
+    socket.bytesAvailable.side_effect = lambda: len(data)
+
+    def read(size: int) -> QByteArray:
+        result = bytes(data[:size])
+        del data[:size]
+        return QByteArray(result)
+
+    socket.read.side_effect = read
+    return socket, data
+
+
+@pytest.fixture
+def observing(
+    worker: channel._Worker, monkeypatch: pytest.MonkeyPatch
+) -> tuple[channel._Worker, Mock, Mock, bytearray, list[int]]:
+    """Start a real single-flight observe with deterministic same-host clocks."""
+    clock = [1_000_000_000]
+    monkeypatch.setattr(channel.time, "monotonic_ns", lambda: clock[0])
+    monkeypatch.setattr(channel.time, "monotonic", lambda: clock[0] / 1_000_000_000)
+    worker.session_deadline = worker.deadline = 20.0
+    worker.phase = "ready"
+    control, helper = synchronous_peer(worker)
+    frame, data = buffered_socket()
+    worker.frame_socket = frame
+    target = channel.ObserveTarget(7, 1234, 99, (1, 1))
+    worker.submit(
+        1,
+        json.dumps(
+            {
+                "operation": "observe",
+                "observe_schema": 1,
+                "deadline_ns": 3_000_000_000,
+                "request": json.loads(target.serialize()),
+            }
+        ).encode(),
+    )
+    assert worker.failure is None
+    assert worker.deadline == 3.0
+    return worker, control, helper, data, clock
+
+
+def observed_response(
+    worker: channel._Worker, control: Mock, metadata: channel.Observation
+) -> None:
+    """Deliver metadata through the actual framed control decoder."""
+    feed_peer(
+        worker,
+        control,
+        Message(
+            "response",
+            1,
+            {"operation": "observed", "observation": json.loads(metadata.canonical)},
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "order", ["metadata-first", "binary-first", "disconnect-before-metadata"]
+)
+def test_observe_waits_for_paired_eof_and_natural_retirement(
+    observing: tuple[channel._Worker, Mock, Mock, bytearray, list[int]],
+    monkeypatch: pytest.MonkeyPatch,
+    order: str,
+) -> None:
+    """No provisional reply, no pixels in signals, no success before both EOFs."""
+    worker, control, helper, data, _clock = observing
+    metadata = observe_value(worker)
+    pixels = bytes(range(36))
+
+    wire = header_for_rgb(metadata.frame_identity(), pixels).encode() + pixels
+    replies, receipts = [], []
+    worker.reply.connect(lambda *args: replies.append(args))
+    worker.terminal.connect(lambda _g, raw: receipts.append(json.loads(raw)))
+    if order == "metadata-first":
+        observed_response(worker, control, metadata)
+    data.extend(wire)
+    worker._frame_readable()
+    if order != "metadata-first":
+        assert worker.frame_header_read == 128
+        assert worker.frame_bytes == 0
+        assert len(data) == 36
+        assert not worker.frame_drain_queued
+        if order == "disconnect-before-metadata":
+            worker._frame_disconnected()
+        observed_response(worker, control, metadata)
+    assert replies == []
+    if order != "disconnect-before-metadata":
+        assert not worker.finish_requested
+        worker._frame_disconnected()
+    assert worker.frame_eof
+    assert worker.frame_bytes == 36
+    assert worker.deadline == 3.0
+    assert control.write.call_count == 2  # observe then automatic reserved finish
+    feed_peer(worker, control, Message("response", 2, {"operation": "finished"}))
+    assert worker.phase == "retiring"
+    assert worker.deadline == 6.0
+    assert not receipts
+    worker._disconnected()
+    helper.status = helper_status(retired=True, exit_code=0)
+    helper.poll.return_value = helper.status
+    monkeypatch.setattr(channel.QThread, "currentThread", Mock)
+    worker._poll()
+    assert len(receipts) == 1
+    assert receipts[0]["passed"]
+    assert receipts[0]["observe"]["observation"] == json.loads(metadata.canonical)
+    assert (
+        receipts[0]["observe"]["validated_ns"] < receipts[0]["observe"]["deadline_ns"]
+    )
+    assert receipts[0]["observe"]["finished_ns"] < receipts[0]["observe"]["deadline_ns"]
+    assert replies == []
+
+
+def test_frame_drain_is_bounded_and_single_continuation(
+    observing: tuple[channel._Worker, Mock, Mock, bytearray, list[int]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Large buffered frames drain in bounded turns, never a queued chunk backlog."""
+    worker, control, _helper, data, _clock = observing
+    metadata = observe_value(worker, 256, 256)
+    pixels = bytes(256 * 256 * 3)
+    observed_response(worker, control, metadata)
+    queued = Mock()
+    monkeypatch.setattr(channel.QTimer, "singleShot", queued)
+    data.extend(header_for_rgb(metadata.frame_identity(), pixels).encode() + pixels)
+    worker._frame_disconnected()
+    assert len(data) == len(pixels) + 128 - 65536
+    assert worker.frame_drain_queued
+    queued.assert_called_once()
+    worker._queue_frame()
+    queued.assert_called_once()
+    while data:
+        worker._resume_frame()
+    assert worker.frame_eof
+    assert worker.failure is None
+    assert all(
+        call.args[0] <= 65536
+        for call in cast(Mock, worker.frame_socket).read.call_args_list
+    )
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "digest",
+        "trailer",
+        "short-header",
+        "short-body",
+        "duplicate-metadata",
+        "cancel",
+        "deadline",
+        "finish-deadline",
+    ],
+)
+def test_observe_bad_stream_never_publishes(
+    observing: tuple[channel._Worker, Mock, Mock, bytearray, list[int]], failure: str
+) -> None:
+    """Every failure keeps first cause and discards provisional observation evidence."""
+    worker, control, _helper, data, clock = observing
+    metadata = observe_value(worker)
+    pixels = bytes(range(36))
+    header = header_for_rgb(metadata.frame_identity(), pixels).encode()
+    observed_response(worker, control, metadata)
+    if failure == "duplicate-metadata":
+        feed_peer(
+            worker,
+            control,
+            Message(
+                "response",
+                1,
+                {
+                    "operation": "observed",
+                    "observation": json.loads(metadata.canonical),
+                },
+            ),
+        )
+    else:
+        data.extend(header[:5] if failure == "short-header" else header)
+        if failure != "short-header":
+            data.extend(
+                bytes(36)
+                if failure == "digest"
+                else pixels[:-1]
+                if failure == "short-body"
+                else pixels
+            )
+        if failure == "trailer":
+            data.extend(b"x")
+        elif failure == "cancel":
+            worker.cancelled.set()
+        elif failure == "deadline":
+            clock[0] = 3_000_000_000
+        worker._frame_disconnected()
+        if failure == "finish-deadline":
+            clock[0] = 3_000_000_000
+            feed_peer(
+                worker, control, Message("response", 2, {"operation": "finished"})
+            )
+    assert worker.failure is not None
+    first = worker.failure
+    worker._frame_readable()
+    assert worker.failure == first
+    assert worker.pending_reply is None
+
+
+@pytest.mark.parametrize("frame_first", [True, False])
+def test_inert_empty_binary_eof_is_order_independent(
+    worker: channel._Worker, *, frame_first: bool
+) -> None:
+    """Inert finish still requires the empty data endpoint, in either callback order."""
+    control, _helper = synchronous_peer(worker)
+    worker.phase = "ready"
+    worker.finish()
+    if frame_first:
+        worker._frame_disconnected()
+    feed_peer(worker, control, Message("response", 1, {"operation": "finished"}))
+    worker._disconnected()
+    if not frame_first:
+        worker._frame_disconnected()
+    assert worker.eof
+    assert worker.frame_eof
+    assert worker.failure is None
+
+
+def test_authoritative_ns_boundary_overrides_float_rounding(
+    observing: tuple[channel._Worker, Mock, Mock, bytearray, list[int]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A float clock just below deadline cannot admit the exact ns boundary."""
+    worker, _control, _helper, _data, clock = observing
+    clock[0] = 3_000_000_000
+    monkeypatch.setattr(channel.time, "monotonic", lambda: 2.999999999)
+    with pytest.raises(ProtocolError, match="deadline"):
+        worker._admit()
+
+
+def test_observe_facade_stamps_before_serializing_and_consumes_failure(
+    runtime: RuntimeManifest, qapp: QCoreApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed/expired attempt cannot be retried or gain a worker-arrival budget."""
+    del runtime, qapp
+    facade = channel.HelperChannel()
+    facade._state = "ready"
+    now = [1_000_000_000]
+    monkeypatch.setattr(channel.time, "monotonic_ns", lambda: now[0])
+    target = channel.ObserveTarget(7, 1234, 99, (1, 1))
+    original = channel.ObserveTarget.serialize
+
+    def delayed(value: channel.ObserveTarget) -> bytes:
+        now[0] = 3_000_000_000
+        return original(value)
+
+    monkeypatch.setattr(channel.ObserveTarget, "serialize", delayed)
+    requests = []
+    facade._request.connect(lambda *args: requests.append(args))
+    with pytest.raises(ProtocolError, match="deadline"):
+        facade.observe(1, target)
+    assert facade._observe_consumed
+    assert facade._cancelled.is_set()
+    assert requests == []
+    with pytest.raises(RuntimeError, match="cannot observe"):
+        facade.observe(2, target)
+
+
+@pytest.mark.parametrize("order", ["control-first", "frame-first"])
+def test_ready_requires_both_authenticated_endpoints(
+    worker: channel._Worker, monkeypatch: pytest.MonkeyPatch, order: str
+) -> None:
+    """A valid control handshake is provisional until the second kernel peer binds."""
+    control, _helper = synchronous_peer(worker)
+    worker.frame_socket = None
+    worker.peer = 7
+    frame, _data = buffered_socket()
+    server = Mock()
+    server.nextPendingConnection.return_value = frame
+    worker.frame_server = server
+    monkeypatch.setattr(channel, "_peer_pid", lambda _descriptor: 7)
+    ready = []
+    worker.ready.connect(ready.append)
+    message = Message(
+        "ready",
+        0,
+        {
+            "pid": 7,
+            "executable": "fake",
+            "epoch": worker.epoch,
+            "protocol_version": 1,
+            "peer_schema": 2,
+        },
+    )
+    if order == "frame-first":
+        worker._frame_connected()
+    else:
+        feed_peer(worker, control, message)
+    assert ready == []
+    if order == "frame-first":
+        feed_peer(worker, control, message)
+    else:
+        worker._frame_connected()
+    assert ready == [1]
+    assert worker.failure is None
+    worker._notify_ready()
+    assert ready == [1]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "wrong-pid",
+        "missing",
+        "duplicate",
+        "closed",
+        "unrequested-eof",
+        "unsolicited",
+        "control-trailer",
+    ],
+)
+def test_binary_endpoint_failures_never_admit_ready(
+    worker: channel._Worker, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    """Actual peer ownership and startup stream validity are independent gates."""
+    control, helper = synchronous_peer(worker)
+    frame, data = buffered_socket()
+    worker.frame_socket = frame if failure == "duplicate" else None
+    worker.frame_server = Mock()
+    worker.frame_server.nextPendingConnection.return_value = (
+        None if failure == "missing" else frame
+    )
+    monkeypatch.setattr(
+        channel, "_peer_pid", lambda _descriptor: 8 if failure == "wrong-pid" else 7
+    )
+    if failure == "closed":
+        helper.poll.return_value = replace(helper_status(), closed=True)
+    elif failure == "unsolicited":
+        data.extend(b"x")
+    elif failure == "control-trailer":
+        worker.peer = 7
+        worker.verified_identity = b"{}"
+        worker.decoder.buffer.extend(b"x")
+    ready = []
+    worker.ready.connect(ready.append)
+    worker._frame_connected()
+    if failure == "unrequested-eof":
+        worker._frame_disconnected()
+    assert worker.failure is not None
+    assert ready == []
+    control.write.assert_not_called()
+
+
+def test_session_cap_only_shortens_observe_deadline(
+    worker: channel._Worker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Remaining session time cannot be renewed by beginning an observe command."""
+    monkeypatch.setattr(channel.time, "monotonic_ns", lambda: 1_000_000_000)
+    monkeypatch.setattr(channel.time, "monotonic", lambda: 1.0)
+    worker.deadline = worker.session_deadline = 1.5
+    worker.phase = "ready"
+    control, _helper = synchronous_peer(worker)
+    target = channel.ObserveTarget(7, 1234, 99, (1, 1))
+    worker.submit(
+        1,
+        json.dumps(
+            {
+                "operation": "observe",
+                "observe_schema": 1,
+                "deadline_ns": 3_000_000_000,
+                "request": json.loads(target.serialize()),
+            }
+        ).encode(),
+    )
+    assert worker.observe_deadline_ns == 1_500_000_000
+    decoded = channel.Decoder().feed(control.write.call_args.args[0])
+    assert decoded[0].payload["deadline_ns"] == 1_500_000_000
+
+
+def test_submit_cannot_bypass_typed_observe_api(qapp: QCoreApplication) -> None:
+    """Public raw payload submission exposes no deadline override."""
+    del qapp
+    facade = channel.HelperChannel()
+    facade._state = "ready"
+    with pytest.raises(ValueError, match="typed one-shot"):
+        facade.submit(1, b'{"operation":"observe"}')
+    assert facade._state == "ready"
+
+
+def test_empty_first_failure_is_stable(worker: channel._Worker) -> None:
+    """A later cleanup callback cannot replace an empty original failure."""
+    worker._fail("")
+    worker._fail("later")
+    assert worker.failure == "channel-failure"
+
+
+def test_typed_observe_admission_and_metadata_progress(
+    qapp: QCoreApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only immutable bounded metadata crosses facade signals, once per attempt."""
+    del qapp
+    monkeypatch.setattr(channel.time, "monotonic_ns", lambda: 1_000_000_000)
+    facade = channel.HelperChannel()
+    facade._state = "ready"
+    requests, progress = [], []
+    facade._request.connect(
+        lambda caller, payload: requests.append((caller, json.loads(payload)))
+    )
+    facade.progress.connect(
+        lambda generation, payload: progress.append((generation, payload))
+    )
+    target = channel.ObserveTarget(7, 1234, 99, (1, 1))
+    facade.observe(1, target)
+    assert requests == [
+        (
+            1,
+            {
+                "operation": "observe",
+                "observe_schema": 1,
+                "deadline_ns": 3_000_000_000,
+                "request": json.loads(target.serialize()),
+            },
+        )
+    ]
+    facade._progress(facade._generation, b'{"phase":"frame-body","bytes":1}')
+    assert len(progress) == 1
+    facade.cancel()
+    facade._progress(facade._generation, b"{}")
+    facade._progress(facade._generation + 1, b"{}")
+    assert len(progress) == 1
+    with pytest.raises(RuntimeError, match="cannot observe"):
+        facade.observe(2, target)
+
+
+@pytest.mark.parametrize("invalid", ["caller", "target"])
+def test_invalid_typed_observe_consumes_attempt(
+    qapp: QCoreApplication, invalid: str
+) -> None:
+    """Even invalid input cannot leave an admitted one-shot operation reusable."""
+    del qapp
+    facade = channel.HelperChannel()
+    facade._state = "ready"
+    with pytest.raises(
+        ProtocolError, match=r"Invalid observe caller|immutable observation"
+    ):
+        facade.observe(
+            True if invalid == "caller" else 1,
+            {} if invalid == "target" else channel.ObserveTarget(7, 1, 99, (1, 1)),  # ty: ignore[invalid-argument-type]
+        )
+    assert facade._observe_consumed
+    assert facade._cancelled.is_set()
+
+
+def test_duplicate_ready_before_frame_is_rejected(worker: channel._Worker) -> None:
+    """A pending second endpoint does not create a second control handshake slot."""
+    worker.verified_identity = b"{}"
+    with pytest.raises(ProtocolError, match="duplicate-ready"):
+        worker._message(Message("ready", 0, {}))
+
+
+@pytest.mark.parametrize("failure", ["exception", "boolean", "float", "regression"])
+def test_facade_clock_failure_cancels_admitted_lifetime(
+    qapp: QCoreApplication, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    """Clock acquisition belongs inside the cancellation-on-failure boundary."""
+    del qapp
+    facade = channel.HelperChannel()
+    facade._state = "ready"
+    calls = (
+        Mock(side_effect=RuntimeError("clock unavailable"))
+        if failure == "exception"
+        else Mock(return_value=True if failure == "boolean" else 1.0)
+    )
+    if failure == "regression":
+        calls.side_effect = [1_000_000_000, 900_000_000]
+    monkeypatch.setattr(channel.time, "monotonic_ns", calls)
+    requests = []
+    facade._request.connect(lambda *args: requests.append(args))
+    with pytest.raises((RuntimeError, ProtocolError)):
+        facade.observe(1, channel.ObserveTarget(7, 1, 99, (1, 1)))
+    assert facade._observe_consumed
+    assert facade._cancelled.is_set()
+    assert facade._state == "closing"
+    assert requests == []
+
+
+def test_worker_ns_regression_after_frame_validation_is_terminal(
+    observing: tuple[channel._Worker, Mock, Mock, bytearray, list[int]],
+) -> None:
+    """Once pairing is terminal, the finish path still retains the ns history."""
+    worker, control, _helper, data, clock = observing
+    metadata = observe_value(worker)
+    observed_response(worker, control, metadata)
+    data.extend(
+        header_for_rgb(metadata.frame_identity(), bytes(36)).encode() + bytes(36)
+    )
+    worker._frame_disconnected()
+    assert worker.frame_eof
+    clock[0] = 900_000_000
+    feed_peer(worker, control, Message("response", 2, {"operation": "finished"}))
+    assert worker.failure == "invalid-or-regressed-monotonic-ns-clock"
+    assert worker.observe_finished_ns is None
+
+
+def test_partial_early_finished_prefix_cannot_be_completed_after_frame_eof(
+    observing: tuple[channel._Worker, Mock, Mock, bytearray, list[int]],
+) -> None:
+    """Busy frame reception is not permission to pre-send the next control response."""
+    worker, control, _helper, data, _clock = observing
+    metadata = observe_value(worker)
+    early_finish = encode(Message("response", 2, {"operation": "finished"}))
+    combined = (
+        encode(
+            Message(
+                "response",
+                1,
+                {
+                    "operation": "observed",
+                    "observation": json.loads(metadata.canonical),
+                },
+            )
+        )
+        + early_finish[:9]
+    )
+    control.bytesAvailable.side_effect = [len(combined), 0, 0]
+    control.read.return_value = QByteArray(combined)
+    worker._readable()
+    assert worker.failure == "unsolicited-partial-observe-trailer"
+    first = worker.failure
+    data.extend(
+        header_for_rgb(metadata.frame_identity(), bytes(36)).encode() + bytes(36)
+    )
+    worker._frame_disconnected()
+    control.bytesAvailable.side_effect = [len(early_finish) - 9, 0]
+    control.read.return_value = QByteArray(early_finish[9:])
+    worker._readable()
+    assert worker.failure == first
+    assert not worker.finish_requested
+    assert control.write.call_count == 1

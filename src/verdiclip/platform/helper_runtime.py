@@ -15,7 +15,7 @@ from pathlib import Path
 
 _PYTHON_VERSION_PARTS = 3
 _MAX_VERSION_PART = 1000
-_SCHEMA = 2
+_SCHEMA = 3
 _MAX_MANIFEST_BYTES = 16_384
 _MAX_PATH_CHARS = 2048
 _MAX_VERSION_CHARS = 128
@@ -25,6 +25,11 @@ _MODULES = (
     "verdiclip.platform.helper_bootstrap",
     "verdiclip.platform.helper_peer",
     "verdiclip.platform.helper_protocol",
+    "verdiclip.capture.scroll_stitch",
+    "verdiclip.capture.frame_envelope",
+    "verdiclip.capture.observe_protocol",
+    "verdiclip.capture.observe_native",
+    "verdiclip.capture.observe_provider",
 )
 _PACKAGES = ("verdiclip", "mss")
 
@@ -62,7 +67,7 @@ class RuntimeManifest:
 
     executable: str
     roots: tuple[str, ...]
-    origins: tuple[str, str, str, str, str]
+    origins: tuple[str, ...]
     versions: tuple[str, str]
     python_version: tuple[int, int, int]
     pointer_bits: int
@@ -150,7 +155,7 @@ def inspect_runtime() -> RuntimeManifest:  # noqa: C901 - fixed runtime identity
     manifest = RuntimeManifest(
         str(Path(executable).resolve(strict=True)),
         tuple(dict.fromkeys(roots)),
-        (origins[0], origins[1], origins[2], origins[3], origins[4]),
+        origins,
         (versions[0], versions[1]),
         (sys.version_info.major, sys.version_info.minor, sys.version_info.micro),
         struct.calcsize("P") * 8,

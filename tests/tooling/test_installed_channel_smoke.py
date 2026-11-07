@@ -1,8 +1,13 @@
 """Portable admission tests, not claims of native installed-channel qualification."""
 
 import ctypes
+import importlib.abc
+import importlib.machinery
+import zipfile
+from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from types import ModuleType
+from typing import cast, override
 
 import pytest
 from scripts import installed_channel_smoke as smoke
@@ -378,3 +383,102 @@ def test_parent_death_preserves_inspection_failure(
             smoke.time.monotonic() + 1,
         )
     assert any("second close error" in note for note in caught.value.__notes__)
+
+
+@pytest.fixture
+def channel_wheel(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Isolate the channel's independent loaded-file checks from the base verifier."""
+
+    @dataclass
+    class Runtime:
+        origins: tuple[tuple[str, str], ...]
+
+    root = tmp_path / "installed packages å"
+    package = root / "verdiclip"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_bytes(b"# Installed package.\n")
+    modules = (
+        smoke.helper_channel,
+        smoke.helper_peer,
+        smoke.helper_protocol,
+        smoke.helper_bootstrap,
+        smoke.scroll_stitch,
+        smoke.frame_envelope,
+        smoke.observe_protocol,
+        smoke.observe_native,
+        smoke.observe_provider,
+    )
+    wheel = tmp_path / "fixture.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        for module in modules:
+            relative = module.__name__.replace(".", "/") + ".py"
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            payload = ("# " + relative + "\n").encode()
+            path.write_bytes(payload)
+            archive.writestr(relative, payload)
+            monkeypatch.setattr(module, "__file__", str(path))
+
+    class Loader(importlib.abc.Loader):
+        @override
+        def exec_module(self, module: ModuleType) -> None:
+            """Supply only the already independently tested base inspection result."""
+            module.inspect_runtime = lambda _wheel: Runtime(  # ty: ignore[unresolved-attribute]
+                (("verdiclip", str(package / "__init__.py")),)
+            )
+
+    monkeypatch.setattr(
+        smoke.importlib.util,
+        "spec_from_file_location",
+        lambda name, _path: importlib.machinery.ModuleSpec(name, Loader()),
+    )
+    return wheel
+
+
+def test_channel_verifier_checks_all_fixed_loaded_files(channel_wheel: Path) -> None:
+    """The real channel verifier accepts exact files in both package subdirectories."""
+    assert smoke.verify_wheel(channel_wheel)["origins"]
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "helper_channel",
+        "helper_peer",
+        "helper_protocol",
+        "helper_bootstrap",
+        "scroll_stitch",
+        "frame_envelope",
+        "observe_protocol",
+        "observe_native",
+        "observe_provider",
+    ],
+)
+@pytest.mark.parametrize("failure", ["mixed-origin", "missing-wheel", "wrong-bytes"])
+def test_channel_verifier_rejects_each_module_mismatch(
+    channel_wheel: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    module_name: str,
+    failure: str,
+) -> None:
+    """Extra installed files or mixed imports cannot masquerade as exact wheel code."""
+    module = getattr(smoke, module_name)
+    relative = module.__name__.replace(".", "/") + ".py"
+    if failure == "mixed-origin":
+        other = channel_wheel.parent / "other.py"
+        other.write_bytes(Path(module.__file__).read_bytes())
+        monkeypatch.setattr(module, "__file__", str(other))
+        with pytest.raises(RuntimeError, match="outside the verified wheel"):
+            smoke.verify_wheel(channel_wheel)
+        return
+    with zipfile.ZipFile(channel_wheel) as archive:
+        entries = {name: archive.read(name) for name in archive.namelist()}
+    if failure == "missing-wheel":
+        del entries[relative]
+    else:
+        entries[relative] += b"# Different bytes.\n"
+    with zipfile.ZipFile(channel_wheel, "w") as archive:
+        for name, payload in entries.items():
+            archive.writestr(name, payload)
+    with pytest.raises((KeyError, ValueError)):
+        smoke.verify_wheel(channel_wheel)

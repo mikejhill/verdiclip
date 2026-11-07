@@ -13,16 +13,13 @@ from typing import cast
 import pytest
 from scripts import installed_runtime_smoke as smoke
 
-from verdiclip.platform import helper_peer, helper_protocol
 from verdiclip.platform.owned_helper import HelperCommand, HelperStatus
 
 _PRIMITIVE_BYTES = {
     module.__name__: Path(module.__file__).read_bytes()
     for module in (
         smoke.helper_runtime,
-        smoke.helper_bootstrap,
-        helper_peer,
-        helper_protocol,
+        *smoke._FIXED_RUNTIME_MODULES,
     )
 }
 
@@ -44,6 +41,12 @@ def installed(
         "verdiclip/platform/helper_peer.py": "# Peer fixture.\n",
         "verdiclip/platform/helper_protocol.py": "# Protocol fixture.\n",
         "mss/__init__.py": "__version__='10.2.0'\n",
+        "mss/base.py": "class MSSBase: pass\n",
+        "verdiclip/capture/__init__.py": "",
+        **{
+            module.__name__.replace(".", "/") + ".py": "# Capture fixture.\n"
+            for module in smoke._FIXED_RUNTIME_MODULES[3:]
+        },
         "verdiclip-1.2.3.dist-info/METADATA": "Name: verdiclip\nVersion: 1.2.3\n",
         "mss-10.2.0.dist-info/METADATA": "Name: mss\nVersion: 10.2.0\n",
     }
@@ -73,18 +76,12 @@ def installed(
 
     for module in (
         smoke.helper_runtime,
-        smoke.helper_bootstrap,
-        helper_peer,
-        helper_protocol,
+        *smoke._FIXED_RUNTIME_MODULES,
     ):
         monkeypatch.setattr(
             module,
             "__file__",
-            str(
-                root
-                / "verdiclip/platform"
-                / (module.__name__.rsplit(".", 1)[1] + ".py")
-            ),
+            str(root / (module.__name__.replace(".", "/") + ".py")),
         )
     monkeypatch.setattr(smoke.metadata, "distribution", distribution)
     runtime = smoke.inspect_runtime(wheel)
@@ -469,9 +466,10 @@ def test_exact_primitive_case_uses_production_argv(
         (
             dict(runtime.origins)["verdiclip"],
             dict(runtime.origins)["mss"],
-            str(root / "verdiclip/platform/helper_bootstrap.py"),
-            str(root / "verdiclip/platform/helper_peer.py"),
-            str(root / "verdiclip/platform/helper_protocol.py"),
+            *(
+                str(root / (module.__name__.replace(".", "/") + ".py"))
+                for module in smoke._FIXED_RUNTIME_MODULES
+            ),
         ),
         ("1.2.3", "10.2.0"),
         runtime.python_version,
@@ -547,11 +545,9 @@ def test_primitive_suffix_cannot_publish_after_failed_verification(
     root, _, runtime = installed
     for module in (
         smoke.helper_runtime,
-        smoke.helper_bootstrap,
-        helper_peer,
-        helper_protocol,
+        *smoke._FIXED_RUNTIME_MODULES,
     ):
-        target = root / "verdiclip/platform" / Path(module.__file__).name
+        target = root / (module.__name__.replace(".", "/") + ".py")
         target.write_bytes(_PRIMITIVE_BYTES[module.__name__])
     manifest = smoke.helper_runtime.RuntimeManifest(
         runtime.executable,
@@ -559,9 +555,10 @@ def test_primitive_suffix_cannot_publish_after_failed_verification(
         (
             dict(runtime.origins)["verdiclip"],
             dict(runtime.origins)["mss"],
-            str(root / "verdiclip/platform/helper_bootstrap.py"),
-            str(root / "verdiclip/platform/helper_peer.py"),
-            str(root / "verdiclip/platform/helper_protocol.py"),
+            *(
+                str(root / (module.__name__.replace(".", "/") + ".py"))
+                for module in smoke._FIXED_RUNTIME_MODULES
+            ),
         ),
         ("1.2.3", "10.2.0"),
         runtime.python_version,
@@ -623,13 +620,13 @@ def test_second_case_failure_cannot_preserve_overall_pass(
     assert report["failure"] == "production proof failed"
 
 
-@pytest.mark.parametrize("missing", ["helper_runtime", "helper_bootstrap"])
+@pytest.mark.parametrize("missing", [m.__name__ for m in smoke._VERIFIED_MODULES])
 def test_old_wheel_cannot_attest_extra_installed_primitives(
     installed: tuple[Path, Path, smoke.InstalledRuntime], missing: str
 ) -> None:
     """Extra files on disk cannot replace required primitive entries in the wheel."""
     root, wheel, _ = installed
-    name = f"verdiclip/platform/{missing}.py"
+    name = missing.replace(".", "/") + ".py"
     assert (root / name).is_file()
     with zipfile.ZipFile(wheel) as archive:
         entries = {
@@ -642,7 +639,7 @@ def test_old_wheel_cannot_attest_extra_installed_primitives(
         smoke.inspect_runtime(wheel)
 
 
-@pytest.mark.parametrize("module", [smoke.helper_runtime, smoke.helper_bootstrap])
+@pytest.mark.parametrize("module", smoke._VERIFIED_MODULES)
 def test_independent_inspection_rejects_mixed_primitive_origin(
     installed: tuple[Path, Path, smoke.InstalledRuntime],
     monkeypatch: pytest.MonkeyPatch,
@@ -653,3 +650,19 @@ def test_independent_inspection_rejects_mixed_primitive_origin(
     monkeypatch.setattr(module, "__file__", str(root / "verdiclip/__init__.py"))
     with pytest.raises(ValueError, match="runtime primitive origin"):
         smoke.inspect_runtime(wheel)
+
+
+@pytest.mark.parametrize("index", range(2, 10))
+def test_primitive_manifest_checks_every_fixed_origin(
+    installed: tuple[Path, Path, smoke.InstalledRuntime], index: int
+) -> None:
+    """Matching package origins cannot hide a mismatched fixed module origin."""
+    root, _, runtime = installed
+    manifest = smoke.helper_runtime.inspect_runtime()
+    smoke.admit_primitive_manifest(manifest, runtime)
+    origins = list(manifest.origins)
+    origins[index] = str(root / "verdiclip/__init__.py")
+    with pytest.raises(ValueError, match="differs from independent"):
+        smoke.admit_primitive_manifest(
+            replace(manifest, origins=tuple(origins)), runtime
+        )

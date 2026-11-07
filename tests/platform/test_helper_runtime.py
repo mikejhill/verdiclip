@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 from dataclasses import replace
+from importlib import import_module
 from importlib.metadata import PathDistribution
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from verdiclip.platform import helper_bootstrap as bootstrap
-from verdiclip.platform import helper_peer, helper_protocol
+from verdiclip.platform import helper_peer
 from verdiclip.platform import helper_runtime as runtime
 
 
@@ -26,11 +27,15 @@ def installed(
         "verdiclip/__init__.py": "VERSION='1.2.3'\n",
         "verdiclip/platform/__init__.py": "",
         "mss/__init__.py": "__version__='10.2.0'\n",
+        "mss/base.py": "class MSSBase: pass\n",
+        "verdiclip/capture/__init__.py": "",
         "verdiclip-1.2.3.dist-info/METADATA": "Name: verdiclip\nVersion: 1.2.3\n",
         "mss-10.2.0.dist-info/METADATA": "Name: mss\nVersion: 10.2.0\n",
     }
-    for module in (runtime, bootstrap, helper_peer, helper_protocol):
-        files[f"verdiclip/platform/{Path(module.__file__).name}"] = Path(
+    fixed = tuple(import_module(name) for name in runtime._MODULES[2:])
+    for module in (runtime, *fixed):
+        assert module.__file__ is not None
+        files[module.__name__.replace(".", "/") + ".py"] = Path(
             module.__file__
         ).read_text(encoding="utf-8")
     for name, content in files.items():
@@ -48,7 +53,7 @@ def installed(
             __file__=str(root / "verdiclip/platform/helper_bootstrap.py")
         ),
     }
-    for module in (helper_peer, helper_protocol):
+    for module in fixed:
         name = module.__name__
         modules[name] = SimpleNamespace(
             __file__=str(root / (name.replace(".", "/") + ".py"))
@@ -243,20 +248,16 @@ def test_fixed_peer_arguments_are_data_after_attestation(
     assert arguments[3].startswith(bootstrap.BOOTSTRAP_SOURCE)
     assert arguments[4:] == (installed.serialize(), launch.serialize())
     assert "from verdiclip.platform.helper_peer import run" in arguments[3]
-    assert installed.schema_version == 2
-    assert len(installed.origins) == 5
+    assert installed.schema_version == 3
+    assert len(installed.origins) == 10
 
 
-@pytest.mark.parametrize("index", [3, 4])
+@pytest.mark.parametrize("index", [3, 4, 5, 6, 7, 8, 9])
 def test_fixed_peer_module_origin_mismatch_fails(
     installed: runtime.RuntimeManifest, monkeypatch: pytest.MonkeyPatch, index: int
 ) -> None:
     """New fixed peer/protocol origins are attested, not merely added import roots."""
-    name = (
-        "verdiclip.platform.helper_peer"
-        if index == 3
-        else "verdiclip.platform.helper_protocol"
-    )
+    name = runtime._MODULES[index]
     monkeypatch.setattr(sys.modules[name], "__file__", installed.origins[0])
     with pytest.raises(ValueError, match="Fixed helper origin"):
         runtime.inspect_runtime()
@@ -280,7 +281,7 @@ def test_manifest_serialized_byte_budget_includes_json_escaping(
 ) -> None:
     """Individually bounded Unicode paths can still overflow the aggregate envelope."""
     path = str(Path(installed.roots[0]).anchor) + "é" * 1500
-    value = replace(installed, origins=(path,) * 5)
+    value = replace(installed, origins=(path,) * 10)
     with pytest.raises(ValueError, match="byte bound"):
         value.serialize()
 
