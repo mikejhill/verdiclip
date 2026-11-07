@@ -154,7 +154,11 @@ def test_stream_all_split_boundaries(split: int) -> None:
 
 
 @pytest.mark.parametrize(
-    "chunk", [b"", RGB + b"x", bytearray(RGB), bytes(MAX_CHUNK_BYTES + 1)]
+    "chunk",
+    [b"", RGB + b"x", bytearray(RGB), bytes(MAX_CHUNK_BYTES + 1)],
+    # Pytest exports the node ID in PYTEST_CURRENT_TEST. A repr of the oversized
+    # buffer exceeds Windows' environment-variable limit before the test runs.
+    ids=["empty", "trailing", "mutable", "over-chunk-limit"],
 )
 def test_invalid_chunks_latch_failure(chunk: object) -> None:
     """Excess chunks are rejected without hashing and cannot resume afterward."""

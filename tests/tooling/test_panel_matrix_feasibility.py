@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -246,6 +247,7 @@ def test_matrix_calls_real_browser_experiment_routing(
     # No replacement of run_probe/probe_arguments: the old caller typo must fail
     # at the real fixed allowlist before any simulated helper launch.
     assert matrix.run_probe is panel_feasibility.run_probe
+    monkeypatch.setenv("PYTHONPATH", os.environ.get("PYTHONPATH", ""))
     monkeypatch.setattr(
         matrix, "verify_raw", lambda _output, _initial: {"verified": True}
     )

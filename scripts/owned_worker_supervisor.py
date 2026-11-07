@@ -28,6 +28,15 @@ DRAIN_POLL_SECONDS = 0.01
 WAIT_TIMEOUT = 258
 
 
+class ResidualInspectionError(OSError):
+    """Retain immediate Win32 failure code and every already observed field."""
+
+    def __init__(self, operation: str, witness: dict[str, object]) -> None:
+        code = ctypes.get_last_error()
+        self.witness = {**witness, "error": {"operation": operation, "winerror": code}}
+        super().__init__(f"{operation} failed with Win32 error {code}")
+
+
 class ResidualObserver:
     """Read-only kernel witnesses pinned to verified members of one owned job."""
 
@@ -68,35 +77,38 @@ class ResidualObserver:
             raise RuntimeError("Residual witness bound exceeded")
         handle = self.api.OpenProcess(0x00101000, 0, pid)  # QUERY_LIMITED + SYNCHRONIZE
         if not handle:
-            raise OSError("Could not open residual process read-only")
+            raise ResidualInspectionError("OpenProcess", {"pid": pid})
         self.handles[pid] = handle
         member = wintypes.BOOL()
         if not self.api.IsProcessInJob(handle, self.job.handle, ctypes.byref(member)):
-            raise OSError("Could not verify residual job membership")
+            raise ResidualInspectionError("IsProcessInJob", {"pid": pid})
         if not member.value:
             raise RuntimeError("Residual PID no longer belongs to owned job")
 
     def snapshot(self, pid: int) -> dict[str, object]:
-        """Capture kernel image plus zero-wait exit evidence through the same handle."""
+        """Read exit evidence first; never lose it when a later image query fails."""
         handle = self.handles[pid]
+        witness: dict[str, object] = {"pid": pid, "image": None}
+        wait = self.api.WaitForSingleObject(handle, 0)
+        if wait not in (0, WAIT_TIMEOUT):
+            raise ResidualInspectionError(
+                "WaitForSingleObject", {**witness, "wait_result": wait}
+            )
+        witness.update(wait_result=wait, exited=wait == 0)
+        code = wintypes.DWORD()
+        if not self.api.GetExitCodeProcess(handle, ctypes.byref(code)):
+            raise ResidualInspectionError("GetExitCodeProcess", witness)
+        witness.update(
+            raw_exit_code=code.value, exit_code=code.value if wait == 0 else None
+        )
         size = wintypes.DWORD(IMAGE_CHARS)
         image = ctypes.create_unicode_buffer(IMAGE_CHARS)
         if not self.api.QueryFullProcessImageNameW(
             handle, 0, image, ctypes.byref(size)
         ):
-            raise OSError("Could not inspect residual kernel image")
-        wait = self.api.WaitForSingleObject(handle, 0)
-        if wait not in (0, WAIT_TIMEOUT):
-            raise OSError("Could not inspect residual exit state")
-        code = wintypes.DWORD()
-        if not self.api.GetExitCodeProcess(handle, ctypes.byref(code)):
-            raise OSError("Could not inspect residual exit code")
-        return {
-            "pid": pid,
-            "image": image.value,
-            "exited": wait == 0,
-            "exit_code": code.value if wait == 0 else None,
-        }
+            raise ResidualInspectionError("QueryFullProcessImageNameW", witness)
+        witness["image"] = image.value
+        return witness
 
     def close(self) -> list[str]:
         """Close every inspection handle, including failed membership checks."""
@@ -104,7 +116,7 @@ class ResidualObserver:
         for handle in self.handles.values():
             try:
                 if not self.api.CloseHandle(handle):
-                    errors.append("Could not close residual inspection handle")
+                    errors.append(str(ResidualInspectionError("CloseHandle", {})))
             except Exception as error:  # noqa: BLE001 - attempt every retained handle
                 errors.append(repr(error))
         self.handles.clear()
@@ -131,6 +143,8 @@ def drain_naturally(
     observer: ResidualObserver | None = None
     errors: list[str] = []
     first: list[dict[str, object]] = []
+    final: list[dict[str, object]] = []
+    active = first
     try:
         observer = ResidualObserver(job)
         pids = initial
@@ -144,17 +158,20 @@ def drain_naturally(
             time.sleep(min(DRAIN_POLL_SECONDS, max(0.0, deadline - time.monotonic())))
             pids = job.pids()
             result["final_pids"] = pids
-        final = [observer.snapshot(pid) for pid in observer.handles]
-        result["final_witnesses"] = final
+        active = final
+        final.extend(observer.snapshot(pid) for pid in observer.handles)
         result["natural_empty"] = (
             not pids
             and all(item["exited"] is True for item in final)
             and time.monotonic() < deadline
         )
     except Exception as error:  # noqa: BLE001 - retain partial observations and uncertainty
+        if isinstance(error, ResidualInspectionError):
+            active.append(error.witness)
         errors.append(repr(error))
     finally:
         result["initial_witnesses"] = first
+        result["final_witnesses"] = final
         if observer is not None:
             errors.extend(observer.close())
         result["elapsed_seconds"] = time.monotonic() - started

@@ -205,6 +205,7 @@ def test_residual_identity_uncertainty_closes_handle_and_fails(
     failure: str,
 ) -> None:
     """A PID must still belong to the owned job before identity is inspected."""
+    monkeypatch.setattr(supervisor.ctypes, "get_last_error", lambda: 5, raising=False)
     job = Mock()
     job.handle = 1
     job.api.OpenProcess.return_value = 0 if failure == "open" else 88
@@ -288,7 +289,71 @@ def test_residual_snapshot_pins_same_job_image_and_exit() -> None:
         "image": "C:\\Windows\\owned.exe",
         "exited": True,
         "exit_code": 0,
+        "raw_exit_code": 0,
+        "wait_result": 0,
     }
     job.api.OpenProcess.assert_called_once_with(0x00101000, 0, 77)
     job.api.WaitForSingleObject.assert_called_once_with(88, 0)
     assert observer.close() == []
+
+
+@pytest.mark.parametrize("wait_result", [0, supervisor.WAIT_TIMEOUT])
+def test_image_error_preserves_live_or_exited_partial_witness(
+    monkeypatch: pytest.MonkeyPatch,
+    wait_result: int,
+) -> None:
+    """Retain exit evidence and exact image errors while failing closed."""
+    calls: list[str] = []
+    job = Mock()
+    job.handle = 1
+    job.api.OpenProcess.return_value = 88
+
+    def membership(_handle: int, _job: int, member: object) -> bool:
+        member._obj.value = 1  # ty: ignore[unresolved-attribute] - ctypes byref
+        return True
+
+    def wait(_handle: int, _timeout: int) -> int:
+        calls.append("wait")
+        return wait_result
+
+    def exit_code(_handle: int, code: object) -> bool:
+        calls.append("exit")
+        code._obj.value = 0 if wait_result == 0 else 259  # ty: ignore[unresolved-attribute]
+        return True
+
+    def image(*_args: object) -> bool:
+        calls.append("image")
+        return False
+
+    def last_error() -> int:
+        calls.append("GetLastError")
+        return 31
+
+    def close(_handle: int) -> bool:
+        calls.append("close")
+        return True
+
+    job.api.IsProcessInJob.side_effect = membership
+    job.api.WaitForSingleObject.side_effect = wait
+    job.api.GetExitCodeProcess.side_effect = exit_code
+    job.api.QueryFullProcessImageNameW.side_effect = image
+    job.api.CloseHandle.side_effect = close
+    monkeypatch.setattr(supervisor.ctypes, "get_last_error", last_error, raising=False)
+    observer = supervisor.ResidualObserver(job)
+    monkeypatch.setattr(supervisor, "ResidualObserver", lambda _: observer)
+    result = supervisor.drain_naturally(job, [77], supervisor.time.monotonic() + 1)
+    assert result["natural_empty"] is False
+    assert result["errors"]
+    assert result["initial_witnesses"] == [
+        {
+            "pid": 77,
+            "image": None,
+            "wait_result": wait_result,
+            "exited": wait_result == 0,
+            "raw_exit_code": 0 if wait_result == 0 else 259,
+            "exit_code": 0 if wait_result == 0 else None,
+            "error": {"operation": "QueryFullProcessImageNameW", "winerror": 31},
+        }
+    ]
+    assert calls == ["wait", "exit", "image", "GetLastError", "close"]
+    assert not observer.handles
