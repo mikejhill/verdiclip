@@ -242,6 +242,9 @@ def diagnose_topology(  # noqa: PLR0913, PLR0917 - explicit fixed diagnostic sco
     gui: Owner,
     started: float,
     deadline: float,
+    *,
+    request_written: bool = False,
+    monitor: Callable[[], None] | None = None,
 ) -> Json:
     """Observe the rejected tree without changing the original failure/admission."""
     pids = topology_pids(status["members"])
@@ -253,10 +256,13 @@ def diagnose_topology(  # noqa: PLR0913, PLR0917 - explicit fixed diagnostic sco
         "deadline": deadline,
     }
     topology_request(request, session, deadline, time.monotonic())
-    write_handshake(output / "topology-request.json", request)
+    if not request_written:
+        write_handshake(output / "topology-request.json", request)
     result: Json = {"request": request, "original_snapshot": status}
     acknowledged = False
     while time.monotonic() < deadline:
+        if monitor is not None:
+            monitor()
         validate_calls(
             output / "calls.jsonl",
             started,
@@ -306,6 +312,8 @@ def diagnose_topology(  # noqa: PLR0913, PLR0917 - explicit fixed diagnostic sco
                 deadline=deadline,
                 diagnostic=True,
             )
+            if monitor is not None:
+                monitor()
             if time.monotonic() >= deadline:
                 raise RuntimeError("Late topology final evidence")
             return result
@@ -1217,6 +1225,148 @@ def track_temporary_member(
         raise RuntimeError("Unexpected process during the attested helper lifecycle")
 
 
+def retain_membership_failure(
+    output: Path, result: Json, context: Json, error: Exception
+) -> None:
+    """Latch the original rejection before optional evidence reads or scheduling."""
+    result["first_failure"] = repr(error)
+    frozen = json.loads(json.dumps(context, allow_nan=False))
+    result["membership_failure"] = frozen
+    try:
+        write_handshake(output / "membership-failure.json", frozen)
+    except Exception as failure:  # noqa: BLE001 - evidence cannot replace rejection
+        result["membership_failure_persistence_error"] = repr(failure)[:2048]
+
+
+def diagnose_startup_failure(  # noqa: PLR0913, PLR0917 - fixed failure-only scope
+    output: Path,
+    executor: Path,
+    session: str,
+    context: Json,
+    gui: Owner,
+    module: ModuleType,
+    owners: dict[str, Any],
+    provenance: Json,
+    wheel: Path,
+    case_deadline: float,
+    absolute_deadline: float,
+) -> Json:
+    """Later pinned identities never retroactively authorize the rejected snapshot."""
+    failure_time = context["failure_time"]
+    deadline = min(failure_time + CALL_SECONDS, case_deadline, absolute_deadline)
+    evidence: Json = {
+        "deadline": deadline,
+        "status": "unavailable",
+        "scope": "later process identities; not identity proof at original failure",
+    }
+    try:
+        if any(
+            phase in context["completed_phases"]
+            for phase in ("pre-observe", "post-terminal")
+        ):
+            evidence["reason"] = "Later-phase failure is retention only"
+            return evidence
+        if (executor / "ownership-pre-observe-ack.json").exists():
+            raise RuntimeError("Observation acknowledgment already exists")  # noqa: TRY301 - retain diagnostic failure only
+        pids = topology_pids(
+            sorted(set(context["snapshot"]["members"]) - set(context["baseline"]))
+        )
+        if time.monotonic() >= deadline:
+            raise RuntimeError("No remaining startup diagnostic budget")  # noqa: TRY301 - retain diagnostic failure only
+        diagnostic = output / "startup-diagnostics"
+        diagnostic.mkdir()
+        request = {
+            "schema": 1,
+            "session": session,
+            "pids": list(pids),
+            "original_snapshot_time": context["snapshot_finished"],
+            "deadline": deadline,
+        }
+        write_handshake(diagnostic / "topology-request.json", request)
+        from verdiclip.platform.owned_helper import (  # noqa: PLC0415 - outer only
+            HelperCommand,
+        )
+
+        script = Path(__file__).resolve()
+        sidecar = script.with_name("observe_process_diagnostics.py")
+        command = HelperCommand(
+            provenance["executable"],
+            (
+                "-I",
+                "-S",
+                str(script),
+                "--topology-child",
+                "--wheel",
+                str(wheel),
+                "--output",
+                str(diagnostic),
+                "--session",
+                session,
+                "--diagnostic-deadline",
+                str(deadline),
+                "--diagnostic-harness-sha",
+                hashlib.sha256(script.read_bytes()).hexdigest(),
+                "--diagnostic-sidecar-sha",
+                hashlib.sha256(sidecar.read_bytes()).hexdigest(),
+            ),
+            str(diagnostic),
+        )
+        if time.monotonic() >= deadline:
+            raise RuntimeError("Late diagnostic owner construction")  # noqa: TRY301 - retain diagnostic failure only
+        owner = module.ExternalOwner()
+        owners["startup-diagnostic"] = owner
+        if time.monotonic() >= deadline:
+            raise RuntimeError("Late diagnostic native launch")  # noqa: TRY301 - retain diagnostic failure only
+        owner.start(command)
+        if time.monotonic() >= deadline:
+            raise RuntimeError("Late diagnostic native launch completion")  # noqa: TRY301 - retain diagnostic failure only
+        evidence["result"] = diagnose_topology(
+            diagnostic,
+            session,
+            {"members": list(pids)},
+            context["snapshot_finished"],
+            gui,
+            failure_time,
+            deadline,
+            request_written=True,
+            monitor=lambda: validate_calls(
+                executor / "calls.jsonl",
+                context["preparation_start"],
+                time.monotonic,
+                finished=False,
+                deadline=deadline,
+            ),
+        )
+        if time.monotonic() >= deadline:
+            raise RuntimeError("Late startup diagnostic result")  # noqa: TRY301 - retain diagnostic failure only
+        evidence["status"] = "completed"
+    except Exception as error:  # noqa: BLE001 - original rejection remains authoritative
+        evidence["error"] = repr(error)[:2048]
+    return evidence
+
+
+def topology_child(args: argparse.Namespace) -> int:
+    """Fixed stdlib-only diagnostic entry; no GUI, reference or provider dispatch."""
+    script = Path(__file__).resolve()
+    if (
+        hashlib.sha256(script.read_bytes()).hexdigest() != args.diagnostic_harness_sha
+        or hashlib.sha256(
+            script.with_name("observe_process_diagnostics.py").read_bytes()
+        ).hexdigest()
+        != args.diagnostic_sidecar_sha
+        or not math.isfinite(args.diagnostic_deadline)
+        or time.monotonic() >= args.diagnostic_deadline
+    ):
+        raise RuntimeError("Diagnostic source identity or deadline invalid")
+    journal = Journal(args.output / "calls.jsonl", args.diagnostic_deadline)
+    try:
+        journal.check()
+        collect_topology(args.output, args.session, journal)
+        return 0
+    finally:
+        journal.stream.close()
+
+
 def serve_checkpoint(  # noqa: PLR0913, PLR0917 - explicit fixed ownership scope
     output: Path, session: str, phase: str, gui: Owner, profile: Json, deadline: float
 ) -> Json | None:
@@ -1888,13 +2038,75 @@ def outer(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912, PLR0915 - ow
                 )
             if case_start is not None:
                 if status["exit_code"] is None:
-                    track_temporary_member(
-                        set(status["members"]),
-                        set(profile["request"]["pids"]),
-                        provisional_members,
-                        peer_pid,
-                        retiring=len(checkpoints) == len(OWNERSHIP_PHASES),
-                    )
+                    context = {
+                        "schema": 1,
+                        "session": session,
+                        "snapshot": status,
+                        "snapshot_started": snapshot_started,
+                        "snapshot_finished": snapshot_finished,
+                        "baseline": list(profile["request"]["pids"]),
+                        "provisional_before": sorted(provisional_members),
+                        "provisional_union": sorted(
+                            provisional_members
+                            | (set(status["members"]) - set(profile["request"]["pids"]))
+                        ),
+                        "peer_pid": peer_pid,
+                        "completed_phases": [item["phase"] for item in checkpoints],
+                        "preparation_start": started,
+                        "case_deadline": deadline,
+                        "absolute_deadline": absolute_deadline,
+                    }
+                    try:
+                        track_temporary_member(
+                            set(status["members"]),
+                            set(profile["request"]["pids"]),
+                            provisional_members,
+                            peer_pid,
+                            retiring=len(checkpoints) == len(OWNERSHIP_PHASES),
+                        )
+                    except Exception as error:
+                        context["failure_time"] = time.monotonic()
+                        retain_membership_failure(output, result, context, error)
+                        # Optional files are later observations, not guard inputs.
+                        phase_evidence = {}
+                        for name in ("peer-identity", "ownership-pre-observe-request"):
+                            try:
+                                path = executor / f"{name}.json"
+                                phase_evidence[name] = (
+                                    read(path) if path.exists() else None
+                                )
+                            except Exception as read_error:  # noqa: BLE001 - retain original rejection
+                                phase_evidence[name] = {
+                                    "error": repr(read_error)[:2048]
+                                }
+                        result["failure_phase_evidence"] = phase_evidence
+                        try:
+                            write_handshake(
+                                output / "failure-phase-evidence.json",
+                                {
+                                    "session": session,
+                                    "observed": time.monotonic(),
+                                    "evidence": phase_evidence,
+                                },
+                            )
+                        except Exception as persistence_error:  # noqa: BLE001 - preserve rejection
+                            result["phase_persistence_error"] = repr(persistence_error)[
+                                :2048
+                            ]
+                        result["startup_diagnostics"] = diagnose_startup_failure(
+                            output,
+                            executor,
+                            session,
+                            context,
+                            gui,
+                            module,
+                            owners,
+                            provenance,
+                            args.wheel,
+                            deadline,
+                            absolute_deadline,
+                        )
+                        raise
                 if len(checkpoints) < len(OWNERSHIP_PHASES):
                     phase = OWNERSHIP_PHASES[len(checkpoints)]
                     if (
@@ -1959,7 +2171,12 @@ def outer(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912, PLR0915 - ow
         result["first_failure"] = repr(error)
     finally:
         result["cleanup"] = {
-            name: release_owner(owner, deadline)
+            name: release_owner(
+                owner,
+                min(deadline, result["startup_diagnostics"]["deadline"])
+                if name == "startup-diagnostic"
+                else deadline,
+            )
             for name, owner in reversed(tuple(owners.items()))
         }
         if any(not x["confirmed"] or x["forced"] for x in result["cleanup"].values()):
@@ -1976,6 +2193,10 @@ def main() -> int:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--fixture", type=Path)
     parser.add_argument("--child", action="store_true")
+    parser.add_argument("--topology-child", action="store_true")
+    parser.add_argument("--diagnostic-deadline", type=float)
+    parser.add_argument("--diagnostic-harness-sha")
+    parser.add_argument("--diagnostic-sidecar-sha")
     parser.add_argument("--states", type=Path)
     parser.add_argument("--fixture-pid", type=int)
     parser.add_argument("--preparation-start", type=float)
@@ -1991,6 +2212,19 @@ def main() -> int:
         parser.error("Owned observe proof requires exact-head disposable Windows CI")
     args.wheel = args.wheel.resolve(strict=True)
     args.output = args.output.resolve()
+    if args.topology_child:
+        try:
+            return topology_child(args)
+        except Exception as error:
+            try:
+                write(
+                    args.output / "topology-fatal.json", {"error": repr(error)[:2048]}
+                )
+            except Exception as persistence_error:  # noqa: BLE001 - preserve primary
+                error.add_note(
+                    f"Diagnostic error retention failed: {persistence_error!r}"
+                )
+            raise
     if args.child:
         try:
             return child(args)

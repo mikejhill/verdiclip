@@ -619,3 +619,30 @@ must exit naturally with code zero and the exact owned job must become empty;
 forced retirement cannot qualify. All earlier singleton failures remain failed.
 This explicit-profile contract requires a fresh reviewed native run before it can
 qualify any image.
+
+### Startup membership failure evidence (research only)
+
+The first ownership research run remains failed. A rejected temporary-member
+snapshot is now retained with its original timestamps, baseline, provisional
+history before the predicate, proposed union, completed phases and known peer
+PID. The original exception is latched before any optional diagnostic work.
+Available peer and pending-phase files are retained separately as later reads.
+No failed predicate is retried, exempted or reclassified.
+
+Only a failure before the pre-observe acknowledgment may launch the fixed
+stdlib-only diagnostic entry in a separate owned job. It uses the independently
+verified base interpreter with `-I -S`, checks the copied harness and sidecar
+hashes, and receives at most eight exact extra PIDs from the rejected snapshot.
+Existing process pins and bounded Toolhelp collection are reused. Pins survive
+one later outer GUI-job snapshot, then are rechecked and released. No job handle
+is shared. Images, creation times and parent metadata describe later observations;
+they do not establish identities at the original failure or authorize capture.
+Exited, missing, late or otherwise unavailable processes remain unavailable.
+
+The diagnostic deadline is the minimum of failure time plus three seconds, the
+original case deadline and the original absolute deadline. Original GUI and
+separate diagnostic call watchdogs continue. The diagnostic owner joins existing
+cleanup with its tighter deadline, including on partial launch failure. No
+pre-observe acknowledgment is sent after rejection. Later-phase failures retain
+context only. Diagnostic completion never changes the original failure, and
+partial evidence is acceptable without extending any budget or retrying.
