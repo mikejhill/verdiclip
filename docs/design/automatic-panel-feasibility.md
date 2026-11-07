@@ -591,3 +591,31 @@ observations are explicitly temporal evidence, not retroactive proof about the
 original handles. No owning job handle is shared. All work and handshakes remain
 within the original preparation and native-call deadlines; errors or missing
 metadata cannot admit capture or replace the original singleton failure.
+
+### Explicit owned executor profile
+
+The next harness contract admits only an independently verified singleton or the
+observed three-process profile. A singleton must be the actual executor and the
+retained launch PID, with its full kernel image matching both fixed launcher and
+verified base-interpreter paths. The three roles are the retained venv launcher,
+the actual base-Python executor, and one console host whose expected full path is
+derived from GetSystemDirectoryW plus `conhost.exe`. Observed image names are not
+used to construct expectations. Both children require the observed launch parent
+PID, creation no earlier than the launch lifetime, available pinned identity and
+liveness, and the exact current owned-job set. Parent identifiers remain temporal
+snapshot evidence, not authorization to follow arbitrary ancestors.
+
+Baseline process handles stay retained through the case. Stable membership
+checkpoints occur before reference pixels (baseline only), before provider observe
+(baseline plus the production channel's kernel-attested direct helper), and after
+natural helper retirement (baseline only). Startup membership is provisional and
+cannot authorize provider capture or output. Unknown extra members after the
+attested-helper checkpoint fail the case. No basename exemptions, launch rewrite,
+new production hooks, or additional time budgets are introduced.
+
+The executor rechecks and closes its baseline pins before exiting. This does not
+claim that it observed its own handle signaled. The outer retained launcher handle
+must exit naturally with code zero and the exact owned job must become empty;
+forced retirement cannot qualify. All earlier singleton failures remain failed.
+This explicit-profile contract requires a fresh reviewed native run before it can
+qualify any image.

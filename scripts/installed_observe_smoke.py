@@ -24,7 +24,7 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 PREPARATION_SECONDS = 10.0
 OUTER_SECONDS = 25.0
@@ -43,6 +43,7 @@ NATIVE_DPI = 96
 FIXED_VERTICAL = 119
 MAX_STATES = 256
 MAX_TOPOLOGY_PIDS = 8
+PEER_SCHEMA = 2
 MARKER_COUNT = 4
 RGB_CHANNELS = 3
 MAX_CHANNEL = 255
@@ -857,6 +858,429 @@ def terminal_matches(
     )
 
 
+class BaselinePins(Protocol):
+    """Retained exact-process witnesses, never an owning job capability."""
+
+    deadline: float
+
+    def observe(self) -> Json:
+        """Recheck the held process identities without releasing them."""
+        ...
+
+    def finish(self) -> Json:
+        """Recheck and release all baseline pins before executor exit."""
+        ...
+
+    def close(self) -> list[str]:
+        """Idempotently release every remaining pin."""
+        ...
+
+
+def ownership_interval(value: Json, lower: float, deadline: float) -> None:
+    """Reject malformed, stale or late native snapshot timing without rounding."""
+    begin, end = value.get("started"), value.get("finished")
+    if (
+        type(begin) not in (int, float)
+        or type(end) not in (int, float)
+        or not isinstance(begin, (int, float))
+        or not isinstance(end, (int, float))
+        or not math.isfinite(begin)
+        or not math.isfinite(end)
+        or not lower <= begin <= end <= time.monotonic() < deadline
+    ):
+        raise ValueError("Ownership snapshot interval invalid")
+
+
+def ownership_packet(value: Json, session: str, field: str) -> Json:
+    """Only a fixed session-bound ownership exchange is accepted."""
+    if (
+        set(value) != {"schema", "session", field}
+        or type(value["schema"]) is not int
+        or value["schema"] != 1
+        or value["session"] != session
+        or not isinstance(value[field], dict)
+    ):
+        raise ValueError("Ownership packet identity/schema differs")
+    return value[field]
+
+
+def wait_owned_file(path: Path, journal: Journal) -> Json:
+    """Wait under the current original deadline, never creating a fresh budget."""
+    while not path.exists():
+        journal.check()
+        time.sleep(0.01)
+    value = read(path)
+    journal.check()
+    return value
+
+
+def profile_records(
+    module: ModuleType, records: Json, request: Json, console: str
+) -> Json:
+    """Resolve only the exact independently expected process roles."""
+    topology_targets(records, topology_pids(request["pids"]))
+    if records.get("cleanup_errors", []) != []:
+        raise ValueError("Baseline pin cleanup was not clean")
+    return dict(
+        module.validate_profile(
+            records["processes"],
+            request["launch_pid"],
+            request["executor_pid"],
+            request["expected_launch"],
+            request["expected_base"],
+            console,
+        )
+    )
+
+
+def acquire_ownership(
+    output: Path, session: str, started: float, journal: Journal
+) -> tuple[BaselinePins, Json]:
+    """Hold baseline pins through capture, never retaining an owning job handle."""
+    request = ownership_packet(
+        wait_owned_file(output / "ownership-request.json", journal), session, "request"
+    )
+    required = {
+        "pids",
+        "launch_pid",
+        "executor_pid",
+        "expected_launch",
+        "expected_base",
+        "snapshot_time",
+        "deadline",
+    }
+    if set(request) != required or request["deadline"] != journal.deadline:
+        raise ValueError("Ownership request fields/deadline differ")
+    pids = topology_pids(request["pids"])
+    if (
+        request["executor_pid"] != os.getpid()
+        or type(request["launch_pid"]) is not int
+        or request["launch_pid"] not in pids
+        or type(request["executor_pid"]) is not int
+        or request["executor_pid"] not in pids
+        or type(request["snapshot_time"]) not in (int, float)
+        or not math.isfinite(request["snapshot_time"])
+        or not started
+        <= request["snapshot_time"]
+        <= time.monotonic()
+        < journal.deadline
+    ):
+        raise ValueError("Ownership request lifetime differs")
+    module = journal.call("ownership.import", topology_module)
+    console = module.expected_console_image(journal, journal.deadline)
+    pins = module.PinnedProcesses(pids, journal.deadline, journal)
+    try:
+        records = pins.collect()
+        roles = profile_records(module, records, request, console)
+        pinned = {
+            "request": request,
+            "console": console,
+            "roles": roles,
+            "records": records,
+        }
+        journal.check()
+        write_handshake(
+            output / "ownership-pinned.json",
+            {"schema": 1, "session": session, "pinned": pinned},
+        )
+        membership = ownership_packet(
+            wait_owned_file(output / "ownership-membership.json", journal),
+            session,
+            "membership",
+        )
+        ownership_interval(membership, request["snapshot_time"], journal.deadline)
+        if (
+            set(membership) != {"started", "finished", "snapshot"}
+            or membership["snapshot"]["exit_code"] is not None
+            or set(topology_pids(membership["snapshot"]["members"])) != set(pids)
+        ):
+            raise ValueError("Baseline is not currently contained/alive")  # noqa: TRY301 - release owned resources and preserve failure
+        current = pins.observe()
+        if (
+            profile_records(module, current, request, console) != roles
+            or current["processes"] != records["processes"]
+        ):
+            raise ValueError("Baseline identity changed across membership snapshot")  # noqa: TRY301 - release owned resources and preserve failure
+        journal.check()
+        write_handshake(
+            output / "ownership-ready.json",
+            {"schema": 1, "session": session, "ready": pinned},
+        )
+        return cast("BaselinePins", pins), pinned
+    except BaseException:
+        pins.close()
+        raise
+
+
+def prepare_owned_case(  # noqa: PLR0913, PLR0917 - explicit fixed ownership scope
+    output: Path,
+    states: Path,
+    session: str,
+    started: float,
+    pid: int,
+    fixture: Json,
+    expected: Json,
+    guard: ReferenceGuard,
+    journal: Journal,
+) -> tuple[Json, BaselinePins, Json]:
+    """Prepare the already-open target and admit only the explicit ownership profile."""
+    native = journal.call("preparation.ready_guard", guard.check)
+    if fixture_key(latest(states)) != expected:
+        raise RuntimeError("Fixture changed during preparation")
+    ready = time.monotonic()
+    receipt = {
+        "schema": 1,
+        "session": session,
+        "fixture_pid": pid,
+        "executor_pid": os.getpid(),
+        "ready": ready,
+        "fixture": fixture,
+        "native": native,
+    }
+    preparation_receipt(receipt, session, pid, started, ready)
+    write_handshake(output / "preparation-ready.json", receipt)
+    pins, profile = acquire_ownership(output, session, started, journal)
+    try:
+        handoff = wait_owned_file(output / "case-start.json", journal)
+        deadline = case_handoff(handoff, session, ready, started, time.monotonic())
+        journal.deadline = deadline
+        pins.deadline = deadline  # Same single preparation-to-case transition.
+        journal.call("case.initial_guard", guard.check)
+        if fixture_key(latest(states)) != expected:
+            raise RuntimeError("Fixture changed across ownership handoff")  # noqa: TRY301 - release owned resources and preserve failure
+        return {**handoff, "ready": ready}, pins, profile  # noqa: TRY300 - ownership transferred only on success
+    except BaseException:
+        pins.close()
+        raise
+
+
+def qualify_ownership(  # noqa: PLR0913, PLR0917 - explicit fixed ownership scope
+    output: Path,
+    session: str,
+    status: Json,
+    stamp: float,
+    gui: Owner,
+    started: float,
+    deadline: float,
+    launch_pid: int,
+    executor_pid: int,
+    expected_launch: str,
+    expected_base: str,
+) -> Json:
+    """Use held identities and an exact later job snapshot, not name exemptions."""
+    pids = topology_pids(status["members"])
+    request = {
+        "pids": list(pids),
+        "launch_pid": launch_pid,
+        "executor_pid": executor_pid,
+        "expected_launch": expected_launch,
+        "expected_base": expected_base,
+        "snapshot_time": stamp,
+        "deadline": deadline,
+    }
+    write_handshake(
+        output / "ownership-request.json",
+        {"schema": 1, "session": session, "request": request},
+    )
+    pinned = None
+    module = (
+        topology_module()
+    )  # Pure validation only; no native calls in the outer owner.
+    while time.monotonic() < deadline:
+        validate_calls(
+            output / "calls.jsonl",
+            started,
+            time.monotonic,
+            finished=False,
+            deadline=deadline,
+        )
+        path = output / "ownership-pinned.json"
+        if pinned is None and path.exists():
+            candidate = ownership_packet(read(path), session, "pinned")
+            if (
+                set(candidate) != {"request", "console", "roles", "records"}
+                or candidate["request"] != request
+            ):
+                raise ValueError("Ownership response substituted launch expectations")
+            roles = profile_records(
+                module, candidate["records"], request, candidate["console"]
+            )
+            if roles != candidate["roles"]:
+                raise ValueError("Ownership roles differ")
+            begin = time.monotonic()
+            if begin >= deadline:
+                raise RuntimeError("Late ownership profile")
+            current = gui.snapshot()
+            end = time.monotonic()
+            if (
+                end >= deadline
+                or current["exit_code"] is not None
+                or set(topology_pids(current["members"])) != set(pids)
+            ):
+                raise RuntimeError("Ownership job changed while pins were retained")
+            membership = {"started": begin, "finished": end, "snapshot": current}
+            write_handshake(
+                output / "ownership-membership.json",
+                {"schema": 1, "session": session, "membership": membership},
+            )
+            pinned = candidate
+        path = output / "ownership-ready.json"
+        if pinned is not None and path.exists():
+            ready = ownership_packet(read(path), session, "ready")
+            if ready != pinned:
+                raise ValueError("Ownership ready differs from pinned profile")
+            validate_calls(
+                output / "calls.jsonl",
+                started,
+                time.monotonic,
+                finished=False,
+                deadline=deadline,
+            )
+            if time.monotonic() >= deadline:
+                raise RuntimeError("Late ownership readiness")
+            return pinned
+        time.sleep(0.01)
+    raise RuntimeError("Ownership qualification exceeded original preparation deadline")
+
+
+OWNERSHIP_PHASES = ("pre-reference", "pre-observe", "post-terminal")
+
+
+def ownership_checkpoint(  # noqa: PLR0913, PLR0917 - explicit fixed ownership scope
+    output: Path,
+    session: str,
+    phase: str,
+    peer: Json | None,
+    pins: BaselinePins,
+    profile: Json,
+    journal: Journal,
+) -> None:
+    """A stable-phase exact membership observation precedes pixels or admission."""
+    if phase not in OWNERSHIP_PHASES:
+        raise ValueError("Unknown ownership checkpoint")
+    requested = time.monotonic()
+    request = {
+        "phase": phase,
+        "deadline": journal.deadline,
+        "peer": peer,
+        "requested": requested,
+    }
+    journal.check()
+    write_handshake(
+        output / f"ownership-{phase}-request.json",
+        {"schema": 1, "session": session, "request": request},
+    )
+    response = ownership_packet(
+        wait_owned_file(output / f"ownership-{phase}-ack.json", journal), session, "ack"
+    )
+    if set(response) != {"phase", "deadline", "started", "finished", "snapshot"}:
+        raise ValueError("Ownership checkpoint acknowledgment fields differ")
+    ownership_interval(response, requested, journal.deadline)
+    wanted = set(profile["request"]["pids"])
+    if phase == "pre-observe":
+        if peer is None or not peer:
+            raise ValueError("Pre-observe lacks attested helper identity")
+        wanted.add(peer["pid"])
+    if (
+        response["phase"] != phase
+        or response["deadline"] != journal.deadline
+        or response["snapshot"]["exit_code"] is not None
+        or set(topology_pids(response["snapshot"]["members"])) != wanted
+    ):
+        raise RuntimeError("Stable ownership checkpoint changed")
+    current = pins.observe()
+    if (
+        current["processes"] != profile["records"]["processes"]
+        or current["cleanup_errors"]
+    ):
+        raise RuntimeError("Held baseline identity changed before capture")
+    journal.check()
+
+
+def track_temporary_member(
+    members: set[int],
+    baseline: set[int],
+    seen: set[int],
+    peer_pid: int | None,
+    *,
+    retiring: bool,
+) -> None:
+    """One provisional PID must later be the channel-attested direct producer."""
+    if not retiring and not baseline <= members:
+        raise RuntimeError("A retained baseline process disappeared")
+    extra = members - baseline
+    if retiring and extra:
+        # Post-terminal cleanup no longer retains an authenticated helper identity.
+        raise RuntimeError("Unexpected process after helper retirement")
+    seen.update(extra)
+    if len(seen) > 1 or (peer_pid is not None and seen - {peer_pid}):
+        raise RuntimeError("Unexpected process during the attested helper lifecycle")
+
+
+def serve_checkpoint(  # noqa: PLR0913, PLR0917 - explicit fixed ownership scope
+    output: Path, session: str, phase: str, gui: Owner, profile: Json, deadline: float
+) -> Json | None:
+    """Only existing channel-attested helper identity may extend the baseline set."""
+    path = output / f"ownership-{phase}-request.json"
+    if not path.exists():
+        return None
+    request = ownership_packet(read(path), session, "request")
+    if (
+        set(request) != {"phase", "deadline", "peer", "requested"}
+        or request["phase"] != phase
+        or request["deadline"] != deadline
+    ):
+        raise ValueError("Ownership checkpoint request differs")
+    stamp = request["requested"]
+    if (
+        type(stamp) not in (int, float)
+        or not math.isfinite(stamp)
+        or not deadline - CASE_SECONDS <= stamp <= time.monotonic() < deadline
+    ):
+        raise ValueError("Ownership checkpoint request timing invalid")
+    wanted = set(profile["request"]["pids"])
+    if phase == "pre-observe":
+        peer = ownership_packet(read(output / "peer-identity.json"), session, "peer")
+        if (
+            request["peer"] != peer
+            or type(peer.get("pid")) is not int
+            or not 0 < peer["pid"] < 2**32
+            or peer["pid"] in wanted
+            or peer.get("executable") != profile["request"]["expected_base"]
+            or peer.get("protocol_version") != 1
+            or peer.get("peer_schema") != PEER_SCHEMA
+            or not isinstance(peer.get("epoch"), str)
+            or re.fullmatch(r"[0-9a-f]{32}", peer["epoch"]) is None
+        ):
+            raise ValueError("Temporary member is not the attested direct helper")
+        wanted.add(peer["pid"])
+    elif request["peer"] is not None:
+        raise ValueError("Unexpected temporary peer at baseline checkpoint")
+    begin = time.monotonic()
+    if begin >= deadline:
+        raise RuntimeError("Late ownership checkpoint")
+    status = gui.snapshot()
+    end = time.monotonic()
+    if (
+        end >= deadline
+        or status["exit_code"] is not None
+        or set(topology_pids(status["members"])) != wanted
+    ):
+        raise RuntimeError("Unexpected member at stable ownership checkpoint")
+    ack = {
+        "phase": phase,
+        "deadline": deadline,
+        "started": begin,
+        "finished": end,
+        "snapshot": status,
+    }
+    write_handshake(
+        output / f"ownership-{phase}-ack.json",
+        {"schema": 1, "session": session, "ack": ack},
+    )
+    return ack
+
+
 def pin_preparation(
     states: Path, pid: int, journal: Journal
 ) -> tuple[Json, Json, ReferenceGuard]:
@@ -981,7 +1405,7 @@ def child(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - fixed owned
         "passed": False,
         "first_failure": None,
         "responsiveness_qualified": False,
-        "case": "already-open-owned-wpf-single-observation",
+        "case": "already-open-owned-wpf-explicit-ownership",
         "cold_startup_in_capture_latency": False,
         "preparation_start": args.preparation_start,
         "provenance": provenance,
@@ -994,11 +1418,17 @@ def child(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - fixed owned
     before_root = b""
     before_panel = b""
     submitted = False
+    baseline_pins = None
+    baseline_profile: Json = {}
 
     def identified(value: int, payload: bytes) -> None:
         if value != generation or identity:
             raise RuntimeError("Unexpected observe peer identity")
         identity.update(json.loads(payload))
+        write_handshake(
+            args.output / "peer-identity.json",
+            {"schema": 1, "session": args.session, "peer": identity},
+        )
 
     def ready(value: int) -> None:
         nonlocal submitted
@@ -1007,6 +1437,18 @@ def child(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - fixed owned
         journal.call("reference.before_observe", guard.check)
         if fixture_key(latest(args.states)) != expected:
             raise RuntimeError("Fixture changed before observe")
+        if baseline_pins is None:
+            raise RuntimeError("Missing retained baseline ownership")
+        ownership_checkpoint(
+            args.output,
+            args.session,
+            "pre-observe",
+            identity,
+            baseline_pins,
+            baseline_profile,
+            journal,
+        )
+        journal.call("reference.after_ownership", guard.check)
         submitted = True
         channel.observe(1, target)
 
@@ -1024,6 +1466,17 @@ def child(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - fixed owned
             identity,
         ):
             raise RuntimeError("Observe terminal does not match independent reference")
+        if baseline_pins is None:
+            raise RuntimeError("Missing retained baseline ownership")
+        ownership_checkpoint(
+            args.output,
+            args.session,
+            "post-terminal",
+            None,
+            baseline_pins,
+            baseline_profile,
+            journal,
+        )
         after_root, after_panel = reference(
             journal, guard, args.states, expected, args.output, "after"
         )
@@ -1048,7 +1501,8 @@ def child(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - fixed owned
         app.exit(0)
 
     def start() -> None:
-        nonlocal guard, generation, target, expected, before_root, before_panel
+        nonlocal guard, generation, target, expected
+        nonlocal before_root, before_panel, baseline_pins, baseline_profile
         wait_until = preparation_deadline
         while not list(args.states.glob("[0-9][0-9][0-9][0-9].json")):
             if time.monotonic() >= wait_until:
@@ -1066,7 +1520,7 @@ def child(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - fixed owned
             "reference.widget_geometry",
             lambda: reference_guard.excluded_window(int(window.winId())),
         )
-        handoff = prepare_case(
+        handoff, baseline_pins, baseline_profile = prepare_owned_case(
             args.output,
             args.states,
             args.session,
@@ -1082,6 +1536,16 @@ def child(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - fixed owned
             case_start=handoff["case_start"],
             case_deadline=journal.deadline,
             absolute_deadline=absolute_deadline,
+        )
+        result["ownership_profile"] = baseline_profile
+        ownership_checkpoint(
+            args.output,
+            args.session,
+            "pre-reference",
+            None,
+            baseline_pins,
+            baseline_profile,
+            journal,
         )
         before_root, before_panel = reference(
             journal, guard, args.states, expected, args.output, "before"
@@ -1121,6 +1585,21 @@ def child(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - fixed owned
         code = app.exec()
     finally:
         sys.excepthook = old_hook
+        if baseline_pins is not None:
+            try:
+                final_pins = baseline_pins.finish()
+                result["baseline_pin_cleanup"] = final_pins
+                if (
+                    final_pins["cleanup_errors"]
+                    or final_pins["processes"]
+                    != baseline_profile["records"]["processes"]
+                ):
+                    raise RuntimeError("Baseline pre-exit pin cleanup/identity failed")  # noqa: TRY301 - release owned resources and preserve failure
+            except Exception as error:  # noqa: BLE001 - preserve first failure while releasing pins
+                result["passed"] = False
+                result["first_failure"] = result["first_failure"] or repr(error)
+            finally:
+                baseline_pins.close()
         if guard is not None:
             try:
                 journal.cleanup("reference.pin.close", guard.close)
@@ -1283,8 +1762,13 @@ def outer(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912, PLR0915 - ow
     deadline = preparation_deadline
     session = uuid.uuid4().hex
     case_start = None
+    profile: Json = {}
+    checkpoints: list[Json] = []
+    peer_pid = None
+    provisional_members: set[int] = set()
+    expected_launch = str(Path(sys.executable).resolve())
     result.update(
-        contract="already-open-panel-v1",
+        contract="already-open-panel-explicit-ownership-v2",
         preparation_start=started,
         preparation_deadline=preparation_deadline,
         absolute_deadline=absolute_deadline,
@@ -1303,7 +1787,7 @@ def outer(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912, PLR0915 - ow
         owners["gui"] = gui
         gui.start(
             HelperCommand(
-                str(Path(sys.executable).resolve()),
+                expected_launch,
                 (
                     "-I",
                     str(Path(__file__).resolve()),
@@ -1357,24 +1841,22 @@ def outer(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912, PLR0915 - ow
                     "gui_snapshot_started": snapshot_started,
                     "gui_snapshot_finished": snapshot_finished,
                 }
-                if gui.process is None or status["members"] != [gui.process.pid]:
-                    original = RuntimeError(
-                        "Prepared executor no longer solely owned/alive"
-                    )
-                    result["first_failure"] = repr(original)
-                    try:
-                        result["topology"] = diagnose_topology(
-                            executor,
-                            session,
-                            status,
-                            snapshot_finished,
-                            gui,
-                            started,
-                            deadline,
-                        )
-                    except Exception as diagnostic_error:  # noqa: BLE001 - preserve original rejection
-                        result["topology_error"] = repr(diagnostic_error)[:2048]
-                    raise original  # noqa: TRY301 - unchanged primary ownership rejection
+                if gui.process is None:
+                    raise RuntimeError("Missing retained executor launch")  # noqa: TRY301 - release owned resources and preserve failure
+                profile = qualify_ownership(
+                    executor,
+                    session,
+                    status,
+                    snapshot_finished,
+                    gui,
+                    started,
+                    deadline,
+                    gui.process.pid,
+                    prepared["executor_pid"],
+                    expected_launch,
+                    provenance["executable"],
+                )
+                result["ownership_profile"] = profile
                 fixture_state = fixture.snapshot()
                 result["preparation_ownership"].update(
                     fixture_launch_pid=fixture.process.pid,
@@ -1404,11 +1886,51 @@ def outer(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912, PLR0915 - ow
                     case_deadline=deadline,
                     preparation=prepared,
                 )
+            if case_start is not None:
+                if status["exit_code"] is None:
+                    track_temporary_member(
+                        set(status["members"]),
+                        set(profile["request"]["pids"]),
+                        provisional_members,
+                        peer_pid,
+                        retiring=len(checkpoints) == len(OWNERSHIP_PHASES),
+                    )
+                if len(checkpoints) < len(OWNERSHIP_PHASES):
+                    phase = OWNERSHIP_PHASES[len(checkpoints)]
+                    if (
+                        phase == "pre-observe"
+                        and (executor / "ownership-pre-observe-request.json").exists()
+                    ):
+                        candidate_peer = ownership_packet(
+                            read(executor / "peer-identity.json"), session, "peer"
+                        )
+                        if provisional_members - {candidate_peer.get("pid")}:
+                            raise RuntimeError(  # noqa: TRY301 - no pixels authorized
+                                "A provisional member was not the attested helper"
+                            )
+                    ack = serve_checkpoint(
+                        executor, session, phase, gui, profile, deadline
+                    )
+                    if ack is not None:
+                        checkpoints.append(ack)
+                        result["ownership_checkpoints"] = checkpoints
+                        if phase == "pre-observe":
+                            peer = ownership_packet(
+                                read(executor / "peer-identity.json"), session, "peer"
+                            )
+                            peer_pid = peer["pid"]
+                            result["attested_peer"] = peer
             if status["exit_code"] is not None and not status["members"]:
                 value = read(executor / "result.json")
                 result.update(child=value, gui=status)
                 if (
                     case_start is None
+                    or len(checkpoints) != len(OWNERSHIP_PHASES)
+                    or value.get("ownership_profile") != profile
+                    or not isinstance(value.get("baseline_pin_cleanup"), dict)
+                    or value["baseline_pin_cleanup"].get("cleanup_errors") != []
+                    or value["baseline_pin_cleanup"].get("processes")
+                    != profile["records"]["processes"]
                     or status["exit_code"] != 0
                     or value.get("passed") is not True
                     or value.get("case_start") != case_start

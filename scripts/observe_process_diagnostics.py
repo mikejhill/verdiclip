@@ -1,4 +1,4 @@
-"""Bounded requested-PID diagnostics, never ancestry or process authorization.
+"""Harness-only PID diagnostics and explicit bounded ownership profiles.
 
 One documented Toolhelp snapshot supplies parent PID hints. Retained process
 handles, GetProcessId, creation FILETIME and zero-time waits qualify only those
@@ -10,16 +10,20 @@ from __future__ import annotations
 
 import ctypes as c
 import math
+import ntpath
 import sys
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any, Protocol
 
 MAX_PIDS = 8
 MAX_ENTRIES = 4096
 ENUMERATION_SECONDS = 3.0
+NATIVE_CALL_SECONDS = 3.0
+PROFILE_PROCESS_COUNT = 3
 IMAGE_BUFFER_CHARS = 32768
 MAX_IMAGE_CHARS = 1024
 MAX_ERROR_CHARS = 256
@@ -98,6 +102,166 @@ def native_error(operation: str) -> OSError:
     return OSError(c.get_last_error(), f"{operation} failed")
 
 
+def logged_call[T](journal: Journal, name: str, operation: Callable[[], T]) -> T:
+    """Preserve a native failure when an error logger itself raises afterward."""
+    primary: BaseException | None = None
+
+    def invoke() -> T:
+        nonlocal primary
+        try:
+            return operation()
+        except BaseException as error:
+            primary = error
+            raise
+
+    try:
+        return journal.call(f"topology.{name}", invoke)
+    except BaseException as error:
+        if primary is not None and primary is not error:
+            primary.add_note(f"Journal failure: {error_text(error)}")
+            raise primary from error
+        raise
+
+
+def canonical_image(value: object) -> str:
+    """Compare bounded absolute Windows paths without discarding namespace prefixes."""
+    if (
+        type(value) is not str
+        or not 0 < len(value) <= MAX_IMAGE_CHARS
+        or "\0" in value
+        or not ntpath.isabs(value)
+        or not ntpath.splitdrive(value)[0]
+    ):
+        raise ValueError("Invalid absolute Windows executable path")
+    return ntpath.normcase(ntpath.normpath(value))
+
+
+def expected_console_image(journal: Journal, deadline: float) -> str:
+    """Derive the sole console image from GetSystemDirectoryW, never environment."""
+    if type(deadline) not in (int, float) or not math.isfinite(deadline):
+        raise ValueError("Invalid process diagnostic deadline")
+    started = time.monotonic()
+
+    def check() -> None:
+        now = time.monotonic()
+        if now >= deadline or now - started >= NATIVE_CALL_SECONDS:
+            raise RuntimeError("System directory call exceeded original deadline")
+
+    def read() -> str:
+        check()
+        kernel = c.WinDLL("kernel32", use_last_error=True)
+        function = kernel.GetSystemDirectoryW
+        function.argtypes = [c.POINTER(c.c_wchar), c.c_uint32]
+        function.restype = c.c_uint32
+        buffer = c.create_unicode_buffer(IMAGE_BUFFER_CHARS)
+        size = int(function(buffer, IMAGE_BUFFER_CHARS))
+        if size == 0:
+            raise native_error("GetSystemDirectoryW")
+        check()
+        if not 0 < size <= MAX_IMAGE_CHARS:
+            raise RuntimeError("System directory exceeds retained character bound")
+        directory = canonical_image(c.wstring_at(buffer, size))
+        result = canonical_image(ntpath.join(directory, "conhost.exe"))
+        check()
+        return result
+
+    result = logged_call(journal, "GetSystemDirectoryW", read)
+    check()
+    return result
+
+
+def profile_pid(value: object) -> int:
+    """Require the exact bounded positive PID type, including at caller boundaries."""
+    if type(value) is not int or not 1 <= value < 2**32:
+        raise ValueError("Invalid ownership profile PID")
+    return value
+
+
+def profile_record(record: Json) -> tuple[int, str, int]:
+    """Admit a retained identity without trusting a basename or status alone."""
+    if type(record) is not dict:
+        raise ValueError("Invalid ownership profile process record")
+    requested = profile_pid(record.get("requested_pid"))
+    actual = profile_pid(record.get("process_id"))
+    created = record.get("creation_100ns")
+    if (
+        requested != actual
+        or record.get("status") != "available"
+        or type(record.get("errors")) is not list
+        or record["errors"]
+        or type(created) is not int
+        or not 0 < created < 2**64
+    ):
+        raise ValueError("Unavailable or changed ownership profile identity")
+    return requested, canonical_image(record.get("image_path")), created
+
+
+def profile_child(record: Json, created: int, launch: int, launch_created: int) -> None:
+    """Both children require an available parent PID and non-earlier creation time."""
+    parent = record.get("parent")
+    if (
+        type(parent) is not dict
+        or parent.get("status") != "available"
+        or type(parent.get("pid")) is not int
+        or parent["pid"] != launch
+        or created < launch_created
+    ):
+        raise ValueError("Unqualified child parent or creation identity")
+
+
+def validate_profile(  # noqa: PLR0913, PLR0917 - independent fixed ownership expectations
+    records: Sequence[Json],
+    launch_pid: int,
+    executor_pid: int,
+    expected_launch_path: str,
+    expected_base_path: str,
+    expected_console_path: str,
+) -> Mapping[str, int]:
+    """Admit only the explicit singleton or launcher/executor/console profile."""
+    launch, executor = profile_pid(launch_pid), profile_pid(executor_pid)
+    launch_image = canonical_image(expected_launch_path)
+    base_image = canonical_image(expected_base_path)
+    console_image = canonical_image(expected_console_path)
+    if not isinstance(records, (list, tuple)) or len(records) not in (
+        1,
+        PROFILE_PROCESS_COUNT,
+    ):
+        raise ValueError("Unknown ownership process profile")
+    identities: dict[int, tuple[str, int]] = {}
+    by_pid: dict[int, Json] = {}
+    for record in records:
+        pid, path, created = profile_record(record)
+        if pid in identities:
+            raise ValueError("Duplicate ownership profile PID")
+        identities[pid], by_pid[pid] = (path, created), record
+    if launch not in identities or executor not in identities:
+        raise ValueError("Missing launcher or executor identity")
+    if launch == executor:
+        if (
+            len(identities) != 1
+            or identities[launch][0] != launch_image
+            or launch_image != base_image
+        ):
+            raise ValueError("Singleton does not match both executable expectations")
+        return MappingProxyType({"launcher": launch, "executor": executor})
+    if len(identities) != PROFILE_PROCESS_COUNT:
+        raise ValueError("Incomplete launcher/executor/console profile")
+    console = (set(identities) - {launch, executor}).pop()
+    if (
+        identities[launch][0] != launch_image
+        or identities[executor][0] != base_image
+        or identities[console][0] != console_image
+    ):
+        raise ValueError("Unexpected full process image in ownership profile")
+    for child in (executor, console):
+        profile_child(
+            by_pid[child], identities[child][1], launch, identities[launch][1]
+        )
+    return MappingProxyType(
+        {"launcher": launch, "executor": executor, "console": console}
+    )
+
+
 class PinnedProcesses:
     """Own at most eight exact pins and one diagnostic-only Toolhelp snapshot."""
 
@@ -155,23 +319,7 @@ class PinnedProcesses:
             raise RuntimeError("Process diagnostic original deadline expired")
 
     def _call[T](self, name: str, operation: Callable[[], T]) -> T:
-        primary: BaseException | None = None
-
-        def invoke() -> T:
-            nonlocal primary
-            try:
-                return operation()
-            except BaseException as error:
-                primary = error
-                raise
-
-        try:
-            return self.journal.call(f"topology.{name}", invoke)
-        except BaseException as error:
-            if primary is not None and primary is not error:
-                primary.add_note(f"Journal failure: {error_text(error)}")
-                raise primary from error
-            raise
+        return logged_call(self.journal, name, operation)
 
     def _query[T](self, pin: Pin, name: str, operation: Callable[[], T]) -> T:
         def checked() -> T:
@@ -361,6 +509,19 @@ class PinnedProcesses:
         return {
             "processes": [pin.value() for pin in self.pins],
             "enumeration": metadata,
+        }
+
+    def observe(self) -> Json:
+        """Recheck identities without closing pins or repeating the snapshot."""
+        if self.closed:
+            raise RuntimeError("Process diagnostic pins are already closed")
+        self._check()
+        for pin in self.pins:
+            self._recheck(pin)
+        self._check()
+        return {
+            "processes": [pin.value() for pin in self.pins],
+            "cleanup_errors": list(self.cleanup_errors),
         }
 
     def finish(self) -> Json:

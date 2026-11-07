@@ -656,21 +656,47 @@ def test_outer_success_cannot_hide_forced_or_unconfirmed_cleanup(
     gui.process.pid = 654
     gui.snapshot.side_effect = [
         {"exit_code": None, "members": [654]},
+        {"exit_code": None, "members": [654]},
+        {"exit_code": None, "members": [654]},
         {"exit_code": 0, "members": []},
     ]
-    module.verify_wheel.return_value = {"verified": True}
+    module.verify_wheel.return_value = {"verified": True, "executable": "base"}
     module.ExternalOwner.side_effect = [fixture, gui]
+
+    profile = {
+        "request": {"pids": [654], "expected_base": "base"},
+        "records": {"processes": [{"requested_pid": 654}]},
+    }
+    monkeypatch.setattr(smoke, "qualify_ownership", Mock(return_value=profile))
+    monkeypatch.setattr(
+        smoke,
+        "serve_checkpoint",
+        Mock(side_effect=[{"phase": p} for p in smoke.OWNERSHIP_PHASES]),
+    )
 
     def start(_command: object) -> None:
         output = args.output / "executor"
         smoke.write(
             output / "result.json",
-            {"passed": True, "case_start": 1.0, "case_deadline": 16.0},
+            {
+                "passed": True,
+                "case_start": 1.0,
+                "case_deadline": 16.0,
+                "ownership_profile": profile,
+                "baseline_pin_cleanup": {
+                    "processes": profile["records"]["processes"],
+                    "cleanup_errors": [],
+                },
+            },
         )
         smoke.write(
             output / "preparation-ready.json", prepared_value(authored, ready=1.0)
         )
         log(output / "calls.jsonl", [event("process", 1.0)])
+        smoke.write(
+            output / "peer-identity.json",
+            {"schema": 1, "session": "a" * 32, "peer": {"pid": 777}},
+        )
 
     gui.start.side_effect = start
     monkeypatch.setattr(owned_helper, "HelperCommand", Mock(return_value=None))
@@ -1288,7 +1314,7 @@ def test_outer_preparation_failure_never_publishes_case_start(  # noqa: PLR0915 
         }
 
     fixture.snapshot.side_effect = snapshot
-    module.verify_wheel.return_value = {"verified": True}
+    module.verify_wheel.return_value = {"verified": True, "executable": "base"}
     module.ExternalOwner.side_effect = [fixture, gui]
 
     def start(_command: object) -> None:
@@ -1320,8 +1346,10 @@ def test_outer_preparation_failure_never_publishes_case_start(  # noqa: PLR0915 
     monkeypatch.setattr(smoke, "release_owner", cleanup)
     monkeypatch.setattr(
         smoke,
-        "diagnose_topology",
-        Mock(side_effect=RuntimeError("diagnostic unavailable")),
+        "qualify_ownership",
+        Mock(side_effect=RuntimeError("Unqualified ownership profile"))
+        if failure == "gui-descendant"
+        else Mock(return_value={}),
     )
     assert smoke.outer(args) == 1
     result = original_read(args.output / "receipt.json")
@@ -1345,10 +1373,9 @@ def test_outer_preparation_failure_never_publishes_case_start(  # noqa: PLR0915 
         }
         fixture.snapshot.assert_not_called()
         assert (
-            result["first_failure"]
-            == "RuntimeError('Prepared executor no longer solely owned/alive')"
+            result["first_failure"] == "RuntimeError('Unqualified ownership profile')"
         )
-        assert result["topology_error"] == "RuntimeError('diagnostic unavailable')"
+        assert "topology_error" not in result
     if failure == "wrong-job":
         assert result["preparation_ownership"]["fixture_launch_pid"] == 321
         assert result["preparation_ownership"]["fixture_snapshot"] == {

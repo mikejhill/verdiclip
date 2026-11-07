@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import ctypes as c
 import json
-from collections.abc import Callable
+from collections.abc import Callable, MutableMapping
 from functools import partial
-from typing import Any
+from typing import Any, cast
 from unittest.mock import Mock
 
 import pytest
@@ -26,6 +26,8 @@ class Kernel:
         self.paths: dict[int, str] = {}
         self.created: dict[int, int] = {}
         self.actual_pids: dict[int, int] = {}
+        self.system_directory = r"C:\Windows\System32"
+        self.reported_system_length: int | None = None
         self.exited: set[int] = set()
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
         self.advance: dict[str, float] = {}
@@ -35,6 +37,7 @@ class Kernel:
             for name in (
                 "OpenProcess",
                 "GetProcessId",
+                "GetSystemDirectoryW",
                 "GetProcessTimes",
                 "WaitForSingleObject",
                 "QueryFullProcessImageNameW",
@@ -59,6 +62,9 @@ class Kernel:
         elif name == "CreateToolhelp32Snapshot":
             assert args == (0x00000002, 0)
             pid = 0
+        elif name == "GetSystemDirectoryW":
+            assert args[1] == 32768
+            pid = 0
         else:
             pid = int(args[0]) - 1000 if args[0] >= 1000 else 0
         key = (name, pid)
@@ -73,6 +79,13 @@ class Kernel:
             return pid + 1000
         if name == "GetProcessId":
             return self.actual_pids.get(pid, pid)
+        if name == "GetSystemDirectoryW":
+            args[0].value = self.system_directory
+            return (
+                self.reported_system_length
+                if self.reported_system_length is not None
+                else len(self.system_directory)
+            )
         if name == "GetProcessTimes":
             for pointer, value in zip(
                 args[1:], (self.created.get(pid, 100 + pid), 0, 0, 0), strict=True
@@ -569,3 +582,383 @@ def test_expired_budget_never_opens_or_enumerates(kernel: Kernel) -> None:
     assert all(value["status"] == "unavailable" for value in result["processes"])
     assert pins.finish()["cleanup_errors"] == []
     assert kernel.calls == []
+
+
+def test_observe_rechecks_without_reopening_closing_or_resnapshotting(
+    kernel: Kernel,
+) -> None:
+    """Repeated observations keep the same pins and the one original deadline."""
+    pins = diagnostic.PinnedProcesses((11, 22), 10.0, Journal())
+    pins.collect()
+    first = pins.observe()
+    kernel.now = 2.0
+    second = pins.observe()
+    assert first == second
+    assert second["cleanup_errors"] == []
+    assert pins.deadline == 10.0
+    assert [pin.handle for pin in pins.pins] == [1011, 1022]
+    assert kernel.OpenProcess.call_count == 2
+    kernel.CreateToolhelp32Snapshot.assert_called_once()
+    kernel.CloseHandle.assert_called_once_with(900)
+    assert kernel.GetProcessTimes.call_count == 8
+    first["processes"][0]["parent"]["pid"] = 999
+    assert pins.observe()["processes"][0]["parent"]["pid"] == 1
+    pins.finish()
+    assert [call.args[0] for call in kernel.CloseHandle.call_args_list] == [
+        900,
+        1011,
+        1022,
+    ]
+    with pytest.raises(RuntimeError, match="closed"):
+        pins.observe()
+
+
+@pytest.mark.parametrize("change", ["exited", "creation", "process-id", "api-error"])
+def test_observe_rejects_changed_retained_identity_but_keeps_handles(
+    kernel: Kernel, change: str
+) -> None:
+    """An exited, substituted, or unreadable process cannot refresh an old profile."""
+    pins = diagnostic.PinnedProcesses((11, 22), 10.0, Journal())
+    pins.collect()
+    if change == "exited":
+        kernel.exited.add(11)
+    elif change == "creation":
+        kernel.created[11] = 999
+    elif change == "process-id":
+        kernel.actual_pids[11] = 99
+    else:
+        kernel.fail.add(("GetProcessTimes", 11))
+    result = pins.observe()
+    assert result["processes"][0]["status"] == (
+        "unavailable" if change == "api-error" else "stale"
+    )
+    assert result["processes"][1]["status"] == "available"
+    assert [pin.handle for pin in pins.pins] == [1011, 1022]
+    kernel.CloseHandle.assert_called_once_with(900)
+    pins.close()
+
+
+def test_observe_cannot_reset_the_original_deadline(kernel: Kernel) -> None:
+    """No refresh operation is allowed at the original exact deadline."""
+    pins = diagnostic.PinnedProcesses((11,), 10.0, Journal())
+    pins.collect()
+    count = len(kernel.calls)
+    kernel.now = 10.0
+    with pytest.raises(RuntimeError, match="deadline"):
+        pins.observe()
+    assert len(kernel.calls) == count
+    assert pins.pins[0].handle == 1011
+    pins.close()
+
+
+def test_console_expectation_comes_from_system_directory_not_environment(
+    kernel: Kernel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the native system directory plus fixed conhost.exe supplies expectation."""
+    monkeypatch.setenv("SystemRoot", r"D:\untrusted")
+    monkeypatch.setenv("WINDIR", r"D:\untrusted")
+    journal = Journal()
+    assert (
+        diagnostic.expected_console_image(journal, 10.0)
+        == r"c:\windows\system32\conhost.exe"
+    )
+    assert journal.names == ["topology.GetSystemDirectoryW"]
+    assert kernel.GetSystemDirectoryW.call_count == 1
+    assert kernel.GetSystemDirectoryW.argtypes == [c.POINTER(c.c_wchar), c.c_uint32]
+    assert kernel.GetSystemDirectoryW.restype is c.c_uint32
+    assert [name for name, _args in kernel.calls] == ["GetSystemDirectoryW"]
+
+
+@pytest.mark.parametrize(
+    ("deadline", "duration"), [(10.0, 2.999), (10.0, 3.0), (10.0, 3.001), (2.0, 1.0)]
+)
+def test_system_directory_call_obeys_exact_native_and_preparation_deadlines(
+    kernel: Kernel, deadline: float, duration: float
+) -> None:
+    """Late completion cannot produce a console expectation or restart prep time."""
+    kernel.advance["GetSystemDirectoryW"] = duration
+    if duration < min(3.0, deadline - 1.0):
+        assert diagnostic.expected_console_image(Journal(), deadline).endswith(
+            r"\conhost.exe"
+        )
+    else:
+        with pytest.raises(RuntimeError, match="deadline"):
+            diagnostic.expected_console_image(Journal(), deadline)
+    kernel.GetSystemDirectoryW.assert_called_once()
+
+
+@pytest.mark.parametrize("deadline", [float("nan"), float("inf"), True])
+def test_system_directory_rejects_invalid_deadlines_without_native_call(
+    kernel: Kernel, deadline: float
+) -> None:
+    """Invalid caller timing is never replaced with a fresh relative timeout."""
+    with pytest.raises(ValueError, match="deadline"):
+        diagnostic.expected_console_image(Journal(), deadline)
+    assert kernel.calls == []
+
+
+def test_system_directory_expired_budget_never_starts_native_query(
+    kernel: Kernel,
+) -> None:
+    """The original deadline is checked before DLL loading and querying."""
+    with pytest.raises(RuntimeError, match="deadline"):
+        diagnostic.expected_console_image(Journal(), 1.0)
+    assert kernel.calls == []
+
+
+@pytest.mark.parametrize("reported", [0, 1025, 32768, 32769])
+def test_system_directory_missing_or_oversized_native_output_is_not_truncated(
+    kernel: Kernel, reported: int
+) -> None:
+    """Native required-size returns and failure cannot become guessed paths."""
+    kernel.reported_system_length = reported
+    with pytest.raises((OSError, RuntimeError), match=r"failed|bound"):
+        diagnostic.expected_console_image(Journal(), 10.0)
+
+
+@pytest.mark.parametrize(
+    "directory",
+    [
+        r"Windows\System32",
+        r"\Windows\System32",
+        "C:\\Windows\0wrong",
+        "C:\\" + "a" * 1021,
+    ],
+)
+def test_system_directory_requires_complete_bounded_absolute_result(
+    kernel: Kernel, directory: str
+) -> None:
+    """Relative, NUL-containing, or append-overflow output cannot identify conhost."""
+    kernel.system_directory = directory
+    with pytest.raises(ValueError, match="Windows executable path"):
+        diagnostic.expected_console_image(Journal(), 10.0)
+
+
+@pytest.mark.parametrize("phase", ["before", "after"])
+def test_system_directory_logger_failure_never_returns_an_expectation(
+    kernel: Kernel, phase: str
+) -> None:
+    """Unlogged or uncertain system-directory reads cannot qualify an executable."""
+    journal = Journal()
+    getattr(journal, phase).add("topology.GetSystemDirectoryW")
+    with pytest.raises(RuntimeError, match="journal"):
+        diagnostic.expected_console_image(journal, 10.0)
+    assert kernel.GetSystemDirectoryW.call_count == int(phase == "after")
+
+
+LAUNCH_PATH = r"C:\venv\Scripts\python.exe"
+BASE_PATH = r"C:\Python313\python.exe"
+CONSOLE_PATH = r"C:\Windows\System32\conhost.exe"
+
+
+def profile_records() -> list[dict[str, Any]]:
+    """Build the only admitted three-role shape from explicit retained metadata."""
+    return [
+        {
+            "requested_pid": pid,
+            "process_id": pid,
+            "creation_100ns": 1000 + index,
+            "image_path": path,
+            "status": "available",
+            "errors": [],
+            "parent": {"status": "unavailable"}
+            if index == 0
+            else {"status": "available", "pid": 11},
+        }
+        for index, (pid, path) in enumerate(
+            ((11, LAUNCH_PATH), (22, BASE_PATH), (33, CONSOLE_PATH))
+        )
+    ]
+
+
+def test_profile_requires_exact_three_roles_and_returns_immutable_map() -> None:
+    """Ignore the launcher's parent but require both independently expected children."""
+    records = profile_records()
+    roles = diagnostic.validate_profile(
+        records, 11, 22, LAUNCH_PATH, BASE_PATH, CONSOLE_PATH
+    )
+    assert dict(roles) == {"launcher": 11, "executor": 22, "console": 33}
+    with pytest.raises(TypeError):
+        cast("MutableMapping[str, int]", roles)["console"] = 44
+    records[2]["requested_pid"] = 44
+    assert roles["console"] == 33
+
+
+def test_singleton_requires_actual_executor_is_launch_and_both_images_match() -> None:
+    """A standalone executor must satisfy both independent executable expectations."""
+    record = profile_records()[:1]
+    roles = diagnostic.validate_profile(
+        record, 11, 11, LAUNCH_PATH, LAUNCH_PATH, CONSOLE_PATH
+    )
+    assert dict(roles) == {"launcher": 11, "executor": 11}
+    with pytest.raises(ValueError, match="both"):
+        diagnostic.validate_profile(
+            record, 11, 11, LAUNCH_PATH, BASE_PATH, CONSOLE_PATH
+        )
+    with pytest.raises(ValueError, match="Missing"):
+        diagnostic.validate_profile(
+            record, 11, 22, LAUNCH_PATH, LAUNCH_PATH, CONSOLE_PATH
+        )
+
+
+def test_profile_normalizes_only_complete_windows_paths() -> None:
+    """Case, slash style, and lexical dot components are normalized without guessing."""
+    records = profile_records()
+    records[0]["image_path"] = "c:/venv/scripts/./PYTHON.EXE"
+    records[1]["image_path"] = r"C:\Python313\folder\..\python.exe"
+    roles = diagnostic.validate_profile(
+        records, 11, 22, LAUNCH_PATH, BASE_PATH, CONSOLE_PATH
+    )
+    assert roles["executor"] == 22
+
+
+@pytest.mark.parametrize(
+    ("index", "path"),
+    [
+        (0, r"D:\other\python.exe"),
+        (1, r"C:\other\python.exe"),
+        (2, r"D:\substitute\conhost.exe"),
+        (2, r"C:\Windows\System32\cmd.exe"),
+        (1, r"\\?\C:\Python313\python.exe"),
+        (1, r"\\.\C:\Python313\python.exe"),
+        (2, "conhost.exe"),
+        (1, r"C:python.exe"),
+        (1, r"\Python313\python.exe"),
+        (1, "C:\\Python313\\python.exe\0ignored"),
+        (1, "C:\\" + "a" * 1022),
+    ],
+)
+def test_profile_never_matches_basename_substitutes_or_strips_prefixes(
+    index: int, path: str
+) -> None:
+    """The same executable basename in another directory is still an unknown image."""
+    records = profile_records()
+    records[index]["image_path"] = path
+    with pytest.raises(ValueError, match=r"image|path"):
+        diagnostic.validate_profile(
+            records, 11, 22, LAUNCH_PATH, BASE_PATH, CONSOLE_PATH
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("status", "stale"),
+        ("status", "unavailable"),
+        ("errors", ["query failed"]),
+        ("errors", None),
+        ("creation_100ns", 0),
+        ("creation_100ns", -1),
+        ("creation_100ns", True),
+        ("creation_100ns", 1001.0),
+        ("creation_100ns", float("nan")),
+        ("creation_100ns", float("inf")),
+        ("creation_100ns", 2**64),
+        ("process_id", 99),
+        ("process_id", True),
+        ("requested_pid", False),
+        ("image_path", None),
+    ],
+)
+def test_profile_rejects_unavailable_or_ambiguous_pinned_metadata(
+    field: str, value: object
+) -> None:
+    """A role cannot override unavailable or malformed identity evidence."""
+    records = profile_records()
+    records[1][field] = value
+    with pytest.raises(ValueError, match=r".+"):
+        diagnostic.validate_profile(
+            records, 11, 22, LAUNCH_PATH, BASE_PATH, CONSOLE_PATH
+        )
+
+
+@pytest.mark.parametrize("child", [1, 2])
+@pytest.mark.parametrize(
+    "parent",
+    [
+        {"status": "unavailable"},
+        {"status": "stale", "pid": 11},
+        {"status": "available", "pid": 22},
+        {"status": "available", "pid": True},
+        None,
+    ],
+)
+def test_both_children_require_available_exact_launcher_parent(
+    child: int, parent: object
+) -> None:
+    """Neither a grandchild nor a guessed console relationship is admitted."""
+    records = profile_records()
+    records[child]["parent"] = parent
+    with pytest.raises(ValueError, match="parent"):
+        diagnostic.validate_profile(
+            records, 11, 22, LAUNCH_PATH, BASE_PATH, CONSOLE_PATH
+        )
+
+
+@pytest.mark.parametrize("child", [1, 2])
+def test_children_cannot_predate_the_retained_launcher(child: int) -> None:
+    """A reused parent PID cannot authorize an older executor or console process."""
+    records = profile_records()
+    records[child]["creation_100ns"] = 999
+    with pytest.raises(ValueError, match="creation"):
+        diagnostic.validate_profile(
+            records, 11, 22, LAUNCH_PATH, BASE_PATH, CONSOLE_PATH
+        )
+    records[child]["creation_100ns"] = 1000
+    assert (
+        diagnostic.validate_profile(
+            records, 11, 22, LAUNCH_PATH, BASE_PATH, CONSOLE_PATH
+        )["executor"]
+        == 22
+    )
+
+
+@pytest.mark.parametrize(
+    "case", ["missing", "duplicate", "extra", "transient-extra", "same-roles"]
+)
+def test_profile_rejects_missing_duplicate_or_extra_processes(case: str) -> None:
+    """Unknown or exited extra members are never silently removed from a profile."""
+    records = profile_records()
+    executor = 22
+    if case == "missing":
+        records.pop()
+    elif case == "duplicate":
+        records[2] = dict(records[1])
+    elif case in ("extra", "transient-extra"):
+        records.append(
+            {
+                **records[2],
+                "requested_pid": 44,
+                "process_id": 44,
+                "status": "stale" if case == "transient-extra" else "available",
+            }
+        )
+    else:
+        executor = 11
+    with pytest.raises(ValueError, match=r"profile|Duplicate|Singleton"):
+        diagnostic.validate_profile(
+            records, 11, executor, LAUNCH_PATH, BASE_PATH, CONSOLE_PATH
+        )
+
+
+def test_reused_retained_process_cannot_refresh_a_previously_valid_profile(
+    kernel: Kernel,
+) -> None:
+    """Profile admission consumes a fresh recheck, not old successful metadata."""
+    kernel.paths = {11: LAUNCH_PATH, 22: BASE_PATH, 33: CONSOLE_PATH}
+    kernel.entries = [(11, 1, "ignored"), (22, 11, "ignored"), (33, 11, "ignored")]
+    pins = diagnostic.PinnedProcesses((11, 22, 33), 10.0, Journal())
+    initial = pins.collect()["processes"]
+    assert (
+        diagnostic.validate_profile(
+            initial, 11, 22, LAUNCH_PATH, BASE_PATH, CONSOLE_PATH
+        )["console"]
+        == 33
+    )
+    kernel.created[22] = 9999
+    changed = pins.observe()["processes"]
+    with pytest.raises(ValueError, match="identity"):
+        diagnostic.validate_profile(
+            changed, 11, 22, LAUNCH_PATH, BASE_PATH, CONSOLE_PATH
+        )
+    pins.finish()
