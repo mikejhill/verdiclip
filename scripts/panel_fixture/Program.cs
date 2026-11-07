@@ -99,12 +99,14 @@ internal sealed class Fixture : Window
         timer.Tick += (_, _) => Sample();
         ContentRendered += (_, _) =>
         {
+            if (ObserveOnly) ObserveDiagnostic.Record("content-rendered");
             target.ScrollToVerticalOffset(119);
             target.ScrollToHorizontalOffset(ObserveOnly ? 0 : 47);
             sibling.ScrollToVerticalOffset(93);
             sibling.ScrollToHorizontalOffset(27);
             Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, () =>
             {
+                if (ObserveOnly) ObserveDiagnostic.Record("application-idle");
                 initialized = true;
                 Sample();
                 timer.Start();
@@ -242,13 +244,94 @@ internal sealed class Fixture : Window
         string temporary = final + ".tmp";
         File.WriteAllText(temporary, JsonSerializer.Serialize(record));
         File.Move(temporary, final);
+        if (sequence == 1) ObserveDiagnostic.Record("first-sample-published");
     }
 
     [STAThread]
     private static void Main(string[] args)
     {
         if (args.Length != 2) throw new ArgumentException("state-path mode required");
-        var app = new Application();
-        app.Run(new Fixture(Path.GetFullPath(args[0]), args[1]));
+        if (args[1] != "observe-only")
+        {
+            var app = new Application();
+            app.Run(new Fixture(Path.GetFullPath(args[0]), args[1]));
+            return;
+        }
+        ObserveDiagnostic.Configure(Path.GetFullPath(args[0]));
+        ObserveDiagnostic.Record("main-entry");
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+            ObserveDiagnostic.Record("domain-unhandled", e.ExceptionObject as Exception);
+        try
+        {
+            ObserveDiagnostic.Record("application-create");
+            var app = new Application();
+            app.DispatcherUnhandledException += (_, e) =>
+                ObserveDiagnostic.Record("dispatcher-unhandled", e.Exception);
+            ObserveDiagnostic.Record("constructor-entry");
+            var fixture = new Fixture(Path.GetFullPath(args[0]), args[1]);
+            ObserveDiagnostic.Record("constructor-returned");
+            app.Run(fixture);
+        }
+        catch (Exception error)
+        {
+            ObserveDiagnostic.Record("main-exception", error);
+            throw;
+        }
+    }
+}
+
+
+// Best-effort evidence only: never handles an application exception or retries.
+// Fixed names, one publication per phase, <=4096 bytes each; not telemetry.
+internal static class ObserveDiagnostic
+{
+    private static string? directory;
+    private static readonly object gate = new();
+    private static readonly HashSet<string> recorded = new();
+    private static readonly HashSet<string> phases = new()
+    {
+        "main-entry", "application-create", "constructor-entry",
+        "constructor-returned", "content-rendered", "application-idle",
+        "first-sample-published", "domain-unhandled", "dispatcher-unhandled",
+        "main-exception"
+    };
+
+    internal static void Configure(string states)
+    {
+        directory = Path.Combine(states, "diagnostics");
+    }
+
+    internal static void Record(string phase, Exception? error = null)
+    {
+        try
+        {
+            lock (gate)
+            {
+                if (directory is null || !phases.Contains(phase) || !recorded.Add(phase)) return;
+                Directory.CreateDirectory(directory);
+                string? type = error?.GetType().FullName;
+                string? message = error?.Message;
+                if (type?.Length > 128) type = type[..128];
+                if (message?.Length > 256) message = message[..256];
+                byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(new
+                {
+                    schema = 1, scope = "owned-observe-only-startup", phase,
+                    pid = Environment.ProcessId, monotonic_ticks = Stopwatch.GetTimestamp(),
+                    monotonic_frequency = Stopwatch.Frequency,
+                    exception_type = type, exception_message = message,
+                    exception_hresult = error?.HResult
+                });
+                if (bytes.Length > 4096) return;
+                string final = Path.Combine(directory, phase + ".json");
+                string temporary = final + ".tmp";
+                File.WriteAllBytes(temporary, bytes);
+                File.Move(temporary, final);
+            }
+        }
+        catch (Exception)
+        {
+            // Persistence failure must not replace the original exception or
+            // change fixture execution. Missing evidence remains unqualified.
+        }
     }
 }

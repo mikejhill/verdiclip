@@ -624,5 +624,6 @@ jobs:
             receipts/installed-observe/executor/*.jsonl
             receipts/installed-observe/executor/*.png
             receipts/installed-observe/states/*.json
+            receipts/installed-observe/states/diagnostics/*.json
           if-no-files-found: error
           retention-days: 14

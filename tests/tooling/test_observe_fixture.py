@@ -200,3 +200,86 @@ def test_creation_time_is_frozen_once_only_in_observe_mode() -> None:
     sample = section("    private void SampleObservation", "    [STAThread]")
     assert "process_created_100ns = processCreated100ns," in sample
     assert "GetCurrentProcess" not in sample
+
+
+def test_startup_diagnostics_are_opt_in_and_exceptions_propagate() -> None:
+    """Ordinary mode bypasses diagnostics; both unhandled hooks remain unhandled."""
+    main = section("    private static void Main", "// Best-effort evidence")
+    ordinary = main.split('if (args[1] != "observe-only")', 1)[1].split(
+        "ObserveDiagnostic.Configure", 1
+    )[0]
+    assert "app.Run(new Fixture(Path.GetFullPath(args[0]), args[1]));" in ordinary
+    assert "return;" in ordinary
+    assert "ObserveDiagnostic.Record" not in ordinary
+    assert "AppDomain.CurrentDomain.UnhandledException +=" in main
+    assert "app.DispatcherUnhandledException +=" in main
+    assert 'Record("main-exception", error);\n            throw;' in main
+    assert "Handled =" not in SOURCE
+    assert "SetObserved" not in SOURCE
+
+
+def test_startup_phase_order_and_first_publication_are_exact() -> None:
+    """The publication witness is after the first closed atomic telemetry file."""
+    main = section("    private static void Main", "// Best-effort evidence")
+    phases = [
+        'Record("main-entry")',
+        'Record("application-create")',
+        "new Application()",
+        'Record("constructor-entry")',
+        "var fixture = new Fixture",
+        'Record("constructor-returned")',
+        "app.Run(fixture)",
+    ]
+    # Skip the untouched ordinary-mode Application construction.
+    main = main.split("ObserveDiagnostic.Configure", 1)[1]
+    positions = [main.index(phase) for phase in phases]
+    assert positions == sorted(positions)
+    constructor = section("    internal Fixture(", "    private static ScrollViewer")
+    assert (
+        'if (ObserveOnly) ObserveDiagnostic.Record("content-rendered");' in constructor
+    )
+    assert (
+        'if (ObserveOnly) ObserveDiagnostic.Record("application-idle");' in constructor
+    )
+    sample = section("    private void SampleObservation", "    [STAThread]")
+    assert sample.index("File.Move(temporary, final);") < sample.index(
+        'if (sequence == 1) ObserveDiagnostic.Record("first-sample-published");'
+    )
+
+
+def test_diagnostics_are_fixed_bounded_atomic_and_best_effort() -> None:
+    """Ten fixed phase records cannot grow with repeated ticks or exceptions."""
+    diagnostics = SOURCE.split("internal static class ObserveDiagnostic", 1)[1]
+    phase_block = diagnostics.split("phases = new()", 1)[1].split("};", 1)[0]
+    phases = re.findall(r'"([a-z-]+)"', phase_block)
+    assert len(phases) == len(set(phases)) == 10
+    assert 'Path.Combine(states, "diagnostics")' in diagnostics
+    assert "!phases.Contains(phase) || !recorded.Add(phase)" in diagnostics
+    assert "lock (gate)" in diagnostics
+    assert "type[..128]" in diagnostics
+    assert "message[..256]" in diagnostics
+    assert "if (bytes.Length > 4096) return;" in diagnostics
+    assert diagnostics.index(
+        "File.WriteAllBytes(temporary, bytes);"
+    ) < diagnostics.index("File.Move(temporary, final);")
+    assert "catch (Exception)" in diagnostics
+    assert not any(
+        word in diagnostics
+        for word in ("Thread.Sleep", "Task.Delay", "while (", "throw;")
+    )
+
+
+def test_only_exact_diagnostic_artifact_path_is_added() -> None:
+    """Startup evidence is separate from telemetry, with no broad profile upload."""
+    workflow = (
+        Path(__file__).resolve().parents[2]
+        / ".github/workflows/automatic-panel-feasibility.yml"
+    ).read_text()
+    assert workflow.count("receipts/installed-observe/states/diagnostics/*.json") == 1
+    assert "receipts/installed-observe/states/*.json" in workflow
+    harness = (
+        Path(__file__).resolve().parents[2] / "scripts/installed_observe_smoke.py"
+    ).read_text()
+    assert 'glob("[0-9][0-9][0-9][0-9].json")' in harness
+    assert "CASE_SECONDS = 15.0" in harness
+    assert "REFERENCE_SECONDS = 2.0" in harness
