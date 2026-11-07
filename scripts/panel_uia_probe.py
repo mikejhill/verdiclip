@@ -18,6 +18,7 @@ from pathlib import Path
 import mss
 import mss.tools
 from scripts.panel_uia import PanelUia, Point, ScrollState, Structure
+from scripts.panel_viewport import midpoint_percent, viewport_rect
 
 MAX_PIXELS = 16_000_000
 SETTLE_SECONDS = 2
@@ -254,7 +255,10 @@ class Probe:
         self.report["target"] = asdict(self.identity)
         self.emit({"event": "discovered_target", **asdict(self.identity)})
         self.report["ancestors"] = [asdict(item) for item in self.uia.ancestors]
-        self.report["children"] = [asdict(item) for item in self.uia.inspect_children()]
+        children = self.uia.inspect_children()
+        self.report["children"] = [asdict(item) for item in children]
+        viewport = viewport_rect(self.identity, children)
+        self.report["derived_viewport"] = viewport
         if (
             self.identity.pid
             not in fixture.get("owned_process_ids", [self.args.expected_pid])
@@ -283,12 +287,8 @@ class Probe:
                 raise RuntimeError("Fixture not wholly on one monitor")
             self.frame(source, "before")
             if not self.args.inspect_only:
-                mid = min(
-                    50.0,
-                    0.5
-                    * self.initial.vertical_view
-                    * FULL_PERCENT
-                    / (FULL_PERCENT - self.initial.vertical_view),
+                mid = midpoint_percent(
+                    self.initial.vertical_view, viewport[3] - viewport[1]
                 )
                 for name, percent in (("top", 0.0), ("mid", mid), ("bottom", 100.0)):
                     self.seek(percent)
@@ -302,6 +302,8 @@ class Probe:
         try:
             self.execute()
         except Exception as error:  # noqa: BLE001 - terminal diagnostic boundary
+            if self.uia is not None:
+                self.report["ancestors"] = [asdict(item) for item in self.uia.ancestors]
             self.report["first_failure"] = repr(error)
             self.emit({"event": "first_failure", "error": repr(error)})
             self.restore_after_failure()

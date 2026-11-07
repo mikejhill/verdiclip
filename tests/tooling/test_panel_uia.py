@@ -220,3 +220,110 @@ def test_horizontal_change_latches_uncertain(monkeypatch: pytest.MonkeyPatch) ->
     assert probe.uncertain
     probe.restore_after_failure()
     assert writes == [0]
+
+
+@pytest.fixture
+def discovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[PanelUia, Com, list[dict[str, object]]]:
+    """One synthetic ancestor, with no native calls or UI."""
+    panel = object.__new__(PanelUia)
+    panel.target = None
+    panel.pattern = None
+    panel.ancestors = []
+    panel.refs = []
+    events: list[dict[str, object]] = []
+    panel.emit = events.append
+    panel.uia = Com(c.c_void_p(1), panel.emit)
+    node = Com(c.c_void_p(2), panel.emit)
+    state = Structure(123, 456, 50030, "Chrome", (1, 2, 30, 40), offscreen=False)
+    monkeypatch.setattr(Com, "checked", lambda *_: None)
+    monkeypatch.setattr(Com, "release", lambda *_: None)
+    monkeypatch.setattr(PanelUia, "own", lambda *_: node)
+    monkeypatch.setattr(PanelUia, "structure", lambda *_: state)
+    monkeypatch.setattr(PanelUia, "navigate", lambda *_: None)
+    return panel, node, events
+
+
+def test_missing_pattern_retains_ancestor_on_chain_end(
+    monkeypatch: pytest.MonkeyPatch,
+    discovery: tuple[PanelUia, Com, list[dict[str, object]]],
+) -> None:
+    """An unsupported chain retains structure and its explicit null pattern."""
+    panel, _, events = discovery
+    monkeypatch.setattr(PanelUia, "scroll_pattern", lambda *_: None)
+    with pytest.raises(OSError, match="ancestor chain ended after 1 nodes"):
+        panel.discover(10, 20)
+    assert events == [
+        {
+            "event": "ancestor",
+            "index": 0,
+            "pid": 123,
+            "hwnd": 456,
+            "control_type": 50030,
+            "framework": "Chrome",
+            "rect": (1, 2, 30, 40),
+            "offscreen": False,
+        },
+        {"event": "ancestor_pattern", "index": 0, "scroll_pattern_present": False},
+    ]
+    assert len(panel.ancestors) == 1
+    assert panel.target is None
+
+
+@pytest.mark.parametrize("vertical", [False, True])
+def test_pattern_diagnostics_preserve_selection(
+    monkeypatch: pytest.MonkeyPatch,
+    discovery: tuple[PanelUia, Com, list[dict[str, object]]],
+    *,
+    vertical: bool,
+) -> None:
+    """Diagnostics distinguish horizontal-only providers without changing choice."""
+    panel, node, events = discovery
+    monkeypatch.setattr(PanelUia, "scroll_pattern", lambda *_: node)
+    monkeypatch.setattr(Com, "read", lambda *_: c.c_int32(vertical))
+    if vertical:
+        assert panel.discover(10, 20) == panel.ancestors[0]
+        assert panel.target is node
+    else:
+        with pytest.raises(OSError, match="ancestor chain ended"):
+            panel.discover(10, 20)
+        assert panel.target is None
+    assert events[1:] == [
+        {"event": "ancestor_pattern", "index": 0, "scroll_pattern_present": True},
+        {"event": "ancestor_vertical", "index": 0, "vertical_scrollable": vertical},
+    ]
+
+
+def test_pattern_failure_retains_prior_structure(
+    monkeypatch: pytest.MonkeyPatch,
+    discovery: tuple[PanelUia, Com, list[dict[str, object]]],
+) -> None:
+    """A provider exception cannot erase the ancestor already visited."""
+    panel, _, events = discovery
+
+    def fail(_self: PanelUia, _node: Com) -> None:
+        raise OSError("provider failure")
+
+    monkeypatch.setattr(PanelUia, "scroll_pattern", fail)
+    with pytest.raises(OSError, match="provider failure"):
+        panel.discover(10, 20)
+    assert len(events) == 1
+    assert events[0]["event"] == "ancestor"
+    assert events[0]["framework"] == "Chrome"
+    assert len(panel.ancestors) == 1
+
+
+def test_bound_diagnostics_are_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+    discovery: tuple[PanelUia, Com, list[dict[str, object]]],
+) -> None:
+    """An endless chain records only the 32 permitted structures and outcomes."""
+    panel, node, events = discovery
+    monkeypatch.setattr(PanelUia, "scroll_pattern", lambda *_: None)
+    monkeypatch.setattr(PanelUia, "navigate", lambda *_: node)
+    with pytest.raises(OSError, match="reached bound of 32 ancestors"):
+        panel.discover(10, 20)
+    assert len(events) == 64
+    assert [e["index"] for e in events if e["event"] == "ancestor"] == list(range(32))
+    assert len(panel.ancestors) == 32

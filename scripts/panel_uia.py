@@ -15,7 +15,7 @@ import sys
 import time
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 MAX_ANCESTORS = 32
 MAX_CHILDREN = 64
@@ -237,21 +237,42 @@ class PanelUia:
             7, (Point, c.POINTER(c.c_void_p)), Point(x, y), c.byref(pointer)
         )
         element = self.own(pointer)
-        for _ in range(MAX_ANCESTORS):
+        for index in range(MAX_ANCESTORS):
             state = self.structure(element)
             self.ancestors.append(state)
+            # Publish before the next native call: failures must retain the
+            # visited non-text structure, not only successful discoveries.
+            self.emit({"event": "ancestor", "index": index, **asdict(state)})
             pattern = self.scroll_pattern(element)
+            self.emit(
+                {
+                    "event": "ancestor_pattern",
+                    "index": index,
+                    "scroll_pattern_present": pattern is not None,
+                }
+            )
             if pattern is not None:
-                if pattern.read(10, c.c_int32).value:
+                vertical = bool(pattern.read(10, c.c_int32).value)
+                self.emit(
+                    {
+                        "event": "ancestor_vertical",
+                        "index": index,
+                        "vertical_scrollable": vertical,
+                    }
+                )
+                if vertical:
                     self.target, self.pattern = element, pattern
                     return state
                 pattern.release()
             parent = self.navigate(element, 3)
             element.release()
             if parent is None:
-                break
+                raise OSError(
+                    "No vertical ScrollPattern: ancestor chain ended after "
+                    f"{index + 1} nodes"
+                )
             element = parent
-        raise OSError("No vertical ScrollPattern within 32 ancestors")
+        raise OSError("No vertical ScrollPattern: reached bound of 32 ancestors")
 
     def read_state(self) -> ScrollState:
         """Read the selected scroll provider's current state."""

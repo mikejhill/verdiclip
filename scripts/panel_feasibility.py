@@ -198,6 +198,7 @@ def edge_fixture(
         "dpr": dpr,
         "state": state["state"],
         "edge_executable": str(edge),
+        "browser_user_agent": state["user_agent"],
         "browser_scale_flag": scale,
         "real_monitor_dpi_variant": False,
     }
@@ -431,6 +432,14 @@ def main() -> int:
             )
         result["fixture"] = fixture
         result["helper"] = run_probe(probe_job, fixture, args.output)
+        if any(
+            record["event"] == "call_end"
+            and record["seconds"] > NATIVE_CALL_DEADLINE_SECONDS
+            for record in events(args.output / "probe/calls.jsonl")
+        ):
+            raise RuntimeError(  # noqa: TRY301 - terminal diagnostic boundary
+                "Completed native call exceeded three seconds"
+            )
         time.sleep(0.15)
         result["oracle"] = oracle(fixture, snapshots(state_dir), args.output)
         result["checkpoint_passed"] = checkpoint_passed(result["oracle"])
@@ -453,6 +462,11 @@ def main() -> int:
                 server.close()
             except Exception as error:  # noqa: BLE001 - preserve original failure
                 result["cleanup"]["server"] = {"confirmed": False, "error": repr(error)}
+        result["checkpoint_passed"] = (
+            result["checkpoint_passed"]
+            and result["first_failure"] is None
+            and all(v["confirmed"] for v in result["cleanup"].values())
+        )
         write(args.output / "receipt.json", result)
     return int(
         result["first_failure"] is not None

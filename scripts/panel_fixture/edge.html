@@ -36,7 +36,7 @@ let initialized = false;
 function report() {
   if (!initialized || sequence >= 256) return;
   fetch('state', {method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({sequence: sequence++, dpr: devicePixelRatio,
+    body: JSON.stringify({sequence: sequence++, dpr: devicePixelRatio, user_agent: navigator.userAgent,
       state: {target: state(target), outer: state(outer), sibling: state(sibling)}})});
 }
 requestAnimationFrame(() => requestAnimationFrame(() => {
