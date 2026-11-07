@@ -1,7 +1,8 @@
 """Supervised Windows-only UIA feasibility probe; never product capture code.
 
 Run only against an owned fixture with a hard-timeout process supervisor. Output
-must be a new directory. No write retries, stitching, automatic fallback or GUI.
+must be a new directory. No write retries, automatic fallback or GUI.
+Full stitching is opt-in.
 Explicit discovery settling permits one guarded read-only delayed observation.
 """
 
@@ -18,8 +19,11 @@ from pathlib import Path
 
 import mss
 import mss.tools
+from scripts.panel_full_sweep import FullSweep
 from scripts.panel_uia import MAX_ANCESTORS, PanelUia, Point, ScrollState, Structure
 from scripts.panel_viewport import midpoint_percent, viewport_rect
+
+from verdiclip.capture.scroll_stitch import ScrollFrame
 
 MAX_PIXELS = 16_000_000
 SETTLE_SECONDS = 2
@@ -100,6 +104,7 @@ class Probe:
         }
         self.emit({"event": "process", **self.report})
         self.uncertain = False
+        self.full_sweep: FullSweep | None = None
         self.guard: NativeGuard | None = None
         self.uia: PanelUia | None = None
         self.identity: Structure | None = None
@@ -132,13 +137,18 @@ class Probe:
         self.validate()
         if self.uia is None or self.guard is None or self.initial is None:
             raise RuntimeError("Probe not initialized")
-        self.uncertain = True
         # Chromium's SetScrollPercent computes both offsets even for NoScroll.
         # Preserve the already-validated horizontal value, without a second write.
         # https://chromium.googlesource.com/chromium/src/+/refs/heads/main/ui/accessibility/platform/ax_platform_node_win.cc
         horizontal = (
             self.initial.horizontal if self.initial.horizontal_scrollable else -1.0
         )
+        sweep = getattr(self, "full_sweep", None)
+        if getattr(self, "report", {}).get("restoration_prohibited"):
+            raise RuntimeError("Further scroll writes prohibited")
+        if sweep is not None:
+            sweep.before_write()
+        self.uncertain = True
         self.uia.set_vertical(percent, horizontal=horizontal)
         self.guard.check()
         current = self.observe_acknowledgement(percent)
@@ -190,10 +200,13 @@ class Probe:
             time.sleep(0.1)
         raise RuntimeError("Scroll acknowledgement did not settle within deadline")
 
-    def frame(self, source: mss.MSS, name: str) -> None:
+    def frame(self, source: mss.MSS, name: str) -> ScrollFrame:
         """Require three equal physical-pixel samples within two seconds."""
         if self.identity is None:
             raise RuntimeError("Probe not initialized")
+        sweep = getattr(self, "full_sweep", None)
+        if sweep is not None:
+            sweep.begin_frame()
         left, top, right, bottom = self.identity.rect
         area = {"left": left, "top": top, "width": right - left, "height": bottom - top}
         previous = None
@@ -204,6 +217,7 @@ class Probe:
             shot = source.grab(area)
             self.validate()
             if time.monotonic() - start >= SETTLE_SECONDS:
+                self.report["restoration_prohibited"] = True
                 raise RuntimeError(f"Frame deadline exceeded for {name}")
             pixels = shot.rgb
             matched = matched + 1 if previous == pixels else 1
@@ -221,8 +235,9 @@ class Probe:
                         "state": asdict(self.last) if self.last is not None else None,
                     }
                 )
-                return
+                return ScrollFrame(shot.size[0], shot.size[1], bytes(pixels))
             time.sleep(0.1)
+        self.report["restoration_prohibited"] = True
         raise RuntimeError(f"Pixels did not settle for {name}")
 
     def check_rect(self, fixture: dict[str, list[int]]) -> None:
@@ -301,6 +316,7 @@ class Probe:
 
     def execute(self) -> None:
         """Validate explicit owned-fixture identity before the first write."""
+        started = time.monotonic()
         fixture = json.loads(
             Path(self.args.fixture_manifest).read_text(encoding="utf-8")
         )
@@ -349,8 +365,15 @@ class Probe:
                 for item in source.monitors[1:]
             ):
                 raise RuntimeError("Fixture not wholly on one monitor")
-            self.frame(source, "before")
-            if not self.args.inspect_only:
+            before = self.frame(source, "before")
+            if getattr(self.args, "full_sweep", False):
+                if not (
+                    viewport[0] <= self.args.x < viewport[2]
+                    and viewport[1] <= self.args.y < viewport[3]
+                ):
+                    raise RuntimeError("Selected point lies outside native viewport")
+                FullSweep(self, source, viewport, before, started).run()
+            elif not self.args.inspect_only:
                 mid = midpoint_percent(
                     self.initial.vertical_view, viewport[3] - viewport[1]
                 )
@@ -382,7 +405,13 @@ class Probe:
 
     def restore_after_failure(self) -> None:
         """Do not overwrite first failure with a secondary restoration failure."""
-        if self.uncertain or self.initial is None or self.last == self.initial:
+        if (
+            self.uncertain
+            or self.report.get("full_sweep_deadline_exceeded")
+            or self.report.get("restoration_prohibited")
+            or self.initial is None
+            or self.last == self.initial
+        ):
             return
         try:
             self.validate()
@@ -402,7 +431,9 @@ def main() -> int:
     parser.add_argument("--expected-pid", type=int, required=True)
     parser.add_argument("--fixture-manifest", required=True)
     parser.add_argument("--output", required=True)
-    parser.add_argument("--inspect-only", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--inspect-only", action="store_true")
+    mode.add_argument("--full-sweep", action="store_true")
     parser.add_argument("--settle-discovery", action="store_true")
     return Probe(parser.parse_args()).run()
 

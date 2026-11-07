@@ -88,7 +88,7 @@ vertical seek resets horizontal position from approximately 47 to 0. The invaria
 check fails immediately and the uncertain operation prohibits restoration.
 No partial image is delivered; all owned processes retire.
 
-Chromium's native provider implementation confirms the cause:
+Chromium's native provider implementation corroborates the cause:
 [AXPlatformNodeWin::SetScrollPercent](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/ui/accessibility/platform/ax_platform_node_win.cc)
 converts both arguments to offsets without a special `NoScroll(-1)` branch.
 The negative horizontal percentage is consequently clamped to the left edge.
@@ -98,3 +98,30 @@ checks. No retry or corrective write is attempted in an uncertain session.
 The same source computes view size from clipped outer bounds plus scroll range;
 this explains the browser provider's metrics without claiming its rectangle is
 the actual content viewport. Browser viewport qualification remains open.
+
+## Fifth experiment and complete-sweep gate
+
+Head `fe5f566adddeb1240ac7b15d70f2e25d0c21af50`, native run
+[42350720739](https://github.com/mikejhill/verdiclip/actions/runs/42350720739).
+Explicit acknowledged horizontal percentages preserve horizontal position in
+all five cases. Both Edge variants now perform the actual sparse scroll and
+restore exactly. The 125% historical receipt fails only its independent sample
+oracle: rounding a fractional content boundary outward included a partially
+covered row. The revised oracle samples wholly covered pixels and retains their
+vertical phase; offline replay passes all five retained cases. Historical
+receipts are not rewritten. None of this qualifies full browser capture.
+
+The next native experiment uses complete WPF top-to-bottom sweeps, repeated
+bottom verification, top replay and exact restoration. The independent 96-DPI
+fixture oracle checks all 1,457 output scanlines at its known color column,
+including every separator and the last row; it is not a full-image golden oracle.
+All native writes recheck geometry and deadline. Uncertain frame acquisition or
+geometry prohibits restoration writes. Frame and elapsed-time budgets apply to
+fallback restoration too. No image is published before all checks pass.
+
+A separately tested pure coordinator models these lifecycle gates but is not
+connected to the application's UI or controller. Existing capture remains
+unchanged. Browser work is researching full-frame output with static chrome
+excluded only from alignment; clean CSS viewport access is not a prerequisite.
+Experimental framing rules still have adversarial qualification gaps and are
+not included in production. This draft must not be merged or released yet.

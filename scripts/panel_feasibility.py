@@ -6,11 +6,13 @@ import argparse
 import ctypes
 import hashlib
 import json
+import math
 import os
 import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -20,11 +22,14 @@ from scripts.panel_checkpoint import checkpoint_passed
 from scripts.panel_fixture_server import FixtureServer
 from scripts.panel_owned_job import OwnedJob
 from scripts.panel_probe_oracle import (
+    ROW_COUNT,
+    ROW_HEIGHT,
     Pixels,
     color_bounds,
     inspect_rows,
     interior_overlap_displacements,
     overlap_displacements,
+    row_color,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -33,6 +38,7 @@ MAX_EVENT_BYTES = 4_000_000
 HELPER_DEADLINE_SECONDS = 30
 NATIVE_CALL_DEADLINE_SECONDS = 3
 OFFSET_PERCENT_TOLERANCE = 0.2
+NATIVE_ORACLE_DPI = 96
 
 
 def write(path: Path, value: object) -> None:
@@ -230,7 +236,9 @@ def run_probe(job: OwnedJob, fixture: Json, output: Path) -> Json:
         [str(ROOT), str(Path(sys.prefix) / "Lib/site-packages"), str(ROOT / "src")]
     )
     probe_dir = output / "probe"
-    extra = ["--settle-discovery"] if fixture["kind"] == "owned-edge" else []
+    extra = (
+        ["--settle-discovery"] if fixture["kind"] == "owned-edge" else ["--full-sweep"]
+    )
     pid, handle = job.start(
         [
             str(base),
@@ -294,6 +302,26 @@ def load_pixels(path: Path) -> Pixels:
     return Pixels(image.width(), image.height(), rgb)
 
 
+def oracle_crop_geometry(
+    content: Sequence[float], target: Sequence[int]
+) -> tuple[list[int], float]:
+    """Use fully contained fixture pixels and retain their vertical sample phase.
+
+    This is independent synthetic-fixture geometry, never product viewport
+    inference. Fractionally covered edge pixels are not row-color samples.
+    """
+    left, top = math.ceil(content[0]), math.ceil(content[1])
+    right, bottom = math.floor(content[2]), math.floor(content[3])
+    if left >= right or top >= bottom:
+        raise ValueError("Fixture content contains no complete pixel rectangle")
+    return [
+        left - target[0],
+        top - target[1],
+        right - target[0],
+        bottom - target[1],
+    ], top - content[1]
+
+
 def oracle(fixture: Json, states: list[Json], output: Path) -> Json:
     """Compare UIA against independent fixture state and native pixel content."""
     path = output / "probe/manifest.json"
@@ -304,13 +332,10 @@ def oracle(fixture: Json, states: list[Json], output: Path) -> Json:
         return {"complete": False, "reason": "No discovered target", "probe": report}
     rect = report["target"]["rect"]
     content = fixture["content_rect"]
-    relative = [
-        round(content[0] - rect[0]),
-        round(content[1] - rect[1]),
-        round(content[2] - rect[0]),
-        round(content[3] - rect[1]),
-    ]
+    relative, vertical_phase = oracle_crop_geometry(content, rect)
     frames: dict[str, Pixels] = {}
+    before_full: Pixels | None = None
+    restored_full = False
     checks = {}
     scale = fixture.get("dpr", fixture.get("dpi_y", 96) / 96)
     extent = fixture["state"]["target"]["extent_height"]
@@ -319,7 +344,12 @@ def oracle(fixture: Json, states: list[Json], output: Path) -> Json:
         if event["event"] != "stable_frame":
             continue
         name = event["name"]
-        frame = load_pixels(output / f"probe/{name}.png").crop(relative)
+        full_frame = load_pixels(output / f"probe/{name}.png")
+        if name == "before":
+            before_full = full_frame
+        elif name == "restore":
+            restored_full = before_full is not None and full_frame == before_full
+        frame = full_frame.crop(relative)
         frames[name] = frame
         percent = event["state"]["vertical"]
         # Percent is not an offset oracle: pick the fixture's independently
@@ -338,7 +368,9 @@ def oracle(fixture: Json, states: list[Json], output: Path) -> Json:
                 "reason": "No independent offset snapshot",
             }
         else:
-            checks[name] = inspect_rows(frame, candidates[0], scale)
+            checks[name] = inspect_rows(
+                frame, candidates[0] + vertical_phase / scale, scale
+            )
     unchanged = all(
         snapshot["state"][pane] == fixture["state"][pane]
         for snapshot in states
@@ -357,6 +389,8 @@ def oracle(fixture: Json, states: list[Json], output: Path) -> Json:
         "independent_content_rect": content,
         "uia_rect_is_content_rect": rect == content,
         "content_oracle_crops_are_test_only": True,
+        "content_oracle_relative_crop": relative,
+        "content_oracle_vertical_phase_pixels": vertical_phase,
         "frame_checks": checks,
         "top_mid_displacements": overlap_displacements(frames["top"], frames["mid"])
         if "top" in frames and "mid" in frames
@@ -369,9 +403,7 @@ def oracle(fixture: Json, states: list[Json], output: Path) -> Json:
         "sibling_outer_unchanged": unchanged,
         "horizontal_unchanged": horizontal,
         "original_state_restored": restored_state,
-        "original_pixels_restored": "before" in frames
-        and "restore" in frames
-        and frames["before"] == frames["restore"],
+        "original_pixels_restored": restored_full,
         "product_viewport_qualified": False,
     }
 
@@ -387,6 +419,55 @@ def _require_probe_success(exit_code: int) -> None:
         raise RuntimeError("Probe returned failure; first provider error retained")
 
 
+def full_sweep_oracle(fixture: Json, output: Path) -> Json:
+    """Verify every synthetic WPF color row independently, including boundaries."""
+    report = json.loads((output / "probe/manifest.json").read_text(encoding="utf-8"))
+    if not report.get("full_sweep_passed") or report.get("first_failure") is not None:
+        return {
+            "passed": False,
+            "reason": "Helper did not complete full sweep",
+            "probe": report,
+        }
+    if fixture["dpi_y"] != NATIVE_ORACLE_DPI or fixture["dpi_x"] != NATIVE_ORACLE_DPI:
+        return {
+            "passed": False,
+            "reason": "First full-sweep pixel oracle requires native 96 DPI",
+        }
+    image = load_pixels(output / "probe/stitched.png")
+    rect = fixture["content_rect"]
+    expected_size = (round(rect[2] - rect[0]), ROW_COUNT * ROW_HEIGHT)
+    if (image.width, image.height) != expected_size:
+        return {
+            "passed": False,
+            "reason": "Composite dimensions differ from independent fixture",
+            "actual": [image.width, image.height],
+            "expected": expected_size,
+        }
+    x = image.width - 12
+    mismatches = []
+    for y in range(image.height):
+        expected = (
+            bytes((255, 255, 255))
+            if y % ROW_HEIGHT == 0
+            else row_color(y // ROW_HEIGHT)
+        )
+        actual = image.rgb[(y * image.width + x) * 3 : (y * image.width + x) * 3 + 3]
+        if actual != expected:
+            mismatches.append(y)
+    before = load_pixels(output / "probe/before.png")
+    restored = load_pixels(output / "probe/restore.png")
+    return {
+        "passed": not mismatches and before == restored,
+        "width": image.width,
+        "height": image.height,
+        "all_scanlines_checked": image.height,
+        "mismatching_scanlines": mismatches,
+        "full_initial_frame_restored": before == restored,
+        "rgb_sha256": hashlib.sha256(image.rgb).hexdigest(),
+        "product_integration_qualified": False,
+    }
+
+
 def verify_result(result: Json, output: Path, state_dir: Path, fixture: Json) -> None:
     """Keep read-only discovery distinct from actual pixel checkpoint success."""
     if any(
@@ -395,7 +476,13 @@ def verify_result(result: Json, output: Path, state_dir: Path, fixture: Json) ->
         for record in events(output / "probe/calls.jsonl")
     ):
         raise RuntimeError("Completed native call exceeded three seconds")
-    if result["read_only_discovery"]:
+    if result.get("full_sweep"):
+        result["oracle"] = full_sweep_oracle(fixture, output)
+        _require_probe_success(result["helper"]["exit_code"])
+        result["checkpoint_passed"] = result["oracle"]["passed"]
+        if not result["checkpoint_passed"]:
+            raise RuntimeError("Independent complete-sweep oracle failed")
+    elif result["read_only_discovery"]:
         report = json.loads(
             (output / "probe/manifest.json").read_text(encoding="utf-8")
         )
@@ -439,6 +526,7 @@ def main() -> int:
         "cleanup": {},
         "checkpoint_passed": False,
         "read_only_discovery": False,
+        "full_sweep": args.case.startswith("wpf-"),
         "diagnostic_completed": False,
     }
     fixture_job = None
