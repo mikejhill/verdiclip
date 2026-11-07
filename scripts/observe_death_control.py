@@ -412,7 +412,6 @@ class DeathControl:
                 "roles": roles,
                 "records": {
                     "processes": records,
-                    "cleanup_errors": [],
                     "enumeration": enumeration,
                 },
                 "reference_initial": self.begin["reference_initial"],

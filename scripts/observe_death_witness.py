@@ -584,7 +584,6 @@ class Witness:
         if self.journal is not None:
             try:
                 self.journal.check()
-                self.journal.emit("process_exit", "death-witness")
             except BaseException as error:  # noqa: BLE001 - preserve late cleanup
                 self.result["cleanup_errors"].append(repr(error))
             finally:

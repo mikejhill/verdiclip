@@ -14,6 +14,7 @@ from unittest.mock import Mock
 import pytest
 from scripts import installed_observe_smoke as smoke
 from scripts import observe_death_control as control
+from scripts import observe_process_diagnostics as topology
 
 from verdiclip.platform import helper_bootstrap, helper_runtime, owned_helper
 
@@ -119,19 +120,31 @@ def prepared(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace
     smoke.write(executor / "death-reference.json", reference)
     now[0] = 101.0
     assert not value.before_observe(profile, temporary, identity, 115.0)
+    # Use the real producer's detached records, not a separately guessed schema.
+    collector = object.__new__(topology.PinnedProcesses)
+    collector.collected = collector.closed = False
+    collector.pins = [
+        topology.Pin(
+            requested_pid=pid,
+            process_id=pid,
+            creation_100ns=1234 + pid,
+            image_path="C:\\Python\\python.exe",
+            status="available",
+        )
+        for pid in (11, 12)
+    ]
+    collector.journal = Mock()
+    collector.journal.call.side_effect = lambda _name, operation: operation()
+    monkeypatch.setattr(collector, "_recheck", lambda _pin: None)
+
+    def enumerate_parents(metadata: Json) -> dict[int, int]:
+        metadata.update(entries=4, complete=True)
+        return {11: 10, 12: 10}
+
+    monkeypatch.setattr(collector, "_enumerate", enumerate_parents)
     pins = {
         "roles": {"executor": 11, "peer": 12},
-        "records": {
-            "processes": [record(11), record(12)],
-            "cleanup_errors": [],
-            "enumeration": {
-                "started_monotonic": 101.0,
-                "finished_monotonic": 101.0,
-                "entries": 4,
-                "complete": True,
-                "error": None,
-            },
-        },
+        "records": collector.collect(),
         "reference_initial": reference["reference_initial"],
         "pinned_ns": 101_000_000_000,
     }
@@ -687,3 +700,19 @@ def test_local_provenance_bound_and_object_shape() -> None:
         control.canonical_provenance({"large": "x" * control.MAX_JSON})
     with pytest.raises(ValueError, match="object"):
         control.canonical_provenance([])  # ty: ignore[invalid-argument-type]
+
+
+def test_live_pinned_schema_rejects_invented_cleanup_field(
+    prepared: SimpleNamespace,
+) -> None:
+    """A collect packet cannot masquerade as later close or retirement evidence."""
+    value = prepared.value
+    prepared.pins["records"]["cleanup_errors"] = []
+    smoke.write(
+        value.output / "death-pinned.json",
+        {"schema": 1, "session": value.session, "pinned": prepared.pins},
+    )
+    with pytest.raises(ValueError, match="fields differ"):
+        value.before_observe(
+            prepared.profile, prepared.temporary, prepared.identity, 115.0
+        )

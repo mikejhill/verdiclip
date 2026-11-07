@@ -12,6 +12,7 @@ from unittest.mock import Mock
 
 import pytest
 from scripts import observe_death_witness as witness
+from tests.tooling.test_observe_death_wire_lifecycle import WireKernel, real_collect
 
 Json = dict[str, Any]
 NOW = 100_000_000_000
@@ -456,9 +457,10 @@ def test_full_surviving_lifecycle(  # noqa: C901, PLR0912, PLR0915 - full fixed 
     smoke.fixture_key.return_value = begin["expected"]
     guard = smoke.ReferenceGuard.return_value
     guard.initial = begin["reference_initial"]
-    executor = executor_record()
-    peer = {**executor, "process_id": 22, "creation_100ns": 124}
-    records = [executor, peer]
+    collected = real_collect(WireKernel(), [21, 22], monkeypatch)
+    records = collected["processes"]
+    executor, peer = records
+    assert set(collected) == {"processes", "enumeration"}
     baseline = {
         "console": "conhost",
         "roles": {"executor": 21},
@@ -472,7 +474,7 @@ def test_full_surviving_lifecycle(  # noqa: C901, PLR0912, PLR0915 - full fixed 
     topology.expected_console_image.return_value = "conhost"
     topology.PinnedProcesses.return_value = pins
     smoke.topology_module.return_value = topology
-    pins.collect.return_value = {"processes": records}
+    pins.collect.return_value = collected
     pins.observe.return_value = {"processes": records, "cleanup_errors": []}
     pins.pins = [SimpleNamespace(handle=501), SimpleNamespace(handle=502)]
     pins.kernel = api
