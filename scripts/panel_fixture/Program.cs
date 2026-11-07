@@ -46,6 +46,11 @@ internal sealed class Fixture : Window
     private int sequence;
     private string previous = "";
     private bool initialized;
+    private readonly Grid? observeRoot;
+    private readonly long processCreated100ns;
+    private readonly List<Marker> markers = new();
+    private bool ObserveOnly => mode == "observe-only";
+    private sealed record Marker(string Id, Border Element, int[] Rgb);
 
     internal Fixture(string output, string mode)
     {
@@ -80,13 +85,22 @@ internal sealed class Fixture : Window
         else { grid.Children.Add(target); }
         Grid.SetColumn(sibling, 1);
         grid.Children.Add(sibling);
-        Content = grid;
-        timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(50) };
+        if (ObserveOnly)
+        {
+            using var process = Process.GetCurrentProcess();
+            processCreated100ns = process.StartTime.ToUniversalTime().ToFileTimeUtc();
+            target.HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
+            observeRoot = ObserveLayout(grid);
+            Content = observeRoot;
+        }
+        else { Content = grid; }
+        timer = new DispatcherTimer
+            { Interval = TimeSpan.FromMilliseconds(ObserveOnly ? 100 : 50) };
         timer.Tick += (_, _) => Sample();
         ContentRendered += (_, _) =>
         {
             target.ScrollToVerticalOffset(119);
-            target.ScrollToHorizontalOffset(47);
+            target.ScrollToHorizontalOffset(ObserveOnly ? 0 : 47);
             sibling.ScrollToVerticalOffset(93);
             sibling.ScrollToHorizontalOffset(27);
             Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, () =>
@@ -129,6 +143,7 @@ internal sealed class Fixture : Window
 
     private void Sample()
     {
+        if (ObserveOnly) { SampleObservation(); return; }
         if (elapsed.Elapsed > TimeSpan.FromSeconds(70)) { Close(); return; }
         if (!initialized) return;
         var presenter = target.Template.FindName("PART_ScrollContentPresenter", target)
@@ -155,6 +170,74 @@ internal sealed class Fixture : Window
             state, milliseconds = elapsed.ElapsedMilliseconds, sequence
         };
         // Immutable, closed-before-published snapshots avoid Windows sharing races.
+        string final = Path.Combine(output, $"{sequence++:D4}.json");
+        string temporary = final + ".tmp";
+        File.WriteAllText(temporary, JsonSerializer.Serialize(record));
+        File.Move(temporary, final);
+    }
+
+    private Grid ObserveLayout(Grid panels)
+    {
+        var root = new Grid();
+        root.Children.Add(panels);
+        var layer = new Canvas { IsHitTestVisible = false };
+        // Authored positions are outside both panels. The harness samples only
+        // these reported rectangles; it must never search desktop pixels.
+        AddMarker(layer, "top-left", 8, 8, Color.FromRgb(11, 241, 227));
+        AddMarker(layer, "top-right", 812, 8, Color.FromRgb(247, 181, 13));
+        AddMarker(layer, "bottom-left", 8, 544, Color.FromRgb(149, 17, 239));
+        AddMarker(layer, "bottom-right", 812, 544, Color.FromRgb(19, 239, 73));
+        root.Children.Add(layer);
+        return root;
+    }
+
+    private void AddMarker(Canvas layer, string id, double left, double top, Color color)
+    {
+        var element = new Border
+        {
+            Width = 4, Height = 4, Background = new SolidColorBrush(color),
+            SnapsToDevicePixels = true
+        };
+        Canvas.SetLeft(element, left);
+        Canvas.SetTop(element, top);
+        layer.Children.Add(element);
+        markers.Add(new Marker(id, element, new[] { (int)color.R, color.G, color.B }));
+    }
+
+    private void SampleObservation()
+    {
+        if (elapsed.Elapsed > TimeSpan.FromSeconds(70)) { Close(); return; }
+        // The only control is an owned, fixed stop file, never a command payload.
+        if (File.Exists(Path.Combine(output, "stop"))) { Close(); return; }
+        if (!initialized) return;
+        if (sequence >= 256) throw new InvalidOperationException("Snapshot bound exceeded");
+        var presenter = target.Template.FindName("PART_ScrollContentPresenter", target)
+            as ScrollContentPresenter ?? throw new InvalidOperationException("No presenter");
+        var contentRect = Bounds(presenter);
+        var dpi = VisualTreeHelper.GetDpi(this);
+        var record = new
+        {
+            schema = 1, kind = "owned-wpf", mode, pid = Environment.ProcessId,
+            alive = true,
+            process_created_100ns = processCreated100ns,
+            root_hwnd = new WindowInteropHelper(this).Handle.ToInt64(),
+            // This is the authored layout/client rectangle, NOT an outer HWND
+            // rectangle. The harness obtains and pins the latter independently.
+            authored_layout_rect = Bounds(observeRoot
+                ?? throw new InvalidOperationException("No observation layout")),
+            rect = Bounds(target), content_rect = contentRect,
+            click = new[] { (contentRect[0] + contentRect[2]) / 2,
+                (contentRect[1] + contentRect[3]) / 2 },
+            owned_process_ids = new[] { Environment.ProcessId },
+            dpi_x = dpi.PixelsPerInchX, dpi_y = dpi.PixelsPerInchY,
+            row_height_dip = Rows.RowHeight, row_count = Rows.Count,
+            markers = markers.Select(marker => new
+                { id = marker.Id, rect = Bounds(marker.Element), rgb = marker.Rgb }).ToArray(),
+            state = new { target = State(target), sibling = State(sibling), outer = (object?)null },
+            milliseconds = elapsed.ElapsedMilliseconds, sequence
+        };
+        // Publish every sample, including unchanged state, so freshness can be
+        // checked independently. No telemetry file is reopened or overwritten.
         string final = Path.Combine(output, $"{sequence++:D4}.json");
         string temporary = final + ".tmp";
         File.WriteAllText(temporary, JsonSerializer.Serialize(record));

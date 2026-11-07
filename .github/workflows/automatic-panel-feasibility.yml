@@ -539,3 +539,90 @@ jobs:
             receipts/paint-table125/authored.html
           if-no-files-found: error
           retention-days: 14
+
+  installed-observe:
+    if: >-
+      github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
+      github.head_ref == 'feature/automatic-panel-capture' &&
+      github.event.pull_request.draft == true
+    name: Installed wheel owned WPF observation
+    runs-on: windows-2025
+    timeout-minutes: 7
+    env:
+      PYTHONUTF8: "1"
+      QUALIFICATION_HEAD: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: "false"
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          enable-cache: false
+          python-version: "3.13"
+      - name: Locked dependencies and owned observe-only fixture
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          if ((git rev-parse HEAD).Trim() -ne $env:QUALIFICATION_HEAD) { throw 'Wrong candidate head' }
+          uv sync --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet build scripts/panel_fixture/PanelFixture.csproj --configuration Release --output .tmp/observe-fixture
+          exit $LASTEXITCODE
+      - name: Fresh-wheel single observation, no retries
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          uv build --wheel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $wheels = @(Get-ChildItem dist -Filter *.whl)
+          if ($wheels.Count -ne 1) { throw 'Expected exactly one candidate wheel' }
+          $wheel = $wheels[0].FullName
+          $proof = Join-Path $env:RUNNER_TEMP ('observe-proof-' + [guid]::NewGuid())
+          New-Item -ItemType Directory -Path $proof | Out-Null
+          uv venv "$proof\venv"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $python = Join-Path $proof 'venv\Scripts\python.exe'
+          uv pip install --python $python --no-deps $wheel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          uv export --locked --no-dev --no-emit-project --format requirements-txt --output-file "$proof\requirements.txt"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          uv pip install --python $python --require-hashes -r "$proof\requirements.txt"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item scripts/installed_runtime_smoke.py "$proof\installed_runtime_smoke.py"
+          Copy-Item scripts/installed_channel_smoke.py "$proof\installed_channel_smoke.py"
+          Copy-Item scripts/installed_observe_smoke.py "$proof\installed_observe_smoke.py"
+          Copy-Item .tmp/observe-fixture "$proof\fixture" -Recurse
+          $outside = New-Item -ItemType Directory -Path "$proof\outside checkout"
+          $target = Join-Path $env:GITHUB_WORKSPACE 'receipts/installed-observe'
+          New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
+          $proofExit = 1
+          Push-Location $outside.FullName
+          try {
+            & $python "$proof\installed_observe_smoke.py" --wheel $wheel --fixture "$proof\fixture\PanelFixture.exe" --output "$proof\receipts"
+            $proofExit = $LASTEXITCODE
+          } finally {
+            Pop-Location
+            if (Test-Path "$proof\receipts") { Copy-Item "$proof\receipts" $target -Recurse }
+          }
+          exit $proofExit
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: ${{ !cancelled() }}
+        with:
+          name: installed-wheel-owned-observe
+          path: |
+            scripts/installed_observe_smoke.py
+            scripts/installed_channel_smoke.py
+            scripts/installed_runtime_smoke.py
+            scripts/panel_fixture/Program.cs
+            receipts/installed-observe/receipt.json
+            receipts/installed-observe/executor/*.json
+            receipts/installed-observe/executor/*.jsonl
+            receipts/installed-observe/executor/*.png
+            receipts/installed-observe/states/*.json
+          if-no-files-found: error
+          retention-days: 14
