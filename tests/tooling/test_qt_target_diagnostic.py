@@ -346,3 +346,28 @@ def test_journal_limits_fail_before_append(
         ledger.start(nodes[0], 0)
     assert (tmp_path / "phases.jsonl").read_bytes() == b""
     assert ledger.failure == "phase journal bound exceeded"
+
+
+def test_child_clock_retained_before_fixture_monkeypatch(
+    nodes: list[str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Changing shared time for product tests cannot corrupt journal timestamps."""
+    original = target.CHILD_MONOTONIC
+    before = original()
+    monkeypatch.setattr(target.time, "monotonic", lambda: -1.0)
+    assert target.time.monotonic() == -1.0
+    assert target.CHILD_MONOTONIC is original
+    ledger = target.TargetLedger(nodes, "epoch", tmp_path)
+    ledger.start(nodes[0], target.CHILD_MONOTONIC())
+    for phase in ("setup", "call", "teardown"):
+        ledger.report(nodes[0], phase, "passed", target.CHILD_MONOTONIC())
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "phases.jsonl").read_text().splitlines()
+    ]
+    times = [row["monotonic"] for row in records]
+    assert before <= times[0] <= times[-1]
+    assert times == sorted(times)
+    assert len(ledger.completed) == 1

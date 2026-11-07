@@ -18,6 +18,9 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+# Retain the real clock before pytest fixtures can mutate the shared time module.
+CHILD_MONOTONIC = time.monotonic
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
@@ -425,15 +428,15 @@ def child(source: Path, output: Path, epoch: str) -> int:
 
         def pytest_runtest_logstart(self, nodeid: str, location: object) -> None:
             del location
-            ledger.start(nodeid, time.monotonic())
+            ledger.start(nodeid, CHILD_MONOTONIC())
             write_json(
                 output / "progress.json",
-                {"nodeid": nodeid, "monotonic": time.monotonic()},
+                {"nodeid": nodeid, "monotonic": CHILD_MONOTONIC()},
             )
 
         def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
             ledger.report(
-                report.nodeid, str(report.when), report.outcome, time.monotonic()
+                report.nodeid, str(report.when), report.outcome, CHILD_MONOTONIC()
             )
 
     os.chdir(source)
