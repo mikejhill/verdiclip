@@ -3,14 +3,16 @@
 import ctypes
 import importlib.abc
 import importlib.machinery
+import json
 import zipfile
-from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 from typing import cast, override
 
 import pytest
 from scripts import installed_channel_smoke as smoke
+from scripts import installed_runtime_smoke as runtime_smoke
+from scripts import observe_death_control as death_control
 
 
 def terminal(*, passed: bool = True) -> dict[str, object]:
@@ -388,11 +390,6 @@ def test_parent_death_preserves_inspection_failure(
 @pytest.fixture
 def channel_wheel(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Isolate the channel's independent loaded-file checks from the base verifier."""
-
-    @dataclass
-    class Runtime:
-        origins: tuple[tuple[str, str], ...]
-
     root = tmp_path / "installed packages å"
     package = root / "verdiclip"
     package.mkdir(parents=True)
@@ -425,8 +422,18 @@ def channel_wheel(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         @override
         def exec_module(self, module: ModuleType) -> None:
             """Supply only the already independently tested base inspection result."""
-            module.inspect_runtime = lambda _wheel: Runtime(  # ty: ignore[unresolved-attribute]
-                (("verdiclip", str(package / "__init__.py")),)
+            module.inspect_runtime = lambda _wheel: runtime_smoke.InstalledRuntime(  # ty: ignore[unresolved-attribute]
+                executable=str(root / "python.exe"),
+                roots=(str(root),),
+                origins=(
+                    ("verdiclip", str(package / "__init__.py")),
+                    ("mss", str(root / "mss/__init__.py")),
+                    ("owned_helper", str(package / "platform/owned_helper.py")),
+                ),
+                versions=(("verdiclip", "1.2.3"), ("mss", "10.2.0")),
+                python_version=(3, 13, 1),
+                pointer_bits=64,
+                wheel_sha256="a" * 64,
             )
 
     monkeypatch.setattr(
@@ -486,3 +493,94 @@ def test_channel_verifier_rejects_each_module_mismatch(
             archive.writestr(name, payload)
     with pytest.raises((KeyError, ValueError)):
         smoke.verify_wheel(channel_wheel)
+
+
+def test_real_channel_verifier_provenance_survives_ready_json(
+    channel_wheel: Path, tmp_path: Path
+) -> None:
+    """Actual InstalledRuntime/asdict tuples cross the real ready-packet boundary."""
+    provenance = smoke.verify_wheel(channel_wheel)
+    expected = death_control.canonical_provenance(provenance)
+    assert isinstance(provenance["origins"], tuple)
+    assert isinstance(provenance["versions"], tuple)
+    assert isinstance(provenance["python_version"], tuple)
+    path = tmp_path / "death-ready.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "session": "a" * 32,
+                "ready": {
+                    "pid": 123,
+                    "ready": 100.0,
+                    "provenance": provenance,
+                    "sources": {},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    received = death_control.read_packet(path, "a" * 32, "ready")["provenance"]
+    assert isinstance(received["origins"], list)
+    assert isinstance(received["origins"][0], list)
+    assert isinstance(received["versions"], list)
+    assert isinstance(received["python_version"], list)
+    death_control._same(received, expected)
+    with pytest.raises(ValueError, match="type differs"):
+        death_control._same(received, provenance)
+    assert isinstance(provenance["origins"], tuple)
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "boolean-integer",
+        "float-integer",
+        "version-value",
+        "version-type",
+        "origin",
+        "extra-key",
+        "missing-key",
+    ],
+)
+def test_wire_provenance_remains_strict_after_expected_canonicalization(
+    channel_wheel: Path, tmp_path: Path, fault: str
+) -> None:
+    """Canonical local expectations do not coerce or repair received evidence."""
+    provenance = smoke.verify_wheel(channel_wheel)
+    expected = death_control.canonical_provenance(provenance)
+    wire = json.loads(json.dumps(provenance))
+    if fault == "boolean-integer":
+        # True compares equal to 1 in Python but must not attest Python micro 1.
+        wire["python_version"][2] = True
+    elif fault == "float-integer":
+        wire["pointer_bits"] = 64.0
+    elif fault == "version-value":
+        wire["versions"][0][1] = "9.9.9"
+    elif fault == "version-type":
+        wire["versions"][0][1] = 123
+    elif fault == "origin":
+        wire["origins"][0][1] = str(tmp_path / "different-package.py")
+    elif fault == "extra-key":
+        wire["extra"] = True
+    else:
+        del wire["wheel_sha256"]
+    path = tmp_path / "death-ready.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "session": "a" * 32,
+                "ready": {
+                    "pid": 123,
+                    "ready": 100.0,
+                    "provenance": wire,
+                    "sources": {},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    received = death_control.read_packet(path, "a" * 32, "ready")["provenance"]
+    with pytest.raises(ValueError, match="Death evidence"):
+        death_control._same(received, expected)

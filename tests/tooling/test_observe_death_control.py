@@ -61,7 +61,11 @@ def prepared(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace
         wheel=output / "fixed.whl",
         session="a" * 32,
         started=100.0,
-        provenance={"executable": str(tmp_path / "base-python")},
+        provenance={
+            "executable": str(tmp_path / "base-python"),
+            "roots": (str(tmp_path),),
+            "python_version": (3, 13, 5),
+        },
     )
     (value.output / "death-calls.jsonl").write_text(
         json.dumps({"event": "process", "name": "executor", "monotonic": 100.0}) + "\n"
@@ -658,3 +662,28 @@ def test_bootstrap_and_launch_bracket_original_preparation_deadline(
     assert owners["death-witness"] is owner
     assert owner.start.call_count == (0 if phase == "inspection" else 1)
     owner.close.assert_not_called()
+
+
+def test_local_provenance_is_an_independent_wire_snapshot() -> None:
+    """Local tuple normalization neither mutates inputs nor weakens equality."""
+    original = {"roots": ("installed",), "python_version": (3, 13, 5)}
+    actual = control.canonical_provenance(original)
+    assert actual == {"roots": ["installed"], "python_version": [3, 13, 5]}
+    assert original["roots"] == ("installed",)
+    actual["roots"].append("other")
+    assert original["roots"] == ("installed",)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
+def test_nonfinite_local_provenance_is_rejected(value: float) -> None:
+    """The local snapshot never creates nonstandard JSON numeric evidence."""
+    with pytest.raises(ValueError, match="Out of range float"):
+        control.canonical_provenance({"invalid": value})
+
+
+def test_local_provenance_bound_and_object_shape() -> None:
+    """Even trusted expected metadata remains bounded and object-shaped."""
+    with pytest.raises(ValueError, match="bound"):
+        control.canonical_provenance({"large": "x" * control.MAX_JSON})
+    with pytest.raises(ValueError, match="object"):
+        control.canonical_provenance([])  # ty: ignore[invalid-argument-type]

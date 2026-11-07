@@ -70,6 +70,22 @@ def read_packet(path: Path, session: str, field: str) -> Json:
     return cast("Json", value[field])
 
 
+def canonical_provenance(value: Json) -> Json:
+    """Snapshot trusted verifier output using its explicit JSON wire shape.
+
+    InstalledRuntime/asdict retains tuples, while the witness packet decodes
+    them as lists. Normalize only this local expectation, never received data
+    or the strict evidence comparator.
+    """
+    raw = json.dumps(value, allow_nan=False).encode("utf-8")
+    if len(raw) > MAX_JSON:
+        raise ValueError("Death provenance exceeds bound")
+    decoded = json.loads(raw, object_pairs_hook=_unique)
+    if type(decoded) is not dict:
+        raise ValueError("Death provenance is not an object")
+    return cast("Json", decoded)
+
+
 def _time(value: object) -> float:
     if (
         not isinstance(value, (float, int))
@@ -163,7 +179,7 @@ class DeathControl:
         self.absolute_deadline = started + 25.0
         self.deadline = self.preparation_deadline
         self.retirement_deadline: float | None = None
-        self.provenance = deepcopy(provenance)
+        self.provenance = canonical_provenance(provenance)
         self.sources = {
             name: hashlib.sha256(
                 Path(__file__).with_name(name).read_bytes()
