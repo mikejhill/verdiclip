@@ -15,6 +15,8 @@ def driver(monkeypatch: pytest.MonkeyPatch) -> tuple[Driver, Mock]:
     """Inject only packet and guard boundaries."""
     value = object.__new__(Driver)
     value.sent = 0
+    value.post_consumed = False
+    value._post_packet = False
     api = Mock()
     value.api = api
     api.SendInput.return_value = 1
@@ -147,3 +149,32 @@ def test_cross_reference_uses_qt_shared_resource_loading(
             value.cross_cursor()
     api.LoadImageW.assert_called_once_with(None, 32515, 2, 0, 0, 0x8040)
     api.DestroyCursor.assert_not_called()
+
+
+def test_reserved_post_move_cannot_extend_ordinary_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sixteen ordinary commands plus exactly one reserved MOVE, never eighteen."""
+    value, api = driver(monkeypatch)
+    value.sent = 16
+    value.move_post_retirement(Point(100, 100))
+    assert value.sent == 17
+    assert api.SendInput.call_args.args[0] == 1
+    assert api.SendInput.call_args.args[1]._obj.payload.mouse.dwFlags == 0xC001
+    with pytest.raises(RuntimeError, match="post-input-budget"):
+        value.move_post_retirement(Point(101, 100))
+    with pytest.raises(RuntimeError, match="input-budget"):
+        value.move(Point(101, 100))
+    api.SendInput.assert_called_once()
+
+
+def test_failed_reserved_move_cannot_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A denied/partial reserved insertion consumes its sole attempt."""
+    value, api = driver(monkeypatch)
+    api.SendInput.return_value = 0
+    with pytest.raises(RuntimeError, match="insertion"):
+        value.move_post_retirement(Point(100, 100))
+    with pytest.raises(RuntimeError, match="post-input-budget"):
+        value.move_post_retirement(Point(100, 100))
+    assert not value._post_packet
+    api.SendInput.assert_called_once()

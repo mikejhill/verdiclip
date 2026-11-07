@@ -10,7 +10,7 @@ jobs:
   foreground:
     if: >-
       github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
-      github.head_ref == 'feature/native-pointer' &&
+      (github.head_ref == 'feature/native-pointer' || github.head_ref == 'diagnostic/released-pointer-baseline') &&
       github.event.pull_request.draft == true
     name: Ordinary pointer / Qt ${{ matrix.qt }}
     runs-on: windows-2025
@@ -48,7 +48,7 @@ jobs:
         timeout-minutes: 2
         shell: pwsh
         run: |
-          uv run --no-sync pytest tests/capture/test_native_pointer_route.py tests/capture/test_native_pointer_service.py tests/capture/test_native_pointer_session.py tests/capture/test_native_pointer_worker.py tests/capture/test_native_pointer_cursor.py tests/capture/test_native_pointer_driver.py tests/capture/test_native_pointer_crash.py --no-cov -p no:randomly -q
+          uv run --no-sync pytest tests/capture/test_native_pointer_route.py tests/capture/test_native_pointer_service.py tests/capture/test_native_pointer_session.py tests/capture/test_native_pointer_worker.py tests/capture/test_native_pointer_cursor.py tests/capture/test_native_pointer_driver.py tests/capture/test_native_pointer_setup.py tests/capture/test_native_pointer_followup.py tests/capture/test_native_pointer_crash.py --no-cov -p no:randomly -q
           exit $LASTEXITCODE
       - name: Stationary admission and first terminal appearance
         timeout-minutes: 2

@@ -22,6 +22,8 @@ from tests.capture.native_pointer_cursor import (
     copy_appearance,
 )
 from tests.capture.native_pointer_driver import Driver, State
+from tests.capture.native_pointer_followup import followup, handoff_acceptable
+from tests.capture.native_pointer_setup import prepare
 from tests.capture.scroll_peer import ScrollPeer
 
 from verdiclip.capture.grabber import MssScreenSource
@@ -95,6 +97,9 @@ def terminal(  # noqa: PLR0913, PLR0917 - explicit independent terminal boundary
     expected: Point,
     qtbot: QtBot,
     owned_handles: tuple[int, ...],
+    peer: ScrollPeer,
+    *,
+    final: bool,
 ) -> None:
     """First snapshot after actual retirement cannot be replaced by later recovery."""
     qtbot.waitUntil(
@@ -115,12 +120,18 @@ def terminal(  # noqa: PLR0913, PLR0917 - explicit independent terminal boundary
         "physical_input_verified": False,
         "rendered_pointer_verified": False,
     }
-    print("NATIVE_POINTER_TERMINAL=" + json.dumps(checks, sort_keys=True))  # noqa: T201 - fixed private comparison only
-    assert all(
-        value
-        for key, value in checks.items()
-        if key not in {"physical_input_verified", "rendered_pointer_verified"}
+    cross_reference = driver.cross_cursor()
+    checks["terminal_matches_cross_resource"] = (
+        bool(cross_reference) and after.cursor == cross_reference
     )
+    checks["cleanup_confirmed"] = True
+    first_ok = handoff_acceptable(checks)
+    checks["first_handoff_acceptable"] = first_ok
+    print("NATIVE_POINTER_TERMINAL=" + json.dumps(checks, sort_keys=True))  # noqa: T201 - fixed private comparison only
+    assert first_ok, "First stationary handoff unavailable"
+    if final:
+        second_ok = followup(driver, peer, qtbot.wait, checks, expected_cursor())
+        assert second_ok, "Subsequent interaction unavailable or mismatched"
 
 
 @pytest.mark.native_desktop
@@ -137,10 +148,7 @@ def test_owned_native_pointer_stationary_retirement_and_input(  # noqa: PLR0915 
     assert desktop.flags == 1
     assert owned_source.process is not None
     driver = Driver(owned_source.handle, owned_source.process.pid)
-    center = driver.client().center
-    initial = Point(round(center.x), round(center.y))
-    driver.move(initial)
-    qtbot.wait(20)  # One finite pre-scope delivery interval, never restoration polling.
+    initial = prepare(driver, owned_source, qtbot.wait)
     before = driver.read()
     assert before.flags == 1
     baseline_position_matches = before.point == initial
@@ -250,7 +258,16 @@ def test_owned_native_pointer_stationary_retirement_and_input(  # noqa: PLR0915 
             else:
                 driver.key(0x1B, down=True)
                 driver.key(0x1B, down=False)
-            terminal(service, driver, before, point, qtbot, owned_handles)
+            terminal(
+                service,
+                driver,
+                before,
+                point,
+                qtbot,
+                owned_handles,
+                owned_source,
+                final=index == 3,
+            )
             driver.allowed = {driver.fixture: driver.fixture_pid}
             assert all(item.stopped.is_set() and item.cleaned for item in workers)
         assert len(captures) == 1
@@ -308,9 +325,14 @@ def test_native_pointer_preserves_protected_menu(
     """Protected menu falls back before admission, or revokes an owned session."""
     assert owned_source.process is not None
     driver = Driver(owned_source.handle, owned_source.process.pid)
-    center = driver.client().center
-    driver.move(Point(round(center.x), round(center.y)))
-    qtbot.wait(20)
+    initial = prepare(driver, owned_source, qtbot.wait)
+    before = driver.read()
+    baseline_ready = (
+        before.flags == 1
+        and before.point == initial
+        and copy_appearance(before.cursor, NativeReader()) == expected_cursor()
+    )
+    assert baseline_ready, "Menu fixture baseline unavailable"
     source = MssScreenSource()
     service = CaptureService(source, FixedWindows(), show_magnifier=False)
     service.enable_native_pointer()
@@ -373,12 +395,11 @@ def test_native_pointer_abrupt_owned_process_exit(
     """Exact child exit, not normal cleanup, precedes the first restoration sample."""
     assert owned_source.process is not None
     driver = Driver(owned_source.handle, owned_source.process.pid)
-    center = driver.client().center
-    driver.move(Point(round(center.x), round(center.y)))
-    qtbot.wait(20)
+    initial = prepare(driver, owned_source, qtbot.wait)
     before = driver.read()
     baseline = (
         before.flags == 1
+        and before.point == initial
         and copy_appearance(before.cursor, NativeReader()) == expected_cursor()
     )
     assert baseline, "Crash baseline unavailable"
@@ -398,7 +419,18 @@ def test_native_pointer_abrupt_owned_process_exit(
             == expected_cursor(),
             "causal_exit_confirmed": True,
         }
+        cross_reference = driver.cross_cursor()
+        checks["terminal_matches_cross_resource"] = (
+            bool(cross_reference) and after.cursor == cross_reference
+        )
+        checks["cleanup_confirmed"] = True
+        first_ok = handoff_acceptable(checks)
+        checks["first_handoff_acceptable"] = first_ok
         print("NATIVE_POINTER_CRASH=" + json.dumps(checks, sort_keys=True))  # noqa: T201 - fixed comparisons
-        assert all(checks.values()), checks
+        assert first_ok, "First crash handoff unavailable"
+        second_ok = followup(
+            driver, owned_source, qtbot.wait, checks, expected_cursor()
+        )
+        assert second_ok, "Subsequent interaction unavailable or mismatched"
     finally:
         child.close()
