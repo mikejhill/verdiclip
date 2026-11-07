@@ -54,6 +54,12 @@ Consequences:
 - Focus in the style bar is returned to the canvas by the first `Esc`, before
   any level is left.
 
+## Editor tabs
+
+| ID | Given / When | Then |
+| --- | --- | --- |
+| UX-TAB-04 | A user navigates without a mouse | `Ctrl+PgUp` / `Ctrl+PgDown` select the previous / next tab, wrapping at the ends, alongside `Ctrl+Shift+Tab` / `Ctrl+Tab`. `Ctrl+Shift+PgUp` / `Ctrl+Shift+PgDown` move the active tab left / right without wrapping. These commands work from the canvas, tab strip and inline editors, keeping edits with their document; switching commits pending text to its original tab. A single tab stays in place. The Window menu and shortcut tooltips expose the commands. |
+
 ## Capture
 
 | ID | Given / When | Then |

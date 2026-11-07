@@ -82,6 +82,8 @@ If Windows or another screenshot tool already owns `PrtSc`, VerdiClip tells you 
 | Copy / Paste marks | `Ctrl+C` / `Ctrl+V` |
 | Delete selection | `Delete` |
 | Print | `Ctrl+P` |
+| Previous / next tab | `Ctrl+PgUp` / `Ctrl+PgDown` (also `Ctrl+Shift+Tab` / `Ctrl+Tab`) |
+| Move tab left / right | `Ctrl+Shift+PgUp` / `Ctrl+Shift+PgDown` |
 | Zoom | `Ctrl+wheel` |
 | Actual size / Fit | `Ctrl+0` / `Ctrl+Shift+F` |
 | Pan | `Space`+drag |
