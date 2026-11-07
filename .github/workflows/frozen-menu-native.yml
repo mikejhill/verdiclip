@@ -18,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        qt: ["6.11.2", "6.12.0"]
+        qt: ["6.11.3", "6.12.0"]
         source: [candidate, released-0121, released-0131]
     env:
       PYTHONUTF8: "1"

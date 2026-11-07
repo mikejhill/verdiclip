@@ -1,0 +1,162 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Owned static panel matrix</title>
+<script type="application/json" id="configuration">MATRIX_CONFIGURATION</script>
+<style>
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #405367; }
+body { font: 15px/21px 'Segoe UI', sans-serif; color: #18212a; }
+#outer { position: absolute; left: 30px; top: 30px; width: calc(var(--panel-width) + 100px); height: 420px; overflow: scroll; border: 2px solid #c52991; }
+#outer-content { width: 1100px; padding: 24px; min-height: 700px; }
+#target { width: var(--panel-width); height: 310px; border: 2px solid #169bb4; overflow: scroll; background: #fff; position: relative; }
+#body { position: relative; width: 100%; }
+#target.table #body { width: 1080px; }
+#sibling { position: absolute; left: calc(var(--panel-width) + 150px); top: 30px; width: 110px; height: 420px; overflow: scroll; background: #eee; border: 2px solid #a55b14; }
+#sibling div { width: 280px; height: 900px; }
+.message { border-top: 1px solid #ccd4dd; padding: 9px 8px 11px; background: #fff; }
+.message:nth-child(even) { background: #edf3f8; }
+.heading { display: flex; justify-content: space-between; font-size: 12px; color: #41546b; }
+.text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.sentinel { display: flex; justify-content: space-between; font: 11px/15px monospace; }
+pre { margin: 4px 0; font: 12px/17px Consolas, monospace; white-space: pre-wrap; }
+table { border-collapse: collapse; table-layout: fixed; width: 1080px; font-size: 13px; }
+th,td { width: 180px; height: 31px; border: 1px solid #a1acb9; padding: 3px 7px; white-space: nowrap; }
+th { background: #dce9f6; }
+tr:nth-child(even) { background: #eef4fa; }
+#sticky { position: sticky; top: 105px; z-index: 2; margin-top: 80px; background: #e9ca42; color: #151515; height: 27px; }
+.dark { color: #e6eaf0; background: #171d25; color-scheme: dark; }
+.dark #target,.dark .message { background: #171d25; }
+.dark .message:nth-child(even),.dark tr:nth-child(even) { background: #263344; }
+.dark .heading { color: #b9c9dd; }
+.dark th { background: #31465c; }
+.calibration { position:fixed; top:4px; width:8px; height:8px; display:flex; pointer-events:none; z-index:100; }
+.calibration span { width:4px; height:8px; }
+</style>
+<div id="outer"><div id="outer-content"><div id="target" role="region" aria-label="Owned matrix target"><div id="body"></div></div></div></div>
+<div id="sibling"><div>Owned sibling control</div></div>
+<div class="calibration" style="left:4px"><span style="background:rgb(241,31,117)"></span><span style="background:rgb(23,213,83)"></span></div>
+<div class="calibration" style="left:20px"><span style="background:rgb(37,89,239)"></span><span style="background:rgb(249,197,17)"></span></div>
+<script>
+// Authored local page code, not injected by capture or by a browser extension.
+const config = JSON.parse(document.querySelector('#configuration').textContent);
+document.documentElement.style.setProperty('--panel-width', `${config.width}px`);
+document.body.classList.toggle('dark', config.theme === 'dark');
+const target = document.querySelector('#target');
+const content = document.querySelector('#body');
+const outer = document.querySelector('#outer');
+const sibling = document.querySelector('#sibling');
+target.classList.add(config.scenario);
+const passages = [
+  'Can we check the launch notes? The owner, date, and rollback steps should stay together.',
+  'Yes. Short answer first.',
+  'Trace 07: cache hit\n  retry_count = 0\n  result = {"ready": true, "items": [3, 8, 21]}',
+  'The long line wraps naturally at the selected width. Punctuation matters: [] {} () < > & / \\ and 0123456789.',
+];
+const ids = [];
+if (config.scenario === 'conversation') {
+  for (let i = 0; i < 16; i++) {
+    const id = `message-${String(i).padStart(2, '0')}`;
+    ids.push(id);
+    const article = document.createElement('article'); article.className = 'message'; article.dataset.id = id;
+    const heading = document.createElement('div'); heading.className = 'heading';
+    heading.textContent = `${i % 2 ? 'Morgan' : 'Taylor'} · 09:${String(i + 10)} · ${id}`;
+    const text = document.createElement(i % 4 === 2 ? 'pre' : 'div'); text.className = 'text'; text.textContent = passages[i % passages.length];
+    const sentinel = document.createElement('div'); sentinel.className = 'sentinel';
+    for (const label of [`L${i}[]`, `{}R${i}`]) { const span = document.createElement('span'); span.textContent = label; sentinel.append(span); }
+    article.append(heading, text, sentinel); content.append(article);
+  }
+} else {
+  const table = document.createElement('table');
+  for (let i = 0; i < 34; i++) {
+    const row = document.createElement('tr'); row.dataset.id = `table-${i}`; ids.push(row.dataset.id);
+    for (let j = 0; j < 6; j++) {
+      const cell = document.createElement(i === 0 ? 'th' : 'td');
+      cell.textContent = i === 0 ? `Column ${j} / header` : `${i}:${j} · ${(i * 197 + j * 31) / 100} · item`;
+      row.append(cell);
+    }
+    table.append(row);
+  }
+  content.append(table);
+}
+if (config.variant === 'sticky') {
+  const sticky = document.createElement('div'); sticky.id = 'sticky'; sticky.textContent = 'Stationary interior warning'; content.prepend(sticky);
+}
+const browserVersion = {status: "pending", fullVersionList: null};
+if (!navigator.userAgentData?.getHighEntropyValues) browserVersion.status = "unavailable";
+else navigator.userAgentData.getHighEntropyValues(["fullVersionList"]).then(value => {
+  if (browserVersion.status !== "pending") return;
+  browserVersion.fullVersionList = value.fullVersionList; browserVersion.status = "succeeded";
+}, error => { if (browserVersion.status !== "pending") return; browserVersion.status = "rejected"; browserVersion.reason = String(error).slice(0,256); });
+let initialized = false, sequence = 0, streamTick = 0, endpointLimit = null;
+const observedBoxes = new Map();
+const boxObserver = new ResizeObserver(entries => {
+  for (const entry of entries) {
+    const r = entry.contentRect;
+    observedBoxes.set(entry.target, {x:r.x, y:r.y, width:r.width, height:r.height});
+  }
+});
+for (const element of [target, outer, sibling]) boxObserver.observe(element);
+const isReference = config.reference_offset !== null || config.reference_endpoint;
+function state(element) {
+  const r = element.getBoundingClientRect();
+  const style = getComputedStyle(element);
+  const box = observedBoxes.get(element);
+  if (!box) throw new Error('Authored content-box observer is not initialized');
+  return {vertical: element.scrollTop, horizontal: element.scrollLeft,
+    viewport_height: element.clientHeight, viewport_width: element.clientWidth,
+    extent_height: element.scrollHeight, extent_width: element.scrollWidth,
+    rect: [r.left, r.top, r.right, r.bottom], border: [element.clientLeft, element.clientTop],
+    fractional_border: [parseFloat(style.borderLeftWidth), parseFloat(style.borderTopWidth),
+      parseFloat(style.borderRightWidth), parseFloat(style.borderBottomWidth)], content_box: box};
+}
+function report() {
+  if (!initialized || sequence >= 256) return;
+  const receipt = {sequence: sequence++, dpr: devicePixelRatio, user_agent: navigator.userAgent,
+    mode: isReference ? `${config.reference_mode}-reference` : 'scroll', config,
+    browser_version: browserVersion,
+    viewport: {document_client:[document.documentElement.clientWidth,document.documentElement.clientHeight], computed:[document.documentElement,document.body,target].map(element => {const style=getComputedStyle(element); return {zoom:style.zoom,transform:style.transform};}), inner:[innerWidth,innerHeight], scroll:[scrollX,scrollY], visual_offset:[visualViewport.offsetLeft,visualViewport.offsetTop], visual_scale:visualViewport.scale, visual_size:[visualViewport.width,visualViewport.height]},
+    calibration: Array.from(document.querySelectorAll(".calibration"), element => { const r=element.getBoundingClientRect(); return [r.left,r.top,r.right,r.bottom]; }),
+    observer_ready: [target,outer,sibling].every(element => observedBoxes.has(element)), endpoint_limit: endpointLimit,
+    reference_offset: config.reference_offset, stream_tick: streamTick, expected_ids: ids,
+    state: {target: state(target), outer: state(outer), sibling: state(sibling)}};
+  // Existing owned fixture server may retain this bounded evidence; no external URL.
+  fetch('state', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(receipt)});
+}
+const observerStarted = performance.now();
+function initializeWhenObserved() {
+  if (browserVersion.status === "pending" && performance.now()-observerStarted >= 2000) browserVersion.status = "timed-out";
+  if (browserVersion.status === "pending" || ![target,outer,sibling].every(element => observedBoxes.has(element))) {
+    if (performance.now() - observerStarted < 2000) requestAnimationFrame(initializeWhenObserved);
+    return; // Missing observer data is a startup failure, never a zero-box fallback.
+  }
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+  outer.scrollLeft = 11; sibling.scrollTop = 93; sibling.scrollLeft = 27;
+  target.scrollLeft = config.scenario === 'table' ? 147 : 0;
+  if (config.reference_endpoint) { target.scrollTop = Number.MAX_SAFE_INTEGER; }
+  else if (config.reference_offset === null) { target.scrollTop = 119; }
+  else if (config.reference_mode === 'scroll') {
+    // Independent authored oracle offset; never obtained from capture alignment.
+    target.scrollTop = config.reference_offset;
+  } else {
+    // Reference uses an independently authored content position, not UIA scrolling,
+    // matcher offsets or seams. Identical width/theme preserve wrapping and fonts.
+    content.style.transform = `translateY(${-config.reference_offset}px)`;
+    target.scrollTop = 0;
+  }
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    endpointLimit = config.reference_endpoint ? target.scrollTop : null;
+    initialized = true; report();
+    setInterval(report, 100); // Read-only bounded fresh-state receipts for raster bracketing.
+  }));
+  if (config.variant === 'streaming') setInterval(() => {
+    streamTick++;
+    for (const text of document.querySelectorAll('.text, td')) {
+      text.textContent = `Update ${streamTick}: changing visible content.`;
+    }
+    report();
+  }, 250);
+}));
+}
+requestAnimationFrame(initializeWhenObserved);
+for (const element of [target, outer, sibling]) element.addEventListener('scroll', report);
+</script>

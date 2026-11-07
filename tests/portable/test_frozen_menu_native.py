@@ -190,7 +190,7 @@ def test_comparison_keeps_exact_baselines_and_existing_gates() -> None:
     )
     assert "a1c6bbe488284cf5f5b4ed7a8b1e30181e0f62ed" in workflow
     assert "1f73bde2b6ab5ab2324ce8079159004ee2713d3a" in workflow
-    assert 'qt: ["6.11.2", "6.12.0"]' in workflow
+    assert 'qt: ["6.11.3", "6.12.0"]' in workflow
     assert "source: [candidate, released-0121, released-0131]" in workflow
     assert "continue-on-error" not in workflow
     assert "timeout-minutes: 6" in workflow

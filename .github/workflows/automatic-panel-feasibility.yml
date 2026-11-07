@@ -1,0 +1,631 @@
+name: Automatic panel native feasibility
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  provider:
+    if: >-
+      github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
+      github.head_ref == 'feature/automatic-panel-capture' &&
+      github.event.pull_request.draft == true
+    name: Panel feasibility / ${{ matrix.case }} / ${{ matrix.mode }}
+    runs-on: windows-2025
+    timeout-minutes: 6
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {case: wpf-borderless, mode: sweep}
+          - {case: wpf-bordered, mode: sweep}
+          - {case: wpf-nested, mode: sweep}
+          - {case: edge-100, mode: checkpoint}
+          - {case: edge-125, mode: checkpoint}
+          - {case: wpf-nested, mode: clipping-diagnostic}
+          - {case: wpf-borderless, mode: seam-sweep}
+          - {case: wpf-bordered, mode: seam-sweep}
+          - {case: wpf-nested, mode: seam-sweep}
+          - {case: edge-100, mode: msaa-diagnostic}
+          - {case: edge-125, mode: msaa-diagnostic}
+          - {case: edge-100, mode: browser-sequence}
+          - {case: edge-125, mode: browser-sequence}
+    env:
+      PYTHONUTF8: "1"
+      QUALIFICATION_HEAD: ${{ github.event.pull_request.head.sha }}
+      PROBE_CASE: ${{ matrix.case }}
+      PROBE_MODE: ${{ matrix.mode }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: "false"
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          enable-cache: false
+          python-version: "3.13"
+      - name: Locked probe dependencies
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          uv sync --locked
+          exit $LASTEXITCODE
+      - name: Precompile the owned WPF fixture
+        if: startsWith(matrix.case, 'wpf-')
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          dotnet build scripts/panel_fixture/PanelFixture.csproj --configuration Release --output .tmp/panel-fixture
+          exit $LASTEXITCODE
+      - name: One bounded attempt, no automatic rerun
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          $extra = @()
+          if ($env:PROBE_MODE -in @('clipping-diagnostic', 'seam-sweep', 'msaa-diagnostic', 'browser-sequence')) { $extra += "--$env:PROBE_MODE" }
+          uv run --no-sync python -m scripts.panel_feasibility --case $env:PROBE_CASE --output "receipts/$env:PROBE_CASE" --wpf-executable .tmp/panel-fixture/PanelFixture.exe @extra
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: ${{ !cancelled() }}
+        with:
+          name: panel-provider-${{ matrix.case }}-${{ matrix.mode }}
+          path: |
+            receipts/**/receipt.json
+            receipts/**/fixture.json
+            receipts/**/edge-entry.json
+            receipts/**/edge-entry.png
+            receipts/**/probe-startup.json
+            receipts/**/states/*.json
+            receipts/**/probe/*.json
+            receipts/**/probe/*.jsonl
+            receipts/**/probe/*.png
+          if-no-files-found: error
+          retention-days: 14
+
+  owned-helper:
+    if: >-
+      github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
+      github.head_ref == 'feature/automatic-panel-capture' &&
+      github.event.pull_request.draft == true
+    name: Native helper ownership
+    runs-on: windows-2025
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          enable-cache: false
+          python-version: "3.13"
+      - name: Locked dependencies
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          uv sync --locked
+          exit $LASTEXITCODE
+      - name: Prove native ownership and parent-death cleanup
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          uv run --no-sync python scripts/owned_helper_smoke.py --output receipts/owned-helper
+          exit $LASTEXITCODE
+      - name: Prove asynchronous private pipe transport
+        id: pipe
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          uv run --no-sync python scripts/owned_pipe_smoke.py --output receipts/owned-pipe
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: ${{ !cancelled() && steps.pipe.outcome != 'skipped' }}
+        with:
+          name: native-owned-pipe
+          path: receipts/owned-pipe/*.json
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: ${{ !cancelled() }}
+        with:
+          name: native-owned-helper
+          path: receipts/owned-helper/owned-helper.json
+          if-no-files-found: error
+          retention-days: 14
+
+  installed-runtime:
+    if: >-
+      github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
+      github.head_ref == 'feature/automatic-panel-capture' &&
+      github.event.pull_request.draft == true
+    name: Installed wheel helper runtime
+    runs-on: windows-2025
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          enable-cache: false
+          python-version: "3.13"
+      - name: Build exact wheel and prove isolated installed bootstrap
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          uv build --wheel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $wheels = @(Get-ChildItem dist -Filter *.whl)
+          if ($wheels.Count -ne 1) { throw 'Expected exactly one built wheel' }
+          $wheel = $wheels[0].FullName
+          $proof = Join-Path $env:RUNNER_TEMP ("VerdiClip Runtime Café " + [guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $proof | Out-Null
+          uv export --locked --no-dev --no-emit-project --no-hashes --output-file "$proof\constraints.txt"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          uv venv --python 3.13 "$proof\venv"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $python = "$proof\venv\Scripts\python.exe"
+          uv pip install --python $python --constraint "$proof\constraints.txt" $wheel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item scripts/installed_runtime_smoke.py "$proof\installed_runtime_smoke.py"
+          $outside = New-Item -ItemType Directory -Path "$proof\outside checkout"
+          $receiptTarget = Join-Path $env:GITHUB_WORKSPACE 'receipts/installed-runtime'
+          New-Item -ItemType Directory -Force -Path (Split-Path -Parent $receiptTarget) | Out-Null
+          $proofExit = 1
+          Push-Location $outside.FullName
+          try {
+            & $python "$proof\installed_runtime_smoke.py" --wheel $wheel --output "$proof\receipts"
+            $proofExit = $LASTEXITCODE
+          } finally {
+            Pop-Location
+            if (Test-Path "$proof\receipts") { Copy-Item "$proof\receipts" $receiptTarget -Recurse }
+          }
+          exit $proofExit
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: ${{ !cancelled() }}
+        with:
+          name: installed-wheel-runtime
+          path: receipts/installed-runtime/*.json
+          if-no-files-found: error
+          retention-days: 14
+
+  installed-channel:
+    if: >-
+      github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
+      github.head_ref == 'feature/automatic-panel-capture' &&
+      github.event.pull_request.draft == true
+    name: Installed wheel channel lifecycle
+    runs-on: windows-2025
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          enable-cache: false
+          python-version: "3.13"
+      - name: Build exact wheel and prove fixed channel lifecycle
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          uv build --wheel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $wheels = @(Get-ChildItem dist -Filter *.whl)
+          if ($wheels.Count -ne 1) { throw 'Expected exactly one built wheel' }
+          $wheel = $wheels[0].FullName
+          $proof = Join-Path $env:RUNNER_TEMP ("VerdiClip Channel Café " + [guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $proof | Out-Null
+          uv export --locked --no-dev --no-emit-project --no-hashes --output-file "$proof\constraints.txt"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          uv venv --python 3.13 "$proof\venv"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $python = "$proof\venv\Scripts\python.exe"
+          uv pip install --python $python --constraint "$proof\constraints.txt" $wheel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item scripts/installed_runtime_smoke.py "$proof\installed_runtime_smoke.py"
+          Copy-Item scripts/installed_channel_smoke.py "$proof\installed_channel_smoke.py"
+          $outside = New-Item -ItemType Directory -Path "$proof\outside checkout"
+          $receiptTarget = Join-Path $env:GITHUB_WORKSPACE 'receipts/installed-channel'
+          New-Item -ItemType Directory -Force -Path (Split-Path -Parent $receiptTarget) | Out-Null
+          $proofExit = 1
+          Push-Location $outside.FullName
+          try {
+            & $python "$proof\installed_channel_smoke.py" --wheel $wheel --output "$proof\receipts"
+            $proofExit = $LASTEXITCODE
+          } finally {
+            Pop-Location
+            if (Test-Path "$proof\receipts") { Copy-Item "$proof\receipts" $receiptTarget -Recurse }
+          }
+          exit $proofExit
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: ${{ !cancelled() }}
+        with:
+          name: installed-wheel-channel
+          path: receipts/installed-channel/*.json
+          if-no-files-found: error
+          retention-days: 14
+
+  owned-worker:
+    if: >-
+      github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
+      github.head_ref == 'feature/automatic-panel-capture' &&
+      github.event.pull_request.draft == true
+    name: Native lifecycle worker responsiveness
+    runs-on: windows-2025
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          enable-cache: false
+          python-version: "3.13"
+      - name: Locked dependencies
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          uv sync --locked
+          exit $LASTEXITCODE
+      - name: Prove GUI responsiveness under owned lifecycle stalls
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          & .\.venv\Scripts\python.exe -m scripts.owned_worker_supervisor --output receipts/owned-worker
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: ${{ !cancelled() }}
+        with:
+          name: native-owned-worker
+          path: receipts/owned-worker/**/*.json
+          if-no-files-found: error
+          retention-days: 14
+
+  browser-matrix:
+    if: >-
+      github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
+      github.head_ref == 'feature/automatic-panel-capture' &&
+      github.event.pull_request.draft == true
+    name: Owned browser matrix / ${{ matrix.case }}
+    runs-on: windows-2025
+    timeout-minutes: 9
+    strategy:
+      fail-fast: false
+      matrix:
+        case: [conversation-light100, table-dark125]
+    env:
+      PYTHONUTF8: "1"
+      QUALIFICATION_HEAD: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: "false"
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          enable-cache: false
+          python-version: "3.13"
+      - name: Locked matrix dependencies
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          uv sync --locked
+          exit $LASTEXITCODE
+      - name: One conversation attempt with independent references
+        if: matrix.case == 'conversation-light100'
+        timeout-minutes: 6
+        shell: pwsh
+        run: |
+          & .\.venv\Scripts\python.exe -m scripts.panel_matrix_feasibility --case conversation-light100 --output receipts/conversation-light100
+          exit $LASTEXITCODE
+      - name: One table attempt with independent references
+        if: matrix.case == 'table-dark125'
+        timeout-minutes: 6
+        shell: pwsh
+        run: |
+          & .\.venv\Scripts\python.exe -m scripts.panel_matrix_feasibility --case table-dark125 --output receipts/table-dark125
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: ${{ !cancelled() }}
+        with:
+          name: owned-browser-matrix-${{ matrix.case }}
+          path: |
+            scripts/panel_*.py
+            scripts/panel_fixture/matrix.html
+            receipts/**/authored.html
+            receipts/**/receipt.json
+            receipts/**/fixture.json
+            receipts/**/reference-manifest.json
+            receipts/**/reference-outcome.json
+            receipts/**/probe-startup.json
+            receipts/**/states/*.json
+            receipts/**/probe/*.json
+            receipts/**/probe/*.jsonl
+            receipts/**/probe/*.png
+            receipts/**/reference/*.json
+            receipts/**/reference/*.jsonl
+            receipts/**/reference/*.png
+          if-no-files-found: error
+          retention-days: 14
+
+  browser-wheel:
+    if: >-
+      github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
+      github.head_ref == 'feature/automatic-panel-capture' &&
+      github.event.pull_request.draft == true
+    name: Owned browser wheel / ${{ matrix.initial }} / ${{ matrix.mode }}
+    runs-on: windows-2025
+    timeout-minutes: 6
+    strategy:
+      fail-fast: false
+      matrix:
+        initial: [top, middle]
+        mode: [interior, endpoint]
+    env:
+      PYTHONUTF8: "1"
+      QUALIFICATION_HEAD: ${{ github.event.pull_request.head.sha }}
+      WHEEL_INITIAL: ${{ matrix.initial }}
+      WHEEL_MODE: ${{ matrix.mode }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: "false"
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          enable-cache: false
+          python-version: "3.13"
+      - name: Locked wheel experiment dependencies
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          uv sync --locked
+          exit $LASTEXITCODE
+      - name: One guarded wheel attempt, no retries
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          & .\.venv\Scripts\python.exe -m scripts.panel_wheel_feasibility --initial $env:WHEEL_INITIAL --mode $env:WHEEL_MODE --output "receipts/wheel-$env:WHEEL_INITIAL-$env:WHEEL_MODE"
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: ${{ !cancelled() }}
+        with:
+          name: owned-browser-wheel-${{ matrix.initial }}-${{ matrix.mode }}
+          path: |
+            scripts/panel_wheel_probe.py
+            scripts/panel_wheel_feasibility.py
+            receipts/**/owned-wheel.html
+            receipts/**/receipt.json
+            receipts/**/fixture.json
+            receipts/**/edge-entry.json
+            receipts/**/edge-entry.png
+            receipts/**/states/*.json
+            receipts/**/probe/*.json
+            receipts/**/probe/*.jsonl
+          if-no-files-found: error
+          retention-days: 14
+
+  stable-identity:
+    if: >-
+      github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
+      github.head_ref == 'feature/automatic-panel-capture' &&
+      github.event.pull_request.draft == true
+    name: Read-only stable identity / ${{ matrix.case }}
+    runs-on: windows-2025
+    timeout-minutes: 7
+    strategy:
+      fail-fast: false
+      matrix:
+        case: [wpf-borderless, edge-100]
+    env:
+      PYTHONUTF8: "1"
+      QUALIFICATION_HEAD: ${{ github.event.pull_request.head.sha }}
+      IDENTITY_CASE: ${{ matrix.case }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: "false"
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          enable-cache: false
+          python-version: "3.13"
+      - name: Locked identity experiment dependencies
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          uv sync --locked
+          exit $LASTEXITCODE
+      - name: Precompile the owned WPF fixture
+        if: matrix.case == 'wpf-borderless'
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          dotnet build scripts/panel_fixture/PanelFixture.csproj --configuration Release --output .tmp/panel-fixture
+          exit $LASTEXITCODE
+      - name: One read-only identity attempt, no retries
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          & .\.venv\Scripts\python.exe -m scripts.panel_identity_feasibility --case $env:IDENTITY_CASE --output "receipts/identity-$env:IDENTITY_CASE" --wpf-executable .tmp/panel-fixture/PanelFixture.exe
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: ${{ !cancelled() }}
+        with:
+          name: owned-stable-identity-${{ matrix.case }}
+          path: |
+            scripts/panel_uia_identity.py
+            scripts/panel_identity_probe.py
+            scripts/panel_identity_feasibility.py
+            receipts/**/receipt.json
+            receipts/**/fixture.json
+            receipts/**/edge-entry.json
+            receipts/**/edge-entry.png
+            receipts/**/states/*.json
+            receipts/**/probe/*.json
+            receipts/**/probe/*.jsonl
+          if-no-files-found: error
+          retention-days: 14
+
+  owned-paint-control:
+    if: >-
+      github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
+      github.head_ref == 'feature/automatic-panel-capture' &&
+      github.event.pull_request.draft == true
+    name: Owned table125 paint containment
+    runs-on: windows-2025
+    timeout-minutes: 6
+    env:
+      PYTHONUTF8: "1"
+      QUALIFICATION_HEAD: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: "false"
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          enable-cache: false
+          python-version: "3.13"
+      - name: Locked paint experiment dependencies
+        timeout-minutes: 2
+        run: uv sync --locked
+      - name: One opacity control attempt, no retries
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          & .\.venv\Scripts\python.exe -m scripts.panel_paint_feasibility --output receipts/paint-table125
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: ${{ !cancelled() }}
+        with:
+          name: owned-table125-paint-containment
+          path: |
+            scripts/panel_*.py
+            scripts/panel_fixture/matrix.html
+            receipts/paint-table125/receipt.json
+            receipts/paint-table125/fixture.json
+            receipts/paint-table125/paint-phase.json
+            receipts/paint-table125/states/*.json
+            receipts/paint-table125/probe/*.json
+            receipts/paint-table125/probe/*.jsonl
+            receipts/paint-table125/probe/*.png
+            receipts/paint-table125/authored.html
+          if-no-files-found: error
+          retention-days: 14
+
+  installed-observe:
+    if: >-
+      github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
+      github.head_ref == 'feature/automatic-panel-capture' &&
+      github.event.pull_request.draft == true
+    name: Installed wheel owned WPF observation
+    runs-on: windows-2025
+    timeout-minutes: 7
+    env:
+      PYTHONUTF8: "1"
+      QUALIFICATION_HEAD: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: "false"
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          enable-cache: false
+          python-version: "3.13"
+      - name: Locked dependencies and owned observe-only fixture
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          if ((git rev-parse HEAD).Trim() -ne $env:QUALIFICATION_HEAD) { throw 'Wrong candidate head' }
+          uv sync --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet build scripts/panel_fixture/PanelFixture.csproj --configuration Release --output .tmp/observe-fixture
+          exit $LASTEXITCODE
+      - name: Fresh-wheel single observation, no retries
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          uv build --wheel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $wheels = @(Get-ChildItem dist -Filter *.whl)
+          if ($wheels.Count -ne 1) { throw 'Expected exactly one candidate wheel' }
+          $wheel = $wheels[0].FullName
+          $proof = Join-Path $env:RUNNER_TEMP ('observe-proof-' + [guid]::NewGuid())
+          New-Item -ItemType Directory -Path $proof | Out-Null
+          uv venv "$proof\venv"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $python = Join-Path $proof 'venv\Scripts\python.exe'
+          uv pip install --python $python --no-deps $wheel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          uv export --locked --no-dev --no-emit-project --format requirements-txt --output-file "$proof\requirements.txt"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          uv pip install --python $python --require-hashes -r "$proof\requirements.txt"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item scripts/installed_runtime_smoke.py "$proof\installed_runtime_smoke.py"
+          Copy-Item scripts/installed_channel_smoke.py "$proof\installed_channel_smoke.py"
+          Copy-Item scripts/installed_observe_smoke.py "$proof\installed_observe_smoke.py"
+          Copy-Item scripts/observe_process_diagnostics.py "$proof\observe_process_diagnostics.py"
+          Copy-Item .tmp/observe-fixture "$proof\fixture" -Recurse
+          $outside = New-Item -ItemType Directory -Path "$proof\outside checkout"
+          $target = Join-Path $env:GITHUB_WORKSPACE 'receipts/installed-observe'
+          New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
+          $proofExit = 1
+          Push-Location $outside.FullName
+          try {
+            & $python "$proof\installed_observe_smoke.py" --wheel $wheel --fixture "$proof\fixture\PanelFixture.exe" --output "$proof\receipts"
+            $proofExit = $LASTEXITCODE
+          } finally {
+            Pop-Location
+            if (Test-Path "$proof\receipts") { Copy-Item "$proof\receipts" $target -Recurse }
+          }
+          exit $proofExit
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: ${{ !cancelled() }}
+        with:
+          name: installed-wheel-owned-observe
+          path: |
+            scripts/installed_observe_smoke.py
+            scripts/observe_process_diagnostics.py
+            scripts/installed_channel_smoke.py
+            scripts/installed_runtime_smoke.py
+            scripts/panel_fixture/Program.cs
+            receipts/installed-observe/receipt.json
+            receipts/installed-observe/executor/*.json
+            receipts/installed-observe/executor/*.jsonl
+            receipts/installed-observe/executor/*.png
+            receipts/installed-observe/states/*.json
+            receipts/installed-observe/states/diagnostics/*.json
+          if-no-files-found: error
+          retention-days: 14

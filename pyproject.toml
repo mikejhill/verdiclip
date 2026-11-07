@@ -22,7 +22,7 @@ classifiers = [
 ]
 dependencies = [
     "mss>=10.2.0",
-    "pyside6-essentials>=6.11.2",
+    "pyside6-essentials>=6.11.3",
 ]
 
 [project.urls]
