@@ -25,6 +25,7 @@ from PySide6.QtCore import QCoreApplication, QTimer
 from PySide6.QtWidgets import QApplication, QWidget
 
 from verdiclip.capture import (
+    frame_credit,
     frame_envelope,
     observe_native,
     observe_protocol,
@@ -101,6 +102,7 @@ def verify_wheel(wheel: Path) -> dict[str, object]:
         observe_native,
         observe_provider,
         retained_frame,
+        frame_credit,
     )
     with zipfile.ZipFile(wheel) as archive:
         for loaded in loaded_modules:

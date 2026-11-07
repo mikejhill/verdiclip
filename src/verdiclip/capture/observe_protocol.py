@@ -25,7 +25,7 @@ from verdiclip.capture.frame_envelope import (
     FrameIdentity,
     FrameStream,
 )
-from verdiclip.platform.helper_protocol import MAX_REQUESTS, decode
+from verdiclip.platform.helper_protocol import MAX_REQUESTS, VERSION, decode
 
 MAX_TARGET_BYTES = 1024
 MAX_OBSERVATION_BYTES = 8192
@@ -96,7 +96,9 @@ def _parse(data: bytes, limit: int) -> dict[str, object]:
         _bad("Metadata byte bound exceeded")
     # Reuse strict duplicate, nonfinite, nesting and node-count validation.
     return decode(
-        b'{"version":1,"kind":"request","request_id":1,"payload":' + data + b"}"
+        f'{{"version":{VERSION},"kind":"request","request_id":1,"payload":'.encode()
+        + data
+        + b"}"
     ).payload
 
 

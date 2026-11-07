@@ -14,6 +14,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Never
 
+from verdiclip.capture.frame_credit import CREDIT_SCHEMA, CreditToken, PeerCredit
 from verdiclip.capture.frame_envelope import header_for_rgb
 from verdiclip.capture.observe_protocol import MAX_READ_BYTES, ObserveTarget
 from verdiclip.capture.observe_provider import observe_once
@@ -33,7 +34,7 @@ _MAX_LAUNCH_BYTES = 1024
 _MAX_PID = 0xFFFFFFFF
 _WAIT_FAILED = 0xFFFFFFFF
 _WAIT_TIMEOUT = 258
-PEER_SCHEMA = 2
+PEER_SCHEMA = 3
 OBSERVE_NS = 2_000_000_000
 MAX_DEADLINE_NS = 2**63 - 1
 
@@ -47,6 +48,7 @@ class PeerLaunch:
     parent_pid: int
     protocol_version: int = VERSION
     peer_schema: int = PEER_SCHEMA
+    credit_schema: int = CREDIT_SCHEMA
 
     def __post_init__(self) -> None:
         """Accept only the channel's fixed local pipe naming and bounded identity."""
@@ -62,6 +64,8 @@ class PeerLaunch:
             raise ValueError("Invalid helper session epoch")
         if type(self.parent_pid) is not int or not 0 < self.parent_pid <= _MAX_PID:
             raise ValueError("Invalid helper parent PID")
+        if type(self.credit_schema) is not int or self.credit_schema != CREDIT_SCHEMA:
+            raise ValueError("Unsupported frame credit schema")
         if type(self.peer_schema) is not int or self.peer_schema != PEER_SCHEMA:
             raise ValueError("Unsupported fixed peer schema")
         if type(self.protocol_version) is not int or self.protocol_version != VERSION:
@@ -86,6 +90,7 @@ def deserialize_launch(payload: str) -> PeerLaunch:
         "parent_pid",
         "protocol_version",
         "peer_schema",
+        "credit_schema",
     }:
         raise ValueError("Invalid helper launch fields")
     return PeerLaunch(**value)
@@ -441,8 +446,19 @@ def _observe(
         )
     )
     frame.write_bytes(header.encode())
+    transfer = PeerCredit(launch.epoch, request.request_id, len(result.rgb))
     for offset in range(0, len(result.rgb), MAX_READ_BYTES):
-        frame.write_bytes(result.rgb[offset : offset + MAX_READ_BYTES])
+        token = transfer.announce_wait()
+        pipe.write(Message("frame_wait", request.request_id, token.payload()))
+        credit = pipe.read()
+        pipe.checkpoint()
+        if credit.kind != "frame_credit":
+            raise ProtocolError("expected-frame-credit")
+        transfer.consume_credit(
+            CreditToken.from_payload(credit.request_id, credit.payload)
+        )
+        frame.write_bytes(result.rgb[offset : offset + token.count])
+        transfer.wrote_body(token.count)
     frame.close()
     pipe.checkpoint()
 
@@ -467,6 +483,7 @@ def run(payload: str) -> None:
                     "epoch": launch.epoch,
                     "protocol_version": VERSION,
                     "peer_schema": PEER_SCHEMA,
+                    "credit_schema": CREDIT_SCHEMA,
                 },
             )
         )

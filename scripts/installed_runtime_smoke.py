@@ -27,6 +27,7 @@ import mss
 
 import verdiclip
 from verdiclip.capture import (
+    frame_credit,
     frame_envelope,
     observe_native,
     observe_protocol,
@@ -55,6 +56,7 @@ _FIXED_RUNTIME_MODULES = (
     observe_protocol,
     observe_native,
     observe_provider,
+    frame_credit,
 )
 _VERIFIED_MODULES = (helper_runtime, *_FIXED_RUNTIME_MODULES)
 

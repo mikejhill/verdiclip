@@ -18,6 +18,7 @@ import json
 import math
 import os
 import re
+import struct
 import sys
 import threading
 import time
@@ -45,7 +46,14 @@ FIXED_VERTICAL = 119
 MAX_STATES = 256
 MAX_TOPOLOGY_PIDS = 8
 MAX_TEMPORARY_PIDS = 2
-PEER_SCHEMA = 2
+PEER_SCHEMA = 3
+PROTOCOL_VERSION = 2
+CREDIT_SCHEMA = 1
+CREDIT_BYTES = 65536
+MAX_CREDIT_CHUNKS = 24
+CREDIT_PREFIX_BYTES = 4
+CREDIT_RECORD_BYTES = 512
+CREDIT_EVENT_FIELDS = 4
 MARKER_COUNT = 4
 RGB_CHANNELS = 3
 MAX_CHANNEL = 255
@@ -868,6 +876,199 @@ def terminal_matches(
     )
 
 
+class CreditFacade(Protocol):
+    """Only the public capacity method is available to this proof adapter."""
+
+    def grant_frame_credit(
+        self, generation: int, request_id: int, chunk_index: int
+    ) -> None:
+        """Grant the current immutable token once."""
+
+
+def unique_credit_fields(pairs: list[tuple[str, object]]) -> Json:
+    """Independent strict parser; duplicate fields cannot hide wrong identity."""
+    result: Json = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("Duplicate credit proof field")
+        result[key] = value
+    return result
+
+
+class CreditTranscript:
+    """Independent bounded success transcript, not a protocol implementation."""
+
+    def __init__(self, generation: int, epoch: str, size: int) -> None:
+        if (
+            type(generation) is not int
+            or generation <= 0
+            or type(epoch) is not str
+            or re.fullmatch(r"[0-9a-f]{32}", epoch) is None
+            or type(size) is not int
+            or not 0 < size <= 1024 * 512 * 3
+        ):
+            raise ValueError("Invalid independent credit proof identity")
+        self.generation, self.epoch, self.size = generation, epoch, size
+        self.count = (size + CREDIT_BYTES - 1) // CREDIT_BYTES
+        self.events: list[Json] = []
+        self.failed = False
+
+    def grant(
+        self, generation: int, raw: bytes, facade: CreditFacade, journal: Journal
+    ) -> None:
+        """Validate one announced capacity token and call the public method once."""
+        try:
+            journal.check()
+            if (
+                self.failed
+                or type(generation) is not int
+                or generation != self.generation
+                or type(raw) is not bytes
+                or not CREDIT_PREFIX_BYTES < len(raw) <= CREDIT_RECORD_BYTES
+                or struct.unpack(">I", raw[:CREDIT_PREFIX_BYTES])[0]
+                != len(raw) - CREDIT_PREFIX_BYTES
+                or len(self.events) >= self.count
+            ):
+                raise ValueError("Invalid credit proof event")  # noqa: TRY301 - latch before propagation
+            message = json.loads(
+                raw[CREDIT_PREFIX_BYTES:], object_pairs_hook=unique_credit_fields
+            )
+            index = len(self.events)
+            payload = {
+                "credit_schema": CREDIT_SCHEMA,
+                "epoch": self.epoch,
+                "frame_id": 1,
+                "chunk_index": index,
+                "offset": index * CREDIT_BYTES,
+                "count": min(CREDIT_BYTES, self.size - index * CREDIT_BYTES),
+            }
+            expected = {
+                "version": PROTOCOL_VERSION,
+                "kind": "frame_wait",
+                "request_id": 1,
+                "payload": payload,
+            }
+            # Canonical comparison also rejects bool/int equivalence and floats.
+            if json.dumps(message, sort_keys=True, allow_nan=False) != json.dumps(
+                expected, sort_keys=True
+            ):
+                raise ValueError("Credit proof token differs from fixed sequence")  # noqa: TRY301
+            event: Json = {
+                "token": payload,
+                "wait_received_ns": time.monotonic_ns(),
+                "grant_called_ns": time.monotonic_ns(),
+                "grant_returned_ns": None,
+            }
+            self.events.append(event)  # Consume before a reentrant public call.
+            journal.call(
+                "credit.grant", lambda: facade.grant_frame_credit(generation, 1, index)
+            )
+            event["grant_returned_ns"] = time.monotonic_ns()
+            journal.check()
+        except BaseException:
+            self.failed = True
+            raise
+
+    def verify(self, receipt: Json) -> Json:  # noqa: C901 - independent terminal proof
+        """Cross-check public requests against worker reservations and byte totals."""
+        observe = receipt.get("observe", {})
+        state = observe.get("credit")
+        observation = observe.get("observation", {})
+        if (
+            not isinstance(observation, dict)
+            or observation.get("epoch") != self.epoch
+            or type(observation.get("request_id")) is not int
+            or observation["request_id"] != 1
+            or type(observation.get("frame_id")) is not int
+            or observation["frame_id"] != 1
+        ):
+            raise ValueError("Credit receipt identity differs")
+        if (
+            self.failed
+            or receipt.get("passed") is not True
+            or len(self.events) != self.count
+            or not isinstance(state, dict)
+            or set(state)
+            != {
+                "pending",
+                "granted_bytes",
+                "accepted_bytes",
+                "last_grant_sequence",
+                "cancel_sequence",
+                "cancel_time_ns",
+                "observed_sequence",
+                "observed_time_ns",
+                "failed",
+                "events",
+            }
+            or observe.get("credit_cancellation") is not None
+        ):
+            raise ValueError("Incomplete credit proof transcript")
+        for key, expected in {
+            "granted_bytes": self.size,
+            "accepted_bytes": self.size,
+            "last_grant_sequence": self.count * 2,
+            "cancel_sequence": 0,
+            "cancel_time_ns": 0,
+            "observed_sequence": 0,
+            "observed_time_ns": 0,
+            "transfer_messages": 4 + 2 * self.count,
+        }.items():
+            actual = observe.get(key) if key == "transfer_messages" else state.get(key)
+            if type(actual) is not int or actual != expected:
+                raise ValueError("Credit terminal counters differ")
+        if state["pending"] is not None or state["failed"] is not False:
+            raise ValueError("Credit transfer did not finish cleanly")
+        worker_events = state["events"]
+        deadline, finished = observe.get("deadline_ns"), observe.get("finished_ns")
+        if (
+            type(deadline) is not int
+            or type(finished) is not int
+            or not 0 < finished < deadline
+            or type(worker_events) is not list
+            or len(worker_events) != 2 * self.count
+        ):
+            raise ValueError("Invalid credit proof ordering")
+        previous = 0
+        for index, event in enumerate(self.events):
+            wait, grant = worker_events[2 * index : 2 * index + 2]
+            for value, kind, sequence in (
+                (wait, "wait", 2 * index + 1),
+                (grant, "grant", 2 * index + 2),
+            ):
+                if (
+                    type(value) is not list
+                    or len(value) != CREDIT_EVENT_FIELDS
+                    or type(value[0]) is not int
+                    or type(value[1]) is not int
+                    or type(value[3]) is not int
+                    or value[0] != sequence
+                    or value[2] != kind
+                    or value[3] != index
+                ):
+                    raise ValueError("Invalid worker credit event")
+            received, called, returned = (
+                event[k]
+                for k in ("wait_received_ns", "grant_called_ns", "grant_returned_ns")
+            )
+            if (
+                any(type(t) is not int for t in (received, called, returned))
+                or not previous <= wait[1] <= received <= called <= returned < deadline
+                or not called <= grant[1] <= finished
+                or not grant[1] < deadline
+            ):
+                raise ValueError("Credit event crossed original deadline or order")
+            previous = grant[1]
+        return {
+            "schema": CREDIT_SCHEMA,
+            "chunks": self.count,
+            "bytes": self.size,
+            "public_events": self.events,
+            "worker_events": worker_events,
+            "exact_sequence": True,
+        }
+
+
 def compare_retained_frame(
     frame: object, reference_rgb: bytes, receipt: bytes, expected_rect: tuple[int, ...]
 ) -> Json:
@@ -1366,8 +1567,12 @@ def serve_temporary(  # noqa: PLR0913, PLR0917 - fixed handshake
         or type(peer.get("pid")) is not int
         or not 0 < peer["pid"] < 2**32
         or peer.get("executable") != baseline["request"]["expected_base"]
-        or peer.get("protocol_version") != 1
+        or type(peer.get("protocol_version")) is not int
+        or type(peer.get("peer_schema")) is not int
+        or type(peer.get("credit_schema")) is not int
+        or peer.get("protocol_version") != PROTOCOL_VERSION
         or peer.get("peer_schema") != PEER_SCHEMA
+        or peer.get("credit_schema") != CREDIT_SCHEMA
         or not isinstance(peer.get("epoch"), str)
         or re.fullmatch(r"[0-9a-f]{32}", peer["epoch"]) is None
     ):
@@ -1737,8 +1942,12 @@ def serve_checkpoint(  # noqa: C901, PLR0913, PLR0917 - explicit fixed ownership
             or not 0 < peer["pid"] < 2**32
             or peer["pid"] in wanted
             or peer.get("executable") != profile["request"]["expected_base"]
-            or peer.get("protocol_version") != 1
+            or type(peer.get("protocol_version")) is not int
+            or type(peer.get("peer_schema")) is not int
+            or type(peer.get("credit_schema")) is not int
+            or peer.get("protocol_version") != PROTOCOL_VERSION
             or peer.get("peer_schema") != PEER_SCHEMA
+            or peer.get("credit_schema") != CREDIT_SCHEMA
             or not isinstance(peer.get("epoch"), str)
             or re.fullmatch(r"[0-9a-f]{32}", peer["epoch"]) is None
         ):
@@ -1930,6 +2139,7 @@ def child(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - fixed owned
     consumer_started = 0.0
     consumer_receipt: Json = {}
     consumer_timer = QTimer(window)
+    credit_transcript: CreditTranscript | None = None
 
     def identified(value: int, payload: bytes) -> None:
         if value != generation or identity:
@@ -1941,7 +2151,7 @@ def child(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - fixed owned
         )
 
     def ready(value: int) -> None:
-        nonlocal submitted, temporary_pins, temporary_profile
+        nonlocal submitted, temporary_pins, temporary_profile, credit_transcript
         if value != generation or submitted or target is None or guard is None:
             raise RuntimeError("Unexpected observe ready")
         journal.call("reference.before_observe", guard.check)
@@ -1971,7 +2181,16 @@ def child(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - fixed owned
         result["temporary_profile"] = temporary_profile
         journal.call("reference.after_ownership", guard.check)
         submitted = True
+        credit_transcript = CreditTranscript(
+            generation, identity["epoch"], len(before_panel)
+        )
+        result["credit_public_events"] = credit_transcript.events
         channel.observe(1, target)
+
+    def grant_credit(value: int, raw: bytes) -> None:
+        if credit_transcript is None or result["first_failure"] is not None:
+            raise RuntimeError("Unexpected credit event outside successful observation")
+        credit_transcript.grant(value, raw, channel, journal)
 
     def terminal(value: int, payload: bytes) -> None:
         if value != generation or guard is None or target is None:
@@ -1988,6 +2207,9 @@ def child(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - fixed owned
         ):
             raise RuntimeError("Observe terminal does not match independent reference")
         nonlocal consumer, consumer_started, consumer_receipt
+        if credit_transcript is None:
+            raise RuntimeError("Missing independent credit proof")
+        result["credit_transcript"] = credit_transcript.verify(receipt)
         frame = channel.take_frame(value, 1)
         try:
             channel.take_frame(value, 1)
@@ -2141,6 +2363,7 @@ def child(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - fixed owned
             app.exit(1)
 
     consumer_timer.timeout.connect(consumed)
+    channel.credit_required.connect(grant_credit)
     channel.identity.connect(identified)
     channel.ready.connect(ready)
     channel.terminal.connect(terminal)

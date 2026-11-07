@@ -21,11 +21,19 @@ import uuid
 from ctypes import wintypes
 from dataclasses import asdict
 from pathlib import Path
-from typing import Never
+from typing import Never, cast
 
 from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 
+from verdiclip.capture.frame_credit import (
+    CREDIT_SCHEMA,
+    MAX_TRANSFER_MESSAGES,
+    CreditGate,
+    CreditSnapshot,
+    CreditToken,
+    ParentCredit,
+)
 from verdiclip.capture.frame_envelope import HEADER_BYTES as FRAME_HEADER_BYTES
 from verdiclip.capture.observe_protocol import (
     MAX_READ_BYTES,
@@ -52,6 +60,7 @@ from verdiclip.platform.helper_protocol import (
     HEADER_BYTES,
     MAX_MESSAGE_BYTES,
     MAX_REQUESTS,
+    VERSION,
     Decoder,
     Message,
     ProtocolError,
@@ -107,10 +116,29 @@ def _payload(data: bytes) -> dict[str, object]:
     """Validate immutable control bytes through the proven strict JSON parser."""
     if type(data) is not bytes or not 0 < len(data) <= MAX_MESSAGE_BYTES:
         raise ValueError("Control payload must be bounded immutable bytes")
-    envelope = b'{"version":1,"kind":"request","request_id":1,"payload":' + data + b"}"
+    envelope = (
+        f'{{"version":{VERSION},"kind":"request","request_id":1,"payload":'.encode()
+        + data
+        + b"}"
+    )
     message = decode(envelope)
     encode(message)  # Include envelope overhead in the existing wire limit.
     return message.payload
+
+
+def _credit_snapshot(value: CreditSnapshot) -> dict[str, object]:
+    """Compact bounded event evidence, without repeated full token dictionaries."""
+    result = cast("dict[str, object]", asdict(value))
+    result["events"] = [
+        [
+            event.sequence,
+            event.time_ns,
+            event.kind,
+            event.token.chunk_index if event.token is not None else None,
+        ]
+        for event in value.events
+    ]
+    return result
 
 
 def _serialized(value: object) -> bytes:
@@ -121,6 +149,7 @@ class _Worker(QObject):
     """Single affinity owner; never exposed as a public launch-target interface."""
 
     progress = Signal(int, bytes)
+    credit_required = Signal(int, bytes)
     identity = Signal(int, bytes)
     ready = Signal(int)
     reply = Signal(int, int, bytes)
@@ -132,6 +161,10 @@ class _Worker(QObject):
         super().__init__()
         self.generation, self.runtime, self.cancelled = generation, runtime, cancelled
         self.vault = FrameVault(generation, cancelled)
+        self.credit_gate = CreditGate(cancelled)
+        self.credits: ParentCredit | None = None
+        self.credit_notified: CreditToken | None = None
+        self.transfer_messages = 0
         self.pixel_sink: FrameSink | None = None
         self.pixel_candidate: VerifiedCandidate | None = None
         self.helper: OwnedHelper | None = None
@@ -364,7 +397,7 @@ class _Worker(QObject):
             return True
         return False
 
-    def _drain_frame(self) -> None:
+    def _drain_frame(self) -> None:  # noqa: C901, PLR0912 - independent header, credit and sink gates
         if self.frame_socket is None or self.observe_pairing is None:
             _reject("missing-frame-state")
         budget = MAX_READ_BYTES
@@ -377,8 +410,16 @@ class _Worker(QObject):
                     break
                 self.observe_pairing.header(data)
                 self.frame_header_read += len(data)
+                if self.frame_header_read == FRAME_HEADER_BYTES:
+                    self._notify_credit()
             elif self.observe_pairing.payload_ready:
-                data = bytes(self.frame_socket.read(budget).data())
+                if self.credits is None:
+                    _reject("missing-frame-credit")
+                credit_state = self.credits.snapshot()
+                remaining = credit_state.granted_bytes - credit_state.accepted_bytes
+                if remaining <= 0 or self.frame_socket.bytesAvailable() > remaining:
+                    _reject("body-without-credit")
+                data = bytes(self.frame_socket.read(min(budget, remaining)).data())
                 if not data:
                     break
                 self.observe_pairing.feed(data)
@@ -389,6 +430,7 @@ class _Worker(QObject):
                     self.vault.begin(identity)
                     self.pixel_sink = FrameSink(identity, self._admit)
                 self.pixel_sink.feed(data)
+                self.credits.accept_body(len(data))
                 self.frame_bytes += len(data)
                 if self.frame_first_byte_ns is None:
                     self.frame_first_byte_ns = time.monotonic_ns()
@@ -401,6 +443,71 @@ class _Worker(QObject):
                 break  # Wait for metadata, without a zero-progress continuation loop.
             budget -= len(data)
         self._admit()
+        self._notify_credit()
+
+    def _transfer_control(self) -> None:
+        if self.transfer_messages >= MAX_TRANSFER_MESSAGES:
+            _reject("transfer-control-budget")
+        self.transfer_messages += 1
+
+    def _notify_credit(self) -> None:
+        if (
+            self.credits is None
+            or self.observe_pairing is None
+            or not self.observe_pairing.payload_ready
+            or self.decoder.buffer
+        ):
+            return
+        token = self.credits.grantable
+        if token is None or token == self.credit_notified:
+            return
+        self._admit()
+        if self.pixel_sink is None:
+            if self.observe_metadata is None:
+                _reject("missing-pixel-metadata")
+            identity = self.observe_metadata.frame_identity()
+            self.vault.begin(identity)
+            self.pixel_sink = FrameSink(identity, self._admit)
+        self._admit()
+        self.credit_notified = token
+        self.credit_required.emit(
+            self.generation,
+            encode(Message("frame_wait", token.request_id, token.payload())),
+        )
+
+    @Slot(int, bytes)
+    def grant_credit(self, generation: int, raw: bytes) -> None:
+        """Reserve one credit against cancellation before any native pipe write."""
+        try:
+            self._admit()
+            if (
+                generation != self.generation
+                or self.phase != "busy"
+                or self.credits is None
+                or self.socket is None
+            ):
+                _reject("invalid-credit-phase")
+            decoder = Decoder()
+            messages = decoder.feed(raw)
+            if (
+                len(messages) != 1
+                or decoder.buffer
+                or messages[0].kind != "frame_credit"
+            ):
+                _reject("invalid-credit-command")
+            message = messages[0]
+            token = CreditToken.from_payload(message.request_id, message.payload)
+            if token != self.credit_notified:
+                _reject("unannounced-credit")
+            self._admit()
+            self._transfer_control()
+            self.credits.reserve_grant(token)
+            self.credit_notified = None
+            if self.socket.bytesToWrite() or self.socket.write(raw) != len(raw):
+                _reject("credit-write-failed")
+            self._admit()
+        except Exception as error:  # noqa: BLE001 - no duplicate or failed credit recovery
+            self._fail(str(error))
 
     def _finish_frame(self) -> None:
         if self.frame_socket is None or self.observe_pairing is None:
@@ -410,6 +517,9 @@ class _Worker(QObject):
                 self._queue_frame()
             return
         if self.frame_disconnected and self.observe_pairing.payload_ready:
+            if self.credits is None:
+                _reject("missing-frame-credit")
+            self.credits.finish()
             header = self.observe_pairing.eof()
             self._admit()
             if self.pixel_sink is None or self.observe_metadata is None:
@@ -481,6 +591,8 @@ class _Worker(QObject):
             _reject("no-connection")
         if payload.get("operation") == "observe":
             payload = self._begin_observe(payload)
+        if self.observe_consumed:
+            self._transfer_control()
         data = encode(self.flight.begin(payload))
         self._admit()
         if self.socket.bytesToWrite() or self.socket.write(data) != len(data):
@@ -505,6 +617,9 @@ class _Worker(QObject):
     @Slot()
     def cancel(self) -> None:
         """Observe cancellation without enqueueing a provider command."""
+        self.credit_gate.cancel()
+        if self.credits is not None:
+            self.credits.observe_cancel()
         self._fail("cancelled")
 
     def _ready_message(self, message: Message) -> None:
@@ -514,15 +629,24 @@ class _Worker(QObject):
             message.kind != "ready"
             or message.request_id != 0
             or set(message.payload)
-            != {"pid", "executable", "epoch", "protocol_version", "peer_schema"}
+            != {
+                "pid",
+                "executable",
+                "epoch",
+                "protocol_version",
+                "peer_schema",
+                "credit_schema",
+            }
         ):
             _reject("invalid-ready")
         if (
             message.payload["epoch"] != self.epoch
             or type(message.payload["protocol_version"]) is not int
-            or message.payload["protocol_version"] != 1
+            or message.payload["protocol_version"] != VERSION
             or type(message.payload["peer_schema"]) is not int
             or message.payload["peer_schema"] != PEER_SCHEMA
+            or type(message.payload["credit_schema"]) is not int
+            or message.payload["credit_schema"] != CREDIT_SCHEMA
         ):
             _reject("wrong-session-epoch")
         pid, executable = message.payload["pid"], message.payload["executable"]
@@ -548,13 +672,22 @@ class _Worker(QObject):
         self.verified_identity = identity
         self._maybe_ready()
 
-    def _message(self, message: Message) -> None:
+    def _message(self, message: Message) -> None:  # noqa: C901 - strict phase and transfer admission
         self._admit()
+        if self.observe_consumed:
+            self._transfer_control()
         if self.phase == "starting":
             self._ready_message(message)
             return
         if self.phase != "busy":
             _reject("unsolicited-message")
+        if message.kind == "frame_wait":
+            if self.credits is None or self.finish_requested:
+                _reject("unexpected-frame-wait")
+            self.credits.receive_wait(
+                CreditToken.from_payload(message.request_id, message.payload)
+            )
+            return
         self.flight.accept(message)
         if self.finish_requested:
             if message.payload != {"operation": "finished"}:
@@ -581,6 +714,12 @@ class _Worker(QObject):
             self.observe_pairing.metadata(metadata.canonical)
             self._admit()
             self.observe_metadata = metadata
+            self.credits = ParentCredit(
+                self.epoch,
+                metadata.frame_identity().request_id,
+                metadata.frame_identity().payload_bytes,
+                gate=self.credit_gate,
+            )
         else:
             payload = _serialized(message.payload)
             self._admit()
@@ -610,13 +749,8 @@ class _Worker(QObject):
             self._admit()
             if was_starting and self.phase == "ready":
                 self._notify_ready()
-            if (
-                self.observe_metadata is not None
-                and not self.finish_requested
-                and self.decoder.buffer
-            ):
-                _reject("unsolicited-partial-observe-trailer")
             if self.observe_metadata is not None:
+                self._notify_credit()
                 self._frame_readable()  # Resume a header-paused socket after metadata.
             if self.pending_reply is not None:
                 caller, payload = self.pending_reply
@@ -649,6 +783,9 @@ class _Worker(QObject):
         if self.failure is None:
             self.failure = reason or "channel-failure"
         self.pending_reply = None
+        self.credit_gate.cancel()
+        if self.credits is not None:
+            self.credits.observe_cancel()
         self._discard_pixels()
         if self.phase != "retiring":
             self.phase = "retiring"
@@ -779,6 +916,17 @@ class _Worker(QObject):
                 "validated_ns": self.frame_validated_ns,
                 "finished_ns": self.observe_finished_ns,
                 "bytes": self.frame_bytes,
+                "transfer_messages": self.transfer_messages,
+                "credit": _credit_snapshot(self.credits.snapshot())
+                if self.credits is not None
+                else None,
+                "credit_cancellation": {
+                    "latched": _credit_snapshot(self.credits.witness().latched),
+                    "final": _credit_snapshot(self.credits.witness().final),
+                }
+                if self.credits is not None
+                and self.credits.snapshot().observed_sequence
+                else None,
                 "image_sha256": self.frame_digest,
                 "observation": json.loads(self.observe_metadata.canonical)
                 if receipt["passed"] and self.observe_metadata is not None
@@ -825,11 +973,13 @@ class _Lifetime(QObject):
     """Outlive facade deletion until terminal evidence and actual thread finish."""
 
     progress = Signal(int, bytes)
+    credit_required = Signal(int, bytes)
     identity = Signal(int, bytes)
     ready = Signal(int)
     reply = Signal(int, int, bytes)
     terminal = Signal(int, bytes)
     request = Signal(int, bytes)
+    credit = Signal(int, bytes)
     cancellation = Signal()
     finishing = Signal()
 
@@ -841,6 +991,7 @@ class _Lifetime(QObject):
         self.worker_thread = QThread()
         self.worker = _Worker(generation, runtime, cancelled)
         self.vault = self.worker.vault
+        self.credit_gate = self.worker.credit_gate
         self.expiry_timer = QTimer(self)
         self.expiry_timer.setInterval(_POLL_MS)
         self.expiry_timer.timeout.connect(self._expiry)
@@ -854,6 +1005,8 @@ class _Lifetime(QObject):
         self.worker_thread.started.connect(self.worker.start)
         queued = Qt.ConnectionType.QueuedConnection
         self.request.connect(self.worker.submit, queued)
+        self.credit.connect(self.worker.grant_credit, queued)
+        self.worker.credit_required.connect(self.credit_required, queued)
         self.cancellation.connect(self.worker.cancel, queued)
         self.finishing.connect(self.worker.finish, queued)
         self.worker.progress.connect(self.progress, queued)
@@ -868,7 +1021,7 @@ class _Lifetime(QObject):
     def abandon(self) -> None:
         """Deletion of the GUI facade is cancellation, never thread destruction."""
         self.vault.invalidate()
-        self.cancelled.set()
+        self.credit_gate.cancel()
         if not self.completed:
             self.cancellation.emit()
         self._release_if_disposed()
@@ -956,11 +1109,13 @@ class HelperChannel(QObject):
     """Unused facade with no public executable, module, path or command selection."""
 
     progress = Signal(int, bytes)
+    credit_required = Signal(int, bytes)
     identity = Signal(int, bytes)
     ready = Signal(int)
     reply = Signal(int, int, bytes)
     terminal = Signal(int, bytes)
     _request = Signal(int, bytes)
+    _credit = Signal(int, bytes)
     _cancel = Signal()
     _finish = Signal()
 
@@ -974,6 +1129,9 @@ class HelperChannel(QObject):
         self._terminal_receipt: bytes | None = None
         self._last_caller = 0
         self._observe_consumed = False
+        self._pending_credit: CreditToken | None = None
+        self._credit_epoch: str | None = None
+        self._credit_next = 0
 
     def _affinity(self) -> None:
         if QThread.currentThread() != self.thread():
@@ -988,8 +1146,11 @@ class HelperChannel(QObject):
         self._state = "starting"
         self._lifetime = _Lifetime(self._generation, runtime, self._cancelled)
         self._vault = self._lifetime.vault
+        self._credit_epoch = self._lifetime.worker.epoch
         queued = Qt.ConnectionType.QueuedConnection
         self._request.connect(self._lifetime.request)
+        self._credit.connect(self._lifetime.credit)
+        self._lifetime.credit_required.connect(self._credit_required, queued)
         self._cancel.connect(self._lifetime.cancellation)
         self._finish.connect(self._lifetime.finishing)
         self._lifetime.progress.connect(self._progress, queued)
@@ -1061,15 +1222,80 @@ class HelperChannel(QObject):
     def cancel(self) -> None:
         """Latch before the queued wake; retain ownership until retirement."""
         self._affinity()
+        already_cancelled = self._cancelled.is_set()
+        self._pending_credit = None
+        if self._lifetime is not None:
+            self._lifetime.credit_gate.cancel()
         if self._vault is not None:
             self._vault.invalidate()
-        if self._state in ("idle", "terminal") or self._cancelled.is_set():
+        if self._state in ("idle", "terminal") or already_cancelled:
             if self._lifetime is not None:
                 self._lifetime._release_if_disposed()
             return
         self._cancelled.set()
         self._state = "closing"
         self._cancel.emit()
+
+    @Slot(int, bytes)
+    def _credit_required(self, generation: int, raw: bytes) -> None:
+        if (
+            generation != self._generation
+            or self._state != "busy"
+            or self._cancelled.is_set()
+        ):
+            return
+        try:
+            decoder = Decoder()
+            messages = decoder.feed(raw)
+            if (
+                len(messages) != 1
+                or decoder.buffer
+                or messages[0].kind != "frame_wait"
+                or self._pending_credit is not None
+                or not self._observe_consumed
+            ):
+                _reject("invalid-public-credit-wait")
+            token = CreditToken.from_payload(
+                messages[0].request_id, messages[0].payload
+            )
+            if (
+                token.epoch != self._credit_epoch
+                or token.chunk_index != self._credit_next
+            ):
+                _reject("stale-public-credit-wait")
+            self._pending_credit = token
+            self.credit_required.emit(generation, raw)
+        except Exception:
+            self.cancel()
+            raise
+
+    def grant_frame_credit(
+        self, generation: int, request_id: int, chunk_index: int
+    ) -> None:
+        """Consume one capacity token before queuing its single worker grant."""
+        self._affinity()
+        try:
+            token = self._pending_credit
+            if (
+                self._state != "busy"
+                or self._cancelled.is_set()
+                or type(generation) is not int
+                or generation != self._generation
+                or type(request_id) is not int
+                or type(chunk_index) is not int
+                or token is None
+                or token.request_id != request_id
+                or token.chunk_index != chunk_index
+            ):
+                _reject("invalid-public-credit-grant")
+            self._pending_credit = None
+            self._credit_next += 1
+            self._credit.emit(
+                generation, encode(Message("frame_credit", request_id, token.payload()))
+            )
+        except Exception:
+            self.cancel()
+            raise
 
     def finish(self) -> None:
         """Request orderly retirement only when no operation is outstanding."""

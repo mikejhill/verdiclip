@@ -45,7 +45,7 @@ def runtime(tmp_path: Path) -> RuntimeManifest:
             str(tmp_path / "c"),
             str(tmp_path / "d"),
             str(tmp_path / "e"),
-            *(str(tmp_path / name) for name in ("f", "g", "h", "i", "j")),
+            *(str(tmp_path / name) for name in ("f", "g", "h", "i", "j", "k")),
         ),
         ("1", "2"),
         (3, 13, 1),
@@ -203,8 +203,9 @@ def test_cancel_during_ready_verification_blocks_send(worker: channel._Worker) -
                     "pid": 7,
                     "executable": "owned",
                     "epoch": worker.epoch,
-                    "protocol_version": 1,
-                    "peer_schema": 2,
+                    "protocol_version": channel.VERSION,
+                    "peer_schema": channel.PEER_SCHEMA,
+                    "credit_schema": channel.CREDIT_SCHEMA,
                 },
             )
         )
@@ -501,8 +502,9 @@ def test_real_qt_worker_roundtrip_uses_only_private_fake_boundary(  # noqa: C901
                         "pid": 7,
                         "executable": "fake",
                         "epoch": epochs[0],
-                        "protocol_version": 1,
-                        "peer_schema": 2,
+                        "protocol_version": channel.VERSION,
+                        "peer_schema": channel.PEER_SCHEMA,
+                        "credit_schema": channel.CREDIT_SCHEMA,
                     },
                 )
             )
@@ -712,8 +714,9 @@ def test_ready_epoch_mismatch_precedes_producer_validation(
                     "pid": 7,
                     "executable": "owned",
                     "epoch": "f" * 32,
-                    "protocol_version": 1,
-                    "peer_schema": 2,
+                    "protocol_version": channel.VERSION,
+                    "peer_schema": channel.PEER_SCHEMA,
+                    "credit_schema": channel.CREDIT_SCHEMA,
                 },
             )
         )
@@ -795,8 +798,9 @@ def test_verified_flag_does_not_admit_failed_lifetime(
                     "pid": 7,
                     "executable": "owned",
                     "epoch": worker.epoch,
-                    "protocol_version": 1,
-                    "peer_schema": 2,
+                    "protocol_version": channel.VERSION,
+                    "peer_schema": channel.PEER_SCHEMA,
+                    "credit_schema": channel.CREDIT_SCHEMA,
                 },
             )
         )
@@ -865,8 +869,9 @@ def test_direct_callbacks_complete_verified_roundtrip(worker: channel._Worker) -
         "pid": 7,
         "executable": "fake",
         "epoch": worker.epoch,
-        "protocol_version": 1,
-        "peer_schema": 2,
+        "protocol_version": channel.VERSION,
+        "peer_schema": channel.PEER_SCHEMA,
+        "credit_schema": channel.CREDIT_SCHEMA,
     }
     feed_peer(worker, socket, Message("ready", 0, identity))
     assert identities == [(1, identity)]
@@ -1038,8 +1043,9 @@ def test_protocol_failures_preserve_no_success(
             "pid": 7,
             "executable": "fake",
             "epoch": worker.epoch,
-            "protocol_version": 1,
-            "peer_schema": 2,
+            "protocol_version": channel.VERSION,
+            "peer_schema": channel.PEER_SCHEMA,
+            "credit_schema": channel.CREDIT_SCHEMA,
         }
         if mode == "invalid-ready":
             payload["extra"] = 1
@@ -1280,6 +1286,14 @@ def observing(
     )
     assert worker.failure is None
     assert worker.deadline == 3.0
+
+    def grant(generation: int, raw: bytes) -> None:
+        wait = channel.Decoder().feed(raw)[0]
+        worker.grant_credit(
+            generation, encode(Message("frame_credit", wait.request_id, wait.payload))
+        )
+
+    worker.credit_required.connect(grant)
     return worker, control, helper, data, clock
 
 
@@ -1287,15 +1301,29 @@ def observed_response(
     worker: channel._Worker, control: Mock, metadata: channel.Observation
 ) -> None:
     """Deliver metadata through the actual framed control decoder."""
-    feed_peer(
-        worker,
-        control,
+    token = channel.CreditToken.for_chunk(
+        worker.epoch, 1, metadata.frame_identity().payload_bytes, 0
+    )
+    messages = [
         Message(
             "response",
             1,
             {"operation": "observed", "observation": json.loads(metadata.canonical)},
         ),
-    )
+        Message("frame_wait", 1, token.payload()),
+    ]
+    pending = bytearray(b"".join(encode(message) for message in messages))
+    control.bytesAvailable.side_effect = lambda: len(pending)
+
+    def read(size: int) -> QByteArray:
+        payload = bytes(pending[:size])
+        del pending[:size]
+        return QByteArray(payload)
+
+    control.read.side_effect = read
+    worker._readable()
+    control.bytesAvailable.side_effect = None
+    control.bytesAvailable.return_value = 0
 
 
 @pytest.mark.parametrize(
@@ -1334,7 +1362,7 @@ def test_observe_waits_for_paired_eof_and_natural_retirement(
     assert worker.frame_eof
     assert worker.frame_bytes == 36
     assert worker.deadline == 3.0
-    assert control.write.call_count == 2  # observe then automatic reserved finish
+    assert control.write.call_count == 3  # observe, credit, automatic reserved finish
     feed_peer(worker, control, Message("response", 2, {"operation": "finished"}))
     assert worker.phase == "retiring"
     assert worker.deadline == 6.0
@@ -1365,15 +1393,23 @@ def test_frame_drain_is_bounded_and_single_continuation(
     observed_response(worker, control, metadata)
     queued = Mock()
     monkeypatch.setattr(channel.QTimer, "singleShot", queued)
-    data.extend(header_for_rgb(metadata.frame_identity(), pixels).encode() + pixels)
-    worker._frame_disconnected()
-    assert len(data) == len(pixels) + 128 - 65536
+    data.extend(
+        header_for_rgb(metadata.frame_identity(), pixels).encode() + pixels[:65536]
+    )
+    worker._frame_readable()
+    assert len(data) == 128
     assert worker.frame_drain_queued
     queued.assert_called_once()
     worker._queue_frame()
     queued.assert_called_once()
     while data:
         worker._resume_frame()
+    for index in (1, 2):
+        token = channel.CreditToken.for_chunk(worker.epoch, 1, len(pixels), index)
+        feed_peer(worker, control, Message("frame_wait", 1, token.payload()))
+        data.extend(pixels[index * 65536 : (index + 1) * 65536])
+        worker._frame_readable()
+    worker._frame_disconnected()
     assert worker.frame_eof
     assert worker.failure is None
     assert all(
@@ -1527,8 +1563,9 @@ def test_ready_requires_both_authenticated_endpoints(
             "pid": 7,
             "executable": "fake",
             "epoch": worker.epoch,
-            "protocol_version": 1,
-            "peer_schema": 2,
+            "protocol_version": channel.VERSION,
+            "peer_schema": channel.PEER_SCHEMA,
+            "credit_schema": channel.CREDIT_SCHEMA,
         },
     )
     if order == "frame-first":
@@ -1764,15 +1801,17 @@ def test_partial_early_finished_prefix_cannot_be_completed_after_frame_eof(
     control.bytesAvailable.side_effect = [len(combined), 0, 0]
     control.read.return_value = QByteArray(combined)
     worker._readable()
-    assert worker.failure == "unsolicited-partial-observe-trailer"
+    assert worker.failure is None  # A fragmented wait is legal, not an early finish.
+    assert worker.credit_notified is None
+    control.bytesAvailable.side_effect = [len(early_finish) - 9, 0]
+    control.read.return_value = QByteArray(early_finish[9:])
+    worker._readable()
+    assert worker.failure == "wrong-id"
     first = worker.failure
     data.extend(
         header_for_rgb(metadata.frame_identity(), bytes(36)).encode() + bytes(36)
     )
     worker._frame_disconnected()
-    control.bytesAvailable.side_effect = [len(early_finish) - 9, 0]
-    control.read.return_value = QByteArray(early_finish[9:])
-    worker._readable()
     assert worker.failure == first
     assert not worker.finish_requested
     assert control.write.call_count == 1

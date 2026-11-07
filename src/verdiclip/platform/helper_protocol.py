@@ -19,7 +19,8 @@ MAX_REQUESTS = 128
 MAX_JSON_DEPTH = 16
 MAX_JSON_NODES = 1024
 HEADER_BYTES = 4
-VERSION = 1
+VERSION = 2
+MAX_CREDIT_RECORD_BYTES = 512
 
 
 class ProtocolError(ValueError):
@@ -104,10 +105,16 @@ def decode(payload: bytes) -> Message:
         "ready",
         "request",
         "response",
+        "frame_wait",
+        "frame_credit",
     ):
         raise ProtocolError("invalid-envelope")
     if not isinstance(value["payload"], dict):
         raise ProtocolError("invalid-envelope")
+    if value["kind"] in ("frame_wait", "frame_credit") and (
+        len(payload) + HEADER_BYTES > MAX_CREDIT_RECORD_BYTES
+    ):
+        raise ProtocolError("oversized-credit-record")
     bounded_json(value)
     return Message(value["kind"], request_id, value["payload"], version)
 

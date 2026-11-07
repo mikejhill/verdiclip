@@ -8,6 +8,7 @@ import zipfile
 from dataclasses import replace
 from importlib.metadata import PathDistribution
 from pathlib import Path
+from types import ModuleType
 from typing import cast
 
 import pytest
@@ -652,7 +653,7 @@ def test_independent_inspection_rejects_mixed_primitive_origin(
         smoke.inspect_runtime(wheel)
 
 
-@pytest.mark.parametrize("index", range(2, 10))
+@pytest.mark.parametrize("index", range(2, 11))
 def test_primitive_manifest_checks_every_fixed_origin(
     installed: tuple[Path, Path, smoke.InstalledRuntime], index: int
 ) -> None:
@@ -666,3 +667,16 @@ def test_primitive_manifest_checks_every_fixed_origin(
         smoke.admit_primitive_manifest(
             replace(manifest, origins=tuple(origins)), runtime
         )
+
+
+@pytest.mark.parametrize("module", smoke._VERIFIED_MODULES)
+def test_independent_inspection_rejects_changed_primitive_bytes(
+    installed: tuple[Path, Path, smoke.InstalledRuntime], module: ModuleType
+) -> None:
+    """A matching origin and version cannot disguise changed installed code."""
+    _, wheel, _ = installed
+    assert module.__file__ is not None
+    path = Path(module.__file__)
+    path.write_bytes(path.read_bytes() + b"# changed installed bytes\n")
+    with pytest.raises(ValueError, match="does not match wheel"):
+        smoke.inspect_runtime(wheel)

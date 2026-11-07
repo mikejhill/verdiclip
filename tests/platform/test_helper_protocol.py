@@ -69,12 +69,12 @@ def test_buffer_limit_even_without_message_completion() -> None:
         b"{}",
         b"[]",
         b"{",
-        b'{"version":1,"version":1}',
+        b'{"version":2,"version":2}',
         b'{"version":true,"kind":"response","request_id":1,"payload":{}}',
-        b'{"version":1,"kind":"response","request_id":true,"payload":{}}',
-        b'{"version":1,"kind":"response","request_id":1,"payload":{"x":NaN}}',
-        b'{"version":1,"kind":"response","request_id":1,"payload":{"x":1e999}}',
-        b'{"version":1,"kind":"response","request_id":1,"payload":[],"extra":0}',
+        b'{"version":2,"kind":"response","request_id":true,"payload":{}}',
+        b'{"version":2,"kind":"response","request_id":1,"payload":{"x":NaN}}',
+        b'{"version":2,"kind":"response","request_id":1,"payload":{"x":1e999}}',
+        b'{"version":2,"kind":"response","request_id":1,"payload":[],"extra":0}',
     ],
 )
 def test_malformed_envelopes_reject(payload: bytes) -> None:
@@ -89,7 +89,7 @@ def test_nesting_and_request_budget() -> None:
     for _ in range(MAX_JSON_DEPTH + 1):
         value = [value]
     wire = json.dumps(
-        {"version": 1, "kind": "response", "request_id": 1, "payload": {"x": value}}
+        {"version": 2, "kind": "response", "request_id": 1, "payload": {"x": value}}
     ).encode()
     with pytest.raises(ProtocolError, match="json-complexity"):
         decode(wire)

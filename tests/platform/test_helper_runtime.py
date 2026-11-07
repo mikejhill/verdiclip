@@ -82,6 +82,8 @@ def test_manifest_round_trip(installed: runtime.RuntimeManifest) -> None:
     [
         ("schema_version", True),
         ("schema_version", 1),
+        ("schema_version", 3),
+        ("schema_version", 4.0),
         ("executable", "relative"),
         ("executable", "x" * 2049),
         ("roots", []),
@@ -248,11 +250,11 @@ def test_fixed_peer_arguments_are_data_after_attestation(
     assert arguments[3].startswith(bootstrap.BOOTSTRAP_SOURCE)
     assert arguments[4:] == (installed.serialize(), launch.serialize())
     assert "from verdiclip.platform.helper_peer import run" in arguments[3]
-    assert installed.schema_version == 3
-    assert len(installed.origins) == 10
+    assert installed.schema_version == 4
+    assert len(installed.origins) == 11
 
 
-@pytest.mark.parametrize("index", [3, 4, 5, 6, 7, 8, 9])
+@pytest.mark.parametrize("index", [3, 4, 5, 6, 7, 8, 9, 10])
 def test_fixed_peer_module_origin_mismatch_fails(
     installed: runtime.RuntimeManifest, monkeypatch: pytest.MonkeyPatch, index: int
 ) -> None:
@@ -281,7 +283,7 @@ def test_manifest_serialized_byte_budget_includes_json_escaping(
 ) -> None:
     """Individually bounded Unicode paths can still overflow the aggregate envelope."""
     path = str(Path(installed.roots[0]).anchor) + "é" * 1500
-    value = replace(installed, origins=(path,) * 10)
+    value = replace(installed, origins=(path,) * 11)
     with pytest.raises(ValueError, match="byte bound"):
         value.serialize()
 
@@ -306,7 +308,7 @@ def test_bootstrap_in_process_verification_gates(
     )
     expected = installed
     if failure == "protocol":
-        monkeypatch.setattr(bootstrap.helper_protocol, "VERSION", 2)
+        monkeypatch.setattr(bootstrap.helper_protocol, "VERSION", 1)
     elif failure == "executable":
         expected = replace(installed, executable=str(tmp_path / "other-python"))
     elif failure == "runtime":
@@ -322,3 +324,38 @@ def test_bootstrap_in_process_verification_gates(
         }
         with pytest.raises(RuntimeError, match=messages[failure]):
             bootstrap.verify_runtime(expected.serialize())
+
+
+@pytest.mark.parametrize("schema", [3, 4.0, True])
+def test_bootstrap_prefix_rejects_old_or_inexact_schema(
+    installed: runtime.RuntimeManifest, tmp_path: Path, schema: object
+) -> None:
+    """The isolated prefix rejects incompatible schemas before importing packages."""
+    data = json.loads(installed.serialize())
+    data["schema_version"] = schema
+    result = subprocess.run(  # noqa: S603 - fixed authored prefix, local fixture data
+        [
+            installed.executable,
+            "-I",
+            "-S",
+            "-c",
+            bootstrap.BOOTSTRAP_SOURCE,
+            json.dumps(data),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert b"Unexpected isolated interpreter identity" in result.stderr
+
+
+def test_credit_module_must_be_loaded(
+    installed: runtime.RuntimeManifest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An installed credit file alone cannot attest an absent loaded primitive."""
+    assert installed.schema_version == 4
+    monkeypatch.delitem(sys.modules, "verdiclip.capture.frame_credit")
+    with pytest.raises(ValueError, match="must already be loaded"):
+        runtime.inspect_runtime()

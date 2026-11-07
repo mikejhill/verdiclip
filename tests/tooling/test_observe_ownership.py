@@ -234,8 +234,9 @@ def test_stable_checkpoint_requires_exact_phase_specific_members(
         "pid": 44,
         "epoch": "b" * 32,
         "executable": BASE,
-        "peer_schema": 2,
-        "protocol_version": 1,
+        "peer_schema": smoke.PEER_SCHEMA,
+        "credit_schema": smoke.CREDIT_SCHEMA,
+        "protocol_version": smoke.PROTOCOL_VERSION,
     }
     peer_record = {
         "requested_pid": 44,

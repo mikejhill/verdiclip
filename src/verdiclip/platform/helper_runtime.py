@@ -15,7 +15,7 @@ from pathlib import Path
 
 _PYTHON_VERSION_PARTS = 3
 _MAX_VERSION_PART = 1000
-_SCHEMA = 3
+_SCHEMA = 4
 _MAX_MANIFEST_BYTES = 16_384
 _MAX_PATH_CHARS = 2048
 _MAX_VERSION_CHARS = 128
@@ -30,6 +30,7 @@ _MODULES = (
     "verdiclip.capture.observe_protocol",
     "verdiclip.capture.observe_native",
     "verdiclip.capture.observe_provider",
+    "verdiclip.capture.frame_credit",
 )
 _PACKAGES = ("verdiclip", "mss")
 

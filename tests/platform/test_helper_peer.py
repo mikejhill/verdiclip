@@ -38,7 +38,7 @@ def test_launch_roundtrip_has_only_fixed_fields() -> None:
         ("parent_pid", 0),
         ("parent_pid", 2**32),
         ("protocol_version", True),
-        ("protocol_version", 2),
+        ("protocol_version", 1),
     ],
 )
 def test_launch_rejects_ambiguous_identity(key: str, value: object) -> None:
@@ -122,7 +122,7 @@ def test_peer_eof_closes_without_reconnecting(monkeypatch: pytest.MonkeyPatch) -
     assert pipe.close.call_count == 2
     ready = pipe.write.call_args.args[0]
     assert ready.payload["epoch"] == launch().epoch
-    assert ready.payload["protocol_version"] == 1
+    assert ready.payload["protocol_version"] == 2
 
 
 def test_peer_ready_ping_finish_closes(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -531,6 +531,14 @@ def test_peer_produces_metadata_before_binary_and_finishes_once(
     control, frame = Mock(), Mock()
     control.read.side_effect = [
         observe_request(target, 3_000_000_000),
+        *[
+            Message(
+                "frame_credit",
+                1,
+                peer.CreditToken.for_chunk(launch().epoch, 1, len(pixels), i).payload(),
+            )
+            for i in range(3)
+        ],
         Message("request", 2, {"operation": "finish"}),
     ]
     order = []
@@ -595,7 +603,7 @@ def test_binary_chunk_bound_before_native_io(native_api: Mock, value: bytes) -> 
     pipe.close()
 
 
-@pytest.mark.parametrize("schema", [True, 1, 3])
+@pytest.mark.parametrize("schema", [True, 1, 2, 4])
 def test_peer_schema_is_distinct_from_framing(schema: object) -> None:
     """Old/ambiguous handshake shapes cannot claim the new binary capability."""
     data = json.loads(launch().serialize())

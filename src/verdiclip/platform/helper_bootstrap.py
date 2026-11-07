@@ -26,7 +26,8 @@ payload = sys.argv[1]
 if len(payload) > 16384 or len(payload.encode("utf-8")) > 16384:
     raise ValueError("Runtime manifest exceeds byte bound")
 data = json.loads(payload)
-if (not isinstance(data, dict) or data.get("schema_version") != 3
+if (not isinstance(data, dict) or type(data.get("schema_version")) is not int
+    or data.get("schema_version") != 4
     or data.get("python_version") != list(sys.version_info[:3])
     or data.get("pointer_bits") != struct.calcsize("P") * 8
     or type(data.get("executable")) is not str
@@ -47,7 +48,7 @@ verify_runtime(payload)
 
 def verify_runtime(payload: str) -> None:
     """Fail before worker entry if isolated child identity differs from parent."""
-    if helper_protocol.VERSION != 1:
+    if helper_protocol.VERSION != 2:  # noqa: PLR2004 - fixed protocol attestation
         raise RuntimeError("Unsupported fixed peer protocol")
     expected = deserialize_manifest(payload)
     if not sys.flags.isolated or not sys.flags.no_site:

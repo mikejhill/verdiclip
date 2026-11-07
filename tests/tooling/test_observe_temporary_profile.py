@@ -37,8 +37,9 @@ def peer() -> Json:
     return {
         "pid": 44,
         "executable": BASE,
-        "protocol_version": 1,
+        "protocol_version": smoke.PROTOCOL_VERSION,
         "peer_schema": smoke.PEER_SCHEMA,
+        "credit_schema": smoke.CREDIT_SCHEMA,
         "epoch": "b" * 32,
     }
 
