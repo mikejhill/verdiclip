@@ -253,8 +253,8 @@ def test_supervisor_separates_target_coverage_and_cleanup(
     monkeypatch.setattr(target, "retire", retire)
     assert target.supervise(target.ROOT, tmp_path) == (code if cleanup_ok else 1)
     receipt = target.read_json(tmp_path / "receipt.json")
-    assert receipt["collection_scope"] == "explicit-prefix-not-full-suite"
-    assert "3691" in receipt["collection_limitation"]
+    assert receipt["collection_scope"] == "full-collection-prefix-execution"
+    assert "nextitem" in receipt["collection_limitation"]
     assert receipt["target_outcome"] == "passed"
     assert receipt["pytest_exit"]["exit_code"] == code
     assert receipt["status"] == ("non-reproduction" if cleanup_ok else "failed")
@@ -371,3 +371,92 @@ def test_child_clock_retained_before_fixture_monkeypatch(
     assert before <= times[0] <= times[-1]
     assert times == sorted(times)
     assert len(ledger.completed) == 1
+
+
+def collection_case(
+    nodes: list[str], tmp_path: Path
+) -> tuple[target.FullCollection, SimpleNamespace]:
+    """Model pytest Item identity, retaining the full discovered graph."""
+    proof = target.FullCollection(nodes, "epoch", tmp_path)
+    selected = [SimpleNamespace(nodeid=name) for name in nodes]
+    selected += [
+        SimpleNamespace(nodeid=f"other/test.py::test_{index}")
+        for index in range(3691 - len(nodes))
+    ]
+    excluded = [SimpleNamespace(nodeid=name) for name in sorted(proof.EXCLUDED)]
+    for item in [*selected, *excluded]:
+        proof.collect(item)
+    proof.excluded.extend(excluded)
+    return proof, SimpleNamespace(items=selected)
+
+
+def test_full_collection_retained_and_prefix_not_reordered(
+    nodes: list[str], tmp_path: Path
+) -> None:
+    """Truncation retains every original object including the unexecuted suffix."""
+    proof, session = collection_case(nodes, tmp_path)
+    original = list(session.items)
+    proof.admit(session)
+    assert session.items == original[:157]
+    assert len(proof.all_items) == 3696
+    assert all(any(item is kept for kept in proof.all_items) for item in original)
+    receipt = target.read_json(tmp_path / "full-collection.json", 1024 * 1024)
+    assert receipt["selected"] == [item.nodeid for item in original]
+    assert receipt["original_nextitem"] == original[157].nodeid
+    assert receipt["historical_windows_suffix_verified"] is False
+    with pytest.raises(ValueError, match="mismatch"):
+        proof.admit(session)
+
+
+@pytest.mark.parametrize(
+    "change", ["count", "excluded", "reorder", "foreign", "duplicate", "receipt-bound"]
+)
+def test_full_collection_mismatch_never_fits_prefix(
+    nodes: list[str],
+    tmp_path: Path,
+    change: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Counts, identities, exact exclusions and first157 are admission gates."""
+    proof, session = collection_case(nodes, tmp_path)
+    if change == "count":
+        proof.all_items.pop()
+    elif change == "excluded":
+        proof.excluded[0].nodeid = "other-exclusion"
+    elif change == "reorder":
+        session.items[0], session.items[1] = session.items[1], session.items[0]
+    elif change == "foreign":
+        session.items[-1] = SimpleNamespace(nodeid=session.items[-1].nodeid)
+    elif change == "duplicate":
+        session.items[-1] = session.items[-2]
+    else:
+        monkeypatch.setattr(proof, "MAX_ORDER_BYTES", 1)
+    before = list(session.items)
+    with pytest.raises(ValueError, match=r"mismatch|bound"):
+        proof.admit(session)
+    assert session.items == before
+    assert not proof.admitted
+    assert not (tmp_path / "full-collection.json").exists()
+
+
+def test_full_discovery_count_is_bounded(nodes: list[str], tmp_path: Path) -> None:
+    """The Item retention list cannot silently grow past the fixed source count."""
+    proof, _ = collection_case(nodes, tmp_path)
+    with pytest.raises(ValueError, match="count exceeded"):
+        proof.collect(SimpleNamespace(nodeid="extra"))
+    assert len(proof.all_items) == 3696
+
+
+def test_child_uses_root_collection_and_post_collection_admission() -> None:
+    """Audit the actual pytest call: no explicit nodes or reordering suppression."""
+    import inspect  # noqa: PLC0415 - inspect only this fixed diagnostic function
+
+    source = inspect.getsource(target.child)
+    assert '"--randomly-dont-reorganize"' not in source
+    assert "*nodes" not in source
+    assert '"--randomly-seed=" + str(SEED)' in source
+    assert '"not native_desktop"' in source
+    assert "pytest_collection_modifyitems" not in source
+    assert "@pytest.hookimpl(tryfirst=True)" in source
+    assert "def pytest_runtestloop" in source
+    assert "collection.admit(session)" in source

@@ -16,7 +16,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 # Retain the real clock before pytest fixtures can mutate the shared time module.
 CHILD_MONOTONIC = time.monotonic
@@ -368,6 +368,71 @@ def target_snapshot(path: Path) -> tuple[dict[str, Any], str]:
     return value, hashlib.sha256(raw).hexdigest()
 
 
+class FullCollection:
+    """Retain every collected Item and validate final seeded order without fitting."""
+
+    DISCOVERED = 3696
+    SELECTED = 3691
+    EXCLUDED: ClassVar[set[str]] = {
+        "tests/editor/test_tab_preview_native.py::test_native_preview_does_not_occlude_tab_hit_testing",
+        *(
+            "tests/editor/test_tabs_native.py::test_native_tab_gesture_keeps_document_and_releases_input["
+            + mode
+            + "]"
+            for mode in ("merge", "detach", "escape", "hotkey")
+        ),
+    }
+    MAX_ORDER_BYTES = 1024 * 1024
+
+    def __init__(self, nodes: list[str], epoch: str, output: Path) -> None:
+        self.nodes = nodes
+        self.epoch = epoch
+        self.output = output
+        self.all_items: list[Any] = []
+        self.excluded: list[Any] = []
+        self.admitted = False
+
+    def collect(self, item: Any) -> None:  # noqa: ANN401 - pytest Item retained without target imports
+        """Keep strong references, including items later deselected."""
+        if len(self.all_items) >= self.DISCOVERED:
+            raise ValueError("full collection count exceeded")
+        self.all_items.append(item)
+
+    def admit(self, session: Any) -> None:  # noqa: ANN401 - pytest Session seam
+        """Called at runtestloop entry, after all collection hooks returned."""
+        selected = list(session.items)
+        order = [item.nodeid for item in selected]
+        excluded = [item.nodeid for item in self.excluded]
+        if (
+            self.admitted
+            or len(self.all_items) != self.DISCOVERED
+            or len(selected) != self.SELECTED
+            or len(excluded) != len(self.EXCLUDED)
+            or set(excluded) != self.EXCLUDED
+            or len({id(item) for item in self.all_items}) != self.DISCOVERED
+            or {id(item) for item in selected} | {id(item) for item in self.excluded}
+            != {id(item) for item in self.all_items}
+            or len(set(order)) != self.SELECTED
+            or order[:NODE_COUNT] != self.nodes
+        ):
+            raise ValueError("full collection/order/exclusion mismatch")
+        value = {
+            "epoch": self.epoch,
+            "source_sha256": digest(ROOT / "scripts/qt_hang_diagnostic/inputs.json"),
+            "discovered": 3696,
+            "excluded": excluded,
+            "selected": order,
+            "historical_windows_suffix_verified": False,
+            "original_nextitem": order[NODE_COUNT],
+        }
+        if len(json.dumps(value).encode("utf-8")) > self.MAX_ORDER_BYTES:
+            raise ValueError("full order receipt exceeds bound")
+        write_once(self.output / "full-collection.json", value)
+        write_json(self.output / "collected.json", order[:NODE_COUNT])
+        session.items = selected[:NODE_COUNT]
+        self.admitted = True
+
+
 def child(source: Path, output: Path, epoch: str) -> int:
     """Run the sole fixed prefix with file-only progress hooks."""
     log = (output / "pytest.log").open("w", encoding="utf-8", buffering=1)
@@ -408,13 +473,18 @@ def child(source: Path, output: Path, epoch: str) -> int:
     )
 
     ledger = TargetLedger(nodes, epoch, output)
+    collection = FullCollection(nodes, epoch, output)
 
     class Progress:
-        def pytest_collection_modifyitems(self, items: list[pytest.Item]) -> None:
-            actual = [item.nodeid for item in items]
-            write_json(output / "collected.json", actual)
-            if actual != nodes:
-                raise ValueError("collected order differs from fixed prefix")
+        def pytest_itemcollected(self, item: pytest.Item) -> None:
+            collection.collect(item)
+
+        def pytest_deselected(self, items: list[pytest.Item]) -> None:
+            collection.excluded.extend(items)
+
+        @pytest.hookimpl(tryfirst=True)
+        def pytest_runtestloop(self, session: pytest.Session) -> None:
+            collection.admit(session)
 
         def pytest_runtest_call(self, item: pytest.Item) -> None:
             del item
@@ -452,8 +522,6 @@ def child(source: Path, output: Path, epoch: str) -> int:
             "--junitxml=" + str(output / "junit.xml"),
             "--ux-snapshots=" + str(output / "snapshots"),
             "--randomly-seed=" + str(SEED),
-            "--randomly-dont-reorganize",
-            *nodes,
         ],
         plugins=[Progress()],
     )
@@ -530,10 +598,11 @@ def supervise(source: Path, output: Path) -> int:  # noqa: C901, PLR0912, PLR091
     receipt: dict[str, Any] = {
         "base": BASE,
         "seed": SEED,
-        "collection_scope": "explicit-prefix-not-full-suite",
+        "collection_scope": "full-collection-prefix-execution",
         "collection_limitation": (
-            "157 explicitly collected nodes omit possible imports/hooks from the "
-            "original 3691-test full collection; non-reproduction is not resolution"
+            "All3696 Items retained; only first157 execute. Final nextitem/session "
+            "fixture retirement differs; historical Windows suffix order unknown; "
+            "non-reproduction is not resolution"
         ),
         "native_stack_available": False,
         "debugger_intervention": False,

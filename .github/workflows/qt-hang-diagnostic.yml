@@ -1,4 +1,4 @@
-name: Target-aware Qt 6.11.3 diagnosis without debugger
+name: Full-collection Qt 6.11.3 prefix diagnosis
 
 on:
   push:
@@ -39,7 +39,7 @@ jobs:
           Copy-Item scripts/qt_hang_diagnostic/prefix.json diagnostic-results/
           git rev-parse HEAD | Set-Content diagnostic-results/diagnostic-head.txt
           Get-FileHash diagnostic-results/failed-source.zip -Algorithm SHA256 | Format-List | Out-File diagnostic-results/archive-sha256.txt
-      - name: One owned prefix and target, Python stacks only
+      - name: One full collection and owned prefix, Python stacks only
         timeout-minutes: 2
         shell: pwsh
         run: >-

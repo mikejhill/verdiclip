@@ -49,3 +49,29 @@ change the process context. Matching selected source bytes and execution order
 does not recreate that broader context. The receipt labels this scope as
 `explicit-prefix-not-full-suite`. A passing target is non-reproduction only,
 not evidence that the original full-suite hang is resolved.
+
+## Next distinct variant: full collection, prefix execution
+
+The active candidate now invokes the original root testpaths, marker filter and
+seed with normal pytest-randomly ordering. There are no explicit node arguments
+or `--randomly-dont-reorganize`. At runtest-loop entry, after collection returns,
+it requires 3,696 discovered Items, precisely the five original native-desktop
+exclusions, 3,691 selected Items, and the exact known first 157 nodes. Any
+mismatch fails; the harness never sorts or fits the prefix.
+
+All discovered Item objects, including deselected and unexecuted suffix Items,
+remain strongly referenced through the session. Before narrowing execution to
+the first 157, a write-once session/source-bound full-order receipt is emitted
+with a 1 MiB byte cap. The prior explicit-collection paragraph documents the
+previous attempt, not this variant. The current receipt scope is
+`full-collection-prefix-execution`.
+
+This is still not an exact original full-suite execution: the final target's
+`nextitem` is now None, rather than the following selected Item, so fixture
+retirement/session boundaries may differ. The original next Item is recorded
+from this collection (prior local evidence identified
+`tests/editor/test_style_bar.py::test_field_labels_keep_clear_of_the_separator_before_them`).
+The complete historical Windows suffix order was not retained, so this receipt
+must not claim to verify that unknown order. A pass remains non-reproduction,
+not resolution of the original hang. Source checks, phase journal, coverage,
+30/15/48-second budgets and the no-debugger contract are unchanged.
