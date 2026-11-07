@@ -1006,6 +1006,7 @@ def prepared_value(authored: Json, *, ready: float = 2.0) -> Json:
         "schema": 1,
         "session": "a" * 32,
         "fixture_pid": 321,
+        "executor_pid": 654,
         "ready": ready,
         "fixture": authored,
         "native": {
@@ -1037,6 +1038,11 @@ def test_preparation_has_fixed_ten_second_admission(authored: Json, now: float) 
         ("session", "b" * 32),
         ("fixture_pid", 322),
         ("fixture_pid", 321.0),
+        ("executor_pid", True),
+        ("executor_pid", 654.0),
+        ("executor_pid", 0),
+        ("executor_pid", -1),
+        ("executor_pid", 2**32),
         ("ready", float("nan")),
         ("ready", float("inf")),
         ("ready", True),
@@ -1235,14 +1241,26 @@ def test_real_preparation_handoff_retains_guards_and_fixed_deadlines(
                 assert guard.check.call_count == 1
                 assert journal.deadline == 10.0
         assert smoke.read(output / "preparation-ready.json")["native"] == native
+        assert (
+            smoke.read(output / "preparation-ready.json")["executor_pid"]
+            == smoke.os.getpid()
+        )
     finally:
         journal.stream.close()
 
 
 @pytest.mark.parametrize(
-    "failure", ["late-read", "late-snapshot", "wrong-job", "wrong-pid", "terminal"]
+    "failure",
+    [
+        "late-read",
+        "late-snapshot",
+        "wrong-job",
+        "wrong-pid",
+        "terminal",
+        "gui-descendant",
+    ],
 )
-def test_outer_preparation_failure_never_publishes_case_start(
+def test_outer_preparation_failure_never_publishes_case_start(  # noqa: PLR0915 - full external failure path
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, authored: Json, failure: str
 ) -> None:
     """Actual external admission rejects late evidence and lost ownership."""
@@ -1255,7 +1273,9 @@ def test_outer_preparation_failure_never_publishes_case_start(
     fixture.process.pid, gui.process.pid = 321, 654
     gui.snapshot.return_value = {
         "exit_code": 1 if failure == "terminal" else None,
-        "members": [] if failure == "terminal" else [654],
+        "members": []
+        if failure == "terminal"
+        else ([654, 765] if failure == "gui-descendant" else [654]),
     }
     clock = [1.0]
 
@@ -1307,6 +1327,22 @@ def test_outer_preparation_failure_never_publishes_case_start(
     assert "case_start" not in result
     assert not (args.output / "executor" / "case-start.json").exists()
     assert all(call.args[1] == 11.0 for call in cleanup.call_args_list)
+    if failure == "gui-descendant":
+        evidence = result["preparation_ownership"]
+        assert evidence == {
+            "session": "a" * 32,
+            "ready": 1.0,
+            "executor_pid": 654,
+            "gui_launch_pid": 654,
+            "gui_snapshot": {"exit_code": None, "members": [654, 765]},
+        }
+        fixture.snapshot.assert_not_called()
+    if failure == "wrong-job":
+        assert result["preparation_ownership"]["fixture_launch_pid"] == 321
+        assert result["preparation_ownership"]["fixture_snapshot"] == {
+            "exit_code": None,
+            "members": [322],
+        }
 
 
 @pytest.mark.parametrize("finished", [9.999, 10.0, 10.001])
@@ -1359,3 +1395,11 @@ def test_slow_successful_preparation_pin_is_released_before_rejection(
         guard.close.assert_called_once_with()
     finally:
         journal.stream.close()
+
+
+def test_preparation_executor_pid_is_required(authored: Json) -> None:
+    """Missing executor PID is not inferred from the launch process or job list."""
+    value = prepared_value(authored)
+    del value["executor_pid"]
+    with pytest.raises(ValueError, match="fields"):
+        smoke.preparation_receipt(value, "a" * 32, 321, 0.0, 3.0)

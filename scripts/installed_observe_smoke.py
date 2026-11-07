@@ -168,7 +168,15 @@ def preparation_receipt(
     value: Json, session: str, pid: int, started: float, now: float
 ) -> Json:
     """Validate owned metadata only; never treat it as pixel/provider evidence."""
-    if set(value) != {"schema", "session", "fixture_pid", "ready", "fixture", "native"}:
+    if set(value) != {
+        "schema",
+        "session",
+        "fixture_pid",
+        "executor_pid",
+        "ready",
+        "fixture",
+        "native",
+    }:
         raise ValueError("Preparation receipt fields differ")
     if (
         type(value["schema"]) is not int
@@ -176,6 +184,8 @@ def preparation_receipt(
         or value["session"] != session
         or type(value["fixture_pid"]) is not int
         or value["fixture_pid"] != pid
+        or type(value["executor_pid"]) is not int
+        or not 0 < value["executor_pid"] < 2**32
     ):
         raise ValueError("Preparation receipt identity differs")
     ready = value["ready"]
@@ -672,6 +682,7 @@ def prepare_case(  # noqa: PLR0913, PLR0917 - explicit immutable handshake input
         "schema": 1,
         "session": session,
         "fixture_pid": pid,
+        "executor_pid": os.getpid(),
         "ready": ready_time,
         "fixture": fixture,
         "native": native,
@@ -1100,9 +1111,20 @@ def outer(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912, PLR0915 - ow
                     started,
                     time.monotonic(),
                 )
+                result["preparation_ownership"] = {
+                    "session": session,
+                    "ready": prepared["ready"],
+                    "executor_pid": prepared["executor_pid"],
+                    "gui_launch_pid": None if gui.process is None else gui.process.pid,
+                    "gui_snapshot": status,
+                }
                 if gui.process is None or status["members"] != [gui.process.pid]:
                     raise RuntimeError("Prepared executor no longer solely owned/alive")  # noqa: TRY301 - first failure
                 fixture_state = fixture.snapshot()
+                result["preparation_ownership"].update(
+                    fixture_launch_pid=fixture.process.pid,
+                    fixture_snapshot=fixture_state,
+                )
                 if fixture_state["exit_code"] is not None or fixture_state[
                     "members"
                 ] != [fixture.process.pid]:
