@@ -19,8 +19,8 @@ jobs:
     timeout-minutes: 9
     env:
       PYTHONUTF8: "1"
-      QUALIFICATION_HEAD: "bdb94e4e97bca35925530959a4c40348a5328995"
-      QUALIFICATION_TREE: "85a8393554c182c1d1b74c48da743b1e43d209ee"
+      QUALIFICATION_HEAD: "38c70085968c6f9046450a12820af3b543edc402"
+      QUALIFICATION_TREE: "5bf2e891253f578e340052fc9cce7f52338d763b"
       WORKFLOW_HEAD: ${{ github.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -29,7 +29,7 @@ jobs:
           GIT_CONFIG_KEY_0: core.autocrlf
           GIT_CONFIG_VALUE_0: "false"
         with:
-          ref: bdb94e4e97bca35925530959a4c40348a5328995
+          ref: 38c70085968c6f9046450a12820af3b543edc402
           persist-credentials: false
       - name: Verify fixed candidate and retain separate workflow identity
         timeout-minutes: 1
@@ -92,6 +92,7 @@ jobs:
             uv.lock
             scripts/panel_*.py
             scripts/panel_fixture/matrix.html
+            scripts/panel_raw_geometry_readiness.md
             receipts/research-source.json
             receipts/table-dark125/receipt.json
             receipts/table-dark125/raw/receipt.json
