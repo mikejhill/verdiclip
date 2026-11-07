@@ -15,11 +15,17 @@ from pathlib import Path
 
 _PYTHON_VERSION_PARTS = 3
 _MAX_VERSION_PART = 1000
-_SCHEMA = 1
+_SCHEMA = 2
 _MAX_MANIFEST_BYTES = 16_384
 _MAX_PATH_CHARS = 2048
 _MAX_VERSION_CHARS = 128
-_MODULES = ("verdiclip", "mss", "verdiclip.platform.helper_bootstrap")
+_MODULES = (
+    "verdiclip",
+    "mss",
+    "verdiclip.platform.helper_bootstrap",
+    "verdiclip.platform.helper_peer",
+    "verdiclip.platform.helper_protocol",
+)
 _PACKAGES = ("verdiclip", "mss")
 
 
@@ -56,7 +62,7 @@ class RuntimeManifest:
 
     executable: str
     roots: tuple[str, ...]
-    origins: tuple[str, str, str]
+    origins: tuple[str, str, str, str, str]
     versions: tuple[str, str]
     python_version: tuple[int, int, int]
     pointer_bits: int
@@ -103,7 +109,7 @@ class RuntimeManifest:
         return result
 
 
-def inspect_runtime() -> RuntimeManifest:
+def inspect_runtime() -> RuntimeManifest:  # noqa: C901 - fixed runtime identity checks
     """Describe normal installed pip, uv tool or uvx roots without guessing paths."""
     if getattr(sys, "frozen", False):
         raise ValueError("Frozen helper runtimes are not supported")
@@ -131,10 +137,10 @@ def inspect_runtime() -> RuntimeManifest:
             raise ValueError("Loaded package origin differs from its distribution")
         roots.append(str(root))
         versions.append(dist.version)
-    if Path(origins[2]) != (
-        Path(roots[0]) / "verdiclip/platform/helper_bootstrap.py"
-    ).resolve(strict=True):
-        raise ValueError("Bootstrap origin differs from the installed distribution")
+    for origin, module in zip(origins[2:], _MODULES[2:], strict=True):
+        relative = module.replace(".", "/") + ".py"
+        if Path(origin) != (Path(roots[0]) / relative).resolve(strict=True):
+            raise ValueError("Fixed helper origin differs from installed distribution")
     if (
         versions[0] != getattr(modules[0], "VERSION", None)
         or getattr(modules[1], "__version__", None) != versions[1]
@@ -144,7 +150,7 @@ def inspect_runtime() -> RuntimeManifest:
     manifest = RuntimeManifest(
         str(Path(executable).resolve(strict=True)),
         tuple(dict.fromkeys(roots)),
-        (origins[0], origins[1], origins[2]),
+        (origins[0], origins[1], origins[2], origins[3], origins[4]),
         (versions[0], versions[1]),
         (sys.version_info.major, sys.version_info.minor, sys.version_info.micro),
         struct.calcsize("P") * 8,

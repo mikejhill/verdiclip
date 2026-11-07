@@ -5,6 +5,27 @@ base is `b8254f2a9c6dab9d50bd6b174a5651b2aff92201`. This is not a restoration of
 the removed 0.13.0 scrolling workflow. Normal capture and its frozen-menu/input
 ownership behavior remain a separate path.
 
+## Current qualification status
+
+The following original proposal is not a finalized support contract. In
+particular, its UIA-only input choice and edge-strip removal language are under
+review, not authorization to narrow browser support or discard selected bounds.
+The current experiments preserve the complete selected panel rectangle and assess
+both UIA writes and bounded native wheel messages with independent read-only
+position evidence. Native wheel messages are not foreign-process code injection.
+No input method is adopted until its endpoint, restoration, interference and
+pixel-fidelity evidence passes. There is no silent fallback after an uncertain
+write.
+
+Reference-only owned browser scripts supply independent test oracles; they are
+not injected into the user's applications or used by raw acquisition. Browser
+fractional edges must retain every selected pixel. Static borders and rails may
+be represented only through observed source pixels with explicit provenance;
+stationary content cannot be assumed to be disposable chrome. Ambiguous occlusion,
+changing content or unproved coverage fails without delivering a partial image.
+See `automatic-panel-feasibility.md` for current evidence and
+`automatic-panel-release-gates.md` for the unchanged release hold.
+
 ## Interaction
 
 1. Choose **Capture scrolling panel** from the tray or its configurable hotkey

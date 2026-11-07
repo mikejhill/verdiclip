@@ -13,11 +13,17 @@ from typing import cast
 import pytest
 from scripts import installed_runtime_smoke as smoke
 
+from verdiclip.platform import helper_peer, helper_protocol
 from verdiclip.platform.owned_helper import HelperCommand, HelperStatus
 
 _PRIMITIVE_BYTES = {
     module.__name__: Path(module.__file__).read_bytes()
-    for module in (smoke.helper_runtime, smoke.helper_bootstrap)
+    for module in (
+        smoke.helper_runtime,
+        smoke.helper_bootstrap,
+        helper_peer,
+        helper_protocol,
+    )
 }
 
 
@@ -35,6 +41,8 @@ def installed(
         "verdiclip/platform/owned_helper.py": "# Fixture.\n",
         "verdiclip/platform/helper_runtime.py": "# Runtime fixture.\n",
         "verdiclip/platform/helper_bootstrap.py": "# Bootstrap fixture.\n",
+        "verdiclip/platform/helper_peer.py": "# Peer fixture.\n",
+        "verdiclip/platform/helper_protocol.py": "# Protocol fixture.\n",
         "mss/__init__.py": "__version__='10.2.0'\n",
         "verdiclip-1.2.3.dist-info/METADATA": "Name: verdiclip\nVersion: 1.2.3\n",
         "mss-10.2.0.dist-info/METADATA": "Name: mss\nVersion: 10.2.0\n",
@@ -63,7 +71,12 @@ def installed(
         version = "1.2.3" if name == "verdiclip" else "10.2.0"
         return PathDistribution(root / f"{name}-{version}.dist-info")
 
-    for module in (smoke.helper_runtime, smoke.helper_bootstrap):
+    for module in (
+        smoke.helper_runtime,
+        smoke.helper_bootstrap,
+        helper_peer,
+        helper_protocol,
+    ):
         monkeypatch.setattr(
             module,
             "__file__",
@@ -457,6 +470,8 @@ def test_exact_primitive_case_uses_production_argv(
             dict(runtime.origins)["verdiclip"],
             dict(runtime.origins)["mss"],
             str(root / "verdiclip/platform/helper_bootstrap.py"),
+            str(root / "verdiclip/platform/helper_peer.py"),
+            str(root / "verdiclip/platform/helper_protocol.py"),
         ),
         ("1.2.3", "10.2.0"),
         runtime.python_version,
@@ -495,6 +510,9 @@ def test_exact_primitive_case_uses_production_argv(
             """Record the unconditional final resource-release fallback."""
             releases.append(reason)
 
+    # Initialize host sysconfig before simulating only the Windows orchestration.
+    # Otherwise a first test on Linux tries importing Windows sysconfigdata.
+    smoke.sysconfig.get_config_vars()
     monkeypatch.setattr(smoke.sys, "platform", "win32")
     monkeypatch.setattr(smoke.helper_runtime, "inspect_runtime", lambda: manifest)
     monkeypatch.setattr(smoke, "OwnedHelper", Proof)
@@ -527,7 +545,12 @@ def test_primitive_suffix_cannot_publish_after_failed_verification(
 ) -> None:
     """Real isolated execution never reaches the ready suffix after proof failure."""
     root, _, runtime = installed
-    for module in (smoke.helper_runtime, smoke.helper_bootstrap):
+    for module in (
+        smoke.helper_runtime,
+        smoke.helper_bootstrap,
+        helper_peer,
+        helper_protocol,
+    ):
         target = root / "verdiclip/platform" / Path(module.__file__).name
         target.write_bytes(_PRIMITIVE_BYTES[module.__name__])
     manifest = smoke.helper_runtime.RuntimeManifest(
@@ -537,6 +560,8 @@ def test_primitive_suffix_cannot_publish_after_failed_verification(
             dict(runtime.origins)["verdiclip"],
             dict(runtime.origins)["mss"],
             str(root / "verdiclip/platform/helper_bootstrap.py"),
+            str(root / "verdiclip/platform/helper_peer.py"),
+            str(root / "verdiclip/platform/helper_protocol.py"),
         ),
         ("1.2.3", "10.2.0"),
         runtime.python_version,

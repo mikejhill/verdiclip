@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from verdiclip.platform import helper_bootstrap as bootstrap
+from verdiclip.platform import helper_peer, helper_protocol
 from verdiclip.platform import helper_runtime as runtime
 
 
@@ -27,7 +28,7 @@ def installed(
         "verdiclip-1.2.3.dist-info/METADATA": "Name: verdiclip\nVersion: 1.2.3\n",
         "mss-10.2.0.dist-info/METADATA": "Name: mss\nVersion: 10.2.0\n",
     }
-    for module in (runtime, bootstrap):
+    for module in (runtime, bootstrap, helper_peer, helper_protocol):
         files[f"verdiclip/platform/{Path(module.__file__).name}"] = Path(
             module.__file__
         ).read_text(encoding="utf-8")
@@ -46,6 +47,11 @@ def installed(
             __file__=str(root / "verdiclip/platform/helper_bootstrap.py")
         ),
     }
+    for module in (helper_peer, helper_protocol):
+        name = module.__name__
+        modules[name] = SimpleNamespace(
+            __file__=str(root / (name.replace(".", "/") + ".py"))
+        )
     for name, module in modules.items():
         monkeypatch.setitem(sys.modules, name, module)
     monkeypatch.setattr(
@@ -69,7 +75,7 @@ def test_manifest_round_trip(installed: runtime.RuntimeManifest) -> None:
     ("field", "value"),
     [
         ("schema_version", True),
-        ("schema_version", 2),
+        ("schema_version", 1),
         ("executable", "relative"),
         ("executable", "x" * 2049),
         ("roots", []),
@@ -224,3 +230,32 @@ def test_proof_requires_isolation(installed: runtime.RuntimeManifest) -> None:
     """Calling verification in an ordinary parent cannot prove child isolation."""
     with pytest.raises(RuntimeError, match="Isolated"):
         bootstrap.verify_runtime(installed.serialize())
+
+
+def test_fixed_peer_arguments_are_data_after_attestation(
+    installed: runtime.RuntimeManifest,
+) -> None:
+    """Only the fixed GUI-free inert peer is dispatched after runtime verification."""
+    launch = helper_peer.PeerLaunch("VerdiClip-helper-" + "a" * 32, "b" * 32, 7)
+    arguments = bootstrap.peer_arguments(installed.serialize(), launch.serialize())
+    assert arguments[:3] == ("-I", "-S", "-c")
+    assert arguments[3].startswith(bootstrap.BOOTSTRAP_SOURCE)
+    assert arguments[4:] == (installed.serialize(), launch.serialize())
+    assert "from verdiclip.platform.helper_peer import run" in arguments[3]
+    assert installed.schema_version == 2
+    assert len(installed.origins) == 5
+
+
+@pytest.mark.parametrize("index", [3, 4])
+def test_fixed_peer_module_origin_mismatch_fails(
+    installed: runtime.RuntimeManifest, monkeypatch: pytest.MonkeyPatch, index: int
+) -> None:
+    """New fixed peer/protocol origins are attested, not merely added import roots."""
+    name = (
+        "verdiclip.platform.helper_peer"
+        if index == 3
+        else "verdiclip.platform.helper_protocol"
+    )
+    monkeypatch.setattr(sys.modules[name], "__file__", installed.origins[0])
+    with pytest.raises(ValueError, match="Fixed helper origin"):
+        runtime.inspect_runtime()

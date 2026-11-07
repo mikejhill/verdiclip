@@ -33,6 +33,7 @@ from scripts.panel_fixture_server import FixtureServer
 from scripts.panel_matrix_reference import reference_offsets
 from scripts.panel_owned_job import OwnedJob
 from scripts.panel_probe_oracle import color_bounds
+from scripts.panel_reference_outcome import retain_failure
 
 CASES = {
     "conversation-light100": (MatrixCase("conversation", width=320), "1"),
@@ -195,14 +196,26 @@ def run_reference(job: OwnedJob, manifest: Json, output: Path) -> Json:
         code = job.wait(handle, 0)
         records = events(output / "reference/calls.jsonl")
         now = time.monotonic()
-        validate_reference_log(records, start, now, finished=code is not None)
+        try:
+            validate_reference_log(records, start, now, finished=code is not None)
+        except RuntimeError as error:
+            primary = retain_failure(output, manifest, records, code, str(error))
+            raise RuntimeError(primary) from error
         if code is not None:
             if code != 0:
-                raise RuntimeError(f"Reference helper failed with exit {code}")
+                primary = retain_failure(output, manifest, records, code, None)
+                raise RuntimeError(primary)
             # Re-read the clock after validation, immediately before admission.
             elapsed = time.monotonic() - start
             if elapsed >= HELPER_SECONDS:
-                raise RuntimeError("Reference helper total deadline exceeded")
+                primary = retain_failure(
+                    output,
+                    manifest,
+                    records,
+                    code,
+                    "Reference helper total deadline exceeded",
+                )
+                raise RuntimeError(primary)
             return {"pid": pid, "exit_code": code, "seconds": elapsed}
         time.sleep(0.05)
 

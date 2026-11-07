@@ -172,9 +172,13 @@ def test_reference_zero_exit_final_deadline(
     monkeypatch.setattr(matrix, "events", lambda _path: reference_log())
     if last_clock >= 30:
         with pytest.raises(RuntimeError, match="total deadline"):
-            matrix.run_reference(cast("OwnedJob", Job()), {}, tmp_path)
+            matrix.run_reference(
+                cast("OwnedJob", Job()), {"allowed_rect": [0, 0, 10, 10]}, tmp_path
+            )
     else:
-        result = matrix.run_reference(cast("OwnedJob", Job()), {}, tmp_path)
+        result = matrix.run_reference(
+            cast("OwnedJob", Job()), {"allowed_rect": [0, 0, 10, 10]}, tmp_path
+        )
         assert result["exit_code"] == 0
 
 
@@ -286,3 +290,73 @@ def test_actual_endpoint_763_2_is_not_rounded_to_763() -> None:
     observed["initial"]["endpoint_limit"] = 763
     with pytest.raises(RuntimeError, match="actual settled endpoint"):
         matrix.verify_reference_identity(raw, observed, None)
+
+
+def test_reference_failed_exit_retains_child_and_missing_guard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real orchestration retains rejection before secondary guard verdict."""
+
+    class Job:
+        def start(self, *_args: object) -> tuple[int, int]:
+            return 1, 2
+
+        def wait(self, *_args: object) -> int:
+            return 1
+
+    folder = tmp_path / "reference"
+    folder.mkdir()
+    (folder / "readiness.json").write_text(
+        json.dumps(
+            {
+                "root_rect": [0, 0, 10, 10],
+                "observations": [],
+                "first_failure": "Predicted calibration pixels differ",
+            }
+        )
+    )
+    records = [
+        r for r in reference_log() if r.get("operation") != "reference.final_guard"
+    ]
+    times = iter([0.0, 1.0])
+    monkeypatch.setattr(matrix.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(matrix, "events", lambda _path: records)
+    monkeypatch.setenv("PYTHONPATH", os.environ.get("PYTHONPATH", ""))
+    with pytest.raises(RuntimeError, match="Predicted calibration pixels differ"):
+        matrix.run_reference(
+            cast("OwnedJob", Job()), {"allowed_rect": [0, 0, 10, 10]}, tmp_path
+        )
+    report = json.loads((tmp_path / "reference-outcome.json").read_text())
+    assert (
+        report["supervisor_failure"] == "Reference final guard/cleanup evidence missing"
+    )
+    assert report["exit_code"] == 1
+    assert report["source_close_end_recorded"] is True
+
+
+def test_zero_exit_missing_final_guard_still_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A nominal child exit cannot bypass the original strict success log gate."""
+
+    class Job:
+        def start(self, *_args: object) -> tuple[int, int]:
+            return 1, 2
+
+        def wait(self, *_args: object) -> int:
+            return 0
+
+    records = [
+        r for r in reference_log() if r.get("operation") != "reference.final_guard"
+    ]
+    times = iter([0.0, 1.0])
+    monkeypatch.setattr(matrix.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(matrix, "events", lambda _path: records)
+    monkeypatch.setenv("PYTHONPATH", os.environ.get("PYTHONPATH", ""))
+    with pytest.raises(RuntimeError, match="final guard/cleanup evidence missing"):
+        matrix.run_reference(
+            cast("OwnedJob", Job()), {"allowed_rect": [0, 0, 10, 10]}, tmp_path
+        )
+    saved = json.loads((tmp_path / "reference-outcome.json").read_text())
+    assert saved["exit_code"] == 0
+    assert saved["success_admitted"] is False

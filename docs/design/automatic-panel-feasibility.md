@@ -413,3 +413,62 @@ the discovery-start value overwrote its later event emission time. The producer
 now owns the event timestamp and records discovery start separately. A regression
 exercises the actual emitter, JSONL reader and unchanged watchdog validator.
 Existing bounded discovery settling was already enabled and is not extended.
+
+## Eighteenth and nineteenth experiment evidence
+
+Native run [42362003577](https://github.com/mikejhill/verdiclip/actions/runs/42362003577)
+at `b7f1be8` passes the reviewed outer lifecycle contract. A residual image query
+returns access denied once and remains recorded as unavailable. The same pinned
+owned handle then exits with code zero and the job becomes naturally empty about
+10.5 milliseconds later. All five inner lifecycle cases pass. This qualifies that
+inert proof under its explicit contract, not the new packaged channel.
+
+Both full-root matrix collections pass. The conversation reference remains exact.
+The table's full-outer candidate still lacks qualified fractional origin/phase
+proof, so collection success is not accepted as raster correctness. Its genuine
+half-device-pixel outer edges must be preserved, not cropped or dismissed as an
+unsupported browser case.
+
+Native run [42362721743](https://github.com/mikejhill/verdiclip/actions/runs/42362721743)
+at `cb517c9` passes both wheel interior cases, including exact restored fixture
+state and pixels. Both endpoint cases reject motion during a capture. Paired
+read-only observations identify vertical-only target changes while structure and
+other state remain unchanged. This demonstrates sampled motion, not its internal
+cause. These failed cases remain failed evidence.
+
+The next bounded wheel experiment may discard direction-consistent vertical-only
+crossings only while a successfully sent write is awaiting acknowledgment. It
+retains uncertainty, records the discarded pair and does not issue another write.
+Three identical complete samples must span at least 0.2 seconds before admission.
+Identity, geometry, nonvertical changes and direction reversal still reject. The
+original two-second settling deadline is never restarted or extended.
+
+The same experimental batch adds read-only UIA identity checkpoints on owned
+stable WPF and Edge fixtures, plus reference-only render-widget origin, fixed
+marker and high-entropy version evidence. Stable identity observations do not
+prove replacement detection. Geometry projections remain unqualified until
+native evidence and numeric/source assumptions support the independent oracle.
+None of these experiments enables scrolling capture in the product.
+
+## Twentieth experiment: endpoint propagation and origin limits
+
+Native run [42363755912](https://github.com/mikejhill/verdiclip/actions/runs/42363755912)
+at `c04bd9d` passes both stable identity cases and both wheel interior cases.
+The latter restore exact initial state and complete panel RGB. Both endpoint
+negative cases now reach target bottom, then deliberately send another down
+notch. That propagates to the outer scroller; geometry guards reject before any
+inverse write or restoration. These cases remain failures under their original
+expectation. They establish that a wheel strategy must stop on independently
+verified endpoints rather than probe by scrolling again. Wheel-only arbitrary
+position restoration also remains unqualified. UIA is still the stronger current
+full-sweep candidate, not a promise to exclude other browser input methods.
+
+The conversation collector and independent full-width reference pass again. At
+125%, the table's native legacy render-widget client origin does not predict the
+fixed authored marker placement exactly. Full-root first/last images are retained;
+no fitted one-pixel correction is admitted. Chromium's pinned
+`156.0.8078.80` `ScreenWin::DIPToClientRect` uses an enclosing integer rectangle,
+which does not preserve a fractional painted origin. Source behavior explains
+why treating that client origin as exact is unjustified; it does not establish
+the missing phase. An independent bounded reference calibration remains necessary.
+Raw acquisition does not consume these reference scripts or marker results.
