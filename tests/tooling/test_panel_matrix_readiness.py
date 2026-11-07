@@ -172,3 +172,40 @@ def test_selected_native_bounds_preserve_color_clipped_edges() -> None:
     assert selected.rgb[:3] == image.rgb[21:24]
     with pytest.raises(ValueError, match="outside"):
         reference.selected_from_root(image, [50, 50, 56, 55], [49, 50, 55, 54])
+
+
+@pytest.mark.parametrize("change_at", [2, 3])
+def test_native_parent_geometry_change_rejects_stable_pixels(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change_at: int
+) -> None:
+    """Parent DPI changes within or between observations invalidate root evidence."""
+    manifest = setup(monkeypatch, [frame(0)] * 3)
+    count = [0]
+    sequence = [0]
+
+    def observe(_manifest: object) -> dict[str, Any]:
+        count[0] += 1
+        return {
+            "hwnd": 4,
+            "screen_client_rect": [0, 0, WIDTH, HEIGHT],
+            "native_geometry": {
+                "parent_chain": [
+                    {"hwnd": 12, "dpi": 120 if count[0] >= change_at else 96}
+                ]
+            },
+        }
+
+    def snapshot(_path: Path) -> dict[str, Any]:
+        sequence[0] += 1
+        return {"sequence": sequence[0], "state": {"target": {"vertical": 0}}}
+
+    monkeypatch.setattr(
+        reference, "ViewportOrigin", lambda *_args: SimpleNamespace(observe=observe)
+    )
+    monkeypatch.setattr(reference, "latest_authored_state", snapshot)
+    with pytest.raises(RuntimeError, match="origin changed"):
+        reference.stable_owned_root(manifest, tmp_path / "changed", tmp_path / "states")
+    report = json.loads((tmp_path / "changed/readiness.json").read_text())
+    assert "origin changed" in report["first_failure"]
+    assert (tmp_path / "changed/root-first.png").exists()
+    assert (tmp_path / "changed/root-last.png").exists()

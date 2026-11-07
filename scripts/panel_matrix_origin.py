@@ -8,6 +8,8 @@ from collections.abc import Callable
 from ctypes import wintypes
 from typing import Any, Protocol
 
+from scripts.panel_matrix_geometry import configure_geometry_api, parent_geometry
+
 MAX_WINDOWS = 64
 MARKERS = (
     (4, 4, (241, 31, 117), (23, 213, 83)),
@@ -53,6 +55,7 @@ class ViewportOrigin:
         for name, (args, result) in signatures.items():
             function = getattr(self.api, name)
             function.argtypes, function.restype = args, result
+        configure_geometry_api(self.api)
 
     def call(self, name: str, *args: object) -> int:
         """Watch native calls and guard before consuming returned data."""
@@ -129,6 +132,7 @@ class ViewportOrigin:
             "pid": pid.value,
             "root_hwnd": root,
             "screen_client_rect": bounds,
+            "native_geometry": parent_geometry(self, hwnd, manifest),
         }
 
 

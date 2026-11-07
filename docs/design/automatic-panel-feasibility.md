@@ -472,3 +472,26 @@ which does not preserve a fractional painted origin. Source behavior explains
 why treating that client origin as exact is unjustified; it does not establish
 the missing phase. An independent bounded reference calibration remains necessary.
 Raw acquisition does not consume these reference scripts or marker results.
+
+## Installed fixed-channel native proof
+
+Native run [42364612912](https://github.com/mikejhill/verdiclip/actions/runs/42364612912)
+at `62bb93a` passes the fresh-installed-wheel channel harness. All five cases
+qualify their declared lifecycle contracts: ping/finish, immediate cancellation,
+after-ready cancellation, startup facade deletion, and pinned-handle parent death.
+Outer cleanup is confirmed without forced termination contributing to success.
+The installed-runtime capture, poison-path and schema-2 bootstrap checks pass too.
+Both jobs attest the same built wheel. These are inert peer lifecycle results,
+not provider, frame-transfer, GUI latency or product qualification.
+
+Ordinary tests pass, but the Python 3.13 diff-coverage gate fails on newly added
+boundary branches. Additional deterministic callback/native-seam tests are being
+added while retaining the real QThread integration and native proofs. Coverage
+configuration and thresholds remain unchanged. No release is authorized by the
+native result alone.
+
+The table reference still rejects its original calibration mismatch. Failure
+retention now reports that root cause rather than only a secondary missing final
+guard. Its dedicated outcome JSON was not included by the artifact upload glob;
+the next batch adds that exact file path. Existing receipts and raw logs remain
+available, but the omitted detailed outcome file is not claimed as verified.

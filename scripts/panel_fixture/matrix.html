@@ -114,7 +114,7 @@ function report() {
   const receipt = {sequence: sequence++, dpr: devicePixelRatio, user_agent: navigator.userAgent,
     mode: isReference ? `${config.reference_mode}-reference` : 'scroll', config,
     browser_version: browserVersion,
-    viewport: {inner:[innerWidth,innerHeight], scroll:[scrollX,scrollY], visual_offset:[visualViewport.offsetLeft,visualViewport.offsetTop], visual_scale:visualViewport.scale, visual_size:[visualViewport.width,visualViewport.height]},
+    viewport: {document_client:[document.documentElement.clientWidth,document.documentElement.clientHeight], computed:[document.documentElement,document.body,target].map(element => {const style=getComputedStyle(element); return {zoom:style.zoom,transform:style.transform};}), inner:[innerWidth,innerHeight], scroll:[scrollX,scrollY], visual_offset:[visualViewport.offsetLeft,visualViewport.offsetTop], visual_scale:visualViewport.scale, visual_size:[visualViewport.width,visualViewport.height]},
     calibration: Array.from(document.querySelectorAll(".calibration"), element => { const r=element.getBoundingClientRect(); return [r.left,r.top,r.right,r.bottom]; }),
     observer_ready: [target,outer,sibling].every(element => observedBoxes.has(element)), endpoint_limit: endpointLimit,
     reference_offset: config.reference_offset, stream_tick: streamTick, expected_ids: ids,

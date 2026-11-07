@@ -348,6 +348,7 @@ jobs:
             receipts/**/receipt.json
             receipts/**/fixture.json
             receipts/**/reference-manifest.json
+            receipts/**/reference-outcome.json
             receipts/**/probe-startup.json
             receipts/**/states/*.json
             receipts/**/probe/*.json

@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+from dataclasses import replace
 from importlib.metadata import PathDistribution
 from pathlib import Path
 from types import SimpleNamespace
@@ -259,3 +260,64 @@ def test_fixed_peer_module_origin_mismatch_fails(
     monkeypatch.setattr(sys.modules[name], "__file__", installed.origins[0])
     with pytest.raises(ValueError, match="Fixed helper origin"):
         runtime.inspect_runtime()
+
+
+@pytest.mark.parametrize("field", ["roots", "versions"])
+def test_direct_manifest_rejects_duplicate_roots_or_wrong_version_count(
+    installed: runtime.RuntimeManifest, field: str
+) -> None:
+    """The immutable constructor enforces invariants independently of JSON parsing."""
+    if field == "roots":
+        with pytest.raises(ValueError, match="Duplicate runtime roots"):
+            replace(installed, roots=(installed.roots[0], installed.roots[0]))
+    else:
+        with pytest.raises(ValueError, match="Invalid runtime distribution versions"):
+            replace(installed, versions=("1",))
+
+
+def test_manifest_serialized_byte_budget_includes_json_escaping(
+    installed: runtime.RuntimeManifest,
+) -> None:
+    """Individually bounded Unicode paths can still overflow the aggregate envelope."""
+    path = str(Path(installed.roots[0]).anchor) + "é" * 1500
+    value = replace(installed, origins=(path,) * 5)
+    with pytest.raises(ValueError, match="byte bound"):
+        value.serialize()
+
+
+@pytest.mark.parametrize("failure", [None, "protocol", "executable", "runtime", "gui"])
+def test_bootstrap_in_process_verification_gates(
+    installed: runtime.RuntimeManifest,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    failure: str | None,
+) -> None:
+    """Exercise child verification branches directly, not only in untraced children."""
+    modules = {"PySide6.QtCore": object()} if failure == "gui" else {}
+    monkeypatch.setattr(
+        bootstrap,
+        "sys",
+        SimpleNamespace(
+            flags=SimpleNamespace(isolated=True, no_site=True),
+            executable=installed.executable,
+            modules=modules,
+        ),
+    )
+    expected = installed
+    if failure == "protocol":
+        monkeypatch.setattr(bootstrap.helper_protocol, "VERSION", 2)
+    elif failure == "executable":
+        expected = replace(installed, executable=str(tmp_path / "other-python"))
+    elif failure == "runtime":
+        expected = replace(installed, versions=("9.9.9", installed.versions[1]))
+    if failure is None:
+        assert bootstrap.verify_runtime(expected.serialize()) is None
+    else:
+        messages = {
+            "protocol": "Unsupported fixed peer protocol",
+            "executable": "Child executable differs",
+            "runtime": "Child runtime differs",
+            "gui": "GUI imported",
+        }
+        with pytest.raises(RuntimeError, match=messages[failure]):
+            bootstrap.verify_runtime(expected.serialize())

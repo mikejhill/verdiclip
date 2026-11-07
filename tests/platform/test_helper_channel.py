@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import ctypes
 import json
 import threading
 import time
 from dataclasses import replace
 from pathlib import Path
+from typing import cast
 from unittest.mock import Mock
 
 import pytest
@@ -777,3 +779,359 @@ def test_default_builder_has_only_fixed_inert_dispatch(
     monkeypatch.setattr(channel, "_fixed_peer_command", fixed)
     assert channel._build_command(runtime, launch) is fixed.return_value
     fixed.assert_called_once_with(runtime, launch)
+
+
+def synchronous_peer(worker: channel._Worker) -> tuple[Mock, Mock]:
+    """Keep deterministic callback coverage separate from the real QThread proof."""
+    socket = Mock()
+    socket.bytesAvailable.return_value = 0
+    socket.bytesToWrite.return_value = 0
+    socket.write.side_effect = len
+    helper = Mock()
+    helper.status = helper_status()
+    helper.poll.return_value = helper.status
+    helper.verify_ready.return_value = helper.status
+    worker.socket, worker.helper = socket, helper
+    return socket, helper
+
+
+def feed_peer(worker: channel._Worker, socket: Mock, message: Message) -> None:
+    """Deliver one exact batch through the real decoder and callback admission."""
+    payload = encode(message)
+    socket.bytesAvailable.side_effect = [len(payload), 0, 0]
+    socket.read.return_value = QByteArray(payload)
+    worker._readable()
+    socket.bytesAvailable.side_effect = None
+    socket.bytesAvailable.return_value = 0
+
+
+def test_direct_callbacks_complete_verified_roundtrip(worker: channel._Worker) -> None:
+    """Assert identity, correlation, finish and EOF on every synchronous transition."""
+    socket, helper = synchronous_peer(worker)
+    worker.peer = 7
+    identities, ready, replies = [], [], []
+    worker.identity.connect(
+        lambda generation, data: identities.append((generation, json.loads(data)))
+    )
+    worker.ready.connect(ready.append)
+    worker.reply.connect(
+        lambda gen, caller, data: replies.append((gen, caller, json.loads(data)))
+    )
+    identity: dict[str, object] = {
+        "pid": 7,
+        "executable": "fake",
+        "epoch": worker.epoch,
+        "protocol_version": 1,
+    }
+    feed_peer(worker, socket, Message("ready", 0, identity))
+    assert identities == [(1, identity)]
+    assert ready == [1]
+    helper.verify_ready.assert_called_once_with(7, "fake")
+    worker.submit(4, b'{"operation":"ping"}')
+    assert worker.phase == "busy"
+    assert worker.caller_id == 4
+    feed_peer(worker, socket, Message("response", 1, {"operation": "pong"}))
+    assert replies == [(1, 4, {"operation": "pong"})]
+    worker.finish()
+    assert worker.finish_requested
+    feed_peer(worker, socket, Message("response", 2, {"operation": "finished"}))
+    assert worker.phase == "retiring"
+    worker._disconnected()
+    assert worker.eof
+    assert worker.failure is None
+    assert socket.write.call_count == 2
+
+
+@pytest.mark.parametrize(
+    "failure", [None, "listen", "launch", "cancel-before", "cancel-after"]
+)
+def test_start_resource_admission_and_failure_cleanup(
+    worker: channel._Worker,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str | None,
+) -> None:
+    """Retain created resources and latch cancellation on both sides of launch."""
+    server, timer, helper = Mock(), Mock(), Mock()
+    server.listen.return_value = failure != "listen"
+    factory = Mock(return_value=server)
+    factory.SocketOption = channel.QLocalServer.SocketOption
+    monkeypatch.setattr(channel, "QLocalServer", factory)
+    monkeypatch.setattr(channel, "QTimer", Mock(return_value=timer))
+    monkeypatch.setattr(channel, "OwnedHelper", Mock(return_value=helper))
+    builder = Mock(return_value="fixed-test-command")
+    monkeypatch.setattr(channel, "_build_command", builder)
+    if failure == "cancel-before":
+        worker.cancelled.set()
+    elif failure == "cancel-after":
+        helper.start.side_effect = lambda _command: worker.cancelled.set()
+    elif failure == "launch":
+        helper.start.side_effect = OSError("native launch failure")
+    worker.start()
+    assert worker.launch_returned
+    timer.start.assert_called_once()
+    if failure is None:
+        assert worker.failure is None
+        assert worker.phase == "starting"
+        helper.start.assert_called_once_with("fixed-test-command")
+    else:
+        assert worker.failure is not None
+        assert worker.phase == "retiring"
+        if failure in ("launch", "cancel-after"):
+            helper.terminate.assert_called_once()
+        else:
+            helper.start.assert_not_called()
+    if failure == "cancel-before":
+        builder.assert_not_called()
+    else:
+        server.setMaxPendingConnections.assert_called_once_with(1)
+
+
+@pytest.mark.parametrize(
+    "mode", ["valid", "no-server", "no-socket", "no-helper", "duplicate"]
+)
+def test_connection_admits_only_one_owned_peer(
+    worker: channel._Worker,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+) -> None:
+    """Wire notifications only after exact native PID and membership checks."""
+    socket, helper = synchronous_peer(worker)
+    server = Mock()
+    server.nextPendingConnection.return_value = socket
+    worker.server = server
+    worker.socket = None
+    monkeypatch.setattr(channel, "_peer_pid", lambda _descriptor: 7)
+    if mode == "no-server":
+        worker.server = None
+    elif mode == "no-socket":
+        server.nextPendingConnection.return_value = None
+    elif mode == "no-helper":
+        worker.helper = None
+    elif mode == "duplicate":
+        worker.socket = socket
+    worker._connected()
+    if mode == "valid":
+        assert worker.peer == 7
+        assert worker.failure is None
+        socket.readyRead.connect.assert_called_once()
+        socket.disconnected.connect.assert_called_once()
+    else:
+        assert worker.failure in ("unexpected-connection", "missing-owned-peer")
+        helper.verify_ready.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "mode", ["busy", "reserved", "caller", "no-socket", "buffered", "short-write"]
+)
+def test_submission_failures_send_no_second_command(
+    worker: channel._Worker, mode: str
+) -> None:
+    """Invalid phase/correlation and failed writes latch retirement without retries."""
+    socket, helper = synchronous_peer(worker)
+    worker.phase = "ready"
+    if mode == "busy":
+        worker.phase = "busy"
+    elif mode == "reserved":
+        worker.flight.completed = channel.MAX_REQUESTS - 1
+    elif mode == "caller":
+        worker.caller_id = 1
+    elif mode == "no-socket":
+        worker.socket = None
+    elif mode == "buffered":
+        socket.bytesToWrite.return_value = 1
+    elif mode == "short-write":
+        socket.write.side_effect = None
+        socket.write.return_value = 0
+    worker.submit(1, b"{}")
+    assert worker.failure is not None
+    assert worker.phase == "retiring"
+    helper.terminate.assert_called_once()
+    assert socket.write.call_count == int(mode == "short-write")
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "finish-busy",
+        "cancel",
+        "invalid-ready",
+        "bad-pid",
+        "no-helper",
+        "bad-finished",
+        "missing-identity",
+        "early-eof",
+    ],
+)
+def test_protocol_failures_preserve_no_success(
+    worker: channel._Worker, mode: str
+) -> None:
+    """Exercise each rejection without replacing decoder or admission decisions."""
+    socket, _helper = synchronous_peer(worker)
+    worker.peer = 7
+    if mode == "finish-busy":
+        worker.finish()
+        assert worker.failure == "finish-while-busy"
+    elif mode == "cancel":
+        worker.cancel()
+        assert worker.failure == "cancelled"
+    elif mode == "early-eof":
+        worker._disconnected()
+        assert worker.failure == "unexpected-eof"
+    elif mode == "missing-identity":
+        with pytest.raises(ProtocolError, match="missing-verified-identity"):
+            worker._notify_ready()
+    elif mode == "bad-finished":
+        worker.phase = "ready"
+        worker.finish()
+        feed_peer(worker, socket, Message("response", 1, {"operation": "pong"}))
+        assert worker.failure == "invalid-finished"
+    else:
+        payload: dict[str, object] = {
+            "pid": 7,
+            "executable": "fake",
+            "epoch": worker.epoch,
+            "protocol_version": 1,
+        }
+        if mode == "invalid-ready":
+            payload["extra"] = 1
+        elif mode == "bad-pid":
+            payload["pid"] = True
+        else:
+            worker.helper = None
+        with pytest.raises(ProtocolError, match=r"invalid-ready|unverified-producer"):
+            worker._message(Message("ready", 0, payload))
+
+
+@pytest.mark.parametrize(
+    "mode", ["done", "cancel", "expired", "no-helper", "poll-error", "late-poll"]
+)
+def test_poll_is_nonblocking_and_cannot_admit_late_success(
+    worker: channel._Worker,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+) -> None:
+    """One timer callback retains cleanup responsibility across each failure."""
+    _socket, helper = synchronous_peer(worker)
+    clock = [1.0]
+    worker.deadline = worker.session_deadline = 2.0
+    monkeypatch.setattr(channel.time, "monotonic", lambda: clock[0])
+    terminal = Mock()
+    monkeypatch.setattr(worker, "_terminal", terminal)
+    if mode == "done":
+        worker.done = True
+    elif mode == "cancel":
+        worker.cancelled.set()
+    elif mode == "expired":
+        clock[0] = 2.0
+    elif mode == "no-helper":
+        worker.helper = None
+    elif mode == "poll-error":
+        helper.poll.side_effect = OSError("inspection failed")
+    else:
+
+        def late() -> HelperStatus:
+            clock[0] = 2.0
+            return helper_status(retired=True, exit_code=0)
+
+        helper.poll.side_effect = late
+        worker.phase = "retiring"
+    worker._poll()
+    if mode == "no-helper":
+        terminal.assert_called_once()
+    else:
+        terminal.assert_not_called()
+    if mode in ("cancel", "expired", "poll-error"):
+        assert worker.failure is not None
+        helper.terminate.assert_called_once()
+    if mode == "done":
+        helper.poll.assert_not_called()
+        worker._fail("ignored after terminal")
+        assert worker.failure is None
+
+
+def test_terminal_cancellation_closes_qt_resources_before_delivery(
+    worker: channel._Worker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancellation during terminal construction cannot expose passed true."""
+    worker.cancelled.set()
+    timer, server, thread = Mock(), Mock(), Mock()
+    worker.timer, worker.server = timer, server
+    monkeypatch.setattr(channel.QThread, "currentThread", lambda: thread)
+    receipts = []
+    worker.terminal.connect(
+        lambda _generation, payload: receipts.append(json.loads(payload))
+    )
+    worker._terminal()
+    assert receipts[0]["passed"] is False
+    assert receipts[0]["failure"] == "cancelled"
+    timer.stop.assert_called_once()
+    server.close.assert_called_once()
+    thread.quit.assert_called_once()
+
+
+@pytest.mark.parametrize("success", [True, False])
+def test_kernel_peer_pid_uses_exact_descriptor_and_error(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    success: bool,
+) -> None:
+    """Native server identity is not replaced with an advertised PID."""
+
+    def query(descriptor: int, output: object) -> int:
+        assert descriptor == 88
+        ctypes.cast(cast("int", output), ctypes.POINTER(channel.wintypes.ULONG))[0] = 7
+        return int(success)
+
+    function = Mock(side_effect=query)
+    kernel = Mock(GetNamedPipeClientProcessId=function)
+    monkeypatch.setattr(
+        channel.ctypes, "WinDLL", lambda *_a, **_kw: kernel, raising=False
+    )
+    monkeypatch.setattr(channel.ctypes, "get_last_error", lambda: 5, raising=False)
+    monkeypatch.setattr(
+        channel.ctypes,
+        "WinError",
+        lambda code: OSError(f"native {code}"),
+        raising=False,
+    )
+    if success:
+        assert channel._peer_pid(88) == 7
+    else:
+        with pytest.raises(OSError, match="native 5"):
+            channel._peer_pid(88)
+    function.assert_called_once()
+
+
+@pytest.mark.parametrize("remaining", [0, 1])
+def test_empty_read_does_not_spin_or_admit_buffer_overflow(
+    worker: channel._Worker,
+    remaining: int,
+) -> None:
+    """A stalled read is bounded; unread trailing data disqualifies the session."""
+    socket, _helper = synchronous_peer(worker)
+    socket.bytesAvailable.side_effect = [1, remaining]
+    socket.read.return_value = QByteArray()
+    worker._readable()
+    socket.read.assert_called_once()
+    assert worker.failure == ("buffer-limit" if remaining else None)
+    assert worker.verified_identity is None
+
+
+def test_facade_wrong_thread_and_repeated_start_never_launch(
+    runtime: RuntimeManifest,
+    qapp: QCoreApplication,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Invalid facade use fails before constructing a lifetime or worker thread."""
+    del qapp
+    facade = channel.HelperChannel()
+    lifetime = Mock()
+    monkeypatch.setattr(channel, "_Lifetime", lifetime)
+    facade._state = "starting"
+    with pytest.raises(RuntimeError, match="cannot start"):
+        facade.start(runtime)
+    monkeypatch.setattr(channel.QThread, "currentThread", object)
+    with pytest.raises(RuntimeError, match="owning thread"):
+        facade.start(runtime)
+    lifetime.assert_not_called()
