@@ -7,12 +7,14 @@ import gc
 import json
 import threading
 import time
+from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
 from typing import cast
 from unittest.mock import Mock
 
 import pytest
+import shiboken6
 from PySide6.QtCore import (
     QByteArray,
     QCoreApplication,
@@ -52,13 +54,24 @@ def runtime(tmp_path: Path) -> RuntimeManifest:
 
 
 @pytest.fixture
-def worker(runtime: RuntimeManifest, qapp: QCoreApplication) -> channel._Worker:
-    """Construct a worker without starting any native resource."""
-    del qapp
+def worker(
+    runtime: RuntimeManifest, qapp: QCoreApplication
+) -> Iterator[channel._Worker]:
+    """Own state-only workers through explicit destruction on their GUI affinity."""
     value = channel._Worker(1, runtime, threading.Event())
+    destroyed = []
+    value.destroyed.connect(lambda: destroyed.append(True))
     value.session_deadline = value.deadline = time.monotonic() + 20
     value.launch_returned = True
-    return value
+    yield value
+    if shiboken6.isValid(value):
+        assert value.thread() == qapp.thread(), (
+            "State worker moved to a live foreign thread"
+        )
+        value.deleteLater()
+        QCoreApplication.sendPostedEvents(value, QEvent.Type.DeferredDelete)
+    assert not shiboken6.isValid(value)
+    assert destroyed == [True]
 
 
 def helper_status(
