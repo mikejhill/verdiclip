@@ -45,7 +45,7 @@ jobs:
         shell: pwsh
         run: |
           uv sync --locked
-          git archive --format=zip --output=diagnostic-results/failed-source.zip ecb4a4cf675b701259ced8b18c1f5f4c1a32cdfa
+          git -c core.autocrlf=false archive --format=zip --output=diagnostic-results/failed-source.zip ecb4a4cf675b701259ced8b18c1f5f4c1a32cdfa
           Expand-Archive diagnostic-results/failed-source.zip failed-source
           Copy-Item scripts/qt_hang_diagnostic/inputs.json diagnostic-results/
           Copy-Item scripts/qt_hang_diagnostic/prefix.json diagnostic-results/

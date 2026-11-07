@@ -321,3 +321,16 @@ def test_supervisor_deadline_and_attachment_lifecycle(  # noqa: C901, PLR0915 - 
     if expected:
         assert receipt["failure"]
     assert all(owner.api.CloseHandle.call_count == 2 for owner in owners)
+
+
+def test_archive_explicitly_disables_line_ending_conversion() -> None:
+    """Archive bytes must match Git hashes outside the checkout step's env."""
+    workflow = (
+        diagnostic.ROOT / ".github/workflows/qt-hang-diagnostic.yml"
+    ).read_text()
+    assert (
+        "git -c core.autocrlf=false archive --format=zip "
+        "--output=diagnostic-results/failed-source.zip "
+        "ecb4a4cf675b701259ced8b18c1f5f4c1a32cdfa"
+    ) in workflow
+    assert "git archive --format=zip" not in workflow
