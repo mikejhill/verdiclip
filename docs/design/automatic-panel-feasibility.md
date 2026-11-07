@@ -550,3 +550,31 @@ adaptive band, retry, fitted origin, source crop or deadline change is allowed.
 This remains one fixed owned table125 pose, not complete-scroll qualification,
 a replacement of the existing matrix oracle, or product behavior. Fresh native
 qualification of this revision is required; prior failure is not reclassified.
+
+### Already-open owned WPF observation contract
+
+The installed observation harness now separates fixture preparation from capture.
+The previous cold-start-inclusive attempts at `b5f32912` and `02351554` remain
+failed and unqualified; their missing telemetry is not reclassified as success.
+This new contract excludes cold .NET fixture startup from capture latency and
+makes no claim about opening a target application within a capture deadline.
+
+Before launching the fixture, the outer owner fixes a ten-second preparation
+limit and a twenty-five-second absolute limit including cleanup. The owned
+reference executor waits for initialized observe-only telemetry and independently
+pins the process creation time, HWND, foreground owner, input epoch, physical root
+geometry, DPI and liveness. It publishes bounded metadata only. No MSS object,
+reference pixels or provider launch is allowed in preparation. The outer reads
+only bounded receipts and process/job state, then authoritatively stamps one
+case start while still before the preparation deadline. A late handoff fails even
+if its ready receipt was timely. The executor retains its native handles and
+rechecks the same guards before any reference or provider work.
+
+The observation case retains its fifteen-second ceiling, two-second reference
+and observe limits, three-second native-call/helper-startup limits and five-second
+cleanup limit. Its deadline is the earlier of case-start plus fifteen seconds and
+the original absolute limit. Cleanup is also bounded by the active phase deadline;
+it cannot turn forced retirement or a prior failure into success. Preparation
+start, ready, case start and both deadlines are retained separately. There are no
+retries, clock resets, deadline extensions or production behavior changes. Native
+qualification of this revised experiment remains pending until an exact-head run.

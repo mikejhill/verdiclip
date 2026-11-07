@@ -634,7 +634,12 @@ def test_terminal_rejects_input_epoch_drift(
     ("confirmed", "forced"), [(True, False), (True, True), (False, False)]
 )
 def test_outer_success_cannot_hide_forced_or_unconfirmed_cleanup(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, confirmed: bool, forced: bool
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    authored: Json,
+    *,
+    confirmed: bool,
+    forced: bool,
 ) -> None:
     """Actual outer admission rejects bad cleanup even after a successful child."""
     executable = tmp_path / "fixture.exe"
@@ -644,20 +649,34 @@ def test_outer_success_cannot_hide_forced_or_unconfirmed_cleanup(
     )
     fixture, gui, module = Mock(), Mock(), Mock()
     fixture.process.pid = 321
-    fixture.snapshot.return_value = {"exit_code": 0, "members": []}
-    gui.snapshot.return_value = {"exit_code": 0, "members": []}
+    fixture.snapshot.side_effect = [
+        {"exit_code": None, "members": [321]},
+        {"exit_code": 0, "members": []},
+    ]
+    gui.process.pid = 654
+    gui.snapshot.side_effect = [
+        {"exit_code": None, "members": [654]},
+        {"exit_code": 0, "members": []},
+    ]
     module.verify_wheel.return_value = {"verified": True}
     module.ExternalOwner.side_effect = [fixture, gui]
 
     def start(_command: object) -> None:
         output = args.output / "executor"
-        smoke.write(output / "result.json", {"passed": True})
+        smoke.write(
+            output / "result.json",
+            {"passed": True, "case_start": 1.0, "case_deadline": 16.0},
+        )
+        smoke.write(
+            output / "preparation-ready.json", prepared_value(authored, ready=1.0)
+        )
         log(output / "calls.jsonl", [event("process", 1.0)])
 
     gui.start.side_effect = start
     monkeypatch.setattr(owned_helper, "HelperCommand", Mock(return_value=None))
     monkeypatch.setattr(smoke, "support", lambda: module)
     monkeypatch.setattr(smoke.time, "monotonic", lambda: 1.0)
+    monkeypatch.setattr(smoke.uuid, "uuid4", lambda: SimpleNamespace(hex="a" * 32))
     cleanup = Mock(
         return_value={"confirmed": confirmed, "forced": forced, "errors": []}
     )
@@ -979,3 +998,364 @@ def test_pending_call_can_expire_while_log_is_read(tmp_path: Path) -> None:
     clock = iter([3.9, 3.99, 4.0])
     with pytest.raises(RuntimeError, match="blocked"):
         smoke.validate_calls(path, 0.0, lambda: next(clock), finished=False)
+
+
+def prepared_value(authored: Json, *, ready: float = 2.0) -> Json:
+    """Construct the real fixed metadata-only preparation receipt."""
+    return {
+        "schema": 1,
+        "session": "a" * 32,
+        "fixture_pid": 321,
+        "ready": ready,
+        "fixture": authored,
+        "native": {
+            "root_hwnd": 456,
+            "pid": 321,
+            "rect": list(ROOT),
+            "input_tick": 123,
+            "creation_100ns": 1234,
+        },
+    }
+
+
+@pytest.mark.parametrize("now", [9.999, 10.0, 10.001])
+def test_preparation_has_fixed_ten_second_admission(authored: Json, now: float) -> None:
+    """Even an early ready receipt cannot be admitted at or after the prep cap."""
+    value = prepared_value(authored)
+    if now < 10:
+        assert smoke.preparation_receipt(value, "a" * 32, 321, 0.0, now) is value
+    else:
+        with pytest.raises(ValueError, match="timing"):
+            smoke.preparation_receipt(value, "a" * 32, 321, 0.0, now)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("schema", True),
+        ("schema", 2),
+        ("session", "b" * 32),
+        ("fixture_pid", 322),
+        ("fixture_pid", 321.0),
+        ("ready", float("nan")),
+        ("ready", float("inf")),
+        ("ready", True),
+        ("ready", -1),
+        ("ready", 3.1),
+    ],
+)
+def test_preparation_rejects_wrong_identity_and_times(
+    authored: Json, field: str, value: object
+) -> None:
+    """Cross-session, wrong-process and malformed time cannot start capture."""
+    receipt = prepared_value(authored)
+    receipt[field] = value
+    with pytest.raises(ValueError, match=r".+"):
+        smoke.preparation_receipt(receipt, "a" * 32, 321, 0.0, 3.0)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("pid", 322),
+        ("root_hwnd", 457),
+        ("creation_100ns", 1235),
+        ("input_tick", True),
+        ("input_tick", -1),
+        ("input_tick", 2**32),
+        ("rect", [100, 100, 200, 200]),
+    ],
+)
+def test_preparation_requires_consistent_pinned_native_facts(
+    authored: Json, field: str, value: object
+) -> None:
+    """Authored identity must agree with retained native process/root evidence."""
+    receipt = prepared_value(authored)
+    receipt["native"][field] = value
+    with pytest.raises(ValueError, match=r".+"):
+        smoke.preparation_receipt(receipt, "a" * 32, 321, 0.0, 3.0)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("sequence", -1),
+        ("sequence", 256),
+        ("sequence", True),
+        ("root_hwnd", 0),
+        ("root_hwnd", True),
+        ("mode", "borderless"),
+    ],
+)
+def test_preparation_requires_initialized_correct_fixture(
+    authored: Json, field: str, value: object
+) -> None:
+    """Only bounded initialized snapshots from the exact fixture mode qualify."""
+    authored[field] = value
+    with pytest.raises(ValueError, match=r".+"):
+        smoke.preparation_receipt(prepared_value(authored), "a" * 32, 321, 0.0, 3.0)
+
+
+@pytest.mark.parametrize("now", [9.999, 10.0, 10.001])
+def test_case_handoff_must_arrive_before_prep_deadline(now: float) -> None:
+    """Ready earlier is insufficient if the child receives its start too late."""
+    value = {"schema": 1, "session": "a" * 32, "case_start": 9.5, "deadline": 24.5}
+    if now < 10:
+        assert smoke.case_handoff(value, "a" * 32, 9.0, 0.0, now) == 24.5
+    else:
+        with pytest.raises(ValueError, match="timing"):
+            smoke.case_handoff(value, "a" * 32, 9.0, 0.0, now)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("schema", True),
+        ("session", "b" * 32),
+        ("case_start", 0.5),
+        ("case_start", 4.0),
+        ("case_start", float("nan")),
+        ("deadline", 18.0),
+        ("deadline", 16.0),
+        ("deadline", float("inf")),
+    ],
+)
+def test_case_handoff_never_changes_authoritative_budget(
+    field: str, value: object
+) -> None:
+    """A changed, stale, future or extended case clock fails before pixels."""
+    handoff = {"schema": 1, "session": "a" * 32, "case_start": 2.0, "deadline": 17.0}
+    handoff[field] = value
+    with pytest.raises(ValueError, match=r".+"):
+        smoke.case_handoff(handoff, "a" * 32, 1.0, 0.0, 3.0)
+
+
+def test_duplicate_handshake_is_not_overwritten(tmp_path: Path) -> None:
+    """An already-published start cannot be replaced to restart the clock."""
+    path = tmp_path / "case-start.json"
+    smoke.write_handshake(path, {"deadline": 17.0})
+    with pytest.raises(RuntimeError, match="Duplicate"):
+        smoke.write_handshake(path, {"deadline": 25.0})
+    assert smoke.read(path) == {"deadline": 17.0}
+
+
+@pytest.mark.parametrize("deadline", [10.0, 24.5, 25.0])
+def test_external_call_parser_enforces_explicit_active_deadline(
+    tmp_path: Path, deadline: float
+) -> None:
+    """Prep and capture use distinct fixed caps; validation never starts another."""
+    path = tmp_path / "calls.jsonl"
+    log(path, [event("process", 0.0)])
+    smoke.validate_calls(
+        path, 0.0, lambda: deadline - 0.001, finished=False, deadline=deadline
+    )
+    with pytest.raises(RuntimeError, match="case deadline"):
+        smoke.validate_calls(
+            path, 0.0, lambda: deadline, finished=False, deadline=deadline
+        )
+
+
+@pytest.mark.parametrize(
+    "failure", [None, "input", "fixture", "late", "missing", "session"]
+)
+def test_real_preparation_handoff_retains_guards_and_fixed_deadlines(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, authored: Json, failure: str | None
+) -> None:
+    """Actual metadata handshake keeps its original pin and admits no drift."""
+    output, states = tmp_path / "executor", tmp_path / "states"
+    output.mkdir()
+    states.mkdir()
+    smoke.write(states / "0000.json", authored)
+    clock = [2.0]
+    monkeypatch.setattr(smoke.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(smoke.time, "sleep", lambda _: clock.__setitem__(0, 10.0))
+    guard = Mock()
+    native = prepared_value(authored)["native"]
+    guard.check.side_effect = [
+        native,
+        RuntimeError("Frozen reference native guard changed")
+        if failure == "input"
+        else native,
+    ]
+    original = smoke.write_handshake
+
+    def publish(path: Path, value: Json) -> None:
+        original(path, value)
+        assert path.name == "preparation-ready.json"
+        assert guard.check.call_count == 1
+        if failure == "fixture":
+            changed = json.loads(json.dumps(authored))
+            changed["state"]["target"]["vertical"] = 120
+            smoke.write(states / "0001.json", {**changed, "sequence": 1})
+        if failure != "missing":
+            original(
+                output / "case-start.json",
+                {
+                    "schema": 1,
+                    "session": "b" * 32 if failure == "session" else "a" * 32,
+                    "case_start": 2.0,
+                    "deadline": 17.0,
+                },
+            )
+        if failure == "late":
+            clock[0] = 10.0
+
+    monkeypatch.setattr(smoke, "write_handshake", publish)
+    journal = smoke.Journal(output / "calls.jsonl", 10.0)
+    try:
+        if failure is None:
+            result = smoke.prepare_case(
+                output,
+                states,
+                "a" * 32,
+                0.0,
+                321,
+                authored,
+                smoke.fixture_key(authored),
+                guard,
+                journal,
+            )
+            assert result["case_start"] == 2.0
+            assert journal.deadline == 17.0
+            assert guard.check.call_count == 2
+        else:
+            with pytest.raises((RuntimeError, ValueError), match=r".+"):
+                smoke.prepare_case(
+                    output,
+                    states,
+                    "a" * 32,
+                    0.0,
+                    321,
+                    authored,
+                    smoke.fixture_key(authored),
+                    guard,
+                    journal,
+                )
+            if failure in ("late", "missing", "session"):
+                assert guard.check.call_count == 1
+                assert journal.deadline == 10.0
+        assert smoke.read(output / "preparation-ready.json")["native"] == native
+    finally:
+        journal.stream.close()
+
+
+@pytest.mark.parametrize(
+    "failure", ["late-read", "late-snapshot", "wrong-job", "wrong-pid", "terminal"]
+)
+def test_outer_preparation_failure_never_publishes_case_start(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, authored: Json, failure: str
+) -> None:
+    """Actual external admission rejects late evidence and lost ownership."""
+    executable = tmp_path / "fixture.exe"
+    executable.write_bytes(b"owned fixture stub, never executed")
+    args = argparse.Namespace(
+        fixture=executable, wheel=tmp_path / "app.whl", output=tmp_path / "out"
+    )
+    fixture, gui, module = Mock(), Mock(), Mock()
+    fixture.process.pid, gui.process.pid = 321, 654
+    gui.snapshot.return_value = {
+        "exit_code": 1 if failure == "terminal" else None,
+        "members": [] if failure == "terminal" else [654],
+    }
+    clock = [1.0]
+
+    def snapshot() -> Json:
+        if failure == "late-snapshot":
+            clock[0] = 11.0
+        return {
+            "exit_code": None,
+            "members": [322] if failure == "wrong-job" else [321],
+        }
+
+    fixture.snapshot.side_effect = snapshot
+    module.verify_wheel.return_value = {"verified": True}
+    module.ExternalOwner.side_effect = [fixture, gui]
+
+    def start(_command: object) -> None:
+        output = args.output / "executor"
+        receipt = prepared_value(authored, ready=1.0)
+        if failure == "wrong-pid":
+            receipt["fixture_pid"] = 322
+        smoke.write(output / "preparation-ready.json", receipt)
+        smoke.write(
+            output / "result.json", {"passed": False, "first_failure": "fixture failed"}
+        )
+        log(output / "calls.jsonl", [event("process", 1.0)])
+
+    original_read = smoke.read
+
+    def read_receipt(path: Path) -> Json:
+        value = original_read(path)
+        if path.name == "preparation-ready.json" and failure == "late-read":
+            clock[0] = 11.0
+        return value
+
+    gui.start.side_effect = start
+    monkeypatch.setattr(smoke, "read", read_receipt)
+    monkeypatch.setattr(owned_helper, "HelperCommand", Mock(return_value=None))
+    monkeypatch.setattr(smoke, "support", lambda: module)
+    monkeypatch.setattr(smoke.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(smoke.uuid, "uuid4", lambda: SimpleNamespace(hex="a" * 32))
+    cleanup = Mock(return_value={"confirmed": True, "forced": False, "errors": []})
+    monkeypatch.setattr(smoke, "release_owner", cleanup)
+    assert smoke.outer(args) == 1
+    result = original_read(args.output / "receipt.json")
+    assert result["passed"] is False
+    assert result["preparation_start"] == 1.0
+    assert result["preparation_deadline"] == 11.0
+    assert result["absolute_deadline"] == 26.0
+    assert "case_start" not in result
+    assert not (args.output / "executor" / "case-start.json").exists()
+    assert all(call.args[1] == 11.0 for call in cleanup.call_args_list)
+
+
+@pytest.mark.parametrize("finished", [9.999, 10.0, 10.001])
+def test_telemetry_read_crossing_preparation_deadline_never_acquires_native_pin(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, authored: Json, finished: float
+) -> None:
+    """The actual child acquisition path checks fresh time after reading telemetry."""
+    clock = [9.9]
+    monkeypatch.setattr(smoke.time, "monotonic", lambda: clock[0])
+
+    def latest(_states: Path) -> Json:
+        clock[0] = finished
+        return authored
+
+    monkeypatch.setattr(smoke, "latest", latest)
+    constructor = Mock()
+    monkeypatch.setattr(smoke, "ReferenceGuard", constructor)
+    journal = smoke.Journal(tmp_path / "calls.jsonl", 10.0)
+    try:
+        if finished < 10.0:
+            _, _, guard = smoke.pin_preparation(tmp_path, 321, journal)
+            assert guard is constructor.return_value
+            constructor.assert_called_once_with(authored, 321)
+        else:
+            with pytest.raises(RuntimeError, match="deadline"):
+                smoke.pin_preparation(tmp_path, 321, journal)
+            constructor.assert_not_called()
+    finally:
+        journal.stream.close()
+
+
+def test_slow_successful_preparation_pin_is_released_before_rejection(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, authored: Json
+) -> None:
+    """A returned owned handle survives post-call timing rejection only until close."""
+    clock = [9.0]
+    guard = Mock()
+    monkeypatch.setattr(smoke.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(smoke, "latest", lambda _states: authored)
+
+    def construct(_fixture: Json, _pid: int) -> Mock:
+        clock[0] = 10.0
+        return guard
+
+    monkeypatch.setattr(smoke, "ReferenceGuard", construct)
+    journal = smoke.Journal(tmp_path / "calls.jsonl", 10.0)
+    try:
+        with pytest.raises(RuntimeError, match="deadline"):
+            smoke.pin_preparation(tmp_path, 321, journal)
+        guard.close.assert_called_once_with()
+    finally:
+        journal.stream.close()

@@ -2,7 +2,10 @@
 
 Copy beside installed_channel_smoke.py and installed_runtime_smoke.py. The outer
 owner never captures pixels: an owned GUI/reference executor runs all possibly
-blocking reference calls under external3s/15s watchdogs. No production overrides.
+blocking reference calls under external3s/15s watchdogs after separately bounded
+10s owned fixture preparation. Total including cleanup is capped at25s. This
+already-open-panel contract excludes cold startup from capture latency. No
+production overrides. Earlier cold-start-inclusive failures remain failures.
 """
 
 from __future__ import annotations
@@ -17,11 +20,14 @@ import os
 import re
 import sys
 import time
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Protocol
 
+PREPARATION_SECONDS = 10.0
+OUTER_SECONDS = 25.0
 CASE_SECONDS = 15.0
 CALL_SECONDS = 3.0
 REFERENCE_SECONDS = 2.0
@@ -53,6 +59,13 @@ def write(path: Path, value: object) -> None:
     pending = path.with_suffix(".tmp")
     pending.write_bytes(data)
     pending.replace(path)
+
+
+def write_handshake(path: Path, value: Json) -> None:
+    """A private fixed-path handshake may be published only once per session."""
+    if path.exists():
+        raise RuntimeError("Duplicate observation handshake")
+    write(path, value)
 
 
 def read(path: Path) -> Json:
@@ -149,6 +162,78 @@ def latest(states: Path) -> Json:
     ):
         raise RuntimeError("Fixture telemetry sequence mismatch")
     return value
+
+
+def preparation_receipt(
+    value: Json, session: str, pid: int, started: float, now: float
+) -> Json:
+    """Validate owned metadata only; never treat it as pixel/provider evidence."""
+    if set(value) != {"schema", "session", "fixture_pid", "ready", "fixture", "native"}:
+        raise ValueError("Preparation receipt fields differ")
+    if (
+        type(value["schema"]) is not int
+        or value["schema"] != 1
+        or value["session"] != session
+        or type(value["fixture_pid"]) is not int
+        or value["fixture_pid"] != pid
+    ):
+        raise ValueError("Preparation receipt identity differs")
+    ready = value["ready"]
+    if (
+        type(ready) not in (int, float)
+        or not math.isfinite(ready)
+        or not started <= ready <= now < started + PREPARATION_SECONDS
+    ):
+        raise ValueError("Preparation receipt timing invalid")
+    fixture = value["fixture"]
+    if (
+        type(fixture.get("sequence")) is not int
+        or not 0 <= fixture["sequence"] < MAX_STATES
+        or type(fixture.get("root_hwnd")) is not int
+        or not 0 < fixture["root_hwnd"] < 2**64
+    ):
+        raise ValueError("Preparation initialized telemetry invalid")
+    key = fixture_key(fixture)
+    native = value["native"]
+    if (
+        fixture["pid"] != pid
+        or set(native) != {"root_hwnd", "pid", "rect", "input_tick", "creation_100ns"}
+        or native["pid"] != pid
+        or native["root_hwnd"] != fixture["root_hwnd"]
+        or native["creation_100ns"] != fixture["process_created_100ns"]
+        or type(native["input_tick"]) is not int
+        or not 0 <= native["input_tick"] < 2**32
+    ):
+        raise ValueError("Preparation native identity differs")
+    root, panel = rect(native["rect"]), rect(key["rect"])
+    if not (
+        root[0] <= panel[0] < panel[2] <= root[2]
+        and root[1] <= panel[1] < panel[3] <= root[3]
+    ):
+        raise ValueError("Preparation panel outside root")
+    return value
+
+
+def case_handoff(
+    value: Json, session: str, prepared: float, started: float, now: float
+) -> float:
+    """One outer-authored case clock, strictly within the original preparation."""
+    if set(value) != {"schema", "session", "case_start", "deadline"}:
+        raise ValueError("Case handoff fields differ")
+    begin, deadline = value["case_start"], value["deadline"]
+    if (
+        type(value["schema"]) is not int
+        or value["schema"] != 1
+        or value["session"] != session
+        or any(
+            type(t) not in (int, float) or not math.isfinite(t)
+            for t in (begin, deadline)
+        )
+        or not started <= prepared <= begin <= now < started + PREPARATION_SECONDS
+        or deadline != min(begin + CASE_SECONDS, started + OUTER_SECONDS)
+    ):
+        raise ValueError("Case handoff identity/timing invalid")
+    return float(deadline)
 
 
 def crop(
@@ -542,9 +627,76 @@ def terminal_matches(
     )
 
 
+def pin_preparation(
+    states: Path, pid: int, journal: Journal
+) -> tuple[Json, Json, ReferenceGuard]:
+    """Admit telemetry before acquiring native resources, retaining slow returns."""
+    fixture = latest(states)
+    expected = fixture_key(fixture)
+    journal.check()
+    started = time.monotonic()
+    journal.emit("call_start", "reference.pin")
+    journal.check()
+    guard = ReferenceGuard(fixture, pid)
+    try:
+        journal.emit("call_end", "reference.pin")
+        journal.check()
+        if time.monotonic() - started >= CALL_SECONDS:
+            raise RuntimeError("Reference pin exceeded3s")  # noqa: TRY301 - release retained native pin
+    except BaseException as primary:
+        try:
+            journal.cleanup("reference.pin.close", guard.close)
+        except BaseException as error:  # noqa: BLE001 - preserve primary during cleanup
+            primary.add_note(f"Preparation pin cleanup failed: {error!r}")
+        raise
+    return fixture, expected, guard
+
+
+def prepare_case(  # noqa: PLR0913, PLR0917 - explicit immutable handshake inputs
+    output: Path,
+    states: Path,
+    session: str,
+    started: float,
+    pid: int,
+    fixture: Json,
+    expected: Json,
+    guard: ReferenceGuard,
+    journal: Journal,
+) -> Json:
+    """Retain pinned preparation identity across a single metadata-only handoff."""
+    native = journal.call("preparation.ready_guard", guard.check)
+    if fixture_key(latest(states)) != expected:
+        raise RuntimeError("Fixture changed during preparation")
+    ready_time = time.monotonic()
+    receipt = {
+        "schema": 1,
+        "session": session,
+        "fixture_pid": pid,
+        "ready": ready_time,
+        "fixture": fixture,
+        "native": native,
+    }
+    preparation_receipt(receipt, session, pid, started, ready_time)
+    write_handshake(output / "preparation-ready.json", receipt)
+    journal.check()
+    handoff_path = output / "case-start.json"
+    while not handoff_path.exists():
+        journal.check()
+        time.sleep(0.01)
+    handoff = read(handoff_path)
+    deadline = case_handoff(handoff, session, ready_time, started, time.monotonic())
+    journal.deadline = deadline  # Exactly one transition, never a reset.
+    journal.call("case.initial_guard", guard.check)
+    if fixture_key(latest(states)) != expected:
+        raise RuntimeError("Fixture changed across preparation handoff")
+    return {**handoff, "ready": ready_time}
+
+
 def child(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - fixed owned executor lifecycle
     """All native references run here, never in the outer watchdog process."""
-    journal = Journal(args.output / "calls.jsonl", args.deadline)
+    preparation_deadline = args.preparation_start + PREPARATION_SECONDS
+    absolute_deadline = args.preparation_start + OUTER_SECONDS
+    journal = Journal(args.output / "calls.jsonl", preparation_deadline)
     module = journal.call("installed.imports", support)
     provenance = journal.call(
         "installed.verify", lambda: module.verify_wheel(args.wheel)
@@ -591,7 +743,9 @@ def child(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - fixed owned
         "passed": False,
         "first_failure": None,
         "responsiveness_qualified": False,
-        "case": "owned-wpf-single-observation",
+        "case": "already-open-owned-wpf-single-observation",
+        "cold_startup_in_capture_latency": False,
+        "preparation_start": args.preparation_start,
         "provenance": provenance,
     }
     guard = None
@@ -657,20 +811,14 @@ def child(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - fixed owned
 
     def start() -> None:
         nonlocal guard, generation, target, expected, before_root, before_panel
-        wait_until = min(args.deadline, time.monotonic() + REFERENCE_SECONDS)
+        wait_until = preparation_deadline
         while not list(args.states.glob("[0-9][0-9][0-9][0-9].json")):
             if time.monotonic() >= wait_until:
                 raise RuntimeError("Fixture telemetry startup missing")
             time.sleep(0.01)
-        fixture = latest(args.states)
-        expected = fixture_key(fixture)
-        started = time.monotonic()
-        journal.emit("call_start", "reference.pin")
-        guard = ReferenceGuard(fixture, args.fixture_pid)
-        journal.emit("call_end", "reference.pin")
-        journal.check()
-        if time.monotonic() - started >= CALL_SECONDS:
-            raise RuntimeError("Reference pin exceeded3s")
+        fixture, expected, guard = pin_preparation(
+            args.states, args.fixture_pid, journal
+        )
         # The witness widget is fixed outside both the selected panel and root.
         root = rect(guard.initial["rect"])
         if not (root[2] <= WITNESS_X or root[3] <= WITNESS_Y):
@@ -679,6 +827,23 @@ def child(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - fixed owned
         result["witness_rect"] = journal.call(
             "reference.widget_geometry",
             lambda: reference_guard.excluded_window(int(window.winId())),
+        )
+        handoff = prepare_case(
+            args.output,
+            args.states,
+            args.session,
+            args.preparation_start,
+            args.fixture_pid,
+            fixture,
+            expected,
+            guard,
+            journal,
+        )
+        result.update(
+            preparation_ready=handoff["ready"],
+            case_start=handoff["case_start"],
+            case_deadline=journal.deadline,
+            absolute_deadline=absolute_deadline,
         )
         before_root, before_panel = reference(
             journal, guard, args.states, expected, args.output, "before"
@@ -724,7 +889,7 @@ def child(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - fixed owned
             except Exception as error:  # noqa: BLE001 - preserve first failure
                 result["passed"] = False
                 result["first_failure"] = result["first_failure"] or repr(error)
-        if time.monotonic() >= args.deadline:
+        if time.monotonic() >= journal.deadline:
             result["passed"] = False
             result["first_failure"] = result["first_failure"] or "Case deadline expired"
         result.update(heartbeat_count=window.beats, paint_count=window.paints)
@@ -734,15 +899,21 @@ def child(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - fixed owned
 
 
 def validate_calls(  # noqa: C901, PLR0912 - explicit watchdog event parser
-    path: Path, started: float, clock: Callable[[], float], *, finished: bool
+    path: Path,
+    started: float,
+    clock: Callable[[], float],
+    *,
+    finished: bool,
+    deadline: float | None = None,
 ) -> None:
     """Externally reject missing startup, blocked calls and late completed calls."""
+    until = started + CASE_SECONDS if deadline is None else deadline
     now = clock()
-    if now - started >= CASE_SECONDS:
+    if now >= until:
         raise RuntimeError("External observe case deadline")
     if not path.exists():
         now = clock()
-        if now - started >= CASE_SECONDS:
+        if now >= until:
             raise RuntimeError("External observe case deadline")
         if finished or now - started >= CALL_SECONDS:
             raise RuntimeError("Observe executor startup missing")
@@ -757,7 +928,7 @@ def validate_calls(  # noqa: C901, PLR0912 - explicit watchdog event parser
         if line.endswith(b"\n")
     ]
     now = clock()
-    if now - started >= CASE_SECONDS:
+    if now >= until:
         raise RuntimeError("External observe case deadline")
     if not records or len(records) > MAX_CALLS:
         raise RuntimeError("Observe call log empty/oversized")
@@ -788,7 +959,7 @@ def validate_calls(  # noqa: C901, PLR0912 - explicit watchdog event parser
         else:
             raise RuntimeError(f"Reference native call failure/pairing: {record}")
     now = clock()
-    if now - started >= CASE_SECONDS:
+    if now >= until:
         raise RuntimeError("External observe case deadline")
     if pending and (finished or now - pending["monotonic"] >= CALL_SECONDS):
         raise RuntimeError("Reference native call incomplete/blocked")
@@ -837,7 +1008,7 @@ def release_owner(owner: Owner, deadline: float) -> Json:
     return result
 
 
-def outer(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - owned lifetime
+def outer(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912, PLR0915 - owned lifetime
     """No MSS/UIA/reference read here: only owned process polls and bounded files."""
     module = support()
     provenance = module.verify_wheel(args.wheel)
@@ -861,7 +1032,19 @@ def outer(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - owned lifet
     }
     owners = {}
     started = time.monotonic()
-    deadline = started + CASE_SECONDS
+    preparation_deadline = started + PREPARATION_SECONDS
+    absolute_deadline = started + OUTER_SECONDS
+    deadline = preparation_deadline
+    session = uuid.uuid4().hex
+    case_start = None
+    result.update(
+        contract="already-open-panel-v1",
+        preparation_start=started,
+        preparation_deadline=preparation_deadline,
+        absolute_deadline=absolute_deadline,
+        cold_startup_in_capture_latency=False,
+        session=session,
+    )
     try:
         fixture = module.ExternalOwner()
         owners["fixture"] = fixture
@@ -887,8 +1070,10 @@ def outer(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - owned lifet
                     str(states),
                     "--fixture-pid",
                     str(fixture.process.pid),
-                    "--deadline",
-                    str(deadline),
+                    "--preparation-start",
+                    str(started),
+                    "--session",
+                    session,
                 ),
                 str(output),
             )
@@ -900,11 +1085,58 @@ def outer(args: argparse.Namespace) -> int:  # noqa: C901, PLR0915 - owned lifet
                 started,
                 time.monotonic,
                 finished=status["exit_code"] is not None,
+                deadline=deadline,
             )
+            ready_path = executor / "preparation-ready.json"
+            if (
+                case_start is None
+                and ready_path.exists()
+                and status["exit_code"] is None
+            ):
+                prepared = preparation_receipt(
+                    read(ready_path),
+                    session,
+                    fixture.process.pid,
+                    started,
+                    time.monotonic(),
+                )
+                if gui.process is None or status["members"] != [gui.process.pid]:
+                    raise RuntimeError("Prepared executor no longer solely owned/alive")  # noqa: TRY301 - first failure
+                fixture_state = fixture.snapshot()
+                if fixture_state["exit_code"] is not None or fixture_state[
+                    "members"
+                ] != [fixture.process.pid]:
+                    raise RuntimeError("Prepared fixture no longer solely owned/alive")  # noqa: TRY301 - preserve first failure
+                case_start = time.monotonic()
+                if case_start >= preparation_deadline:
+                    raise RuntimeError("Late preparation admission")  # noqa: TRY301 - preserve first failure
+                deadline = min(case_start + CASE_SECONDS, absolute_deadline)
+                handoff = {
+                    "schema": 1,
+                    "session": session,
+                    "case_start": case_start,
+                    "deadline": deadline,
+                }
+                case_handoff(handoff, session, prepared["ready"], started, case_start)
+                write_handshake(executor / "case-start.json", handoff)
+                if time.monotonic() >= preparation_deadline:
+                    raise RuntimeError("Late preparation handoff publication")  # noqa: TRY301 - preserve first failure
+                result.update(
+                    preparation_ready=prepared["ready"],
+                    case_start=case_start,
+                    case_deadline=deadline,
+                    preparation=prepared,
+                )
             if status["exit_code"] is not None and not status["members"]:
                 value = read(executor / "result.json")
                 result.update(child=value, gui=status)
-                if status["exit_code"] != 0 or value.get("passed") is not True:
+                if (
+                    case_start is None
+                    or status["exit_code"] != 0
+                    or value.get("passed") is not True
+                    or value.get("case_start") != case_start
+                    or value.get("case_deadline") != deadline
+                ):
                     raise RuntimeError(  # noqa: TRY301 - preserve first failure
                         f"Observe executor failed: {value.get('first_failure')}"
                     )
@@ -947,7 +1179,8 @@ def main() -> int:
     parser.add_argument("--child", action="store_true")
     parser.add_argument("--states", type=Path)
     parser.add_argument("--fixture-pid", type=int)
-    parser.add_argument("--deadline", type=float)
+    parser.add_argument("--preparation-start", type=float)
+    parser.add_argument("--session")
     args = parser.parse_args()
     if (
         sys.platform != "win32"
