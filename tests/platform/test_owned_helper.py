@@ -104,7 +104,8 @@ def running() -> tuple[OwnedHelper, FakeApi]:
 def test_ready_and_nonblocking_cleanup() -> None:
     """Do not confirm cleanup until both producer and descendant membership end."""
     helper, api = running()
-    assert helper.verify_ready(101, _EXE.lower()).producer_verified
+    observed = helper.verify_ready(101, _EXE.lower())
+    assert observed.producer_verified
     api.live = (101, 102)
     status = helper.close()
     assert status.termination_requested
@@ -113,15 +114,18 @@ def test_ready_and_nonblocking_cleanup() -> None:
     assert status.remaining_pids == (101, 102)
     api.code = 1
     api.live = (102,)
-    assert not helper.poll().cleanup_confirmed
+    observed = helper.poll()
+    assert not observed.cleanup_confirmed
     api.live = ()
     status = helper.poll()
     assert status.closed
     assert status.cleanup_confirmed
     assert api.closed == [21, 20, 10]
     calls = list(api.calls)
-    assert helper.close() == status
-    assert helper.verify_ready(101, _EXE) == status
+    observed = helper.close()
+    assert observed == status
+    observed = helper.verify_ready(101, _EXE)
+    assert observed == status
     assert api.calls == calls
 
 
@@ -169,20 +173,24 @@ def test_launcher_or_invalid_ready_pid_is_rejected(pid: object) -> None:
 def test_wrong_reported_image_is_rejected(reported: object) -> None:
     """An untrusted ready path cannot override kernel identity."""
     helper, _ = running()
-    assert helper.verify_ready(101, cast("str", reported)).termination_requested
+    observed = helper.verify_ready(101, cast("str", reported))
+    assert observed.termination_requested
 
 
 def test_kernel_image_mismatch_and_missing_membership() -> None:
     """Reported identity is insufficient without matching live kernel evidence."""
     helper, api = running()
     api.executable = r"C:\uv\launcher.exe"
-    assert helper.verify_ready(101, _EXE).termination_requested
+    observed = helper.verify_ready(101, _EXE)
+    assert observed.termination_requested
     helper, api = running()
     api.live = (102,)
-    assert helper.verify_ready(101, _EXE).termination_requested
+    observed = helper.verify_ready(101, _EXE)
+    assert observed.termination_requested
     helper, api = running()
     api.code = 0
-    assert helper.verify_ready(101, _EXE).termination_requested
+    observed = helper.verify_ready(101, _EXE)
+    assert observed.termination_requested
 
 
 def test_known_exit_kills_remaining_descendants() -> None:
@@ -194,7 +202,8 @@ def test_known_exit_kills_remaining_descendants() -> None:
     assert status.termination_requested
     assert not status.cleanup_confirmed
     api.live = ()
-    assert helper.poll().cleanup_confirmed
+    observed = helper.poll()
+    assert observed.cleanup_confirmed
 
 
 @pytest.mark.parametrize("ready", [True, False])
@@ -260,14 +269,17 @@ def test_cannot_restart_or_ready_before_launch() -> None:
     with pytest.raises(RuntimeError, match="restarted"):
         helper.start(_COMMAND)
     idle = OwnedHelper(FakeApi())
-    assert not idle.poll().closed
+    observed = idle.poll()
+    assert not observed.closed
     status = idle.verify_ready(101, _EXE)
     assert status.termination_requested
     with pytest.raises(RuntimeError, match="restarted"):
         idle.start(_COMMAND)
-    assert idle.close().cleanup_confirmed
+    observed = idle.close()
+    assert observed.cleanup_confirmed
     closed = OwnedHelper(FakeApi())
-    assert closed.close().cleanup_confirmed
+    observed = closed.close()
+    assert observed.cleanup_confirmed
     with pytest.raises(RuntimeError, match="restarted"):
         closed.start(_COMMAND)
 
@@ -424,11 +436,15 @@ def test_native_atomic_launch_flags_and_zero_wait(
     assert kernel.job_attribute == 0x0002000D
     assert kernel.inherited is False
     api.resume(process.thread)
-    assert api.image(process.process) == _EXE
-    assert api.members(job) == (101,)
-    assert api.exit_code(process.process) is None
+    image_path = api.image(process.process)
+    assert image_path == _EXE
+    members = api.members(job)
+    assert members == (101,)
+    exit_code = api.exit_code(process.process)
+    assert exit_code is None
     kernel.wait = 0
-    assert api.exit_code(process.process) == 7
+    exit_code = api.exit_code(process.process)
+    assert exit_code == 7
     api.terminate(job)
     api.close_handle(job)
     names = [name for name, _ in kernel.calls]
@@ -501,11 +517,16 @@ def test_watchdog_releases_pending_or_stale_membership(
     assert api.closed == [21, 20, 10]
     assert api.calls.count("terminate") == 1
     calls = list(api.calls)
-    assert helper.release_unconfirmed("Another deadline") == status
-    assert helper.poll() == status
-    assert helper.close() == status
-    assert helper.terminate() == status
-    assert helper.verify_ready(101, _EXE) == status
+    observed = helper.release_unconfirmed("Another deadline")
+    assert observed == status
+    observed = helper.poll()
+    assert observed == status
+    observed = helper.close()
+    assert observed == status
+    observed = helper.terminate()
+    assert observed == status
+    observed = helper.verify_ready(101, _EXE)
+    assert observed == status
     assert api.calls == calls
 
 
@@ -522,9 +543,12 @@ def test_watchdog_retains_native_release_errors(operation: str) -> None:
     assert len(status.cleanup_errors) == 2
     assert sorted(api.closed) == [10, 20, 21]
     calls = list(api.calls)
-    assert helper.release_unconfirmed("Again") == status
-    assert helper.poll() == status
-    assert helper.close() == status
+    observed = helper.release_unconfirmed("Again")
+    assert observed == status
+    observed = helper.poll()
+    assert observed == status
+    observed = helper.close()
+    assert observed == status
     assert api.calls == calls
 
 
@@ -537,7 +561,8 @@ def test_watchdog_does_not_downgrade_confirmed_cleanup() -> None:
     assert status.cleanup_confirmed
     assert status.closed
     calls = list(api.calls)
-    assert helper.release_unconfirmed("Late timer") == status
+    observed = helper.release_unconfirmed("Late timer")
+    assert observed == status
     assert api.calls == calls
 
 
@@ -555,7 +580,8 @@ def test_watchdog_preserves_earlier_failure_and_handles_no_launch() -> None:
     result = idle.release_unconfirmed("Startup deadline")
     assert result.closed
     assert not result.cleanup_confirmed
-    assert idle.close() == result
+    observed = idle.close()
+    assert observed == result
     assert untouched.calls == []
     with pytest.raises(RuntimeError, match="restarted"):
         idle.start(_COMMAND)

@@ -185,3 +185,26 @@ metadata. Ownership and input guards surround provider calls, all native and COM
 cleanup calls share the watchdog, and failure never permits restoration writes.
 Diagnostic completion requires unchanged original state/pixels; it does not mean
 that a usable scrollbar was found.
+
+## Ninth experiment
+
+Native run [42354624789](https://github.com/mikejhill/verdiclip/actions/runs/42354624789)
+at `a8f171cfbf05b4e3ddedfd23cc64a9e7e206cc6b`: all three separate seam
+sweeps pass their complete full-width references, including the nested 373 by
+1,457 image (543,461 pixels). The original strict nested gate still rejects its
+known clipped glyph. Every successful sweep restores exactly and retires its
+owned processes. Ordinary CI and CodeQL pass.
+
+Both read-only MSAA cases finish with unchanged pixels/state and clean cleanup,
+but their 36 inspected nodes expose only grouping/client roles, not scrollbar
+roles. This bounded route did not establish native browser rail geometry. It is
+not evidence that every conceivable accessibility route is unavailable.
+The native watchdog-release smoke separately proves process death while its API
+correctly retains an unconfirmed-cleanup result.
+
+The next inert transport proof uses a current-user-only local pipe, kernel peer
+PID verification and asynchronous parent callbacks. Fixed cases cover fragmented
+messages, oversized/duplicate/wrong-ID replies, startup/command timeout,
+cancellation and a contained wrong-peer descendant. Positive completion requires
+clean EOF, zero producer exit and confirmed cleanup. Deadlines are checked at
+admission as well as by timers. This experiment has no UIA, images or product UI.

@@ -52,8 +52,10 @@ def test_clipped_final_step_and_immutable_output() -> None:
     """Every source row appears once, including a non-page-sized final step."""
     stitcher = ScrollStitcher()
     first = frame(0)
-    assert stitcher.append(first) == StitchStep(0, 96, 96, 1)
-    assert stitcher.append(frame(48)) == StitchStep(48, 48, 144, 2)
+    step = stitcher.append(first)
+    assert step == StitchStep(0, 96, 96, 1)
+    step = stitcher.append(frame(48))
+    assert step == StitchStep(48, 48, 144, 2)
     step = stitcher.append(frame(55))
     assert step == StitchStep(89, 7, 151, 3)
     output = stitcher.finish()
@@ -88,7 +90,8 @@ def test_no_progress_or_insufficient_overlap(start: int) -> None:
     message = "Unchanged" if start == 0 else "No sufficient"
     with pytest.raises(StitchError, match=message):
         stitcher.append(frame(start))
-    assert stitcher.append(frame(70)) == StitchStep(26, 70, 166, 2)
+    step = stitcher.append(frame(70))
+    assert step == StitchStep(26, 70, 166, 2)
 
 
 @pytest.mark.parametrize(
@@ -100,7 +103,8 @@ def test_overlap_minimum(height: int, shift: int, *, accepted: bool) -> None:
     stitcher = ScrollStitcher()
     stitcher.append(frame(0, height))
     if accepted:
-        assert stitcher.append(frame(shift, height)).new_rows == shift
+        step = stitcher.append(frame(shift, height))
+        assert step.new_rows == shift
     else:
         with pytest.raises(StitchError, match="No sufficient"):
             stitcher.append(frame(shift, height))
@@ -155,7 +159,8 @@ def test_repeated_prefix_fallback_with_unique_seam() -> None:
     second = ScrollFrame(1, 96, b"".join(rows) + frame(200, 48, 1).rgb)
     stitcher = ScrollStitcher()
     stitcher.append(first)
-    assert stitcher.append(second).overlap_rows == 48
+    step = stitcher.append(second)
+    assert step.overlap_rows == 48
 
 
 def test_partial_prefix_is_not_a_seam() -> None:
@@ -188,7 +193,8 @@ def test_matches_exhaustive_overlap_oracle(values: list[int], shift: int) -> Non
             stitcher.append(ScrollFrame(1, 96, second))
     else:
         overlap = candidates[0]
-        assert stitcher.append(ScrollFrame(1, 96, second)).overlap_rows == overlap
+        step = stitcher.append(ScrollFrame(1, 96, second))
+        assert step.overlap_rows == overlap
         seam = overlap // 2
         assert stitcher.finish().rgb == (
             first[: (96 - overlap + seam) * 3] + second[seam * 3 :]

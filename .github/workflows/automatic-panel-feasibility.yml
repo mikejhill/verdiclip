@@ -112,6 +112,20 @@ jobs:
         run: |
           uv run --no-sync python scripts/owned_helper_smoke.py --output receipts/owned-helper
           exit $LASTEXITCODE
+      - name: Prove asynchronous private pipe transport
+        id: pipe
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          uv run --no-sync python scripts/owned_pipe_smoke.py --output receipts/owned-pipe
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: ${{ !cancelled() && steps.pipe.outcome != 'skipped' }}
+        with:
+          name: native-owned-pipe
+          path: receipts/owned-pipe/*.json
+          if-no-files-found: error
+          retention-days: 14
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: ${{ !cancelled() }}
         with:
