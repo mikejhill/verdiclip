@@ -21,63 +21,6 @@ env:
   PYTHONUTF8: "1"
 
 jobs:
-  hosted-scrollbar:
-    name: Owned scrollbar / ${{ matrix.provider }} / Qt ${{ matrix.qt }} / scale ${{ matrix.scale }}
-    # Conservative coverage: every CI invocation, including documentation changes.
-    # No path-based skip can accidentally omit a product/helper/workflow dependency.
-    # The native input adapter separately verifies this disposable runner identity.
-    if: github.repository == 'mikejhill/verdiclip'
-    runs-on: windows-2025
-    timeout-minutes: 5
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - {provider: wpf, qt: '6.11.2', scale: '1'}
-          - {provider: wpf, qt: '6.12.0', scale: '1'}
-          - {provider: wpf, qt: '6.12.0', scale: '1.5'}
-          - {provider: wpf, qt: '6.12.0', scale: '2'}
-          - {provider: winforms, qt: '6.12.0', scale: '1'}
-    cache-mode: none
-    permissions:
-      contents: read
-    env:
-      VERDICLIP_HOSTED_SCROLLBAR: '1'
-      VERDICLIP_NATIVE_PROVIDER: ${{ matrix.provider }}
-      VERDICLIP_EXPECTED_QT: ${{ matrix.qt }}
-      VERDICLIP_EXPECTED_QT_SCALE: ${{ matrix.scale }}
-      QT_SCALE_FACTOR: ${{ matrix.scale }}
-      VERDICLIP_HOSTED_SOURCE: ${{ github.sha }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-        with:
-          python-version: '3.13'
-          enable-cache: false
-      - run: uv sync --locked
-      - name: Select the explicit isolated Qt runtime
-        shell: pwsh
-        run: uv pip install "pyside6-essentials==$env:VERDICLIP_EXPECTED_QT" "shiboken6==$env:VERDICLIP_EXPECTED_QT"
-      - name: Verify source and execute one bounded owned interaction
-        timeout-minutes: 2
-        shell: pwsh
-        run: |
-          $head = (& git rev-parse HEAD).Trim()
-          if ($LASTEXITCODE -ne 0 -or $head -cne $env:VERDICLIP_HOSTED_SOURCE) { throw 'Source mismatch' }
-          ./scripts/test_capture_broker_native.ps1 -ScrollbarOnly -ExecuteAfterHandoff -PythonPaths "$PWD/.venv/Scripts/python.exe"
-      - name: Retain textual qualification results in the job log
-        if: always()
-        shell: pwsh
-        run: |
-          $receipts = @(Get-ChildItem -LiteralPath .test-tmp -Directory -Filter 'native-broker-*' -ErrorAction Stop |
-            ForEach-Object { Get-ChildItem -LiteralPath $_.FullName -Recurse -File } |
-            Where-Object { $_.Name -in @('stdout.log', 'stderr.log', 'scrollbar-native.json', 'fixture-retired.json', 'fixture-stdout.log', 'fixture-stderr.log') })
-          $receipts |
-            ForEach-Object { "RECEIPT=$($_.Name)"; Get-Content -LiteralPath $_.FullName }
-          if (-not ($receipts | Where-Object Name -eq 'stdout.log')) { throw 'Native test stdout receipt missing' }
-
   portable-baseline:
     name: Portable baseline (Linux, offscreen)
     runs-on: ubuntu-latest
@@ -235,7 +178,6 @@ jobs:
         run: >-
           uv run --no-sync pytest tests/capture tests/platform/test_hotkeys.py
           tests/shell/test_hotkey_field.py
-          tests/shell/test_preview_manifest_contract.py
           -m "not native_desktop"
           --junitxml=capture-contracts.xml
       - name: Upload reproducible contract results
@@ -336,21 +278,6 @@ jobs:
           uv pip install --python .smoke $wheel
           & .smoke/Scripts/verdiclip.exe --version
           & .smoke/Scripts/python.exe -c "import verdiclip; assert verdiclip.VERSION != '0.0.0+unknown'"
-      - name: Verify installed scrolling helper bytes without executing them
-        shell: pwsh
-        run: |
-          @'
-          from pathlib import Path
-          import verdiclip
-          source = Path('src/verdiclip/capture/scroll').resolve()
-          installed = Path(verdiclip.__file__).resolve().parent / 'capture' / 'scroll'
-          assert installed != source, 'Verification must inspect the installed wheel'
-          for name in ('uia_helper.ps1', 'uia_native_request.ps1', 'uia_desktop.cs',
-                       'uia_nofocus.cs', 'uia_nofocus_interop.cs'):
-              assert (installed / name).read_bytes() == (source / name).read_bytes(), name
-          print('Installed native helper assets match reviewed source; no helper executed')
-          '@ | & .smoke/Scripts/python.exe -
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist
@@ -435,7 +362,7 @@ jobs:
   ci-passed:
     name: CI passed
     if: always()
-    needs: [hosted-scrollbar, portable-baseline, lint, typecheck, test, capture-contracts, tabs-contracts, ux-gallery, build, audit, workflows]
+    needs: [portable-baseline, lint, typecheck, test, capture-contracts, tabs-contracts, ux-gallery, build, audit, workflows]
     runs-on: ubuntu-latest
     steps:
       - name: Require every job to succeed

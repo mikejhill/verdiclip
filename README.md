@@ -42,6 +42,12 @@ VerdiClip checks PyPI for a newer release a minute after it starts and every 6 h
 
 Tray → **Check for updates** opens a status window immediately. It stays visible with the result or an error; a failed check can be retried. Development versions that cannot be compared with stable releases say so explicitly. Settings → General turns off automatic checking, or automatic installing (VerdiClip then offers each release in a notification). If an update fails, the old version starts again and the notification names the log, `%APPDATA%\VerdiClip\update\update.log`.
 
+## Corrective release candidate
+
+This candidate restores 0.12.1 capture behavior and adds tabs. Completed captures open a new tab in the existing editor by default; Settings can choose separate windows. The editor is brought forward when capture completes, unless protected editor UI is open.
+
+Scrolling capture and the broker-based menu redesign are not included. Historical design documents are retained for reference. See [the corrective scope](docs/corrective-release-scope.md) for the release boundaries and later work.
+
 ## Capture
 
 | Do this | Press |

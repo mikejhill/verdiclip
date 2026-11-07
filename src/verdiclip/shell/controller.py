@@ -9,7 +9,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final
 
-from PySide6.QtCore import QObject, Qt, QThread, QTimer, QUrl
+from PySide6.QtCore import QObject, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QImage, QImageReader
 from PySide6.QtWidgets import (
     QApplication,
@@ -22,21 +22,10 @@ from PySide6.QtWidgets import (
 from verdiclip import APP_NAME, DOCS_URL, VERSION
 from verdiclip.capture.grabber import ScreenSource
 from verdiclip.capture.models import Capture
-from verdiclip.capture.reviewed import CaptureCompleteness, CaptureKind, ReviewedCapture
-from verdiclip.capture.scroll.panels import ScrollReviewPanel
-from verdiclip.capture.scroll.session import ScrollSession
-from verdiclip.capture.scroll.uia_adapter import UiaAdapter
-from verdiclip.capture.scroll.workflow import (
-    BackendFactory,
-    ScrollFactories,
-    ScrollWorkflow,
-)
 from verdiclip.capture.service import CaptureService, WindowSource
 from verdiclip.document.admission import CaptureProvenance
 from verdiclip.document.document import Document
-from verdiclip.editor.close_prompt import CloseChoice, ClosePrompt
 from verdiclip.editor.icons import IconFactory
-from verdiclip.editor.page import DocumentRecord
 from verdiclip.editor.session import EditorSession
 from verdiclip.editor.style_memory import StyleMemory
 from verdiclip.editor.window import IMAGE_FILTER, EditorOptions, EditorWindow
@@ -50,22 +39,14 @@ from verdiclip.platform.launcher import LaunchCommand, tray_launch
 from verdiclip.platform.shortcuts import Shortcut, ShortcutRegistration
 from verdiclip.platform.startup import StartupRegistration
 from verdiclip.settings import (
-    CaptureSettings,
+    CaptureDestination,
     IntegrationSettings,
-    OutputSettings,
     Settings,
     SettingsStore,
 )
-from verdiclip.shell.gui_readiness import (
-    StartupReadiness,
-    prepare_and_admit,
-    prepare_gui_fonts,
-)
-from verdiclip.shell.scroll_review import ScrollReviews
 from verdiclip.shell.settings_dialog import HOTKEY_FIELDS, SettingsDialog
 from verdiclip.shell.theme import ThemeManager
 from verdiclip.shell.tray import CHECK_UPDATES_LABEL, TrayCommands, TrayIcon
-from verdiclip.startup_lifetime import StartupLifetime
 from verdiclip.update.service import Updater
 
 logger = logging.getLogger(__name__)
@@ -87,21 +68,6 @@ class ShellIntegration:
     key_capture: KeyCapture | None = None
     # Finds and installs newer releases; None leaves updates out of the tray
     updater: Updater | None = None
-
-
-@dataclass(slots=True)
-class CaptureDelivery:
-    """Retain original pixels and successful receipts until delivery completes."""
-
-    capture: ReviewedCapture
-    actions: CaptureSettings
-    output: OutputSettings
-    target: EditorWindow | None
-    activate_editor: bool
-    saved: Path | None = None
-    copied: bool = False
-    admitted: bool = False
-    in_flight: bool = False
 
 
 class AppController(QObject):
@@ -128,37 +94,24 @@ class AppController(QObject):
         self._capture = CaptureService(
             screens, windows, show_magnifier=self._settings.capture.show_magnifier
         )
-        self._scroll_workflow: ScrollWorkflow | None = None
         self._editors: list[EditorWindow] = []
         self._workspace = Workspace()
         self._workspace.window_added.connect(self._wire_editor)
         self._workspace.window_removed.connect(self._forget)
-        self._pending_deliveries: dict[str, CaptureDelivery] = {}
-        self._completed_deliveries: set[str] = set()
-        self._scroll_reviews = ScrollReviews(self)
-        self._scroll_reviews.reviewed_capture.connect(self._deliver_scroll_review)
-        self._scroll_reviews.cleanup_failed.connect(
-            lambda message: self._notify(
-                "Capture cleanup needs retry", message, warning=True
-            )
-        )
-        self._scroll_reviews.work_changed.connect(self._resume_idle_if_ready)
-        self._closing_editors = False
-        self._icon_factory = IconFactory(QApplication.palette().windowText().color())
-        self._icon = self._icon_factory.brand()
-        self._tray = TrayIcon(self._icon, self._tray_commands())
         self._workspace.presentation_failed.connect(
             lambda message: self._notify(
                 "Editor work retained",
                 message,
                 warning=True,
-                on_click=self._workspace.present_retained,
+                on_click=self._recover_editor_work,
             )
         )
+        self._icon_factory = IconFactory(QApplication.palette().windowText().color())
+        self._icon = self._icon_factory.brand()
+        self._tray = TrayIcon(self._icon, self._tray_commands())
         self._last_saved_folder: Path | None = None
         self._message_action: Callable[[], None] = self._open_last_folder
         self._manual_check = False
-        self._gui_readiness: StartupReadiness | None = None
         self._update_status: QMessageBox | None = None
         self._announced: str | None = None
         self._check_timer = QTimer(self)
@@ -170,11 +123,9 @@ class AppController(QObject):
             updater.checked.connect(self._on_update_checked)
             updater.check_failed.connect(self._on_update_check_failed)
         self._capture.captured.connect(self._on_captured)
-        self._capture.failed.connect(self._tray.set_capture_error)
         self._capture.failed.connect(
             lambda message: self._notify("Capture failed", message, warning=True)
         )
-        self._capture.work_changed.connect(self._resume_idle_if_ready)
         self._hotkeys.triggered.connect(self._on_hotkey)
         self._tray.messageClicked.connect(self._on_message_clicked)
 
@@ -200,43 +151,11 @@ class AppController(QObject):
         """Return the open editors."""
         return tuple(self._editors)
 
-    @property
-    def workspace(self) -> Workspace:
-        """Return the shared owner for all editor documents and hosts."""
-        return self._workspace
-
-    @property
-    def pending_deliveries(self) -> tuple[ReviewedCapture, ...]:
-        """Retain failed capture delivery without forcing an editor to open."""
-        return tuple(attempt.capture for attempt in self._pending_deliveries.values())
-
     # Lifecycle
 
-    @property
-    def gui_readiness(self) -> StartupReadiness | None:
-        """Return measured startup admission costs, excluding outer ready logging."""
-        return self._gui_readiness
-
     def start(self) -> None:
-        """Prepare GUI resources before offering tray/hotkeys (UX-TRY-01)."""
-        self._gui_readiness = None
-        readiness = prepare_and_admit(
-            lambda: ThemeManager.apply(self._settings.appearance.theme),
-            prepare_gui_fonts,
-            self._admit_startup,
-        )
-        self._gui_readiness = readiness
-        logger.info(
-            "%s %s ready; startup admission %.1f ms "
-            "(font preparation %.1f ms included)",
-            APP_NAME,
-            VERSION,
-            readiness.controller_start_ms,
-            readiness.fonts.elapsed_ms,
-        )
-
-    def _admit_startup(self) -> None:
-        """Expose capture entry points only after required font preparation."""
+        """Apply the theme, show the tray, and register hotkeys (UX-TRY-01)."""
+        ThemeManager.apply(self._settings.appearance.theme)
         self._tray.show()
         self._apply_hotkeys()
         # Re-assert Windows registrations so they survive moved installs and
@@ -250,6 +169,7 @@ class AppController(QObject):
             self._apply_start_menu(keep_others=True)
         self._report_update()
         self._schedule_update_checks()
+        logger.info("%s %s ready", APP_NAME, VERSION)
 
     def shutdown(self) -> None:
         """Release global resources."""
@@ -259,13 +179,10 @@ class AppController(QObject):
             self._update_status.hide()
             self._update_status.deleteLater()
             self._update_status = None
-        with StartupLifetime() as lifetime:
-            lifetime.callback(self._tray.hide)
-            lifetime.callback(self._hotkeys.close)
-            lifetime.callback(self._workspace.cancel_drag)
-            if self._scroll_workflow is not None:
-                lifetime.callback(self._scroll_workflow.shutdown)
-            lifetime.callback(self._capture.cancel)
+        self._capture.cancel()
+        self._workspace.cancel_drag()
+        self._hotkeys.close()
+        self._tray.hide()
 
     def handle_forwarded(self, arguments: list[str]) -> None:
         """Act on arguments sent by a second launch."""
@@ -282,15 +199,7 @@ class AppController(QObject):
 
     def _on_hotkey(self, action: str) -> None:
         """Dispatch a global hotkey."""
-        if action == "scrolling" and self._scroll_workflow is None:
-            self._notify(
-                "Scrolling capture unavailable",
-                "Scrolling capture is not available in this build.",
-                warning=True,
-            )
-            return
         handlers = {
-            "scrolling": self._capture.capture_scrolling,
             "region": self._capture.capture_region,
             "window": self._capture.capture_active_window,
             "fullscreen": self._capture.capture_fullscreen,
@@ -301,234 +210,68 @@ class AppController(QObject):
             self._workspace.cancel_drag()
             handler()
 
-    def configure_scrolling(
-        self, adapter: UiaAdapter, backend: BackendFactory, spool_parent: Path
-    ) -> ScrollWorkflow:
-        """Attach explicit scrolling services once; defaults enable no native path.
-
-        Transfer an idle, unparented adapter to application ownership. The backend
-        factory must bind the capture's latched input_active predicate when using
-        a qualified native adapter. Configuration itself launches no provider.
-        """
-        if QThread.currentThread() != self.thread():
-            raise ValueError("Configure scrolling on the application thread")
-        if self._scroll_workflow is not None or self._capture.is_selecting:
-            raise ValueError("Configure scrolling once while capture is idle")
-        if (
-            adapter.busy
-            or adapter.parent() is not None
-            or adapter.thread() != self.thread()
-        ):
-            raise ValueError(
-                "Scrolling requires an idle, unowned application-thread adapter"
-            )
-        workflow = ScrollWorkflow(
-            adapter,
-            factories=ScrollFactories(backend, self.review_scrolling_capture),
-            spool_parent=spool_parent,
-            input_active=lambda: self._capture.input_active,
-        )
-        adapter.setParent(workflow)
-        try:
-            self._capture.set_scroll_workflow(workflow)
-        except ValueError:
-            # The service's declared rejection occurs before it takes ownership.
-            adapter.setParent(None)
-            workflow.deleteLater()
-            raise
-        # An unexpected Qt attachment failure must not delete a graph that the
-        # capture service may already own. Such failures require caller recovery.
-        self._scroll_workflow = workflow
-        self._tray.set_scrolling_available(available=True)
-        for window in self._workspace.windows:
-            window.action("capture_scrolling").setEnabled(True)
-        return workflow
-
-    def capture_scrolling(self) -> None:
-        """Start scrolling selection through the same preserved input owner."""
-        self._on_hotkey("scrolling")
-
-    def review_scrolling_capture(self, session: ScrollSession) -> ScrollReviewPanel:
-        """Own stopped-result review without enabling native scrolling acquisition.
-
-        The future capture coordinator presents the returned nonmodal panel only
-        after capture has stopped. Opening it does not activate or dismiss other UI.
-        """
-        self._workspace.cancel_drag()
-        return self._scroll_reviews.open(session)
-
-    def _deliver_scroll_review(self, result: ReviewedCapture) -> None:
-        try:
-            if result.capture_id in self._pending_deliveries:
-                self.retry_delivery(result.capture_id)
-            else:
-                self.deliver_reviewed_capture(result)
-        except (AppError, RuntimeError, ValueError, MemoryError) as error:
-            self._scroll_reviews.delivery_failed(result.capture_id, str(error))
-            self._notify("Capture retained for retry", str(error), warning=True)
-
     def _on_captured(self, capture: Capture) -> None:
-        """Adapt an ordinary capture to the reviewed, producer-neutral seam."""
-        self.deliver_reviewed_capture(
-            ReviewedCapture(
-                capture.image,
-                capture.title,
-                capture.taken_at,
-                CaptureKind.SCREENSHOT,
-                CaptureCompleteness.COMPLETE,
-            )
-        )
-
-    def deliver_reviewed_capture(
-        self,
-        result: ReviewedCapture,
-        *,
-        target: EditorWindow | None = None,
-        activate_editor: bool = False,
-    ) -> EditorWindow | None:
-        """Apply chosen outputs once; preserve native popup/modal context by default.
-
-        Partial images must already have passed producer-owned review. Capture
-        plans, tiles, repeat targets and input backend objects never cross here.
-        Preserved-foreground producers keep activate_editor=False. Foreground
-        opt-in belongs to explicit user intent, outside the canonical image.
-        """
-        if result.capture_id in self._completed_deliveries:
-            self._scroll_reviews.acknowledge_delivery(result.capture_id)
-            return self._capture_host(result.capture_id)
-        attempt = self._pending_deliveries.setdefault(
-            result.capture_id,
-            CaptureDelivery(
-                result,
-                self._settings.capture,
-                self._settings.output,
-                target,
-                activate_editor,
-            ),
-        )
-        if attempt.in_flight:
-            return self._capture_host(result.capture_id)
-        attempt.in_flight = True
-        try:
-            return self._deliver_capture_attempt(attempt)
-        finally:
-            attempt.in_flight = False
-
-    def _deliver_capture_attempt(self, attempt: CaptureDelivery) -> EditorWindow | None:
-        """Settle one reserved attempt; reentrant duplicate callbacks coalesce."""
-        errors: list[str] = []
-        done = self._deliver_outputs(attempt, errors)
-        if attempt.actions.open_editor or not attempt.actions.has_action:
-            self._admit_capture(attempt, errors)
-        if errors:
-            self._scroll_reviews.delivery_failed(
-                attempt.capture.capture_id, "\n".join(errors)
-            )
-            self._notify(
-                "Could not deliver the capture",
-                "\n".join(errors) + "\nCapture retained. Click to retry its delivery.",
-                warning=True,
-                on_click=lambda: self.retry_delivery(attempt.capture.capture_id),
-            )
-        else:
-            self._pending_deliveries.pop(attempt.capture.capture_id)
-            self._completed_deliveries.add(attempt.capture.capture_id)
-            self._scroll_reviews.acknowledge_delivery(attempt.capture.capture_id)
-            self._tray.set_capture_error("")
-        if done:
-            hint = "\nClick to open the folder." if attempt.saved is not None else ""
-            # Keep a failed attempt's retry action rather than replacing it.
-            if errors:
-                logger.info("Screenshot captured: %s", "\n".join(done))
-            else:
-                self._notify("Screenshot captured", "\n".join(done) + hint)
-        self._resume_idle_if_ready()
-        return self._capture_host(attempt.capture.capture_id)
-
-    def retry_delivery(self, capture_id: str) -> None:
-        """Retry failed sinks using current output settings without duplicating work."""
-        attempt = self._pending_deliveries.get(capture_id)
-        if attempt is not None and not attempt.in_flight:
-            attempt.output = self._settings.output
-            self.deliver_reviewed_capture(attempt.capture)
-
-    def _deliver_outputs(
-        self, attempt: CaptureDelivery, errors: list[str]
-    ) -> list[str]:
-        """Run independent outputs and count only confirmed successful delivery."""
-        result, actions = attempt.capture, attempt.actions
-        delivery = ImageDelivery(attempt.output)
+        """Run every enabled after-capture action (UX-CAP-11..13)."""
+        actions = self._settings.capture
+        delivery = ImageDelivery(self._settings.output)
+        saved: Path | None = None
+        copied = False
         done: list[str] = []
-        if actions.save_to_file and attempt.saved is None:
-            try:
-                attempt.saved = delivery.save(
-                    result.image,
-                    delivery.auto_path(title=result.title, moment=result.created_at),
-                )
-                self._last_saved_folder = attempt.saved.parent
-                done.append(f"Saved {attempt.saved}")
-            except AppError as error:
-                errors.append(str(error))
-        if actions.copy_to_clipboard and not attempt.copied:
-            try:
-                delivery.copy(result.image)
-                attempt.copied = True
-                done.append("Copied to clipboard")
-            except AppError as error:
-                errors.append(str(error))
-        return done
-
-    def _capture_record(self, capture_id: str) -> DocumentRecord | None:
-        return next(
-            (
-                record
-                for record in self._workspace.documents
-                if record.provenance is not None
-                and record.provenance.capture_id == capture_id
-            ),
-            None,
-        )
-
-    def _capture_host(self, capture_id: str) -> EditorWindow | None:
-        record = self._capture_record(capture_id)
-        return (
-            self._workspace.host_of(record.identifier) if record is not None else None
-        )
-
-    def _admit_capture(self, attempt: CaptureDelivery, errors: list[str]) -> None:
-        if attempt.admitted:
-            self._refresh_capture_delivery(attempt)
-            return
-        result = attempt.capture
-        options = EditorOptions(
-            title=result.title,
-            source_path=attempt.saved,
-            confirm_close=self._settings.editor.confirm_unsaved_close,
-            provenance=CaptureProvenance.from_capture(result),
-        )
         try:
-            self._open_document(
-                result.image,
-                options,
-                delivered=attempt.saved is not None or attempt.copied,
-                target=attempt.target,
-                activate=attempt.activate_editor,
+            if actions.save_to_file:
+                when = capture.taken_at
+                saved = delivery.save(
+                    capture.image, delivery.auto_path(title=capture.title, moment=when)
+                )
+                self._last_saved_folder = saved.parent
+                done.append(f"Saved {saved}")
+            if actions.copy_to_clipboard:
+                delivery.copy(capture.image)
+                copied = True
+                done.append("Copied to clipboard")
+        except AppError as err:
+            self._notify("Could not deliver the capture", str(err), warning=True)
+        if actions.open_editor or not actions.has_action:
+            options = EditorOptions(
+                title=capture.title,
+                source_path=saved,
+                confirm_close=self._settings.editor.confirm_unsaved_close,
+                provenance=CaptureProvenance.from_capture(capture),
             )
-            attempt.admitted = True
-            self._refresh_capture_delivery(attempt)
-        except (AppError, RuntimeError, ValueError, MemoryError) as error:
-            errors.append(f"Could not open capture editor: {error}")
+            try:
+                self._open_document(
+                    capture.image,
+                    options,
+                    delivered=saved is not None or copied,
+                    new_window=actions.destination is CaptureDestination.WINDOWS,
+                )
+            except (RuntimeError, ValueError, MemoryError):
+                retained = any(
+                    record.provenance == options.provenance
+                    for record in self._workspace.documents
+                )
+                if retained:
+                    self._notify(
+                        "Editor work retained",
+                        "The screenshot could not be shown. "
+                        "Click to recover retained tabs.",
+                        warning=True,
+                        on_click=self._recover_editor_work,
+                    )
+                else:
+                    self._notify(
+                        "Could not open the capture",
+                        "The editor could not accept the screenshot.",
+                        warning=True,
+                    )
+                return  # Keep the recovery action; never repeat save/copy delivery.
+        if done:
+            hint = "\nClick to open the folder." if saved is not None else ""
+            self._notify("Screenshot captured", "\n".join(done) + hint)
 
-    def _refresh_capture_delivery(self, attempt: CaptureDelivery) -> None:
-        """A retried original-image output must never mark newer edits delivered."""
-        record = self._capture_record(attempt.capture.capture_id)
-        if record is not None:
-            if record.saved_path is None:
-                record.saved_path = attempt.saved
-            record.copied = record.copied or attempt.copied
-            if attempt.saved is not None or attempt.copied:
-                record.session.history.mark_delivered(expected_state_id=0)
-            self._workspace.refresh_document(record.identifier)
+    def _recover_editor_work(self) -> None:
+        """Retry retained views only, never repeat capture or output delivery."""
+        self._workspace.recover_retained(activate=True)
 
     # Editors
 
@@ -555,41 +298,37 @@ class AppController(QObject):
         *,
         delivered: bool,
         target: EditorWindow | None = None,
-        activate: bool = True,
+        new_window: bool = False,
     ) -> EditorWindow:
-        existing = (
-            self._capture_record(options.provenance.capture_id)
-            if options.provenance is not None
-            else None
-        )
-        session = (
-            existing.session
-            if existing is not None
-            else EditorSession(
-                Document(image),
-                self._settings.editor,
-                remembered=self._styles.load(),
-                on_style_change=self._styles.remember,
-                delivered=delivered,
-            )
+        session = EditorSession(
+            Document(image),
+            self._settings.editor,
+            remembered=self._styles.load(),
+            on_style_change=self._styles.remember,
+            delivered=delivered,
         )
         return self._workspace.open_document(
             session,
             ImageDelivery(self._settings.output),
             options,
             target=target,
-            activate=activate,
+            activate=True,
+            new_window=new_window,
+            select_new=options.provenance is not None,
         )
 
+    @property
+    def workspace(self) -> Workspace:
+        """Return document ownership across all tab hosts."""
+        return self._workspace
+
     def _wire_editor(self, editor: EditorWindow) -> None:
-        """Wire every host, including ones created by tab detachment."""
+        """Wire new and detached tab hosts once."""
         editor.open_image_requested.connect(
             lambda path, host=editor: self.open_image(path, target=host)
         )
         editor.settings_requested.connect(lambda e=editor: self.show_settings(e))
         editor.about_requested.connect(lambda e=editor: self._show_about(e))
-        editor.scrolling_requested.connect(self.capture_scrolling)
-        editor.action("capture_scrolling").setEnabled(self._scroll_workflow is not None)
         self._editors.append(editor)
 
     def open_image(
@@ -617,10 +356,7 @@ class AppController(QObject):
         """Drop a closed editor."""
         if editor in self._editors:
             self._editors.remove(editor)
-        self._resume_idle_if_ready()
-
-    def _resume_idle_if_ready(self) -> None:
-        if not self._has_retained_work() and self._idle_timer.isActive():
+        if not self._workspace.has_work and self._idle_timer.isActive():
             self._idle_timer.start(0)  # A deferred update can go ahead now
 
     # Tray commands
@@ -628,17 +364,16 @@ class AppController(QObject):
     def _tray_commands(self) -> TrayCommands:
         """Return the callbacks for the tray menu."""
         return TrayCommands(
-            capture_region=lambda: self._on_hotkey("region"),
-            capture_window=lambda: self._on_hotkey("window"),
-            capture_fullscreen=lambda: self._on_hotkey("fullscreen"),
-            repeat_last=lambda: self._on_hotkey("repeat"),
+            capture_region=self._capture.capture_region,
+            capture_window=self._capture.capture_active_window,
+            capture_fullscreen=self._capture.capture_fullscreen,
+            repeat_last=self._capture.repeat_last,
             open_image=self._ask_open_image,
             open_folder=self.open_screenshots_folder,
             settings=self.show_settings,
             about=self._show_about,
             exit=self.request_exit,
             update=self.check_for_updates if self._updater is not None else None,
-            capture_scrolling=self.capture_scrolling,
         )
 
     def _ask_open_image(self) -> None:
@@ -900,19 +635,12 @@ class AppController(QObject):
             )
             self._notify("Could not check for updates", reason, warning=True)
 
-    def _has_retained_work(self) -> bool:
-        """Capture leases and producer-owned originals outlive presentation windows."""
-        return (
-            self._workspace.has_work
-            or bool(self._pending_deliveries)
-            or self._scroll_reviews.has_work
-            or self._capture.is_selecting
-        )
-
     def _defer_automatic_install(self) -> bool:
-        """Keep background updates away from retained work and visible app UI."""
-        busy = self._has_retained_work() or any(
-            widget.isVisible() for widget in QApplication.topLevelWidgets()
+        """Keep background updates away from retained work and visible UI."""
+        busy = (
+            self._workspace.has_work
+            or self._capture.is_selecting
+            or any(widget.isVisible() for widget in QApplication.topLevelWidgets())
         )
         if busy:
             self._idle_timer.start(IDLE_RETRY_MS)
@@ -933,93 +661,8 @@ class AppController(QObject):
     # Internals
 
     def _close_editors(self) -> bool:
-        """Resolve retained captures and approve every document before disposal."""
-        if self._closing_editors:
-            return False
-        if self._capture.is_selecting:
-            self._notify(
-                "Capture in progress",
-                "Finish, review or cancel the capture before closing.",
-                warning=True,
-            )
-            return False
-        self._closing_editors = True
-        try:
-            return self._close_retained_and_workspace()
-        finally:
-            self._closing_editors = False
-
-    def _pending_plan_current(self, plan: tuple[CaptureDelivery, ...]) -> bool:
-        return (
-            not self._scroll_reviews.has_unaccepted
-            and not self._capture.is_selecting
-            and not any(item.in_flight for item in plan)
-            and tuple(id(item) for item in self._pending_deliveries.values())
-            == tuple(id(item) for item in plan)
-        )
-
-    def _close_retained_and_workspace(self) -> bool:
-        if self._scroll_reviews.has_unaccepted:
-            self._notify(
-                "Scrolling review needs a decision",
-                "Use or discard the scrolling capture in its review before closing.",
-                warning=True,
-            )
-            return False
-        plan = tuple(self._pending_deliveries.values())
-        if any(item.in_flight for item in plan):
-            self._notify(
-                "Capture delivery in progress",
-                "Please close again when the capture finishes.",
-                warning=True,
-            )
-            return False
-        for attempt in plan:
-            prompt = ClosePrompt(
-                f'The original capture "{attempt.capture.title or "Screenshot"}" '
-                "still has unfinished automatic output. Save that original image "
-                "to a file before closing? Don't save stops retrying it; "
-                "editor changes are checked separately."
-            )
-            choice = prompt.ask(None)
-            if choice is CloseChoice.CANCEL:
-                return False
-            if choice is CloseChoice.SAVE and not self._save_retained_capture(attempt):
-                return False
-
-        def guard() -> bool:
-            return self._pending_plan_current(plan)
-
-        if not self._workspace.close_all(can_commit=guard) or not guard():
-            return False
-        for attempt in plan:
-            self._pending_deliveries.pop(attempt.capture.capture_id)
-            self._completed_deliveries.add(attempt.capture.capture_id)
-        closed = self._scroll_reviews.close_resolved()
-        # A final review close can synchronously begin another capture or admit
-        # fresh work. Earlier close approvals cannot authorize its disposal.
-        return closed and not self._has_retained_work()
-
-    def _save_retained_capture(self, attempt: CaptureDelivery) -> bool:
-        delivery = ImageDelivery(self._settings.output)
-        try:
-            start = attempt.saved or delivery.auto_path(
-                title=attempt.capture.title, moment=attempt.capture.created_at
-            )
-        except AppError:
-            start = self._settings.output.directory / "Screenshot.png"
-        chosen, _filter = QFileDialog.getSaveFileName(
-            None, "Save retained capture", str(start), IMAGE_FILTER
-        )
-        if not chosen:
-            return False
-        try:
-            attempt.saved = delivery.save(attempt.capture.image, Path(chosen))
-        except AppError as error:
-            self._notify("Capture not saved", str(error), warning=True)
-            return False
-        self._refresh_capture_delivery(attempt)
-        return True
+        """Close every editor; False if one stayed open to keep unsaved work."""
+        return self._workspace.close_all()
 
     def _pause_hotkeys(self, paused: bool) -> None:  # noqa: FBT001 - Qt signal
         """Release hotkeys while Settings records one, so the keys reach it."""

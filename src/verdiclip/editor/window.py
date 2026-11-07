@@ -102,7 +102,6 @@ class EditorWindow(QMainWindow):
     open_image_requested = Signal(object)  # Path
     settings_requested = Signal()
     about_requested = Signal()
-    scrolling_requested = Signal()
 
     def __init__(
         self,
@@ -239,6 +238,16 @@ class EditorWindow(QMainWindow):
             not self._closing
             and not blocked
             and not any(p.record.operations for p in self.pages)
+        )
+
+    @property
+    def accepts_capture(self) -> bool:
+        """Do not commit live typing merely to select an incoming capture."""
+        popup = QApplication.activePopupWidget()
+        return (
+            self.eligible
+            and not (popup is not None and popup in self.findChildren(QWidget))
+            and not any(p.canvas.editors.is_open for p in self.pages)
         )
 
     @property
@@ -659,13 +668,6 @@ class EditorWindow(QMainWindow):
             lambda: QDesktopServices.openUrl(QUrl(DOCS_URL)),
         )
         self._add_action("about", f"&About {APP_NAME}", None, self.about_requested.emit)
-        scrolling = self._add_action(
-            "capture_scrolling",
-            "Capture &scrolling area…",
-            None,
-            self.scrolling_requested.emit,
-        )
-        scrolling.setEnabled(False)
         self._add_action("undo", "&Undo", QKeySequence.StandardKey.Undo, self._undo)
         redo = self._add_action("redo", "&Redo", "Ctrl+Y", self._redo)
         redo.setShortcuts([QKeySequence("Ctrl+Y"), QKeySequence("Ctrl+Shift+Z")])
@@ -840,7 +842,6 @@ class EditorWindow(QMainWindow):
             lambda: self._workspace.populate_window_menu(tabs, self)
         )
         tools = bar.addMenu("&Tools")
-        tools.addAction(self._actions["capture_scrolling"])
         tools.addSeparator()
         for action in self._tool_actions.values():
             tools.addAction(action)
