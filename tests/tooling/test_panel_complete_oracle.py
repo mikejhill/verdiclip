@@ -90,3 +90,22 @@ def test_unqualified_dpi_fails(
     fixture, path, _ = complete
     fixture["dpi_y"] = 120
     assert supervisor.full_sweep_oracle(fixture, path)["passed"] is False
+
+
+@pytest.mark.parametrize("full_width_passed", [False, True])
+def test_complete_gate_requires_full_width_reference(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, full_width_passed: bool
+) -> None:
+    """A passing color column cannot excuse a corrupted text or seam pixel."""
+    monkeypatch.setattr(supervisor, "full_sweep_oracle", lambda *_: {"passed": True})
+    monkeypatch.setattr(
+        supervisor, "full_width_oracle", lambda *_: {"passed": full_width_passed}
+    )
+    result: dict[str, Any] = {"full_sweep": True, "helper": {"exit_code": 0}}
+    if full_width_passed:
+        supervisor.verify_result(result, tmp_path, tmp_path, {})
+        assert result["checkpoint_passed"] is True
+    else:
+        with pytest.raises(RuntimeError, match="complete-sweep oracle"):
+            supervisor.verify_result(result, tmp_path, tmp_path, {})
+        assert result["checkpoint_passed"] is False

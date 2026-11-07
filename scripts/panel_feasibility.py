@@ -19,6 +19,7 @@ from typing import Any
 import mss
 from PySide6.QtGui import QImage
 from scripts.panel_checkpoint import checkpoint_passed
+from scripts.panel_complete_reference import associate_frames, compare_reference
 from scripts.panel_fixture_server import FixtureServer
 from scripts.panel_owned_job import OwnedJob
 from scripts.panel_probe_oracle import (
@@ -472,6 +473,16 @@ def full_sweep_oracle(fixture: Json, output: Path) -> Json:
     }
 
 
+def full_width_oracle(fixture: Json, output: Path, state_dir: Path) -> Json:
+    """Use independent fixture states and raw frames to verify every output pixel."""
+    directory = output / "probe"
+    images = {p.stem: load_pixels(p) for p in directory.glob("*.png")}
+    frames = associate_frames(
+        fixture, snapshots(state_dir), events(directory / "calls.jsonl"), images
+    )
+    return compare_reference(frames, images["stitched"])
+
+
 def verify_result(result: Json, output: Path, state_dir: Path, fixture: Json) -> None:
     """Keep read-only discovery distinct from actual pixel checkpoint success."""
     if any(
@@ -499,6 +510,9 @@ def verify_result(result: Json, output: Path, state_dir: Path, fixture: Json) ->
         result["oracle"] = full_sweep_oracle(fixture, output)
         _require_probe_success(result["helper"]["exit_code"])
         result["checkpoint_passed"] = result["oracle"]["passed"]
+        if result["checkpoint_passed"]:
+            result["full_width_oracle"] = full_width_oracle(fixture, output, state_dir)
+            result["checkpoint_passed"] = result["full_width_oracle"]["passed"]
         if not result["checkpoint_passed"]:
             raise RuntimeError("Independent complete-sweep oracle failed")
     elif result["read_only_discovery"]:
