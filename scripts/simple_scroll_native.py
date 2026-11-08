@@ -10,6 +10,7 @@ from __future__ import annotations
 import ctypes as c
 import ctypes.wintypes as w
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -20,6 +21,7 @@ from tempfile import TemporaryDirectory
 
 from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer
 
+from verdiclip.capture.grabber import MssScreenSource
 from verdiclip.capture.scroll_helper import ScrollHelper
 from verdiclip.capture.scrolling import ScrollResult
 from verdiclip.geometry import Point
@@ -167,11 +169,20 @@ def _require(condition: object, message: str) -> None:
 
 def _case(kind: str, output: Path, report: dict[str, object]) -> None:
     window = _prepare(_window())
+    report["window"] = asdict(window)
+    screens = MssScreenSource()
+    try:
+        frozen = screens.freeze()
+        report["desktop"] = asdict(frozen.bounds)
+        frozen.image.save(str(output / "desktop-before-discovery.png"))
+    finally:
+        screens.close()
     point = (
         Point(window.bounds.left + 350, window.bounds.top + 300)
         if kind == "edge-nested"
         else window.bounds.center
     )
+    report["selected_point"] = asdict(point)
     with UiaScrollTarget(point) as target:
         report["viewport"] = asdict(target.area)
         report["initial"] = asdict(target.position())
@@ -223,6 +234,7 @@ def _case(kind: str, output: Path, report: dict[str, object]) -> None:
 
 def main() -> None:
     """Run one actual-app case; the workflow owns the outer wall-clock limit."""
+    logging.basicConfig(level=logging.DEBUG)
     kind = sys.argv[1]
     output = Path("artifacts/simple-scroll") / kind
     output.mkdir(parents=True, exist_ok=True)

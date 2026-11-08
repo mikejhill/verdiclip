@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ctypes as c
 import ctypes.wintypes as w
+import logging
 import math
 import sys
 import uuid
@@ -23,6 +24,8 @@ from verdiclip.capture.grabber import MssScreenSource
 from verdiclip.capture.scrolling import END_PERCENT, ScrollPosition
 from verdiclip.exceptions import CaptureError
 from verdiclip.geometry import Point, Rect
+
+logger = logging.getLogger(__name__)
 
 _SCROLL_IID = "88f4d42a-e881-459d-a77c-73bbbb7e02dc"
 _MAX_ANCESTORS = 32
@@ -214,6 +217,11 @@ class UiaScrollTarget:
     ) -> tuple[_Interface, _Interface]:
         for _ in range(_MAX_ANCESTORS):
             pattern = element.scroll_pattern(self._owners)
+            logger.debug(
+                "UIA ancestor bounds=%s scroll=%s",
+                element.bounds(),
+                pattern is not None,
+            )
             if pattern is not None and 0.0 <= pattern.number(6) <= END_PERCENT:
                 return element, pattern
             element = walker.pointer_result(
@@ -249,7 +257,10 @@ class UiaScrollTarget:
             for y in (self._area.top, self._area.center.y, self._area.bottom - 1):
                 window = self._user.WindowFromPoint(w.POINT(round(x), round(y)))
                 if self._user.GetAncestor(window, 2) != self._window:
-                    raise CaptureError("Another window covers the scroll panel")
+                    raise CaptureError(
+                        f"Another window covers the scroll panel at ({x}, {y}); "
+                        f"viewport={self._area}, window={self._window_rect}"
+                    )
         if self._input() != self._input_tick:
             raise CaptureError("Stopped because you used the mouse or keyboard")
 
