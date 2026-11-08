@@ -30,9 +30,13 @@ def target() -> UiaScrollTarget:
     result._window, result._process = 1, 2
     result._window_rect = (0, 0, 500, 500)
     result._area = Rect(20, 20, 300, 300)
+    result._provider_bounds = result._area
+    result._viewport = Mock(return_value=result._area)
     result._input_tick = 12
     result._element, result._scroll = Mock(), Mock()
     result._element.bounds.return_value = result._area
+    result._native_handle = None
+    result._element.native_handle.return_value = None
     result._user.GetForegroundWindow.return_value = 1
     result._user.IsWindowVisible.return_value = True
     result._user.IsIconic.return_value = False
@@ -70,9 +74,9 @@ def test_null_pattern_leaf_ascends_to_scrollable_parent() -> None:
     leaf.scroll_pattern.return_value = None
     parent.scroll_pattern.return_value = pattern
     pattern.number.return_value = 20.0
-    walker.pointer_result.return_value = parent
+    walker.parent.return_value = parent
     assert native._find(leaf, walker) == (parent, pattern)
-    assert walker.pointer_result.call_count == 1
+    assert walker.parent.call_count == 1
 
 
 def test_discovery_does_not_rebind_after_provider_error() -> None:
@@ -82,7 +86,7 @@ def test_discovery_does_not_rebind_after_provider_error() -> None:
     leaf.scroll_pattern.side_effect = OSError("Element unavailable")
     with pytest.raises(OSError, match="unavailable"):
         native._find(leaf, walker)
-    walker.pointer_result.assert_not_called()
+    walker.parent.assert_not_called()
 
 
 def test_discovery_ancestor_limit() -> None:
@@ -90,10 +94,10 @@ def test_discovery_ancestor_limit() -> None:
     native = target()
     leaf, walker = Mock(), Mock()
     leaf.scroll_pattern.return_value = None
-    walker.pointer_result.return_value = leaf
+    walker.parent.return_value = leaf
     with pytest.raises(CaptureError, match="No supported"):
         native._find(leaf, walker)
-    assert walker.pointer_result.call_count == 32
+    assert walker.parent.call_count == 32
 
 
 @pytest.mark.parametrize(
@@ -155,6 +159,8 @@ def test_off_desktop_frame_is_not_silently_clipped() -> None:
     """Clipping could change both the selected content and stitch geometry."""
     native = target()
     native._area = Rect(300, 300, 300, 300)
+    native._provider_bounds = native._area
+    mock(native._viewport).return_value = native._area
     mock(native._element.bounds).return_value = native._area
     with pytest.raises(CaptureError, match="outside"):
         native.frame()
@@ -182,3 +188,117 @@ def test_non_windows_fails_without_loading_native(
     monkeypatch.setattr("sys.platform", "linux")
     with pytest.raises(CaptureError, match="Windows"):
         UiaScrollTarget(Point(10, 10))
+
+
+def test_missing_pattern_refreshes_same_point_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Standard metadata reads may activate a lazily exposed application tree."""
+    native = target()
+    automation, walker, first, second, pattern = (Mock() for _ in range(5))
+    automation.pointer_result.side_effect = [first, second]
+    first.scroll_pattern.return_value = None
+    walker.parent.return_value = None
+    second.scroll_pattern.return_value = pattern
+    pattern.number.return_value = 0.0
+    pause = Mock()
+    monkeypatch.setattr("verdiclip.platform.scrolling.time.sleep", pause)
+    assert native._discover(Point(30, 40), automation, walker) == (second, pattern)
+    pause.assert_called_once_with(0.5)
+    assert first.control_type.call_count == second.control_type.call_count == 1
+    assert [call.args[0] for call in automation.pointer_result.call_args_list] == [7, 7]
+    points = [call.args[2][1] for call in automation.pointer_result.call_args_list]
+    assert [(point.x, point.y) for point in points] == [(30, 40), (30, 40)]
+
+
+def test_refresh_keeps_original_input_baseline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Waiting for accessibility never recaptures permission after user input."""
+    native = target()
+    automation, walker, leaf = Mock(), Mock(), Mock()
+    automation.pointer_result.return_value = leaf
+    leaf.scroll_pattern.return_value = None
+    walker.parent.return_value = None
+
+    def user_input(_seconds: float) -> None:
+        mock(native._input).return_value = 13
+
+    monkeypatch.setattr("verdiclip.platform.scrolling.time.sleep", user_input)
+    with pytest.raises(CaptureError, match="mouse or keyboard"):
+        native._discover(Point(30, 40), automation, walker)
+    assert automation.pointer_result.call_count == 1
+
+
+def test_refresh_never_masks_provider_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A broken inner provider is never a reason to bind an outer target."""
+    native = target()
+    automation, walker, leaf = Mock(), Mock(), Mock()
+    automation.pointer_result.return_value = leaf
+    leaf.scroll_pattern.side_effect = OSError("Provider unavailable")
+    pause = Mock()
+    monkeypatch.setattr("verdiclip.platform.scrolling.time.sleep", pause)
+    with pytest.raises(OSError, match="unavailable"):
+        native._discover(Point(30, 40), automation, walker)
+    pause.assert_not_called()
+    assert automation.pointer_result.call_count == 1
+
+
+def test_native_viewport_without_handle_uses_provider_bounds() -> None:
+    """Never substitute an ancestor HWND for an application-owned panel."""
+    native = target()
+    assert UiaScrollTarget._viewport(native) == native._provider_bounds
+
+
+def test_native_viewport_excludes_only_own_non_client_chrome() -> None:
+    """Use the actual native client rectangle, not guessed text/sidebars."""
+    native = target()
+
+    def client_rect(_handle: object, value: c._CArgObject) -> bool:
+        # RECT uses Windows LONG; use exactly the type from the adapter.
+        import ctypes.wintypes as w  # noqa: PLC0415
+
+        rect = c.cast(value, c.POINTER(w.RECT)).contents
+        rect.left, rect.top, rect.right, rect.bottom = 0, 0, 280, 280
+        return True
+
+    def locate(_handle: object, value: c._CArgObject) -> bool:
+        import ctypes.wintypes as w  # noqa: PLC0415
+
+        point = c.cast(value, c.POINTER(w.POINT)).contents
+        point.x, point.y = point.x + 20, point.y + 20
+        return True
+
+    native._native_handle = 10
+    mock(native._element.native_handle).return_value = 10
+    mock(native._user.GetClientRect).side_effect = client_rect
+    mock(native._user.ClientToScreen).side_effect = locate
+    assert UiaScrollTarget._viewport(native) == Rect(20, 20, 280, 280)
+    mock(native._user.GetAncestor).return_value = 9
+    with pytest.raises(CaptureError, match="owner changed"):
+        UiaScrollTarget._viewport(native)
+
+
+def test_discovery_refresh_exhausts_after_second_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unsupported targets cause one refresh, never a polling loop."""
+    native = target()
+    automation, walker, leaf = Mock(), Mock(), Mock()
+    automation.pointer_result.return_value = leaf
+    leaf.scroll_pattern.return_value = None
+    walker.parent.return_value = None
+    pause = Mock()
+    monkeypatch.setattr("verdiclip.platform.scrolling.time.sleep", pause)
+    with pytest.raises(CaptureError, match="No supported"):
+        native._discover(Point(30, 40), automation, walker)
+    pause.assert_called_once_with(0.5)
+    assert automation.pointer_result.call_count == 2
+
+
+def test_changed_native_handle_is_not_rebound() -> None:
+    """Identical geometry is insufficient when the selected native owner changes."""
+    native = target()
+    native._native_handle = 10
+    mock(native._element.native_handle).return_value = 11
+    with pytest.raises(CaptureError, match="handle changed"):
+        UiaScrollTarget._viewport(native)
+    mock(native._user.GetClientRect).assert_not_called()

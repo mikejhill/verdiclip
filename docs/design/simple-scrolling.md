@@ -33,7 +33,10 @@ activity, focus change, moved/resized window, changed viewport, missing provider
 uncertain movement, or changed content size aborts. No synthetic scroll notch is
 sent at an inner panel's endpoint. Horizontal position is never changed.
 
-The entire UIA viewport is retained. No sidebar is guessed or trimmed. Exact
+The UIA viewport is retained, intersected only with the selected element's own
+native client rectangle when it exposes an HWND. This excludes known OS
+non-client scrollbars/borders; an ancestor HWND is never substituted. No sidebar
+is guessed or trimmed. Exact
 full-width overlap is the initial conservative registration method; repeated
 rows, sticky chrome, animation, fractional rendering and UIA bounds that include
 scrollbars may be unsupported. Real-app results, not fixture-specific profiles,
@@ -82,3 +85,21 @@ a 50% view size (240-pixel document), but misleading 32-pixel overlaps produced
 296 pixels. Exact overlap alone does not establish correct completeness. Add
 this regression and an explicit rounding tolerance when real-app results guide
 the registration choice.
+
+### First real-application findings
+
+Initial exact-head runs are retained at Actions runs 42438853514, 42439089244,
+and 42439416156. Real desktop smoke passed; these scrolling jobs failed honestly.
+The hosted taskbar covered the first test window. The harness now uses Windows'
+work area without changing capture bounds. Notepad then captured two frames,
+rejected their overlap, and restored the exact starting percentages. Its saved
+pixels include OS scrollbars, motivating the own-HWND client rectangle above.
+
+Fresh Edge exposed only Pane ancestors until ordinary ControlType reads activated
+its deeper accessibility tree. After that read and a 0.5-second observation, the
+normal document and nested panel exposed ScrollPattern. Production discovery now
+reads standard ControlType metadata and refreshes the same point once only for
+missing scroll targets, preserving its initial input/window/process eligibility.
+Provider errors are never retried. Native cold launches now run with DEBUG off;
+the extra diagnostic probe still preserves any first failure. This is not a
+browser-flag change or proof of success in arbitrary applications.

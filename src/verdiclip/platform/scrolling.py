@@ -14,6 +14,7 @@ import ctypes.wintypes as w
 import logging
 import math
 import sys
+import time
 import uuid
 from contextlib import ExitStack
 from typing import Self
@@ -31,6 +32,10 @@ _SCROLL_IID = "88f4d42a-e881-459d-a77c-73bbbb7e02dc"
 _MAX_ANCESTORS = 32
 _MIN_SIZE = 64
 _WAIT_TIMEOUT = 258
+
+
+class _NoScrollTargetError(CaptureError):
+    """Ordinary unsupported discovery, distinct from a broken provider."""
 
 
 class _Guid(c.Structure):
@@ -89,6 +94,29 @@ class _Interface:
         )
         return None if result.value is None else _Interface(result, owners)
 
+    def native_handle(self) -> int | None:
+        """Read the HWND associated with this exact UIA element, if any."""
+        result = w.HWND()
+        self.call(36, (c.POINTER(w.HWND),), c.byref(result))
+        return result.value
+
+    def control_type(self) -> int:
+        """Read standard metadata, activating lazy application accessibility."""
+        result = c.c_int()
+        self.call(21, (c.POINTER(c.c_int),), c.byref(result))
+        return result.value
+
+    def parent(self, child: _Interface, owners: ExitStack) -> _Interface | None:
+        """Return the raw parent; a null parent means the root was reached."""
+        result = c.c_void_p()
+        self.call(
+            3,
+            (c.c_void_p, c.POINTER(c.c_void_p)),
+            child._pointer,
+            c.byref(result),
+        )
+        return None if result.value is None else _Interface(result, owners)
+
     def number(self, slot: int) -> float:
         result = c.c_double()
         self.call(slot, (c.POINTER(c.c_double),), c.byref(result))
@@ -109,8 +137,9 @@ class UiaScrollTarget:
 
     Any real input stops the transaction, including mouse movement. This is
     conservative by design. We observe the current desktop and never seize it.
-    The full provider rectangle is captured; UIA bounds that include fixed
-    chrome may therefore fail the full-width stitch rather than be cropped.
+    The provider rectangle is intersected only with its own native client
+    rectangle when available. Other fixed chrome may fail the stitch rather
+    than be guessed or cropped.
     """
 
     def __init__(self, point: Point) -> None:
@@ -136,6 +165,8 @@ class UiaScrollTarget:
             "WindowFromPoint": ((w.POINT,), w.HWND),
             "GetAncestor": ((w.HWND, w.UINT), w.HWND),
             "GetWindowRect": ((w.HWND, c.POINTER(w.RECT)), w.BOOL),
+            "GetClientRect": ((w.HWND, c.POINTER(w.RECT)), w.BOOL),
+            "ClientToScreen": ((w.HWND, c.POINTER(w.POINT)), w.BOOL),
             "GetWindowThreadProcessId": ((w.HWND, c.POINTER(w.DWORD)), w.DWORD),
             "IsWindowVisible": ((w.HWND,), w.BOOL),
             "IsIconic": ((w.HWND,), w.BOOL),
@@ -199,11 +230,10 @@ class UiaScrollTarget:
         )
         automation = _Interface(pointer, self._owners)
         walker = automation.pointer_result(16, self._owners)
-        element = automation.pointer_result(
-            7, self._owners, (w.POINT, w.POINT(round(point.x), round(point.y)))
-        )
-        self._element, self._scroll = self._find(element, walker)
-        self._area = self._element.bounds()
+        self._element, self._scroll = self._discover(point, automation, walker)
+        self._provider_bounds = self._element.bounds()
+        self._native_handle = self._element.native_handle()
+        self._area = self._viewport()
         if (
             self._area.width < _MIN_SIZE
             or self._area.height < _MIN_SIZE
@@ -212,34 +242,75 @@ class UiaScrollTarget:
             raise CaptureError("UI Automation did not identify a visible scroll panel")
         self.check()
 
+    def _discover(
+        self, point: Point, automation: _Interface, walker: _Interface
+    ) -> tuple[_Interface, _Interface]:
+        for attempt in range(2):
+            self._check_window()
+            element = automation.pointer_result(
+                7, self._owners, (w.POINT, w.POINT(round(point.x), round(point.y)))
+            )
+            try:
+                return self._find(element, walker)
+            except _NoScrollTargetError:
+                if attempt:
+                    raise
+                # Chromium may expose its document only after a standard
+                # metadata request. Refresh once, without resetting eligibility.
+                time.sleep(0.5)
+        raise _NoScrollTargetError("No supported vertical scroll panel at this point")
+
+    def _viewport(self) -> Rect:
+        """Exclude only OS non-client chrome of the element's own native HWND."""
+        handle = self._element.native_handle()
+        if handle != self._native_handle:
+            raise CaptureError("The scroll panel's native handle changed")
+        if handle is None:
+            return self._provider_bounds
+        if self._user.GetAncestor(handle, 2) != self._window:
+            raise CaptureError("The scroll panel's native owner changed")
+        bounds = w.RECT()
+        if not self._user.GetClientRect(handle, c.byref(bounds)):
+            raise CaptureError("Could not read the scroll panel's native client area")
+        first, last = (
+            w.POINT(bounds.left, bounds.top),
+            w.POINT(bounds.right, bounds.bottom),
+        )
+        if not self._user.ClientToScreen(
+            handle, c.byref(first)
+        ) or not self._user.ClientToScreen(handle, c.byref(last)):
+            raise CaptureError("Could not locate the scroll panel's native client area")
+        client = Rect.from_points(Point(first.x, first.y), Point(last.x, last.y))
+        return self._provider_bounds.intersected(client)
+
     def _find(
         self, element: _Interface, walker: _Interface
     ) -> tuple[_Interface, _Interface]:
         for _ in range(_MAX_ANCESTORS):
+            kind = element.control_type()
             pattern = element.scroll_pattern(self._owners)
             if logger.isEnabledFor(logging.DEBUG):
-                control_type = c.c_int()
-                element.call(21, (c.POINTER(c.c_int),), c.byref(control_type))
                 logger.debug(
                     "UIA ancestor type=%s bounds=%s scroll=%s",
-                    control_type.value,
+                    kind,
                     element.bounds(),
                     pattern is not None,
                 )
             if pattern is not None and 0.0 <= pattern.number(6) <= END_PERCENT:
                 return element, pattern
-            element = walker.pointer_result(
-                3, self._owners, (c.c_void_p, element._pointer)
-            )
-        raise CaptureError("No supported vertical scroll panel at this point")
+            parent = walker.parent(element, self._owners)
+            if parent is None:
+                break
+            element = parent
+        raise _NoScrollTargetError("No supported vertical scroll panel at this point")
 
     @property
     def area(self) -> Rect:
-        """Return the provider's complete viewport, not a guessed content crop."""
+        """Return the viewport, excluding only known native non-client chrome."""
         return self._area
 
-    def check(self) -> None:
-        """Reject changed user state before/after every provider/capture operation."""
+    def _check_window(self) -> None:
+        """Preserve the original eligibility snapshot, including during discovery."""
         if self._input() != self._input_tick:
             raise CaptureError("Stopped because you used the mouse or keyboard")
         if (
@@ -250,7 +321,14 @@ class UiaScrollTarget:
             or self._window_bounds() != self._window_rect
         ):
             raise CaptureError("The target window changed or lost focus")
-        if self._element.bounds() != self._area:
+
+    def check(self) -> None:
+        """Reject changed user state before/after every provider/capture operation."""
+        self._check_window()
+        if (
+            self._element.bounds() != self._provider_bounds
+            or self._viewport() != self._area
+        ):
             raise CaptureError("The scroll panel changed position or size")
         offscreen = w.BOOL()
         self._element.call(38, (c.POINTER(w.BOOL),), c.byref(offscreen))

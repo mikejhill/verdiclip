@@ -62,7 +62,9 @@ def _document(*, nested: bool) -> str:
     )
 
 
-def _launch(kind: str, directory: Path) -> subprocess.Popen[bytes]:
+def _launch(
+    kind: str, directory: Path, report: dict[str, object]
+) -> subprocess.Popen[bytes]:
     if kind.startswith("edge"):
         path = directory / "scrolling.html"
         path.write_text(_document(nested=kind == "edge-nested"), encoding="utf-8")
@@ -94,6 +96,25 @@ def _launch(kind: str, directory: Path) -> subprocess.Popen[bytes]:
         )
         executable = Path(os.environ["WINDIR"]) / "System32/notepad.exe"
         command = [str(executable), str(path)]
+    powershell = (
+        Path(os.environ["WINDIR"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    )
+    literal = str(executable).replace("'", "''")
+    version = subprocess.run(  # noqa: S603 - read version of the fixed installed app
+        [
+            str(powershell),
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            f"(Get-Item -LiteralPath '{literal}').VersionInfo | "
+            "Select-Object FileVersion,ProductVersion | ConvertTo-Json",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    report["version"] = json.loads(version.stdout)
     return subprocess.Popen(command)  # noqa: S603 - fixed installed apps and owned content
 
 
@@ -215,6 +236,7 @@ def _case(kind: str, output: Path, report: dict[str, object]) -> None:
     )
     report["selected_point"] = asdict(point)
     with _open_target(point, report) as target:
+        report["provider_bounds"] = asdict(target._provider_bounds)
         report["viewport"] = asdict(target.area)
         report["initial"] = asdict(target.position())
         if kind == "edge-nested":
@@ -239,6 +261,7 @@ def _case(kind: str, output: Path, report: dict[str, object]) -> None:
         message=result.message, restoration=result.restoration, frames=result.frames
     )
     if result.image is not None:
+        report["result_size"] = [result.image.width(), result.image.height()]
         result.image.save(str(output / "result.png"))
     with UiaScrollTarget(point) as target:
         after = target.position()
@@ -265,7 +288,7 @@ def _case(kind: str, output: Path, report: dict[str, object]) -> None:
 
 def main() -> None:
     """Run one actual-app case; the workflow owns the outer wall-clock limit."""
-    logging.basicConfig(level=logging.DEBUG)
+    logging.basicConfig(level=logging.INFO)
     kind = sys.argv[1]
     output = Path("artifacts/simple-scroll") / kind
     output.mkdir(parents=True, exist_ok=True)
@@ -286,7 +309,7 @@ def main() -> None:
         else "capture and restore smoke; screenshot content review required",
     }
     with TemporaryDirectory(prefix="verdiclip-scroll-test-") as scratch:
-        process = _launch(kind, Path(scratch))
+        process = _launch(kind, Path(scratch), report)
         try:
             _case(kind, output, report)
         except Exception as error:
