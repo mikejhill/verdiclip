@@ -54,7 +54,7 @@ def test_explorer_uses_only_disposable_owned_files(
     assert len(list(folder.glob("*.txt"))) == 160
     assert popen.call_args.args[0] == [
         str(tmp_path / "Windows" / "explorer.exe"),
-        "/separate",
+        "/separate,",
         str(folder),
     ]
 
@@ -69,6 +69,28 @@ def test_diagnostic_gesture_uses_held_native_input(
     widget = Mock(spec=QWidget)
     desktop.click(widget, Point(30, 40), enter=True)
     click.assert_called_once_with(widget, Point(30, 40), enter=True, hold_ms=120)
+
+
+def test_explorer_discovery_failure_preserves_setup_evidence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A missing folder target is a setup failure, not a capture verdict."""
+    runner = diagnostics.ExplorerCase()
+    runner.process = Mock(pid=123)
+    runner.process.poll.return_value = 0
+    monkeypatch.setattr(
+        diagnostics.native, "_window", Mock(side_effect=RuntimeError("No folder"))
+    )
+    evidence = Mock()
+    monkeypatch.setattr(diagnostics.native, "_desktop_evidence", evidence)
+    case = Mock()
+    monkeypatch.setattr(diagnostics, "_case", case)
+    report: dict[str, object] = {}
+    with pytest.raises(RuntimeError, match="No folder"):
+        runner.run("explorer-click", tmp_path, report)
+    assert report == {"explorer_launcher_pid": 123, "explorer_launcher_exit": 0}
+    evidence.assert_called_once_with(tmp_path, report)
+    case.assert_not_called()
 
 
 @pytest.mark.parametrize("state", ["owned", "shared", "exited", "missing"])

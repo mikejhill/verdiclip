@@ -110,7 +110,8 @@ def _explorer(
     native._record_version(executable, report)
     # A separate Explorer process is requested; existing cleanup verifies PID
     # ownership before closing a window and never kills the desktop shell.
-    return subprocess.Popen([str(executable), "/separate", str(folder)])  # noqa: S603
+    # Explorer parses comma-delimited fields, not conventional argv switches.
+    return subprocess.Popen([str(executable), "/separate,", str(folder)])  # noqa: S603
 
 
 class ExplorerCase:
@@ -128,7 +129,17 @@ class ExplorerCase:
 
     def run(self, kind: str, output: Path, report: dict[str, object]) -> None:
         """Refuse shared-shell targets without closing or killing their windows."""
-        window = native._window()
+        try:
+            window = native._window()
+        except RuntimeError:
+            report["explorer_launcher_pid"] = (
+                None if self.process is None else self.process.pid
+            )
+            report["explorer_launcher_exit"] = (
+                None if self.process is None else self.process.poll()
+            )
+            native._desktop_evidence(output, report)
+            raise
         user = c.WinDLL("user32", use_last_error=True)
         user.GetWindowThreadProcessId.argtypes = (w.HWND, c.POINTER(w.DWORD))
         user.GetWindowThreadProcessId.restype = w.DWORD
