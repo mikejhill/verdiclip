@@ -11,6 +11,7 @@ import json
 import os
 from collections.abc import Callable
 from dataclasses import asdict, replace
+from fractions import Fraction
 from pathlib import Path
 from typing import cast
 from unittest.mock import Mock
@@ -112,6 +113,12 @@ class AppCapture:
         if choice is None:
             raise RuntimeError("Missing selected target")
         point, window, tick = choice
+        # Preserve the actual choice even if an exact handoff assertion fails.
+        self.report.update(
+            selected_point=asdict(point),
+            selected_window=window.handle,
+            release_input_tick=tick,
+        )
         _require(
             point == Point(round(self.point.x), round(self.point.y)),
             "Wrong selected point",
@@ -136,9 +143,6 @@ class AppCapture:
                 "request for the selected window",
             )
         self.report.update(
-            selected_point=asdict(point),
-            selected_window=window.handle,
-            release_input_tick=tick,
             saved_prechooser_foreground=service._foreground,
             handoff_foreground=self.desktop.foreground(),
             handoff_activation_requested=service._activation_requested,
@@ -321,6 +325,7 @@ class AppCapture:
             active = next(
                 o for o in overlays if o.screen_geometry.physical.contains(self.point)
             )
+            self.point = self._gesture_point(active.screen_geometry)
             self.desktop.click(
                 active,
                 self.point,
@@ -334,6 +339,35 @@ class AppCapture:
         ):
             self._keys((0x1B,))
             self.interrupted = True
+
+    def _gesture_point(self, geometry: ScreenGeometry) -> Point:
+        """Choose an interior point shared by native and integer Qt cursor grids."""
+        local = geometry.to_local(self.point)
+        # For 125%, every fourth logical pixel is also an integer native pixel.
+        # Enter samples integer QCursor.pos(), unlike fractional mouse positions.
+        step = Fraction(str(geometry.scale)).denominator
+        logical = Point(round(local.x / step) * step, round(local.y / step) * step)
+        derived = geometry.to_physical(logical)
+        native = Point(round(derived.x), round(derived.y))
+        self.report.update(
+            requested_center=asdict(self.point),
+            gesture_screen=asdict(geometry),
+            gesture_local_point=asdict(logical),
+            logical_grid_point=asdict(derived),
+            native_requested_point=asdict(native),
+        )
+        _require(native == derived, "Gesture point is not on the native pixel grid")
+        area = self.window.bounds.intersected(geometry.physical)
+        _require(
+            area.left < native.x < area.right and area.top < native.y < area.bottom,
+            "Gesture point is not inside the selected target and overlay",
+        )
+        _require(
+            self._background_bounds is None
+            or not self._background_bounds.contains(native),
+            "Gesture point is covered by the owned background widget",
+        )
+        return native
 
     def _trace_background_activation(self) -> None:
         """Count the selected adapter's native calls without replacing behavior."""

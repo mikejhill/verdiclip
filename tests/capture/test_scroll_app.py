@@ -193,18 +193,24 @@ def test_native_setup_requires_observed_qt_and_native_foreground(
         "edge-background-enter",
     ],
 )
+@pytest.mark.parametrize("scale", [1.0, 1.25, 2.0])
 def test_native_chooser_uses_one_realistic_held_gesture(
-    monkeypatch: pytest.MonkeyPatch, kind: str
+    monkeypatch: pytest.MonkeyPatch, kind: str, scale: float
 ) -> None:
     """Hosted click and Enter paths process events between press and release."""
     case = object.__new__(AppCapture)
     case.kind = kind
     case.controller = Mock()
     case.desktop = Mock()
-    case.point = Point(50, 50)
+    case.point = Point(53, 50.5)
     case.repeating = case.selected = case.interrupted = False
+    case.window = WindowInfo(123, "Owned Edge", Rect(0, 0, 200, 100))
+    case.report = {}
+    case._background_bounds = None
     overlay = Mock()
-    overlay.screen_geometry.physical = Rect(0, 0, 200, 100)
+    overlay.screen_geometry = ScreenGeometry(
+        "test", Rect(0, 0, 200 / scale, 100 / scale), Rect(0, 0, 200, 100), scale
+    )
     case.controller._scrolling.overlays = [overlay]
     order: list[str] = []
     trace = Mock(side_effect=lambda: order.append("trace"))
@@ -214,7 +220,7 @@ def test_native_chooser_uses_one_realistic_held_gesture(
     case._observe()
     case.desktop.click.assert_called_once_with(
         overlay,
-        case.point,
+        {1.0: Point(53, 50), 1.25: Point(55, 50), 2.0: Point(52, 50)}[scale],
         enter=kind == "edge-app-hotkey" or kind.endswith("-enter"),
         hold_ms=120,
     )
@@ -475,3 +481,92 @@ def test_background_activation_trace_is_limited_to_hosted_native_adapter(
     original.assert_not_called()
     assert case._restore_activation is None
     assert not case.report
+
+
+@pytest.mark.parametrize("scale", [1.0, 1.25, 2.0])
+@pytest.mark.parametrize("origin", [Point(0, 0), Point(-1600, -1200)])
+def test_native_gesture_point_uses_both_integer_grids(
+    scale: float, origin: Point
+) -> None:
+    """Odd physical centers remain exact after the integer Qt cursor round trip."""
+    case = object.__new__(AppCapture)
+    case.window = WindowInfo(
+        123, "Owned Edge", Rect(origin.x + 23, origin.y + 20, 1000, 729)
+    )
+    case.point = case.window.bounds.center
+    case.report = {}
+    case._background_bounds = None
+    geometry = ScreenGeometry(
+        "test",
+        Rect(origin.x, origin.y, 1600 / scale, 1200 / scale),
+        Rect(origin.x, origin.y, 1600, 1200),
+        scale,
+    )
+    native = case._gesture_point(geometry)
+    expected = {
+        1.0: Point(origin.x + 523, origin.y + 384),
+        1.25: Point(origin.x + 525, origin.y + 385),
+        2.0: Point(origin.x + 524, origin.y + 384),
+    }[scale]
+    assert native == expected
+    local = geometry.to_local(native)
+    assert local == Point(round(local.x), round(local.y))
+    assert native == geometry.to_physical(local)
+    assert native == Point(round(native.x), round(native.y))
+    assert case.report["requested_center"] == {
+        "x": origin.x + 523,
+        "y": origin.y + 384.5,
+    }
+    assert (
+        case.report["native_requested_point"]
+        == case.report["logical_grid_point"]
+        == {"x": expected.x, "y": expected.y}
+    )
+    assert case.report["gesture_screen"] == {
+        "name": "test",
+        "logical": {
+            "x": origin.x,
+            "y": origin.y,
+            "width": 1600 / scale,
+            "height": 1200 / scale,
+        },
+        "physical": {"x": origin.x, "y": origin.y, "width": 1600, "height": 1200},
+        "scale": scale,
+    }
+
+
+@pytest.mark.parametrize("boundary", ["target", "overlay", "background"])
+def test_native_gesture_point_rejects_unsafe_adjustment(boundary: str) -> None:
+    """A grid adjustment cannot cross a target or owned-widget boundary."""
+    case = object.__new__(AppCapture)
+    case.point = Point(3, 3)
+    case.report = {}
+    case.window = WindowInfo(
+        123, "Owned Edge", Rect(0, 0, 4 if boundary == "target" else 20, 20)
+    )
+    case._background_bounds = Rect(4, 4, 2, 2) if boundary == "background" else None
+    physical = Rect(0, 0, 4 if boundary == "overlay" else 20, 20)
+    geometry = ScreenGeometry("test", Rect(0, 0, physical.width / 2, 10), physical, 2)
+    with pytest.raises(RuntimeError, match=r"not inside|covered"):
+        case._gesture_point(geometry)
+
+
+def test_native_helper_records_wrong_choice_before_exact_assertion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cursor mismatch remains diagnosable even when no helper is launched."""
+    case = object.__new__(AppCapture)
+    case.point = Point(524, 384)
+    case.window = WindowInfo(123, "Owned Edge", Rect(23, 20, 1000, 729))
+    case.report = {"requested_center": {"x": 523, "y": 384.5}}
+    case.controller = Mock()
+    case.controller._scrolling._choice = (Point(522, 384), case.window, 456)
+    launch = Mock()
+    monkeypatch.setattr("scripts.simple_scroll_app._traced_helper", launch)
+    with pytest.raises(RuntimeError, match="Wrong selected point"):
+        case._helper()
+    assert case.report["selected_point"] == {"x": 522, "y": 384}
+    assert case.report["selected_window"] == 123
+    assert case.report["release_input_tick"] == 456
+    assert case.report["requested_center"] == {"x": 523, "y": 384.5}
+    launch.assert_not_called()
