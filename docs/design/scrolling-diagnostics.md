@@ -32,6 +32,15 @@ delivery and ordinary Repeat flow from `simple_scroll_app`. It varies the input:
 - Explorer: an owned temporary directory containing 160 harmless text files,
   opened in installed Explorer without changing its view settings.
 
+Explorer may create the requested folder window in a broker process rather than
+the launched PID. The harness records existing ShellWindows HWNDs before launch,
+then requires one new visible HWND whose canonical folder path exactly matches
+the unique temporary fixture. Its live owner PID and exact folder identity are
+checked before each setup lookup. Cleanup rechecks HWND, PID and folder, posts one
+ordinary close to that window, and verifies the HWND disappears. It never kills
+Explorer, the launcher or the desktop shell. A reused tab/window, ambiguous path,
+changed identity or failed close is a diagnostic failure, not a capture verdict.
+
 Both click and Enter are exercised for prose, panel and Explorer. Native gestures
 hold for 120 ms while Qt processes events between press and release. Existing
 instantaneous-input qualification remains unchanged. The seven new jobs run only

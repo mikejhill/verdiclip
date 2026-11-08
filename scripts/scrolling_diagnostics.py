@@ -10,9 +10,11 @@ from __future__ import annotations
 import ctypes as c
 import ctypes.wintypes as w
 import html
+import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import override
 from unittest.mock import patch
@@ -24,6 +26,9 @@ from scripts.simple_scroll_handoff import Desktop
 
 from verdiclip.capture.scrolling import ScrollResult
 from verdiclip.geometry import Point
+from verdiclip.platform.windows import WindowInfo, WindowLocator
+
+_WAIT_TIMEOUT = 0x00000102
 
 
 def document(layout: str) -> str:
@@ -114,21 +119,134 @@ def _explorer(
     return subprocess.Popen([str(executable), "/separate,", str(folder)])  # noqa: S603
 
 
+def _shell_windows(folder: Path) -> dict[int, bool]:
+    """Read HWNDs and exact fixture identity, without retaining other paths."""
+    powershell = (
+        Path(os.environ["WINDIR"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    )
+    literal = str(folder).replace("'", "''")
+    script = (
+        "$ErrorActionPreference='Stop'; $shell=New-Object -ComObject Shell.Application;"
+        "$items=@($shell.Windows() | ForEach-Object {"
+        "if ([IO.Path]::GetFileName($_.FullName) -ieq 'explorer.exe') {"
+        "$handle=[long]$_.HWND; $exact=$false; try {"
+        "$exact=([IO.Path]::GetFullPath($_.Document.Folder.Self.Path) "
+        f"-eq [IO.Path]::GetFullPath('{literal}')) }} catch {{}};"
+        "[pscustomobject]@{ hwnd=$handle; target=$exact }"
+        "} }); ConvertTo-Json -InputObject $items -Compress"
+    )
+    result = subprocess.run(  # noqa: S603 - read public shell metadata for owned fixture
+        [str(powershell), "-NoProfile", "-NonInteractive", "-Command", script],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    items = json.loads(result.stdout)
+    if not isinstance(items, list) or any(
+        not isinstance(item, dict)
+        or type(item.get("hwnd")) is not int
+        or item.get("hwnd", 0) <= 0
+        or type(item.get("target")) is not bool
+        for item in items
+    ):
+        raise TypeError("Invalid Explorer window identity response")
+    result_by_handle = {int(item["hwnd"]): bool(item["target"]) for item in items}
+    if len(result_by_handle) != len(items):
+        raise RuntimeError("Explorer exposed duplicate HWND identities")
+    return result_by_handle
+
+
+def _window_pid(window: int) -> int:
+    user = c.WinDLL("user32", use_last_error=True)
+    user.GetWindowThreadProcessId.argtypes = (w.HWND, c.POINTER(w.DWORD))
+    user.GetWindowThreadProcessId.restype = w.DWORD
+    pid = w.DWORD()
+    native._require(
+        user.GetWindowThreadProcessId(window, c.byref(pid)),
+        "The fixture window no longer exists",
+    )
+    kernel = c.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenProcess.argtypes = (w.DWORD, w.BOOL, w.DWORD)
+    kernel.OpenProcess.restype = w.HANDLE
+    kernel.WaitForSingleObject.argtypes = (w.HANDLE, w.DWORD)
+    kernel.WaitForSingleObject.restype = w.DWORD
+    kernel.CloseHandle.argtypes = (w.HANDLE,)
+    kernel.CloseHandle.restype = w.BOOL
+    process = kernel.OpenProcess(0x00100000, 0, pid.value)  # SYNCHRONIZE only.
+    native._require(process, "Could not observe the fixture window's process")
+    try:
+        native._require(
+            kernel.WaitForSingleObject(process, 0) == _WAIT_TIMEOUT,
+            "The fixture window's process exited",
+        )
+    finally:
+        kernel.CloseHandle(process)
+    return pid.value
+
+
 class ExplorerCase:
-    """Require an independently owned Explorer process before capture setup."""
+    """Own one new fixture window, never the shell or Explorer broker process."""
 
     def __init__(self) -> None:
         self.process: subprocess.Popen[bytes] | None = None
+        self.folder: Path | None = None
+        self.before: set[int] = set()
+        self.window: WindowInfo | None = None
+        self.pid: int | None = None
+        self.report: dict[str, object] = {}
+        self.prepare = native._prepare
 
     def launch(
         self, kind: str, directory: Path, report: dict[str, object]
     ) -> subprocess.Popen[bytes]:
-        """Retain the exact launched process rather than infer ownership by title."""
+        """Record existing shell windows before opening a unique owned folder."""
+        self.folder = directory / "VerdiClip scrolling check"
+        self.report = report
+        self.before = set(_shell_windows(self.folder))
         self.process = _explorer(kind, directory, report)
         return self.process
 
+    def _identities(self) -> dict[int, bool]:
+        if self.folder is None:
+            raise RuntimeError("Explorer fixture was not prepared")
+        return _shell_windows(self.folder)
+
+    def _verify(self, window: WindowInfo) -> None:
+        identities = self._identities()
+        native._require(
+            window.handle not in self.before
+            and identities.get(window.handle) is True
+            and sum(identities.values()) == 1,
+            "Explorer did not expose one new exact fixture folder window",
+        )
+        pid = _window_pid(window.handle)
+        native._require(
+            self.pid is None or pid == self.pid,
+            "The fixture window's process changed",
+        )
+        self.pid = pid
+
+    def _verified_window(self) -> WindowInfo:
+        if self.window is None:
+            raise RuntimeError("Explorer fixture window was not identified")
+        visible = WindowLocator().visible_windows()
+        window = next((w for w in visible if w.handle == self.window.handle), None)
+        if window is None:
+            raise RuntimeError("The fixture window is no longer visible")
+        self._verify(window)
+        return window
+
+    def _prepare(self, window: WindowInfo) -> WindowInfo:
+        current = self._verified_window()
+        native._require(
+            current.handle == window.handle,
+            "Capture setup tried to change the fixture window",
+        )
+        return self.prepare(current)
+
     def run(self, kind: str, output: Path, report: dict[str, object]) -> None:
-        """Refuse shared-shell targets without closing or killing their windows."""
+        """Verify exact newly created folder identity before moving or focusing."""
         try:
             window = native._window()
         except RuntimeError:
@@ -140,23 +258,65 @@ class ExplorerCase:
             )
             native._desktop_evidence(output, report)
             raise
-        user = c.WinDLL("user32", use_last_error=True)
-        user.GetWindowThreadProcessId.argtypes = (w.HWND, c.POINTER(w.DWORD))
-        user.GetWindowThreadProcessId.restype = w.DWORD
-        pid = w.DWORD()
-        thread = user.GetWindowThreadProcessId(window.handle, c.byref(pid))
-        process = self.process
-        report["explorer_window_pid"] = pid.value
-        report["explorer_launcher_pid"] = None if process is None else process.pid
-        native._require(
-            process is not None
-            and process.poll() is None
-            and thread
-            and pid.value == process.pid,
-            "Explorer did not create a verified owned separate process; "
-            "shared-shell capture setup was not attempted",
+        self._verify(window)
+        self.window = window
+        report["explorer_window_pid"] = self.pid
+        report["explorer_launcher_pid"] = (
+            None if self.process is None else self.process.pid
         )
-        _case(kind, output, report)
+        report["explorer_new_exact_folder_window"] = True
+        with (
+            patch.object(native, "_window", self._verified_window),
+            patch.object(app, "_window", self._verified_window),
+            patch.object(app, "_prepare", self._prepare),
+        ):
+            _case(kind, output, report)
+
+    def cleanup(
+        self, _process: subprocess.Popen[bytes] | None, *, window: int | None = None
+    ) -> None:
+        """Close only the still-verified new fixture HWND; never kill Explorer."""
+        del window
+        user = c.WinDLL("user32", use_last_error=True)
+        user.PostMessageW.argtypes = (w.HWND, w.UINT, w.WPARAM, w.LPARAM)
+        user.PostMessageW.restype = w.BOOL
+        user.IsWindow.argtypes = (w.HWND,)
+        user.IsWindow.restype = w.BOOL
+        if self.window is not None and not user.IsWindow(self.window.handle):
+            self.report["explorer_cleanup"] = "retained fixture HWND confirmed absent"
+            return
+        identities = self._identities()
+        candidates = [
+            h for h, exact in identities.items() if exact and h not in self.before
+        ]
+        if not candidates:
+            native._require(
+                self.window is None,
+                "Fixture HWND is alive but its exact path is missing; none closed",
+            )
+            self.report["explorer_cleanup"] = "no verified fixture window; none closed"
+            return
+        native._require(
+            len(candidates) == 1 and sum(identities.values()) == 1,
+            "Ambiguous fixture windows; none closed",
+        )
+        handle = candidates[0]
+        native._require(
+            self.window is None or handle == self.window.handle,
+            "Fixture window identity changed; no window closed",
+        )
+        pid = _window_pid(handle)
+        native._require(
+            self.pid is None or pid == self.pid,
+            "Fixture process identity changed; no window closed",
+        )
+        native._require(user.PostMessageW(handle, 0x0010, 0, 0), "Fixture close failed")
+        for _ in range(30):
+            time.sleep(0.1)
+            if not user.IsWindow(handle):
+                self.report["explorer_cleanup"] = "verified fixture window closed"
+                return
+        raise RuntimeError("Fixture window did not close; Explorer was not killed")
 
 
 def main() -> None:
@@ -177,6 +337,11 @@ def main() -> None:
             native,
             "_launch",
             explorer.launch if layout == "explorer" else native._launch,
+        ),
+        patch.object(
+            native,
+            "_stop_owned_process",
+            explorer.cleanup if layout == "explorer" else native._stop_owned_process,
         ),
     ):
         native.main(gui=True, case=explorer.run if layout == "explorer" else _case)
