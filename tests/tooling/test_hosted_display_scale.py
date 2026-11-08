@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes as c
 import json
+import re
 import subprocess
 from dataclasses import replace
 from itertools import chain, count, repeat
@@ -274,7 +275,9 @@ def test_windows_utf8_bom_cleanup_receipt_is_accepted(
 
 
 @pytest.mark.usefixtures("hosted")
-@pytest.mark.parametrize("size", [(2560, 1440), (1920, 1200), (1600, 1200)])
+@pytest.mark.parametrize(
+    "size", [(2560, 1440), (1920, 1200), (1920, 1080), (1600, 1200)]
+)
 def test_allowed_resolution_receipt_matches_independent_readback(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, size: tuple[int, int]
 ) -> None:
@@ -296,7 +299,7 @@ def test_allowed_resolution_receipt_matches_independent_readback(
 
 
 @pytest.mark.usefixtures("hosted")
-@pytest.mark.parametrize("size", [(1920, 1080), (3840, 2160), (1440, 2560)])
+@pytest.mark.parametrize("size", [(1680, 1050), (3840, 2160), (1440, 2560)])
 def test_unlisted_resolution_receipt_is_rejected(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, size: tuple[int, int]
 ) -> None:
@@ -558,3 +561,16 @@ def test_settings_scale_choice_remains_exact_and_single_attempt() -> None:
     assert "('^' + $Scale + '%([ ]+\\(Recommended\\))?$')" in script
     assert script.count("$pattern.Select()") == 1
     assert "scale_target = $Scale" in script
+
+
+def test_resolution_preferences_match_the_owned_settings_order() -> None:
+    """Prefer offered width before 1600 without expanding the finite mode list."""
+    expected = ((2560, 1440), (1920, 1200), (1920, 1080), (1600, 1200))
+    assert expected == scale._RESOLUTIONS
+    script = Path(scale.__file__).with_suffix(".ps1").read_text()
+    modes = script.split("$allowedResolutions = @(", 1)[1].split(")", 1)[0]
+    actual = tuple(
+        (int(width), int(height))
+        for width, height in re.findall(r"width = (\d+); height = (\d+)", modes)
+    )
+    assert actual == expected

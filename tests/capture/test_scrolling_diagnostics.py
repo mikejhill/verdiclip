@@ -4196,6 +4196,20 @@ def test_no_hbar_setup_thread_dpi_guards_remain_fail_closed(
         ("\u20ac" * 6000 + "end", "\u20ac" * 5460 + "end", True),
         (b"\xff" * 6000 + b"end", "\ufffd" * 5460 + "end", True),
     ],
+    ids=(
+        "missing",
+        "text-short",
+        "bytes-short",
+        "text-at-limit",
+        "bytes-at-limit",
+        "text-over-limit",
+        "bytes-over-limit",
+        "invalid-utf8",
+        "text-long-tail",
+        "bytes-long-tail",
+        "multibyte-tail",
+        "invalid-bytes-tail",
+    ),
 )
 def test_no_hbar_setup_preserves_bounded_failure_streams(
     owned_navigation_setup: tuple[diagnostics.ExplorerCase, WindowInfo, Mock, Mock],
@@ -4235,6 +4249,17 @@ def test_no_hbar_setup_preserves_bounded_failure_streams(
     }
     assert len(tail.encode("utf-8")) <= 16 * 1024
     verify.assert_called_once()
+
+
+def test_setup_stream_failure_ids_stay_short_for_windows() -> None:
+    """Windows limits the PYTEST_CURRENT_TEST environment value to 32,767 chars."""
+    marks = getattr(
+        test_no_hbar_setup_preserves_bounded_failure_streams, "pytestmark", ()
+    )
+    mark = next(item for item in marks if "ids" in item.kwargs)
+    ids = mark.kwargs["ids"]
+    assert len(ids) == len(mark.args[1]) == len(set(ids))
+    assert all(isinstance(name, str) and 0 < len(name) < 64 for name in ids)
 
 
 @pytest.mark.parametrize("kind", ["exit", "timeout"])

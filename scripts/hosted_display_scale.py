@@ -22,7 +22,7 @@ from pathlib import Path
 
 _SCALE = 200
 _TARGETS = {125: 120, 200: 192}
-_RESOLUTIONS = ((2560, 1440), (1920, 1200), (1600, 1200))
+_RESOLUTIONS = ((2560, 1440), (1920, 1200), (1920, 1080), (1600, 1200))
 _PER_MONITOR_AWARE = 2
 _TIMEOUT = 60
 _OUTPUT = Path("artifacts/simple-scroll/display-scale")

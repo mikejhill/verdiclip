@@ -9,8 +9,8 @@ draft diagnostic branch.
 The helper uses the supported Windows Settings Display resolution and Scale
 dropdowns. If setup is needed, it enumerates the owned resolution combo's
 offered choices and chooses the first uniquely enabled exact option in this
-preference order: **2560 × 1440, 1920 × 1200, 1600 × 1200**. No other mode is
-allowed, including 1920 × 1080. If none is offered and enabled, setup fails
+preference order: **2560 × 1440, 1920 × 1200, 1920 × 1080, 1600 × 1200**. No other
+mode is allowed. If none is offered and enabled, setup fails
 without selecting a resolution. It selects the chosen option at most once,
 only if the display is not already at that resolution. A later failure never
 causes a second mode to be tried.

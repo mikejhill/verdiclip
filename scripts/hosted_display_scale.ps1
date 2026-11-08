@@ -381,6 +381,7 @@ try {
     $allowedResolutions = @(
         @{ width = 2560; height = 1440 }
         @{ width = 1920; height = 1200 }
+        @{ width = 1920; height = 1080 }
         @{ width = 1600; height = 1200 }
     )
     $outcome.resolution_target = $null
