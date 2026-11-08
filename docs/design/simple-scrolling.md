@@ -266,3 +266,11 @@ The harness now includes SS_NOTIFY for its black rectangle, retaining the exact
 hit-HWND, foreground and rendered-pixel assertions. This is a one-bit test-window
 correction, not a production occlusion change. The failed run remains evidence;
 actual small-cover qualification is still required on the changed head.
+
+Run 42446224859 again passes the other five cases. SS_NOTIFY fixes the overlay's
+exact hit-HWND check; its next assertion finds the black rectangle not yet
+painted. Setup precedes the Qt event loop, so a sleep cannot dispatch WM_PAINT.
+The harness now calls and checks UpdateWindow synchronously, preserving the
+same composition pause and pixel assertion. It saves the attempted covered
+frame before validating paint, so any further failure retains the actual pixels.
+Production code is unchanged; the small-cover gate remains pending.

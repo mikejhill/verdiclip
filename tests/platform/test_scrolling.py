@@ -856,7 +856,7 @@ def test_native_input_is_hosted_only_and_has_no_button_state(
     user.mouse_event.assert_called_once_with(1, 1, 0, 0, 0)
 
 
-@pytest.mark.parametrize("failure", ["none", "hit", "paint"])
+@pytest.mark.parametrize("failure", ["none", "hit", "paint", "update"])
 def test_owned_native_overlay_is_opaque_without_activation(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failure: str
 ) -> None:
@@ -868,6 +868,7 @@ def test_owned_native_overlay_is_opaque_without_activation(
 
     user = Mock()
     user.CreateWindowExW.return_value = 7
+    user.UpdateWindow.return_value = failure != "update"
     user.GetForegroundWindow.return_value = 1
     user.WindowFromPoint.return_value = 1 if failure == "hit" else 7
     user.DestroyWindow.return_value = True
@@ -896,5 +897,9 @@ def test_owned_native_overlay_is_opaque_without_activation(
     assert args[1:4] == ("STATIC", "", 0x90000104)  # Visible popup, black, SS_NOTIFY.
     assert args[4:8] == (95, 95, 20, 20)
     user.DestroyWindow.assert_called_once_with(7)
-    if failure != "hit":
+    user.UpdateWindow.assert_called_once_with(7)
+    assert user.UpdateWindow.argtypes == (w.HWND,)
+    assert user.UpdateWindow.restype is w.BOOL
+    if failure not in ("hit", "update"):
         screens.close.assert_called_once()
+        assert (tmp_path / "covered.png").exists()

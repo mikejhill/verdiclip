@@ -308,6 +308,7 @@ def _cover_panel(area: Rect, window: int, output: Path) -> int:
         c.c_void_p,
     )
     user.CreateWindowExW.restype = w.HWND
+    user.UpdateWindow.argtypes, user.UpdateWindow.restype = (w.HWND,), w.BOOL
     user.GetForegroundWindow.restype = w.HWND
     user.WindowFromPoint.argtypes, user.WindowFromPoint.restype = (w.POINT,), w.HWND
     x, y = round(area.left + area.width / 4), round(area.top + area.height / 4)
@@ -328,8 +329,10 @@ def _cover_panel(area: Rect, window: int, output: Path) -> int:
     _require(handle, "Could not create the owned overlay")
     if not isinstance(handle, int):
         raise TypeError("Overlay returned an invalid window handle")
-    time.sleep(0.1)
     try:
+        # This setup runs before the Qt event loop. Dispatch the initial paint.
+        _require(user.UpdateWindow(handle), "Could not paint the owned overlay")
+        time.sleep(0.1)
         _require(user.GetForegroundWindow() == window, "Overlay changed foreground")
         _require(
             user.WindowFromPoint(w.POINT(x + 10, y + 10)) == handle,
@@ -346,15 +349,15 @@ def _cover_panel(area: Rect, window: int, output: Path) -> int:
             frozen = screens.freeze()
             covered = frozen.crop(area)
             _require(
+                covered.save(str(output / "covered.png")),
+                "Could not save overlay evidence",
+            )
+            _require(
                 covered.pixelColor(
                     x + 10 - round(area.left), y + 10 - round(area.top)
                 ).name()
                 == "#000000",
                 "Overlay was not rendered",
-            )
-            _require(
-                covered.save(str(output / "covered.png")),
-                "Could not save overlay evidence",
             )
         finally:
             screens.close()
