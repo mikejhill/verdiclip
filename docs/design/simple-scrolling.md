@@ -97,12 +97,11 @@ pixels include OS scrollbars, motivating the own-HWND client rectangle above.
 
 Fresh Edge exposed only Pane ancestors until ordinary ControlType reads activated
 its deeper accessibility tree. After that read and a 0.5-second observation, the
-normal document and nested panel exposed ScrollPattern. Production discovery now
-reads standard ControlType metadata and refreshes the same point once only for
-missing scroll targets, preserving its initial input/window/process eligibility.
-Provider errors are never retried. Native cold launches now run with DEBUG off;
-the extra diagnostic probe still preserves any first failure. This is not a
-browser-flag change or proof of success in arbitrary applications.
+normal document and nested panel exposed ScrollPattern. The first correction
+read standard ControlType metadata and refreshed only missing targets. That was
+insufficient when a cold tree exposed an outer ScrollPattern before the intended
+inner panel; see the later correction below. No browser flag or code injection
+was used.
 
 
 Run 42439957680 verified cold Edge discovery with INFO logging and captured the
@@ -139,3 +138,31 @@ step saves the same helper's first two accepted frames and observed UIA position
 for local registration analysis. This test wrapper adds no production logging,
 result channel, crop, helper process, timeout, or matching exception. Only owned
 test document pixels enter the existing short-lived CI artifacts.
+
+
+### Correcting the nested-target interpretation
+
+Run 42441991431 retained the actual helper frames. The nested case unexpectedly
+captured the outer 976×608 document (H=-1, view=30.099%), while setup selected the
+700×420 inner panel (H=34.8837%, view=14.5078%). The outer document moved and
+returned; final inner percentages therefore did NOT establish inner capture or
+horizontal preservation. Earlier nested final-state results are not qualification.
+The incorrect-target frames remain preserved, and no partial image was delivered.
+
+Discovery now requires two consecutive candidates that standard UIA
+CompareElements identifies as the same element, within at most three same-point
+observations. This permits missing/outer → inner → inner readiness while keeping
+the original user-input, foreground window and process eligibility. Provider and
+state errors stop immediately; exhaustion never falls back to the outer candidate.
+All retained references use the existing COM ExitStack cleanup. The old harness
+extra discovery retry is removed. Test-only DEBUG logs preserve ancestor bounds
+and candidate comparisons, and the native harness explicitly compares helper
+frame dimensions/H/view with the prepared panel and records outer before/after
+state. Production logging remains unchanged. Correct inner frames must be
+inspected before any compositor change.
+
+The ordinary Edge pair has exactly one displacement with a ≥32-row exact
+full-width matching band: 304 pixels, independently predicted by UIA as 304.
+Bands at new-frame rows [12,78) and [199,292) support investigating an interior
+seam, without masking columns or cropping output. They do not qualify sticky
+headers or pixels hidden at every position.

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import ctypes as c
+import json
 from contextlib import ExitStack
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 from PySide6.QtGui import QImage
-from scripts.simple_scroll_native import _position_start
+from scripts.simple_scroll_native import _position_start, _verify_selected_target
 
 from verdiclip.capture.grabber import FrozenScreen
 from verdiclip.capture.scrolling import ScrollPosition
@@ -191,13 +193,14 @@ def test_non_windows_fails_without_loading_native(
         UiaScrollTarget(Point(10, 10))
 
 
-def test_missing_pattern_refreshes_same_point_once(
+def test_missing_pattern_requires_two_matching_same_point_observations(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Standard metadata reads may activate a lazily exposed application tree."""
     native = target()
     automation, walker, first, second, pattern = (Mock() for _ in range(5))
-    automation.pointer_result.side_effect = [first, second]
+    automation.pointer_result.side_effect = [first, second, second]
+    automation.same_element.return_value = True
     first.scroll_pattern.return_value = None
     walker.parent.return_value = None
     second.scroll_pattern.return_value = pattern
@@ -205,11 +208,17 @@ def test_missing_pattern_refreshes_same_point_once(
     pause = Mock()
     monkeypatch.setattr("verdiclip.platform.scrolling.time.sleep", pause)
     assert native._discover(Point(30, 40), automation, walker) == (second, pattern)
-    pause.assert_called_once_with(0.5)
-    assert first.control_type.call_count == second.control_type.call_count == 1
-    assert [call.args[0] for call in automation.pointer_result.call_args_list] == [7, 7]
+    assert pause.call_count == 2
+    assert first.control_type.call_count == 1
+    assert second.control_type.call_count == 2
+    automation.same_element.assert_called_once_with(second, second)
+    assert [call.args[0] for call in automation.pointer_result.call_args_list] == [
+        7,
+        7,
+        7,
+    ]
     points = [call.args[2][1] for call in automation.pointer_result.call_args_list]
-    assert [(point.x, point.y) for point in points] == [(30, 40), (30, 40)]
+    assert [(point.x, point.y) for point in points] == [(30, 40)] * 3
 
 
 def test_refresh_keeps_original_input_baseline(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -278,10 +287,10 @@ def test_native_viewport_excludes_only_own_non_client_chrome() -> None:
         UiaScrollTarget._viewport(native)
 
 
-def test_discovery_refresh_exhausts_after_second_read(
+def test_discovery_exhausts_after_three_observations(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Unsupported targets cause one refresh, never a polling loop."""
+    """Unsupported targets stop at the fixed observation bound."""
     native = target()
     automation, walker, leaf = Mock(), Mock(), Mock()
     automation.pointer_result.return_value = leaf
@@ -289,10 +298,10 @@ def test_discovery_refresh_exhausts_after_second_read(
     walker.parent.return_value = None
     pause = Mock()
     monkeypatch.setattr("verdiclip.platform.scrolling.time.sleep", pause)
-    with pytest.raises(CaptureError, match="No supported"):
+    with pytest.raises(CaptureError, match="No stable supported"):
         native._discover(Point(30, 40), automation, walker)
-    pause.assert_called_once_with(0.5)
-    assert automation.pointer_result.call_count == 2
+    assert pause.call_count == 2
+    assert automation.pointer_result.call_count == 3
 
 
 def test_changed_native_handle_is_not_rebound() -> None:
@@ -343,3 +352,90 @@ def test_native_harness_does_not_reissue_unsettled_setup(
         _position_start(native, {}, nested=True)
     assert pause.call_count == 8
     mock(native._scroll.call).assert_called_once()
+
+
+@pytest.mark.parametrize("stable", [True, False])
+def test_lazy_outer_target_cannot_win_before_inner_discovery(
+    monkeypatch: pytest.MonkeyPatch, *, stable: bool
+) -> None:
+    """A provisional outer candidate must never start a scrolling transaction."""
+    native = target()
+    automation, walker, outer, inner, other = (Mock() for _ in range(5))
+    automation.pointer_result.side_effect = [outer, inner, inner if stable else other]
+    automation.same_element.side_effect = [False, stable]
+    for element in (outer, inner, other):
+        element.scroll_pattern.return_value.number.return_value = 0.0
+    pause = Mock()
+    monkeypatch.setattr("verdiclip.platform.scrolling.time.sleep", pause)
+    if stable:
+        assert native._discover(Point(30, 40), automation, walker) == (
+            inner,
+            inner.scroll_pattern.return_value,
+        )
+    else:
+        with pytest.raises(CaptureError, match="No stable supported"):
+            native._discover(Point(30, 40), automation, walker)
+    assert automation.pointer_result.call_count == 3
+    assert pause.call_count == 2
+    mock(native._scroll.call).assert_not_called()
+
+
+def test_uia_element_identity_uses_compare_elements_slot() -> None:
+    """Equal-looking rectangles and different interface addresses are not identity."""
+    import ctypes.wintypes as w  # noqa: PLC0415
+
+    automation, first, second = (object.__new__(_Interface) for _ in range(3))
+    first._pointer, second._pointer = c.c_void_p(10), c.c_void_p(20)
+
+    def compare(
+        slot: int, _types: object, a: object, b: object, out: c._CArgObject
+    ) -> None:
+        assert slot == 3
+        assert a is first._pointer
+        assert b is second._pointer
+        c.cast(out, c.POINTER(w.BOOL)).contents.value = 1
+
+    automation.call = Mock(side_effect=compare)
+    assert automation.same_element(first, second)
+
+
+@pytest.mark.parametrize("wrong", ["none", "dimensions", "horizontal", "view"])
+def test_native_harness_rejects_outer_panel_even_if_restored(
+    tmp_path: Path, wrong: str
+) -> None:
+    """Final inner state cannot qualify a helper that captured another target."""
+    image = QImage(
+        976 if wrong == "dimensions" else 700, 420, QImage.Format.Format_RGB32
+    )
+    image.fill(0)
+    assert image.save(str(tmp_path / "frame-0.png"))
+    position = {
+        "horizontal": -1.0 if wrong == "horizontal" else 35.0,
+        "vertical": 0.0,
+        "view_size": 30.0 if wrong == "view" else 14.5,
+    }
+    (tmp_path / "frames.json").write_text(json.dumps([position]), encoding="utf-8")
+    arguments = (tmp_path, Rect(22, 90, 700, 420), ScrollPosition(35.0, 37.0, 14.5))
+    if wrong == "none":
+        _verify_selected_target(*arguments)
+    else:
+        with pytest.raises(RuntimeError, match="different panel"):
+            _verify_selected_target(*arguments)
+
+
+def test_discovery_identity_error_never_retries_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed identity read is not ordinary lazy-tree readiness."""
+    native = target()
+    automation, walker, leaf = Mock(), Mock(), Mock()
+    automation.pointer_result.return_value = leaf
+    leaf.scroll_pattern.return_value.number.return_value = 0.0
+    automation.same_element.side_effect = OSError("Identity unavailable")
+    pause = Mock()
+    monkeypatch.setattr("verdiclip.platform.scrolling.time.sleep", pause)
+    with pytest.raises(OSError, match="Identity unavailable"):
+        native._discover(Point(30, 40), automation, walker)
+    assert automation.pointer_result.call_count == 2
+    pause.assert_called_once_with(0.5)
+    mock(native._scroll.call).assert_not_called()

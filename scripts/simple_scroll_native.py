@@ -32,8 +32,7 @@ from verdiclip.capture.scrolling import (
     ScrollResult,
     ScrollTransaction,
 )
-from verdiclip.exceptions import CaptureError
-from verdiclip.geometry import Point
+from verdiclip.geometry import Point, Rect
 from verdiclip.platform.scrolling import UiaScrollTarget
 from verdiclip.platform.windows import WindowInfo, WindowLocator
 
@@ -166,6 +165,7 @@ def _prepare(window: WindowInfo) -> WindowInfo:
 
 def _trace_helper() -> None:
     """Save two accepted frames in this owned test child, never in production."""
+    logging.basicConfig(level=logging.DEBUG)
     output = Path(sys.argv.pop())
     original = ScrollTransaction._frame
     observations: list[dict[str, float]] = []
@@ -221,6 +221,12 @@ def _capture(point: Point, output: Path) -> ScrollResult:
     if not results:
         helper.cancel()
         raise RuntimeError("The helper did not produce its bounded terminal result")
+    (output / "helper.log").write_text(
+        bytes(helper._process.readAllStandardError().data()).decode(
+            "utf-8", errors="replace"
+        ),
+        encoding="utf-8",
+    )
     return results[0]
 
 
@@ -245,24 +251,6 @@ def _verify_edge_rows(result: ScrollResult) -> None:
 def _require(condition: object, message: str) -> None:
     if not condition:
         raise RuntimeError(message)
-
-
-def _open_target(point: Point, report: dict[str, object]) -> UiaScrollTarget:
-    """Preserve first failure; observe one delayed read without accepting it."""
-    try:
-        return UiaScrollTarget(point)
-    except (CaptureError, OSError) as first:
-        report["first_discovery_error"] = str(first)
-        time.sleep(0.5)
-        try:
-            with UiaScrollTarget(point) as observation:
-                report["delayed_discovery"] = {
-                    "viewport": asdict(observation.area),
-                    "position": asdict(observation.position()),
-                }
-        except (CaptureError, OSError) as second:
-            report["delayed_discovery_error"] = str(second)
-        raise
 
 
 def _position_start(
@@ -291,6 +279,18 @@ def _position_start(
     raise RuntimeError("The application's test starting position did not settle")
 
 
+def _verify_selected_target(output: Path, area: Rect, start: ScrollPosition) -> None:
+    """The helper must capture the prepared panel, not a restored outer scroller."""
+    image = QImage(str(output / "frame-0.png"))
+    positions = json.loads((output / "frames.json").read_text(encoding="utf-8"))
+    _require(
+        (image.width(), image.height()) == (area.width, area.height)
+        and positions[0]["horizontal"] == start.horizontal
+        and positions[0]["view_size"] == start.view_size,
+        "The helper selected a different panel from the prepared target",
+    )
+
+
 def _case(kind: str, output: Path, report: dict[str, object]) -> None:
     window = _prepare(_window())
     report["window"] = asdict(window)
@@ -307,9 +307,10 @@ def _case(kind: str, output: Path, report: dict[str, object]) -> None:
         else window.bounds.center
     )
     report["selected_point"] = asdict(point)
-    with _open_target(point, report) as target:
+    with UiaScrollTarget(point) as target:
         report["provider_bounds"] = asdict(target._provider_bounds)
         report["viewport"] = asdict(target.area)
+        area = target.area
         report["initial"] = asdict(target.position())
         initial = _position_start(target, report, nested=kind == "edge-nested")
         report["start"] = asdict(initial)
@@ -323,6 +324,7 @@ def _case(kind: str, output: Path, report: dict[str, object]) -> None:
         )
         with UiaScrollTarget(outer_point) as outer:
             outer_before = outer.position()
+            report["outer_before"] = asdict(outer_before)
     result = _capture(point, output)
     report.update(
         message=result.message, restoration=result.restoration, frames=result.frames
@@ -340,10 +342,14 @@ def _case(kind: str, output: Path, report: dict[str, object]) -> None:
         )
     if kind == "edge-nested":
         with UiaScrollTarget(outer_point) as outer:
+            outer_after = outer.position()
+            report["outer_after"] = asdict(outer_after)
             _require(
-                outer.position() == outer_before,
+                outer_after == outer_before,
                 "Capturing the inner panel moved the outer page",
             )
+    if (output / "frame-0.png").is_file():
+        _verify_selected_target(output, area, initial)
     _require(
         result.image is not None and result.restoration == "restored",
         result.message or result.restoration,

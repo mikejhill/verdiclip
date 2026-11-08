@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 _SCROLL_IID = "88f4d42a-e881-459d-a77c-73bbbb7e02dc"
 _MAX_ANCESTORS = 32
+_DISCOVERY_OBSERVATIONS = 3
 _MIN_SIZE = 64
 _WAIT_TIMEOUT = 258
 
@@ -81,6 +82,18 @@ class _Interface:
             c.byref(result),
         )
         return _Interface(result, owners)
+
+    def same_element(self, first: _Interface, second: _Interface) -> bool:
+        """Use UIA identity, not pointer addresses or coincident rectangles."""
+        same = w.BOOL()
+        self.call(
+            3,
+            (c.c_void_p, c.c_void_p, c.POINTER(w.BOOL)),
+            first._pointer,
+            second._pointer,
+            c.byref(same),
+        )
+        return bool(same.value)
 
     def scroll_pattern(self, owners: ExitStack) -> _Interface | None:
         """A successful null pattern is unsupported, not a discovery failure."""
@@ -245,20 +258,34 @@ class UiaScrollTarget:
     def _discover(
         self, point: Point, automation: _Interface, walker: _Interface
     ) -> tuple[_Interface, _Interface]:
-        for attempt in range(2):
+        previous = None
+        for attempt in range(_DISCOVERY_OBSERVATIONS):
             self._check_window()
             element = automation.pointer_result(
                 7, self._owners, (w.POINT, w.POINT(round(point.x), round(point.y)))
             )
             try:
-                return self._find(element, walker)
+                candidate = self._find(element, walker)
             except _NoScrollTargetError:
-                if attempt:
-                    raise
-                # Chromium may expose its document only after a standard
-                # metadata request. Refresh once, without resetting eligibility.
+                previous = None
+            else:
+                same = previous is not None and automation.same_element(
+                    previous[0], candidate[0]
+                )
+                logger.debug(
+                    "UIA point=%s observation=%s same_candidate=%s",
+                    point,
+                    attempt + 1,
+                    same,
+                )
+                if same:
+                    return candidate
+                previous = candidate
+            if attempt + 1 < _DISCOVERY_OBSERVATIONS:
+                # A lazy tree can expose an outer scroller before its inner
+                # target. Confirm the nearest element without resetting state.
                 time.sleep(0.5)
-        raise _NoScrollTargetError("No supported vertical scroll panel at this point")
+        raise CaptureError("No stable supported vertical scroll panel at this point")
 
     def _viewport(self) -> Rect:
         """Exclude only OS non-client chrome of the element's own native HWND."""
