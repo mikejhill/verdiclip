@@ -31,6 +31,7 @@ def _reader() -> witness.ListItemWitness:
     reader = object.__new__(witness.ListItemWitness)
     reader.target = Mock()
     reader._body = Rect(10, 45, 63, 120)
+    reader._horizontal, reader._right_overflow = 0.0, False
     reader._owners, reader._retained = ExitStack(), ExitStack()
     reader._anchors, reader._index, reader._deadline = [], 0, float("inf")
     reader._automation, reader._walker = Mock(), Mock()
@@ -234,12 +235,16 @@ def test_final_observation_uses_two_raw_rectangles_without_reseeding(
                 {
                     "before": {"x": 15, "y": 100, "width": 50, "height": 20},
                     "after": {"x": 15, "y": 70, "width": 50, "height": 20},
+                    "visible_before": {"x": 15, "y": 100, "width": 50, "height": 20},
+                    "visible_after": {"x": 15, "y": 70, "width": 50, "height": 20},
                     "same_identity": True,
                     "same_parent": True,
                 },
                 {
                     "before": {"x": 15, "y": 130, "width": 50, "height": 20},
                     "after": {"x": 15, "y": 100, "width": 50, "height": 20},
+                    "visible_before": {"x": 15, "y": 130, "width": 50, "height": 20},
+                    "visible_after": {"x": 15, "y": 100, "width": 50, "height": 20},
                     "same_identity": True,
                     "same_parent": True,
                 },
@@ -391,3 +396,159 @@ def test_footer_witness_body_excludes_horizontal_scrollbar(
         reader._visible(item)
     reader.close()
     target._owners.close()
+
+
+def _overflow_reader() -> witness.ListItemWitness:
+    reader = _reader()
+    reader._body = Rect(343, 334, 620, 339)
+    reader._right_overflow = True
+    return reader
+
+
+def test_measured_overflow_seeds_raw_items_with_interior_visible_hits() -> None:
+    """The five native39 raw rows yield two visible hits without altering raw bounds."""
+    reader = _overflow_reader()
+    items = [_item(Rect(371, y, 1350, 48)) for y in (346, 402, 458, 514, 570)]
+    for item in items:
+        item.pointer_result.return_value = item
+    _mock(reader._walker.relative).side_effect = [*items, None]
+    _mock(reader._automation.pointer_result).side_effect = items[-2:]
+    reader._seed()
+    assert [anchor.bounds for anchor in reader._anchors] == [
+        Rect(371, 514, 1350, 48),
+        Rect(371, 570, 1350, 48),
+    ]
+    points = [
+        call.args[2][1]
+        for call in _mock(reader._automation.pointer_result).call_args_list
+    ]
+    assert [(point.x, point.y) for point in points] == [(667, 538), (667, 594)]
+    reader.close()
+
+
+@pytest.mark.parametrize("horizontal", [0.0, 1.0, -1.0])
+def test_overflow_capability_requires_original_zero_horizontal(
+    monkeypatch: pytest.MonkeyPatch,
+    horizontal: float,
+) -> None:
+    """Only the independently proven two-rail layout at original H=0 may clip hits."""
+    monkeypatch.setattr(witness, "_Interface", Mock(return_value=Mock()))
+    target = Mock(_owners=ExitStack())
+    target.position.return_value = ScrollPosition(horizontal, 0, 3.7)
+    reader = witness.ListItemWitness(target, _footer_geometry())
+    assert reader._right_overflow is (horizontal == 0.0)
+    assert (reader._visible_bounds(Rect(371, 570, 1350, 48)) is not None) is (
+        horizontal == 0.0
+    )
+    reader.close()
+    target._owners.close()
+
+
+@pytest.mark.parametrize(
+    "bounds",
+    [
+        Rect(342, 570, 1350, 48),
+        Rect(371, 333, 1350, 48),
+        Rect(371, 630, 1350, 48),
+        Rect(963, 570, 100, 48),
+        Rect(962.9, 570, 100, 48),
+        Rect(962, 570, 100, 48),
+        Rect(371, 570, 1350, 0),
+        Rect(371, 570, 1350, 1),
+    ],
+)
+def test_overflow_rejects_clipped_edges_empty_slivers_and_rounded_edge_hits(
+    bounds: Rect,
+) -> None:
+    """Right clipping cannot hide vertical/left loss or produce a boundary hit."""
+    reader = _overflow_reader()
+    assert reader._visible_bounds(bounds) is None
+    with pytest.raises(CaptureError, match="supported visible hit area"):
+        reader._confirm(_item(bounds), bounds)
+    _mock(reader._automation.pointer_result).assert_not_called()
+
+
+def test_overflow_without_two_bar_evidence_remains_unsupported() -> None:
+    """The old fully-contained witness path cannot infer horizontal cropping."""
+    reader = _reader()
+    assert reader._visible_bounds(Rect(15, 70, 100, 20)) is None
+
+
+@pytest.mark.parametrize(
+    "change", ["none", "identity", "parent", "width", "left", "height"]
+)
+def test_overflow_fresh_hit_requires_same_raw_geometry_and_identity(
+    change: str,
+) -> None:
+    """Equal visible rectangles cannot conceal a changed raw item or parent."""
+    reader = _overflow_reader()
+    raw = Rect(371, 570, 1350, 48)
+    retained, fresh = _item(raw), _item(raw)
+    _mock(reader._automation.pointer_result).return_value = fresh
+    _mock(reader._automation.same_element).side_effect = lambda a, b: (
+        a is b or (change != "identity" and a is retained and b is fresh)
+    )
+    if change == "parent":
+        _mock(reader._walker.parent).return_value = None
+    elif change in ("width", "left", "height"):
+        values = {
+            "width": Rect(371, 570, 1351, 48),
+            "left": Rect(372, 570, 1349, 48),
+            "height": Rect(371, 570, 1350, 47),
+        }
+        fresh.bounds.return_value = values[change]
+    if change == "none":
+        reader._confirm(retained, raw)
+    else:
+        with pytest.raises(CaptureError):
+            reader._confirm(retained, raw)
+
+
+@pytest.mark.parametrize(
+    "change", ["none", "horizontal", "late-horizontal", "raw-width"]
+)
+def test_overflow_observation_emits_raw_and_visible_but_preserves_original_h(
+    change: str,
+) -> None:
+    """Displacement is raw vertical motion, never the clipped hit rectangle."""
+    reader = _overflow_reader()
+    reader._index = 1
+    items = [_item(Rect(371, y, 1350, 48)) for y in (402, 458)]
+    reader._anchors = [
+        witness._Anchor(item, Rect(371, y, 1350, 48))
+        for item, y in zip(items, (514, 570), strict=True)
+    ]
+    reader._confirm = Mock()
+    position = ScrollPosition(0.0, 100.0, 3.7)
+    _mock(reader.target.position).return_value = position
+    if change == "horizontal":
+        position = ScrollPosition(1.0, 100.0, 3.7)
+        _mock(reader.target.position).return_value = position
+    elif change == "late-horizontal":
+        _mock(reader.target.position).side_effect = [
+            position,
+            ScrollPosition(1, 100, 3.7),
+        ]
+    elif change == "raw-width":
+        items[0].bounds.return_value = Rect(371, 402, 1351, 48)
+    if change != "none":
+        with pytest.raises(CaptureError):
+            reader.observe(position)
+    else:
+        result = reader.observe(position)
+        records = result["items"]
+        assert isinstance(records, list)
+        assert records[0]["before"] == {"x": 371, "y": 514, "width": 1350, "height": 48}
+        assert records[0]["visible_before"] == {
+            "x": 371,
+            "y": 514,
+            "width": 592,
+            "height": 48,
+        }
+        assert records[0]["after"] == {"x": 371, "y": 402, "width": 1350, "height": 48}
+        assert records[0]["visible_after"] == {
+            "x": 371,
+            "y": 402,
+            "width": 592,
+            "height": 48,
+        }

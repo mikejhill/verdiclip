@@ -714,3 +714,167 @@ def test_footer_oracle_rejects_one_pixel_or_displaced_band(
         image.setPixelColor(x, y, QColor(255, 0, 255))
     with pytest.raises(RuntimeError):
         verify_sequence(image, tmp_path)
+
+
+def _overflow_sequence(output: Path) -> QImage:
+    """Raw right-overflow items retain exact visible intersections and raw deltas."""
+    image = _footer_sequence(output)
+    path = output / "frames.json"
+    positions = json.loads(path.read_text())
+    for position in positions:
+        for item in position["native_item_witness"]["items"]:
+            for phase in ("before", "after"):
+                item[phase]["width"] = 100
+                item[f"visible_{phase}"] = {**item[phase], "width": 18}
+    path.write_text(json.dumps(positions))
+    return image
+
+
+def test_overflow_oracle_uses_raw_displacement_and_exact_fullwidth_pixels(
+    tmp_path: Path,
+) -> None:
+    """Hidden columns never enter coverage; all output pixels still come from frames."""
+    result = verify_sequence(_overflow_sequence(tmp_path), tmp_path)
+    assert result["oracle_verified_rows"] == 129
+    assert result["oracle_frames"] == 3
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "left",
+        "top",
+        "bottom",
+        "empty",
+        "sliver",
+        "edge-hit",
+        "forged-visible",
+        "missing-visible",
+        "raw-width",
+        "raw-x",
+        "raw-height",
+    ],
+)
+def test_overflow_oracle_rejects_forged_clipping(
+    tmp_path: Path,
+    change: str,
+) -> None:
+    """Visible rectangles cannot hide forbidden clipping or altered raw shape."""
+    image = _overflow_sequence(tmp_path)
+    path = tmp_path / "frames.json"
+    positions = json.loads(path.read_text())
+    item = positions[1]["native_item_witness"]["items"][0]
+    if change == "forged-visible":
+        item["visible_before"]["width"] -= 1
+    elif change == "missing-visible":
+        del item["visible_before"]
+    else:
+        phase = "after" if change.startswith("raw-") else "before"
+        if phase == "after":
+            field = {"raw-width": "width", "raw-x": "x", "raw-height": "height"}[change]
+            item[phase][field] += 1
+        else:
+            field, value = {
+                "left": ("x", 9),
+                "top": ("y", 24),
+                "bottom": ("y", 84),
+                "empty": ("x", 30),
+                "sliver": ("x", 29.9),
+                "edge-hit": ("x", 29),
+            }[change]
+            item[phase][field] = value
+        clipped = Rect(**item[phase]).intersected(Rect(10, 25, 20, 60))
+        item[f"visible_{phase}"] = {
+            "x": clipped.x,
+            "y": clipped.y,
+            "width": clipped.width,
+            "height": clipped.height,
+        }
+    path.write_text(json.dumps(positions))
+    with pytest.raises(RuntimeError):
+        verify_sequence(image, tmp_path)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "identity",
+        "parent",
+        "overlap",
+        "duplicate",
+        "unequal",
+        "zero",
+        "negative",
+    ],
+)
+def test_overflow_oracle_rejects_bad_identity_pair_or_raw_delta(
+    tmp_path: Path,
+    change: str,
+) -> None:
+    """Two distinct raw item witnesses must agree on positive vertical motion."""
+    image = _overflow_sequence(tmp_path)
+    path = tmp_path / "frames.json"
+    positions = json.loads(path.read_text())
+    pair = positions[1]["native_item_witness"]["items"]
+    item = pair[0]
+    if change in ("identity", "parent"):
+        item[f"same_{change}"] = False
+    elif change in ("overlap", "duplicate"):
+        pair[1] = json.loads(json.dumps(item))
+        if change == "overlap":
+            for phase in ("before", "after", "visible_before", "visible_after"):
+                pair[1][phase]["y"] += 1
+    else:
+        value = {"unequal": 1, "zero": 30, "negative": 31}[change]
+        item["after"]["y"] += value
+        item["visible_after"]["y"] += value
+    path.write_text(json.dumps(positions))
+    with pytest.raises(RuntimeError):
+        verify_sequence(image, tmp_path)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "no-footer",
+        "header",
+        "footer",
+        "rail",
+        "horizontal",
+        "changed-horizontal",
+        "first-row",
+        "last-row",
+    ],
+)
+def test_overflow_oracle_preserves_layout_horizontal_and_fullwidth_pixel_guards(
+    tmp_path: Path,
+    change: str,
+) -> None:
+    """Overflow evidence cannot weaken original layout, H or exact pixel coverage."""
+    image = _overflow_sequence(tmp_path)
+    if change in ("no-footer", "header", "footer", "rail"):
+        path = tmp_path / "header-geometry.json"
+        geometry = json.loads(path.read_text())
+        nodes = geometry["uia"]["nodes"]
+        if change == "no-footer":
+            nodes.pop()
+        else:
+            index, field, delta = {
+                "header": (1, "x", 1),
+                "footer": (-1, "width", -1),
+                "rail": (2, "height", -1),
+            }[change]
+            nodes[index]["bounds"][field] += delta
+        path.write_text(json.dumps(geometry))
+    elif change in ("horizontal", "changed-horizontal"):
+        path = tmp_path / "frames.json"
+        positions = json.loads(path.read_text())
+        for position in positions if change == "horizontal" else positions[1:2]:
+            position["horizontal"] = 1
+        path.write_text(json.dumps(positions))
+    else:
+        image.setPixelColor(
+            23, 5 if change == "first-row" else 124, QColor(255, 0, 255)
+        )
+    with pytest.raises((CaptureError, RuntimeError)):
+        verify_sequence(image, tmp_path)

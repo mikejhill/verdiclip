@@ -32,6 +32,7 @@ class _HeaderOracle:
             self.header.width,
             self.area.bottom - self.header.bottom - self.footer_height,
         )
+        self._horizontal: object = None
         self._prefix: list[bytes] | None = None
         self._footer: list[bytes] | None = None
 
@@ -49,6 +50,26 @@ class _HeaderOracle:
         ):
             raise RuntimeError("Whole-image oracle terminal extent changed")
 
+    def _visible_item(self, raw: Rect, recorded: object, horizontal: object) -> bool:
+        """Re-derive allowed visible hit geometry without the live witness helper."""
+        if raw.is_empty:
+            return False
+        visible = raw.intersected(self._body)
+        if visible == raw:
+            return recorded is None or raw_bounds(recorded) == visible
+        if not (
+            self.footer_height > 0
+            and self._horizontal == horizontal == 0.0
+            and self._body.left <= raw.left < self._body.right < raw.right
+            and self._body.top <= raw.top < raw.bottom <= self._body.bottom
+            and not visible.is_empty
+            and recorded is not None
+            and raw_bounds(recorded) == visible
+        ):
+            return False
+        x, y = round(visible.center.x), round(visible.center.y)
+        return visible.left < x < visible.right and visible.top < y < visible.bottom
+
     def offset(self, position: dict[str, object], index: int, previous: int) -> int:
         """Derive pixel offsets from two agreeing raw geometry deltas, never seams."""
         value = position.get("native_item_witness")
@@ -57,6 +78,7 @@ class _HeaderOracle:
         witness = cast("dict[str, object]", value)
         items = cast("list[dict[str, object]]", witness["items"])
         if index == 0:
+            self._horizontal = position["horizontal"]
             if witness["from_frame"] is not None or items:
                 raise RuntimeError("Whole-image oracle has an invalid first witness")
             return 0
@@ -69,9 +91,12 @@ class _HeaderOracle:
             if (
                 item["same_identity"] is not True
                 or item["same_parent"] is not True
-                or first.is_empty
-                or first.intersected(self._body) != first
-                or last.intersected(self._body) != last
+                or not self._visible_item(
+                    first, item.get("visible_before"), position["horizontal"]
+                )
+                or not self._visible_item(
+                    last, item.get("visible_after"), position["horizontal"]
+                )
                 or (first.x, first.width, first.height)
                 != (last.x, last.width, last.height)
             ):

@@ -120,10 +120,14 @@ class ListItemWitness:
 
     def __init__(self, target: UiaScrollTarget, geometry: dict[str, object]) -> None:
         self.target, self.geometry = target, geometry
-        area, header, footer, _rail = list_layout(geometry)
+        area, header, footer, rail = list_layout(geometry)
         bottom = area.bottom if footer is None else footer.top
         self._body = Rect(
             area.left, header.bottom, header.width, bottom - header.bottom
+        )
+        self._horizontal = target.position().horizontal
+        self._right_overflow = (
+            footer is not None and rail is not None and self._horizontal == 0.0
         )
         self._owners, self._retained = ExitStack(), ExitStack()
         self._anchors: list[_Anchor] = []
@@ -150,14 +154,32 @@ class ListItemWitness:
         if time.monotonic() >= self._deadline:
             raise CaptureError("Native item witness exceeded its read budget")
 
+    def _visible_bounds(self, bounds: Rect) -> Rect | None:
+        """Clip only measured right overflow for hit testing, never displacement."""
+        if bounds.is_empty:
+            return None
+        visible = bounds.intersected(self._body)
+        if visible == bounds:
+            return bounds
+        if not (
+            self._right_overflow
+            and self._body.left <= bounds.left < self._body.right < bounds.right
+            and self._body.top <= bounds.top < bounds.bottom <= self._body.bottom
+            and not visible.is_empty
+        ):
+            return None
+        x, y = round(visible.center.x), round(visible.center.y)
+        if not visible.left < x < visible.right or not visible.top < y < visible.bottom:
+            return None
+        return visible
+
     def _visible(self, element: _Interface) -> Rect:
         self._budget()
         bounds = element.bounds()
         if (
             element.control_type() != _ITEM
             or element.offscreen()
-            or bounds.is_empty
-            or bounds.intersected(self._body) != bounds
+            or self._visible_bounds(bounds) is None
         ):
             raise CaptureError("Native item witness is no longer fully visible")
         with ExitStack() as owners:
@@ -170,18 +192,21 @@ class ListItemWitness:
 
     def _confirm(self, element: _Interface, bounds: Rect) -> None:
         self._budget()
+        visible = self._visible_bounds(bounds)
+        if visible is None:
+            raise CaptureError("Native item witness has no supported visible hit area")
         with ExitStack() as owners:
             current = self._automation.pointer_result(
                 7,
                 owners,
-                (w.POINT, w.POINT(round(bounds.center.x), round(bounds.center.y))),
+                (w.POINT, w.POINT(round(visible.center.x), round(visible.center.y))),
             )
             for _ in range(_MAX_ANCESTORS):
                 self._budget()
                 if current.control_type() == _ITEM:
-                    visible = self._visible(current)
+                    current_bounds = self._visible(current)
                     same = self._automation.same_element(element, current)
-                    if visible != bounds or not same:
+                    if current_bounds != bounds or not same:
                         raise CaptureError("Native item witness identity changed")
                     return
                 parent = self._walker.parent(current, owners)
@@ -200,7 +225,7 @@ class ListItemWitness:
                     break
                 if child.control_type() == _ITEM and not child.offscreen():
                     bounds = child.bounds()
-                    if not bounds.is_empty and bounds.intersected(self._body) == bounds:
+                    if self._visible_bounds(bounds) is not None:
                         candidates.append(_Anchor(child, bounds))
                 child = self._walker.relative(child, temporary, 6)
             if child is not None or len(candidates) < _PAIR_SIZE:
@@ -230,7 +255,10 @@ class ListItemWitness:
         """Verify prior anchors, then retain the next pair unless at the final frame."""
         self._deadline = time.monotonic() + _SECONDS
         self.target.check()
-        if self.target.position() != position:
+        if (
+            self.target.position() != position
+            or position.horizontal != self._horizontal
+        ):
             raise CaptureError("The scroll panel moved before native item evidence")
         items = []
         deltas = []
@@ -245,11 +273,19 @@ class ListItemWitness:
                 raise CaptureError(
                     "Native item witness changed horizontal or size geometry"
                 )
+            visible_before, visible_after = (
+                self._visible_bounds(anchor.bounds),
+                self._visible_bounds(after),
+            )
+            if visible_before is None or visible_after is None:
+                raise CaptureError("Native item witness lost its visible hit area")
             deltas.append(anchor.bounds.y - after.y)
             items.append(
                 {
                     "before": asdict(anchor.bounds),
                     "after": asdict(after),
+                    "visible_before": asdict(visible_before),
+                    "visible_after": asdict(visible_after),
                     "same_identity": True,
                     "same_parent": True,
                 }
