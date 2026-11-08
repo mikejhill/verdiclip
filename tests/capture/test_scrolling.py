@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import replace
 from pathlib import Path
 from typing import override
@@ -12,6 +13,7 @@ from PySide6.QtGui import QColor, QImage, QPainter
 from scripts.simple_scroll_native import _trace_helper
 
 from verdiclip.capture.scrolling import (
+    ScrollBarState,
     ScrollPosition,
     ScrollTransaction,
     VerticalStitch,
@@ -1614,3 +1616,345 @@ def test_interior_metric_change_still_leaves_provider_write_unresolved(
     assert "moved unexpectedly" in result.message
     assert result.restoration == "not restored: the provider write is unresolved"
     assert target.moves == [12.5, 25.0]
+
+
+class NativeEndpointTarget(HeaderTarget):
+    """Native units deliberately differ from pixels, with persistent normalization."""
+
+    def __init__(self, start: int = 2400) -> None:
+        super().__init__()
+        self.native_position = start
+        self.page = 1200
+        self.offset = round(start / 10)
+
+    def scrollbar_state(self) -> ScrollBarState:
+        """Return exact separate native units, not a position inferred from pixels."""
+        return ScrollBarState(
+            101, 102, 103, 104, 0, 5999, self.page, self.native_position
+        )
+
+    @override
+    def position(self) -> ScrollPosition:
+        state = NativeEndpointTarget.scrollbar_state(self)
+        return ScrollPosition(
+            self.horizontal, state.percent(state.position), 100 * self.page / 5999
+        )
+
+    @override
+    def move(self, vertical: float) -> None:
+        self.moves.append(vertical)
+        if vertical == 100.0:
+            self.page = 1218
+        self.native_position = round((6000 - self.page) * vertical / 100)
+        self.offset = 480 if vertical == 100.0 else round(self.native_position / 10)
+
+
+@pytest.mark.parametrize("start", [0, 2400])
+def test_native_inverse_restores_absolute_position_and_nonrail_pixels(
+    start: int,
+) -> None:
+    """Normalized view size may persist; native position and content may not drift."""
+    target = NativeEndpointTarget(start)
+    original, pixels = target.position(), target.frame()
+    operation = transaction(target)
+    result = operation.run()
+    assert result.image is not None
+    assert result.restoration == "restored"
+    assert target.native_position == start
+    assert target.frame().copy(0, 0, 63, 145) == pixels.copy(0, 0, 63, 145)
+    assert target.position().view_size != original.view_size
+    assert target.moves[-2:] == [100.0, 100 * start / 4782]
+    assert operation._expected == target.position()
+    assert result.frames == 9  # The two original-middle anchors are not capture frames.
+
+
+def prepared_native_restore() -> tuple[
+    NativeEndpointTarget, ScrollTransaction, ScrollPosition
+]:
+    """Prepare only an already extent-confirmed endpoint for focused race tests."""
+    target = NativeEndpointTarget()
+    operation = transaction(target)
+    initial = target.position()
+    operation._save_anchor(initial)
+    target.move(100.0)
+    operation._moved = True
+    operation._terminal = operation._expected = target.position()
+    return target, operation, initial
+
+
+@pytest.mark.parametrize(
+    "field", ["rail", "parent", "root", "pid", "minimum", "maximum", "page"]
+)
+def test_native_restore_rejects_changed_endpoint_before_writing(
+    monkeypatch: pytest.MonkeyPatch, field: str
+) -> None:
+    """Stale native identities, ranges and pages cannot authorize any restoration."""
+    target, operation, initial = prepared_native_restore()
+    read = target.scrollbar_state
+    monkeypatch.setattr(
+        target,
+        "scrollbar_state",
+        lambda: replace(read(), **{field: getattr(read(), field) + 1}),
+    )
+    assert operation._restore(initial).startswith("not restored")
+    assert target.moves == [100.0]
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["unit", "header", "body", "horizontal", "page", "input", "missing", "unstable"],
+)
+def test_native_restore_never_retries_or_acknowledges_inexact_write(
+    monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    """One unit/pixel, changed H or lost ownership leaves the write unresolved."""
+    target, operation, initial = prepared_native_restore()
+    move, frame, read = target.move, target.frame, target.scrollbar_state
+
+    def corrupt_move(vertical: float) -> None:
+        move(vertical)
+        if change == "unit":
+            target.native_position += 1
+        if change == "horizontal":
+            target.horizontal += 1
+        if change == "page":
+            target.page += 1
+        if change == "input":
+            target.input_changed = True
+
+    def corrupt_frame() -> QImage:
+        image = frame()
+        if change in ("header", "body", "unstable"):
+            y = 0 if change == "header" else 30
+            image.setPixelColor(
+                0, y, QColor(255, target.count % 255 if change == "unstable" else 0, 0)
+            )
+        return image
+
+    monkeypatch.setattr(target, "move", corrupt_move)
+    monkeypatch.setattr(target, "frame", corrupt_frame)
+    if change == "missing":
+        monkeypatch.setattr(
+            target, "scrollbar_state", lambda: None if len(target.moves) > 1 else read()
+        )
+    assert operation._restore(initial).startswith("not restored")
+    assert len(target.moves) == 2
+    assert operation._expected is None
+    assert (
+        operation._restore(initial) == "not restored: the provider write is unresolved"
+    )
+    assert len(target.moves) == 2
+
+
+@pytest.mark.parametrize("race", ["frame", "read", "final"])
+def test_native_restore_detects_late_input(
+    monkeypatch: pytest.MonkeyPatch, race: str
+) -> None:
+    """Input after final pixels/read/eligibility must invalidate the result."""
+    target, operation, initial = prepared_native_restore()
+    frame, read, check = target.frame, target.scrollbar_state, target.check
+    samples = 0
+
+    def changed_frame() -> QImage:
+        image = frame()
+        if len(target.moves) > 1 and race == "frame":
+            target.input_changed = True
+        return image
+
+    def changed_read() -> ScrollBarState:
+        state = read()
+        if len(target.moves) > 1 and race == "read":
+            target.input_changed = True
+        return state
+
+    def changed_check() -> None:
+        nonlocal samples
+        if len(target.moves) > 1:
+            samples += 1
+            if race == "final" and samples == 7:
+                target.input_changed = True
+        check()
+
+    monkeypatch.setattr(target, "frame", changed_frame)
+    monkeypatch.setattr(target, "scrollbar_state", changed_read)
+    monkeypatch.setattr(target, "check", changed_check)
+    assert operation._restore(initial).startswith("not restored")
+    assert len(target.moves) == 2
+    assert operation._expected is None
+
+
+def test_native_mapping_accepts_only_adjacent_arithmetic() -> None:
+    """Two representable floats are already outside the allowed rounding ordering."""
+    state = NativeEndpointTarget().scrollbar_state()
+    vertical = state.percent(state.position)
+    adjacent = math.nextafter(vertical, math.inf)
+    assert state.matches(ScrollPosition(0, vertical, 100 * 1200 / 5999))
+    assert state.matches(ScrollPosition(0, adjacent, 100 * 1200 / 5999))
+    assert not state.matches(
+        ScrollPosition(0, math.nextafter(adjacent, math.inf), 100 * 1200 / 5999)
+    )
+
+
+def test_native_cancel_before_anchor_never_moves() -> None:
+    """Original-position pixel observation obeys cooperative cancellation."""
+    target = NativeEndpointTarget()
+    operation = ScrollTransaction(target, lambda: True)
+    result = operation.run()
+    assert result.image is None
+    assert result.restoration == "unchanged"
+    assert target.moves == []
+
+
+def test_native_cancel_still_restores_owned_endpoint() -> None:
+    """Cancellation never stops safe cleanup of an already confirmed owned write."""
+    target, operation, initial = prepared_native_restore()
+    operation._cancelled = lambda: True
+    assert operation._restore(initial) == "restored"
+    assert len(target.moves) == 2
+    assert target.native_position == 2400
+
+
+def test_native_deadline_never_starts_restore() -> None:
+    """Native restoration must not expand the transaction's time budget."""
+    target, operation, initial = prepared_native_restore()
+    operation._clock = lambda: operation._deadline
+    assert operation._restore(initial) == "not restored: time limit"
+    assert target.moves == [100.0]
+
+
+@pytest.mark.parametrize("change", ["input", "position", "page", "pixels"])
+def test_native_initial_anchor_must_be_stable_before_first_move(
+    monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    """The original-middle anchor never acknowledges a changing view or state."""
+    target = NativeEndpointTarget()
+    frame = target.frame
+
+    def changed_frame() -> QImage:
+        image = frame()
+        if change == "input":
+            target.input_changed = True
+        elif change == "position":
+            target.native_position += 1
+        elif change == "page":
+            target.page += 1
+        else:
+            image.setPixelColor(0, 30, QColor(255, target.count, 0))
+        return image
+
+    monkeypatch.setattr(target, "frame", changed_frame)
+    result = transaction(target).run()
+    assert result.image is None
+    assert result.restoration == "unchanged"
+    assert result.frames == 0
+    assert target.moves == []
+
+
+@pytest.mark.parametrize("change", ["null", "size", "header"])
+def test_native_anchor_rejects_invalid_pixels(
+    monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    """Missing pixels or unsupported geometry cannot provide a restore anchor."""
+    target = NativeEndpointTarget()
+    if change == "header":
+        target.header = None
+    else:
+        monkeypatch.setattr(
+            target,
+            "frame",
+            lambda: (
+                QImage()
+                if change == "null"
+                else QImage(10, 10, QImage.Format.Format_RGB32)
+            ),
+        )
+    result = transaction(target).run()
+    assert result.image is None
+    assert target.moves == []
+
+
+@pytest.mark.parametrize("change", ["type", "mapping", "before-frame"])
+def test_native_anchor_rejects_invalid_state(
+    monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    """Optional capability means absent, never accepting corrupt native evidence."""
+    target = NativeEndpointTarget()
+    operation = transaction(target)
+    initial = target.position()
+    if change == "type":
+        monkeypatch.setattr(target, "scrollbar_state", dict)
+    elif change == "mapping":
+        initial = replace(initial, vertical=50.01)
+    else:
+        monkeypatch.setattr(target, "position", lambda: replace(initial, horizontal=28))
+    with pytest.raises(CaptureError):
+        operation._save_anchor(initial)
+    assert target.moves == []
+
+
+def test_native_endpoint_is_rechecked_before_single_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fresh range does not authorize writing after the terminal tuple changes."""
+    target, operation, initial = prepared_native_restore()
+    position = target.position()
+    calls = 0
+
+    def read() -> ScrollPosition:
+        nonlocal calls
+        calls += 1
+        return position if calls == 1 else replace(position, horizontal=28)
+
+    monkeypatch.setattr(target, "position", read)
+    assert operation._restore(initial).startswith("not restored")
+    assert target.moves == [100.0]
+
+
+def test_native_deadline_after_write_keeps_it_unresolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A delayed provider call cannot claim restored state after the deadline."""
+    target, operation, initial = prepared_native_restore()
+    move = target.move
+
+    def delayed_move(vertical: float) -> None:
+        move(vertical)
+        operation._clock = lambda: operation._deadline
+
+    monkeypatch.setattr(target, "move", delayed_move)
+    assert operation._restore(initial).startswith("not restored")
+    assert len(target.moves) == 2
+    assert operation._expected is None
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        ScrollBarState(1, 2, 3, 4, 0, 10, 0, 1),
+        ScrollBarState(1, 2, 3, 4, 0, 10, 11, 0),
+        ScrollBarState(1, 2, 3, 4, 0, 10, 5, 7),
+        ScrollBarState(1, 2, 3, 4, 0, 10, 5, -1),
+    ],
+)
+def test_native_inverse_rejects_unrepresentable_units(state: ScrollBarState) -> None:
+    """No clamping or guessed mapping is permitted outside the native interval."""
+    with pytest.raises(CaptureError):
+        state.percent(state.position)
+
+
+def test_native_already_normalized_bottom_stays_on_strict_restore() -> None:
+    """No terminal change means the original UIA tuple/full pixels still match."""
+    target = NativeEndpointTarget()
+    target.move(100.0)
+    target.moves.clear()
+    initial, pixels = target.position(), target.frame()
+    operation = transaction(target)
+    operation._save_anchor(initial)
+    target.move(0.0)
+    operation._moved = True
+    operation._expected = target.position()
+    assert operation._restore(initial) == "restored"
+    assert target.position() == initial
+    assert target.frame() == pixels
+    assert operation._terminal is None
+    assert target.moves == [0.0, initial.vertical]

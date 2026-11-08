@@ -1290,3 +1290,195 @@ def test_inverse_final_read_or_save_change_cannot_pass_or_trigger_another_write(
         50.10223507015441,
     ]
     context.__exit__.assert_called_once()
+
+
+def _normalized_evidence(capture: diagnostics.ExplorerStartCapture) -> QImage:
+    """Keep native units deliberately unrelated to the tiny synthetic pixels."""
+    capture.result = None
+    area, header = Rect(1, 2, 10, 20), Rect(1, 2, 8, 3)
+    original = {
+        "native_handle": 77,
+        "bar": 2,
+        "success": True,
+        "window_valid": True,
+        "root_matches": True,
+        "parent": 8,
+        "root": 9,
+        "pid": 123,
+        "min": 0,
+        "max": 15999,
+        "page": 1787,
+        "pos": 7106,
+    }
+    if capture.kind in ("explorer-click", "explorer-enter"):
+        original["pos"] = 0
+    final = {**original, "page": 1817}
+    endpoint = {**final, "pos": 14183}
+
+    def position(sample: dict[str, int]) -> dict[str, float]:
+        return {
+            "horizontal": -1.0,
+            "vertical": diagnostics._native_inverse_percent(sample, sample["pos"]),
+            "view_size": 100 * sample["page"] / sample["max"],
+        }
+
+    initial, restored = position(original), position(final)
+    capture.start_position = ScrollPosition(**initial)
+    capture.start_area = area
+    geometry = {
+        "captured_bounds": asdict(area),
+        "uia": {
+            "truncated": False,
+            "nodes": [
+                {"parent": None, "control_type": 50008, "offscreen": False},
+                {
+                    "parent": 0,
+                    "control_type": 50034,
+                    "bounds": asdict(header),
+                    "offscreen": False,
+                },
+                {
+                    "parent": 0,
+                    "control_type": 50014,
+                    "bounds": asdict(Rect(9, 2, 2, 20)),
+                    "offscreen": False,
+                    "native_handle": 77,
+                },
+            ],
+        },
+    }
+    records = {
+        "header-geometry.json": geometry,
+        "restoration.json": {
+            "initial": initial,
+            "final": restored,
+            "initial_native": [original],
+            "final_native": [final],
+        },
+        "target.json": {"initial_position": initial, "area": asdict(area), "window": 9},
+        "frames.json": [{**position(endpoint), "native_scroll_info": [endpoint]}],
+    }
+    for name, record in records.items():
+        (capture.output / name).write_text(json.dumps(record), encoding="utf-8")
+    before = _image()
+    assert before.save(str(capture.output / "before.png"))
+    top = before if original["pos"] == 0 else _image(0xFFFFFFFF)
+    assert top.save(str(capture.output / "frame-0.png"))
+    return before
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "explorer-click",
+        "explorer-enter",
+        "explorer-middle-click",
+        "explorer-middle-enter",
+    ],
+)
+def test_normalized_oracle_requires_native_units_and_every_nonrail_pixel(
+    tmp_path: Path, kind: str
+) -> None:
+    """Four rail-only pixel changes cannot mask even one Header/body mismatch."""
+    capture = _start_capture(tmp_path)
+    capture.kind = kind
+    after = _normalized_evidence(capture)
+    for x, y in ((8, 0), (9, 0), (8, 19), (9, 19)):
+        after.setPixel(x, y, 0xFFFFFFFF)
+    if "middle" in kind:
+        capture._verify_restored(after)
+    else:
+        diagnostics._verify_restored(capture, after)
+    assert capture.report["restored_pixels"] == (
+        "exact non-rail; native position exact; normalized page"
+    )
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "position",
+        "parent",
+        "root",
+        "pid",
+        "min",
+        "max",
+        "page",
+        "horizontal",
+        "view",
+        "two_ulp",
+        "terminal_page",
+        "terminal_range",
+        "terminal_position",
+        "header_pixel",
+        "body_pixel",
+        "geometry",
+        "ambiguous",
+        "unsupported",
+        "failed_read",
+        "bottom",
+        "edge",
+        "missing",
+    ],
+)
+def test_normalized_oracle_rejects_invalid_independent_evidence(
+    tmp_path: Path, invalid: str
+) -> None:
+    """A reported product success is never proof of native/pixel restoration."""
+    capture = _start_capture(tmp_path)
+    after = _normalized_evidence(capture)
+    state_path = tmp_path / "restoration.json"
+    state = json.loads(state_path.read_text())
+    if invalid in ("parent", "root", "pid", "min", "max", "page"):
+        state["final_native"][0][invalid] += 1
+    elif invalid == "position":
+        state["final_native"][0]["pos"] += 1
+    elif invalid in ("horizontal", "view", "two_ulp"):
+        _damage_normalized_position(state["final"], invalid)
+    elif invalid.startswith("terminal_"):
+        path = tmp_path / "frames.json"
+        frames = json.loads(path.read_text())
+        key = {
+            "terminal_page": "page",
+            "terminal_range": "max",
+            "terminal_position": "pos",
+        }[invalid]
+        frames[0]["native_scroll_info"][0][key] += 1
+        path.write_text(json.dumps(frames))
+    elif invalid in ("header_pixel", "body_pixel"):
+        after.setPixel(0, 0 if invalid == "header_pixel" else 10, 0xFFFFFFFF)
+    elif invalid in ("geometry", "ambiguous", "unsupported"):
+        _damage_normalized_geometry(tmp_path, invalid)
+    elif invalid == "failed_read":
+        state["final_native"][0]["success"] = False
+    elif invalid in ("bottom", "edge"):
+        capture.kind = (
+            "explorer-bottom-click" if invalid == "bottom" else "edge-panel-click"
+        )
+    elif invalid == "missing":
+        del state["final_native"]
+    state_path.write_text(json.dumps(state))
+    with pytest.raises((RuntimeError, CaptureError, KeyError)):
+        capture._verify_restored(after)
+    assert "restored_pixels" not in capture.report
+
+
+def _damage_normalized_geometry(output: Path, invalid: str) -> None:
+    path = output / "header-geometry.json"
+    geometry = json.loads(path.read_text())
+    if invalid == "geometry":
+        geometry["captured_bounds"]["width"] += 1
+    elif invalid == "ambiguous":
+        geometry["uia"]["nodes"].append(geometry["uia"]["nodes"][-1])
+    else:
+        geometry["uia"]["nodes"][-1]["offscreen"] = True
+    path.write_text(json.dumps(geometry))
+
+
+def _damage_normalized_position(position: dict[str, float], invalid: str) -> None:
+    if invalid == "two_ulp":
+        position["vertical"] = math.nextafter(
+            math.nextafter(position["vertical"], math.inf), math.inf
+        )
+    else:
+        position["view_size" if invalid == "view" else "horizontal"] += 1

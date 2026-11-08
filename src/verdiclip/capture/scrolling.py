@@ -51,6 +51,69 @@ class ScrollPosition:
     view_size: float
 
 
+@dataclass(frozen=True, slots=True)
+class ScrollBarState:
+    """Verified native rail units; these are never image pixel coordinates."""
+
+    rail: int
+    parent: int
+    root: int
+    pid: int
+    minimum: int
+    maximum: int
+    page: int
+    position: int
+
+    def percent(self, position: int) -> float:
+        """Invert the current native range without rounding its absolute position."""
+        last = self.maximum - max(self.page - 1, 0)
+        if not (
+            self.minimum < last <= self.maximum
+            and self.page > 0
+            and self.minimum <= position <= last
+        ):
+            raise CaptureError("The native scrollbar range is unsupported")
+        return END_PERCENT * (position - self.minimum) / (last - self.minimum)
+
+    def matches(self, position: ScrollPosition) -> bool:
+        """Allow only one adjacent float from arithmetic operation ordering."""
+        pairs = (
+            (position.vertical, self.percent(self.position)),
+            (
+                position.view_size,
+                END_PERCENT * self.page / (self.maximum - self.minimum),
+            ),
+        )
+        return all(
+            math.isfinite(observed)
+            and observed
+            in (
+                computed,
+                math.nextafter(computed, -math.inf),
+                math.nextafter(computed, math.inf),
+            )
+            for observed, computed in pairs
+        )
+
+    def same_range(self, other: ScrollBarState) -> bool:
+        """Keep the same retained native identity and content range."""
+        return (
+            self.rail,
+            self.parent,
+            self.root,
+            self.pid,
+            self.minimum,
+            self.maximum,
+        ) == (
+            other.rail,
+            other.parent,
+            other.root,
+            other.pid,
+            other.minimum,
+            other.maximum,
+        )
+
+
 class ScrollTarget(Protocol):
     """One retained target, used only inside a disposable helper."""
 
@@ -404,6 +467,8 @@ class ScrollTransaction:
         self._moved = False
         self._expected: ScrollPosition | None = None
         self._terminal: ScrollPosition | None = None
+        self._native: ScrollBarState | None = None
+        self._anchor: QImage | None = None
 
     def _check(self, *, restoring: bool = False) -> None:
         if not restoring and self._cancelled():
@@ -429,6 +494,99 @@ class ScrollTransaction:
                 return current
             previous = current
         raise CaptureError("The scroll panel is still changing")
+
+    def _native_state(self) -> ScrollBarState | None:
+        getter = getattr(self._target, "scrollbar_state", None)
+        state = getter() if getter is not None else None
+        if state is not None and not isinstance(state, ScrollBarState):
+            raise CaptureError("The native scrollbar observation is unsupported")
+        return state
+
+    def _anchor_sample(
+        self, position: ScrollPosition, native: ScrollBarState, *, restoring: bool
+    ) -> QImage:
+        self._check(restoring=restoring)
+        if self._target.position() != position or self._native_state() != native:
+            raise CaptureError("The native scrollbar moved during observation")
+        image = self._target.frame()
+        header, area = self._target.header, self._target.area
+        if (
+            header is None
+            or image.isNull()
+            or (image.width(), image.height()) != (area.width, area.height)
+            or not 0 < header.width < area.width
+            or header.width != round(header.width)
+            or image.width() * image.height() > MAX_PIXELS
+        ):
+            raise CaptureError("The native scrollbar has unsupported viewport pixels")
+        if self._target.position() != position or self._native_state() != native:
+            raise CaptureError("The native scrollbar moved during capture")
+        self._check(restoring=restoring)
+        return image.copy(0, 0, round(header.width), image.height())
+
+    def _save_anchor(self, initial: ScrollPosition) -> None:
+        native = self._native_state()
+        if native is None:
+            return
+        if not native.matches(initial):
+            raise CaptureError("The native scrollbar mapping changed")
+        previous = None
+        for _ in range(8):
+            current = self._anchor_sample(initial, native, restoring=False)
+            if current == previous:
+                self._native, self._anchor = native, current
+                return
+            previous = current
+            self._pause(0.08)
+        raise CaptureError("The original viewport did not settle")
+
+    def _restore_native(self, initial: ScrollPosition, current: ScrollPosition) -> None:
+        original, anchor = self._native, self._anchor
+        native = self._native_state()
+        if (
+            original is None
+            or anchor is None
+            or native is None
+            or not native.same_range(original)
+            or not native.matches(current)
+            or native.page == original.page
+            or current != self._terminal
+        ):
+            raise CaptureError("The normalized scrollbar restoration is unsupported")
+        percent = native.percent(original.position)
+        self._check(restoring=True)
+        if self._target.position() != current or self._native_state() != native:
+            raise CaptureError("The terminal scrollbar changed before restoration")
+        self._check(restoring=True)
+        self._expected = None
+        self._target.move(percent)
+        previous = None
+        for _ in range(8):
+            self._pause(0.08)
+            self._check(restoring=True)
+            observed = self._target.position()
+            state = self._native_state()
+            if (
+                state is None
+                or not state.same_range(original)
+                or state.page != native.page
+                or observed.horizontal != initial.horizontal
+                or observed.view_size != current.view_size
+                or not state.matches(observed)
+            ):
+                raise CaptureError(
+                    "The normalized scrollbar changed during restoration"
+                )
+            pixels = self._anchor_sample(observed, state, restoring=True)
+            if state.position == original.position and pixels == anchor:
+                if previous == (observed, state, pixels):
+                    self._check(restoring=True)
+                    self._expected = observed
+                    return
+                previous = (observed, state, pixels)
+            else:
+                previous = None
+        raise CaptureError("The native scrollbar did not restore exact original pixels")
 
     def _terminal_change(
         self, before: ScrollPosition, current: ScrollPosition, percent: float
@@ -629,7 +787,9 @@ class ScrollTransaction:
                 )
             ):
                 return "not restored: scroll position changed unexpectedly"
-            if self._expected != initial:
+            if self._terminal is not None and self._native is not None:
+                self._restore_native(initial, current)
+            elif self._expected != initial:
                 before = self._expected
                 self._expected = None
                 self._target.move(initial.vertical)
@@ -655,6 +815,7 @@ class ScrollTransaction:
             initial = self._target.position()
             self._validate_position(initial)
             self._expected = initial
+            self._save_anchor(initial)
             image = self._sequence(initial)
         except (CaptureError, OSError) as error:
             message = str(error)

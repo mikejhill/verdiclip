@@ -7,6 +7,7 @@ import ctypes.wintypes as w
 import json
 import subprocess
 from contextlib import ExitStack
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock, Mock
 
@@ -19,7 +20,7 @@ from scripts.simple_scroll_native import (
 )
 
 from verdiclip.capture.grabber import FrozenScreen
-from verdiclip.capture.scrolling import ScrollPosition, ScrollResult
+from verdiclip.capture.scrolling import ScrollBarState, ScrollPosition, ScrollResult
 from verdiclip.exceptions import CaptureError
 from verdiclip.geometry import Point, Rect
 from verdiclip.platform import scrolling
@@ -1902,3 +1903,150 @@ def test_activation_checks_state_after_the_potentially_slow_frame_read(
     with pytest.raises(CaptureError, match="changed"):
         native.activate(Point(20, 30), window, 12, 7)
     mock(native._user).SetForegroundWindow.assert_not_called()
+
+
+def native_target() -> UiaScrollTarget:
+    """A retained standard Header rail backed by read-only typed native metadata."""
+    item = target()
+    header = header_element(50034, Rect(20, 20, 283, 25))
+    rail = header_element(50014, Rect(303, 20, 17, 300))
+    rail.native_handle.return_value = 101
+    item._header = _ScrollHeader(header, rail, item.area)
+    item._scrollbar_identity = None
+    item.check = Mock()
+    item._automation = Mock()
+    item._automation.pointer_result.return_value = rail
+    item._automation.same_element.return_value = True
+    item._walker = Mock()
+    item._walker.parent.return_value = item._element
+    mock(item._user.GetParent).return_value = 102
+
+    def pid(_handle: int, result: c._CArgObject) -> int:
+        c.cast(result, c.POINTER(w.DWORD)).contents.value = 104
+        return 1
+
+    def read(_handle: int, _bar: int, result: c._CArgObject) -> bool:
+        info = c.cast(result, c.POINTER(scrolling._ScrollInfo)).contents
+        assert info.size == c.sizeof(scrolling._ScrollInfo)
+        assert info.mask == 7
+        info.minimum, info.maximum, info.page, info.position = 0, 15999, 1787, 7106
+        return True
+
+    mock(item._user.GetWindowThreadProcessId).side_effect = pid
+    mock(item._user.GetScrollInfo).side_effect = read
+    item.position = Mock(
+        return_value=ScrollPosition(-1, 100 * 7106 / 14213, 100 * 1787 / 15999)
+    )
+    return item
+
+
+def test_native_snapshot_reuses_retained_rail_and_typed_sb_ctl() -> None:
+    """No new whole-tree discovery or alternate target is needed for native proof."""
+    item = native_target()
+    state = item.scrollbar_state()
+    assert state == ScrollBarState(101, 102, 1, 104, 0, 15999, 1787, 7106)
+    assert item.scrollbar_state() == state
+    assert mock(item._user.GetScrollInfo).call_args.args[:2] == (101, 2)
+    mock(item._walker.relative).assert_not_called()
+    assert mock(item.check).call_count == 4
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "handle",
+        "parent",
+        "root",
+        "pid",
+        "range",
+        "identity",
+        "missing",
+        "failure",
+        "mapping",
+        "window",
+    ],
+)
+def test_native_snapshot_rejects_changed_evidence(change: str) -> None:
+    """Native identity, UIA identity and arithmetic all remain mandatory."""
+    item = native_target()
+    original = item.scrollbar_state()
+    assert original is not None
+    assert item._header is not None
+    assert item._header.scrollbar is not None
+    rail = item._header.scrollbar
+    if change in ("handle", "missing"):
+        mock(rail.native_handle).return_value = 105 if change == "handle" else None
+    elif change == "parent":
+        mock(item._user.GetParent).return_value = 105
+    elif change == "root":
+        mock(item._user.GetAncestor).return_value = 105
+    elif change == "pid":
+
+        def changed_pid(handle: int, result: c._CArgObject) -> int:
+            c.cast(result, c.POINTER(w.DWORD)).contents.value = handle
+            return 1
+
+        mock(item._user.GetWindowThreadProcessId).side_effect = changed_pid
+    elif change == "range":
+        item._scrollbar_identity = replace(original, maximum=16000)
+    elif change == "identity":
+        mock(item._automation.same_element).return_value = False
+    elif change == "failure":
+        mock(item._user.GetScrollInfo).side_effect = None
+        mock(item._user.GetScrollInfo).return_value = False
+    elif change == "mapping":
+        mock(item.position).return_value = ScrollPosition(-1, 50, 11)
+    else:
+        mock(item._user.IsWindow).return_value = False
+    with pytest.raises(CaptureError):
+        item.scrollbar_state()
+
+
+@pytest.mark.parametrize("kind", ["no-header", "no-rail", "no-hwnd"])
+def test_native_snapshot_absent_for_unsupported_rail(kind: str) -> None:
+    """Absent native support leaves ordinary providers on their strict tuple path."""
+    item = native_target()
+    assert item._header is not None
+    if kind == "no-header":
+        item._header = None
+    elif kind == "no-rail":
+        item._header.scrollbar = None
+    else:
+        assert item._header.scrollbar is not None
+        mock(item._header.scrollbar.native_handle).return_value = None
+    assert item.scrollbar_state() is None
+    mock(item._user.GetScrollInfo).assert_not_called()
+
+
+def test_native_rail_hit_requires_bounded_same_scrollbar_ancestor() -> None:
+    """Unknown hit trees cannot prove ownership by coincident rail coordinates."""
+    item = native_target()
+    hit = header_element(50000, Rect(303, 20, 17, 300))
+    mock(item._automation.pointer_result).return_value = hit
+    mock(item._walker.parent).return_value = hit
+    with pytest.raises(CaptureError, match="cannot be verified"):
+        item.scrollbar_state()
+    assert mock(item._walker.parent).call_count == scrolling._MAX_ANCESTORS
+    mock(item._user.GetScrollInfo).assert_not_called()
+
+
+def test_native_rail_missing_hit_parent_is_unsupported() -> None:
+    """A hit with no ancestor rail cannot silently fall back after native discovery."""
+    item = native_target()
+    mock(item._automation.pointer_result).return_value = header_element(
+        50000, item.area
+    )
+    mock(item._walker.parent).return_value = None
+    with pytest.raises(CaptureError, match="cannot be verified"):
+        item.scrollbar_state()
+    mock(item._user.GetScrollInfo).assert_not_called()
+
+
+def test_native_handle_must_survive_final_read() -> None:
+    """The native identity is still retained after potentially blocking metadata IO."""
+    item = native_target()
+    assert item._header is not None
+    assert item._header.scrollbar is not None
+    mock(item._header.scrollbar.native_handle).side_effect = [101, 105]
+    with pytest.raises(CaptureError, match="during observation"):
+        item.scrollbar_state()

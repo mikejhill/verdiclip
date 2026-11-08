@@ -42,6 +42,7 @@ _WAIT_TIMEOUT = 0x00000102
 _MIDDLE_SETUP_RANGE = 5.0
 _INVERSE_EXPERIMENT = "explorer-inverse-restore"
 _SCROLLBAR_ROLE = 50014
+_SB_CTL = 2
 _MAX_SCROLLBAR_CHILDREN = 64
 _MAX_SCROLLBAR_ANCESTORS = 8
 _EXPLORER_STARTS = {
@@ -131,9 +132,12 @@ def _verify_restored(capture: app.AppCapture, after: QImage) -> None:
     state = json.loads(
         (capture.output / "restoration.json").read_text(encoding="utf-8")
     )
+    first = QImage(str(capture.output / "frame-0.png"))
+    if capture.kind.startswith("explorer-") and state["initial"] != state["final"]:
+        _verify_normalized_restore(capture, state, first, after)
+        return
     native._require(state["initial"] == state["final"], "Scroll state was not restored")
     capture.report["restored_scroll_state"] = state
-    first = QImage(str(capture.output / "frame-0.png"))
     native._require(first.size() == after.size(), "Restored panel geometry changed")
     if first == after:
         capture.report["restored_pixels"] = "exact"
@@ -162,6 +166,108 @@ def _verify_restored(capture: app.AppCapture, after: QImage) -> None:
         first.pixel(x, y) != after.pixel(x, y)
         for y in range(first.height())
         for x in range(first.width())
+    )
+
+
+def _native_rail(rows: list[dict[str, object]], handle: int) -> dict[str, int]:
+    candidates = [row for row in rows if row["bar"] == _SB_CTL]
+    native._require(
+        len(candidates) == 1 and candidates[0]["native_handle"] == handle,
+        "Restoration lacks one exact native ScrollBar",
+    )
+    row = candidates[0]
+    native._require(
+        row["success"] is True
+        and row["window_valid"] is True
+        and row["root_matches"] is True
+        and all(type(row[key]) is int for key in ("min", "max", "page", "pos")),
+        "Restoration lacks valid native ScrollBar values",
+    )
+    return {key: value for key, value in row.items() if type(value) is int}
+
+
+def _verify_native_mapping(position: dict[str, float], state: dict[str, int]) -> None:
+    native._require(
+        _same_native_arithmetic(
+            position["vertical"], _native_inverse_percent(state, state["pos"])
+        )
+        and _same_native_arithmetic(
+            position["view_size"],
+            END_PERCENT * state["page"] / (state["max"] - state["min"]),
+        ),
+        "Restoration native/UIA mapping differs",
+    )
+
+
+def _verify_normalized_restore(
+    capture: app.AppCapture,
+    state: dict[str, object],
+    before: QImage,
+    after: QImage,
+) -> None:
+    """Independently require original native units and every non-rail pixel."""
+    native._require(
+        capture.kind.startswith("explorer-") and "bottom" not in capture.kind,
+        "Only a top/middle Explorer normalization has this independent oracle",
+    )
+    geometry = json.loads((capture.output / "header-geometry.json").read_text())
+    area, header = header_layout(geometry)
+    bars = [
+        node
+        for node in geometry["uia"]["nodes"]
+        if node["parent"] == 0
+        and node["control_type"] == _SCROLLBAR_ROLE
+        and not node["offscreen"]
+    ]
+    native._require(
+        len(bars) == 1 and 0 < header.width < area.width,
+        "Restoration requires a separately identified native rail",
+    )
+    handle = bars[0]["native_handle"]
+    original = _native_rail(
+        cast("list[dict[str, object]]", state["initial_native"]), handle
+    )
+    final = _native_rail(cast("list[dict[str, object]]", state["final_native"]), handle)
+    frames = json.loads((capture.output / "frames.json").read_text())
+    terminal = frames[-1]
+    endpoint = _native_rail(terminal["native_scroll_info"], handle)
+    initial = cast("dict[str, float]", state["initial"])
+    restored = cast("dict[str, float]", state["final"])
+    native._require(
+        all(
+            original[key] == final[key]
+            for key in ("parent", "root", "pid", "min", "max", "pos")
+        )
+        and all(original[key] > 0 for key in ("parent", "root", "pid"))
+        and all(original[key] == endpoint[key] for key in ("min", "max"))
+        and final["page"] == endpoint["page"] != original["page"]
+        and initial["vertical"] < END_PERCENT
+        and terminal["vertical"] == END_PERCENT
+        and restored["view_size"] == terminal["view_size"] != initial["view_size"]
+        and initial["horizontal"] == restored["horizontal"] == terminal["horizontal"],
+        "Restoration changed native position, identity, range or normalized page",
+    )
+    for position, sample in (
+        (initial, original),
+        (restored, final),
+        (terminal, endpoint),
+    ):
+        _verify_native_mapping(position, sample)
+    target = json.loads((capture.output / "target.json").read_text())
+    native._require(
+        target["initial_position"] == initial
+        and target["area"] == asdict(area)
+        and target["window"] == original["root"]
+        and not before.isNull()
+        and before.size() == after.size()
+        and (before.width(), before.height()) == (area.width, area.height)
+        and before.copy(0, 0, round(header.width), before.height())
+        == after.copy(0, 0, round(header.width), after.height()),
+        "Restoration changed target geometry or original non-rail pixels",
+    )
+    capture.report.update(
+        restored_scroll_state=state,
+        restored_pixels="exact non-rail; native position exact; normalized page",
     )
 
 
@@ -227,12 +333,15 @@ class ExplorerStartCapture(app.AppCapture):
         )
         target = json.loads((self.output / "target.json").read_text(encoding="utf-8"))
         native._require(
-            state["initial"] == state["final"] == asdict(self.start_position)
+            state["initial"] == asdict(self.start_position)
             and target["initial_position"] == state["initial"]
             and target["area"] == asdict(self.start_area),
             "Explorer did not restore the actual starting scroll state",
         )
         before = QImage(str(self.output / "before.png"))
+        if state["initial"] != state["final"]:
+            _verify_normalized_restore(self, state, before, after)
+            return
         native._require(
             not before.isNull() and before == after,
             "Explorer did not restore the actual starting pixels",

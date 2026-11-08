@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ctypes as c
+import ctypes.wintypes as w
 import json
 from pathlib import Path
 from unittest.mock import Mock
@@ -482,3 +484,127 @@ def test_header_oracle_independently_enforces_both_total_extents(
     path.write_text(json.dumps(positions), encoding="utf-8")
     with pytest.raises(RuntimeError, match="terminal extent"):
         verify_sequence(image, tmp_path)
+
+
+def _native_restoration_target() -> Mock:
+    target = Mock()
+    target.position.return_value = ScrollPosition(-1.0, 50.0, 12.0)
+    target._user.GetParent.return_value = 8
+    target._user.GetAncestor.return_value = 9
+
+    def pid(_handle: int, output: c.c_void_p) -> int:
+        c.cast(output, c.POINTER(w.DWORD)).contents.value = 123
+        return 5
+
+    target._user.GetWindowThreadProcessId.side_effect = pid
+    return target
+
+
+@pytest.mark.parametrize(
+    "failure", [None, "native", "identity", "position", "late_position", "input"]
+)
+def test_native_restoration_metadata_is_independent_and_guarded(
+    monkeypatch: pytest.MonkeyPatch, failure: str | None
+) -> None:
+    """Read-only initial/final evidence never calls the product restore adapter."""
+    target = _native_restoration_target()
+    row = {
+        "native_handle": 77,
+        "bar": 2,
+        "success": True,
+        "window_valid": True,
+        "root_matches": True,
+        "min": 0,
+        "max": 15999,
+        "page": 1787,
+        "pos": 7106,
+    }
+    second = dict(row)
+    if failure == "native":
+        second["pos"] += 1
+    elif failure == "identity":
+        target._user.GetParent.side_effect = [8, 99]
+    elif failure == "position":
+        original = target.position.return_value
+        target.position.side_effect = [
+            original,
+            original,
+            original,
+            ScrollPosition(-1, 51, 12),
+        ]
+    elif failure == "late_position":
+        original = target.position.return_value
+        target.position.side_effect = [original] * 4 + [ScrollPosition(-1, 51, 12)]
+    elif failure == "input":
+        target.check.side_effect = [None, None, CaptureError("Input changed")]
+    read = Mock(side_effect=[[row], [second]])
+    monkeypatch.setattr(native, "scroll_info", read)
+    if failure is not None:
+        with pytest.raises(CaptureError):
+            native._restoration_native(target, {"independent": "geometry"})
+    else:
+        assert native._restoration_native(target, {"independent": "geometry"}) == [
+            {**row, "parent": 8, "root": 9, "pid": 123}
+        ]
+        assert read.call_count == 2
+    target.move.assert_not_called()
+    target.scrollbar_state.assert_not_called()
+
+
+@pytest.mark.parametrize("kind", ["explorer", "edge"])
+def test_restoration_record_keeps_independent_native_metadata_explorer_only(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, kind: str
+) -> None:
+    """Native observations extend the diagnostic file, not the product result."""
+    target = Mock()
+    position = ScrollPosition(-1.0, 50.0, 12.0)
+    target.position.return_value = position
+    initial = {"horizontal": -1.0, "vertical": 50.0, "view_size": 12.0}
+    selected: dict[str, object] = {
+        "initial_position": initial,
+        "initial_native": [{"pos": 7106}],
+    }
+    evidence = Mock(target=target, geometry={}) if kind == "explorer" else None
+    read = Mock(return_value=[{"pos": 7106, "page": 1817}])
+    monkeypatch.setattr(native, "_restoration_native", read)
+    result = ScrollResult(QImage(), "", "restored", 17)
+    native._record_terminal_position(target, result, selected, tmp_path, evidence)
+    state = json.loads((tmp_path / "restoration.json").read_text())
+    assert state["initial"] == state["final"] == initial
+    if evidence is not None:
+        assert state["initial_native"] == [{"pos": 7106}]
+        assert state["final_native"] == [{"pos": 7106, "page": 1817}]
+        read.assert_called_once_with(target, evidence.geometry)
+    else:
+        assert set(state) == {"initial", "final"}
+        read.assert_not_called()
+    target.move.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", ["target", "position", "input"])
+def test_restoration_record_rejects_races_after_native_observation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failure: str
+) -> None:
+    """No persisted restoration claim survives a changed final read or guard."""
+    target = Mock()
+    position = ScrollPosition(-1.0, 50.0, 12.0)
+    target.position.return_value = position
+    selected: dict[str, object] = {"initial_position": {}, "initial_native": []}
+    evidence = Mock(target=target, geometry={})
+    if failure == "target":
+        evidence.target = Mock()
+    elif failure == "position":
+        target.position.side_effect = [position, ScrollPosition(-1.0, 51.0, 12.0)]
+    else:
+        target.check.side_effect = [None, None, CaptureError("Input changed")]
+    monkeypatch.setattr(native, "_restoration_native", Mock(return_value=[]))
+    with pytest.raises(CaptureError):
+        native._record_terminal_position(
+            target,
+            ScrollResult(QImage(), "", "restored", 17),
+            selected,
+            tmp_path,
+            evidence,
+        )
+    assert not (tmp_path / "restoration.json").exists()
+    target.move.assert_not_called()

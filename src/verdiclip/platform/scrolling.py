@@ -27,6 +27,7 @@ from verdiclip.capture.scrolling import (
     BASE_REGISTRATION_DPI,
     END_PERCENT,
     MAX_REGISTRATION_DPI,
+    ScrollBarState,
     ScrollPosition,
 )
 from verdiclip.exceptions import CaptureError
@@ -62,6 +63,18 @@ class _Guid(c.Structure):
 
 class _LastInput(c.Structure):
     _fields_ = [("size", w.UINT), ("tick", w.DWORD)]
+
+
+class _ScrollInfo(c.Structure):
+    _fields_ = [
+        ("size", w.UINT),
+        ("mask", w.UINT),
+        ("minimum", c.c_int),
+        ("maximum", c.c_int),
+        ("page", w.UINT),
+        ("position", c.c_int),
+        ("track", c.c_int),
+    ]
 
 
 class _MonitorInfo(c.Structure):
@@ -201,6 +214,7 @@ class _ScrollHeader:
     def __init__(
         self, header: _Interface, scrollbar: _Interface | None, area: Rect
     ) -> None:
+        self.scrollbar: _Interface | None = None
         self.bounds = header.bounds()
         self._parts = [(header, _HEADER_CONTROL, self.bounds)]
         if (
@@ -221,6 +235,7 @@ class _ScrollHeader:
                     "The list header does not account for the full width"
                 )
             self._parts.append((scrollbar, _SCROLLBAR_CONTROL, expected))
+            self.scrollbar = scrollbar
 
     @classmethod
     def discover(
@@ -405,6 +420,8 @@ class UiaScrollTarget:
             "GetTopWindow": ((w.HWND,), w.HWND),
             "GetWindow": ((w.HWND, w.UINT), w.HWND),
             "IsWindow": ((w.HWND,), w.BOOL),
+            "GetParent": ((w.HWND,), w.HWND),
+            "GetScrollInfo": ((w.HWND, c.c_int, c.POINTER(_ScrollInfo)), w.BOOL),
         }
         for name, (arguments, result) in signatures.items():
             function = getattr(self._user, name)
@@ -561,6 +578,7 @@ class UiaScrollTarget:
             or not self._area.contains(point)
         ):
             raise CaptureError("UI Automation did not identify a visible scroll panel")
+        self._scrollbar_identity: ScrollBarState | None = None
         self._display = self._observe_display()
         logger.info(
             "Scrolling display: observed=%s registration_dpi=%s",
@@ -742,6 +760,73 @@ class UiaScrollTarget:
                         raise CaptureError("Another window covers the scroll panel")
             window = self._user.GetWindow(window, 2)  # GW_HWNDNEXT, top to bottom
         raise CaptureError("Could not confirm the scroll panel's window order")
+
+    def _rail_identity(self, element: _Interface) -> None:
+        """Reidentify the retained rail, without discovering a new target."""
+        with ExitStack() as owners:
+            point = element.bounds().center
+            current = self._automation.pointer_result(
+                7, owners, (w.POINT, w.POINT(round(point.x), round(point.y)))
+            )
+            for _ in range(_MAX_ANCESTORS):
+                if current.control_type() == _SCROLLBAR_CONTROL:
+                    if not self._automation.same_element(current, element):
+                        raise CaptureError("The native scrollbar identity changed")
+                    return
+                parent = self._walker.parent(current, owners)
+                if parent is None:
+                    break
+                current = parent
+        raise CaptureError("The retained native scrollbar cannot be verified")
+
+    def scrollbar_state(self) -> ScrollBarState | None:
+        """Read optional exact native units only for the already proven Header rail."""
+        if self._header is None or self._header.scrollbar is None:
+            return None
+        element = self._header.scrollbar
+        handle = element.native_handle()
+        previous = getattr(self, "_scrollbar_identity", None)
+        if (handle is None or handle <= 0) and previous is None:
+            return None
+        self.check()
+        if handle is None or handle <= 0 or not self._user.IsWindow(handle):
+            raise CaptureError("The native scrollbar is no longer available")
+        self._rail_identity(element)
+        parent = int(self._user.GetParent(handle) or 0)
+        root = int(self._user.GetAncestor(handle, 2) or 0)
+        pid, root_pid = w.DWORD(), w.DWORD()
+        self._user.GetWindowThreadProcessId(handle, c.byref(pid))
+        self._user.GetWindowThreadProcessId(self._window, c.byref(root_pid))
+        if (
+            not parent
+            or root != self._window
+            or not pid.value
+            or pid.value != root_pid.value
+        ):
+            raise CaptureError("The native scrollbar owner changed")
+        info = _ScrollInfo()
+        info.size, info.mask = c.sizeof(info), 7  # SIF_RANGE | SIF_PAGE | SIF_POS
+        if not self._user.GetScrollInfo(handle, 2, c.byref(info)):  # SB_CTL
+            raise CaptureError("Could not read the native scrollbar")
+        state = ScrollBarState(
+            handle,
+            parent,
+            root,
+            pid.value,
+            info.minimum,
+            info.maximum,
+            info.page,
+            info.position,
+        )
+        if (
+            previous is not None and not state.same_range(previous)
+        ) or not state.matches(self.position()):
+            raise CaptureError("The native scrollbar mapping or identity changed")
+        self.check()
+        if element.native_handle() != handle:
+            raise CaptureError("The native scrollbar handle changed during observation")
+        self._scrollbar_identity = state
+        return state
 
     def position(self) -> ScrollPosition:
         """Read percentages without asking the provider to change anything."""

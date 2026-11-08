@@ -205,6 +205,10 @@ def _target_evidence(
         (output / "header-geometry.json").write_text(
             json.dumps(geometry, indent=2), encoding="utf-8"
         )
+        selected["initial_native"] = _restoration_native(target, geometry)
+        if asdict(target.position()) != selected["initial_position"]:
+            raise CaptureError("The initial restoration position changed")
+        target.check()
         return ListItemWitness(target, geometry)
     return None
 
@@ -245,6 +249,54 @@ def _frame_observation(
     return observation
 
 
+def _restoration_native(
+    target: UiaScrollTarget, geometry: dict[str, object]
+) -> list[dict[str, object]]:
+    """Independently read the retained probe HWNDs, without product restore proof."""
+    position = target.position()
+    rows = _frame_scroll_info(target, position, geometry)
+    getter = target._user.GetParent
+    getter.argtypes, getter.restype = (w.HWND,), w.HWND
+    for row in rows:
+        handle = row["native_handle"]
+        pid = w.DWORD()
+        target._user.GetWindowThreadProcessId(handle, c.byref(pid))
+        row.update(
+            parent=int(getter(handle) or 0),
+            root=int(target._user.GetAncestor(handle, 2) or 0),
+            pid=int(pid.value),
+        )
+    if (
+        position != target.position()
+        or rows != _native_repeat(target, geometry, rows)
+        or position != target.position()
+    ):
+        raise CaptureError("The native restoration observation changed")
+    target.check()
+    return rows
+
+
+def _native_repeat(
+    target: UiaScrollTarget,
+    geometry: dict[str, object],
+    rows: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """Recheck scalar identity and native values around the independent read."""
+    repeated = scroll_info(target, geometry)
+    for row, original in zip(repeated, rows, strict=True):
+        handle = row["native_handle"]
+        pid = w.DWORD()
+        target._user.GetWindowThreadProcessId(handle, c.byref(pid))
+        row.update(
+            parent=int(target._user.GetParent(handle) or 0),
+            root=int(target._user.GetAncestor(handle, 2) or 0),
+            pid=int(pid.value),
+        )
+        if row != original:
+            raise CaptureError("The native restoration observation changed")
+    return repeated
+
+
 def _record_failure_position(target: ScrollTarget, selected: dict[str, object]) -> None:
     """Keep a guarded final sample, never a settling or restoration assertion."""
     try:
@@ -262,6 +314,7 @@ def _record_terminal_position(
     result: ScrollResult,
     selected: dict[str, object],
     output: Path,
+    evidence: ListItemWitness | None = None,
 ) -> None:
     """Observe terminal metadata without changing the transaction's outcome."""
     if result.image is None:
@@ -270,8 +323,19 @@ def _record_terminal_position(
         target.check()
         final = asdict(target.position())
         target.check()
+        state = {"initial": selected["initial_position"], "final": final}
+        if evidence is not None:
+            if evidence.target is not target:
+                raise CaptureError("Native restoration target was not retained")
+            state.update(
+                initial_native=selected["initial_native"],
+                final_native=_restoration_native(evidence.target, evidence.geometry),
+            )
+            if asdict(target.position()) != final:
+                raise CaptureError("The final restoration position changed")
+            target.check()
         (output / "restoration.json").write_text(
-            json.dumps({"initial": selected["initial_position"], "final": final}),
+            json.dumps(state),
             encoding="utf-8",
         )
 
@@ -315,7 +379,9 @@ def _trace_helper() -> None:
     def record_result(operation: ScrollTransaction) -> ScrollResult:
         result = run(operation)
         if complete_sequence:
-            _record_terminal_position(operation._target, result, selected, output)
+            _record_terminal_position(
+                operation._target, result, selected, output, evidence
+            )
         return result
 
     def record_frame(operation: ScrollTransaction, position: ScrollPosition) -> QImage:
