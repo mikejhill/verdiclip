@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.0](https://github.com/mikejhill/verdiclip/compare/v0.13.3...v0.14.0) (2026-11-08)
+
+
+### Features
+
+* integrate bounded scrolling capture ([#127](https://github.com/mikejhill/verdiclip/issues/127)) ([452987c](https://github.com/mikejhill/verdiclip/commit/452987ca053cd5684031654a0f6dd9adf9d77fb3))
+
 ## [0.13.3](https://github.com/mikejhill/verdiclip/compare/v0.13.2...v0.13.3) (2026-11-07)
 
 
