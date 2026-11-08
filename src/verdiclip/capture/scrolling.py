@@ -57,6 +57,10 @@ class ScrollTarget(Protocol):
     def registration_dpi(self) -> int | None:
         """Return verified same-monitor window DPI, or conservative unknown."""
 
+    @property
+    def header(self) -> Rect | None:
+        """Return a verified fixed Header rectangle within the captured area."""
+
     def check(self) -> None:
         """Reject input, focus, geometry, target, or visibility changes."""
 
@@ -311,6 +315,62 @@ class VerticalStitch:
         return result
 
 
+class _HeaderFrames:
+    """Separate verified Header pixels from the moving body without losing width."""
+
+    def __init__(self, first: QImage, area: Rect, header: Rect | None) -> None:
+        VerticalStitch._validate(first)
+        self._first = first
+        self.height, self._width = 0, 0
+        if header is not None:
+            if (
+                header.left != area.left
+                or header.top != area.top
+                or header.width <= 0
+                or header.right > area.right
+                or header.height <= 0
+                or header.bottom >= area.bottom
+                or first.width() != round(area.width)
+                or first.height() != round(area.height)
+                or header.width != round(header.width)
+                or header.height != round(header.height)
+            ):
+                raise CaptureError("The fixed header geometry is inconsistent")
+            self.height, self._width = round(header.height), round(header.width)
+        self.body_height = first.height() - self.height
+        self._header = (
+            first.copy(0, 0, self._width, self.height) if self.height else QImage()
+        )
+
+    def body(self, frame: QImage) -> QImage:
+        """Compare actual Header pixels exactly; the adjacent scrollbar may move."""
+        if frame.size() != self._first.size():
+            raise CaptureError("The scroll panel changed size")
+        if self.height and frame.copy(0, 0, self._width, self.height) != self._header:
+            raise CaptureError("The list header changed during scrolling capture")
+        return (
+            frame.copy(0, self.height, frame.width(), self.body_height)
+            if self.height
+            else frame
+        )
+
+    def finish(self, body: QImage) -> QImage:
+        """Keep the first full-width prefix once, including its scrollbar corner."""
+        if not self.height:
+            return body
+        height = body.height() + self.height
+        if body.width() * height > MAX_PIXELS:
+            raise CaptureError("The scrolling image exceeds the size limit")
+        image = QImage(body.width(), height, QImage.Format.Format_RGB32)
+        if image.isNull():
+            raise CaptureError("Not enough memory for the scrolling image")
+        painter = QPainter(image)
+        painter.drawImage(0, 0, self._first.copy(0, 0, body.width(), self.height))
+        painter.drawImage(0, self.height, body)
+        painter.end()
+        return image
+
+
 class ScrollTransaction:
     """Own one sequence and restore only while the original user state remains.
 
@@ -409,9 +469,9 @@ class ScrollTransaction:
 
     def _sequence(self, initial: ScrollPosition) -> QImage:
         position = self._move(0.0)
-        stitch = VerticalStitch(
-            self._frame(position), dpi=self._target.registration_dpi
-        )
+        first = self._frame(position)
+        frames = _HeaderFrames(first, self._target.area, self._target.header)
+        stitch = VerticalStitch(frames.body(first), dpi=self._target.registration_dpi)
         while position.vertical < END_PERCENT:
             if self._frames >= MAX_FRAMES:
                 raise CaptureError("Scrolling capture reached its page limit")
@@ -419,7 +479,7 @@ class ScrollTransaction:
             step = 50.0 * position.view_size / (100.0 - position.view_size)
             following = self._move(min(100.0, position.vertical + step))
             expected = (
-                self._target.area.height
+                frames.body_height
                 * (100.0 - position.view_size)
                 / position.view_size
                 * (following.vertical - position.vertical)
@@ -428,17 +488,17 @@ class ScrollTransaction:
             logger.info(
                 "Scrolling step: viewport_height=%s view_size=%.6f "
                 "from_vertical=%.6f to_vertical=%.6f expected_advance=%.3f",
-                self._target.area.height,
+                frames.body_height,
                 position.view_size,
                 position.vertical,
                 following.vertical,
                 expected,
             )
-            stitch.append(self._frame(following), expected)
+            stitch.append(frames.body(self._frame(following)), expected)
             position = following
         self._check()
-        image = stitch.finish()
-        expected_height = self._target.area.height * 100.0 / initial.view_size
+        image = frames.finish(stitch.finish())
+        expected_height = frames.height + frames.body_height * 100.0 / initial.view_size
         if abs(image.height() - expected_height) > max(
             2.0, expected_height * _ROUNDING_FRACTION
         ):
@@ -447,7 +507,7 @@ class ScrollTransaction:
                 "viewport_height=%s view_size=%.6f",
                 image.height(),
                 expected_height,
-                self._target.area.height,
+                frames.body_height,
                 initial.view_size,
             )
             raise CaptureError("The completed pixels disagree with the panel's extent")

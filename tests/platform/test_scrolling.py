@@ -28,6 +28,7 @@ from verdiclip.platform.scrolling import (
     UiaScrollTarget,
     _Interface,
     _MonitorInfo,
+    _ScrollHeader,
 )
 from verdiclip.platform.windows import WindowInfo
 
@@ -49,6 +50,7 @@ def target() -> UiaScrollTarget:
     result._provider_bounds = result._area
     result._display_supported = False
     result._display = None
+    result._header = None
     result._viewport = Mock(return_value=result._area)
     result._input_tick = 12
     result._element, result._scroll = Mock(), Mock()
@@ -69,6 +71,154 @@ def target() -> UiaScrollTarget:
         QImage(500, 500, QImage.Format.Format_RGB32), Rect(0, 0, 500, 500)
     )
     return result
+
+
+def header_element(kind: int, bounds: Rect) -> Mock:
+    """One visible retained standard control without application-specific data."""
+    return Mock(
+        spec=_Interface,
+        control_type=Mock(return_value=kind),
+        bounds=Mock(return_value=bounds),
+        offscreen=Mock(return_value=False),
+    )
+
+
+@pytest.mark.parametrize("kind", [50030, 50033, 50028])
+def test_header_discovery_leaves_other_root_roles_unchanged(kind: int) -> None:
+    """A proven List layout must not add broad tree scanning to other controls."""
+    root, walker = header_element(kind, Rect(0, 0, 824, 532)), Mock()
+    with ExitStack() as owners:
+        assert _ScrollHeader.discover(root, walker, owners, root.bounds()) is None
+    walker.relative.assert_not_called()
+
+
+@pytest.mark.parametrize("scrollbar", [False, True])
+def test_header_discovery_uses_exact_standard_roles(*, scrollbar: bool) -> None:
+    """The observed25px Header is separate from the optional17px native rail."""
+    area = Rect(178, 146, 824, 532)
+    root = header_element(50008, area)
+    header = header_element(50034, Rect(178, 146, 807 if scrollbar else 824, 25))
+    bar = header_element(50014, Rect(985, 146, 17, 532))
+    children = [bar, header, None] if scrollbar else [header, None]
+    walker = Mock(relative=Mock(side_effect=children))
+    with ExitStack() as owners:
+        layout = _ScrollHeader.discover(root, walker, owners, area)
+    assert layout is not None
+    assert layout.bounds == header.bounds()
+    calls = walker.relative.call_args_list
+    assert calls[0].args[0] is root
+    assert calls[0].args[2] == 4
+    assert all(call.args[2] == 6 for call in calls[1:])
+
+
+@pytest.mark.parametrize("change", ["hidden", "heading", "nested"])
+def test_header_discovery_never_infers_a_header(change: str) -> None:
+    """Hidden controls, text headings and grandchildren are not fixed-band proof."""
+    area = Rect(178, 146, 824, 532)
+    root = header_element(50008, area)
+    kinds = {"hidden": 50034, "heading": 50020, "nested": 50033}
+    child = header_element(kinds[change], Rect(178, 146, 824, 25))
+    child.offscreen.return_value = change == "hidden"
+    walker = Mock(relative=Mock(side_effect=[child, None]))
+    with ExitStack() as owners:
+        assert _ScrollHeader.discover(root, walker, owners, area) is None
+    assert walker.relative.call_count == 2
+
+
+def test_header_discovery_rejects_ambiguity_and_truncation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bounded discovery cannot assume an unseen second Header does not exist."""
+    area = Rect(178, 146, 824, 532)
+    root = header_element(50008, area)
+    header = header_element(50034, Rect(178, 146, 824, 25))
+    walker = Mock(relative=Mock(side_effect=[header, header, None]))
+    with ExitStack() as owners, pytest.raises(CaptureError, match="ambiguous"):
+        _ScrollHeader.discover(root, walker, owners, area)
+    monkeypatch.setattr(scrolling, "_MAX_HEADER_CHILDREN", 1)
+    walker.relative.side_effect = None
+    walker.relative.return_value = header
+    with ExitStack() as owners, pytest.raises(CaptureError, match="limit"):
+        _ScrollHeader.discover(root, walker, owners, area)
+
+
+def test_header_absence_requires_complete_bounded_discovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unseen Header after the traversal limit cannot become proven absence."""
+    area = Rect(178, 146, 824, 532)
+    root = header_element(50008, area)
+    item = header_element(50007, Rect(178, 177, 600, 24))
+    walker = Mock(relative=Mock(return_value=item))
+    monkeypatch.setattr(scrolling, "_MAX_HEADER_CHILDREN", 2)
+    with ExitStack() as owners, pytest.raises(CaptureError, match="limit"):
+        _ScrollHeader.discover(root, walker, owners, area)
+    assert walker.relative.call_count == 3
+
+
+@pytest.mark.parametrize(
+    "bounds",
+    [
+        Rect(179, 146, 806, 25),
+        Rect(178, 147, 807, 25),
+        Rect(178, 146, 825, 25),
+        Rect(178, 146, 807, 0),
+        Rect(178, 146, 0, 25),
+        Rect(178, 146, 807, 500),
+    ],
+)
+def test_header_geometry_rejects_unproved_top_band(bounds: Rect) -> None:
+    """Only exact top-aligned geometry leaving a viable body is supported."""
+    with pytest.raises(CaptureError, match="geometry"):
+        _ScrollHeader(header_element(50034, bounds), None, Rect(178, 146, 824, 532))
+
+
+@pytest.mark.parametrize("gap", [0, 1, 2])
+def test_header_requires_exact_scrollbar_for_uncovered_width(gap: int) -> None:
+    """A narrower Header never licenses discarding arbitrary right-side pixels."""
+    header = header_element(50034, Rect(178, 146, 807, 25))
+    bar = (
+        None if gap == 0 else header_element(50014, Rect(985 + gap, 146, 17 - gap, 532))
+    )
+    with pytest.raises(CaptureError, match="full width"):
+        _ScrollHeader(header, bar, Rect(178, 146, 824, 532))
+
+
+@pytest.mark.parametrize("part", ["header", "scrollbar"])
+@pytest.mark.parametrize(
+    "change", ["none", "role", "bounds", "hidden", "parent", "identity"]
+)
+def test_retained_header_guards_role_geometry_visibility_and_parent(
+    part: str, change: str
+) -> None:
+    """Each subsequent guard checks retained controls without rewalking list rows."""
+    native = target()
+    native._area = Rect(178, 146, 824, 532)
+    header = header_element(50034, Rect(178, 146, 807, 25))
+    bar = header_element(50014, Rect(985, 146, 17, 532))
+    native._header = _ScrollHeader(header, bar, native.area)
+    modified = header if part == "header" else bar
+    walker = Mock()
+    walker.parent.return_value = native._element
+    automation = Mock(same_element=Mock(return_value=change != "identity"))
+    if change == "role":
+        modified.control_type.return_value = 50033
+    elif change == "bounds":
+        modified.bounds.return_value = Rect(178, 146, 806, 25)
+    elif change == "hidden":
+        modified.offscreen.return_value = True
+    elif change == "parent":
+        walker.parent.side_effect = lambda element, _: (
+            None if element is modified else native._element
+        )
+    if change == "none":
+        native._header.check(native._element, automation, walker)
+        assert native.header == Rect(178, 146, 807, 25)
+        assert walker.parent.call_count == 2
+    else:
+        with pytest.raises(CaptureError, match="header or scrollbar changed"):
+            native._header.check(native._element, automation, walker)
+    walker.relative.assert_not_called()
 
 
 def display_target(dpi: int = 192) -> UiaScrollTarget:

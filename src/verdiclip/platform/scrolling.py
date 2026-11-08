@@ -41,6 +41,10 @@ _DISCOVERY_OBSERVATIONS = 3
 _MIN_SIZE = 64
 _WAIT_TIMEOUT = 258
 _MAX_WINDOWS = 512
+_MAX_HEADER_CHILDREN = 256
+_LIST_CONTROL = 50008
+_SCROLLBAR_CONTROL = 50014
+_HEADER_CONTROL = 50034
 _PER_MONITOR_AWARE = 2
 
 
@@ -150,14 +154,26 @@ class _Interface:
 
     def parent(self, child: _Interface, owners: ExitStack) -> _Interface | None:
         """Return the raw parent; a null parent means the root was reached."""
+        return self.relative(child, owners, 3)
+
+    def relative(
+        self, child: _Interface, owners: ExitStack, slot: int
+    ) -> _Interface | None:
+        """Read nullable parent/first-child/next-sibling results (slots 3/4/6)."""
         result = c.c_void_p()
         self.call(
-            3,
+            slot,
             (c.c_void_p, c.POINTER(c.c_void_p)),
             child._pointer,
             c.byref(result),
         )
         return None if result.value is None else _Interface(result, owners)
+
+    def offscreen(self) -> bool:
+        """Read the provider's current visibility without reading any content."""
+        result = w.BOOL()
+        self.call(38, (c.POINTER(w.BOOL),), c.byref(result))
+        return bool(result.value)
 
     def number(self, slot: int) -> float:
         result = c.c_double()
@@ -172,6 +188,86 @@ class _Interface:
         return Rect.from_points(
             Point(native.left, native.top), Point(native.right, native.bottom)
         )
+
+
+class _ScrollHeader:
+    """Retain the proven standard List Header and optional adjacent scrollbar.
+
+    Only direct standard roles establish this layout; no application profile,
+    pixel inference, or discarded width. Public Header bounds identify the fixed
+    prefix, while a separate ScrollBar must account for any remaining width.
+    """
+
+    def __init__(
+        self, header: _Interface, scrollbar: _Interface | None, area: Rect
+    ) -> None:
+        self.bounds = header.bounds()
+        self._parts = [(header, _HEADER_CONTROL, self.bounds)]
+        if (
+            self.bounds.left != area.left
+            or self.bounds.top != area.top
+            or self.bounds.width <= 0
+            or self.bounds.right > area.right
+            or self.bounds.height <= 0
+            or area.bottom - self.bounds.bottom < _MIN_SIZE
+        ):
+            raise CaptureError("The list header has unsupported geometry")
+        if self.bounds.right != area.right:
+            expected = Rect(
+                self.bounds.right, area.top, area.right - self.bounds.right, area.height
+            )
+            if scrollbar is None or scrollbar.bounds() != expected:
+                raise CaptureError(
+                    "The list header does not account for the full width"
+                )
+            self._parts.append((scrollbar, _SCROLLBAR_CONTROL, expected))
+
+    @classmethod
+    def discover(
+        cls, element: _Interface, walker: _Interface, owners: ExitStack, area: Rect
+    ) -> _ScrollHeader | None:
+        """Inspect only a bounded shallow List view; other targets are unchanged."""
+        if element.control_type() != _LIST_CONTROL:
+            return None
+        parts: dict[int, _Interface] = {}
+        ambiguous = False
+        child = walker.relative(element, owners, 4)
+        for _ in range(_MAX_HEADER_CHILDREN):
+            if child is None:
+                break
+            kind = child.control_type()
+            if (
+                kind == _HEADER_CONTROL
+                or (kind == _SCROLLBAR_CONTROL and child.bounds().height == area.height)
+            ) and not child.offscreen():
+                if kind in parts:
+                    ambiguous = True
+                parts[kind] = child
+            child = walker.relative(child, owners, 6)
+        header = parts.get(_HEADER_CONTROL)
+        if child is not None:
+            raise CaptureError("The list header discovery exceeded its limit")
+        if header is None:
+            return None
+        if ambiguous:
+            raise CaptureError("The list has ambiguous header geometry")
+        return cls(header, parts.get(_SCROLLBAR_CONTROL), area)
+
+    def check(
+        self, root: _Interface, automation: _Interface, walker: _Interface
+    ) -> None:
+        """Recheck retained role geometry and parent identity, never rescan rows."""
+        with ExitStack() as owners:
+            for element, kind, bounds in self._parts:
+                parent = walker.parent(element, owners)
+                if (
+                    parent is None
+                    or not automation.same_element(parent, root)
+                    or element.control_type() != kind
+                    or element.bounds() != bounds
+                    or element.offscreen()
+                ):
+                    raise CaptureError("The list header or scrollbar changed")
 
 
 class ScrollSelectionState:
@@ -271,8 +367,8 @@ class UiaScrollTarget:
     Any real input stops the transaction, including mouse movement. This is
     conservative by design. We observe the current desktop and never seize it.
     The provider rectangle is intersected only with its own native client
-    rectangle when available. Other fixed chrome may fail the stitch rather
-    than be guessed or cropped.
+    rectangle when available. A proven standard List Header is retained once;
+    other fixed chrome may fail the stitch rather than be guessed or cropped.
     """
 
     def __init__(
@@ -449,6 +545,10 @@ class UiaScrollTarget:
         self._provider_bounds = self._element.bounds()
         self._native_handle = self._element.native_handle()
         self._area = self._viewport()
+        self._automation, self._walker = automation, walker
+        self._header = _ScrollHeader.discover(
+            self._element, walker, self._owners, self._area
+        )
         logger.info(
             "Scrolling viewport: provider=%s captured=%s native_handle=%s",
             self._provider_bounds,
@@ -551,6 +651,11 @@ class UiaScrollTarget:
         return self._area
 
     @property
+    def header(self) -> Rect | None:
+        """Return the verified standard Header rectangle, never an inferred crop."""
+        return None if self._header is None else self._header.bounds
+
+    @property
     def registration_dpi(self) -> int | None:
         """Use only per-monitor-aware, same-monitor DPI within the bounded range."""
         display = self._display
@@ -586,6 +691,8 @@ class UiaScrollTarget:
             raise CaptureError("The scroll panel changed position or size")
         if self._observe_display() != self._display:
             raise CaptureError("The scroll panel's monitor or DPI changed")
+        if self._header is not None:
+            self._header.check(self._element, self._automation, self._walker)
         offscreen = w.BOOL()
         self._element.call(38, (c.POINTER(w.BOOL),), c.byref(offscreen))
         if offscreen.value:

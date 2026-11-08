@@ -15,6 +15,7 @@ from verdiclip.capture.scrolling import (
     ScrollPosition,
     ScrollTransaction,
     VerticalStitch,
+    _HeaderFrames,
 )
 from verdiclip.exceptions import CaptureError
 from verdiclip.geometry import Rect
@@ -33,6 +34,7 @@ class Target:
     """Finite document with a viewport and user-observable scroll state."""
 
     area = Rect(10, 20, 80, 120)
+    header: Rect | None = None
     registration_dpi: int | None = None
 
     def __init__(self, *, total: int = 600, offset: int = 173) -> None:
@@ -83,6 +85,104 @@ class Target:
         if self.late_movement:
             self.offset = min(480, self.offset + 1)
         return result
+
+
+class HeaderTarget(Target):
+    """A verified25px Header with separately identified17px scrollbar corner."""
+
+    area = Rect(10, 20, 80, 145)
+    header: Rect | None = Rect(10, 20, 63, 25)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.change_header = False
+
+    @override
+    def frame(self) -> QImage:
+        """Expose full-width body pixels and a moving scrollbar beside the Header."""
+        body = super().frame()
+        image = QImage(80, 145, QImage.Format.Format_RGB32)
+        image.fill(QColor(0, 80, 160))
+        painter = QPainter(image)
+        painter.fillRect(63, 0, 17, 25, QColor(self.offset % 251, 80, 160))
+        painter.drawImage(0, 25, body)
+        painter.end()
+        if self.change_header and self.offset:
+            image.setPixelColor(5, 5, QColor("red"))
+        return image
+
+
+def test_verified_header_is_retained_once_with_every_full_width_body_pixel() -> None:
+    """Verified geometry changes displacement/body extent, never source width."""
+    target = HeaderTarget()
+    initial = target.position()
+    target.offset = 0
+    first = target.frame()
+    target.offset = 173
+    result = transaction(target).run()
+    expected = QImage(80, 625, QImage.Format.Format_RGB32)
+    painter = QPainter(expected)
+    painter.drawImage(0, 0, first.copy(0, 0, 80, 25))
+    painter.drawImage(0, 25, target.document)
+    painter.end()
+    assert result.image == expected
+    assert result.frames == 9
+    assert result.restoration == "restored"
+    assert target.position() == initial
+    assert target.moves[-2:] == [100.0, initial.vertical]
+
+
+def test_any_changed_header_pixel_rejects_and_restores() -> None:
+    """Even a single changed actual Header pixel cannot be silently frozen."""
+    target = HeaderTarget()
+    target.change_header = True
+    initial = target.position()
+    result = transaction(target).run()
+    assert result.image is None
+    assert "header changed" in result.message
+    assert result.restoration == "restored"
+    assert target.position() == initial
+
+
+def test_fixed_pixels_without_header_metadata_are_not_cropped() -> None:
+    """The old conservative path still rejects unproved fixed chrome."""
+    target = HeaderTarget()
+    target.header = None
+    result = transaction(target).run()
+    assert result.image is None
+    assert result.restoration == "restored"
+
+
+def test_header_counts_against_existing_output_pixel_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A body fitting the budget cannot hide a prefix that exceeds the limit."""
+    monkeypatch.setattr("verdiclip.capture.scrolling.MAX_PIXELS", 80 * 620)
+    target = HeaderTarget()
+    result = transaction(target).run()
+    assert result.image is None
+    assert "size limit" in result.message
+    assert result.restoration == "restored"
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        Rect(11, 20, 63, 25),
+        Rect(10, 21, 63, 25),
+        Rect(10, 20, 81, 25),
+        Rect(10, 20, 0, 25),
+        Rect(10, 20, 63, 0),
+        Rect(10, 20, 63, 145),
+        Rect(10, 20, 63.5, 25),
+        Rect(10, 20, 63, 25.5),
+    ],
+)
+def test_header_frame_boundary_rejects_inconsistent_geometry(header: Rect) -> None:
+    """Only exact integer pixel rectangles can establish the retained prefix."""
+    first = QImage(80, 145, QImage.Format.Format_RGB32)
+    with pytest.raises(CaptureError, match="geometry is inconsistent"):
+        _HeaderFrames(first, Rect(10, 20, 80, 145), header)
 
 
 def transaction(target: Target) -> ScrollTransaction:
