@@ -213,6 +213,32 @@ class VerticalStitch:
                 match = (advance, *longest)
         return match
 
+    def _edge_onset(
+        self,
+        old: list[bytes],
+        new: list[bytes],
+        *,
+        right: bool,
+        allow_unchanged: bool = False,
+    ) -> int:
+        """Skip one proven unchanged exterior column, never search inward."""
+        corners = self._limit(_EDGE_CORNER_ROWS)
+        if len(old) <= 2 * corners or len(old[0]) // 4 <= 1:
+            return 0
+        outer = len(old[0]) - 4 if right else 0
+        adjacent = outer - 4 if right else 4
+        color = old[0][outer : outer + 4]
+        before, after = old[corners:-corners], new[corners:-corners]
+        first = before[0][adjacent : adjacent + 4]
+        second = after[0][adjacent : adjacent + 4]
+        uniform = (
+            all(row[outer : outer + 4] == color for row in (*old, *new))
+            and color not in (first, second)
+            and all(row[adjacent : adjacent + 4] == first for row in before)
+            and all(row[adjacent : adjacent + 4] == second for row in after)
+        )
+        return int(uniform and (first != second or allow_unchanged))
+
     def _edge_width(self, old: list[bytes], new: list[bytes], *, right: bool) -> int:
         """Measure a changed uniform outer strip, rejecting widths over the cap.
 
@@ -225,8 +251,12 @@ class VerticalStitch:
             return 0
         before = old[corners:-corners]
         after = new[corners:-corners]
-        for width in range(min(self._limit(_MAX_EDGE_WIDTH) + 1, len(old[0]) // 4)):
-            column = len(old[0]) - 4 * (width + 1) if right else 4 * width
+        onset = self._edge_onset(old, new, right=right)
+        for width in range(
+            min(self._limit(_MAX_EDGE_WIDTH) + 1, len(old[0]) // 4 - onset)
+        ):
+            offset = onset + width
+            column = len(old[0]) - 4 * (offset + 1) if right else 4 * offset
             first = before[0][column : column + 4]
             second = after[0][column : column + 4]
             if (
@@ -237,19 +267,28 @@ class VerticalStitch:
                 return width
         return 0
 
-    def _registration(self, old: list[bytes], new: list[bytes]) -> tuple[int, int, int]:
+    def _registration(
+        self, old: list[bytes], new: list[bytes]
+    ) -> tuple[int, int, int, bool]:
         """Try all columns first; only no match permits a measured-edge retry."""
         match = self._alignment(old, new)
         if match is not None:
-            return match
+            return *match, True
         left = self._edge_width(old, new, right=False)
         right = self._edge_width(old, new, right=True)
         if left or right:
-            end = len(old[0]) - right * 4
-            match = self._alignment(
-                [row[left * 4 : end] for row in old],
-                [row[left * 4 : end] for row in new],
-            )
+            left_start = self._edge_onset(old, new, right=False) * 4
+            right_end = len(old[0]) - self._edge_onset(old, new, right=True) * 4
+
+            def retained(rows: list[bytes]) -> list[bytes]:
+                return [
+                    row[:left_start]
+                    + row[left_start + left * 4 : right_end - right * 4]
+                    + row[right_end:]
+                    for row in rows
+                ]
+
+            match = self._alignment(retained(old), retained(new))
             if match is not None:
                 logger.info(
                     "Scrolling registration edges: left_columns=%s right_columns=%s "
@@ -258,17 +297,18 @@ class VerticalStitch:
                     right,
                     self._dpi,
                 )
-                return match
+                return *match, False
         raise CaptureError("The panel's scrolling pixels cannot be joined reliably")
 
-    def _edge_colors(self, rows: list[bytes], *, right: bool) -> set[bytes]:
+    def _edge_colors(self, rows: list[bytes], *, right: bool, onset: int) -> set[bytes]:
         """Find uniform side colors, excluding a color continuing past the cap."""
         corners = self._limit(_EDGE_CORNER_ROWS)
         body = rows[corners:-corners]
         limit = self._limit(_MAX_PERIMETER_WIDTH)
         colors: set[bytes] = set()
         for width in range(limit + 1):
-            column = len(rows[0]) - 4 * (width + 1) if right else 4 * width
+            offset = onset + width
+            column = len(rows[0]) - 4 * (offset + 1) if right else 4 * offset
             color = body[0][column : column + 4]
             if any(row[column : column + 4] != color for row in body):
                 break
@@ -278,7 +318,7 @@ class VerticalStitch:
                 colors.discard(color)
         return colors
 
-    def _top_perimeter(self, rows: list[bytes]) -> set[int]:
+    def _top_perimeter(self, rows: list[bytes], onsets: tuple[int, int]) -> set[int]:
         """Identify bounded uniform top rows connected to both side perimeters."""
         corners = self._limit(_TOP_CORNER_COLUMNS)
         limit = self._limit(_MAX_TOP_PERIMETER_ROWS)
@@ -287,9 +327,9 @@ class VerticalStitch:
             or len(rows[0]) <= 8 * corners
         ):
             return set()
-        colors = self._edge_colors(rows, right=False) & self._edge_colors(
-            rows, right=True
-        )
+        colors = self._edge_colors(
+            rows, right=False, onset=onsets[0]
+        ) & self._edge_colors(rows, right=True, onset=onsets[1])
         perimeter = set()
         for y, row in enumerate(rows[: limit + 1]):
             interior = row[corners * 4 : -corners * 4]
@@ -306,14 +346,27 @@ class VerticalStitch:
         after = memoryview(b"".join(new)).cast("I")
         return sum(a != b for a, b in zip(before, after, strict=True)), len(before)
 
-    def _check_top(self, old: list[bytes], new: list[bytes], advance: int) -> None:
+    def _check_top(
+        self,
+        old: list[bytes],
+        new: list[bytes],
+        advance: int,
+        *,
+        full_width: bool,
+    ) -> None:
         """Keep the 5% guard, allowing only independently measured perimeter rows."""
         before, after = old[advance : advance + MIN_OVERLAP], new[:MIN_OVERLAP]
         mismatches, compared = self._difference(before, after)
         if mismatches <= compared * _PREFIX_MISMATCH_FRACTION:
             return
-        perimeter = self._top_perimeter(old)
-        if perimeter and perimeter == self._top_perimeter(new):
+        # A stable outline needs no exclusion for registration. Only a unique
+        # exact full-width match can prove its unchanged exterior for this check.
+        onsets = (
+            self._edge_onset(old, new, right=False, allow_unchanged=full_width),
+            self._edge_onset(old, new, right=True, allow_unchanged=full_width),
+        )
+        perimeter = self._top_perimeter(old, onsets)
+        if perimeter and perimeter == self._top_perimeter(new, onsets):
             mismatches, compared = self._difference(
                 [row for y, row in enumerate(before) if y not in perimeter],
                 [row for y, row in enumerate(after) if y not in perimeter],
@@ -335,7 +388,7 @@ class VerticalStitch:
         if image.size() != self._previous.size():
             raise CaptureError("The scroll panel changed size")
         old, new = self._rows(self._previous), self._rows(image)
-        advance, first, last = self._registration(old, new)
+        advance, first, last, full_width = self._registration(old, new)
         logger.info(
             "Scrolling alignment: measured_advance=%s expected_advance=%s "
             "matching_band=(%s,%s)",
@@ -352,7 +405,7 @@ class VerticalStitch:
             raise CaptureError("The panel's pixels disagree with its scroll position")
         # Reject broad fixed headers. This practical check cannot establish
         # pixels hidden by a tiny overlay at every position.
-        self._check_top(old, new, advance)
+        self._check_top(old, new, advance, full_width=full_width)
         if image.width() * (self._height + advance) > MAX_PIXELS:
             raise CaptureError("The scrolling image exceeds the size limit")
         # Keep earlier pixels above a verified seam and later pixels below it.

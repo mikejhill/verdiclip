@@ -45,6 +45,8 @@ _SCROLLBAR_ROLE = 50014
 _SB_CTL = 2
 _MAX_SCROLLBAR_CHILDREN = 64
 _MAX_SCROLLBAR_ANCESTORS = 8
+_SCALED_FIXTURE_DPI = 192
+_SCALED_FIXTURE_BORDER = 6
 _EXPLORER_STARTS = {
     "explorer-middle-click": 50.0,
     "explorer-middle-enter": 50.0,
@@ -122,6 +124,80 @@ def _case(kind: str, output: Path, report: dict[str, object]) -> None:
         app._case(kind, output, report)
 
 
+def _scaled_fixture_ring_restored(first: QImage, after: QImage) -> bool:
+    """Prove this 192-DPI CSS fixture's original ring and exact complement.
+
+    This is a fixture-only color oracle, independent of production registration.
+    The original 3 CSS pixel border is rectangular; focused corner antialiasing
+    may change only its original members. No rectangular inset is ignored.
+    """
+    gray = 0xFFB1B5BA
+    width, height = first.width(), first.height()
+    if min(width, height) <= 2 * (_SCALED_FIXTURE_BORDER + 1):
+        return False
+
+    def side(length: int, *, vertical: bool, reverse: bool) -> tuple[int, int]:
+        def pixel(offset: int) -> int:
+            coordinate = length - 1 - offset if reverse else offset
+            return (
+                first.pixel(width // 2, coordinate)
+                if vertical
+                else first.pixel(coordinate, height // 2)
+            )
+
+        onset = int(pixel(0) != gray)
+        outer = length - 1 if reverse else 0
+        exterior = (
+            (first.pixel(x, outer) for x in range(width))
+            if vertical
+            else (first.pixel(outer, y) for y in range(height))
+        )
+        if onset and any(color != pixel(0) for color in exterior):
+            return 0, 0
+        end = onset
+        while end <= onset + _SCALED_FIXTURE_BORDER and pixel(end) == gray:
+            end += 1
+        return onset, end
+
+    left, right = (side(width, vertical=False, reverse=r) for r in (False, True))
+    top, bottom = (side(height, vertical=True, reverse=r) for r in (False, True))
+    if any(
+        not 1 <= end - start <= _SCALED_FIXTURE_BORDER
+        for start, end in (left, right, top, bottom)
+    ):
+        return False
+    for y in range(height):
+        for x in range(width):
+            inside = (
+                left[0] <= x < width - right[0] and top[0] <= y < height - bottom[0]
+            )
+            member = inside and (
+                x < left[1]
+                or x >= width - right[1]
+                or y < top[1]
+                or y >= height - bottom[1]
+            )
+            # The inward boundary must be non-gray: reject connected protrusions,
+            # without treating isolated gray content pixels as border members.
+            inner_boundary = (
+                left[1] <= x < width - right[1]
+                and top[1] <= y < height - bottom[1]
+                and (
+                    x in (left[1], width - right[1] - 1)
+                    or y in (top[1], height - bottom[1] - 1)
+                )
+            )
+            valid = (
+                first.pixel(x, y) == gray
+                if member
+                else first.pixel(x, y) == after.pixel(x, y)
+                and not (inner_boundary and first.pixel(x, y) == gray)
+            )
+            if not valid:
+                return False
+    return True
+
+
 def _verify_restored(capture: app.AppCapture, after: QImage) -> None:
     """Separate exact scroll-state restoration from the measured panel outline."""
     if capture.result is not None and capture.result.image is not None:
@@ -141,6 +217,29 @@ def _verify_restored(capture: app.AppCapture, after: QImage) -> None:
     native._require(first.size() == after.size(), "Restored panel geometry changed")
     if first == after:
         capture.report["restored_pixels"] = "exact"
+        return
+    target_path = capture.output / "target.json"
+    target = (
+        json.loads(target_path.read_text(encoding="utf-8"))
+        if target_path.is_file()
+        else {}
+    )
+    if (
+        capture.kind.startswith("edge-panel-")
+        and target.get("window_dpi") == _SCALED_FIXTURE_DPI
+    ):
+        native._require(
+            _scaled_fixture_ring_restored(first, after),
+            "Restored content pixels differ beyond the original fixture border ring",
+        )
+        capture.report["restored_pixels"] = (
+            "exact complement; original border ring changed"
+        )
+        capture.report["restored_perimeter_changed_pixels"] = sum(
+            first.pixel(x, y) != after.pixel(x, y)
+            for y in range(first.height())
+            for x in range(first.width())
+        )
         return
     # This owned CSS fixture's measured focus outline changes within its outer
     # four pixels (including rounded corners). All interior pixels stay exact.

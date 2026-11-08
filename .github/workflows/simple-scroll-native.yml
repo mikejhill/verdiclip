@@ -162,9 +162,9 @@ jobs:
       - name: Capture actual applications in this same verified display session
         timeout-minutes: 9
         run: |
-          $cases = @('edge-prose-click', 'edge-prose-enter', 'explorer-click', 'explorer-enter',
-            'explorer-middle-click', 'explorer-middle-enter', 'explorer-bottom-click',
-            'explorer-bottom-enter', 'edge-panel-click', 'edge-panel-enter')
+          $cases = @('edge-prose-click', 'edge-prose-enter', 'edge-panel-click', 'edge-panel-enter',
+            'explorer-click', 'explorer-enter', 'explorer-middle-click', 'explorer-middle-enter',
+            'explorer-bottom-click', 'explorer-bottom-enter')
           foreach ($case in $cases) {
             uv run python -c "import json; from dataclasses import asdict; from scripts.hosted_display_scale import Display; value = Display().read(); print(json.dumps(asdict(value))); assert value.qualified"
             if ($LASTEXITCODE -ne 0) { throw 'Display is not at verified 200% before capture' }

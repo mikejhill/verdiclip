@@ -1482,3 +1482,100 @@ def _damage_normalized_position(position: dict[str, float], invalid: str) -> Non
         )
     else:
         position["view_size" if invalid == "view" else "horizontal"] += 1
+
+
+def _scaled_restoration_pair() -> tuple[QImage, QImage]:
+    first = QImage(90, 60, QImage.Format.Format_RGB32)
+    first.fill(0xFFFFFFFF)
+    for y in range(1, 60):
+        for x in range(89):
+            if x < 5 or x >= 83 or y < 7 or y >= 54:
+                first.setPixel(x, y, 0xFFB1B5BA)
+    after = first.copy()
+    for y in range(1, 60):
+        for x in range(89):
+            if x < 3 or x >= 85 or y < 5 or y >= 56:
+                # Include differing corner coverage, only on original members.
+                after.setPixel(x, y, 0xFF101010 if x % 2 else 0xFF505050)
+    return first, after
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "none",
+        "interior_gray",
+        "protrusion",
+        "exterior",
+        "nonmember",
+        "missing_ring",
+        "wide_ring",
+        "two_exterior",
+    ],
+)
+def test_scaled_fixture_restore_requires_original_ring_and_exact_complement(
+    invalid: str,
+) -> None:
+    """Only original connected border pixels may change, never an inset rectangle."""
+    first, after = _scaled_restoration_pair()
+    if invalid == "interior_gray":
+        first.setPixel(40, 30, 0xFFB1B5BA)
+    elif invalid == "protrusion":
+        first.setPixel(5, 20, 0xFFB1B5BA)
+        after.setPixel(5, 20, 0xFFB1B5BA)
+    elif invalid == "exterior":
+        after.setPixel(89, 20, 0xFF000000)
+    elif invalid == "nonmember":
+        after.setPixel(5, 20, 0xFF000000)
+    elif invalid == "missing_ring":
+        first.setPixel(0, 20, 0xFFFFFFFF)
+    elif invalid == "wide_ring":
+        for y in range(1, 60):
+            first.setPixel(5, y, 0xFFB1B5BA)
+            first.setPixel(6, y, 0xFFB1B5BA)
+    elif invalid == "two_exterior":
+        for y in range(60):
+            first.setPixel(88, y, 0xFFFFFFFF)
+            after.setPixel(88, y, 0xFFFFFFFF)
+    assert diagnostics._scaled_fixture_ring_restored(first, after) == (
+        invalid == "none"
+    )
+
+
+def test_scaled_fixture_unchanged_isolated_gray_content_is_not_border() -> None:
+    """An isolated unchanged content color does not join the measured ring."""
+    first, after = _scaled_restoration_pair()
+    first.setPixel(40, 30, 0xFFB1B5BA)
+    after.setPixel(40, 30, 0xFFB1B5BA)
+    assert diagnostics._scaled_fixture_ring_restored(first, after)
+
+
+@pytest.mark.parametrize("dpi", [96, 192])
+def test_scaled_ring_oracle_requires_verified_192_dpi(tmp_path: Path, dpi: int) -> None:
+    """The legacy 96-DPI oracle keeps its independently established bound."""
+    capture = _start_capture(tmp_path)
+    _start_evidence(capture)
+    capture.kind = "edge-panel-click"
+    first, after = _scaled_restoration_pair()
+    capture.result = None
+    assert first.save(str(tmp_path / "frame-0.png"))
+    (tmp_path / "target.json").write_text(
+        json.dumps({"window_dpi": dpi}), encoding="utf-8"
+    )
+    if dpi == 96:
+        with pytest.raises(RuntimeError, match="measured fixture perimeter"):
+            diagnostics._verify_restored(capture, after)
+    else:
+        diagnostics._verify_restored(capture, after)
+        assert (
+            capture.report["restored_pixels"]
+            == "exact complement; original border ring changed"
+        )
+
+
+def test_scaled_fixture_exterior_must_be_uniform() -> None:
+    """An unchanged but textured column is not proof of fixture exterior."""
+    first, after = _scaled_restoration_pair()
+    first.setPixel(89, 20, 0xFF000000)
+    after.setPixel(89, 20, 0xFF000000)
+    assert not diagnostics._scaled_fixture_ring_restored(first, after)

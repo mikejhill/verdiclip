@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import override
 
 import pytest
-from PySide6.QtGui import QColor, QImage, QPainter
+from PySide6.QtGui import QColor, QImage, QPainter, QTransform
 from scripts.simple_scroll_native import _trace_helper
 
 from verdiclip.capture.scrolling import (
@@ -1958,3 +1958,283 @@ def test_native_already_normalized_bottom_stays_on_strict_restore() -> None:
     assert target.frame() == pixels
     assert operation._terminal is None
     assert target.moves == [0.0, initial.vertical]
+
+
+def exterior_panel_frame(
+    source: QImage, offset: int, *, exterior: int = 1, focused: bool = False
+) -> QImage:
+    """Synthetic asymmetric 200% outline with a retained physical exterior pixel."""
+    result = source.copy(0, offset, source.width(), 120)
+    width = source.width()
+    painter = QPainter(result)
+    gray = QColor(177, 181, 186)
+    painter.fillRect(0, 0, 5, 120, gray)
+    painter.fillRect(width - exterior - 6, 0, 6, 120, gray)
+    painter.fillRect(0, 1, width - exterior, 6, gray)
+    if offset or focused:
+        painter.fillRect(0, 0, 3, 120, QColor("black"))
+        painter.fillRect(width - exterior - 4, 0, 4, 120, QColor("black"))
+        painter.fillRect(0, 1, width - exterior, 4, QColor("black"))
+    painter.fillRect(width - exterior, 0, exterior, 120, QColor("white"))
+    painter.end()
+    return result
+
+
+@pytest.mark.parametrize("mirror", [False, True])
+@pytest.mark.parametrize("focused_start", [False, True])
+def test_exterior_outline_complete_sequence_keeps_every_column(
+    caplog: pytest.LogCaptureFixture,
+    *,
+    mirror: bool,
+    focused_start: bool,
+) -> None:
+    """All pixels, including the exterior and short terminal join, remain intact."""
+    caplog.set_level("INFO")
+    source = document(367, width=240)
+    first = exterior_panel_frame(source, 0, focused=focused_start)
+    transform = QTransform.fromScale(-1 if mirror else 1, 1)
+    stitch = VerticalStitch(first.transformed(transform), dpi=192)
+    previous = 0
+    for offset in (60, 120, 180, 240, 247):
+        stitch.append(
+            exterior_panel_frame(source, offset).transformed(transform),
+            offset - previous,
+        )
+        previous = offset
+    expected = source.copy()
+    painter = QPainter(expected)
+    painter.drawImage(0, 0, first.copy(0, 0, 240, 93))
+    for x, width, color in (
+        (0, 5, QColor(177, 181, 186)),
+        (233, 6, QColor(177, 181, 186)),
+        (0, 3, QColor("black")),
+        (235, 4, QColor("black")),
+        (239, 1, QColor("white")),
+    ):
+        painter.fillRect(x, 93, width, 274, color)
+    painter.end()
+    assert stitch.finish() == expected.transformed(transform)
+    if focused_start:
+        assert "Scrolling registration edges" not in caplog.text
+    else:
+        assert (
+            "left_columns=4 right_columns=3"
+            if mirror
+            else "left_columns=3 right_columns=4"
+        ) in caplog.text
+    assert "rows=[1, 2, 3, 4, 5, 6]" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "two_exterior",
+        "textured_exterior",
+        "changed_exterior",
+        "textured_adjacent",
+        "unchanged_adjacent",
+        "over_cap",
+        "beyond_strip",
+        "wide_sidebar",
+        "sticky_header",
+    ],
+)
+def test_exterior_outline_never_searches_or_hides_content(invalid: str) -> None:
+    """The one-pixel paired proof cannot expand any existing chrome bound."""
+    source = document(width=240)
+    frames = [
+        exterior_panel_frame(
+            source, offset, exterior=2 if invalid == "two_exterior" else 1
+        )
+        for offset in (0, 60)
+    ]
+    for index, frame in enumerate(frames):
+        painter = QPainter(frame)
+        if invalid == "changed_exterior" and index:
+            painter.fillRect(239, 0, 1, 120, QColor("red"))
+        elif invalid == "unchanged_adjacent":
+            painter.fillRect(238, 0, 1, 120, QColor("gray"))
+        elif invalid == "over_cap":
+            painter.fillRect(234, 0, 1, 120, QColor("black" if index else "gray"))
+        elif invalid == "wide_sidebar":
+            painter.fillRect(232, 0, 1, 120, QColor(177, 181, 186))
+        elif invalid == "sticky_header":
+            painter.fillRect(10, 7, 220, 10, QColor("red"))
+        painter.end()
+    if invalid in ("textured_exterior", "textured_adjacent", "beyond_strip"):
+        x = {"textured_exterior": 239, "textured_adjacent": 238, "beyond_strip": 234}[
+            invalid
+        ]
+        for y in range(120):
+            frames[1].setPixelColor(x, y, QColor(255, y, 255))
+    with pytest.raises(CaptureError):
+        VerticalStitch(frames[0], dpi=192).append(frames[1], 60.0)
+
+
+def test_exterior_outline_keeps_global_ambiguity_fatal() -> None:
+    """A proved exterior pixel does not select among repeated interior bands."""
+    source = document(180, width=240)
+    painter = QPainter(source)
+    for y in (40, 80, 120):
+        painter.drawImage(0, y, source.copy(0, 0, 240, 40))
+    painter.end()
+    with pytest.raises(CaptureError, match="ambiguous"):
+        VerticalStitch(exterior_panel_frame(source, 0), dpi=192).append(
+            exterior_panel_frame(source, 60), 60.0
+        )
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "exterior_color",
+        "exterior_pixel",
+        "adjacent_texture",
+        "adjacent_exterior",
+        "wide_side",
+        "interior",
+        "header",
+    ],
+)
+def test_full_width_exterior_proof_is_recomputed_on_every_pair(invalid: str) -> None:
+    """A previous successful append never excuses changed structure or content."""
+    source = document(width=240)
+    stitch = VerticalStitch(exterior_panel_frame(source, 0), dpi=192)
+    stitch.append(exterior_panel_frame(source, 60), 60.0)
+    candidate = exterior_panel_frame(source, 120)
+    painter = QPainter(candidate)
+    if invalid == "exterior_color":
+        painter.fillRect(239, 0, 1, 120, QColor("red"))
+    elif invalid == "adjacent_exterior":
+        painter.fillRect(238, 0, 1, 120, QColor("white"))
+    elif invalid == "wide_side":
+        painter.fillRect(232, 0, 1, 120, QColor(177, 181, 186))
+    elif invalid == "interior":
+        painter.fillRect(20, 0, 20, 120, QColor("red"))
+    elif invalid == "header":
+        painter.fillRect(10, 7, 220, 10, QColor("red"))
+    painter.end()
+    if invalid in ("exterior_pixel", "adjacent_texture"):
+        candidate.setPixelColor(
+            239 if invalid == "exterior_pixel" else 238, 20, QColor("red")
+        )
+    with pytest.raises(CaptureError):
+        stitch.append(candidate, 60.0)
+    # A rejected pair does not change the last accepted pixels.
+    stitch.append(exterior_panel_frame(source, 120), 60.0)
+    assert stitch.finish().height() == 240
+
+
+def test_failed_append_keeps_previous_pixels_for_next_exact_registration() -> None:
+    """A rejected movement cannot change the next pair's alignment inputs."""
+    source = document(width=240)
+    stitch = VerticalStitch(exterior_panel_frame(source, 0), dpi=192)
+    with pytest.raises(CaptureError, match="disagree with its scroll position"):
+        stitch.append(exterior_panel_frame(source, 60), 70.0)
+    assert stitch.finish() == exterior_panel_frame(source, 0)
+    stitch.append(exterior_panel_frame(source, 60), 60.0)
+    stitch.append(exterior_panel_frame(source, 120), 60.0)
+    assert stitch.finish().height() == 240
+
+
+def test_exterior_outline_allows_a_new_proven_adjacent_color_change() -> None:
+    """A later outline transition must pass the same fresh paired proof."""
+    source = document(width=240)
+    stitch = VerticalStitch(exterior_panel_frame(source, 0), dpi=192)
+    stitch.append(exterior_panel_frame(source, 60), 60.0)
+    unfocused = exterior_panel_frame(source.copy(0, 120, 240, 120), 0)
+    stitch.append(unfocused, 60.0)
+    stitch.append(exterior_panel_frame(source, 180), 60.0)
+    assert stitch.finish().height() == 300
+
+
+def test_masked_only_alignment_cannot_unlock_static_opposite_exterior() -> None:
+    """A changed left side cannot authorize static right-side perimeter evidence."""
+    source = document(width=240)
+    first = exterior_panel_frame(source, 0, focused=True)
+    second = exterior_panel_frame(source, 60)
+    painter = QPainter(second)
+    painter.fillRect(0, 0, 1, 120, QColor("red"))
+    painter.end()
+    with pytest.raises(CaptureError, match="top of the scroll panel"):
+        VerticalStitch(first, dpi=192).append(second, 60.0)
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "two_exterior",
+        "textured_exterior",
+        "changed_exterior",
+        "textured_adjacent",
+        "outer_adjacent",
+        "wide_side",
+        "top_cap",
+        "unequal_rows",
+    ],
+)
+def test_already_focused_start_keeps_all_perimeter_guards(invalid: str) -> None:
+    """An exact full-width match is necessary but does not replace bounded proof."""
+    source = document(width=240)
+    frames = [
+        exterior_panel_frame(
+            source, offset, focused=True, exterior=2 if invalid == "two_exterior" else 1
+        )
+        for offset in (0, 60)
+    ]
+    for index, frame in enumerate(frames):
+        painter = QPainter(frame)
+        if invalid == "changed_exterior" and index:
+            painter.fillRect(239, 0, 1, 120, QColor("red"))
+        elif invalid == "outer_adjacent":
+            painter.fillRect(238, 0, 1, 120, QColor("white"))
+        elif invalid == "wide_side":
+            painter.fillRect(232, 0, 1, 120, QColor(177, 181, 186))
+        elif invalid == "top_cap":
+            painter.fillRect(0, 8, 239, 1, QColor(177, 181, 186))
+        elif invalid == "unequal_rows" and index:
+            painter.drawImage(5, 6, source.copy(5, 66, 228, 1))
+        painter.end()
+        if invalid in ("textured_exterior", "textured_adjacent"):
+            for y in range(120):
+                frame.setPixelColor(
+                    239 if invalid == "textured_exterior" else 238,
+                    y,
+                    QColor(255, y, 255),
+                )
+    with pytest.raises(CaptureError):
+        VerticalStitch(frames[0], dpi=192).append(frames[1], 60.0)
+
+
+@pytest.mark.parametrize("focused", [False, True])
+def test_exterior_proof_never_bypasses_missing_or_ambiguous_alignment(
+    *, focused: bool
+) -> None:
+    """Repeated and wholly unrelated content cannot unlock static perimeter rows."""
+    source = document(180, width=240)
+    painter = QPainter(source)
+    for y in (40, 80, 120):
+        painter.drawImage(0, y, source.copy(0, 0, 240, 40))
+    painter.end()
+    first = exterior_panel_frame(source, 0, focused=focused)
+    second = exterior_panel_frame(source, 60)
+    with pytest.raises(CaptureError, match="ambiguous"):
+        VerticalStitch(first, dpi=192).append(second, 60.0)
+    painter = QPainter(second)
+    painter.fillRect(5, 7, 228, 113, QColor("red"))
+    painter.end()
+    with pytest.raises(CaptureError, match="cannot be joined"):
+        VerticalStitch(first, dpi=192).append(second, 60.0)
+
+
+def test_already_focused_start_rejects_textured_sticky_header() -> None:
+    """A thin legitimate border cannot excuse fixed textured content beneath it."""
+    source = document(width=240)
+    frames = [exterior_panel_frame(source, offset, focused=True) for offset in (0, 60)]
+    for frame in frames:
+        painter = QPainter(frame)
+        for y in range(7, 17):
+            painter.fillRect(10, y, 220, 1, QColor(255, y, 255))
+        painter.end()
+    with pytest.raises(CaptureError, match="top of the scroll panel"):
+        VerticalStitch(frames[0], dpi=192).append(frames[1], 60.0)
