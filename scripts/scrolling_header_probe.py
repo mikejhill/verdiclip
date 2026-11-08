@@ -57,7 +57,9 @@ class _ScrollInfo(c.Structure):
 
 def _scroll_info(target: UiaScrollTarget, handle: int, bar: int) -> dict[str, object]:
     """Observe one native scrollbar, reporting failed reads without invented data."""
-    getter = target._user.GetScrollInfo
+    # ctypes caches function objects on each DLL instance. Keep this independent
+    # diagnostic structure signature away from the product's retained callable.
+    getter = c.WinDLL("user32", use_last_error=True).GetScrollInfo
     getter.argtypes, getter.restype = (
         (w.HWND, c.c_int, c.POINTER(_ScrollInfo)),
         w.BOOL,

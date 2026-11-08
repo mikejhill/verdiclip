@@ -6,6 +6,7 @@ import ctypes as c
 import ctypes.wintypes as w
 import json
 from contextlib import ExitStack
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -13,6 +14,7 @@ from scripts import scrolling_header_probe as probe
 
 from verdiclip.exceptions import CaptureError
 from verdiclip.geometry import Rect
+from verdiclip.platform import scrolling as production
 
 
 @pytest.mark.parametrize("success", [True, False])
@@ -37,8 +39,9 @@ def test_scroll_info_reports_native_fields_or_explicit_failure(
         info.position, info.track_position = 893, 894
         return success
 
-    getter = target._user.GetScrollInfo
-    getter.side_effect = read
+    getter = Mock(side_effect=read)
+    library = Mock(return_value=SimpleNamespace(GetScrollInfo=getter))
+    monkeypatch.setattr(probe.c, "WinDLL", library, raising=False)
     assert probe._scroll_info(target, 19, 2) == {
         "native_handle": 19,
         "bar": 2,
@@ -57,19 +60,26 @@ def test_scroll_info_reports_native_fields_or_explicit_failure(
     assert [call[0] for call in target._user.method_calls] == [
         "IsWindow",
         "GetAncestor",
-        "GetScrollInfo",
     ]
+    target._user.GetScrollInfo.assert_not_called()
+    library.assert_called_once_with("user32", use_last_error=True)
     reset_error.assert_called_once_with(0)
     assert last_error.call_count == (0 if success else 1)
 
 
 @pytest.mark.parametrize("valid", [True, False])
-def test_scroll_info_rejects_dead_or_unrelated_handles(*, valid: bool) -> None:
+def test_scroll_info_rejects_dead_or_unrelated_handles(
+    monkeypatch: pytest.MonkeyPatch, *, valid: bool
+) -> None:
     """A stale/reused HWND is never read as the previously observed scrollbar."""
     target = Mock()
     target._window = 17
     target._user.IsWindow.return_value = valid
     target._user.GetAncestor.return_value = 99
+    independent = Mock()
+    monkeypatch.setattr(
+        probe.c, "WinDLL", Mock(return_value=independent), raising=False
+    )
     result = probe._scroll_info(target, 19, 2)
     assert result["success"] is False
     assert result["window_valid"] is valid
@@ -77,6 +87,7 @@ def test_scroll_info_rejects_dead_or_unrelated_handles(*, valid: bool) -> None:
     assert result["error"] is None
     assert all(result[key] is None for key in ("min", "max", "page", "pos", "trackpos"))
     target._user.GetScrollInfo.assert_not_called()
+    independent.GetScrollInfo.assert_not_called()
     assert target._user.GetAncestor.call_count == int(valid)
 
 
@@ -311,3 +322,56 @@ def test_native_client_maps_both_corners() -> None:
         "native_handle": 17,
         "bounds": {"x": 178, "y": 146, "width": 824, "height": 532},
     }
+
+
+def test_probe_native_signature_isolated_from_production(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real ctypes type guards survive independent probe/product interleaving."""
+    target = Mock()
+    target._window = 17
+    target._user.IsWindow.return_value = True
+    target._user.GetAncestor.return_value = 17
+    monkeypatch.setattr(probe.c, "set_last_error", Mock(), raising=False)
+    monkeypatch.setattr(probe.c, "get_last_error", Mock(return_value=0), raising=False)
+    calls: list[str] = []
+
+    def product_read(
+        _handle: int, _bar: int, pointer: c._Pointer[production._ScrollInfo]
+    ) -> int:
+        calls.append("production")
+        pointer.contents.position = 7106
+        return 1
+
+    def probe_read(
+        _handle: int, _bar: int, pointer: c._Pointer[probe._ScrollInfo]
+    ) -> int:
+        calls.append("probe")
+        pointer.contents.position = 7106
+        return 1
+
+    # CFUNCTYPE provides the same typed pointer conversion on Linux and Windows;
+    # no OS call or untyped pointer cast can hide incompatible structure classes.
+    product_types = (w.HWND, c.c_int, c.POINTER(production._ScrollInfo))
+    probe_types = (w.HWND, c.c_int, c.POINTER(probe._ScrollInfo))
+    product_getter = c.CFUNCTYPE(w.BOOL, *product_types)(product_read)
+    probe_getter = c.CFUNCTYPE(w.BOOL, *probe_types)(probe_read)
+    target._user.GetScrollInfo = product_getter
+    library = Mock(return_value=SimpleNamespace(GetScrollInfo=probe_getter))
+    monkeypatch.setattr(probe.c, "WinDLL", library, raising=False)
+    assert c.sizeof(production._ScrollInfo) == c.sizeof(probe._ScrollInfo)
+    for _ in range(2):
+        assert probe._scroll_info(target, 19, 2)["pos"] == 7106
+        assert target._user.GetScrollInfo is product_getter
+        assert product_getter.argtypes == product_types
+        assert probe_getter.argtypes == probe_types
+        assert product_getter.restype is w.BOOL
+        result = production._ScrollInfo()
+        assert product_getter(19, 2, c.byref(result))
+        assert result.position == 7106
+        with pytest.raises(c.ArgumentError, match="LP__ScrollInfo"):
+            product_getter(19, 2, c.byref(probe._ScrollInfo()))
+        with pytest.raises(c.ArgumentError, match="LP__ScrollInfo"):
+            probe_getter(19, 2, c.byref(production._ScrollInfo()))
+    assert calls == ["probe", "production", "probe", "production"]
+    assert library.call_count == 2
