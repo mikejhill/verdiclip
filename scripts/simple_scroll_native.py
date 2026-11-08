@@ -17,7 +17,8 @@ import sys
 import time
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import asdict
+from contextlib import ExitStack
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -38,10 +39,11 @@ from verdiclip.capture.scrolling import (
     ScrollResult,
     ScrollTarget,
     ScrollTransaction,
+    VerticalStitch,
 )
 from verdiclip.exceptions import CaptureError
 from verdiclip.geometry import Point, Rect
-from verdiclip.platform.scrolling import UiaScrollTarget
+from verdiclip.platform.scrolling import UiaScrollTarget, _Interface, _ListSteps
 from verdiclip.platform.windows import WindowInfo, WindowLocator
 
 _ROWS = 120
@@ -347,6 +349,206 @@ def _record_terminal_position(
         )
 
 
+@dataclass(slots=True)
+class _PhaseSample:
+    key: str
+    started: int
+    previous: str
+    frame: int | None
+    children: int = 0
+
+
+class _PhaseTiming:
+    """Bounded test-only numeric attribution, never provider state or acceptance.
+
+    Inclusive timings overlap: append includes item finish, native state includes
+    target checks, and frame observation includes the independent witness. Only
+    exclusive_ns subtracts nested timed spans. COM/tree counts also overlap:
+    relative reads are a subset of interface calls, which exclude direct Release.
+    Exceptions count raised callbacks, not unsuccessful returned capture results.
+    Any timing errors make attribution incomplete; nothing refunds the deadline.
+    Frames refer to the most recently started acquisition; begin belongs to its
+    source frame and finish to its destination. No per-call rows are retained.
+    """
+
+    def __init__(self) -> None:
+        self.totals: dict[str, dict[str, int]] = {}
+        self.frames: list[dict[str, dict[str, int]]] = []
+        self.calls: dict[str, Counter[str]] = {}
+        self.errors = 0
+        self._phase = "outside_transaction"
+        self._stack: list[_PhaseSample] = []
+        self._frame: int | None = None
+
+    def next_frame(self) -> None:
+        """Bound only diagnostic storage, without changing the actual frame budget."""
+        try:
+            self._frame = len(self.frames) if len(self.frames) < MAX_FRAMES else None
+            if self._frame is not None:
+                self.frames.append({})
+        except Exception:  # noqa: BLE001 - observation must not alter capture
+            self.errors += 1
+
+    def _start(self, name: str, *, phase: bool) -> _PhaseSample | None:
+        try:
+            sample = _PhaseSample(
+                name if phase else f"{self._phase}.{name}",
+                time.perf_counter_ns(),
+                self._phase,
+                self._frame,
+            )
+            self._stack.append(sample)
+            if phase:
+                self._phase = name
+        except Exception:  # noqa: BLE001 - timing is never an acceptance gate
+            self.errors += 1
+            return None
+        return sample
+
+    def _finish(self, sample: _PhaseSample | None, *, failed: bool) -> None:
+        if sample is None:
+            return
+        try:
+            elapsed = max(0, time.perf_counter_ns() - sample.started)
+            destinations = [self.totals]
+            if sample.frame is not None:
+                destinations.append(self.frames[sample.frame])
+            for destination in destinations:
+                row = destination.setdefault(
+                    sample.key,
+                    {
+                        "count": 0,
+                        "inclusive_ns": 0,
+                        "exclusive_ns": 0,
+                        "max_ns": 0,
+                        "exceptions": 0,
+                    },
+                )
+                row["count"] += 1
+                row["inclusive_ns"] += elapsed
+                row["exclusive_ns"] += max(0, elapsed - sample.children)
+                row["max_ns"] = max(row["max_ns"], elapsed)
+                row["exceptions"] += int(failed)
+            if len(self._stack) > 1:
+                self._stack[-2].children += elapsed
+        except Exception:  # noqa: BLE001 - preserve original return or exception
+            self.errors += 1
+        finally:
+            self._stack.pop()
+            self._phase = sample.previous
+
+    def timed[**P, T](
+        self, name: str, function: Callable[P, T], *, phase: bool = False
+    ) -> Callable[P, T]:
+        """Observe the same callback exactly once, preserving its result/exception."""
+
+        def observed(*args: P.args, **kwargs: P.kwargs) -> T:
+            sample = self._start(name, phase=phase)
+            failed = True
+            try:
+                result = function(*args, **kwargs)
+                failed = False
+                return result
+            finally:
+                self._finish(sample, failed=failed)
+
+        return observed
+
+    def count(self, name: str) -> None:
+        """Count existing interface/tree calls by active phase without timing each."""
+        try:
+            self.calls.setdefault(self._phase, Counter())[name] += 1
+        except Exception:  # noqa: BLE001 - counter failure cannot affect the call
+            self.errors += 1
+
+    def save(self, output: Path) -> None:
+        """Persist only after transaction exit; timing errors preserve its outcome."""
+        try:
+            (output / "phase-timing.json").write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "errors": self.errors,
+                        "totals": self.totals,
+                        "frames": self.frames,
+                        "calls": self.calls,
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+        except Exception:  # noqa: BLE001 - optional evidence must not mask failure
+            self.errors += 1
+
+
+def _time_helper_calls(timing: _PhaseTiming, wrappers: ExitStack) -> None:
+    """Observe only the named diagnostic phases and existing COM/tree calls."""
+    interface_call, relative = _Interface.call, _Interface.relative
+
+    def count_call(
+        interface: _Interface,
+        slot: int,
+        arguments: tuple[type[c._CData], ...],
+        *values: object,
+    ) -> None:
+        timing.count("interface_calls")
+        return interface_call(interface, slot, arguments, *values)
+
+    def count_relative(
+        interface: _Interface, child: _Interface, owners: ExitStack, slot: int
+    ) -> _Interface | None:
+        name = {3: "parent_reads", 4: "first_child_reads", 6: "next_sibling_reads"}.get(
+            slot
+        )
+        if name is not None:
+            timing.count(name)
+        return relative(interface, child, owners, slot)
+
+    for owner, name, label, phase in (
+        (_ListSteps, "begin", "list_begin", True),
+        (_ListSteps, "finish", "list_finish", True),
+        (UiaScrollTarget, "check", "target_check", False),
+        (UiaScrollTarget, "scrollbar_state", "native_state", False),
+        (ScrollTransaction, "_move", "move", True),
+        (ScrollTransaction, "_settle", "settle", False),
+        (ScrollTransaction, "_restore", "restore", True),
+        (VerticalStitch, "append", "append", True),
+        (ListItemWitness, "observe", "trace_witness", True),
+        (sys.modules[__name__], "_frame_scroll_info", "trace_native", True),
+    ):
+        wrappers.enter_context(
+            patch.object(
+                owner,
+                name,
+                timing.timed(label, getattr(owner, name), phase=phase),
+            )
+        )
+    wrappers.enter_context(patch.object(_Interface, "call", count_call))
+    wrappers.enter_context(patch.object(_Interface, "relative", count_relative))
+
+
+def _save_timed_frame(
+    timing: _PhaseTiming,
+    frame: QImage,
+    observation: dict[str, object],
+    observations: list[dict[str, object]],
+    output: Path,
+) -> None:
+    """Keep the existing PNG/metadata write order, measuring each without extra I/O."""
+    if not timing.timed("trace_png", frame.save, phase=True)(
+        str(output / f"frame-{len(observations)}.png")
+    ):
+        raise OSError("Could not save the native scrolling diagnostic frame")
+    observations.append(observation)
+
+    def write_frames() -> None:
+        (output / "frames.json").write_text(
+            json.dumps(observations, indent=2), encoding="utf-8"
+        )
+
+    timing.timed("trace_json", write_frames, phase=True)()
+
+
 def _trace_helper() -> None:
     """Save bounded native evidence in this owned test child, never production."""
     logging.basicConfig(level=logging.INFO)
@@ -362,6 +564,9 @@ def _trace_helper() -> None:
     complete_sequence = mode.startswith(_REPRESENTATIVE_PREFIXES)
     frame_limit = MAX_FRAMES if complete_sequence else _DIAGNOSTIC_FRAMES
     retained_pixels = 0
+    timing = _PhaseTiming()
+    acquire = timing.timed("frame", original, phase=True)
+    observe = timing.timed("trace_observation", _frame_observation, phase=True)
 
     def record_open(
         target: UiaScrollTarget,
@@ -384,7 +589,7 @@ def _trace_helper() -> None:
         move(target, percent)
 
     def record_result(operation: ScrollTransaction) -> ScrollResult:
-        result = run(operation)
+        result = timing.timed("transaction", run, phase=True)(operation)
         if complete_sequence:
             _record_terminal_position(
                 operation._target, result, selected, output, evidence
@@ -393,18 +598,14 @@ def _trace_helper() -> None:
 
     def record_frame(operation: ScrollTransaction, position: ScrollPosition) -> QImage:
         nonlocal retained_pixels
-        frame = original(operation, position)
+        timing.next_frame()
+        frame = acquire(operation, position)
         if len(observations) < frame_limit:
             retained_pixels += frame.width() * frame.height()
             if retained_pixels > MAX_PIXELS:
                 raise CaptureError("Diagnostic frame evidence exceeds its pixel limit")
-            observation = _frame_observation(operation, position, evidence, mode)
-            if not frame.save(str(output / f"frame-{len(observations)}.png")):
-                raise OSError("Could not save the native scrolling diagnostic frame")
-            observations.append(observation)
-            (output / "frames.json").write_text(
-                json.dumps(observations, indent=2), encoding="utf-8"
-            )
+            observation = observe(operation, position, evidence, mode)
+            _save_timed_frame(timing, frame, observation, observations, output)
             if len(observations) == 1 and mode in (
                 "edge-cancel",
                 "edge-input",
@@ -417,13 +618,16 @@ def _trace_helper() -> None:
 
     try:
         with (
+            ExitStack() as wrappers,
             patch.object(ScrollTransaction, "_frame", record_frame),
             patch.object(ScrollTransaction, "run", record_result),
             patch.object(UiaScrollTarget, "move", record_move),
             patch.object(UiaScrollTarget, "_open", record_open),
         ):
+            _time_helper_calls(timing, wrappers)
             helper_main()
     finally:
+        timing.save(output)
         (output / "target.json").write_text(json.dumps(selected), encoding="utf-8")
         (output / "movement.json").write_text(
             json.dumps(

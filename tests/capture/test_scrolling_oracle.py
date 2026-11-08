@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes as c
 import ctypes.wintypes as w
 import json
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -1641,3 +1642,252 @@ def test_erased_frame_telemetry_cannot_hide_lost_selected_route_geometry(
         target_path.write_text(json.dumps(target))
     with pytest.raises(RuntimeError, match="Whole-image oracle"):
         verify_sequence(image, tmp_path)
+
+
+def test_phase_timing_nested_totals_do_not_double_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Inclusive spans overlap; exclusive time subtracts each direct timed child."""
+    clock = iter([100, 110, 130, 160])
+    monkeypatch.setattr(native.time, "perf_counter_ns", lambda: next(clock))
+    timing = native._PhaseTiming()
+    timing.next_frame()
+    result = object()
+    inner = timing.timed("target_check", lambda: result)
+    assert timing.timed("list_begin", inner, phase=True)() is result
+    assert timing.totals == {
+        "list_begin.target_check": {
+            "count": 1,
+            "inclusive_ns": 20,
+            "exclusive_ns": 20,
+            "max_ns": 20,
+            "exceptions": 0,
+        },
+        "list_begin": {
+            "count": 1,
+            "inclusive_ns": 60,
+            "exclusive_ns": 40,
+            "max_ns": 60,
+            "exceptions": 0,
+        },
+    }
+    assert timing.frames == [timing.totals]
+    assert timing.errors == 0
+    assert not timing._stack
+    assert timing._phase == "outside_transaction"
+
+
+@pytest.mark.parametrize("exception", [CaptureError("provider"), OSError("native")])
+def test_phase_timing_counts_failure_without_changing_exception(
+    monkeypatch: pytest.MonkeyPatch, exception: Exception
+) -> None:
+    """The original exception identity propagates after one observed invocation."""
+    clock = iter([100, 170])
+    monkeypatch.setattr(native.time, "perf_counter_ns", lambda: next(clock))
+    timing = native._PhaseTiming()
+    callback = Mock(side_effect=exception)
+    with pytest.raises(type(exception)) as caught:
+        timing.timed("list_finish", callback, phase=True)(3, terminal=True)
+    assert caught.value is exception
+    callback.assert_called_once_with(3, terminal=True)
+    assert timing.totals["list_finish"] == {
+        "count": 1,
+        "inclusive_ns": 70,
+        "exclusive_ns": 70,
+        "max_ns": 70,
+        "exceptions": 1,
+    }
+    assert timing.errors == 0
+    assert not timing._stack
+
+
+@pytest.mark.parametrize("when", ["start", "end"])
+@pytest.mark.parametrize("fails", [False, True])
+def test_phase_clock_failure_never_changes_callback_outcome(
+    monkeypatch: pytest.MonkeyPatch, when: str, *, fails: bool
+) -> None:
+    """Even broken optional clocks cannot skip, retry or replace capture work."""
+    ticks = [RuntimeError("clock")] if when == "start" else [100, RuntimeError("clock")]
+    monkeypatch.setattr(native.time, "perf_counter_ns", Mock(side_effect=ticks))
+    timing = native._PhaseTiming()
+    original = CaptureError("Original provider failure")
+    result = object()
+    callback = Mock(side_effect=original) if fails else Mock(return_value=result)
+    wrapped = timing.timed("frame", callback, phase=True)
+    if fails:
+        with pytest.raises(CaptureError) as caught:
+            wrapped(7, value=9)
+        assert caught.value is original
+    else:
+        assert wrapped(7, value=9) is result
+    callback.assert_called_once_with(7, value=9)
+    assert timing.errors == 1
+    assert not timing._stack
+    assert timing._phase == "outside_transaction"
+
+
+def test_phase_frame_storage_is_bounded_without_limiting_callbacks() -> None:
+    """The existing80frame cap bounds samples, never calls or capture semantics."""
+    timing = native._PhaseTiming()
+    callback = Mock(return_value=17)
+    wrapped = timing.timed("frame", callback, phase=True)
+    for _ in range(native.MAX_FRAMES + 4):
+        timing.next_frame()
+        assert wrapped() == 17
+    assert len(timing.frames) == native.MAX_FRAMES
+    assert callback.call_count == native.MAX_FRAMES + 4
+    assert timing.totals["frame"]["count"] == native.MAX_FRAMES + 4
+    assert sum(row["frame"]["count"] for row in timing.frames) == native.MAX_FRAMES
+
+
+def test_phase_call_counts_separate_product_and_independent_tracer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Count existing tree/COM calls without another call, arguments or call rows."""
+    call = Mock()
+    monkeypatch.setattr(native._Interface, "call", call)
+    returned = Mock()
+
+    def relative(interface: object, _child: object, _owners: object, slot: int) -> Mock:
+        native._Interface.call(interface, slot, ())  # ty: ignore[invalid-argument-type]
+        return returned
+
+    monkeypatch.setattr(native._Interface, "relative", relative)
+    timing = native._PhaseTiming()
+    interface = Mock()
+    original_relative = native._Interface.relative
+    with ExitStack() as wrappers:
+        native._time_helper_calls(timing, wrappers)
+        for phase in ("list_begin", "trace_witness"):
+            observed = timing.timed(phase, native._Interface.relative, phase=True)
+            for slot in (3, 4, 6):
+                assert observed(interface, interface, wrappers, slot) is returned
+    assert native._Interface.call is call
+    assert native._Interface.relative is original_relative
+    assert call.call_count == 6
+    assert [entry.args[1] for entry in call.call_args_list] == [3, 4, 6, 3, 4, 6]
+    assert timing.calls == {
+        phase: {
+            "interface_calls": 3,
+            "parent_reads": 1,
+            "first_child_reads": 1,
+            "next_sibling_reads": 1,
+        }
+        for phase in ("list_begin", "trace_witness")
+    }
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_trace_timing_persists_after_exit_and_restores_every_wrapper(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, failed: bool
+) -> None:
+    """Success and exceptions preserve exact work and restore every patched method."""
+    frame = QImage(24, 60, QImage.Format.Format_RGB32)
+    frame.fill(QColor("white"))
+    position = ScrollPosition(0.0, 0.0, 50.0)
+    target, operation = Mock(), Mock()
+    callbacks: list[str] = []
+    original_error = CaptureError("Original source failure")
+    result = ScrollResult(None, "Original result", "unchanged", 1)
+    monkeypatch.setattr(native.ScrollTransaction, "_frame", lambda *_: frame)
+    monkeypatch.setattr(
+        native.UiaScrollTarget, "move", lambda *_: callbacks.append("write")
+    )
+    monkeypatch.setattr(
+        native.UiaScrollTarget, "check", lambda *_: callbacks.append("guard")
+    )
+
+    def run(_operation: object) -> ScrollResult:
+        assert not (tmp_path / "phase-timing.json").exists()
+        native.UiaScrollTarget.check(target)
+        native.UiaScrollTarget.move(target, 12.5)
+        assert native.ScrollTransaction._frame(operation, position) is frame
+        assert not (tmp_path / "phase-timing.json").exists()
+        native.UiaScrollTarget.check(target)
+        if failed:
+            raise original_error
+        return result
+
+    monkeypatch.setattr(native.ScrollTransaction, "run", run)
+    originals = [
+        (owner, name, getattr(owner, name))
+        for owner, names in (
+            (
+                native.ScrollTransaction,
+                ("_frame", "run", "_move", "_settle", "_restore"),
+            ),
+            (native.UiaScrollTarget, ("move", "_open", "check", "scrollbar_state")),
+            (native._ListSteps, ("begin", "finish")),
+            (native._Interface, ("call", "relative")),
+            (native.VerticalStitch, ("append",)),
+            (native.ListItemWitness, ("observe",)),
+            (native, ("_frame_scroll_info",)),
+        )
+        for name in names
+    ]
+    results = []
+    monkeypatch.setattr(
+        native,
+        "helper_main",
+        lambda: results.append(native.ScrollTransaction.run(operation)),
+    )
+    monkeypatch.setattr("sys.argv", ["-c", str(tmp_path), "edge"])
+    if failed:
+        with pytest.raises(CaptureError) as caught:
+            native._trace_helper()
+        assert caught.value is original_error
+    else:
+        native._trace_helper()
+        assert results == [result]
+        assert results[0] is result
+    assert callbacks == ["guard", "write", "guard"]
+    assert all(getattr(owner, name) is original for owner, name, original in originals)
+    evidence = json.loads((tmp_path / "phase-timing.json").read_text())
+    assert evidence["errors"] == 0
+    assert evidence["totals"]["transaction"]["exceptions"] == int(failed)
+    assert evidence["totals"]["transaction.target_check"]["count"] == 2
+    assert evidence["totals"]["frame"]["count"] == 1
+    assert evidence["totals"]["trace_png"]["count"] == 1
+    assert evidence["totals"]["trace_json"]["count"] == 1
+    assert len(evidence["frames"]) == 1
+    assert json.loads((tmp_path / "movement.json").read_text()) == {
+        "writes": 1,
+        "last_vertical": 12.5,
+    }
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_timing_write_failure_does_not_replace_original_outcome(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, failed: bool
+) -> None:
+    """Optional timing storage may fail without changing result or exception."""
+    write = Path.write_text
+
+    def fail_timing(path: Path, data: str, *args: object, **kwargs: object) -> int:
+        if path.name == "phase-timing.json":
+            raise OSError("Timing destination unavailable")
+        return write(path, data, *args, **kwargs)  # ty: ignore[invalid-argument-type]
+
+    monkeypatch.setattr(Path, "write_text", fail_timing)
+    result = ScrollResult(None, "Original result", "unchanged", 0)
+    error = CaptureError("Original source failure")
+    run = Mock(side_effect=error) if failed else Mock(return_value=result)
+    monkeypatch.setattr(native.ScrollTransaction, "run", run)
+    results = []
+    monkeypatch.setattr(
+        native,
+        "helper_main",
+        lambda: results.append(native.ScrollTransaction.run(Mock())),
+    )
+    monkeypatch.setattr("sys.argv", ["-c", str(tmp_path), "edge"])
+    if failed:
+        with pytest.raises(CaptureError) as caught:
+            native._trace_helper()
+        assert caught.value is error
+    else:
+        native._trace_helper()
+        assert results == [result]
+        assert results[0] is result
+    run.assert_called_once()
+    assert not (tmp_path / "phase-timing.json").exists()
+    assert (tmp_path / "movement.json").exists()
