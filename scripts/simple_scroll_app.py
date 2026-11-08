@@ -332,6 +332,39 @@ class AppCapture:
         )
         self.desktop.click(menu, physical)
 
+    def _seed_editor(self) -> None:
+        """Choose a window through ordinary selection to seed fixed-area Repeat."""
+        self.controller.tray.action("region").trigger()
+        for _ in range(100):
+            if self.controller.capture.overlays:
+                break
+            QTest.qWait(10)
+        overlays = self.controller.capture.overlays
+        _require(bool(overlays), "Initial ordinary chooser did not appear")
+        active = next(
+            overlay
+            for overlay in overlays
+            if overlay.screen_geometry.physical.contains(self.point)
+        )
+        self.desktop.click(active, self.point)
+        for _ in range(100):
+            if self.controller.workspace.documents:
+                break
+            QTest.qWait(10)
+        _require(
+            len(self.controller.workspace.documents) == 1, "Initial capture failed"
+        )
+        self.editor = self.controller.editors[0]
+        self.original = self.controller.workspace.documents[0]
+        self.repeat_area = self.controller.capture._last_area
+        _require(
+            self.repeat_area == self.window.bounds,
+            "Initial selection did not retain the actual application rectangle",
+        )
+        self.report["initial_repeat_area"] = (
+            asdict(self.repeat_area) if self.repeat_area is not None else None
+        )
+
     def run(self) -> None:
         """Exercise app wiring and always close owned UI, helper and hotkeys."""
         timeout = QTimer()
@@ -343,22 +376,7 @@ class AppCapture:
                 "scrolling" in self.hotkeys.registered,
                 "Configured shortcut unavailable",
             )
-            # Actual ordinary window capture seeds the existing editor and Repeat.
-            self.controller.tray.action("window").trigger()
-            for _ in range(100):
-                if self.controller.workspace.documents:
-                    break
-                QTest.qWait(10)
-            _require(
-                len(self.controller.workspace.documents) == 1, "Initial capture failed"
-            )
-            self.editor = self.controller.editors[0]
-            self.original = self.controller.workspace.documents[0]
-            self.repeat_area = self.controller.capture._last_area
-            _require(
-                self.repeat_area == self.window.bounds,
-                "Initial capture did not retain the actual application rectangle",
-            )
+            self._seed_editor()
             self.window = _prepare(self.window)  # Setup only, before entry/selection.
             self.report["window"] = asdict(self.window)
             self.report["initial_foreground"] = self.desktop.foreground()

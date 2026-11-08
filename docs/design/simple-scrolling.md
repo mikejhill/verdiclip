@@ -411,3 +411,15 @@ omissions). Changed executable-line coverage calculated from the fresh XML was
 results; full hosted CI remains required. Light/dark chooser snapshots were
 inspected, and the gallery rendered successfully. Linux offscreen ignored native
 color-scheme changes in the gallery, so Windows theme evidence remains required.
+
+The first integrated run,
+[42453886534](https://github.com/mikejhill/verdiclip/actions/runs/42453886534)
+at `e0b1ee75e5dccca9203a354c44e97ec7af063f00`, passed full CI and CodeQL but
+failed all three new app modes before scrolling. Its setup incorrectly expected
+active-window capture to retain a fixed Repeat rectangle. The existing service
+intentionally clears that rectangle so Repeat resolves the current active window.
+The harness now seeds fixed-area history through the actual ordinary chooser and
+a native click on its owned overlay. It still requires the selected physical
+rectangle, the existing document, exact scrolling output and ordinary Repeat.
+Runtime behavior is unchanged; no previously failed integration result is claimed
+as qualification.

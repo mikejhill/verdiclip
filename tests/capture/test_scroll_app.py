@@ -103,3 +103,39 @@ def test_native_repeat_waits_for_admission_but_rejects_tall_dimensions() -> None
     with pytest.raises(RuntimeError, match="tall composite"):
         case._verify_repeat()
     assert not case.report
+
+
+@pytest.mark.parametrize("boundary", ["valid", "no_selector", "dynamic_repeat"])
+def test_native_seed_requires_real_chooser_and_fixed_area(
+    monkeypatch: pytest.MonkeyPatch, boundary: str
+) -> None:
+    """The fixture seeds a selected window, not dynamic active-window Repeat."""
+    case = object.__new__(AppCapture)
+    case.controller = Mock()
+    case.desktop = Mock()
+    case.window = WindowInfo(123, "Owned Edge", Rect(0, 0, 200, 100))
+    case.point = Point(50, 50)
+    case.report = {}
+    overlay = Mock()
+    overlay.screen_geometry.physical = case.window.bounds
+    case.controller.capture.overlays = [] if boundary == "no_selector" else [overlay]
+    case.controller.capture._last_area = (
+        None if boundary == "dynamic_repeat" else case.window.bounds
+    )
+    case.controller.workspace.documents = [Mock()]
+    case.controller.editors = [Mock()]
+    monkeypatch.setattr("scripts.simple_scroll_app.QTest.qWait", Mock())
+    if boundary == "valid":
+        case._seed_editor()
+        case.desktop.click.assert_called_once_with(overlay, case.point)
+        assert case.report["initial_repeat_area"] == {
+            "x": 0,
+            "y": 0,
+            "width": 200,
+            "height": 100,
+        }
+    else:
+        with pytest.raises(RuntimeError, match=r"chooser|retain"):
+            case._seed_editor()
+        assert not case.report
+    case.controller.tray.action.assert_called_once_with("region")
