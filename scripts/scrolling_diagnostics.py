@@ -19,9 +19,11 @@ from pathlib import Path
 from typing import override
 from unittest.mock import patch
 
+from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QWidget
 from scripts import simple_scroll_app as app
 from scripts import simple_scroll_native as native
+from scripts.scrolling_oracle import verify_sequence
 from scripts.simple_scroll_handoff import Desktop
 
 from verdiclip.capture.scrolling import ScrollResult
@@ -77,15 +79,58 @@ def document(layout: str) -> str:
 def _inspect_result(
     result: ScrollResult, output: Path, report: dict[str, object]
 ) -> None:
-    del output
-    native._require(result.image is not None, result.message)
-    report["oracle"] = "capture/restoration smoke only; inspect exact PNG content"
+    if result.image is None:
+        raise RuntimeError(result.message)
+    report.update(verify_sequence(result.image, output))
+    native._require(
+        report["oracle_frames"] == result.frames,
+        "Whole-image oracle did not retain every accepted frame",
+    )
 
 
 def _case(kind: str, output: Path, report: dict[str, object]) -> None:
     report["oracle"] = "capture/restoration smoke only; inspect exact PNG content"
     report["gesture_hold_ms"] = 120
     app._case(kind, output, report)
+
+
+def _verify_restored(capture: app.AppCapture, after: QImage) -> None:
+    """Separate exact scroll-state restoration from the measured panel outline."""
+    state = json.loads(
+        (capture.output / "restoration.json").read_text(encoding="utf-8")
+    )
+    native._require(state["initial"] == state["final"], "Scroll state was not restored")
+    capture.report["restored_scroll_state"] = state
+    first = QImage(str(capture.output / "frame-0.png"))
+    native._require(first.size() == after.size(), "Restored panel geometry changed")
+    if first == after:
+        capture.report["restored_pixels"] = "exact"
+        return
+    # This owned CSS fixture's measured focus outline changes within its outer
+    # four pixels (including rounded corners). All interior pixels stay exact.
+    perimeter = 4
+    native._require(
+        capture.kind.startswith("edge-panel-")
+        and first.copy(
+            perimeter,
+            perimeter,
+            first.width() - 2 * perimeter,
+            first.height() - 2 * perimeter,
+        )
+        == after.copy(
+            perimeter,
+            perimeter,
+            after.width() - 2 * perimeter,
+            after.height() - 2 * perimeter,
+        ),
+        "Restored content pixels differ beyond the measured fixture perimeter",
+    )
+    capture.report["restored_pixels"] = "exact interior; focus perimeter changed"
+    capture.report["restored_perimeter_changed_pixels"] = sum(
+        first.pixel(x, y) != after.pixel(x, y)
+        for y in range(first.height())
+        for x in range(first.width())
+    )
 
 
 class HumanDesktop(Desktop):
@@ -324,7 +369,8 @@ def main() -> None:
     kind = sys.argv[1]
     layout = kind.removesuffix("-click").removesuffix("-enter")
     native._require(
-        layout in ("edge-prose", "edge-panel", "edge-sidebar", "explorer")
+        layout
+        in ("edge-prose", "edge-panel", "edge-sidebar", "edge-background", "explorer")
         and kind.endswith(("-click", "-enter")),
         "Unknown representative document layout",
     )
@@ -332,6 +378,7 @@ def main() -> None:
     with (
         patch.object(native, "_document", lambda **_kwargs: document(layout)),
         patch.object(app, "_verify_edge_rows", _inspect_result),
+        patch.object(app.AppCapture, "_verify_restored", _verify_restored),
         patch.object(app, "Desktop", HumanDesktop),
         patch.object(
             native,

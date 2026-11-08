@@ -65,6 +65,7 @@ jobs:
         run: >-
           uv run pytest tests/capture/test_capture_native.py
           tests/capture/test_tabs_baseline_native.py
+          tests/ux/test_scrolling_failure_journeys.py::test_interruption_feedback_preserves_native_focus
           --require-interactive-capture --no-cov -p no:randomly -vv -rP
           --junitxml=artifacts/simple-scroll/ordinary-native.xml
           --basetemp=artifacts/simple-scroll/native-temp
@@ -90,7 +91,8 @@ jobs:
       fail-fast: false
       matrix:
         application: [edge-prose-click, edge-prose-enter, edge-panel-click,
-          edge-panel-enter, edge-sidebar-enter, explorer-click, explorer-enter]
+          edge-panel-enter, edge-sidebar-enter, edge-background-click,
+          edge-background-enter, explorer-click, explorer-enter]
     env:
       QT_QPA_PLATFORM: windows
       PYTHONUTF8: "1"

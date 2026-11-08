@@ -1,9 +1,10 @@
 # Scrolling capture diagnostics after 0.14.0
 
 This branch diagnoses reported selection failures and first-step rejection in
-Windows Explorer and Microsoft Edge. It is not a capture fix or release candidate.
-No selection baseline, UIA write, matching threshold, input guard or ordinary
-capture behavior is relaxed.
+Windows Explorer and Microsoft Edge. It is not release qualification. The initial
+commits only add passive diagnostics. Subsequent candidate fixes separately
+address selection handoff, bounded perimeter registration and visible failure
+feedback. Ordinary capture and the original release input tick remain unchanged.
 
 ## Passive production evidence
 
@@ -41,14 +42,21 @@ ordinary close to that window, and verifies the HWND disappears. It never kills
 Explorer, the launcher or the desktop shell. A reused tab/window, ambiguous path,
 changed identity or failed close is a diagnostic failure, not a capture verdict.
 
-Both click and Enter are exercised for prose, panel and Explorer. Native gestures
+Both click and Enter are exercised for prose, panel, background Edge and Explorer.
+Background cases leave Edge visible while a small owned window has focus, requiring
+the production selection path to activate the exact chosen target. Native gestures
 hold for 120 ms while Qt processes events between press and release. Existing
-instantaneous-input qualification remains unchanged. The seven new jobs run only
+controller cases now use held gestures too. The nine diagnostic jobs run only
 on the named draft diagnostic branch and save exact native PNGs and numeric logs.
 
 A rejection fails its diagnostic job and is evidence to investigate, not a
-qualified success. Even an accepted prose/Explorer image proves only capture,
-restoration and delivery; inspect the PNGs before claiming content completeness.
+qualified success. Representative sequences retain all frames within the existing
+80-frame/40-million-pixel limits. An offline oracle maps each original frame to
+absolute global rows using UIA percentages and checks every complete output row
+against acquired pixels, without calling the stitcher or reusing its seams.
+Wrong dimensions, changed/missing output rows and incomplete end coverage reject
+the case. Provider geometry can still be imprecise, and matching rows do not prove
+hidden content semantics or repair repeated scrollbar thumbs; inspect the PNGs.
 The original thirteen native qualification cases and ordinary regressions still
 run separately. Actual shell tray-icon entry, physical pointer jitter, and the
 user's particular app geometry still need discriminating evidence.

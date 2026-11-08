@@ -24,16 +24,20 @@ from unittest.mock import patch
 
 from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer
 from PySide6.QtGui import QImage
+from scripts.scrolling_header_probe import probe_target, window_dpi
 
 from verdiclip.capture.grabber import MssScreenSource
 from verdiclip.capture.scroll_helper import ScrollHelper
 from verdiclip.capture.scroll_helper import main as helper_main
 from verdiclip.capture.scrolling import (
     END_PERCENT,
+    MAX_FRAMES,
+    MAX_PIXELS,
     ScrollPosition,
     ScrollResult,
     ScrollTransaction,
 )
+from verdiclip.exceptions import CaptureError
 from verdiclip.geometry import Point, Rect
 from verdiclip.platform.scrolling import UiaScrollTarget
 from verdiclip.platform.windows import WindowInfo, WindowLocator
@@ -47,6 +51,13 @@ _WINDOW_HEIGHT = 760
 _GREEN = 80
 _BLUE = 160
 _CLEANUP_SECONDS = 20.0  # Existing taskkill + process-wait budget, shared by all paths.
+_REPRESENTATIVE_PREFIXES = (
+    "edge-prose-",
+    "edge-panel-",
+    "edge-sidebar-",
+    "edge-background-",
+    "explorer-",
+)
 
 
 def _document(*, nested: bool) -> str:
@@ -176,17 +187,35 @@ def _prepare(window: WindowInfo) -> WindowInfo:
     return _window()
 
 
+def _target_evidence(
+    target: UiaScrollTarget, output: Path, mode: str, selected: dict[str, object]
+) -> None:
+    """Record extra geometry only for the explicitly owned representative cases."""
+    if not mode.startswith(_REPRESENTATIVE_PREFIXES):
+        return
+    selected["initial_position"] = asdict(target.position())
+    selected["window_dpi"] = window_dpi(target)
+    if mode.startswith("explorer-"):
+        (output / "header-geometry.json").write_text(
+            json.dumps(probe_target(target), indent=2), encoding="utf-8"
+        )
+
+
 def _trace_helper() -> None:
-    """Save two accepted frames in this owned test child, never in production."""
+    """Save bounded native evidence in this owned test child, never production."""
     logging.basicConfig(level=logging.INFO)
     mode = sys.argv.pop()
     output = Path(sys.argv.pop())
     original = ScrollTransaction._frame
+    run = ScrollTransaction.run
     move = UiaScrollTarget.move
     opening = UiaScrollTarget._open
     selected: dict[str, object] = {}
     observations: list[dict[str, float]] = []
     writes: list[float] = []
+    complete_sequence = mode.startswith(_REPRESENTATIVE_PREFIXES)
+    frame_limit = MAX_FRAMES if complete_sequence else _DIAGNOSTIC_FRAMES
+    retained_pixels = 0
 
     def record_open(
         target: UiaScrollTarget,
@@ -201,14 +230,31 @@ def _trace_helper() -> None:
             input_tick=target._input_tick,
             area=asdict(target.area),
         )
+        _target_evidence(target, output, mode, selected)
 
     def record_move(target: UiaScrollTarget, percent: float) -> None:
         writes.append(percent)
         move(target, percent)
 
+    def record_result(operation: ScrollTransaction) -> ScrollResult:
+        result = run(operation)
+        if complete_sequence and result.restoration == "restored":
+            operation._target.check()
+            final = asdict(operation._target.position())
+            operation._target.check()
+            (output / "restoration.json").write_text(
+                json.dumps({"initial": selected["initial_position"], "final": final}),
+                encoding="utf-8",
+            )
+        return result
+
     def record_frame(operation: ScrollTransaction, position: ScrollPosition) -> QImage:
+        nonlocal retained_pixels
         frame = original(operation, position)
-        if len(observations) < _DIAGNOSTIC_FRAMES:
+        if len(observations) < frame_limit:
+            retained_pixels += frame.width() * frame.height()
+            if retained_pixels > MAX_PIXELS:
+                raise CaptureError("Diagnostic frame evidence exceeds its pixel limit")
             if not frame.save(str(output / f"frame-{len(observations)}.png")):
                 raise OSError("Could not save the native scrolling diagnostic frame")
             observations.append(asdict(position))
@@ -228,6 +274,7 @@ def _trace_helper() -> None:
     try:
         with (
             patch.object(ScrollTransaction, "_frame", record_frame),
+            patch.object(ScrollTransaction, "run", record_result),
             patch.object(UiaScrollTarget, "move", record_move),
             patch.object(UiaScrollTarget, "_open", record_open),
         ):
