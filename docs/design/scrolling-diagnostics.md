@@ -76,6 +76,30 @@ non-vertical-rail pixel, including Header, horizontal rail and corner, to be
 restored exactly. The experiment never produces a stitched image or qualifies
 production capture, and it does not change the product's extent tolerance.
 
+## Direct List geometry candidate
+
+The candidate selects the verified standard List/Header/native-rail route only
+at original horizontal percentage zero. It can retain two visible raw ListItem
+identities for each downward step. It keeps the existing exact
+full-width band requirement, then requires the entire non-rail body overlap to
+match before deciding global uniqueness. Both raw item displacements must agree
+exactly with that unique pixel displacement. Generic Edge registration is
+unchanged; no percentage prediction selects a candidate or calibrates pixels.
+
+This route replaces the per-step percentage-to-pixel comparison. It also defers
+the early endpoint estimate-versus-estimate check: continuous pixel/item evidence,
+a stable native maximum and both unchanged final actual-height bounds must pass
+before the endpoint is confirmed. The original and terminal estimates must each
+agree with the completed image within the existing two-percent bound. Fixed
+Header/footer/corner pixels, full output width and resource/input guards remain.
+
+Failed selected-List evidence does not fall back to generic restoration. The
+capture is discarded, and a rejected capture can leave the target scrolled when
+recovery authority has not been proven. Its restoration status remains distinct
+from a restored failure; there is no corrective retry. No-horizontal-scrollbar
+Lists (H=-1) retain the older path and remain unqualified at 200% in this scope.
+Positive horizontal offsets and broader provider layouts are also unqualified.
+
 A rejection fails its diagnostic job and is evidence to investigate, not a
 qualified success. Representative sequences retain all frames within the existing
 80-frame/40-million-pixel limits. An offline oracle maps each original frame to

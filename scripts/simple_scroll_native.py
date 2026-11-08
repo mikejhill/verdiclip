@@ -246,6 +246,13 @@ def _frame_observation(
             evidence.target, position, evidence.geometry
         )
         observation["native_item_witness"] = evidence.observe(position)
+        if position.vertical == END_PERCENT:
+            observation["native_scroll_info_after"] = _restoration_native(
+                evidence.target, evidence.geometry
+            )
+            if evidence.target.position() != position:
+                raise CaptureError("The terminal frame moved during native observation")
+            evidence.target.check()
     return observation
 
 

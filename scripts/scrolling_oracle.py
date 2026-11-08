@@ -15,15 +15,225 @@ from verdiclip.geometry import Rect
 
 _FULL_PERCENT = 100.0
 _PAIR_SIZE = 2
+_NATIVE_BAR = 2
+_SCROLLBAR_ROLE = 50014
+_BAND_ROWS = 32
+_TEXTURE_ROWS = 8
+
+
+class _NativeListOracle:
+    """Check raw native observations, never retained production model objects.
+
+    Frame samples establish rail HWNDs/root membership and native values.
+    Parent/root/PID identity is separately observed initially and at the repeated
+    terminal sample, not freshly reconstructed at every intervening frame.
+    """
+
+    def __init__(self, geometry: dict[str, object], target: dict[str, object]) -> None:
+        area, _header, footer, rail = list_layout(geometry)
+        tree = cast("dict[str, object]", geometry["uia"])
+        nodes = cast("list[dict[str, object]]", tree["nodes"])
+        bars = [
+            node
+            for node in nodes
+            if node["parent"] == 0
+            and node["control_type"] == _SCROLLBAR_ROLE
+            and node["offscreen"] is False
+        ]
+        self.handles: list[int] = []
+        for bounds in (rail, footer):
+            if bounds is None:
+                continue
+            matches = [node for node in bars if raw_bounds(node["bounds"]) == bounds]
+            if len(matches) != 1 or matches[0].get("depth") != 1:
+                raise RuntimeError("Whole-image oracle lacks raw native rail identity")
+            handle = matches[0].get("native_handle")
+            if type(handle) is not int or handle <= 0 or handle in self.handles:
+                raise RuntimeError("Whole-image oracle lacks raw native rail identity")
+            self.handles.append(handle)
+        if rail is None or nodes[0].get("offscreen") is not False:
+            raise RuntimeError("Whole-image oracle lacks raw native List geometry")
+        if raw_bounds(nodes[0]["bounds"]) != area:
+            raise RuntimeError("Whole-image oracle native List bounds changed")
+        if not isinstance(target, dict):
+            raise TypeError("Whole-image oracle has malformed raw native target")
+        self.initial = self._rails(target.get("initial_native"), identity=True)
+        if any(state["pos"] != state["min"] for state in self.initial[1:]):
+            raise RuntimeError("Whole-image oracle native horizontal origin changed")
+        if target.get("area") != geometry["captured_bounds"] or any(
+            state["root"] != target.get("window") for state in self.initial
+        ):
+            raise RuntimeError(
+                "Whole-image oracle native owner differs from the raw target"
+            )
+        self.original: list[dict[str, int]] = []
+        self.previous: list[dict[str, int]] = []
+
+    def _rails(self, value: object, *, identity: bool = False) -> list[dict[str, int]]:
+        if not isinstance(value, list) or any(not isinstance(r, dict) for r in value):
+            raise RuntimeError("Whole-image oracle lacks native frame evidence")
+        rows = cast("list[dict[str, object]]", value)
+        bars = [row for row in rows if row.get("bar") == _NATIVE_BAR]
+        if (
+            len(bars) != len(self.handles)
+            or any(
+                type(row.get("native_handle")) is not int
+                or type(row.get("bar")) is not int
+                for row in bars
+            )
+            or {row["native_handle"] for row in bars} != set(self.handles)
+        ):
+            raise RuntimeError("Whole-image oracle native rail identity changed")
+        result = []
+        keys = ("native_handle", "min", "max", "page", "pos")
+        if identity:
+            keys += ("parent", "root", "pid")
+        for handle in self.handles:
+            row = next(row for row in bars if row["native_handle"] == handle)
+            if not (
+                all(type(row.get(key)) is int for key in keys)
+                and all(
+                    row.get(key) is True
+                    for key in ("success", "window_valid", "root_matches")
+                )
+            ):
+                raise RuntimeError(
+                    "Whole-image oracle has invalid native frame evidence"
+                )
+            state = {key: cast("int", row[key]) for key in keys}
+            minimum, maximum, page, position = (
+                state[key] for key in ("min", "max", "page", "pos")
+            )
+            if not (
+                (
+                    not identity
+                    or all(state[key] > 0 for key in ("parent", "root", "pid"))
+                )
+                and 0 < page < maximum - minimum
+                and minimum <= position <= maximum - page + 1
+            ):
+                raise RuntimeError("Whole-image oracle has invalid native range")
+            result.append(state)
+        return result
+
+    def observe(self, position: dict[str, object], *, final: bool) -> None:
+        """Require raw identity/ranges, independent mapping and a stable endpoint."""
+        states = self._rails(position.get("native_scroll_info"))
+        vertical = states[0]
+        minimum, maximum, page, current = (
+            vertical[key] for key in ("min", "max", "page", "pos")
+        )
+        percent = _FULL_PERCENT * (current - minimum) / (maximum - page + 1 - minimum)
+        view = _FULL_PERCENT * page / (maximum - minimum)
+        if not (
+            _same_float(position["vertical"], percent)
+            and _same_float(position["view_size"], view)
+            and position["horizontal"] == 0.0
+            and (len(states) == 1 or states[1]["pos"] == states[1]["min"])
+        ):
+            raise RuntimeError("Whole-image oracle native/UIA mapping differs")
+        if not self.original:
+            self.original = states
+            if any(
+                state[key] != initial[key]
+                for state, initial in zip(states, self.initial, strict=True)
+                for key in ("native_handle", "min", "max", "page")
+            ):
+                raise RuntimeError("Whole-image oracle native initial range changed")
+            if current != minimum:
+                raise RuntimeError(
+                    "Whole-image oracle native sequence did not start at minimum"
+                )
+        else:
+            fixed = ("native_handle", "min", "max")
+            if (
+                any(vertical[key] != self.original[0][key] for key in fixed)
+                or states[1:] != self.original[1:]
+                or current <= self.previous[0]["pos"]
+                or (not final and page != self.original[0]["page"])
+            ):
+                raise RuntimeError("Whole-image oracle native continuity changed")
+        if final:
+            if current != maximum - page + 1 or position["vertical"] != _FULL_PERCENT:
+                raise RuntimeError("Whole-image oracle lacks an exact native endpoint")
+            repeated = self._rails(
+                position.get("native_scroll_info_after"), identity=True
+            )
+            if any(
+                state[key] != repeat[key]
+                for state, repeat in zip(states, repeated, strict=True)
+                for key in state
+            ) or any(
+                initial[key] != repeat[key]
+                for initial, repeat in zip(self.initial, repeated, strict=True)
+                for key in ("native_handle", "parent", "root", "pid")
+            ):
+                raise RuntimeError(
+                    "Whole-image oracle native terminal observation changed"
+                )
+        elif "native_scroll_info_after" in position:
+            raise RuntimeError(
+                "Whole-image oracle has misplaced terminal native evidence"
+            )
+        self.previous = states
+
+
+def _same_float(value: object, expected: float) -> bool:
+    """Allow one adjacent float for operation ordering, not a measurement tolerance."""
+    return type(value) in (int, float) and value in (
+        expected,
+        math.nextafter(expected, -math.inf),
+        math.nextafter(expected, math.inf),
+    )
+
+
+def _textured_band(before: list[bytes], after: list[bytes]) -> bool:
+    run: set[bytes] = set()
+    length = 0
+    for old, new in zip(before, after, strict=True):
+        if old != new:
+            run.clear()
+            length = 0
+        else:
+            run.add(new)
+            length += 1
+            if length >= _BAND_ROWS and len(run) >= _TEXTURE_ROWS:
+                return True
+    return False
+
+
+def _native_displacement(before: list[bytes], after: list[bytes], width: int) -> int:
+    """Search every shift independently before consulting either raw item delta."""
+    left = [row[: width * 4] for row in before]
+    right = [row[: width * 4] for row in after]
+    candidates = [
+        shift
+        for shift in range(1, len(before) - _BAND_ROWS + 1)
+        if left[shift:] == right[:-shift]
+        and _textured_band(before[shift:], after[:-shift])
+    ]
+    if len(candidates) != 1:
+        raise RuntimeError(
+            "Whole-image oracle lacks one unique native pixel displacement"
+        )
+    return candidates[0]
 
 
 class _HeaderOracle:
     """Map raw Header geometry and independent retained-item displacement evidence."""
 
-    def __init__(self, path: Path) -> None:
-        self.area, self.header, footer, _rail = list_layout(
-            json.loads(path.read_text(encoding="utf-8"))
+    def __init__(self, path: Path, *, native: bool) -> None:
+        geometry = json.loads(path.read_text(encoding="utf-8"))
+        self.area, self.header, footer, _rail = list_layout(geometry)
+        self.native = (
+            _NativeListOracle(
+                geometry, json.loads((path.parent / "target.json").read_text())
+            )
+            if native
+            else None
         )
+        self._previous_body: list[bytes] = []
+        self._top = 0
         self.height = round(self.header.height)
         self.footer_height = 0 if footer is None else round(footer.height)
         self._body = Rect(
@@ -44,7 +254,7 @@ class _HeaderOracle:
         first = fixed + self._body.height * _FULL_PERCENT / original
         last = fixed + self._body.height * _FULL_PERCENT / terminal
         # The prototype's existing extent tolerance, not an exact offset source.
-        if abs(last - first) > max(2.0, first * 0.02) or any(
+        if (self.native is None and abs(last - first) > max(2.0, first * 0.02)) or any(
             abs(height - expected) > max(2.0, expected * 0.02)
             for expected in (first, last)
         ):
@@ -116,7 +326,7 @@ class _HeaderOracle:
         return previous + round(deltas[0])
 
     def rows(
-        self, frame: QImage, result: list[bytes], matched: bytearray
+        self, frame: QImage, result: list[bytes], matched: bytearray, top: int
     ) -> list[bytes]:
         """Verify the original prefix exactly once and every actual Header pixel."""
         if frame.width() != self.area.width or frame.height() != self.area.height:
@@ -141,7 +351,17 @@ class _HeaderOracle:
             self._footer = suffix
             matched[-self.footer_height :] = b"\1" * self.footer_height
         bottom = len(rows) - self.footer_height
-        return rows[self.height : bottom]
+        body = rows[self.height : bottom]
+        if self.native is not None and self._previous_body:
+            measured = _native_displacement(
+                self._previous_body, body, round(self.header.width)
+            )
+            if measured != top - self._top:
+                raise RuntimeError(
+                    "Whole-image oracle raw item and pixel displacements differ"
+                )
+        self._previous_body, self._top = body, top
+        return body
 
 
 def _rows(image: QImage) -> list[bytes]:
@@ -153,17 +373,150 @@ def _rows(image: QImage) -> list[bytes]:
 
 def _verify_view_size(
     original: float,
-    current: float,
+    position: dict[str, object],
     header: _HeaderOracle | None,
     *,
     final: bool,
     height: int,
 ) -> None:
+    current = cast("float", position["view_size"])
+    if header is not None and header.native is not None:
+        header.native.observe(position, final=final)
+        if final:
+            header.terminal_size(original, current, height)
+            return
     if current == original:
         return
     if header is None or not final:
         raise RuntimeError("Whole-image oracle frame geometry is inconsistent")
     header.terminal_size(original, current, height)
+
+
+def _native_observations(
+    geometry: dict[str, object],
+    target: dict[str, object],
+    positions: list[dict[str, object]],
+) -> list[object]:
+    """Collect raw receipts; missing evidence does not mean unsupported."""
+    sources = [(geometry, "scroll_info"), (target, "initial_native")]
+    sources.extend(
+        (position, key)
+        for position in positions
+        for key in ("native_scroll_info", "native_scroll_info_after")
+    )
+    return [source[key] for source, key in sources if key in source]
+
+
+def _original_horizontal(
+    geometry: dict[str, object],
+    target: dict[str, object],
+    positions: list[dict[str, object]],
+) -> float:
+    values = [position["horizontal"] for position in positions]
+    for source, key in ((geometry, "position"), (target, "initial_position")):
+        if key in source:
+            observed = cast("dict[str, object]", source[key])
+            values.append(observed["horizontal"])
+    if any(
+        type(value) not in (int, float)
+        or not math.isfinite(cast("float", value))
+        or (value != -1.0 and not 0.0 <= cast("float", value) <= _FULL_PERCENT)
+        or value != values[0]
+        for value in values
+    ):
+        raise RuntimeError("Whole-image oracle original horizontal evidence changed")
+    return cast("float", values[0])
+
+
+def _unsupported_native_rail(observations: list[object], allowed: set[int]) -> None:
+    """An explicit absent V HWND is unsupported, not a failed or missing native read."""
+    for value in observations:
+        if not isinstance(value, list) or any(
+            not isinstance(row, dict) for row in value
+        ):
+            raise RuntimeError(
+                "Whole-image oracle has malformed native support evidence"
+            )
+        rows = cast("list[dict[str, object]]", value)
+        if any(
+            row.get("bar") == _NATIVE_BAR and row.get("native_handle") not in allowed
+            for row in rows
+        ):
+            raise RuntimeError("Whole-image oracle raw rail contradicts native support")
+
+
+def _native_selected(
+    geometry: dict[str, object],
+    target: dict[str, object],
+    positions: list[dict[str, object]],
+) -> bool:
+    """Select from raw layout, original H and support, never product flags."""
+    if not isinstance(target, dict):
+        raise TypeError("Whole-image oracle has malformed raw native target")
+    horizontal = _original_horizontal(geometry, target, positions)
+    _area, _header, footer, rail = list_layout(geometry)
+    if horizontal != 0.0 or rail is None:
+        return False
+    tree = cast("dict[str, object]", geometry["uia"])
+    nodes = cast("list[dict[str, object]]", tree["nodes"])
+    bars = [
+        node
+        for node in nodes
+        if node["parent"] == 0
+        and node["control_type"] == _SCROLLBAR_ROLE
+        and node["offscreen"] is False
+    ]
+    vertical = next(node for node in bars if raw_bounds(node["bounds"]) == rail)
+    observations = _native_observations(geometry, target, positions)
+    if "native_handle" not in vertical:
+        if observations or any("native_handle" in node for node in nodes):
+            raise RuntimeError("Whole-image oracle lacks raw native support identity")
+        return False  # Historical raw-geometry-only traces retain the strict oracle.
+    handle = vertical["native_handle"]
+    if handle is None or (type(handle) is int and handle == 0):
+        allowed = {
+            cast("int", node["native_handle"])
+            for node in bars
+            if footer is not None
+            and raw_bounds(node["bounds"]) == footer
+            and type(node.get("native_handle")) is int
+            and cast("int", node["native_handle"]) > 0
+        }
+        _unsupported_native_rail(observations, allowed)
+        return False
+    if type(handle) is not int or handle < 0:
+        raise RuntimeError(
+            "Whole-image oracle has malformed raw native support identity"
+        )
+    if "position" not in geometry or "initial_position" not in target:
+        raise RuntimeError(
+            "Whole-image oracle lacks original native selection evidence"
+        )
+    return True
+
+
+def _oracle_header(
+    output: Path, positions: list[dict[str, object]]
+) -> _HeaderOracle | None:
+    path = output / "header-geometry.json"
+    target_path = output / "target.json"
+    try:
+        target = json.loads(target_path.read_text()) if target_path.is_file() else {}
+        if not path.is_file():
+            return _without_header(target, positions)
+        geometry = json.loads(path.read_text())
+        return _HeaderOracle(path, native=_native_selected(geometry, target, positions))
+    except (KeyError, TypeError, ValueError, OSError) as error:
+        raise RuntimeError(
+            "Whole-image oracle has malformed raw geometry evidence"
+        ) from error
+
+
+def _without_header(
+    target: dict[str, object], positions: list[dict[str, object]]
+) -> None:
+    if _native_observations({}, target, positions):
+        raise RuntimeError("Whole-image oracle lacks raw native Header geometry")
 
 
 def verify_sequence(image: QImage, output: Path) -> dict[str, object]:
@@ -185,15 +538,14 @@ def verify_sequence(image: QImage, output: Path) -> dict[str, object]:
     matched = bytearray(image.height())
     total_pixels, last_top, viewport = 0, -1, 0
     first = positions[0]
-    geometry = output / "header-geometry.json"
-    header = _HeaderOracle(geometry) if geometry.is_file() else None
+    header = _oracle_header(output, positions)
     for index, position in enumerate(positions):
         frame = QImage(str(output / f"frame-{index}.png"))
         viewport = viewport or frame.height()
         total_pixels += frame.width() * frame.height()
         _verify_view_size(
             first["view_size"],
-            position["view_size"],
+            position,
             header,
             final=index == len(positions) - 1,
             height=image.height(),
@@ -223,7 +575,9 @@ def verify_sequence(image: QImage, output: Path) -> dict[str, object]:
             raise RuntimeError("Whole-image oracle positions disagree with output")
         last_top = top
         rows = (
-            header.rows(frame, result, matched) if header is not None else _rows(frame)
+            header.rows(frame, result, matched, top)
+            if header is not None
+            else _rows(frame)
         )
         for row, pixels in enumerate(
             rows, start=top + (header.height if header else 0)
