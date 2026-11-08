@@ -323,7 +323,11 @@ class ExplorerCase:
             _case(kind, output, report)
 
     def cleanup(
-        self, _process: subprocess.Popen[bytes] | None, *, window: int | None = None
+        self,
+        _process: subprocess.Popen[bytes] | None,
+        *,
+        window: int | None = None,
+        deadline: float | None = None,
     ) -> None:
         """Close only the still-verified new fixture HWND; never kill Explorer."""
         del window
@@ -361,8 +365,14 @@ class ExplorerCase:
             "Fixture process identity changed; no window closed",
         )
         native._require(user.PostMessageW(handle, 0x0010, 0, 0), "Fixture close failed")
+        close_deadline = time.monotonic() + 3.0
+        if deadline is not None:
+            close_deadline = min(close_deadline, deadline)
         for _ in range(30):
-            time.sleep(0.1)
+            remaining = close_deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(0.1, remaining))
             if not user.IsWindow(handle):
                 self.report["explorer_cleanup"] = "verified fixture window closed"
                 return

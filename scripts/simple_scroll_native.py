@@ -52,7 +52,10 @@ _WINDOW_WIDTH = 1000
 _WINDOW_HEIGHT = 760
 _GREEN = 80
 _BLUE = 160
-_CLEANUP_SECONDS = 20.0  # Existing taskkill + process-wait budget, shared by all paths.
+# Shared scheduling/acceptance deadline, not a preemptive filesystem timeout.
+# The workflow owns the outer bound if a synchronous cleanup call stalls.
+_CLEANUP_SECONDS = 20.0
+_SHARING_VIOLATION = 32
 _REPRESENTATIVE_PREFIXES = (
     "edge-prose-",
     "edge-panel-",
@@ -857,32 +860,36 @@ def main(
         ),
     }
     try:
-        with TemporaryDirectory(prefix="verdiclip-scroll-test-") as scratch:
-            process = None
+        scratch = TemporaryDirectory(prefix="verdiclip-scroll-test-", delete=False)
+        process = None
+        try:
+            process = _launch(kind, Path(scratch.name), report)
+            (case or _case)(kind, output, report)
+        finally:
+            deadline = time.monotonic() + _CLEANUP_SECONDS
             try:
-                process = _launch(kind, Path(scratch), report)
-                (case or _case)(kind, output, report)
-            finally:
-                try:
-                    window = report.get("window")
-                    handle = window.get("handle") if isinstance(window, dict) else None
-                    _stop_owned_process(
-                        process, window=handle if isinstance(handle, int) else None
+                window = report.get("window")
+                handle = window.get("handle") if isinstance(window, dict) else None
+                _stop_owned_process(
+                    process,
+                    window=handle if isinstance(handle, int) else None,
+                    deadline=deadline,
+                )
+                _cleanup_owned_directory(scratch, deadline=deadline)
+            except (OSError, subprocess.SubprocessError) as error:
+                report["cleanup_error"] = str(error)
+                if isinstance(error, subprocess.CalledProcessError):
+                    report["cleanup_stdout"] = (
+                        error.stdout.decode("utf-8", errors="replace")
+                        if error.stdout
+                        else ""
                     )
-                except (OSError, subprocess.SubprocessError) as error:
-                    report["cleanup_error"] = str(error)
-                    if isinstance(error, subprocess.CalledProcessError):
-                        report["cleanup_stdout"] = (
-                            error.stdout.decode("utf-8", errors="replace")
-                            if error.stdout
-                            else ""
-                        )
-                        report["cleanup_stderr"] = (
-                            error.stderr.decode("utf-8", errors="replace")
-                            if error.stderr
-                            else ""
-                        )
-                    raise
+                    report["cleanup_stderr"] = (
+                        error.stderr.decode("utf-8", errors="replace")
+                        if error.stderr
+                        else ""
+                    )
+                raise
     except Exception as error:
         report["success"] = False
         report["error"] = str(error)
@@ -891,6 +898,33 @@ def main(
         (output / "result.json").write_text(
             json.dumps(report, indent=2), encoding="utf-8"
         )
+
+
+def _cleanup_remaining(deadline: float) -> float:
+    """Reject cleanup work or success after the shared shutdown deadline."""
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("Owned directory cleanup exceeded the shutdown deadline")
+    return remaining
+
+
+def _cleanup_owned_directory(
+    directory: TemporaryDirectory[str], *, deadline: float
+) -> None:
+    """Retry only owned-file sharing violations within the shutdown deadline."""
+    while True:
+        _cleanup_remaining(deadline)
+        try:
+            directory.cleanup()
+        except OSError as error:
+            if getattr(error, "winerror", None) != _SHARING_VIOLATION:
+                raise
+            remaining = _cleanup_remaining(deadline)
+            time.sleep(min(0.1, remaining))
+            _cleanup_remaining(deadline)
+        else:
+            _cleanup_remaining(deadline)
+            return
 
 
 def _request_owned_close(process: subprocess.Popen[bytes], window: int) -> bool:
@@ -913,12 +947,16 @@ def _request_owned_close(process: subprocess.Popen[bytes], window: int) -> bool:
 
 
 def _stop_owned_process(
-    process: subprocess.Popen[bytes] | None, *, window: int | None = None
+    process: subprocess.Popen[bytes] | None,
+    *,
+    window: int | None = None,
+    deadline: float | None = None,
 ) -> None:
     """Close gracefully, then force only the owned PID within one existing budget."""
     if process is None or process.poll() is not None:
         return
-    deadline = time.monotonic() + _CLEANUP_SECONDS
+    if deadline is None:
+        deadline = time.monotonic() + _CLEANUP_SECONDS
     if window is not None and _request_owned_close(process, window):
         try:
             process.wait(timeout=min(3.0, max(0.0, deadline - time.monotonic())))

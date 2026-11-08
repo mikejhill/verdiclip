@@ -319,3 +319,42 @@ def test_explorer_cleanup_never_kills_broker(
     else:
         user.PostMessageW.assert_not_called()
     kill.assert_not_called()
+
+
+@pytest.mark.parametrize("deadline", [None, 0.0, 0.25, 20.0])
+def test_explorer_cleanup_keeps_short_close_bound_and_shared_deadline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, deadline: float | None
+) -> None:
+    """Even a remaining 20-second budget grants no longer Explorer close wait."""
+    runner = diagnostics.ExplorerCase()
+    runner.folder, runner.window, runner.pid = tmp_path, Mock(handle=9), 456
+    monkeypatch.setattr(diagnostics, "_shell_windows", Mock(return_value={9: True}))
+    monkeypatch.setattr(diagnostics, "_window_pid", Mock(return_value=456))
+    user = Mock()
+    user.IsWindow.return_value = True
+    monkeypatch.setattr(c, "WinDLL", Mock(return_value=user), raising=False)
+    now = 0.0
+
+    def pause(seconds: float) -> None:
+        nonlocal now
+        now += seconds
+
+    sleep = Mock(side_effect=pause)
+    monkeypatch.setattr(diagnostics.time, "sleep", sleep)
+    monkeypatch.setattr(diagnostics.time, "monotonic", lambda: now)
+    kill = Mock()
+    monkeypatch.setattr(diagnostics.native, "_stop_owned_process", kill)
+    with pytest.raises(RuntimeError, match="Explorer was not killed"):
+        runner.cleanup(Mock(pid=123), window=9, deadline=deadline)
+    expected = 3.0 if deadline is None else min(3.0, deadline)
+    assert now == pytest.approx(expected)
+    assert now <= expected
+    assert sleep.call_count <= 30
+    if deadline == 0.0:
+        sleep.assert_not_called()
+    elif deadline == 0.25:
+        assert [call.args[0] for call in sleep.call_args_list] == pytest.approx(
+            [0.1, 0.1, 0.05]
+        )
+    user.PostMessageW.assert_called_once_with(9, 0x0010, 0, 0)
+    kill.assert_not_called()

@@ -1296,6 +1296,19 @@ def test_metadata_timeout_still_attempts_actual_notepad_launch(
     assert run.call_count == 1
 
 
+def _mock_native_entry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, kind: str
+) -> None:
+    """Fake only the entrypoint's native DPI and application construction."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("WINDIR", "C:/Windows")
+    monkeypatch.setattr("sys.argv", ["native", kind])
+    user = Mock()
+    user.SetProcessDpiAwarenessContext.return_value = True
+    monkeypatch.setattr(c, "WinDLL", Mock(return_value=user), raising=False)
+    monkeypatch.setattr("scripts.simple_scroll_native.QCoreApplication", Mock())
+
+
 @pytest.mark.parametrize("failure", ["launch", "case", "report", "cleanup", "scratch"])
 def test_native_entry_preserves_real_failures_and_owned_cleanup(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failure: str
@@ -1303,13 +1316,7 @@ def test_native_entry_preserves_real_failures_and_owned_cleanup(
     """Launch/capture errors still fail; even a report error cannot skip cleanup."""
     from scripts.simple_scroll_native import main  # noqa: PLC0415
 
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("WINDIR", "C:/Windows")
-    monkeypatch.setattr("sys.argv", ["native", "notepad"])
-    user = Mock()
-    user.SetProcessDpiAwarenessContext.return_value = True
-    monkeypatch.setattr(c, "WinDLL", Mock(return_value=user), raising=False)
-    monkeypatch.setattr("scripts.simple_scroll_native.QCoreApplication", Mock())
+    _mock_native_entry(monkeypatch, tmp_path, "notepad")
     process = Mock(pid=77)
     process.poll.return_value = None
     launch = Mock(
@@ -1326,14 +1333,12 @@ def test_native_entry_preserves_real_failures_and_owned_cleanup(
     monkeypatch.setattr("scripts.simple_scroll_native._launch", launch)
     monkeypatch.setattr("scripts.simple_scroll_native._case", case)
     monkeypatch.setattr("scripts.simple_scroll_native.subprocess.run", stop)
+    directory = MagicMock()
+    directory.name = str(tmp_path / "scratch")
+    temporary = Mock(return_value=directory)
+    monkeypatch.setattr("scripts.simple_scroll_native.TemporaryDirectory", temporary)
     if failure == "scratch":
-        directory = MagicMock()
-        directory.__enter__.return_value = str(tmp_path / "scratch")
-        directory.__exit__.side_effect = OSError("scratch failed")
-        monkeypatch.setattr(
-            "scripts.simple_scroll_native.TemporaryDirectory",
-            Mock(return_value=directory),
-        )
+        directory.cleanup.side_effect = OSError("scratch failed")
         case.side_effect = lambda _kind, _output, report: report.update(success=True)
     if failure == "report":
         monkeypatch.setattr(
@@ -1344,6 +1349,11 @@ def test_native_entry_preserves_real_failures_and_owned_cleanup(
         match="exit status 255" if failure == "cleanup" else f"{failure} failed",
     ):
         main()
+    directory.__exit__.assert_not_called()
+    if failure == "cleanup":
+        directory.cleanup.assert_not_called()
+    else:
+        directory.cleanup.assert_called_once_with()
     if failure == "launch":
         case.assert_not_called()
         stop.assert_not_called()
@@ -1408,11 +1418,12 @@ def test_native_entry_accepts_gui_case_without_importing_handoff(
     default_case = Mock(side_effect=AssertionError("Wrong case"))
     monkeypatch.setattr("scripts.simple_scroll_native._case", default_case)
     case = Mock(side_effect=lambda _kind, _output, report: report.update(success=True))
+    monkeypatch.setattr("scripts.simple_scroll_native.time.monotonic", lambda: 12.0)
     main(gui=True, case=case)
     assert application.return_value.setQuitOnLastWindowClosed.call_args.args == (False,)
     case.assert_called_once()
     default_case.assert_not_called()
-    stop.assert_called_once_with(process, window=None)
+    stop.assert_called_once_with(process, window=None, deadline=32.0)
     report = json.loads(
         (tmp_path / "artifacts/simple-scroll/edge-select/result.json").read_text()
     )
@@ -1501,6 +1512,222 @@ def test_native_cleanup_does_not_force_an_owned_process_that_just_exited(
     request.assert_called_once_with(process, 123)
     force.assert_not_called()
     process.wait.assert_not_called()
+
+
+@pytest.mark.parametrize("remaining", [0.0, 0.25, 2.0])
+def test_native_cleanup_does_not_reset_a_supplied_shutdown_deadline(
+    monkeypatch: pytest.MonkeyPatch, remaining: float
+) -> None:
+    """An enclosing cleanup owner, not the stop helper, owns remaining time."""
+    from scripts.simple_scroll_native import _stop_owned_process  # noqa: PLC0415
+
+    process = Mock(pid=42)
+    process.poll.return_value = None
+    force = Mock()
+    monkeypatch.setattr("scripts.simple_scroll_native.subprocess.run", force)
+    monkeypatch.setattr(
+        "scripts.simple_scroll_native.time.monotonic", lambda: 20.0 - remaining
+    )
+    monkeypatch.setenv("WINDIR", "C:/Windows")
+    _stop_owned_process(process, deadline=20.0)
+    force.assert_called_once()
+    assert force.call_args.args[0][-4:] == ["/PID", "42", "/T", "/F"]
+    assert force.call_args.kwargs["timeout"] == remaining
+    process.wait.assert_called_once_with(timeout=remaining)
+
+
+@pytest.mark.parametrize("failures", [0, 1, 2])
+def test_native_directory_cleanup_retries_only_the_owned_directory(
+    monkeypatch: pytest.MonkeyPatch, failures: int
+) -> None:
+    """Released handles allow the same public cleanup, with no process action."""
+    from scripts.simple_scroll_native import _cleanup_owned_directory  # noqa: PLC0415
+
+    error = PermissionError("owned profile is still in use")
+    error.winerror = 32
+    directory = Mock()
+    directory.cleanup.side_effect = [error] * failures + [None]
+    pause = Mock()
+    stop = Mock(side_effect=AssertionError("Shutdown must not be repeated"))
+    monkeypatch.setattr("scripts.simple_scroll_native.time.monotonic", lambda: 18.0)
+    monkeypatch.setattr("scripts.simple_scroll_native.time.sleep", pause)
+    monkeypatch.setattr("scripts.simple_scroll_native._stop_owned_process", stop)
+    _cleanup_owned_directory(directory, deadline=20.0)
+    assert directory.cleanup.call_count == failures + 1
+    assert all(
+        call.args == () and call.kwargs == {}
+        for call in directory.cleanup.call_args_list
+    )
+    assert pause.call_count == failures
+    assert all(call.args == (0.1,) for call in pause.call_args_list)
+    stop.assert_not_called()
+
+
+@pytest.mark.parametrize("remaining", [0.0, 0.25])
+def test_native_directory_cleanup_stops_at_the_shared_deadline(
+    monkeypatch: pytest.MonkeyPatch, remaining: float
+) -> None:
+    """A persistent sharing violation stays failed without another budget."""
+    from scripts.simple_scroll_native import _cleanup_owned_directory  # noqa: PLC0415
+
+    error = PermissionError("owned profile is still in use")
+    error.winerror = 32
+    directory = Mock()
+    directory.cleanup.side_effect = error
+    now = 20.0 - remaining
+
+    def pause(seconds: float) -> None:
+        nonlocal now
+        now += seconds
+
+    sleep = Mock(side_effect=pause)
+    monkeypatch.setattr("scripts.simple_scroll_native.time.monotonic", lambda: now)
+    monkeypatch.setattr("scripts.simple_scroll_native.time.sleep", sleep)
+    with pytest.raises(TimeoutError, match="shutdown deadline") as caught:
+        _cleanup_owned_directory(directory, deadline=20.0)
+    assert caught.value.__context__ is (error if remaining else None)
+    assert now == 20.0
+    assert directory.cleanup.call_count == (3 if remaining else 0)
+    assert [call.args[0] for call in sleep.call_args_list] == pytest.approx(
+        [0.1, 0.1, 0.05] if remaining else []
+    )
+
+
+@pytest.mark.parametrize("winerror", [None, 5, 33])
+def test_native_directory_cleanup_rejects_other_errors_immediately(
+    monkeypatch: pytest.MonkeyPatch, winerror: int | None
+) -> None:
+    """Permission errors are not presumed to be transient sharing violations."""
+    from scripts.simple_scroll_native import _cleanup_owned_directory  # noqa: PLC0415
+
+    error = PermissionError("owned directory cannot be removed")
+    if winerror is not None:
+        error.winerror = winerror
+    directory = Mock()
+    directory.cleanup.side_effect = error
+    pause, clock = Mock(), Mock(return_value=0.0)
+    monkeypatch.setattr("scripts.simple_scroll_native.time.sleep", pause)
+    monkeypatch.setattr("scripts.simple_scroll_native.time.monotonic", clock)
+    with pytest.raises(PermissionError) as caught:
+        _cleanup_owned_directory(directory, deadline=20.0)
+    assert caught.value is error
+    directory.cleanup.assert_called_once_with()
+    pause.assert_not_called()
+    clock.assert_called_once_with()
+
+
+@pytest.mark.parametrize("elapsed", [20.0, 21.0])
+def test_native_directory_cleanup_never_starts_after_expiry(
+    monkeypatch: pytest.MonkeyPatch, elapsed: float
+) -> None:
+    """A fully consumed shutdown budget cannot start even the first deletion."""
+    from scripts.simple_scroll_native import _cleanup_owned_directory  # noqa: PLC0415
+
+    directory = Mock()
+    pause = Mock()
+    monkeypatch.setattr("scripts.simple_scroll_native.time.monotonic", lambda: elapsed)
+    monkeypatch.setattr("scripts.simple_scroll_native.time.sleep", pause)
+    with pytest.raises(TimeoutError, match="shutdown deadline"):
+        _cleanup_owned_directory(directory, deadline=20.0)
+    directory.cleanup.assert_not_called()
+    pause.assert_not_called()
+
+
+@pytest.mark.parametrize("finished", [20.0, 21.0])
+def test_native_directory_cleanup_rejects_late_success(
+    monkeypatch: pytest.MonkeyPatch, finished: float
+) -> None:
+    """A non-preemptible deletion returning late cannot be accepted as success."""
+    from scripts.simple_scroll_native import _cleanup_owned_directory  # noqa: PLC0415
+
+    now = 19.75
+
+    def cleanup() -> None:
+        nonlocal now
+        now = finished
+
+    directory = Mock()
+    directory.cleanup.side_effect = cleanup
+    pause = Mock()
+    monkeypatch.setattr("scripts.simple_scroll_native.time.monotonic", lambda: now)
+    monkeypatch.setattr("scripts.simple_scroll_native.time.sleep", pause)
+    with pytest.raises(TimeoutError, match="shutdown deadline"):
+        _cleanup_owned_directory(directory, deadline=20.0)
+    directory.cleanup.assert_called_once_with()
+    pause.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "outcome", ["released", "locked", "permission", "expired", "slow_success"]
+)
+def test_native_entry_shares_shutdown_budget_with_directory_cleanup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, outcome: str
+) -> None:
+    """Cleanup retry never reruns shutdown or converts a failed removal to pass."""
+    from scripts.simple_scroll_native import main  # noqa: PLC0415
+
+    _mock_native_entry(monkeypatch, tmp_path, "edge")
+    process = Mock()
+    launch = Mock(return_value=process)
+    case = Mock(side_effect=lambda _kind, _output, report: report.update(success=True))
+    monkeypatch.setattr("scripts.simple_scroll_native._launch", launch)
+    monkeypatch.setattr("scripts.simple_scroll_native._case", case)
+    error = PermissionError("owned profile could not be removed")
+    error.winerror = 5 if outcome == "permission" else 32
+    directory = MagicMock()
+    directory.name = str(tmp_path / "owned-scratch")
+    directory.cleanup.side_effect = [error, None] if outcome == "released" else error
+    temporary = Mock(return_value=directory)
+    monkeypatch.setattr("scripts.simple_scroll_native.TemporaryDirectory", temporary)
+    now = 0.0
+
+    def shutdown(*_args: object, **_kwargs: object) -> None:
+        nonlocal now
+        now = 20.0 if outcome == "expired" else 19.75
+
+    def pause(seconds: float) -> None:
+        nonlocal now
+        now += seconds
+
+    if outcome == "slow_success":
+        directory.cleanup.side_effect = lambda: pause(1.0)
+    stop = Mock(side_effect=shutdown)
+    monkeypatch.setattr("scripts.simple_scroll_native._stop_owned_process", stop)
+    monkeypatch.setattr("scripts.simple_scroll_native.time.monotonic", lambda: now)
+    monkeypatch.setattr("scripts.simple_scroll_native.time.sleep", pause)
+    if outcome == "released":
+        main()
+    else:
+        failure = PermissionError if outcome == "permission" else TimeoutError
+        with pytest.raises(failure) as caught:
+            main()
+        if outcome == "permission":
+            assert caught.value is error
+    temporary.assert_called_once_with(prefix="verdiclip-scroll-test-", delete=False)
+    assert launch.call_args.args[1] == Path(directory.name)
+    stop.assert_called_once_with(process, window=None, deadline=20.0)
+    directory.__exit__.assert_not_called()
+    assert (
+        directory.cleanup.call_count
+        == {
+            "released": 2,
+            "locked": 3,
+            "permission": 1,
+            "expired": 0,
+            "slow_success": 1,
+        }[outcome]
+    )
+    assert now <= 20.0 or outcome == "slow_success"
+    report = json.loads(
+        (tmp_path / "artifacts/simple-scroll/edge/result.json").read_text()
+    )
+    assert report["success"] is (outcome == "released")
+    if outcome != "released":
+        assert report["cleanup_error"] == report["error"]
+        if outcome == "permission":
+            assert report["error"] == str(error)
+        else:
+            assert "shutdown deadline" in report["error"]
 
 
 def test_gui_selection_checks_are_read_only_and_do_not_enter_com(
