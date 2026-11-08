@@ -7,6 +7,18 @@
 
 * integrate bounded scrolling capture ([#127](https://github.com/mikejhill/verdiclip/issues/127)) ([452987c](https://github.com/mikejhill/verdiclip/commit/452987ca053cd5684031654a0f6dd9adf9d77fb3))
 
+Choose **Capture scrolling area** from the tray or press `Ctrl+Alt+PrtSc`, then
+click a finite, static vertical panel that supports Windows UI Automation. The
+image uses your normal editor, clipboard and save settings. Ordinary capture
+and Repeat are unchanged; there is no configuration dialog or input injection.
+
+Capture uses the whole visible width, preserving the horizontal position. Keep
+the target foreground, unobscured and still. Mouse/keyboard activity, including
+`Esc`, stops capture without delivering a partial image or promising restoration.
+Visible scrollbar thumbs and focus borders may remain. Hidden pixels, tiny
+overlays, sticky/animated/infinite content and fractional layouts are not
+qualified. See [support and limits](README.md#scrolling-capture).
+
 ## [0.13.3](https://github.com/mikejhill/verdiclip/compare/v0.13.2...v0.13.3) (2026-11-07)
 
 

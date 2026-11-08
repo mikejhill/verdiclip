@@ -28,14 +28,15 @@ def run(identity: int, path: str) -> dict[str, object]:
 
 def good() -> list[dict[str, object]]:
     """Good."""
-    return [run(1, "ci"), run(2, "codeql")]
+    return [run(1, "ci"), run(2, "codeql"), run(3, "simple-scroll-native")]
 
 
 def test_exact_main_checks_required() -> None:
     """Exact main checks required."""
-    assert assess(good(), SHA) == (True, [1, 2])
+    assert assess(good(), SHA) == (True, [1, 2, 3])
     assert assess([], SHA) == (False, [])
     assert assess(good()[:1], SHA)[0] is False
+    assert assess(good()[:2], SHA)[0] is False
     assert assess(good(), "b" * 40)[0] is False
 
 
@@ -44,15 +45,15 @@ def test_passing_release_run_cannot_erase_failed_main(result: object) -> None:
     """Passing release run cannot erase failed main."""
     rows = good()
     rows[0]["conclusion"] = result
-    rows.append(run(3, "release"))
-    rows.append(run(4, "ci"))
+    rows.append(run(4, "release"))
+    rows.append(run(5, "ci"))
     with pytest.raises(ValueError, match="did not succeed"):
         assess(rows, SHA)
 
 
 def test_pending_and_optional_main_verification_block() -> None:
     """Pending and optional main verification block."""
-    rows = [*good(), run(3, "gui-resource-readiness")]
+    rows = [*good(), run(4, "gui-resource-readiness")]
     rows[-1]["status"] = "in_progress"
     assert not assess(rows, SHA)[0]
     rows[-1]["status"] = "completed"
@@ -63,10 +64,10 @@ def test_pending_and_optional_main_verification_block() -> None:
 
 def test_async_mutation_does_not_become_a_release_dependency() -> None:
     """Async mutation does not become a release dependency."""
-    rows = [*good(), run(3, "mutation"), run(4, "mutation-alerts")]
-    for item in rows[2:]:
+    rows = [*good(), run(4, "mutation"), run(5, "mutation-alerts")]
+    for item in rows[3:]:
         item["status"] = "queued"
-    assert assess(rows, SHA) == (True, [1, 2])
+    assert assess(rows, SHA) == (True, [1, 2, 3])
 
 
 @pytest.mark.parametrize(
@@ -178,5 +179,18 @@ def test_complete_gate_path(
     else:
         gate.main()
         receipt = json.loads(capsys.readouterr().out)
-        assert receipt == {"main_sha": SHA, "verified_runs": [1, 2]}
+        assert receipt == {"main_sha": SHA, "verified_runs": [1, 2, 3]}
         assert len(endpoints) == 3
+
+
+@pytest.mark.parametrize("outcome", ["queued", "failure", "skipped"])
+def test_native_qualification_is_a_required_publication_gate(outcome: str) -> None:
+    """A version-only release still needs its exact main native result."""
+    rows = good()
+    if outcome == "queued":
+        rows[-1]["status"] = "queued"
+        assert not assess(rows, SHA)[0]
+    else:
+        rows[-1]["conclusion"] = outcome
+        with pytest.raises(ValueError, match="did not succeed"):
+            assess(rows, SHA)

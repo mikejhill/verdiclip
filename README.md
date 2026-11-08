@@ -42,11 +42,9 @@ VerdiClip checks PyPI for a newer release a minute after it starts and every 6 h
 
 Tray → **Check for updates** opens a status window immediately. It stays visible with the result or an error; a failed check can be retried. Development versions that cannot be compared with stable releases say so explicitly. Settings → General turns off automatic checking, or automatic installing (VerdiClip then offers each release in a notification). If an update fails, the old version starts again and the notification names the log, `%APPDATA%\VerdiClip\update\update.log`.
 
-## Corrective release candidate
+## Capture and tabs
 
-This candidate restores 0.12.1 capture behavior and adds tabs. Completed captures open a new tab in the existing editor by default; Settings can choose separate windows. The editor is brought forward when capture completes, unless protected editor UI is open.
-
-Scrolling capture and the broker-based menu redesign are not included. Historical design documents are retained for reference. See [the corrective scope](docs/corrective-release-scope.md) for the release boundaries and later work.
+Completed captures open a new tab in the existing editor by default; Settings can choose separate windows. The editor is brought forward when capture completes, unless protected editor UI is open. Ordinary region, window, full-screen and Repeat capture keep their existing behavior. Scrolling capture is a separate command with the limits below.
 
 ## Capture
 
@@ -56,12 +54,23 @@ Scrolling capture and the broker-based menu redesign are not included. Historica
 | Capture the active window | `Alt+PrtSc` |
 | Capture every monitor | `Ctrl+PrtSc` |
 | Repeat the last capture | `Shift+PrtSc` |
+| Capture a scrolling area | `Ctrl+Alt+PrtSc` |
 
 ![The capture overlay: the frozen screen is dimmed, the window under the cursor is outlined with its title, and a magnifier shows the exact pixels](https://raw.githubusercontent.com/mikejhill/verdiclip/main/docs/images/capture.png)
 
 While selecting, the screen is frozen so you get exactly what you saw. A magnifier follows the cursor, arrow keys nudge it by a pixel (`Ctrl` for 10), `Enter` starts and finishes a selection from the keyboard, clicking without dragging captures the window under the cursor, and `Esc` cancels.
 
 If Windows or another screenshot tool already owns `PrtSc`, VerdiClip tells you which hotkeys are taken; everything is still available from the tray menu, and you can choose other keys in Settings.
+
+### Scrolling capture
+
+Choose **Capture scrolling area** from the tray, or press `Ctrl+Alt+PrtSc`, then click inside the scrolling panel. You can also select the current pointer position with `Enter`. There is no configuration dialog. Keep the target window still and avoid mouse or keyboard activity until capture finishes. The complete image uses your usual editor, clipboard and file settings, without changing ordinary Repeat history.
+
+This supports finite, static, vertically scrollable panels that expose Windows UI Automation. It captures the panel's whole currently visible width and preserves its horizontal position; it does not uncover content hidden horizontally. The desktop must be unlocked and the target foreground and unobscured. There is no input or application-code injection.
+
+Press `Esc` to cancel. Other mouse/keyboard input, focus changes or a moved/resized target also stop capture. Cancellation delivers no image. After real input, VerdiClip leaves you in control rather than attempting to restore the old scroll position. It restores only while the target and input state remain eligible; a blocked application or forced stop may leave the panel scrolled.
+
+Scrollbar thumbs and original focus borders can remain in the image, including repeated scrollbar chrome between sections. Pixels hidden behind those boundaries are not reconstructed. Sticky headers, animated or infinite content, fractional layouts and tiny in-app overlays are not qualified; some changes between observations cannot be detected. Ambiguous joins and unsupported providers stop with an explanation instead of delivering a partial capture. Limits are 25 seconds, 80 frames and 40 million pixels. See the [scrolling design and qualification](docs/design/simple-scrolling.md) for exact evidence and remaining limits.
 
 ## Annotate
 

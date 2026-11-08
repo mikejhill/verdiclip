@@ -1,7 +1,9 @@
-name: Simple scrolling native feasibility
+name: Bounded scrolling native qualification
 
 on:
   pull_request:
+  push:
+    branches: [main]
 
 permissions:
   contents: read
@@ -9,9 +11,12 @@ permissions:
 jobs:
   native:
     if: >-
-      github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
-      github.head_ref == 'feature/simple-scrolling' &&
-      github.event.pull_request.draft == true
+      github.repository == 'mikejhill/verdiclip' &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+       (github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
+        ((github.head_ref == 'feature/simple-scrolling' && github.event.pull_request.draft == true) ||
+         github.head_ref == 'release-please--branches--main--components--verdiclip')))
     name: Actual application / ${{ matrix.application }}
     runs-on: windows-2025
     timeout-minutes: 8
@@ -25,11 +30,16 @@ jobs:
       QT_QPA_PLATFORM: windows
       PYTHONUTF8: "1"
       SCROLL_APPLICATION: ${{ matrix.application }}
+      QUALIFICATION_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+      - name: Require exact qualification source
+        run: |
+          $actual = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0 -or $actual -ne $env:QUALIFICATION_HEAD) { throw 'Source mismatch' }
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           python-version: "3.13"

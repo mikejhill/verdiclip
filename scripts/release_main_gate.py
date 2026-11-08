@@ -12,7 +12,11 @@ from urllib.request import Request, urlopen
 
 PAGE_SIZE = 100
 REPOSITORY = "mikejhill/verdiclip"
-REQUIRED = {".github/workflows/ci.yml", ".github/workflows/codeql.yml"}
+REQUIRED = {
+    ".github/workflows/ci.yml",
+    ".github/workflows/codeql.yml",
+    ".github/workflows/simple-scroll-native.yml",
+}
 EXCLUDED = {
     ".github/workflows/release.yml",
     ".github/workflows/mutation.yml",

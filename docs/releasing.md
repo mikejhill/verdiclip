@@ -47,6 +47,11 @@ laptop or completion of every item in the physical checklist.
    review threads and code-scanning findings as described in
    [CONTRIBUTING.md](../CONTRIBUTING.md). Preserve the exact-main verification gate
    before publication; do not weaken coverage, latency or security requirements.
+   The bounded scrolling native matrix also runs on the trusted release branch
+   and every main push. Publication requires that exact main result in addition
+   to CI and CodeQL, including all 13 scrolling cases, real desktop smoke and the
+   unchanged native popup/modal/tab regressions. A missing, skipped or failed
+   native run cannot be replaced by an earlier feature-branch result.
 2. Review the changed UX contracts and their automated evidence, including
    interrupted/repeated flows, focused editors and the applicable Qt profiles.
    Review light/dark snapshots for visible changes. Record the final commit, run
