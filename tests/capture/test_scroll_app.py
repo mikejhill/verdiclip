@@ -570,3 +570,37 @@ def test_native_helper_records_wrong_choice_before_exact_assertion(
     assert case.report["release_input_tick"] == 456
     assert case.report["requested_center"] == {"x": 523, "y": 384.5}
     launch.assert_not_called()
+
+
+@pytest.mark.parametrize("message", ["The list header has unsupported geometry", ""])
+def test_empty_discovery_target_preserves_original_helper_failure(
+    tmp_path: Path, message: str
+) -> None:
+    """A pre-open failure must not become a misleading target['window'] KeyError."""
+    case = object.__new__(AppCapture)
+    case.output = tmp_path
+    case.report = {}
+    case.helper = Mock(diagnostics="Numeric Header rejection evidence")
+    case.desktop = Mock()
+    case.source = Mock()
+    (tmp_path / "target.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "movement.json").write_text(
+        '{"writes": 0, "last_vertical": null}', encoding="utf-8"
+    )
+    result = ScrollResult(None, message, "unchanged: target discovery failed", 0)
+    with pytest.raises(RuntimeError) as error:
+        case._terminal(result)
+    assert str(error.value) == (
+        message or "The helper did not identify a scroll target"
+    )
+    assert case.result is result
+    assert case.report["message"] == message
+    assert case.report["restoration"] == "unchanged: target discovery failed"
+    assert case.report["frames"] == 0
+    assert case.report["child_target"] == {}
+    assert case.report["movement"] == {"writes": 0, "last_vertical": None}
+    assert (tmp_path / "helper.log").read_text() == "Numeric Header rejection evidence"
+    assert isinstance(case.source, Mock)
+    case.source.freeze.assert_not_called()
+    assert not (tmp_path / "after.png").exists()
+    assert not (tmp_path / "result.png").exists()

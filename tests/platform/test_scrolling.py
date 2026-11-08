@@ -126,6 +126,43 @@ def test_header_discovery_never_infers_a_header(change: str) -> None:
     assert walker.relative.call_count == 2
 
 
+@pytest.mark.parametrize("eligible", [False, True])
+def test_header_discovery_records_raw_bars_without_changing_eligibility(
+    caplog: pytest.LogCaptureFixture, *, eligible: bool
+) -> None:
+    """Log each existing raw rail read, including excluded sizes and hidden bars."""
+    area = Rect(178, 146, 824, 532)
+    root = header_element(50008, area)
+    header = header_element(50034, Rect(178, 146, 807, 25))
+    short = header_element(50014, Rect(968, 146, 34, 498))
+    horizontal = header_element(50014, Rect(178, 644, 790, 34))
+    hidden = header_element(50014, Rect(985, 146, 17, 532))
+    hidden.offscreen.return_value = True
+    bar = header_element(50014, Rect(985, 146, 17, 532))
+    raw = [short, horizontal, hidden]
+    if eligible:
+        raw.append(bar)
+    walker = Mock(relative=Mock(side_effect=[*raw, header, None]))
+    with ExitStack() as owners, caplog.at_level("INFO", logger=scrolling.__name__):
+        if eligible:
+            layout = _ScrollHeader.discover(root, walker, owners, area)
+            assert layout is not None
+            assert layout.scrollbar is bar
+        else:
+            with pytest.raises(CaptureError, match="full width"):
+                _ScrollHeader.discover(root, walker, owners, area)
+    for excluded in (short, horizontal, hidden):
+        excluded.bounds.assert_called_once_with()
+        assert f"bounds={excluded.bounds.return_value}" in caplog.text
+    short.offscreen.assert_not_called()
+    horizontal.offscreen.assert_not_called()
+    hidden.offscreen.assert_called_once_with()
+    assert caplog.text.count("Scrolling direct ScrollBar: role=50014") == len(raw)
+    assert caplog.text.count("height_matches=False") == 2
+    assert caplog.text.count("height_matches=True") == 1 + eligible
+    assert walker.relative.call_count == len(raw) + 2
+
+
 def test_header_discovery_rejects_ambiguity_and_truncation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -158,20 +195,51 @@ def test_header_absence_requires_complete_bounded_discovery(
 
 
 @pytest.mark.parametrize(
-    "bounds",
+    ("bounds", "failed"),
     [
-        Rect(179, 146, 806, 25),
-        Rect(178, 147, 807, 25),
-        Rect(178, 146, 825, 25),
-        Rect(178, 146, 807, 0),
-        Rect(178, 146, 0, 25),
-        Rect(178, 146, 807, 500),
+        (Rect(179, 146, 806, 25), "left_mismatch"),
+        (Rect(178, 147, 807, 25), "top_mismatch"),
+        (Rect(178, 146, 825, 25), "right_overflow"),
+        (Rect(178, 146, 807, 0), "nonpositive_height"),
+        (Rect(178, 146, 0, 25), "nonpositive_width"),
+        (Rect(178, 146, 807, 500), "short_body"),
     ],
 )
-def test_header_geometry_rejects_unproved_top_band(bounds: Rect) -> None:
+def test_header_geometry_rejects_unproved_top_band(
+    bounds: Rect, failed: str, caplog: pytest.LogCaptureFixture
+) -> None:
     """Only exact top-aligned geometry leaving a viable body is supported."""
     with pytest.raises(CaptureError, match="geometry"):
         _ScrollHeader(header_element(50034, bounds), None, Rect(178, 146, 824, 532))
+    assert f"header={bounds}" in caplog.text
+    assert "captured=Rect(x=178, y=146, width=824, height=532)" in caplog.text
+    assert f"failed=['{failed}']" in caplog.text
+    assert "header_role=50034" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "failure", [None, CaptureError("Changed"), OSError("Unavailable")]
+)
+def test_header_rejection_retains_raw_rail_or_marks_failed_read(
+    failure: Exception | None, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The optional diagnostic read cannot change the original rejection."""
+    area = Rect(178, 146, 824, 532)
+    header = header_element(50034, Rect(178, 146, 1200, 50))
+    rail = header_element(50014, Rect(968, 146, 34, 532))
+    rail.bounds.side_effect = failure
+    with pytest.raises(
+        CaptureError, match=r"^The list header has unsupported geometry$"
+    ):
+        _ScrollHeader(header, rail, area)
+    header.bounds.assert_called_once_with()
+    rail.bounds.assert_called_once_with()
+    assert "scrollbar_role=50014" in caplog.text
+    assert f"scrollbar_read_failed={failure is not None}" in caplog.text
+    if failure is None:
+        assert "scrollbar=Rect(x=968, y=146, width=34, height=532)" in caplog.text
+    else:
+        assert "scrollbar=None" in caplog.text
 
 
 @pytest.mark.parametrize("gap", [0, 1, 2])
@@ -2050,3 +2118,121 @@ def test_native_handle_must_survive_final_read() -> None:
     mock(item._header.scrollbar.native_handle).side_effect = [101, 105]
     with pytest.raises(CaptureError, match="during observation"):
         item.scrollbar_state()
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "none",
+        "client",
+        "mapping",
+        "owner",
+        "input-before",
+        "input-after",
+        "no-handle",
+        "no-dpi",
+    ],
+)
+def test_header_failure_context_is_bounded_checked_numeric_evidence(
+    failure: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Read the actual selected-window DPI and unclipped native client once."""
+    native = target()
+    native._native_handle = None if failure == "no-handle" else 11
+    native._check_window = Mock()
+    if failure.startswith("input-"):
+        mock(native._check_window).side_effect = (
+            [CaptureError("Changed input")]
+            if failure == "input-before"
+            else [None, CaptureError("Changed input")]
+        )
+    mock(native._user.GetAncestor).return_value = 99 if failure == "owner" else 1
+    mock(native._user).GetDpiForWindow = (
+        None if failure == "no-dpi" else Mock(return_value=192)
+    )
+
+    def client(_handle: int, output: c._CArgObject) -> bool:
+        rectangle = c.cast(output, c.POINTER(w.RECT)).contents
+        rectangle.left, rectangle.top, rectangle.right, rectangle.bottom = (
+            0,
+            0,
+            950,
+            600,
+        )
+        return failure != "client"
+
+    def screen(_handle: int, output: c._CArgObject) -> bool:
+        point = c.cast(output, c.POINTER(w.POINT)).contents
+        point.x += 300
+        point.y += 200
+        return failure != "mapping"
+
+    mock(native._user.GetClientRect).side_effect = client
+    mock(native._user.ClientToScreen).side_effect = screen
+    client_signature = (w.HWND, c.POINTER(w.RECT))
+    screen_signature = (w.HWND, c.POINTER(w.POINT))
+    native._user.GetClientRect.argtypes = client_signature
+    native._user.ClientToScreen.argtypes = screen_signature
+    native._log_header_context()
+    assert native._user.GetClientRect.argtypes == client_signature
+    assert native._user.ClientToScreen.argtypes == screen_signature
+    assert "provider=Rect(x=20, y=20, width=300, height=300)" in caplog.text
+    assert "captured=Rect(x=20, y=20, width=300, height=300)" in caplog.text
+    assert "selected_window=1" in caplog.text
+    success = failure in ("none", "no-handle", "no-dpi")
+    assert f"observation_valid={success}" in caplog.text
+    if success:
+        assert mock(native._check_window).call_count == 2
+        assert f"window_dpi={None if failure == 'no-dpi' else 192}" in caplog.text
+        if failure == "no-handle":
+            assert "native_client=None" in caplog.text
+            mock(native._user.GetClientRect).assert_not_called()
+        else:
+            assert (
+                "native_client=Rect(x=300, y=200, width=950, height=600)" in caplog.text
+            )
+            mock(native._user.GetClientRect).assert_called_once_with(
+                11, mock(native._user.GetClientRect).call_args.args[1]
+            )
+            assert mock(native._user.ClientToScreen).call_count == 2
+        if failure != "no-dpi":
+            mock(native._user.GetDpiForWindow).assert_called_once_with(1)
+    else:
+        assert "native_client=None" in caplog.text
+        assert "window_dpi=None" in caplog.text
+    mock(native._scroll.call).assert_not_called()
+    mock(native._screens.freeze).assert_not_called()
+
+
+@pytest.mark.parametrize("context_failure", [False, True])
+def test_failed_header_discovery_logs_context_without_replacing_exception(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    *,
+    context_failure: bool,
+) -> None:
+    """The original helper failure survives even if diagnostic reads also fail."""
+    native = target()
+    native._ole = Mock()
+    native._discover = Mock(return_value=(native._element, native._scroll))
+    automation = Mock()
+    monkeypatch.setattr(scrolling, "_Interface", Mock(return_value=automation))
+    monkeypatch.setattr(
+        _ScrollHeader,
+        "discover",
+        Mock(side_effect=CaptureError("The list header has unsupported geometry")),
+    )
+    native._header_context = Mock(
+        return_value=(Rect(1, 2, 300, 400), 192),
+        side_effect=OSError("Read failed") if context_failure else None,
+    )
+    try:
+        with pytest.raises(
+            CaptureError, match=r"^The list header has unsupported geometry$"
+        ):
+            native._open(Point(30, 40), window=1, input_tick=12)
+    finally:
+        native._owners.close()
+    mock(native._header_context).assert_called_once_with()
+    assert f"observation_valid={not context_failure}" in caplog.text
+    mock(native._scroll.call).assert_not_called()

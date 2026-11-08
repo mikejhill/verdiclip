@@ -225,6 +225,7 @@ class _ScrollHeader:
             or self.bounds.height <= 0
             or area.bottom - self.bounds.bottom < _MIN_SIZE
         ):
+            self._log_rejected_geometry(area, scrollbar)
             raise CaptureError("The list header has unsupported geometry")
         if self.bounds.right != area.right:
             expected = Rect(
@@ -236,6 +237,39 @@ class _ScrollHeader:
                 )
             self._parts.append((scrollbar, _SCROLLBAR_CONTROL, expected))
             self.scrollbar = scrollbar
+
+    def _log_rejected_geometry(self, area: Rect, scrollbar: _Interface | None) -> None:
+        """Record bounded numeric evidence without replacing the original rejection."""
+        rail, rail_read_failed = None, False
+        try:
+            if scrollbar is not None:
+                rail = scrollbar.bounds()
+        except (CaptureError, OSError):
+            rail_read_failed = True
+        failed = [
+            name
+            for name, invalid in (
+                ("left_mismatch", self.bounds.left != area.left),
+                ("top_mismatch", self.bounds.top != area.top),
+                ("nonpositive_width", self.bounds.width <= 0),
+                ("right_overflow", self.bounds.right > area.right),
+                ("nonpositive_height", self.bounds.height <= 0),
+                ("short_body", area.bottom - self.bounds.bottom < _MIN_SIZE),
+            )
+            if invalid
+        ]
+        logger.warning(
+            "Scrolling Header geometry rejected: captured=%s header_role=%s "
+            "header=%s scrollbar_role=%s scrollbar=%s scrollbar_read_failed=%s "
+            "failed=%s",
+            area,
+            _HEADER_CONTROL,
+            self.bounds,
+            _SCROLLBAR_CONTROL if scrollbar is not None else None,
+            rail,
+            rail_read_failed,
+            failed,
+        )
 
     @classmethod
     def discover(
@@ -251,9 +285,20 @@ class _ScrollHeader:
             if child is None:
                 break
             kind = child.control_type()
+            rail = None
+            if kind == _SCROLLBAR_CONTROL:
+                rail = child.bounds()
+                logger.info(
+                    "Scrolling direct ScrollBar: role=%s bounds=%s captured=%s "
+                    "height_matches=%s",
+                    kind,
+                    rail,
+                    area,
+                    rail.height == area.height,
+                )
             if (
                 kind == _HEADER_CONTROL
-                or (kind == _SCROLLBAR_CONTROL and child.bounds().height == area.height)
+                or (rail is not None and rail.height == area.height)
             ) and not child.offscreen():
                 if kind in parts:
                     ambiguous = True
@@ -563,9 +608,13 @@ class UiaScrollTarget:
         self._native_handle = self._element.native_handle()
         self._area = self._viewport()
         self._automation, self._walker = automation, walker
-        self._header = _ScrollHeader.discover(
-            self._element, walker, self._owners, self._area
-        )
+        try:
+            self._header = _ScrollHeader.discover(
+                self._element, walker, self._owners, self._area
+            )
+        except CaptureError:
+            self._log_header_context()
+            raise
         logger.info(
             "Scrolling viewport: provider=%s captured=%s native_handle=%s",
             self._provider_bounds,
@@ -586,6 +635,57 @@ class UiaScrollTarget:
             self.registration_dpi,
         )
         self.check()
+
+    def _header_context(self) -> tuple[Rect | None, int | None]:
+        """Read client bounds and selected-window DPI with existing typed APIs."""
+        self._check_window()
+        client = None
+        handle = self._native_handle
+        if handle is not None:
+            if (
+                not self._user.IsWindow(handle)
+                or self._user.GetAncestor(handle, 2) != self._window
+            ):
+                raise CaptureError("The Header diagnostic native owner changed")
+            bounds = w.RECT()
+            if not self._user.GetClientRect(handle, c.byref(bounds)):
+                raise CaptureError("Could not read the Header diagnostic client bounds")
+            first, last = (
+                w.POINT(bounds.left, bounds.top),
+                w.POINT(bounds.right, bounds.bottom),
+            )
+            if not self._user.ClientToScreen(
+                handle, c.byref(first)
+            ) or not self._user.ClientToScreen(handle, c.byref(last)):
+                raise CaptureError(
+                    "Could not locate the Header diagnostic client bounds"
+                )
+            client = Rect.from_points(Point(first.x, first.y), Point(last.x, last.y))
+        dpi_api = getattr(self._user, "GetDpiForWindow", None)
+        dpi = None if dpi_api is None else int(dpi_api(self._window))
+        self._check_window()
+        return client, dpi
+
+    def _log_header_context(self) -> None:
+        """Keep failed-discovery evidence numeric and subordinate to its exception."""
+        client, dpi, observed = None, None, False
+        try:
+            client, dpi = self._header_context()
+            observed = True
+        except (CaptureError, OSError):
+            pass
+        logger.warning(
+            "Scrolling Header discovery context: provider=%s captured=%s "
+            "native_handle=%s native_client=%s selected_window=%s "
+            "window_dpi=%s observation_valid=%s",
+            self._provider_bounds,
+            self._area,
+            self._native_handle,
+            client,
+            self._window,
+            dpi,
+            observed,
+        )
 
     def _discover(
         self, point: Point, automation: _Interface, walker: _Interface

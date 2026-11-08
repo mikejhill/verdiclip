@@ -177,6 +177,10 @@ class AppCapture:
         )
         self.report.update(child_target=target, movement=movement)
         _require(
+            bool(target),
+            result.message or "The helper did not identify a scroll target",
+        )
+        _require(
             target["window"] == self.window.handle
             and target["input_tick"] == self.report["release_input_tick"],
             "Child changed target/input baseline",
