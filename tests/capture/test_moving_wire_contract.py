@@ -720,9 +720,20 @@ def test_proof_helper_roundtrip_and_event_order_failures() -> None:
         b'{"x":true,"x":false}',
         b'{"x":"a\\\\b\\"c"} ',
     ],
+    ids=[
+        "empty",
+        "oversized",
+        "surrogate",
+        "integer-overflow",
+        "duplicate-key",
+        "trailing-space",
+    ],
 )
-def test_canonical_json_bounds_and_lexical_escapes(data: bytes) -> None:
+def test_canonical_json_bounds_and_lexical_escapes(
+    data: bytes, request: pytest.FixtureRequest
+) -> None:
     """Malformed encodings cannot bypass scalar size/type gates."""
+    assert len(request.node.nodeid) < 200
     with pytest.raises(wire.ProtocolError):
         parse_json(data, 65536)
 

@@ -178,11 +178,14 @@ def test_cancel_after_heavy_operation_does_not_leave_storage(
     assert slots.reserved_bytes == 0
 
 
-@pytest.mark.parametrize("bad", [b"", b"x" * 32_769, bytearray(b"x")])
+@pytest.mark.parametrize(
+    "bad", [b"", b"x" * 32_769, bytearray(b"x")], ids=["empty", "oversized", "mutable"]
+)
 def test_profile_metadata_bound_is_enforced_before_freeze(
-    monkeypatch: pytest.MonkeyPatch, bad: bytes
+    monkeypatch: pytest.MonkeyPatch, bad: bytes, request: pytest.FixtureRequest
 ) -> None:
     """Actual excess or mutable metadata never starts a full-raster freeze."""
+    assert len(request.node.nodeid) < 200
     sink = filled()
     freeze = Mock(side_effect=AssertionError("unexpected freeze"))
     monkeypatch.setattr(owned, "_freeze", freeze)
@@ -310,9 +313,16 @@ def test_lease_binding_move_and_stale_release_cannot_free_a_new_owner() -> None:
     assert slots.reserved_bytes == 0
 
 
-@pytest.mark.parametrize("chunk", [b"", bytearray(b"x"), b"x" * 65_537])
-def test_bad_credit_chunk_invalidates_the_sink(chunk: bytes) -> None:
+@pytest.mark.parametrize(
+    "chunk",
+    [b"", bytearray(b"x"), b"x" * 65_537],
+    ids=["empty", "mutable", "oversized"],
+)
+def test_bad_credit_chunk_invalidates_the_sink(
+    chunk: bytes, request: pytest.FixtureRequest
+) -> None:
     """Invalid payloads cannot grow storage, freeze or reenter the same pool."""
+    assert len(request.node.nodeid) < 200
     sink = owned.FrameSink(IDENTITY, lambda: None)
     with pytest.raises(ValueError, match="chunk"):
         sink.feed(chunk)

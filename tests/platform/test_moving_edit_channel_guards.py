@@ -51,10 +51,15 @@ def frame_socket(bridge: Bridge, raw: bytes = b"") -> MemorySocket:
 
 
 @pytest.mark.parametrize(
-    "payload", [b"", bytearray(b"{}"), None, b"x" * (wire.MAX_MESSAGE_BYTES + 1)]
+    "payload",
+    [b"", bytearray(b"{}"), None, b"x" * (wire.MAX_MESSAGE_BYTES + 1)],
+    ids=["empty", "mutable", "none", "oversized"],
 )
-def test_control_payload_requires_bounded_immutable_bytes(payload: object) -> None:
+def test_control_payload_requires_bounded_immutable_bytes(
+    payload: object, request: pytest.FixtureRequest
+) -> None:
     """Invalid control storage cannot reach a wire command."""
+    assert len(request.node.nodeid) < 200
     with pytest.raises(ValueError, match="bounded immutable bytes"):
         channel._payload(cast("bytes", payload))
 
