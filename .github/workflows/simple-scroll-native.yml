@@ -125,3 +125,41 @@ jobs:
           path: artifacts/simple-scroll
           if-no-files-found: warn
           retention-days: 14
+
+  display-setup:
+    if: >-
+      github.repository == 'mikejhill/verdiclip' &&
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
+      github.head_ref == 'diagnostics/scrolling-0140' &&
+      github.event.pull_request.draft == true
+    name: Diagnostic only / 200% display setup
+    runs-on: windows-2025
+    timeout-minutes: 4
+    env:
+      PYTHONUTF8: "1"
+      QUALIFICATION_HEAD: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Require exact setup source
+        run: |
+          $actual = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0 -or $actual -ne $env:QUALIFICATION_HEAD) { throw 'Source mismatch' }
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - run: uv sync --locked
+      - name: Probe supported display scaling in this disposable runner
+        timeout-minutes: 2
+        run: uv run python -m scripts.hosted_display_scale
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: scrolling-display-setup-200
+          path: artifacts/simple-scroll/display-scale
+          if-no-files-found: warn
+          retention-days: 14
