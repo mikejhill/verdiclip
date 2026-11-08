@@ -336,3 +336,19 @@ before discovery with zero writes. Two gaps prevent full handoff qualification:
   The overall native run failed. Cause is not established; cleanup remains strict
   and unchanged, with stdout/stderr now preserved and report success set false
   when cleanup fails. No timeout increase, ignored failure, or unchanged rerun.
+
+
+The corrected handoff run, [42449310013](https://github.com/mikejhill/verdiclip/actions/runs/42449310013)
+at `30c93b145df2c481e332b5fd6862ba9a1467fe83`, proves exact mouse and Enter point
+`(510,356)`, complete content, retained child identity and restored top pixels.
+Full CI and CodeQL passed; both harness import-cycle findings were fixed and
+resolved. The two startup-interference assertions again withheld all frames and
+writes, but their jobs failed forced Edge cleanup. Preserved stderr identifies one
+child refusing termination as unsupported; the profile journal remains locked.
+
+The test runner now first posts ordinary WM_CLOSE only when the retained window
+belongs to the still-live owned Popen PID. It never closes by title or enumerates
+other applications. Graceful wait and the existing exact-owned-PID force fallback
+share the original 20-second cleanup budget. Unknown/mismatched HWNDs receive no
+message. Process and profile cleanup remain mandatory, and their failures remain
+fatal. This changes test teardown only; capture/runtime behavior is unchanged.

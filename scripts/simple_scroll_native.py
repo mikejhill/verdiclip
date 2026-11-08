@@ -46,6 +46,7 @@ _WINDOW_WIDTH = 1000
 _WINDOW_HEIGHT = 760
 _GREEN = 80
 _BLUE = 160
+_CLEANUP_SECONDS = 20.0  # Existing taskkill + process-wait budget, shared by all paths.
 
 
 def _document(*, nested: bool) -> str:
@@ -743,7 +744,11 @@ def main(
                 (case or _case)(kind, output, report)
             finally:
                 try:
-                    _stop_owned_process(process)
+                    window = report.get("window")
+                    handle = window.get("handle") if isinstance(window, dict) else None
+                    _stop_owned_process(
+                        process, window=handle if isinstance(handle, int) else None
+                    )
                 except (OSError, subprocess.SubprocessError) as error:
                     report["cleanup_error"] = str(error)
                     if isinstance(error, subprocess.CalledProcessError):
@@ -768,22 +773,54 @@ def main(
         )
 
 
-def _stop_owned_process(process: subprocess.Popen[bytes] | None) -> None:
-    """Clean up only a successfully obtained owned process, even if reporting fails."""
-    if process is not None and process.poll() is None:
-        subprocess.run(  # noqa: S603 - only the process owned by this test
-            [
-                str(Path(os.environ["WINDIR"]) / "System32/taskkill.exe"),
-                "/PID",
-                str(process.pid),
-                "/T",
-                "/F",
-            ],
-            check=True,
-            timeout=10,
-            capture_output=True,
-        )
-        process.wait(timeout=10)
+def _request_owned_close(process: subprocess.Popen[bytes], window: int) -> bool:
+    """Post ordinary close only to a verified window of this live owned process."""
+    user = c.WinDLL("user32", use_last_error=True)
+    user.GetWindowThreadProcessId.argtypes = (w.HWND, c.POINTER(w.DWORD))
+    user.GetWindowThreadProcessId.restype = w.DWORD
+    user.PostMessageW.argtypes = (w.HWND, w.UINT, w.WPARAM, w.LPARAM)
+    user.PostMessageW.restype = w.BOOL
+    pid = w.DWORD()
+    if (
+        not user.GetWindowThreadProcessId(window, c.byref(pid))
+        or pid.value != process.pid
+        or process.poll() is not None
+    ):
+        return False  # The existing owned-PID fallback remains available.
+    if not user.PostMessageW(window, 0x0010, 0, 0):  # WM_CLOSE; never SendMessage
+        raise OSError("Could not close the owned test application window")
+    return True
+
+
+def _stop_owned_process(
+    process: subprocess.Popen[bytes] | None, *, window: int | None = None
+) -> None:
+    """Close gracefully, then force only the owned PID within one existing budget."""
+    if process is None or process.poll() is not None:
+        return
+    deadline = time.monotonic() + _CLEANUP_SECONDS
+    if window is not None and _request_owned_close(process, window):
+        try:
+            process.wait(timeout=min(3.0, max(0.0, deadline - time.monotonic())))
+        except subprocess.TimeoutExpired:
+            pass  # One close request, then the existing owned-process fallback.
+        else:
+            return
+    if process.poll() is not None:
+        return
+    subprocess.run(  # noqa: S603 - only the process owned by this test
+        [
+            str(Path(os.environ["WINDIR"]) / "System32/taskkill.exe"),
+            "/PID",
+            str(process.pid),
+            "/T",
+            "/F",
+        ],
+        check=True,
+        timeout=min(10.0, max(0.0, deadline - time.monotonic())),
+        capture_output=True,
+    )
+    process.wait(timeout=max(0.0, deadline - time.monotonic()))
 
 
 if __name__ == "__main__":

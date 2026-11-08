@@ -1044,7 +1044,8 @@ def test_native_entry_preserves_real_failures_and_owned_cleanup(
         if failure == "cleanup":
             process.wait.assert_not_called()
         else:
-            process.wait.assert_called_once_with(timeout=10)
+            process.wait.assert_called_once()
+            assert 0 < process.wait.call_args.kwargs["timeout"] <= 20
     if failure != "report":
         report = json.loads(
             (tmp_path / "artifacts/simple-scroll/notepad/result.json").read_text()
@@ -1102,8 +1103,92 @@ def test_native_entry_accepts_gui_case_without_importing_handoff(
     assert application.return_value.setQuitOnLastWindowClosed.call_args.args == (False,)
     case.assert_called_once()
     default_case.assert_not_called()
-    stop.assert_called_once_with(process)
+    stop.assert_called_once_with(process, window=None)
     report = json.loads(
         (tmp_path / "artifacts/simple-scroll/edge-select/result.json").read_text()
     )
     assert report["success"] is True
+
+
+@pytest.mark.parametrize(
+    "state", ["owned", "foreign", "missing", "exited", "post_failed"]
+)
+def test_native_cleanup_posts_only_to_live_owned_window(
+    monkeypatch: pytest.MonkeyPatch, state: str
+) -> None:
+    """No unknown/reused HWND can receive an app-close request."""
+    from scripts.simple_scroll_native import _request_owned_close  # noqa: PLC0415
+
+    user = Mock()
+    process = Mock(pid=42)
+    process.poll.return_value = 0 if state == "exited" else None
+
+    def owner(_window: int, out: c._CArgObject) -> int:
+        c.cast(out, c.POINTER(w.DWORD)).contents.value = (
+            99 if state == "foreign" else 42
+        )
+        return 0 if state == "missing" else 1
+
+    user.GetWindowThreadProcessId.side_effect = owner
+    user.PostMessageW.return_value = state != "post_failed"
+    monkeypatch.setattr(c, "WinDLL", Mock(return_value=user), raising=False)
+    if state == "post_failed":
+        with pytest.raises(OSError, match="Could not close"):
+            _request_owned_close(process, 123)
+    else:
+        assert _request_owned_close(process, 123) is (state == "owned")
+    if state in ("owned", "post_failed"):
+        user.PostMessageW.assert_called_once_with(123, 0x0010, 0, 0)
+    else:
+        user.PostMessageW.assert_not_called()
+    assert user.PostMessageW.argtypes == (w.HWND, w.UINT, w.WPARAM, w.LPARAM)
+
+
+@pytest.mark.parametrize("graceful", [True, False])
+def test_native_cleanup_grace_and_force_share_existing_budget(
+    monkeypatch: pytest.MonkeyPatch, *, graceful: bool
+) -> None:
+    """One ordinary close precedes the exact owned-PID force fallback if needed."""
+    from scripts.simple_scroll_native import _stop_owned_process  # noqa: PLC0415
+
+    process = Mock(pid=42)
+    process.poll.return_value = None
+    if not graceful:
+        process.wait.side_effect = [subprocess.TimeoutExpired("app", 3), 0]
+    request = Mock(return_value=True)
+    force = Mock()
+    monkeypatch.setattr("scripts.simple_scroll_native._request_owned_close", request)
+    monkeypatch.setattr("scripts.simple_scroll_native.subprocess.run", force)
+    monkeypatch.setattr(
+        "scripts.simple_scroll_native.time.monotonic", Mock(side_effect=[0, 0, 3, 13])
+    )
+    monkeypatch.setenv("WINDIR", "C:/Windows")
+    _stop_owned_process(process, window=123)
+    request.assert_called_once_with(process, 123)
+    assert process.wait.call_args_list[0].kwargs == {"timeout": 3.0}
+    if graceful:
+        force.assert_not_called()
+        assert process.wait.call_count == 1
+    else:
+        force.assert_called_once()
+        assert force.call_args.args[0][-4:] == ["/PID", "42", "/T", "/F"]
+        assert force.call_args.kwargs["timeout"] == 10.0
+        assert process.wait.call_args_list[1].kwargs == {"timeout": 7.0}
+
+
+def test_native_cleanup_does_not_force_an_owned_process_that_just_exited(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A retained process exit wins the race before the numeric PID fallback."""
+    from scripts.simple_scroll_native import _stop_owned_process  # noqa: PLC0415
+
+    process = Mock(pid=42)
+    process.poll.side_effect = [None, 0]
+    request = Mock(return_value=False)
+    force = Mock()
+    monkeypatch.setattr("scripts.simple_scroll_native._request_owned_close", request)
+    monkeypatch.setattr("scripts.simple_scroll_native.subprocess.run", force)
+    _stop_owned_process(process, window=123)
+    request.assert_called_once_with(process, 123)
+    force.assert_not_called()
+    process.wait.assert_not_called()
