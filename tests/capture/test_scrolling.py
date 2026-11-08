@@ -2616,6 +2616,115 @@ def test_list_overlap_still_requires_positive_textured_band(kind: str) -> None:
     assert stitch.finish() == first
 
 
+def periodic_list_body(*, rail_offset: int = 0) -> QImage:
+    """Repeat sixty textured rows, with a separately moving scrollbar thumb."""
+    image = QImage(80, 120, QImage.Format.Format_RGB32)
+    painter = QPainter(image)
+    tile = document(60)
+    painter.drawImage(0, 0, tile)
+    painter.drawImage(0, 60, tile)
+    painter.fillRect(63, 0, 17, 120, QColor("gray"))
+    painter.fillRect(63, rail_offset, 17, 2, QColor("black"))
+    painter.end()
+    return image
+
+
+@pytest.mark.parametrize("rail_changed", [False, True])
+def test_list_unchanged_periodic_body_rejects_unique_positive_alias(
+    *,
+    rail_changed: bool,
+) -> None:
+    """A positive alias and agreeing item callback cannot prove rendered motion."""
+    first = periodic_list_body()
+    second = periodic_list_body(rail_offset=2 if rail_changed else 0)
+    assert first.copy(0, 0, 63, 120) == second.copy(0, 0, 63, 120)
+    assert (first != second) == rail_changed
+    stitch = VerticalStitch(first, nonrail_width=63)
+    match = stitch._alignment(
+        stitch._rows(first), stitch._rows(second), nonrail_width=63
+    )
+    assert match is not None
+    assert match[0] == 60
+    verified: list[int] = []
+
+    def verify(advance: int) -> None:
+        assert advance == 60
+        verified.append(advance)
+
+    with pytest.raises(CaptureError, match="rendered body did not move"):
+        stitch.append(second, None, verify=verify)
+    assert not verified
+    assert stitch.finish() == first
+
+
+@pytest.mark.parametrize("rail_changed", [False, True])
+def test_list_unchanged_post_write_body_never_gains_restore_authority(
+    monkeypatch: pytest.MonkeyPatch, *, rail_changed: bool
+) -> None:
+    """Native movement and consistent raw-item deltas cannot accept frozen pixels."""
+    target = ListTarget(total=600)
+    original = target.frame()
+
+    def move(vertical: float) -> None:
+        target.moves.append(vertical)
+        target.native_position = round((6000 - target.page) * vertical / 100)
+        target.offset = round(target.native_position / 10)
+
+    def frame() -> QImage:
+        image = original.copy()
+        painter = QPainter(image)
+        painter.drawImage(
+            0,
+            25,
+            periodic_list_body(rail_offset=target.offset // 30 if rail_changed else 0),
+        )
+        painter.end()
+        return image
+
+    monkeypatch.setattr(target, "move", move)
+    monkeypatch.setattr(target, "frame", frame)
+    operation = transaction(target)
+    result = operation.run()
+    assert result.image is None
+    assert "rendered body did not move" in result.message
+    assert result.restoration == "not restored: the provider write is unresolved"
+    assert len(target.moves) == 1
+    assert target.native_position == 600
+    assert target.offset - target.steps.before == 60
+    assert target.steps.begins == [0]
+    assert not target.steps.finishes
+    assert not target.steps.confirmed
+    assert target.steps.closed
+    assert operation._expected is None
+    assert operation._terminal is None
+
+
+def test_list_stable_pre_write_frames_allow_genuine_motion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ordinary equal anchor and top samples are not post-write motion evidence."""
+    target = ListTarget()
+    frame = target.frame
+    before_write: list[QImage] = []
+
+    def observe() -> QImage:
+        image = frame()
+        if not target.moves:
+            before_write.append(image.copy())
+        return image
+
+    monkeypatch.setattr(target, "frame", observe)
+    result = transaction(target).run()
+    assert len(before_write) >= 2
+    assert all(image == before_write[0] for image in before_write)
+    assert result.image is not None
+    assert result.image.copy(0, 25, 80, 592) == target.document
+    assert result.restoration == "restored"
+    assert target.steps.finishes == [60] * 7 + [52]
+    assert target.steps.confirmed
+    assert target.steps.closed
+
+
 @pytest.mark.parametrize("column", [0, 1, 61, 62])
 def test_list_one_nonrail_pixel_cannot_hide_outside_exact_band(column: int) -> None:
     """The existing32row band is insufficient when one other overlap pixel differs."""

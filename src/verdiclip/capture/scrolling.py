@@ -435,6 +435,11 @@ class VerticalStitch:
         if image.size() != self._previous.size():
             raise CaptureError("The scroll panel changed size")
         old, new = self._rows(self._previous), self._rows(image)
+        if self._nonrail_width is not None and all(
+            before[: self._nonrail_width * 4] == after[: self._nonrail_width * 4]
+            for before, after in zip(old, new, strict=True)
+        ):
+            raise CaptureError("The List's rendered body did not move")
         advance, first, last, full_width = self._registration(old, new)
         logger.info(
             "Scrolling alignment: measured_advance=%s expected_advance=%s "
