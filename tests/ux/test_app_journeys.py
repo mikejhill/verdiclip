@@ -272,15 +272,22 @@ def make_app(
         for editor in app.controller.editors:
             editor.session.history.mark_delivered()
             editor.close()
-        status = app.controller._update_status
-        if status is None:
+        statuses = [
+            status
+            for status in (
+                app.controller._update_status,
+                app.controller._scroll_status,
+            )
+            if status is not None
+        ]
+        if not statuses:
             app.controller.shutdown()
         else:
             # Shutdown schedules deletion. Finish only this fixture-owned widget's
             # deferred disposal before a following journey acquires input.
-            with qtbot.waitSignal(status.destroyed, timeout=1000) as destroyed:
+            with qtbot.waitSignals([status.destroyed for status in statuses]):
                 app.controller.shutdown()
-                if not destroyed.signal_triggered:
+                for status in statuses:
                     QCoreApplication.sendPostedEvents(
                         status, QEvent.Type.DeferredDelete
                     )

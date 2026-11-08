@@ -35,6 +35,8 @@ def prepare(app: App) -> ScrollHelper:
         WindowInfo(1, "Scrolling document", Rect(0, 0, 1000, 1000))
     ]
     state.tick.return_value = 456
+    state.foreground.return_value = 1
+    state.observe.return_value = 1
     helper = ScrollHelper()
     helper.start = Mock()
     helper.cancel = Mock()
