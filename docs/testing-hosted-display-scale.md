@@ -80,16 +80,21 @@ Unsupported setup always exits nonzero. No green skip counts as qualification.
 The **one** `display-setup` job is restricted to the same-repository draft
 diagnostic branch condition, pinned to `windows-2025`, with `contents: read`,
 exact-head checkout, uv setup and locked dependency installation. After setup
-succeeds, it runs the existing Edge prose and Explorer diagnostics through both
-click and Enter in that same job. Each case requires fresh independent monitor
+succeeds, it runs Edge prose, the responsive bordered panel, and Explorer from
+top, middle, and bottom through both click and Enter in that same job. The longer
+job/step bounds accommodate sequential cases; product deadlines stay unchanged.
+Each case requires fresh independent monitor
 readback before and after capture, a captured target reporting 192 DPI, and all
 existing image/restoration checks. No successful setup receipt substitutes for
 these reads. Failure stops the sequence and uploads its bounded observations as
 `scrolling-display-setup-200` from `artifacts/simple-scroll`.
 
 Each hosted job receives a different VM, so another job cannot inherit this
-setup. The bordered panel needs fully visible responsive geometry and a separate
+setup. The bordered panel needs fully visible responsive geometry and a successful
 native 200% result before it is qualified; clipping guards remain unchanged.
+The draft bottom-start Header rejection remains a failed diagnostic, even when
+its zero-write and unchanged-state checks succeed. All three Explorer starting
+positions must capture and restore correctly before release.
 A setup probe alone is not Edge, Explorer, scrolling, or hardware qualification.
 
 Current limitations: an initial hosted run confirmed actual 100%/96-DPI

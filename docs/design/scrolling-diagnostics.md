@@ -50,7 +50,15 @@ Both click and Enter are exercised for prose, panel, background Edge and Explore
 Background cases leave Edge visible while a small owned window has focus, requiring
 the production selection path to activate the exact chosen target. Native gestures
 hold for 120 ms while Qt processes events between press and release. Existing
-controller cases now use held gestures too. The nine diagnostic jobs run only
+controller cases now use held gestures too. Explorer also has middle and bottom
+setup variants. Middle requests 50% and must settle in the central 45–55% range;
+bottom must settle at exactly 100%. These are test-setup gates, not product
+tolerances. Their public UIA setup is separate from production
+capture, and their exact starting state and pixels are retained for restoration
+checks. A draft bottom-start rejection remains a failed diagnostic, even if it
+makes no capture writes and leaves the initial state unchanged. All starting
+positions require successful full capture and restoration before release.
+The thirteen diagnostic jobs run only
 on the named draft diagnostic branch and save exact native PNGs and numeric logs.
 
 A rejection fails its diagnostic job and is evidence to investigate, not a
