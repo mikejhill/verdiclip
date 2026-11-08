@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
-from PySide6.QtGui import QColor, QImage
+from PySide6.QtGui import QColor, QImage, QPainter
 from scripts import simple_scroll_native as native
 from scripts.scrolling_diagnostics import _inspect_result, _verify_restored
 from scripts.scrolling_oracle import verify_sequence
@@ -31,10 +31,13 @@ def test_trace_native_scroll_info_is_explorer_only(
     target.position.return_value = position
     geometry: dict[str, object] = {"uia": {"nodes": []}}
     metadata = [{"native_handle": 17, "bar": 1, "success": True, "pos": 0}]
+    witness_record = {"from_frame": None, "items": []}
+    evidence = Mock(target=target, geometry=geometry)
+    evidence.observe.return_value = witness_record
     read = Mock(return_value=metadata)
     monkeypatch.setattr(native.ScrollTransaction, "_frame", lambda *_: frame)
     monkeypatch.setattr(native.UiaScrollTarget, "_open", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(native, "_target_evidence", Mock(return_value=geometry))
+    monkeypatch.setattr(native, "_target_evidence", Mock(return_value=evidence))
     monkeypatch.setattr(native, "scroll_info", read)
     monkeypatch.setattr("sys.argv", ["-c", str(tmp_path), mode])
 
@@ -48,6 +51,8 @@ def test_trace_native_scroll_info_is_explorer_only(
     assert observation["vertical"] == 0.0
     if mode.startswith("explorer-"):
         assert observation["native_scroll_info"] == metadata
+        assert observation["native_item_witness"] == witness_record
+        evidence.observe.assert_called_once_with(position)
         read.assert_called_once_with(target, geometry)
         assert target.position.call_count == 2
         assert target.check.call_count == 2
@@ -78,7 +83,7 @@ def test_explorer_frame_rejects_missing_or_different_target_evidence() -> None:
         native._frame_observation(
             Mock(_target=Mock()),
             ScrollPosition(0.0, 0.0, 50.0),
-            (Mock(), {}),
+            Mock(target=Mock()),
             "explorer-enter",
         )
 
@@ -96,6 +101,167 @@ def _sequence(output: Path) -> QImage:
         )
     (output / "frames.json").write_text(json.dumps(positions), encoding="utf-8")
     return source
+
+
+def _header_sequence(output: Path) -> QImage:
+    """Known full-width pixels, a fixed Header and independently witnessed offsets."""
+    source = _sequence(output)
+    positions = json.loads((output / "frames.json").read_text())
+    area = {"x": 10, "y": 20, "width": 24, "height": 65}
+    header = {"x": 10, "y": 20, "width": 20, "height": 5}
+    nodes = [
+        {"parent": None, "control_type": 50008, "offscreen": False, "bounds": area},
+        {"parent": 0, "control_type": 50034, "offscreen": False, "bounds": header},
+        {
+            "parent": 0,
+            "control_type": 50014,
+            "offscreen": False,
+            "bounds": {"x": 30, "y": 20, "width": 4, "height": 65},
+        },
+    ]
+    (output / "header-geometry.json").write_text(
+        json.dumps(
+            {"captured_bounds": area, "uia": {"nodes": nodes, "truncated": False}}
+        ),
+        encoding="utf-8",
+    )
+    image = QImage(24, 125, QImage.Format.Format_RGB32)
+    for index, top in enumerate((0, 30, 60)):
+        frame = QImage(24, 65, QImage.Format.Format_RGB32)
+        frame.fill(QColor(100, 100, 100))
+        painter = QPainter(frame)
+        painter.fillRect(20, 0, 4, 5, QColor(index * 30, 80, 160))
+        painter.drawImage(0, 5, source.copy(0, top, 24, 60))
+        painter.end()
+        assert frame.save(str(output / f"frame-{index}.png"))
+        if index == 0:
+            painter = QPainter(image)
+            painter.drawImage(0, 0, frame.copy(0, 0, 24, 5))
+            painter.drawImage(0, 5, source)
+            painter.end()
+        items = (
+            [
+                {
+                    "before": {"x": 12, "y": y, "width": 16, "height": 5},
+                    "after": {"x": 12, "y": y - 30, "width": 16, "height": 5},
+                    "same_identity": True,
+                    "same_parent": True,
+                }
+                for y in (60, 75)
+            ]
+            if index
+            else []
+        )
+        positions[index]["native_item_witness"] = {
+            "from_frame": index - 1 if index else None,
+            "items": items,
+        }
+    # Exact pixel evidence must not be rounded from imprecise ScrollPattern percentages.
+    positions[1]["vertical"] = 49.0
+    (output / "frames.json").write_text(json.dumps(positions), encoding="utf-8")
+    return image
+
+
+def test_header_oracle_verifies_every_pixel_row_from_raw_item_geometry(
+    tmp_path: Path,
+) -> None:
+    """Header once, full width, first/last rows and actual offsets are independent."""
+    result = verify_sequence(_header_sequence(tmp_path), tmp_path)
+    assert result["oracle_verified_rows"] == 125
+    assert result["oracle_frames"] == 3
+    assert "retained-item" in str(result["oracle"])
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "pixel",
+        "first_row",
+        "last_row",
+        "header",
+        "duplicate_header",
+        "truncated",
+        "native_header",
+        "header_geometry",
+    ],
+)
+def test_header_oracle_rejects_corrupt_or_missing_pixels(
+    tmp_path: Path, change: str
+) -> None:
+    """No tolerance hides altered content, omitted ends or a duplicated prefix."""
+    image = _header_sequence(tmp_path)
+    if change == "truncated":
+        image = image.copy(0, 0, 24, 124)
+    elif change == "duplicate_header":
+        altered = QImage(24, 130, QImage.Format.Format_RGB32)
+        painter = QPainter(altered)
+        painter.drawImage(0, 0, image.copy(0, 0, 24, 5))
+        painter.drawImage(0, 5, image)
+        painter.end()
+        image = altered
+    elif change == "native_header":
+        path = tmp_path / "frame-1.png"
+        frame = QImage(str(path))
+        frame.setPixelColor(1, 1, QColor("red"))
+        assert frame.save(str(path))
+    elif change == "header_geometry":
+        path = tmp_path / "header-geometry.json"
+        geometry = json.loads(path.read_text())
+        geometry["uia"]["nodes"][1]["bounds"]["height"] = 6
+        path.write_text(json.dumps(geometry), encoding="utf-8")
+    else:
+        y = {"pixel": 72, "first_row": 5, "last_row": 124, "header": 1}[change]
+        image.setPixelColor(1, y, QColor("red"))
+    with pytest.raises(RuntimeError, match="Whole-image oracle"):
+        verify_sequence(image, tmp_path)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "delta",
+        "disagree",
+        "identity",
+        "parent",
+        "missing",
+        "pair",
+        "duplicate",
+        "frame",
+        "invisible",
+        "dimensions",
+    ],
+)
+def test_header_oracle_rejects_invalid_independent_witnesses(
+    tmp_path: Path, change: str
+) -> None:
+    """Both complete, live, distinct item witnesses must certify the same step."""
+    image = _header_sequence(tmp_path)
+    path = tmp_path / "frames.json"
+    positions = json.loads(path.read_text())
+    record = positions[1]["native_item_witness"]
+    items = record["items"]
+    if change == "delta":
+        for item in items:
+            item["before"]["y"] += 1
+    elif change == "disagree":
+        items[0]["after"]["y"] += 1
+    elif change in ("identity", "parent"):
+        items[0][f"same_{change}"] = False
+    elif change == "missing":
+        del positions[1]["native_item_witness"]
+    elif change == "pair":
+        items.pop()
+    elif change == "duplicate":
+        items[1] = items[0]
+    elif change == "frame":
+        record["from_frame"] = 99
+    elif change == "invisible":
+        items[0]["before"]["y"] = 1
+    else:
+        items[0]["after"]["width"] -= 1
+    path.write_text(json.dumps(positions), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="Whole-image oracle"):
+        verify_sequence(image, tmp_path)
 
 
 def test_independent_oracle_verifies_every_output_row(tmp_path: Path) -> None:

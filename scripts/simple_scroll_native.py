@@ -25,6 +25,7 @@ from unittest.mock import patch
 from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer
 from PySide6.QtGui import QImage
 from scripts.scrolling_header_probe import probe_target, scroll_info, window_dpi
+from scripts.scrolling_item_witness import ListItemWitness
 
 from verdiclip.capture.grabber import MssScreenSource
 from verdiclip.capture.scroll_helper import ScrollHelper
@@ -189,7 +190,7 @@ def _prepare(window: WindowInfo) -> WindowInfo:
 
 def _target_evidence(
     target: UiaScrollTarget, output: Path, mode: str, selected: dict[str, object]
-) -> dict[str, object] | None:
+) -> ListItemWitness | None:
     """Record extra geometry only for the explicitly owned representative cases."""
     if not mode.startswith(_REPRESENTATIVE_PREFIXES):
         return None
@@ -200,7 +201,7 @@ def _target_evidence(
         (output / "header-geometry.json").write_text(
             json.dumps(geometry, indent=2), encoding="utf-8"
         )
-        return geometry
+        return ListItemWitness(target, geometry)
     return None
 
 
@@ -221,7 +222,7 @@ def _frame_scroll_info(
 def _frame_observation(
     operation: ScrollTransaction,
     position: ScrollPosition,
-    evidence: tuple[UiaScrollTarget | None, dict[str, object] | None],
+    evidence: ListItemWitness | None,
     mode: str,
 ) -> dict[str, object]:
     """Extend only Explorer's existing frame records with native metadata."""
@@ -231,12 +232,12 @@ def _frame_observation(
         "view_size": position.view_size,
     }
     if mode.startswith("explorer-"):
-        target, geometry = evidence
-        if geometry is None or target is None or target is not operation._target:
+        if evidence is None or evidence.target is not operation._target:
             raise CaptureError("Native scroll evidence target was not retained")
         observation["native_scroll_info"] = _frame_scroll_info(
-            target, position, geometry
+            evidence.target, position, evidence.geometry
         )
+        observation["native_item_witness"] = evidence.observe(position)
     return observation
 
 
@@ -250,7 +251,7 @@ def _trace_helper() -> None:
     opening = UiaScrollTarget._open
     selected: dict[str, object] = {}
     observations: list[dict[str, object]] = []
-    evidence: tuple[UiaScrollTarget | None, dict[str, object] | None] = (None, None)
+    evidence: ListItemWitness | None = None
     writes: list[float] = []
     complete_sequence = mode.startswith(_REPRESENTATIVE_PREFIXES)
     frame_limit = MAX_FRAMES if complete_sequence else _DIAGNOSTIC_FRAMES
@@ -270,7 +271,7 @@ def _trace_helper() -> None:
             input_tick=target._input_tick,
             area=asdict(target.area),
         )
-        evidence = target, _target_evidence(target, output, mode, selected)
+        evidence = _target_evidence(target, output, mode, selected)
 
     def record_move(target: UiaScrollTarget, percent: float) -> None:
         writes.append(percent)
