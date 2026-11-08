@@ -140,14 +140,18 @@ def test_changed_user_or_target_state_rejects_write(change: str) -> None:
     mock(native._scroll.call).assert_not_called()
 
 
-def test_write_keeps_horizontal_percent_and_checks_after_call() -> None:
-    """NoScroll (-1) preserves horizontal position; all actual input is observed."""
+@pytest.mark.parametrize("horizontal", [-1.0, 0.0, 34.883720930232556])
+def test_write_keeps_horizontal_percent_and_checks_after_call(
+    horizontal: float,
+) -> None:
+    """Do not ask a horizontally scrollable provider to interpret NoScroll."""
     native = target()
+    mock(native._scroll.number).return_value = horizontal
     native.move(50.0)
     mock(native._scroll.call).assert_called_once_with(
-        4, (c.c_double, c.c_double), -1.0, 50.0
+        4, (c.c_double, c.c_double), horizontal, 50.0
     )
-    assert mock(native._input).call_count == 4
+    assert mock(native._input).call_count == 6
 
 
 def test_frame_keeps_full_provider_rectangle() -> None:
@@ -439,3 +443,37 @@ def test_discovery_identity_error_never_retries_provider(
     assert automation.pointer_result.call_count == 2
     pause.assert_called_once_with(0.5)
     mock(native._scroll.call).assert_not_called()
+
+
+def test_horizontal_read_must_not_hide_new_user_input() -> None:
+    """A standard H read still precedes the final pre-write ownership check."""
+    native = target()
+
+    def horizontal(_slot: int) -> float:
+        mock(native._input).return_value = 13
+        return 35.0
+
+    mock(native._scroll.number).side_effect = horizontal
+    with pytest.raises(CaptureError, match="mouse or keyboard"):
+        native.move(0.0)
+    mock(native._scroll.call).assert_not_called()
+
+
+@pytest.mark.parametrize("horizontal", [-2.0, -0.5])
+def test_invalid_horizontal_read_never_reaches_provider_write(
+    horizontal: float,
+) -> None:
+    """Invalid horizontal metadata is not silently turned into NoScroll."""
+    native = target()
+    mock(native._scroll.number).return_value = horizontal
+    with pytest.raises(CaptureError, match="horizontal state"):
+        native.move(0.0)
+    mock(native._scroll.call).assert_not_called()
+
+
+def test_fractional_negative_horizontal_position_is_not_noscroll() -> None:
+    """UIA defines -1 or a nonnegative percentage, not the entire -1..100 range."""
+    native = target()
+    mock(native._scroll.number).side_effect = [-0.5, 50.0, 20.0]
+    with pytest.raises(CaptureError, match="unsupported scroll state"):
+        native.position()

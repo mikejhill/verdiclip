@@ -166,3 +166,17 @@ full-width matching band: 304 pixels, independently predicted by UIA as 304.
 Bands at new-frame rows [12,78) and [199,292) support investigating an interior
 seam, without masking columns or cropping output. They do not qualify sticky
 headers or pixels hidden at every position.
+
+
+Run 42442650672 confirms the bounded identity sequence in the actual helper:
+outer → inner → same inner. It then exposes an actual installed Edge provider
+behavior: SetScrollPercent(-1, 0) resets the inner H position from 34.8837% to 0%,
+as well as moving V to 0%. The helper correctly stops before any frame and does
+not restore over the unexpected horizontal change. Earlier outer-target tests
+could not exercise this behavior.
+
+The adapter now supplies the observed horizontal percentage explicitly with the
+vertical request. All exact H/V checks remain; no provider-specific exception or
+rounding tolerance is added. The next cold run uses INFO, with no additional
+DEBUG COM reads. The harness records outer state even when inner restoration
+fails. Correct inner frames are still required before changing composition.

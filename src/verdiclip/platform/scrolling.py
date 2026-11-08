@@ -380,14 +380,20 @@ class UiaScrollTarget:
             self._scroll.number(6),
             self._scroll.number(8),
         )
-        if not -1.0 <= horizontal <= END_PERCENT or not 0.0 <= vertical <= END_PERCENT:
+        if (
+            horizontal != -1.0 and not 0.0 <= horizontal <= END_PERCENT
+        ) or not 0.0 <= vertical <= END_PERCENT:
             raise CaptureError("The selected panel has unsupported scroll state")
         return ScrollPosition(horizontal, vertical, size)
 
     def move(self, vertical: float) -> None:
-        """Keep horizontal position using UIA's NoScroll percentage (-1)."""
+        """Preserve observed H explicitly; some providers mishandle NoScroll."""
         self.check()
-        self._scroll.call(4, (c.c_double, c.c_double), -1.0, vertical)
+        horizontal = self._scroll.number(5)
+        if horizontal != -1.0 and not 0.0 <= horizontal <= END_PERCENT:
+            raise CaptureError("The selected panel has unsupported horizontal state")
+        self.check()
+        self._scroll.call(4, (c.c_double, c.c_double), horizontal, vertical)
         self.check()
 
     def frame(self) -> QImage:

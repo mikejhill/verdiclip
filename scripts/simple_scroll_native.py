@@ -165,7 +165,7 @@ def _prepare(window: WindowInfo) -> WindowInfo:
 
 def _trace_helper() -> None:
     """Save two accepted frames in this owned test child, never in production."""
-    logging.basicConfig(level=logging.DEBUG)
+    logging.basicConfig(level=logging.INFO)
     output = Path(sys.argv.pop())
     original = ScrollTransaction._frame
     observations: list[dict[str, float]] = []
@@ -336,10 +336,6 @@ def _case(kind: str, output: Path, report: dict[str, object]) -> None:
         after = target.position()
         target.frame().save(str(output / "after.png"))
         report["after"] = asdict(after)
-        _require(
-            after == initial,
-            "The starting horizontal/vertical position was not restored",
-        )
     if kind == "edge-nested":
         with UiaScrollTarget(outer_point) as outer:
             outer_after = outer.position()
@@ -348,6 +344,10 @@ def _case(kind: str, output: Path, report: dict[str, object]) -> None:
                 outer_after == outer_before,
                 "Capturing the inner panel moved the outer page",
             )
+    _require(
+        after == initial,
+        "The starting horizontal/vertical position was not restored",
+    )
     if (output / "frame-0.png").is_file():
         _verify_selected_target(output, area, initial)
     _require(
