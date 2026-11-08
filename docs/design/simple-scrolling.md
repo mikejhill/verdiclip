@@ -282,3 +282,15 @@ must change to one uniform observed color, while every outside pixel stays
 unchanged. It records that color rather than assuming a platform theme value. Exact hit ownership, unchanged
 foreground and between-sample placement remain required. No production check
 is weakened; actual small-cover qualification still awaits the changed head.
+
+Run 42446970637 at 393909a1 passes every Edge case, including the fully rendered
+20×20 cover. The helper rejects that covered viewport before any provider write;
+no image is published and starting H/V remains unchanged. The run's only failure
+is Notepad's optional pre-launch PowerShell version read exceeding its unchanged
+10-second diagnostic timeout. Notepad itself did not launch on that attempt.
+
+Version metadata is now best effort: expected read/parse failures are recorded
+as version unknown with version_error, without retry or timeout widening. Actual
+launch, capture and all image/state assertions remain mandatory. Launch failures
+now also reach result.json, and an artifact-write failure cannot bypass owned
+process cleanup. No production behavior changes in this harness correction.

@@ -925,3 +925,108 @@ def test_native_cover_oracle_requires_all_400_pixels_in_bounds(
     before.fill(QColor("white"))
     with pytest.raises(RuntimeError, match="clipped"):
         _verify_cover_pixels(before, before.copy(), left, top)
+
+
+@pytest.mark.parametrize("failure", ["none", "timeout", "exit", "missing", "json"])
+def test_optional_native_version_diagnostic_preserves_failures(
+    monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    """Metadata failure is reported without retrying or widening its deadline."""
+    import subprocess  # noqa: PLC0415
+
+    from scripts.simple_scroll_native import _record_version  # noqa: PLC0415
+
+    monkeypatch.setenv("WINDIR", "C:/Windows")
+    errors = {
+        "timeout": subprocess.TimeoutExpired("metadata", 10),
+        "exit": subprocess.CalledProcessError(1, "metadata"),
+        "missing": FileNotFoundError("metadata reader missing"),
+    }
+    run = Mock(
+        return_value=Mock(
+            stdout="bad JSON" if failure == "json" else '{"FileVersion":"1.2.3"}'
+        ),
+        side_effect=errors.get(failure),
+    )
+    monkeypatch.setattr("scripts.simple_scroll_native.subprocess.run", run)
+    report: dict[str, object] = {}
+    _record_version(Path("C:/Windows/System32/notepad.exe"), report)
+    assert run.call_count == 1
+    assert run.call_args.kwargs["timeout"] == 10
+    if failure == "none":
+        assert report == {"version": {"FileVersion": "1.2.3"}}
+    else:
+        assert report["version"] is None
+        assert report["version_error"]
+
+
+def test_metadata_timeout_still_attempts_actual_notepad_launch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A failed optional read cannot be mistaken for an actual-app result."""
+    import subprocess  # noqa: PLC0415
+
+    from scripts.simple_scroll_native import _launch  # noqa: PLC0415
+
+    monkeypatch.setenv("WINDIR", "C:/Windows")
+    run = Mock(side_effect=subprocess.TimeoutExpired("metadata", 10))
+    process = Mock()
+    launch = Mock(return_value=process)
+    monkeypatch.setattr("scripts.simple_scroll_native.subprocess.run", run)
+    monkeypatch.setattr("scripts.simple_scroll_native.subprocess.Popen", launch)
+    report: dict[str, object] = {}
+    assert _launch("notepad", tmp_path, report) is process
+    assert report["version"] is None
+    assert "TimeoutExpired" in str(report["version_error"])
+    assert launch.call_count == 1
+    assert launch.call_args.args[0] == [
+        str(Path("C:/Windows/System32/notepad.exe")),
+        str(tmp_path / "VerdiClip scrolling check.txt"),
+    ]
+    assert run.call_count == 1
+
+
+@pytest.mark.parametrize("failure", ["launch", "case", "report"])
+def test_native_entry_preserves_real_failures_and_owned_cleanup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failure: str
+) -> None:
+    """Launch/capture errors still fail; even a report error cannot skip cleanup."""
+    from scripts.simple_scroll_native import main  # noqa: PLC0415
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("WINDIR", "C:/Windows")
+    monkeypatch.setattr("sys.argv", ["native", "notepad"])
+    user = Mock()
+    user.SetProcessDpiAwarenessContext.return_value = True
+    monkeypatch.setattr(c, "WinDLL", Mock(return_value=user), raising=False)
+    monkeypatch.setattr("scripts.simple_scroll_native.QCoreApplication", Mock())
+    process = Mock(pid=77)
+    process.poll.return_value = None
+    launch = Mock(
+        return_value=process,
+        side_effect=OSError("launch failed") if failure == "launch" else None,
+    )
+    case = Mock(side_effect=RuntimeError("case failed") if failure == "case" else None)
+    stop = Mock()
+    monkeypatch.setattr("scripts.simple_scroll_native._launch", launch)
+    monkeypatch.setattr("scripts.simple_scroll_native._case", case)
+    monkeypatch.setattr("scripts.simple_scroll_native.subprocess.run", stop)
+    if failure == "report":
+        monkeypatch.setattr(
+            Path, "write_text", Mock(side_effect=OSError("report failed"))
+        )
+    with pytest.raises((RuntimeError, OSError), match=f"{failure} failed"):
+        main()
+    if failure == "launch":
+        case.assert_not_called()
+        stop.assert_not_called()
+    else:
+        assert stop.call_count == 1
+        assert stop.call_args.args[0][-4:] == ["/PID", "77", "/T", "/F"]
+        process.wait.assert_called_once_with(timeout=10)
+    if failure != "report":
+        report = json.loads(
+            (tmp_path / "artifacts/simple-scroll/notepad/result.json").read_text()
+        )
+        assert report["success"] is False
+        assert report["error"] == f"{failure} failed"

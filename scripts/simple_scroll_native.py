@@ -105,26 +105,36 @@ def _launch(
         )
         executable = Path(os.environ["WINDIR"]) / "System32/notepad.exe"
         command = [str(executable), str(path)]
+    report["executable"] = str(executable)
+    _record_version(executable, report)
+    return subprocess.Popen(command)  # noqa: S603 - fixed installed apps and owned content
+
+
+def _record_version(executable: Path, report: dict[str, object]) -> None:
+    """Record optional file metadata without blocking the actual application test."""
     powershell = (
         Path(os.environ["WINDIR"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
     )
     literal = str(executable).replace("'", "''")
-    version = subprocess.run(  # noqa: S603 - read version of the fixed installed app
-        [
-            str(powershell),
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            f"(Get-Item -LiteralPath '{literal}').VersionInfo | "
-            "Select-Object FileVersion,ProductVersion | ConvertTo-Json",
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    report["version"] = json.loads(version.stdout)
-    return subprocess.Popen(command)  # noqa: S603 - fixed installed apps and owned content
+    try:
+        version = subprocess.run(  # noqa: S603 - read version of the fixed installed app
+            [
+                str(powershell),
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                f"(Get-Item -LiteralPath '{literal}').VersionInfo | "
+                "Select-Object FileVersion,ProductVersion | ConvertTo-Json",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        report["version"] = json.loads(version.stdout)
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as error:
+        report["version"] = None
+        report["version_error"] = f"{type(error).__name__}: {error}"
 
 
 def _window() -> WindowInfo:
@@ -686,30 +696,38 @@ def main() -> None:
         ),
     }
     with TemporaryDirectory(prefix="verdiclip-scroll-test-") as scratch:
-        process = _launch(kind, Path(scratch), report)
+        process = None
         try:
+            process = _launch(kind, Path(scratch), report)
             _case(kind, output, report)
         except Exception as error:
             report["error"] = str(error)
             raise
         finally:
-            (output / "result.json").write_text(
-                json.dumps(report, indent=2), encoding="utf-8"
-            )
-            if process.poll() is None:
-                subprocess.run(  # noqa: S603 - only the process owned above
-                    [
-                        str(Path(os.environ["WINDIR"]) / "System32/taskkill.exe"),
-                        "/PID",
-                        str(process.pid),
-                        "/T",
-                        "/F",
-                    ],
-                    check=True,
-                    timeout=10,
-                    capture_output=True,
+            try:
+                (output / "result.json").write_text(
+                    json.dumps(report, indent=2), encoding="utf-8"
                 )
-                process.wait(timeout=10)
+            finally:
+                _stop_owned_process(process)
+
+
+def _stop_owned_process(process: subprocess.Popen[bytes] | None) -> None:
+    """Clean up only a successfully obtained owned process, even if reporting fails."""
+    if process is not None and process.poll() is None:
+        subprocess.run(  # noqa: S603 - only the process owned by this test
+            [
+                str(Path(os.environ["WINDIR"]) / "System32/taskkill.exe"),
+                "/PID",
+                str(process.pid),
+                "/T",
+                "/F",
+            ],
+            check=True,
+            timeout=10,
+            capture_output=True,
+        )
+        process.wait(timeout=10)
 
 
 if __name__ == "__main__":
