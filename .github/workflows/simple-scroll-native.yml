@@ -133,10 +133,11 @@ jobs:
       github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
       github.head_ref == 'diagnostics/scrolling-0140' &&
       github.event.pull_request.draft == true
-    name: Diagnostic only / 200% display setup
+    name: Diagnostic only / 200% Edge and Explorer
     runs-on: windows-2025
-    timeout-minutes: 4
+    timeout-minutes: 8
     env:
+      QT_QPA_PLATFORM: windows
       PYTHONUTF8: "1"
       QUALIFICATION_HEAD: ${{ github.event.pull_request.head.sha }}
     steps:
@@ -156,10 +157,23 @@ jobs:
       - name: Probe supported display scaling in this disposable runner
         timeout-minutes: 2
         run: uv run python -m scripts.hosted_display_scale
+      - name: Capture actual applications in this same verified display session
+        timeout-minutes: 5
+        run: |
+          foreach ($case in @('edge-prose-click', 'edge-prose-enter', 'explorer-click', 'explorer-enter')) {
+            uv run python -c "import json; from dataclasses import asdict; from scripts.hosted_display_scale import Display; value = Display().read(); print(json.dumps(asdict(value))); assert value.qualified"
+            if ($LASTEXITCODE -ne 0) { throw 'Display is not at verified 200% before capture' }
+            uv run python -m scripts.scrolling_diagnostics "$case"
+            if ($LASTEXITCODE -ne 0) { throw "Native 200% capture failed: $case" }
+            $target = Get-Content -Raw "artifacts/simple-scroll/$case/target.json" | ConvertFrom-Json
+            if ($target.window_dpi -ne 192) { throw "Target DPI is not 192: $case" }
+            uv run python -c "import json; from dataclasses import asdict; from scripts.hosted_display_scale import Display; value = Display().read(); print(json.dumps(asdict(value))); assert value.qualified"
+            if ($LASTEXITCODE -ne 0) { throw 'Display changed during capture' }
+          }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: scrolling-display-setup-200
-          path: artifacts/simple-scroll/display-scale
+          path: artifacts/simple-scroll
           if-no-files-found: warn
           retention-days: 14

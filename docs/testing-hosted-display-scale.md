@@ -58,32 +58,22 @@ bounded Settings/desktop screenshots; screenshot failure does not hide the
 original failed result.
 Unsupported setup always exits nonzero. No green skip counts as qualification.
 
-## First workflow experiment
+## Same-session workflow experiment
 
 The **one** `display-setup` job is restricted to the same-repository draft
 diagnostic branch condition, pinned to `windows-2025`, with `contents: read`,
-exact-head checkout, uv setup and locked dependency installation. Its probe and
-artifact steps are equivalent to:
+exact-head checkout, uv setup and locked dependency installation. After setup
+succeeds, it runs the existing Edge prose and Explorer diagnostics through both
+click and Enter in that same job. Each case requires fresh independent monitor
+readback before and after capture, a captured target reporting 192 DPI, and all
+existing image/restoration checks. No successful setup receipt substitutes for
+these reads. Failure stops the sequence and uploads its bounded observations as
+`scrolling-display-setup-200` from `artifacts/simple-scroll`.
 
-```yaml
-- name: Probe actual hosted 200 percent display scaling
-  timeout-minutes: 2
-  run: uv run python -m scripts.hosted_display_scale
-- uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
-  if: always()
-  with:
-    name: scrolling-display-setup-200
-    path: artifacts/simple-scroll/display-scale
-    if-no-files-found: warn
-    retention-days: 14
-```
-
-No matrix is needed until availability is established. Each hosted job receives
-a different VM, so a later capture job cannot inherit this setup. Once setup is
-proven, put it inside each selected diagnostic job before launching Qt and the
-target application. Require monitor scale 200 and target HWND DPI 192 there too,
-before and after the actual scrolling capture. A setup probe alone is not Edge,
-Explorer, scrolling, or physical hardware qualification.
+Each hosted job receives a different VM, so another job cannot inherit this
+setup. The bordered panel needs fully visible responsive geometry and a separate
+native 200% result before it is qualified; clipping guards remain unchanged.
+A setup probe alone is not Edge, Explorer, scrolling, or hardware qualification.
 
 Current limitations: an initial hosted run confirmed actual 100%/96-DPI
 readback and visibly opened Display settings, but exposed a cross-process root
