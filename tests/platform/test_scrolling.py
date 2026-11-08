@@ -2415,3 +2415,621 @@ def test_failed_header_discovery_logs_context_without_replacing_exception(
     mock(native._header_context).assert_called_once_with()
     assert f"observation_valid={not context_failure}" in caplog.text
     mock(native._scroll.call).assert_not_called()
+
+
+class ListStepFixture:
+    """Real retained layout and item references with read-only native doubles."""
+
+    def __init__(self) -> None:
+        self.target = native_target()
+        area, header, rail, footer = footer_parts()
+        self.target._area = area
+        self.target._header = _ScrollHeader(header, rail, area, footer=footer)
+        mock(self.target._element.control_type).return_value = 50008
+        self.native = ScrollBarState(101, 102, 1, 104, 0, 15999, 597, 0)
+        self.position = ScrollPosition(0, 0, 100 * 597 / 15999)
+        self.target.position = Mock(side_effect=lambda: self.position)
+        self.target.scrollbar_state = Mock(side_effect=lambda: self.native)
+        self.items = [header_element(50007, Rect(371, y, 1350, 48)) for y in (514, 570)]
+        self.releases: list[Mock] = []
+        self.temporary_releases: list[Mock] = []
+        self.children = [header, rail, footer, *self.items]
+        self.target._walker = Mock()
+        self.target._automation = Mock()
+        mock(self.target._automation.same_element).side_effect = lambda a, b: a is b
+        mock(self.target._walker.parent).return_value = self.target._element
+        mock(self.target._walker.relative).side_effect = self.relative
+        mock(self.target._automation.pointer_result).side_effect = self.hit
+        for item in self.items:
+            item.pointer_result.side_effect = self.retain(item)
+        self.check = Mock(side_effect=self.layout_check)
+
+    def layout_check(self) -> None:
+        """Keep the actual retained Header/rail checker active during evidence."""
+        assert self.target._header is not None
+        self.target._header.check(
+            self.target._element, self.target._automation, self.target._walker
+        )
+
+    def relative(self, child: _Interface, owners: ExitStack, slot: int) -> Mock | None:
+        """Enumerate bounded direct children, retaining only temporary references."""
+        index = 0 if slot == 4 else self.children.index(mock(child)) + 1
+        if index == len(self.children):
+            return None
+        release = Mock()
+        self.temporary_releases.append(release)
+        owners.callback(release)
+        return self.children[index]
+
+    def hit(self, slot: int, _owners: ExitStack, *args: object) -> Mock:
+        """Fresh point lookup returns the raw item, never a saved oracle verdict."""
+        assert slot == 7
+        assert len(args) == 1
+        prefix = args[0]
+        assert isinstance(prefix, tuple)
+        point = prefix[1]
+        assert isinstance(point, w.POINT)
+        for item in self.items:
+            raw = item.bounds.return_value
+            assert isinstance(raw, Rect)
+            if raw.contains(Point(point.x, point.y)):
+                return item
+        return header_element(50033, Rect(0, 0, 1, 1))
+
+    def retain(self, item: Mock) -> object:
+        """Install one QI-owned reference with observable cleanup."""
+
+        def acquire(slot: int, owners: ExitStack, *_args: object) -> Mock:
+            assert slot == 0
+            release = Mock()
+            self.releases.append(release)
+            owners.callback(release)
+            return item
+
+        return acquire
+
+    def capability(self) -> scrolling._ListSteps:
+        """Select the production optional capability without issuing a write."""
+        steps = self.target.list_steps(self.position, self.check)
+        assert steps is not None
+        return steps
+
+    def advance(self, delta: float = 175, *, terminal: bool = False) -> None:
+        """Change provider observations only, never invoke a production move."""
+        self.native = replace(
+            self.native,
+            position=15388 if terminal else self.native.position + 298,
+            page=612 if terminal else self.native.page,
+        )
+        self.position = ScrollPosition(
+            0,
+            self.native.percent(self.native.position),
+            100 * self.native.page / (self.native.maximum - self.native.minimum),
+        )
+        for item in self.items:
+            item.bounds.return_value = item.bounds.return_value.translated(
+                Point(0, -delta)
+            )
+
+
+@pytest.mark.parametrize("delta", [175, 167, 176])
+def test_list_steps_measure_raw_items_not_native_unit_predictions(delta: int) -> None:
+    """Equal native increments may produce distinct, exactly proven pixel deltas."""
+    fixture = ListStepFixture()
+    steps = fixture.capability()
+    assert steps.body == Rect(343, 334, 620, 339)
+    steps.begin(fixture.position)
+    assert len(fixture.releases) == 2
+    assert all(release.call_count == 1 for release in fixture.temporary_releases)
+    assert all(release.call_count == 0 for release in fixture.releases)
+    calls = mock(fixture.target._walker.relative).call_count
+    fixture.advance(delta)
+    assert steps.finish(fixture.position) == delta
+    assert mock(fixture.target._walker.relative).call_count == calls
+    assert all(release.call_count == 1 for release in fixture.releases)
+    steps.close()
+    fixture.target._owners.close()
+    assert all(release.call_count == 1 for release in fixture.releases)
+    mock(fixture.target._scroll.call).assert_not_called()
+
+
+@pytest.mark.parametrize("reason", ["header", "rail", "role", "horizontal", "native"])
+def test_list_steps_unsupported_selection_does_not_scan_items(reason: str) -> None:
+    """Optional structural absence preserves the existing generic route."""
+    fixture = ListStepFixture()
+    fixture.check.side_effect = None
+    assert fixture.target._header is not None
+    if reason == "header":
+        fixture.target._header = None
+    elif reason == "rail":
+        fixture.target._header.scrollbar = None
+    elif reason == "role":
+        mock(fixture.target._element.control_type).return_value = 50030
+    elif reason == "horizontal":
+        fixture.position = replace(fixture.position, horizontal=20)
+    else:
+        mock(fixture.target.scrollbar_state).side_effect = None
+        mock(fixture.target.scrollbar_state).return_value = None
+    assert fixture.target.list_steps(fixture.position, fixture.check) is None
+    mock(fixture.target._walker.relative).assert_not_called()
+    mock(fixture.target._scroll.call).assert_not_called()
+
+
+@pytest.mark.parametrize("reason", ["position", "mapping", "native-error", "check"])
+def test_list_steps_unsafe_selection_never_returns_unsupported(reason: str) -> None:
+    """An eligible-looking route with failed evidence cannot silently fall back."""
+    fixture = ListStepFixture()
+    initial = fixture.position
+    if reason == "position":
+        fixture.position = replace(initial, vertical=1)
+    elif reason == "mapping":
+        fixture.native = replace(fixture.native, page=599)
+    elif reason == "native-error":
+        mock(fixture.target.scrollbar_state).side_effect = CaptureError("native")
+    else:
+        fixture.check.side_effect = CaptureError("input")
+    with pytest.raises(CaptureError):
+        fixture.target.list_steps(initial, fixture.check)
+    mock(fixture.target._walker.relative).assert_not_called()
+
+
+@pytest.mark.parametrize("phase", ["begin", "finish"])
+@pytest.mark.parametrize(
+    "reason", ["role", "hidden", "parent", "identity", "hit-shape"]
+)
+def test_list_steps_reject_lost_item_evidence(phase: str, reason: str) -> None:
+    """Fresh hits and exact direct parent identity are required on both sides."""
+    fixture = ListStepFixture()
+    steps = fixture.capability()
+    if phase == "finish":
+        steps.begin(fixture.position)
+        fixture.advance()
+    item = fixture.items[0]
+    if reason == "role":
+        item.control_type.return_value = 50020
+    elif reason == "hidden":
+        item.offscreen.return_value = True
+    elif reason == "parent":
+        old_parent = fixture.target._walker.parent
+        fixture.target._walker.parent = Mock(
+            side_effect=lambda element, owners: (
+                header_element(50008, fixture.target.area)
+                if element is item
+                else old_parent(element, owners)
+            )
+        )
+    else:
+        other = header_element(50007, item.bounds.return_value)
+        if reason == "hit-shape":
+            other.bounds.return_value = other.bounds.return_value.translated(
+                Point(0, 1)
+            )
+            mock(fixture.target._automation.same_element).side_effect = lambda a, b: (
+                a is b or (a is item and b is other)
+            )
+        original_hit = fixture.hit
+        mock(fixture.target._automation.pointer_result).side_effect = lambda *args: (
+            other if original_hit(*args) is item else original_hit(*args)
+        )
+    with pytest.raises(CaptureError):
+        steps.begin(fixture.position) if phase == "begin" else steps.finish(
+            fixture.position
+        )
+    steps.close()
+    assert all(release.call_count == 1 for release in fixture.releases)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        Rect(342, 514, 1350, 48),  # left clipping
+        Rect(371, 333, 1350, 48),  # top clipping
+        Rect(371, 626, 1350, 48),  # bottom clipping
+        Rect(962.75, 514, 1350, 48),  # no strictly interior rounded hit
+        Rect(371, 514, 0, 48),
+        Rect(371, 514, 1350, 0),
+    ],
+)
+def test_list_steps_reject_other_clipping_and_slivers(raw: Rect) -> None:
+    """No guessed left inset, vertical clipping or unusable hit point is admitted."""
+    fixture = ListStepFixture()
+    steps = fixture.capability()
+    fixture.items[0].bounds.return_value = raw
+    with pytest.raises(CaptureError, match="bounded item pair"):
+        steps.begin(fixture.position)
+    assert not fixture.releases
+
+
+@pytest.mark.parametrize("reason", ["overlap", "duplicate", "short", "unbounded"])
+def test_list_steps_require_bounded_distinct_disjoint_pair(reason: str) -> None:
+    """Scanning never realizes more items or rescans until a pair can be accepted."""
+    fixture = ListStepFixture()
+    steps = fixture.capability()
+    if reason == "overlap":
+        fixture.items[1].bounds.return_value = Rect(371, 540, 1350, 48)
+    elif reason == "duplicate":
+        mock(fixture.target._automation.same_element).side_effect = lambda a, b: (
+            a is b or (a is fixture.items[0] and b is fixture.items[1])
+        )
+    elif reason == "short":
+        fixture.children.remove(fixture.items[1])
+    else:
+        mock(fixture.target._walker.relative).side_effect = None
+        mock(fixture.target._walker.relative).return_value = fixture.items[0]
+    with pytest.raises(CaptureError):
+        steps.begin(fixture.position)
+    assert mock(fixture.target._walker.relative).call_count <= 65
+    assert not fixture.releases
+    assert all(release.call_count == 1 for release in fixture.temporary_releases)
+
+
+@pytest.mark.parametrize("delta", [0, -1, 175.5])
+def test_list_steps_require_positive_integral_delta(delta: float) -> None:
+    """Item coordinates cannot authorize approximate pixel movement."""
+    fixture = ListStepFixture()
+    steps = fixture.capability()
+    steps.begin(fixture.position)
+    fixture.advance(delta)
+    with pytest.raises(CaptureError, match="pixel displacement"):
+        steps.finish(fixture.position)
+    assert all(release.call_count == 1 for release in fixture.releases)
+
+
+@pytest.mark.parametrize("change", ["x", "width", "height", "delta"])
+def test_list_steps_reject_raw_shape_or_displacement_disagreement(change: str) -> None:
+    """The clipped visible width never conceals a changed raw rectangle."""
+    fixture = ListStepFixture()
+    steps = fixture.capability()
+    steps.begin(fixture.position)
+    fixture.advance()
+    item = fixture.items[0]
+    raw = item.bounds.return_value
+    item.bounds.return_value = replace(
+        raw,
+        **{
+            ("y" if change == "delta" else change): getattr(
+                raw, "y" if change == "delta" else change
+            )
+            + 1
+        },
+    )
+    with pytest.raises(CaptureError):
+        steps.finish(fixture.position)
+    assert all(release.call_count == 1 for release in fixture.releases)
+
+
+@pytest.mark.parametrize(
+    "change", ["horizontal", "range", "page", "native-lost", "role"]
+)
+def test_list_steps_reject_nonterminal_state_changes(change: str) -> None:
+    """Native minimum/maximum, page, H and standard List role stay retained."""
+    fixture = ListStepFixture()
+    steps = fixture.capability()
+    steps.begin(fixture.position)
+    fixture.advance()
+    if change == "horizontal":
+        fixture.position = replace(fixture.position, horizontal=1)
+    elif change == "range":
+        fixture.native = replace(fixture.native, maximum=16000)
+    elif change == "page":
+        fixture.native = replace(fixture.native, page=612)
+        fixture.position = replace(fixture.position, view_size=100 * 612 / 15999)
+    elif change == "native-lost":
+        mock(fixture.target.scrollbar_state).side_effect = None
+        mock(fixture.target.scrollbar_state).return_value = None
+    else:
+        mock(fixture.target._element.control_type).return_value = 50030
+    with pytest.raises(CaptureError):
+        steps.finish(fixture.position)
+    assert all(release.call_count == 1 for release in fixture.releases)
+
+
+@pytest.mark.parametrize("part", [0, 1, 2])
+def test_list_steps_reject_header_footer_and_rail_geometry_changes(part: int) -> None:
+    """All layout parts remain exact; clipping cannot hide changed raw Header."""
+    fixture = ListStepFixture()
+    steps = fixture.capability()
+    steps.begin(fixture.position)
+    fixture.advance()
+    fixture.children[part].bounds.return_value = fixture.children[
+        part
+    ].bounds.return_value.translated(Point(1, 0))
+    with pytest.raises(CaptureError):
+        steps.finish(fixture.position)
+    assert all(release.call_count == 1 for release in fixture.releases)
+
+
+def test_list_steps_terminal_page_change_requires_maximum_and_late_identity() -> None:
+    """A terminal context flag does not replace fresh native endpoint evidence."""
+    fixture = ListStepFixture()
+    steps = fixture.capability()
+    steps.begin(fixture.position)
+    fixture.advance(175, terminal=True)
+    assert steps.finish(fixture.position, terminal=True) == 175
+    steps.confirm_terminal(fixture.position)
+    fixture.native = replace(fixture.native, page=613, position=15387)
+    fixture.position = replace(fixture.position, view_size=100 * 613 / 15999)
+    with pytest.raises(CaptureError, match="unconfirmed"):
+        steps.confirm_terminal(fixture.position)
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+def test_list_steps_terminal_flag_never_authorizes_nonmaximum(
+    *, terminal: bool
+) -> None:
+    """Normalization midsequence fails with or without the terminal context flag."""
+    fixture = ListStepFixture()
+    steps = fixture.capability()
+    steps.begin(fixture.position)
+    fixture.advance(175, terminal=True)
+    fixture.native = replace(fixture.native, position=1000)
+    fixture.position = replace(fixture.position, vertical=fixture.native.percent(1000))
+    with pytest.raises(CaptureError):
+        steps.finish(fixture.position, terminal=terminal)
+
+
+def test_list_steps_original_position_is_not_an_item_anchor() -> None:
+    """An initial nonzero V may move to top before the first retained pair."""
+    fixture = ListStepFixture()
+    fixture.native = replace(fixture.native, position=500)
+    fixture.position = replace(fixture.position, vertical=fixture.native.percent(500))
+    steps = fixture.capability()
+    assert not fixture.releases
+    fixture.native = replace(fixture.native, position=0)
+    fixture.position = replace(fixture.position, vertical=0)
+    steps.begin(fixture.position)
+    fixture.advance()
+    assert steps.finish(fixture.position) == 175
+
+
+def test_list_steps_cannot_overwrite_or_finish_without_retained_pair() -> None:
+    """Outstanding evidence is never retargeted, including on duplicate calls."""
+    fixture = ListStepFixture()
+    steps = fixture.capability()
+    with pytest.raises(CaptureError, match="retained pair"):
+        steps.finish(fixture.position)
+    steps.begin(fixture.position)
+    with pytest.raises(CaptureError, match="outstanding"):
+        steps.begin(fixture.position)
+    assert len(fixture.releases) == 2
+    assert all(release.call_count == 0 for release in fixture.releases)
+    fixture.target._owners.close()
+    assert all(release.call_count == 1 for release in fixture.releases)
+
+
+@pytest.mark.parametrize("phase", ["begin", "finish", "terminal"])
+@pytest.mark.parametrize("reason", ["input", "focus", "deadline"])
+def test_list_steps_late_guard_failure_discards_evidence(
+    phase: str, reason: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Eligibility and deadlines are rechecked after potentially blocking reads."""
+    fixture = ListStepFixture()
+    steps = fixture.capability()
+    if phase != "begin":
+        steps.begin(fixture.position)
+        fixture.advance(175, terminal=phase == "terminal")
+    if phase == "terminal":
+        steps.finish(fixture.position, terminal=True)
+    original_read = fixture.target.scrollbar_state
+
+    def fail_after_read() -> ScrollBarState:
+        state = original_read()
+        assert state is not None
+        if reason == "deadline":
+            monkeypatch.setattr(scrolling.time, "monotonic", lambda: steps._deadline)
+        else:
+            fixture.check.side_effect = CaptureError(reason)
+        return state
+
+    fixture.target.scrollbar_state = Mock(side_effect=fail_after_read)
+    action = {
+        "begin": steps.begin,
+        "finish": steps.finish,
+        "terminal": steps.confirm_terminal,
+    }[phase]
+    with pytest.raises(CaptureError):
+        action(fixture.position)
+    assert all(release.call_count == 1 for release in fixture.releases)
+
+
+@pytest.mark.parametrize("footer", [False, True])
+@pytest.mark.parametrize("clipped", [False, True])
+def test_list_steps_right_clip_requires_the_exact_two_rail_partition(
+    *, footer: bool, clipped: bool
+) -> None:
+    """Without a footer, only wholly contained raw item rectangles qualify."""
+    fixture = ListStepFixture()
+    if not footer:
+        header = header_element(50034, Rect(343, 282, 620, 52))
+        rail = header_element(50014, Rect(963, 282, 34, 425))
+        fixture.target._header = _ScrollHeader(header, rail, fixture.target.area)
+        fixture.children[:3] = [header, rail]
+    if not clipped:
+        for item in fixture.items:
+            item.bounds.return_value = replace(item.bounds.return_value, width=592)
+    steps = fixture.capability()
+    if clipped and not footer:
+        with pytest.raises(CaptureError, match="bounded item pair"):
+            steps.begin(fixture.position)
+    else:
+        steps.begin(fixture.position)
+        fixture.advance()
+        assert steps.finish(fixture.position) == 175
+
+
+@pytest.mark.parametrize("failure", ["missing", "loop", "wrong-item"])
+def test_list_steps_hit_ancestry_is_bounded_and_never_retargets(failure: str) -> None:
+    """A fresh unrelated item cannot replace the pair selected before the write."""
+    fixture = ListStepFixture()
+    steps = fixture.capability()
+    steps.begin(fixture.position)
+    fixture.advance()
+    unrelated = header_element(
+        50007 if failure == "wrong-item" else 50020,
+        fixture.items[0].bounds.return_value,
+    )
+    mock(fixture.target._automation.pointer_result).side_effect = None
+    mock(fixture.target._automation.pointer_result).return_value = unrelated
+    original_parent = fixture.target._walker.parent
+    visits = []
+
+    def parent(element: _Interface, owners: ExitStack) -> _Interface | None:
+        if element is unrelated:
+            visits.append(element)
+            return unrelated if failure == "loop" else None
+        return original_parent(element, owners)
+
+    fixture.target._walker.parent = Mock(side_effect=parent)
+    scans = mock(fixture.target._walker.relative).call_count
+    with pytest.raises(CaptureError):
+        steps.finish(fixture.position)
+    assert len(visits) <= 8
+    assert mock(fixture.target._walker.relative).call_count == scans
+    assert all(release.call_count == 1 for release in fixture.releases)
+
+
+def test_list_steps_fresh_text_descendant_resolves_to_the_same_retained_item() -> None:
+    """Bounded ancestry supports hits inside a ListItem without pointer equality."""
+    fixture = ListStepFixture()
+    descendants = {
+        item: header_element(50020, item.bounds.return_value) for item in fixture.items
+    }
+    original_parent = fixture.target._walker.parent
+    fixture.target._walker.parent = Mock(
+        side_effect=lambda element, owners: next(
+            (item for item, descendant in descendants.items() if element is descendant),
+            original_parent(element, owners),
+        )
+    )
+    mock(fixture.target._automation.pointer_result).side_effect = lambda *args: (
+        descendants[fixture.hit(*args)]
+    )
+    steps = fixture.capability()
+    steps.begin(fixture.position)
+    fixture.advance()
+    assert steps.finish(fixture.position) == 175
+
+
+@pytest.mark.parametrize("failure", ["qi", "raw", "native-after", "budget"])
+def test_list_steps_releases_partial_retention_on_begin_failure(
+    failure: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The first QI reference is released even if acquiring the second fails."""
+    fixture = ListStepFixture()
+    steps = fixture.capability()
+    second = fixture.items[1]
+    if failure == "qi":
+        second.pointer_result.side_effect = OSError("QI failed")
+    elif failure == "raw":
+        second.bounds.side_effect = [
+            second.bounds.return_value,
+            Rect(372, 570, 1350, 48),
+        ]
+    elif failure == "native-after":
+        original = fixture.target.scrollbar_state
+        reads = 0
+
+        def changed_read() -> ScrollBarState:
+            nonlocal reads
+            reads += 1
+            if reads == 2:
+                fixture.native = replace(fixture.native, position=1)
+            state = original()
+            assert state is not None
+            return state
+
+        fixture.target.scrollbar_state = Mock(side_effect=changed_read)
+    else:
+        original_qi = second.pointer_result.side_effect
+        assert callable(original_qi)
+
+        def delayed_qi(*args: object) -> object:
+            item = original_qi(*args)
+            monkeypatch.setattr(scrolling.time, "monotonic", lambda: steps._deadline)
+            return item
+
+        second.pointer_result.side_effect = delayed_qi
+    with pytest.raises((CaptureError, OSError)):
+        steps.begin(fixture.position)
+    assert fixture.releases
+    assert all(release.call_count == 1 for release in fixture.releases)
+    assert all(release.call_count == 1 for release in fixture.temporary_releases)
+    assert not steps._items
+
+
+@pytest.mark.parametrize("change", ["input", "foreground"])
+def test_list_steps_recheck_real_window_guard_after_raw_read(change: str) -> None:
+    """Mouse/keyboard or focus changes during metadata reads are not accepted."""
+    fixture = ListStepFixture()
+    steps = fixture.capability()
+    steps.begin(fixture.position)
+    fixture.advance()
+    fixture.check.side_effect = lambda: UiaScrollTarget._check_window(fixture.target)
+    raw = fixture.items[0].bounds.return_value
+    assert isinstance(raw, Rect)
+
+    def changed_bounds() -> Rect:
+        if change == "input":
+            mock(fixture.target._input).return_value = 13
+        else:
+            mock(fixture.target._user.GetForegroundWindow).return_value = 9
+        return raw
+
+    fixture.items[0].bounds.side_effect = changed_bounds
+    with pytest.raises(CaptureError):
+        steps.finish(fixture.position)
+    assert all(release.call_count == 1 for release in fixture.releases)
+
+
+def test_list_steps_cannot_confirm_terminal_without_verified_items() -> None:
+    """Native maximum alone never establishes the terminal item lineage."""
+    fixture = ListStepFixture()
+    steps = fixture.capability()
+    fixture.advance(175, terminal=True)
+    with pytest.raises(CaptureError, match="unconfirmed"):
+        steps.confirm_terminal(fixture.position)
+
+
+def test_list_steps_selection_rechecks_guard_after_last_position_read() -> None:
+    """Late focus/input failure during selection cannot create the capability."""
+    fixture = ListStepFixture()
+    position = fixture.position
+
+    def changed_position() -> ScrollPosition:
+        fixture.check.side_effect = CaptureError("input changed")
+        return position
+
+    fixture.target.position = Mock(side_effect=changed_position)
+    with pytest.raises(CaptureError, match="input changed"):
+        fixture.target.list_steps(position, fixture.check)
+    assert not fixture.releases
+
+
+def test_list_steps_never_reuse_prior_pair_for_a_later_step() -> None:
+    """Two fresh item references belong to each step and previous ones are released."""
+    fixture = ListStepFixture()
+    steps = fixture.capability()
+    steps.begin(fixture.position)
+    fixture.advance()
+    assert steps.finish(fixture.position) == 175
+    for item, y in zip(fixture.items, (563, 619), strict=True):
+        item.bounds.return_value = replace(item.bounds.return_value, y=y)
+    steps.begin(fixture.position)
+    fixture.advance(167)
+    assert steps.finish(fixture.position) == 167
+    assert len(fixture.releases) == 4
+    assert all(release.call_count == 1 for release in fixture.releases)
+
+
+def test_list_steps_pair_identities_must_remain_distinct_after_movement() -> None:
+    """Two references becoming the same UIA identity cannot prove two items."""
+    fixture = ListStepFixture()
+    steps = fixture.capability()
+    steps.begin(fixture.position)
+    fixture.advance()
+    mock(fixture.target._automation.same_element).side_effect = lambda a, b: (
+        a is b or (a is fixture.items[0] and b is fixture.items[1])
+    )
+    with pytest.raises(CaptureError, match="identities became ambiguous"):
+        steps.finish(fixture.position)
+    assert all(release.call_count == 1 for release in fixture.releases)

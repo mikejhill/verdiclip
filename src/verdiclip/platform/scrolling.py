@@ -16,6 +16,7 @@ import math
 import sys
 import time
 import uuid
+from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import dataclass
 from typing import Self
@@ -44,6 +45,12 @@ _WAIT_TIMEOUT = 258
 _MAX_WINDOWS = 512
 _MAX_HEADER_CHILDREN = 256
 _LIST_CONTROL = 50008
+_LISTITEM_CONTROL = 50007
+_MAX_ITEM_CHILDREN = 64
+_MAX_ITEM_ANCESTORS = 8
+_ITEM_SECONDS = 1.0
+_ITEM_PAIR = 2
+_ELEMENT_IID = "d22108aa-8ac5-49a5-837b-37bbb3d7591e"
 _SCROLLBAR_CONTROL = 50014
 _HEADER_CONTROL = 50034
 _PER_MONITOR_AWARE = 2
@@ -406,6 +413,264 @@ class _ScrollHeader:
                     or element.offscreen()
                 ):
                     raise CaptureError("The list header or scrollbar changed")
+
+
+@dataclass(frozen=True, slots=True)
+class _ListItem:
+    element: _Interface
+    bounds: Rect
+
+
+class _ListSteps:
+    """Read two retained raw ListItems, never converting native units to pixels.
+
+    This capability is selected before traversal. Only an exact retained List
+    layout and native rail can use it; losing evidence never selects a fallback.
+    Temporary scans and hits are bounded, and only two QI references survive a
+    begin call. The transaction owns pixels, uniqueness and restoration rights.
+    """
+
+    def __init__(
+        self,
+        target: UiaScrollTarget,
+        initial: ScrollPosition,
+        native: ScrollBarState,
+        check: Callable[[], None],
+    ) -> None:
+        self._target, self._check = target, check
+        self._header = target._header
+        self._horizontal, self._native = initial.horizontal, native
+        header = target.header
+        if header is None:
+            raise CaptureError("The list step Header is unavailable")
+        footer = target.footer
+        bottom = target.area.bottom if footer is None else footer.top
+        self.body = Rect(
+            header.left, header.bottom, header.width, bottom - header.bottom
+        )
+        self._right_clip = footer is not None and initial.horizontal == 0.0
+        self._retained = ExitStack()
+        self._items: list[_ListItem] = []
+        self._before: ScrollPosition | None = None
+        self._terminal: tuple[ScrollPosition, ScrollBarState] | None = None
+        self._deadline = 0.0
+        target._owners.callback(self.close)
+
+    def close(self) -> None:
+        """Release an abandoned pair before the target's COM apartment closes."""
+        self._retained.close()
+        self._items.clear()
+        self._before = None
+
+    def _guard(self) -> None:
+        self._check()
+        if time.monotonic() >= self._deadline:
+            raise CaptureError("The list item observation exceeded its time limit")
+        if self._target._header is not self._header:
+            raise CaptureError("The retained list layout changed")
+
+    def _state(
+        self, position: ScrollPosition, *, terminal: bool = False
+    ) -> ScrollBarState:
+        self._guard()
+        target = self._target
+        if (
+            target._element.control_type() != _LIST_CONTROL
+            or position.horizontal != self._horizontal
+            or target.position() != position
+        ):
+            raise CaptureError("The list step position or identity changed")
+        native = target.scrollbar_state()
+        self._guard()
+        if (
+            native is None
+            or not native.same_range(self._native)
+            or not native.matches(position)
+            or target.position() != position
+            or (not terminal and native.page != self._native.page)
+            or (
+                terminal
+                and (
+                    position.vertical != END_PERCENT
+                    or native.position != native.maximum - max(native.page - 1, 0)
+                )
+            )
+        ):
+            raise CaptureError("The list step native state changed")
+        self._guard()
+        return native
+
+    def _visible(self, raw: Rect) -> Rect | None:
+        """Allow only right overflow; raw coordinates remain displacement authority."""
+        visible = raw.intersected(self.body)
+        if raw.is_empty or visible.is_empty:
+            return None
+        if visible != raw and not (
+            self._right_clip
+            and self.body.left <= raw.left < self.body.right < raw.right
+            and self.body.top <= raw.top < raw.bottom <= self.body.bottom
+        ):
+            return None
+        x, y = round(visible.center.x), round(visible.center.y)
+        if not visible.left < x < visible.right or not visible.top < y < visible.bottom:
+            return None
+        return visible
+
+    def _raw(self, element: _Interface) -> Rect:
+        self._guard()
+        raw = element.bounds()
+        with ExitStack() as owners:
+            parent = self._target._walker.parent(element, owners)
+            if (
+                element.control_type() != _LISTITEM_CONTROL
+                or element.offscreen()
+                or self._visible(raw) is None
+                or parent is None
+                or not self._target._automation.same_element(
+                    parent, self._target._element
+                )
+            ):
+                raise CaptureError(
+                    "The retained list item is no longer visible or direct"
+                )
+        self._guard()
+        return raw
+
+    def _confirm(self, element: _Interface, raw: Rect) -> None:
+        self._guard()
+        visible = self._visible(raw)
+        if visible is None:
+            raise CaptureError("The list item has no supported hit area")
+        target = self._target
+        with ExitStack() as owners:
+            current = target._automation.pointer_result(
+                7,
+                owners,
+                (w.POINT, w.POINT(round(visible.center.x), round(visible.center.y))),
+            )
+            for _ in range(_MAX_ITEM_ANCESTORS):
+                self._guard()
+                if current.control_type() == _LISTITEM_CONTROL:
+                    if (
+                        self._raw(current) != raw
+                        or not target._automation.same_element(element, current)
+                        or self._raw(element) != raw
+                    ):
+                        raise CaptureError(
+                            "The list item hit identity or raw shape changed"
+                        )
+                    self._guard()
+                    return
+                parent = target._walker.parent(current, owners)
+                if parent is None:
+                    break
+                current = parent
+        raise CaptureError("The retained list item cannot be hit-tested")
+
+    def _seed(self) -> None:
+        target = self._target
+        with ExitStack() as temporary, ExitStack() as retained:
+            candidates: list[_ListItem] = []
+            child = target._walker.relative(target._element, temporary, 4)
+            for _ in range(_MAX_ITEM_CHILDREN):
+                self._guard()
+                if child is None:
+                    break
+                if child.control_type() == _LISTITEM_CONTROL and not child.offscreen():
+                    raw = child.bounds()
+                    if self._visible(raw) is not None:
+                        candidates.append(_ListItem(child, raw))
+                child = target._walker.relative(child, temporary, 6)
+            self._guard()
+            if child is not None or len(candidates) < _ITEM_PAIR:
+                raise CaptureError("The list step cannot retain a bounded item pair")
+            first, last = sorted(candidates, key=lambda item: item.bounds.top)[
+                -_ITEM_PAIR:
+            ]
+            if first.bounds.bottom > last.bounds.top or target._automation.same_element(
+                first.element, last.element
+            ):
+                raise CaptureError("The list step item pair is ambiguous")
+            items = []
+            for item in (first, last):
+                element = item.element.pointer_result(
+                    0, retained, (c.POINTER(_Guid), c.byref(_Guid.parse(_ELEMENT_IID)))
+                )
+                if (
+                    not target._automation.same_element(item.element, element)
+                    or self._raw(element) != item.bounds
+                ):
+                    raise CaptureError("The list item changed while retaining it")
+                self._confirm(element, item.bounds)
+                items.append(_ListItem(element, item.bounds))
+            self._guard()
+            self._retained, self._items = retained.pop_all(), items
+
+    def begin(self, position: ScrollPosition) -> None:
+        """Retain two currently visible identities before one downward write."""
+        if self._items or self._before is not None:
+            raise CaptureError("The previous list step is still outstanding")
+        self._deadline = time.monotonic() + _ITEM_SECONDS
+        try:
+            before = self._state(position)
+            self._seed()
+            if self._state(position) != before:
+                raise CaptureError("The native list moved while retaining items")
+            self._before = position
+        finally:
+            if self._before is None:
+                self.close()
+
+    def finish(self, position: ScrollPosition, *, terminal: bool = False) -> int:
+        """Prove agreeing integral raw displacement, always releasing this pair."""
+        self._deadline = time.monotonic() + _ITEM_SECONDS
+        try:
+            if (
+                self._before is None
+                or len(self._items) != _ITEM_PAIR
+                or position.vertical <= self._before.vertical
+            ):
+                raise CaptureError("The list step has no forward retained pair")
+            native = self._state(position, terminal=terminal)
+            deltas = []
+            for item in self._items:
+                raw = self._raw(item.element)
+                self._confirm(item.element, raw)
+                if (raw.x, raw.width, raw.height) != (
+                    item.bounds.x,
+                    item.bounds.width,
+                    item.bounds.height,
+                ):
+                    raise CaptureError("The list item's raw shape changed")
+                deltas.append(item.bounds.y - raw.y)
+            delta = deltas[0]
+            if (
+                not math.isfinite(delta)
+                or delta <= 0
+                or delta != round(delta)
+                or deltas != [delta, delta]
+            ):
+                raise CaptureError("The list items disagree about pixel displacement")
+            if self._state(position, terminal=terminal) != native:
+                raise CaptureError("The native list moved during item evidence")
+            if self._target._automation.same_element(
+                self._items[0].element, self._items[1].element
+            ):
+                raise CaptureError("The retained list item identities became ambiguous")
+            self._guard()
+            if terminal:
+                self._terminal = position, native
+            return int(delta)
+        finally:
+            self.close()
+
+    def confirm_terminal(self, position: ScrollPosition) -> None:
+        """Recheck the proven native maximum after all independent pixel proofs."""
+        self._deadline = time.monotonic() + _ITEM_SECONDS
+        native = self._state(position, terminal=True)
+        if self._terminal != (position, native):
+            raise CaptureError("The terminal list state is unconfirmed")
+        self._guard()
 
 
 class ScrollSelectionState:
@@ -1015,6 +1280,27 @@ class UiaScrollTarget:
             raise CaptureError("The native scrollbar handle changed during observation")
         self._scrollbar_identity = state
         return state
+
+    def list_steps(
+        self, initial: ScrollPosition, check: Callable[[], None]
+    ) -> _ListSteps | None:
+        """Select optional standard-List evidence once, before any traversal."""
+        check()
+        if (
+            self._header is None
+            or self._header.scrollbar is None
+            or self._element.control_type() != _LIST_CONTROL
+            or initial.horizontal != 0.0
+        ):
+            return None
+        native = self.scrollbar_state()
+        check()
+        if native is None:
+            return None
+        if self.position() != initial or not native.matches(initial):
+            raise CaptureError("The list changed while selecting item evidence")
+        check()
+        return _ListSteps(self, initial, native, check)
 
     def position(self) -> ScrollPosition:
         """Read percentages without asking the provider to change anything."""

@@ -2417,3 +2417,556 @@ def test_footer_counts_against_existing_output_budget(
     monkeypatch.setattr("verdiclip.capture.scrolling.MAX_PIXELS", 80 * 630)
     with pytest.raises(CaptureError, match="size limit"):
         frames.finish(target.document)
+
+
+class ListEvidence:
+    """Portable capability double; platform tests own raw item/native validation."""
+
+    body = Rect(10, 45, 63, 120)
+
+    def __init__(self, target: ListTarget) -> None:
+        self.target = target
+        self.before = 0
+        self.begins: list[int] = []
+        self.finishes: list[int] = []
+        self.confirmed = False
+        self.closed = False
+
+    def begin(self, position: ScrollPosition) -> None:
+        """Bind independently selected items to the last accepted frame position."""
+        assert self.target.position() == position
+        self.before = self.target.offset
+        self.begins.append(self.before)
+
+    def finish(self, position: ScrollPosition, *, terminal: bool = False) -> int:
+        """Return measured displacement without knowing the pixel candidate."""
+        assert position == self.target.position()
+        assert terminal == (position.vertical == 100.0)
+        delta = self.target.offset - self.before
+        self.finishes.append(delta)
+        return delta
+
+    def confirm_terminal(self, position: ScrollPosition) -> None:
+        """Require a fresh native maximum independently of UIA endpoint claims."""
+        assert position == self.target.position()
+        state = self.target.scrollbar_state()
+        assert state.position == state.maximum - state.page + 1
+        self.confirmed = True
+
+    def close(self) -> None:
+        """Record cleanup independently of capture success."""
+        self.closed = True
+
+
+class ListTarget(FooterTarget):
+    """Standard layout with native units independent of exact body displacement."""
+
+    def __init__(self, *, start: int = 0, total: int = 592) -> None:
+        super().__init__(start)
+        self.horizontal = 0.0
+        self.document = document(total)
+        self.steps = ListEvidence(self)
+        self.selected = 0
+
+    def list_steps(self, initial: ScrollPosition, check: object) -> ListEvidence:
+        """Expose optional geometry once, before any traversal write."""
+        assert initial == self.position()
+        assert callable(check)
+        assert not self.moves
+        self.selected += 1
+        return self.steps
+
+    @override
+    def move(self, vertical: float) -> None:
+        self.moves.append(vertical)
+        if vertical == 100.0:
+            self.page = 1236
+        self.native_position = round((6000 - self.page) * vertical / 100)
+        self.offset = (
+            self.document.height() - 120
+            if vertical == 100.0
+            else round(self.native_position / 10)
+        )
+
+
+def test_list_entire_overlap_filters_partial_aliases_before_global_uniqueness() -> None:
+    """A repeated40row band cannot trump the entire100row nonrail overlap."""
+    source = document(260)
+    repeated = source.copy(0, 60, 80, 40)
+    painter = QPainter(source)
+    painter.drawImage(0, 100, repeated)
+    painter.end()
+    first, second = source.copy(0, 0, 80, 160), source.copy(0, 60, 80, 160)
+    with pytest.raises(CaptureError, match="ambiguous"):
+        VerticalStitch(first).append(second, 60)
+    verified: list[int] = []
+    stitch = VerticalStitch(first, nonrail_width=63)
+    stitch.append(second, None, verify=verified.append)
+    assert verified == [60]
+    assert stitch.finish() == source.copy(0, 0, 80, 220)
+
+
+def test_list_global_whole_overlap_ambiguity_precedes_item_evidence() -> None:
+    """Even an item witness favoring one candidate cannot break a pixel tie."""
+    source = QImage(80, 240, QImage.Format.Format_RGB32)
+    painter = QPainter(source)
+    tile = document(40)
+    for y in range(0, 240, 40):
+        painter.drawImage(0, y, tile)
+    painter.end()
+    first = source.copy(0, 0, 80, 160)
+    stitch = VerticalStitch(first, nonrail_width=63)
+    verified: list[int] = []
+    with pytest.raises(CaptureError, match="ambiguous"):
+        stitch.append(source.copy(0, 60, 80, 160), None, verify=verified.append)
+    assert not verified
+    assert stitch.finish() == first
+
+
+@pytest.mark.parametrize("kind", ["zero", "uniform", "untextured"])
+def test_list_overlap_still_requires_positive_textured_band(kind: str) -> None:
+    """Whole matching rows cannot bypass positive movement or8distinct rows."""
+    first, second = document(120), document(180).copy(0, 60, 80, 120)
+    if kind == "zero":
+        second = first.copy()
+    elif kind == "uniform":
+        first.fill(QColor("white"))
+        second.fill(QColor("white"))
+    else:
+        for image in (first, second):
+            for y in range(image.height()):
+                for x in range(image.width()):
+                    image.setPixelColor(x, y, QColor(y % 4, x, 0))
+    stitch = VerticalStitch(first, nonrail_width=63)
+    with pytest.raises(CaptureError):
+        stitch.append(second, None)
+    assert stitch.finish() == first
+
+
+@pytest.mark.parametrize("column", [0, 1, 61, 62])
+def test_list_one_nonrail_pixel_cannot_hide_outside_exact_band(column: int) -> None:
+    """The existing32row band is insufficient when one other overlap pixel differs."""
+    source = document(180)
+    first, second = source.copy(0, 0, 80, 120), source.copy(0, 60, 80, 120)
+    second.setPixelColor(column, 59, QColor("red"))
+    stitch = VerticalStitch(first, nonrail_width=63)
+    with pytest.raises(CaptureError, match="complete overlapping pixels"):
+        stitch.append(second, None)
+    assert stitch.finish() == first
+
+
+@pytest.mark.parametrize("width", [0, -1, 80, 81, 63.5, True])
+def test_list_width_never_authorizes_an_arbitrary_or_empty_crop(width: object) -> None:
+    """Only an integer proper prefix is usable even at the internal stitch boundary."""
+    with pytest.raises(CaptureError, match="geometry"):
+        VerticalStitch(document(120), nonrail_width=width)  # ty: ignore[invalid-argument-type]
+
+
+@pytest.mark.parametrize("start", [0, 2400])
+def test_list_defers_endpoint_estimate_gate_but_proves_both_actual_extents(
+    start: int,
+) -> None:
+    """3% estimate disagreement can bracket the exact image within each2% bound."""
+    target = ListTarget(start=start)
+    original = target.frame()
+    operation = transaction(target)
+    result = operation.run()
+    assert result.image is not None
+    assert result.image.height() == 634
+    assert result.image.copy(0, 25, 80, 592) == target.document
+    assert result.image.copy(0, 617, 80, 17) == original.copy(0, 145, 80, 17)
+    assert target.selected == 1
+    assert target.steps.begins == list(range(0, 480, 60))
+    assert target.steps.finishes == [60] * 7 + [52]
+    assert target.steps.confirmed
+    assert target.steps.closed
+    assert target.native_position == start
+    assert target.moves[-2:] == [100.0, 100 * start / 4764]
+    assert result.restoration == "restored"
+    assert operation._terminal is not None
+
+
+def test_list_step_uses_raw_pixels_not_percentage_prediction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A single large initial offset is measured, never encoded as an inset."""
+    target = ListTarget()
+    move = target.move
+
+    def offset_move(vertical: float) -> None:
+        move(vertical)
+        if 0 < vertical < 100:
+            target.offset += 8
+
+    monkeypatch.setattr(target, "move", offset_move)
+    result = transaction(target).run()
+    assert result.image is not None
+    assert result.image.copy(0, 25, 80, 592) == target.document
+    assert target.steps.finishes == [68] + [60] * 6 + [44]
+
+
+@pytest.mark.parametrize("delta", [0, -60, 59, 61, 60.0, 60.5, True, None])
+def test_list_item_delta_must_be_the_exact_positive_integer_pixel_delta(
+    monkeypatch: pytest.MonkeyPatch, delta: object
+) -> None:
+    """No rounding, nearest candidate, percentage allowance or fallback applies."""
+    target = ListTarget()
+    monkeypatch.setattr(target.steps, "finish", lambda *_args, **_kwargs: delta)
+    operation = transaction(target)
+    result = operation.run()
+    assert result.image is None
+    assert "items disagree" in result.message
+    assert result.restoration == "not restored: the provider write is unresolved"
+    assert len(target.moves) == 1
+    assert operation._expected is None
+    assert operation._terminal is None
+    assert target.steps.closed
+
+
+@pytest.mark.parametrize("stage", ["begin", "finish", "confirm_terminal"])
+def test_list_evidence_failure_never_falls_back_to_generic_restore(
+    monkeypatch: pytest.MonkeyPatch, stage: str
+) -> None:
+    """Lost capability/identity/layout/range evidence revokes write authority."""
+    target = ListTarget(start=2400)
+
+    def fail(*_args: object, **_kwargs: object) -> None:
+        raise CaptureError("List evidence was lost")
+
+    monkeypatch.setattr(target.steps, stage, fail)
+    operation = transaction(target)
+    result = operation.run()
+    assert result.image is None
+    assert result.message == "List evidence was lost"
+    assert result.restoration == "not restored: the provider write is unresolved"
+    assert operation._expected is None
+    assert operation._terminal is None
+    assert target.steps.closed
+    assert target.moves[-1] != 100 * 2400 / 4764
+
+
+@pytest.mark.parametrize("total", [580, 610])
+def test_list_both_final_actual_height_bounds_remain_unchanged(total: int) -> None:
+    """One total bound passes and the other fails; no terminal restore is authorized."""
+    target = ListTarget(total=total)
+    operation = transaction(target)
+    result = operation.run()
+    assert result.image is None
+    assert "disagree with the panel's extent" in result.message
+    assert result.restoration == "not restored: the provider write is unresolved"
+    assert operation._expected is None
+    assert operation._terminal is None
+    assert target.moves[-1] == 100.0
+    assert not target.steps.confirmed
+
+
+@pytest.mark.parametrize("change", ["body", "rail", "header", "horizontal"])
+def test_list_selected_geometry_cannot_be_forged_before_traversal(change: str) -> None:
+    """Only the exact verified nonrail body/right rail layout can select this route."""
+    target = ListTarget()
+    if change == "body":
+        target.steps.body = Rect(10, 45, 62, 120)
+    elif change == "rail":
+        target.vertical_scrollbar = Rect(72, 20, 18, 145)
+    elif change == "header":
+        target.header = Rect(10, 20, 62, 25)
+    else:
+        target.horizontal = 1.0
+    result = transaction(target).run()
+    assert result.image is None
+    assert not target.moves
+    assert result.restoration == "unchanged"
+
+
+def test_list_missing_before_selection_keeps_strict_generic_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unsupported is distinct from failed evidence after the route was selected."""
+    target = ListTarget()
+    monkeypatch.setattr(target, "list_steps", lambda *_args: None)
+    result = transaction(target).run()
+    assert result.image is None
+    assert "moved unexpectedly" in result.message
+    assert target.moves[-1] == 100.0
+    assert not target.steps.begins
+    assert not target.steps.closed
+
+
+@pytest.mark.parametrize("stage", ["finish", "confirm_terminal"])
+@pytest.mark.parametrize("interrupt", ["input", "focus", "deadline", "position"])
+def test_list_late_state_change_cannot_commit_or_restore(
+    monkeypatch: pytest.MonkeyPatch, stage: str, interrupt: str
+) -> None:
+    """Final item/native observations still require current eligibility and position."""
+    target = ListTarget()
+    elapsed = [0.0]
+    operation = ScrollTransaction(
+        target, lambda: False, clock=lambda: elapsed[0], pause=lambda _: None
+    )
+    observe = getattr(target.steps, stage)
+
+    def changed(*args: object, **kwargs: object) -> object:
+        result = observe(*args, **kwargs)
+        if interrupt in ("input", "focus"):
+            target.input_changed = True
+        elif interrupt == "deadline":
+            elapsed[0] = 26.0
+        else:
+            target.horizontal = 1.0
+        return result
+
+    monkeypatch.setattr(target.steps, stage, changed)
+    result = operation.run()
+    assert result.image is None
+    assert result.restoration.startswith("not restored")
+    assert operation._expected is None
+    assert operation._terminal is None
+    assert len(target.moves) == (1 if stage == "finish" else 8)
+    assert target.steps.closed
+
+
+def test_list_rejected_raw_item_proof_leaves_stitch_append_uncommitted() -> None:
+    """A pixel candidate does not change previous frames before item/late guards."""
+    source = document(180)
+    first = source.copy(0, 0, 80, 120)
+    stitch = VerticalStitch(first, nonrail_width=63)
+
+    def reject(_advance: int) -> None:
+        raise CaptureError("The two raw items disagree")
+
+    with pytest.raises(CaptureError, match="two raw items"):
+        stitch.append(source.copy(0, 60, 80, 120), None, verify=reject)
+    assert stitch.finish() == first
+    stitch.append(source.copy(0, 60, 80, 120), None)
+    assert stitch.finish() == source
+
+
+@pytest.mark.parametrize("exact_rows", [0, 31, 32])
+def test_list_nonrail_overlap_still_needs_original_full_width_band(
+    exact_rows: int,
+) -> None:
+    """Excluding the actual rail does not replace the full-width32row criterion."""
+    source = document(180)
+    first, second = source.copy(0, 0, 80, 120), source.copy(0, 60, 80, 120)
+    painter = QPainter(second)
+    painter.fillRect(63, exact_rows, 17, 120 - exact_rows, QColor("red"))
+    painter.end()
+    stitch = VerticalStitch(first, nonrail_width=63)
+    if exact_rows < 32:
+        with pytest.raises(CaptureError, match="complete overlapping pixels"):
+            stitch.append(second, None)
+        assert stitch.finish() == first
+    else:
+        stitch.append(second, None)
+        image = stitch.finish()
+        assert image.width() == 80
+        assert image.height() == 180
+        assert image.copy(0, 0, 63, 180) == source.copy(0, 0, 63, 180)
+        assert image.copy(0, 76, 80, 104) == second.copy(0, 16, 80, 104)
+
+
+@pytest.mark.parametrize("limit", ["frames", "pixels"])
+def test_list_route_keeps_global_capture_limits(
+    monkeypatch: pytest.MonkeyPatch, limit: str
+) -> None:
+    """Item geometry cannot enlarge the existing frame or output pixel budget."""
+    target = ListTarget()
+    if limit == "frames":
+        monkeypatch.setattr("verdiclip.capture.scrolling.MAX_FRAMES", 2)
+    else:
+        monkeypatch.setattr("verdiclip.capture.scrolling.MAX_PIXELS", 80 * 200)
+    result = transaction(target).run()
+    assert result.image is None
+    assert "limit" in result.message
+    assert target.steps.closed
+    assert not target.steps.confirmed
+
+
+def test_list_cleanup_failure_does_not_escape_or_authorize_restoration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An uncertain COM release after success still withholds pixels and writes."""
+    target = ListTarget()
+
+    def fail() -> None:
+        raise OSError("Could not release the retained items")
+
+    monkeypatch.setattr(target.steps, "close", fail)
+    result = transaction(target).run()
+    assert result.image is None
+    assert "release" in result.message
+    assert result.restoration == "not restored: the provider write is unresolved"
+    assert target.moves[-1] == 100.0
+
+
+def test_list_normalized_bottom_start_seeks_top_outside_item_lineage() -> None:
+    """A known bottom start uses no cross-document item proof or extra restore write."""
+    target = ListTarget()
+    target.move(100.0)
+    target.moves.clear()
+    initial, original = target.position(), target.frame()
+    operation = transaction(target)
+    result = operation.run()
+    assert result.image is not None
+    assert result.image.copy(0, 25, 80, 592) == target.document
+    assert target.position() == initial
+    assert target.frame() == original
+    assert target.steps.begins[0] == 0
+    assert all(delta > 0 for delta in target.steps.finishes)
+    assert target.moves[0] == 0.0
+    assert target.moves[-1] == 100.0
+    assert len(target.moves) == len(target.steps.finishes) + 1
+    assert result.restoration == "restored"
+    assert operation._terminal is None
+
+
+def test_list_changed_top_seek_metric_cannot_start_forward_lineage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Selecting geometry never permits initial bottom-to-top metric changes."""
+    target = ListTarget(start=2400)
+    move = target.move
+
+    def changed(vertical: float) -> None:
+        move(vertical)
+        if vertical == 0.0:
+            target.page += 1
+
+    monkeypatch.setattr(target, "move", changed)
+    operation = transaction(target)
+    result = operation.run()
+    assert result.image is None
+    assert "moved unexpectedly" in result.message
+    assert target.moves == [0.0]
+    assert not target.steps.begins
+    assert operation._expected is None
+    assert operation._terminal is None
+    assert result.restoration == "not restored: the provider write is unresolved"
+
+
+def test_list_cancel_before_first_write_changes_nothing() -> None:
+    """Cancellation before selection never acquires items or writes native state."""
+    target = ListTarget(start=2400)
+    result = ScrollTransaction(target, lambda: True, pause=lambda _: None).run()
+    assert result.image is None
+    assert "cancelled" in result.message
+    assert result.restoration == "unchanged"
+    assert not target.moves
+    assert not target.selected
+
+
+def test_list_cancel_during_unaccepted_write_does_not_restore(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A settled native write without pixel/item acceptance remains unresolved."""
+    target = ListTarget()
+    cancelled = [False]
+    move = target.move
+
+    def cancel_after_move(vertical: float) -> None:
+        move(vertical)
+        cancelled[0] = True
+
+    monkeypatch.setattr(target, "move", cancel_after_move)
+    operation = ScrollTransaction(target, lambda: cancelled[0], pause=lambda _: None)
+    result = operation.run()
+    assert result.image is None
+    assert "cancelled" in result.message
+    assert result.restoration == "not restored: the provider write is unresolved"
+    assert operation._expected is None
+    assert len(target.moves) == 1
+    assert target.steps.closed
+
+
+def test_list_cooperative_cancel_between_accepted_steps_can_restore() -> None:
+    """Cancelling a proved interior frame still allows the existing single restore."""
+    target = ListTarget()
+    operation = ScrollTransaction(
+        target,
+        lambda: target.offset == 60 and operation._expected is not None,
+        pause=lambda _: None,
+    )
+    result = operation.run()
+    assert result.image is None
+    assert "cancelled" in result.message
+    assert result.restoration == "restored"
+    assert len(target.moves) == 2
+    assert target.moves[-1] == 0.0
+    assert target.native_position == 0
+    assert target.steps.finishes == [60]
+    assert target.steps.closed
+
+
+@pytest.mark.parametrize("reason", ["User input", "Focus changed"])
+def test_list_input_or_focus_between_accepted_steps_refuses_restore(
+    monkeypatch: pytest.MonkeyPatch, reason: str
+) -> None:
+    """Unlike cooperative cancellation, real eligibility loss never permits writing."""
+    target = ListTarget()
+    operation = transaction(target)
+
+    def lost() -> None:
+        if target.offset == 60 and operation._expected is not None:
+            raise CaptureError(reason)
+
+    monkeypatch.setattr(target, "check", lost)
+    result = operation.run()
+    assert result.image is None
+    assert result.message == reason
+    assert result.restoration == "not restored: the target or user state changed"
+    assert len(target.moves) == 1
+    assert target.steps.finishes == [60]
+
+
+@pytest.mark.parametrize("change", ["maximum", "rail", "page", "missing"])
+def test_list_top_seek_requires_fresh_unchanged_native_state(
+    monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    """A top screenshot/UIA tuple alone cannot grant permission to restore or move."""
+    target = ListTarget(start=2400)
+    read = target.scrollbar_state
+
+    def changed() -> ScrollBarState | None:
+        state = read()
+        if not target.moves:
+            return state
+        return (
+            None
+            if change == "missing"
+            else replace(state, **{change: getattr(state, change) + 1})
+        )
+
+    monkeypatch.setattr(target, "scrollbar_state", changed)
+    operation = transaction(target)
+    result = operation.run()
+    assert result.image is None
+    assert "seeking the top" in result.message
+    assert target.moves == [0.0]
+    assert not target.steps.begins
+    assert operation._expected is None
+    assert result.restoration == "not restored: the provider write is unresolved"
+
+
+@pytest.mark.parametrize("pixel", [(0, 0), (0, 150), (79, 150), (0, 25), (62, 84)])
+def test_list_any_changed_fixed_or_overlapping_exterior_pixel_rejects(
+    monkeypatch: pytest.MonkeyPatch, pixel: tuple[int, int]
+) -> None:
+    """Exact Header/footer/corner and whole nonrail overlap precede raw item proof."""
+    target = ListTarget()
+    frame = target.frame
+
+    def corrupted() -> QImage:
+        image = frame()
+        if target.offset:
+            image.setPixelColor(*pixel, QColor("red"))
+        return image
+
+    monkeypatch.setattr(target, "frame", corrupted)
+    operation = transaction(target)
+    result = operation.run()
+    assert result.image is None
+    assert result.restoration == "not restored: the provider write is unresolved"
+    assert len(target.moves) == 1
+    assert not target.steps.finishes
+    assert operation._expected is None
+    assert operation._terminal is None

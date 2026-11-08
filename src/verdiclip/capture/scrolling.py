@@ -12,6 +12,7 @@ import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from typing import Protocol
 
 from PySide6.QtGui import QColor, QImage, QPainter
@@ -114,6 +115,26 @@ class ScrollBarState:
         )
 
 
+class ListSteps(Protocol):
+    """Optional standard-List evidence; raw elements stay inside the platform."""
+
+    @property
+    def body(self) -> Rect:
+        """Return the verified entire nonrail moving body in desktop pixels."""
+
+    def begin(self, position: ScrollPosition) -> None:
+        """Retain two raw ListItems before a downward traversal write."""
+
+    def finish(self, position: ScrollPosition, *, terminal: bool = False) -> int:
+        """Require both retained items to report one positive integer movement."""
+
+    def confirm_terminal(self, position: ScrollPosition) -> None:
+        """Recheck the same native range at its actual maximum and eligibility."""
+
+    def close(self) -> None:
+        """Release retained raw items without moving the target."""
+
+
 class ScrollTarget(Protocol):
     """One retained target, used only inside a disposable helper."""
 
@@ -159,10 +180,21 @@ class VerticalStitch:
     Repeating or animated content without a unique match remains unsupported.
     """
 
-    def __init__(self, first: QImage, *, dpi: int | None = None) -> None:
+    def __init__(
+        self,
+        first: QImage,
+        *,
+        dpi: int | None = None,
+        nonrail_width: int | None = None,
+    ) -> None:
         self._validate(first)
         if dpi is not None and not BASE_REGISTRATION_DPI <= dpi <= MAX_REGISTRATION_DPI:
             raise CaptureError("The scrolling registration DPI is unsupported")
+        if nonrail_width is not None and not (
+            type(nonrail_width) is int and 0 < nonrail_width < first.width()
+        ):
+            raise CaptureError("The List body geometry is unsupported")
+        self._nonrail_width = nonrail_width
         self._dpi = BASE_REGISTRATION_DPI if dpi is None else dpi
         self._frames = [first.copy()]
         self._previous = first.copy()
@@ -188,13 +220,20 @@ class VerticalStitch:
         return [raw[y * stride : (y + 1) * stride] for y in range(image.height())]
 
     @staticmethod
-    def _alignment(old: list[bytes], new: list[bytes]) -> tuple[int, int, int] | None:
+    def _alignment(
+        old: list[bytes], new: list[bytes], *, nonrail_width: int | None = None
+    ) -> tuple[int, int, int] | None:
         """Find one displacement globally, using exact textured row bands."""
         ids: dict[bytes, int] = {}
         before = [ids.setdefault(row, len(ids)) for row in old]
         after = [ids.setdefault(row, len(ids)) for row in new]
         match = None
         for advance in range(1, len(before) - MIN_OVERLAP + 1):
+            if nonrail_width is not None and any(
+                left[: nonrail_width * 4] != right[: nonrail_width * 4]
+                for left, right in zip(old[advance:], new, strict=False)
+            ):
+                continue
             start = 0
             longest = (0, 0)
             for row in range(len(before) - advance + 1):
@@ -271,9 +310,11 @@ class VerticalStitch:
         self, old: list[bytes], new: list[bytes]
     ) -> tuple[int, int, int, bool]:
         """Try all columns first; only no match permits a measured-edge retry."""
-        match = self._alignment(old, new)
+        match = self._alignment(old, new, nonrail_width=self._nonrail_width)
         if match is not None:
             return *match, True
+        if self._nonrail_width is not None:
+            raise CaptureError("The List's complete overlapping pixels do not match")
         left = self._edge_width(old, new, right=False)
         right = self._edge_width(old, new, right=True)
         if left or right:
@@ -382,7 +423,13 @@ class VerticalStitch:
             )
             raise CaptureError("The top of the scroll panel is fixed or changing")
 
-    def append(self, image: QImage, expected_advance: float | None) -> None:
+    def append(
+        self,
+        image: QImage,
+        expected_advance: float | None,
+        *,
+        verify: Callable[[int], None] | None = None,
+    ) -> None:
         """Join exact bands; a provisional terminal join requires later extent proof."""
         self._validate(image)
         if image.size() != self._previous.size():
@@ -395,6 +442,8 @@ class VerticalStitch:
             advance,
             f"{expected_advance:.3f}"
             if expected_advance is not None
+            else "list_item_geometry"
+            if self._nonrail_width is not None
             else "terminal_extent",
             first,
             last,
@@ -414,6 +463,8 @@ class VerticalStitch:
         if seam >= last:
             raise CaptureError("The panel has no consistent interior join")
         retained = advance + seam - self._tail_start
+        if verify is not None:
+            verify(advance)
         self._frames[-1] = self._previous.copy(
             0, self._tail_start, image.width(), retained
         )
@@ -570,6 +621,8 @@ class ScrollTransaction:
         self._terminal: ScrollPosition | None = None
         self._native: ScrollBarState | None = None
         self._anchor: QImage | None = None
+        self._list_steps: ListSteps | None = None
+        self._list_body: Rect | None = None
 
     def _check(self, *, restoring: bool = False) -> None:
         if not restoring and self._cancelled():
@@ -602,6 +655,87 @@ class ScrollTransaction:
         if state is not None and not isinstance(state, ScrollBarState):
             raise CaptureError("The native scrollbar observation is unsupported")
         return state
+
+    def _select_list_steps(self, initial: ScrollPosition) -> None:
+        """Choose once, before traversal; missing support retains the old path."""
+        factory = getattr(self._target, "list_steps", None)
+        self._list_steps = (
+            factory(initial, self._check) if factory is not None else None
+        )
+        if self._list_steps is not None:
+            self._list_body = self._list_steps.body
+            self._list_width()
+            if self._native is None or initial.horizontal != 0.0:
+                raise CaptureError("The List's original native state is unsupported")
+
+    def _list_width(self) -> int | None:
+        """Exclude only the proven actual rail, never arbitrary exterior content."""
+        steps = self._list_steps
+        if steps is None:
+            return None
+        area, header = self._target.area, self._target.header
+        footer = _footer_height(area, header, getattr(self._target, "footer", None))
+        if (
+            header is None
+            or steps.body != self._list_body
+            or steps.body
+            != Rect(
+                area.left,
+                header.bottom,
+                header.width,
+                area.height - header.height - footer,
+            )
+            or getattr(self._target, "vertical_scrollbar", None)
+            != Rect(
+                header.right, area.top, area.width - header.width, area.height - footer
+            )
+            or not 0 < header.width < area.width
+            or header.width != round(header.width)
+        ):
+            raise CaptureError("The List's nonrail geometry changed or is unsupported")
+        return round(header.width)
+
+    def _confirm_list_start(self, position: ScrollPosition) -> None:
+        """Keep the top seek outside item lineage but prove its native state first."""
+        native, original = self._native_state(), self._native
+        if (
+            native is None
+            or original is None
+            or not native.same_range(original)
+            or native.page != original.page
+            or native.position != native.minimum
+            or position.vertical != 0.0
+            or not native.matches(position)
+            or position.horizontal != 0.0
+            or self._target.position() != position
+        ):
+            raise CaptureError("The List changed native state while seeking the top")
+        self._check()
+        self._expected = position
+
+    def _begin_list_step(self, position: ScrollPosition) -> None:
+        """A selected capability failure also revokes previous restore ownership."""
+        if self._list_steps is not None:
+            self._check()
+            try:
+                self._list_steps.begin(position)
+            except (CaptureError, OSError):
+                self._expected = None
+                raise
+
+    def _verify_list_step(self, position: ScrollPosition, advance: int) -> None:
+        """Confirm item evidence only after global pixel uniqueness, before append."""
+        steps = self._list_steps
+        if steps is None:
+            raise CaptureError("The selected List capability is unavailable")
+        delta = steps.finish(position, terminal=position.vertical == END_PERCENT)
+        if type(delta) is not int or delta != advance or delta <= 0:
+            raise CaptureError("The List items disagree with its scrolling pixels")
+        self._list_width()
+        self._check()
+        if self._target.position() != position:
+            raise CaptureError("The List moved during its pixel verification")
+        self._check()
 
     def _anchor_sample(
         self, position: ScrollPosition, native: ScrollBarState, *, restoring: bool
@@ -726,6 +860,10 @@ class ScrollTransaction:
             or not 0.0 < current.view_size < END_PERCENT
         ):
             return False
+        if self._list_steps is not None:
+            # Admission is provisional. Continuous pixels/items, native maximum,
+            # and BOTH original/terminal actual-image extent checks remain required.
+            return True
         fixed = header.height + _footer_height(
             self._target.area, header, getattr(self._target, "footer", None)
         )
@@ -825,7 +963,7 @@ class ScrollTransaction:
         self._expected = None
         self._target.move(percent)
         observed = self._settle(before, percent)
-        if observed.view_size == before.view_size:
+        if self._list_steps is None and observed.view_size == before.view_size:
             self._expected = observed
         self._check()
         return observed
@@ -839,12 +977,20 @@ class ScrollTransaction:
             self._target.header,
             getattr(self._target, "footer", None),
         )
-        stitch = VerticalStitch(frames.body(first), dpi=self._target.registration_dpi)
+        stitch = VerticalStitch(
+            frames.body(first),
+            dpi=self._target.registration_dpi,
+            nonrail_width=self._list_width(),
+        )
+        self._check()
+        if self._list_steps is not None:
+            self._confirm_list_start(position)
         while position.vertical < END_PERCENT:
             if self._frames >= MAX_FRAMES:
                 raise CaptureError("Scrolling capture reached its page limit")
             # Half a viewport leaves ample overlap without wheel chaining.
             step = 50.0 * position.view_size / (100.0 - position.view_size)
+            self._begin_list_step(position)
             following = self._move(min(100.0, position.vertical + step))
             expected = (
                 frames.body_height
@@ -864,21 +1010,34 @@ class ScrollTransaction:
             )
             stitch.append(
                 frames.body(self._frame(following)),
-                expected if following.view_size == position.view_size else None,
+                expected
+                if self._list_steps is None
+                and following.view_size == position.view_size
+                else None,
+                verify=partial(self._verify_list_step, following)
+                if self._list_steps is not None
+                else None,
             )
+            if self._list_steps is not None and following.vertical != END_PERCENT:
+                self._expected = following
             position = following
         self._check()
         image = frames.finish(stitch.finish())
         self._validate_extent(image, frames, initial.view_size)
-        if position.view_size != initial.view_size:
+        if position.view_size != initial.view_size or self._list_steps is not None:
             self._validate_extent(image, frames, position.view_size)
+            if self._list_steps is not None:
+                self._list_steps.confirm_terminal(position)
+                self._list_width()
             self._check()
             if self._target.position() != position:
                 raise CaptureError(
                     "The scroll panel changed before terminal confirmation"
                 )
             self._check()
-            self._expected = self._terminal = position
+            self._expected = position
+            if position.view_size != initial.view_size:
+                self._terminal = position
         return image
 
     @staticmethod
@@ -948,9 +1107,17 @@ class ScrollTransaction:
             self._validate_position(initial)
             self._expected = initial
             self._save_anchor(initial)
+            self._select_list_steps(initial)
             image = self._sequence(initial)
         except (CaptureError, OSError) as error:
             message = str(error)
+        finally:
+            if self._list_steps is not None:
+                try:
+                    self._list_steps.close()
+                except (CaptureError, OSError) as error:
+                    image, message = None, str(error)
+                    self._expected = self._terminal = None
         restoration = self._restore(initial) if initial is not None else "unchanged"
         if image is not None and restoration != "restored":
             image, message = None, restoration
