@@ -14,6 +14,73 @@ from scripts.scrolling_oracle import verify_sequence
 
 from verdiclip.capture.scrolling import ScrollPosition, ScrollResult
 from verdiclip.exceptions import CaptureError
+from verdiclip.geometry import Point, Rect
+
+
+@pytest.mark.parametrize(
+    "mode", ["explorer-click", "explorer-enter", "edge-panel-enter", "edge"]
+)
+def test_trace_native_scroll_info_is_explorer_only(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: str
+) -> None:
+    """Frame metadata reuses the opened target's probe without changing old cases."""
+    frame = QImage(24, 60, QImage.Format.Format_RGB32)
+    frame.fill(QColor("white"))
+    target = Mock(_window=17, _input_tick=12, area=Rect(0, 0, 24, 60))
+    position = ScrollPosition(0.0, 0.0, 50.0)
+    target.position.return_value = position
+    geometry: dict[str, object] = {"uia": {"nodes": []}}
+    metadata = [{"native_handle": 17, "bar": 1, "success": True, "pos": 0}]
+    read = Mock(return_value=metadata)
+    monkeypatch.setattr(native.ScrollTransaction, "_frame", lambda *_: frame)
+    monkeypatch.setattr(native.UiaScrollTarget, "_open", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(native, "_target_evidence", Mock(return_value=geometry))
+    monkeypatch.setattr(native, "scroll_info", read)
+    monkeypatch.setattr("sys.argv", ["-c", str(tmp_path), mode])
+
+    def capture() -> None:
+        native.UiaScrollTarget._open(target, Point(0, 0))
+        native.ScrollTransaction._frame(Mock(_target=target), position)
+
+    monkeypatch.setattr(native, "helper_main", capture)
+    native._trace_helper()
+    observation = json.loads((tmp_path / "frames.json").read_text())[0]
+    assert observation["vertical"] == 0.0
+    if mode.startswith("explorer-"):
+        assert observation["native_scroll_info"] == metadata
+        read.assert_called_once_with(target, geometry)
+        assert target.position.call_count == 2
+        assert target.check.call_count == 2
+    else:
+        assert "native_scroll_info" not in observation
+        read.assert_not_called()
+
+
+@pytest.mark.parametrize("when", ["before", "during"])
+def test_frame_native_scroll_info_rejects_changed_position(
+    monkeypatch: pytest.MonkeyPatch, when: str
+) -> None:
+    """Unsettled native observations cannot be attached to a prior frame."""
+    position = ScrollPosition(0.0, 0.0, 50.0)
+    changed = ScrollPosition(0.0, 1.0, 50.0)
+    target = Mock()
+    target.position.side_effect = [changed] if when == "before" else [position, changed]
+    read = Mock(return_value=[])
+    monkeypatch.setattr(native, "scroll_info", read)
+    with pytest.raises(CaptureError, match=f"moved {when} native metadata"):
+        native._frame_scroll_info(target, position, {})
+    assert read.call_count == int(when == "during")
+
+
+def test_explorer_frame_rejects_missing_or_different_target_evidence() -> None:
+    """Metadata from another target must not be reused for a capture."""
+    with pytest.raises(CaptureError, match="target was not retained"):
+        native._frame_observation(
+            Mock(_target=Mock()),
+            ScrollPosition(0.0, 0.0, 50.0),
+            (Mock(), {}),
+            "explorer-enter",
+        )
 
 
 def _sequence(output: Path) -> QImage:

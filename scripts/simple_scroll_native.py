@@ -24,7 +24,7 @@ from unittest.mock import patch
 
 from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer
 from PySide6.QtGui import QImage
-from scripts.scrolling_header_probe import probe_target, window_dpi
+from scripts.scrolling_header_probe import probe_target, scroll_info, window_dpi
 
 from verdiclip.capture.grabber import MssScreenSource
 from verdiclip.capture.scroll_helper import ScrollHelper
@@ -189,16 +189,55 @@ def _prepare(window: WindowInfo) -> WindowInfo:
 
 def _target_evidence(
     target: UiaScrollTarget, output: Path, mode: str, selected: dict[str, object]
-) -> None:
+) -> dict[str, object] | None:
     """Record extra geometry only for the explicitly owned representative cases."""
     if not mode.startswith(_REPRESENTATIVE_PREFIXES):
-        return
+        return None
     selected["initial_position"] = asdict(target.position())
     selected["window_dpi"] = window_dpi(target)
     if mode.startswith("explorer-"):
+        geometry = probe_target(target)
         (output / "header-geometry.json").write_text(
-            json.dumps(probe_target(target), indent=2), encoding="utf-8"
+            json.dumps(geometry, indent=2), encoding="utf-8"
         )
+        return geometry
+    return None
+
+
+def _frame_scroll_info(
+    target: UiaScrollTarget, position: ScrollPosition, geometry: dict[str, object]
+) -> list[dict[str, object]]:
+    """Tie read-only native metadata to the just-acquired stable frame position."""
+    target.check()
+    if target.position() != position:
+        raise CaptureError("The scroll panel moved before native metadata capture")
+    result = scroll_info(target, geometry)
+    if target.position() != position:
+        raise CaptureError("The scroll panel moved during native metadata capture")
+    target.check()
+    return result
+
+
+def _frame_observation(
+    operation: ScrollTransaction,
+    position: ScrollPosition,
+    evidence: tuple[UiaScrollTarget | None, dict[str, object] | None],
+    mode: str,
+) -> dict[str, object]:
+    """Extend only Explorer's existing frame records with native metadata."""
+    observation: dict[str, object] = {
+        "horizontal": position.horizontal,
+        "vertical": position.vertical,
+        "view_size": position.view_size,
+    }
+    if mode.startswith("explorer-"):
+        target, geometry = evidence
+        if geometry is None or target is None or target is not operation._target:
+            raise CaptureError("Native scroll evidence target was not retained")
+        observation["native_scroll_info"] = _frame_scroll_info(
+            target, position, geometry
+        )
+    return observation
 
 
 def _trace_helper() -> None:
@@ -206,12 +245,12 @@ def _trace_helper() -> None:
     logging.basicConfig(level=logging.INFO)
     mode = sys.argv.pop()
     output = Path(sys.argv.pop())
-    original = ScrollTransaction._frame
-    run = ScrollTransaction.run
+    original, run = ScrollTransaction._frame, ScrollTransaction.run
     move = UiaScrollTarget.move
     opening = UiaScrollTarget._open
     selected: dict[str, object] = {}
-    observations: list[dict[str, float]] = []
+    observations: list[dict[str, object]] = []
+    evidence: tuple[UiaScrollTarget | None, dict[str, object] | None] = (None, None)
     writes: list[float] = []
     complete_sequence = mode.startswith(_REPRESENTATIVE_PREFIXES)
     frame_limit = MAX_FRAMES if complete_sequence else _DIAGNOSTIC_FRAMES
@@ -224,13 +263,14 @@ def _trace_helper() -> None:
         window: int | None = None,
         input_tick: int | None = None,
     ) -> None:
+        nonlocal evidence
         opening(target, point, window=window, input_tick=input_tick)
         selected.update(
             window=target._window,
             input_tick=target._input_tick,
             area=asdict(target.area),
         )
-        _target_evidence(target, output, mode, selected)
+        evidence = target, _target_evidence(target, output, mode, selected)
 
     def record_move(target: UiaScrollTarget, percent: float) -> None:
         writes.append(percent)
@@ -255,9 +295,10 @@ def _trace_helper() -> None:
             retained_pixels += frame.width() * frame.height()
             if retained_pixels > MAX_PIXELS:
                 raise CaptureError("Diagnostic frame evidence exceeds its pixel limit")
+            observation = _frame_observation(operation, position, evidence, mode)
             if not frame.save(str(output / f"frame-{len(observations)}.png")):
                 raise OSError("Could not save the native scrolling diagnostic frame")
-            observations.append(asdict(position))
+            observations.append(observation)
             (output / "frames.json").write_text(
                 json.dumps(observations, indent=2), encoding="utf-8"
             )

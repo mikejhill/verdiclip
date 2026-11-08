@@ -15,6 +15,120 @@ from verdiclip.exceptions import CaptureError
 from verdiclip.geometry import Rect
 
 
+@pytest.mark.parametrize("success", [True, False])
+def test_scroll_info_reports_native_fields_or_explicit_failure(
+    monkeypatch: pytest.MonkeyPatch, *, success: bool
+) -> None:
+    """GetScrollInfo's mask/layout and error semantics preserve numeric evidence."""
+    target = Mock()
+    target._window = 17
+    target._user.IsWindow.return_value = True
+    target._user.GetAncestor.return_value = 17
+    reset_error, last_error = Mock(), Mock(return_value=5)
+    monkeypatch.setattr(probe.c, "set_last_error", reset_error, raising=False)
+    monkeypatch.setattr(probe.c, "get_last_error", last_error, raising=False)
+
+    def read(handle: int, bar: int, pointer: c._CArgObject) -> bool:
+        assert (handle, bar) == (19, 2)
+        info = c.cast(pointer, c.POINTER(probe._ScrollInfo)).contents
+        assert info.size == c.sizeof(probe._ScrollInfo) == 28
+        assert info.mask == 0x17
+        info.minimum, info.maximum, info.page = -2, 15999, 1787
+        info.position, info.track_position = 893, 894
+        return success
+
+    getter = target._user.GetScrollInfo
+    getter.side_effect = read
+    assert probe._scroll_info(target, 19, 2) == {
+        "native_handle": 19,
+        "bar": 2,
+        "success": success,
+        "window_valid": True,
+        "root_matches": True,
+        "error": 0 if success else 5,
+        "min": -2 if success else None,
+        "max": 15999 if success else None,
+        "page": 1787 if success else None,
+        "pos": 893 if success else None,
+        "trackpos": 894 if success else None,
+    }
+    assert getter.argtypes == (w.HWND, c.c_int, c.POINTER(probe._ScrollInfo))
+    assert getter.restype is w.BOOL
+    assert [call[0] for call in target._user.method_calls] == [
+        "IsWindow",
+        "GetAncestor",
+        "GetScrollInfo",
+    ]
+    reset_error.assert_called_once_with(0)
+    assert last_error.call_count == (0 if success else 1)
+
+
+@pytest.mark.parametrize("valid", [True, False])
+def test_scroll_info_rejects_dead_or_unrelated_handles(*, valid: bool) -> None:
+    """A stale/reused HWND is never read as the previously observed scrollbar."""
+    target = Mock()
+    target._window = 17
+    target._user.IsWindow.return_value = valid
+    target._user.GetAncestor.return_value = 99
+    result = probe._scroll_info(target, 19, 2)
+    assert result["success"] is False
+    assert result["window_valid"] is valid
+    assert result["root_matches"] is False
+    assert result["error"] is None
+    assert all(result[key] is None for key in ("min", "max", "page", "pos", "trackpos"))
+    target._user.GetScrollInfo.assert_not_called()
+    assert target._user.GetAncestor.call_count == int(valid)
+
+
+def test_scroll_info_only_uses_selected_and_visible_direct_scrollbar_handles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prior role metadata permits cheap reads without guessing native classes."""
+    target = Mock()
+    target._native_handle = 17
+    scrollbar = {
+        "parent": 0,
+        "depth": 1,
+        "control_type": 50014,
+        "offscreen": False,
+        "native_handle": 19,
+    }
+    nodes = [
+        {"parent": None},
+        scrollbar,
+        scrollbar,
+        {**scrollbar, "control_type": 50033, "native_handle": 20},
+        {**scrollbar, "offscreen": True, "native_handle": 21},
+        {**scrollbar, "parent": 1, "depth": 2, "native_handle": 22},
+        {**scrollbar, "depth": 2, "native_handle": 23},
+        {**scrollbar, "native_handle": None},
+        {**scrollbar, "native_handle": 0},
+    ]
+    read = Mock(
+        side_effect=lambda _, handle, bar: {"native_handle": handle, "bar": bar}
+    )
+    monkeypatch.setattr(probe, "_scroll_info", read)
+    geometry: dict[str, object] = {"uia": {"nodes": nodes, "truncated": False}}
+    assert probe.scroll_info(target, geometry) == [
+        {"native_handle": 17, "bar": 1},
+        {"native_handle": 19, "bar": 2},
+    ]
+    assert target.check.call_count == 2
+    target._element.assert_not_called()
+
+
+def test_scroll_info_has_no_native_target_without_reported_handles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Missing native metadata never falls back to a guessed top-level handle."""
+    target = Mock()
+    target._native_handle = None
+    read = Mock()
+    monkeypatch.setattr(probe, "_scroll_info", read)
+    assert probe.scroll_info(target, {"uia": {"nodes": []}}) == []
+    read.assert_not_called()
+
+
 @pytest.mark.parametrize("dpi", [96, 120, 144, 192])
 def test_window_dpi_reads_selected_window_without_walking_tree(dpi: int) -> None:
     """Record the actual API value, not a derived or assumed monitor scale."""

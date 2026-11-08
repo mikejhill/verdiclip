@@ -60,3 +60,39 @@ hidden content semantics or repair repeated scrollbar thumbs; inspect the PNGs.
 The original thirteen native qualification cases and ordinary regressions still
 run separately. Actual shell tray-icon entry, physical pointer jitter, and the
 user's particular app geometry still need discriminating evidence.
+
+## Observed candidate results
+
+Exact source `be4c38300c384aa254c56e1e005ce807a60d117a` ran in
+[native run 28](https://github.com/mikejhill/verdiclip/actions/runs/42470673406).
+All thirteen original native cases and nineteen ordinary native checks passed,
+including failure-feedback nonactivation. General CI and both CodeQL analyses
+also passed. The diagnostic matrix is not green:
+
+- Prose, bordered panel and deliberately background-selected Edge passed both
+  click and Enter. Prose/background captured nine frames and 3,012 output rows;
+  panel captured fourteen frames and 3,036 rows. The independent absolute-row
+  oracle checked every full-width output row. A separate decoded-pixel audit of
+  the panel-click, prose-enter and background-click artifacts confirmed those
+  results and original first/last boundary rows.
+- Background cases recorded exactly one native activation of the selected HWND.
+  Prose/background restored identical pixels and exact H/V/view-size state.
+  Panel restored that exact scroll state and all interior pixels, with 4,740
+  changed pixels confined to its known four-pixel outer focus perimeter.
+- Panel output still contains the outline color transition and repeated native
+  scrollbar thumbs. Text clipped horizontally in the original viewport remains
+  clipped. These results cover full visible width, not hidden document width.
+- Explorer click and Enter still reject after the first step: measured movement
+  is 254 pixels while the full-height UIA calculation predicts 265.832 pixels.
+  Both restore scroll state and close only the verified fixture window. A
+  complete 107-node numeric probe identifies a visible standard 807-by-25 Header
+  and adjacent 17-pixel ScrollBar inside the 824-by-532 List. This is evidence for
+  a separate header/body model, not permission to guess a crop.
+- The fixed-sidebar page still rejects the top consistency check at
+  1,631 / 31,232 changed pixels (5.22%). Its failure is retained, not converted to
+  a successful negative qualification or fixed by increasing the threshold.
+
+All reported target windows had `GetDpiForWindow == 96`. This run did not measure
+independent monitor scaling and does not qualify 200% or fractional scaling.
+Actual 200% display setup and readback, complete Explorer content, and subsequent
+source changes require their own exact-head native evidence before release.

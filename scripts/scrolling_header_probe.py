@@ -12,6 +12,8 @@ https://learn.microsoft.com/windows/win32/winauto/uiauto-supportheadercontroltyp
 https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-getclientrect
 https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-clienttoscreen
 https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-getdpiforwindow
+https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-getscrollinfo
+https://learn.microsoft.com/windows/win32/api/winuser/ns-winuser-scrollinfo
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ import time
 from collections import deque
 from contextlib import ExitStack
 from dataclasses import asdict
+from typing import cast
 
 from verdiclip.exceptions import CaptureError
 from verdiclip.geometry import Point, Rect
@@ -32,6 +35,87 @@ _MAX_DEPTH = 2
 _MAX_SECONDS = 2.0
 _HEADER = 50034
 _HEADER_ITEM = 50035
+_SCROLLBAR = 50014
+_SB_VERT = 1
+_SB_CTL = 2
+_SIF_ALL = 0x17
+
+
+class _ScrollInfo(c.Structure):
+    """Public SCROLLINFO layout from winuser.h; no foreign process pointers."""
+
+    _fields_ = [
+        ("size", w.UINT),
+        ("mask", w.UINT),
+        ("minimum", c.c_int),
+        ("maximum", c.c_int),
+        ("page", w.UINT),
+        ("position", c.c_int),
+        ("track_position", c.c_int),
+    ]
+
+
+def _scroll_info(target: UiaScrollTarget, handle: int, bar: int) -> dict[str, object]:
+    """Observe one native scrollbar, reporting failed reads without invented data."""
+    getter = target._user.GetScrollInfo
+    getter.argtypes, getter.restype = (
+        (w.HWND, c.c_int, c.POINTER(_ScrollInfo)),
+        w.BOOL,
+    )
+    info = _ScrollInfo(size=c.sizeof(_ScrollInfo), mask=_SIF_ALL)
+    valid = bool(target._user.IsWindow(handle))
+    owner_matches = valid and target._user.GetAncestor(handle, 2) == target._window
+    success, error = False, None
+    if owner_matches:
+        c.set_last_error(0)
+        success = bool(getter(handle, bar, c.byref(info)))
+        error = 0 if success else c.get_last_error()
+    return {
+        "native_handle": handle,
+        "bar": bar,
+        "success": success,
+        "window_valid": valid,
+        "root_matches": owner_matches,
+        "error": error,
+        "min": info.minimum if success else None,
+        "max": info.maximum if success else None,
+        "page": info.page if success else None,
+        "pos": info.position if success else None,
+        "trackpos": info.track_position if success else None,
+    }
+
+
+def scroll_info(
+    target: UiaScrollTarget, geometry: dict[str, object]
+) -> list[dict[str, object]]:
+    """Read selected HWND SB_VERT and visible direct-child ScrollBar HWND SB_CTL.
+
+    ``geometry`` is an earlier ``probe_target`` result for this target. Reusing
+    its role-derived handles lets hosted frames collect native positions without
+    another UIA tree walk. Values are native scroll units, not proven pixels.
+    No SetScrollInfo, WM_VSCROLL, or other state-changing operation is used.
+    """
+    target.check()
+    tree = cast("dict[str, object]", geometry["uia"])
+    nodes = cast("list[dict[str, object]]", tree["nodes"])
+    handles = {
+        node["native_handle"]
+        for node in nodes[:_MAX_NODES]
+        if node["parent"] == 0
+        and node["depth"] == 1
+        and node["control_type"] == _SCROLLBAR
+        and not node["offscreen"]
+        and isinstance(node["native_handle"], int)
+        and node["native_handle"] != 0
+    }
+    result: list[dict[str, object]] = (
+        [_scroll_info(target, target._native_handle, _SB_VERT)]
+        if target._native_handle is not None
+        else []
+    )
+    result.extend(_scroll_info(target, handle, _SB_CTL) for handle in sorted(handles))
+    target.check()
+    return result
 
 
 def window_dpi(target: UiaScrollTarget) -> int:
@@ -161,5 +245,6 @@ def probe_target(target: UiaScrollTarget) -> dict[str, object]:
             "native_client": _native_client(target),
             "uia": _tree(target._element, walker, owners),
         }
+        result["scroll_info"] = scroll_info(target, result)
     target.check()
     return result
