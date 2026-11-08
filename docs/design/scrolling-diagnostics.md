@@ -27,7 +27,11 @@ delivery and ordinary Repeat flow from `simple_scroll_app`. It varies the input:
 - Edge prose: existing project design documentation in normal paragraphs with
   nonuniform lengths and fractional line height, not numbered colored rows.
 - Edge panel: the same prose in a bordered, padded, horizontally and vertically
-  scrollable panel with fractional geometry.
+  scrollable panel with fractional geometry. Its 740.5-by-385.5 CSS-pixel content
+  box is unchanged in the observed 976-by-608 viewport. Maximum dimensions fit
+  smaller viewports, with a compact heading at heights of 500 CSS pixels or less;
+  the 820-pixel inner article and horizontal overflow remain unchanged. This layout
+  accommodation is not evidence of actual display-scale qualification.
 - Edge sidebar: ordinary prose beside fixed navigation, to expose unsupported
   full-width registration rather than trim content to force a match.
 - Explorer: an owned temporary directory containing 160 harmless text files,

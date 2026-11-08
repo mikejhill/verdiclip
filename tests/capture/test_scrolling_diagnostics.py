@@ -26,6 +26,24 @@ def test_document_has_real_prose_and_declared_layout(layout: str) -> None:
     assert ("<aside>" in source) == (layout == "edge-sidebar")
 
 
+def test_panel_keeps_prose_and_declares_responsive_limits() -> None:
+    """Only the outer panel/header adapt; prose remains horizontally scrollable."""
+    source = diagnostics.document("edge-panel")
+    assert "section{height:385.5px;width:740.5px;margin:24px;" in source
+    assert "max-width:calc(100% - 78px);max-height:calc(100vh - 206px);" in source
+    assert "border:3px solid #b1b5ba;padding:12px;overflow:scroll}" in source
+    assert "section article{width:820px;max-width:none;margin:0}" in source
+    assert (
+        "@media(max-height:500px){"
+        "body>h1{font-size:18px;margin-top:8px;margin-bottom:4px}"
+        "body>p{font-size:12px;line-height:1.2;margin-bottom:8px}"
+        "section{margin-top:8px;max-height:calc(100vh - 110px)}}"
+    ) in source
+    assert "Project design notes" in source
+    assert "Scroll the document panel below." in source
+    assert "Related project resources" in source
+
+
 def test_diagnostic_declares_limited_oracle_even_when_capture_fails(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
