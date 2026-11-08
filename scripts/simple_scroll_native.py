@@ -315,7 +315,7 @@ def _cover_panel(area: Rect, window: int, output: Path) -> int:
         0x08000088,
         "STATIC",
         "",
-        0x90000004,
+        0x90000104,
         x,
         y,
         20,
@@ -324,7 +324,7 @@ def _cover_panel(area: Rect, window: int, output: Path) -> int:
         None,
         None,
         None,
-    )  # NOACTIVATE | TOOLWINDOW | TOPMOST; visible popup black rectangle
+    )  # NOACTIVATE | TOOLWINDOW | TOPMOST; SS_NOTIFY makes STATIC hit-test opaque
     _require(handle, "Could not create the owned overlay")
     if not isinstance(handle, int):
         raise TypeError("Overlay returned an invalid window handle")

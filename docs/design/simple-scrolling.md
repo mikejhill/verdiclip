@@ -253,3 +253,16 @@ percentage. No production protocol or injection is added. Existing deterministic
 subprocess tests cover timeout, malformed output, failed start, cancellation,
 owner EOF and cleanup. Required full CI, exact-head native interruption results,
 UI integration, ordinary capture/Repeat regressions and release gates remain.
+
+Run 42445787024 passes the three original capture cases plus real cancellation
+and input interference. Cancellation returns no image after exactly one top
+write and one exact restore write. Real mouse input leaves the panel at the
+confirmed top position with no image and no subsequent provider write. Full CI
+passes 1,931 tests, 96.71% total coverage and 99% changed-line coverage.
+
+The small-cover case stops in its own setup assertion before starting the helper:
+Windows' default STATIC handling returns HTTRANSPARENT unless SS_NOTIFY is set.
+The harness now includes SS_NOTIFY for its black rectangle, retaining the exact
+hit-HWND, foreground and rendered-pixel assertions. This is a one-bit test-window
+correction, not a production occlusion change. The failed run remains evidence;
+actual small-cover qualification is still required on the changed head.

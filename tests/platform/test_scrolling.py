@@ -854,3 +854,47 @@ def test_native_input_is_hosted_only_and_has_no_button_state(
     monkeypatch.setenv("RUNNER_ENVIRONMENT", "github-hosted")
     _real_mouse_input()
     user.mouse_event.assert_called_once_with(1, 1, 0, 0, 0)
+
+
+@pytest.mark.parametrize("failure", ["none", "hit", "paint"])
+def test_owned_native_overlay_is_opaque_without_activation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failure: str
+) -> None:
+    """STATIC needs SS_NOTIFY or Windows returns HTTRANSPARENT for hit testing."""
+    from scripts.simple_scroll_native import (  # noqa: PLC0415
+        _close_overlay,
+        _cover_panel,
+    )
+
+    user = Mock()
+    user.CreateWindowExW.return_value = 7
+    user.GetForegroundWindow.return_value = 1
+    user.WindowFromPoint.return_value = 1 if failure == "hit" else 7
+    user.DestroyWindow.return_value = True
+    monkeypatch.setattr(c, "WinDLL", Mock(return_value=user), raising=False)
+    monkeypatch.setattr("scripts.simple_scroll_native.time.sleep", Mock())
+    desktop = QImage(500, 500, QImage.Format.Format_RGB32)
+    desktop.fill(QColor("white"))
+    if failure != "paint":
+        painter = QPainter(desktop)
+        painter.fillRect(95, 95, 20, 20, QColor("black"))
+        painter.end()
+    screens = Mock()
+    screens.freeze.return_value = FrozenScreen(desktop, Rect(0, 0, 500, 500))
+    monkeypatch.setattr("scripts.simple_scroll_native.MssScreenSource", lambda: screens)
+    if failure == "none":
+        handle = _cover_panel(Rect(20, 20, 300, 300), 1, tmp_path)
+        assert handle == 7
+        assert (tmp_path / "covered.png").exists()
+        user.DestroyWindow.assert_not_called()
+        _close_overlay(handle)
+    else:
+        with pytest.raises(RuntimeError):
+            _cover_panel(Rect(20, 20, 300, 300), 1, tmp_path)
+    args = user.CreateWindowExW.call_args.args
+    assert args[0] == 0x08000088  # Non-activating, tool, topmost.
+    assert args[1:4] == ("STATIC", "", 0x90000104)  # Visible popup, black, SS_NOTIFY.
+    assert args[4:8] == (95, 95, 20, 20)
+    user.DestroyWindow.assert_called_once_with(7)
+    if failure != "hit":
+        screens.close.assert_called_once()
