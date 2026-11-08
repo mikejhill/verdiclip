@@ -27,6 +27,7 @@ from verdiclip.geometry import Point
 logger = logging.getLogger(__name__)
 
 _MAX_RESULT_BYTES = 8192
+_MAX_DIAGNOSTIC_BYTES = 16_384
 _CANCEL_GRACE_MS = 1500
 
 
@@ -47,6 +48,12 @@ class ScrollHelper(QObject):
         self._cancelled = False
         self._terminal = False
         self._timeout_message = ""
+        self._diagnostics = ""
+
+    @property
+    def diagnostics(self) -> str:
+        """Return bounded child diagnostics, with no captured content or titles."""
+        return self._diagnostics
 
     def start(self, point: Point, *, window: int, input_tick: int) -> None:
         """Start with the selected root and completed-input tick, without rebasing.
@@ -146,6 +153,12 @@ class ScrollHelper(QObject):
     def _exited(self, code: int, status: QProcess.ExitStatus) -> None:
         if self._terminal:
             return
+        raw = bytes(self._process.readAllStandardError().data())
+        self._diagnostics = (
+            raw[-_MAX_DIAGNOSTIC_BYTES:].decode("utf-8", errors="replace").strip()
+        )
+        if self._diagnostics:
+            logger.info("Scrolling helper diagnostics:\n%s", self._diagnostics)
         try:
             self._validate_exit(code, status)
             result = self._read_result()
@@ -184,6 +197,7 @@ def _watch_parent(cancelled: threading.Event) -> None:
 
 def main() -> None:
     """Run only in a fresh helper; no app controller or single-instance setup."""
+    logging.basicConfig(level=logging.INFO, format="%(name)s: %(message)s")
     # Importing this adapter never starts UIA in the parent GUI process.
     import ctypes  # noqa: PLC0415 - Windows dependency belongs to the helper
 

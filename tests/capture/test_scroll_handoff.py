@@ -155,8 +155,9 @@ def test_queued_handoff_rejects_changed_state_without_starting_helper(
 
 
 @pytest.mark.parametrize("changed", ["none", "foreground", "hit"])
+@pytest.mark.parametrize("hold_ms", [0, 120])
 def test_native_input_is_restricted_to_owned_hit_and_focus(
-    qtbot: QtBot, monkeypatch: pytest.MonkeyPatch, changed: str
+    qtbot: QtBot, monkeypatch: pytest.MonkeyPatch, changed: str, hold_ms: int
 ) -> None:
     """The hosted test refuses to click a foreign foreground or covered widget."""
     widget = overlay(qtbot)
@@ -169,20 +170,26 @@ def test_native_input_is_restricted_to_owned_hit_and_focus(
     monkeypatch.setattr("ctypes.WinDLL", Mock(return_value=user), raising=False)
     monkeypatch.setenv("GITHUB_ACTIONS", "true")
     monkeypatch.setenv("RUNNER_ENVIRONMENT", "github-hosted")
+    wait = Mock()
+    monkeypatch.setattr("scripts.simple_scroll_handoff.QTest.qWait", wait)
     desktop = Desktop()
     if changed == "none":
-        desktop.click(widget, Point(30, 40))
+        desktop.click(widget, Point(30, 40), hold_ms=hold_ms)
         assert user.mouse_event.call_args_list[0].args == (2, 0, 0, 0, 0)
         assert user.mouse_event.call_args_list[1].args == (4, 0, 0, 0, 0)
-        desktop.click(widget, Point(30, 40), enter=True)
+        desktop.click(widget, Point(30, 40), enter=True, hold_ms=hold_ms)
         assert user.keybd_event.call_args_list[1].args == (0x0D, 0, 2, 0)
         assert user.WindowFromPoint.argtypes == (w.POINT,)
         assert user.mouse_event.argtypes[-1] == c.c_size_t
+        assert wait.call_count == (2 if hold_ms else 0)
+        if hold_ms:
+            assert all(call.args == (hold_ms,) for call in wait.call_args_list)
     else:
         with pytest.raises(RuntimeError):
-            desktop.click(widget, Point(30, 40))
+            desktop.click(widget, Point(30, 40), hold_ms=hold_ms)
         user.mouse_event.assert_not_called()
         user.keybd_event.assert_not_called()
+        wait.assert_not_called()
     widget.dismiss()
 
 

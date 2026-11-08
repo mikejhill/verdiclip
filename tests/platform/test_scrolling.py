@@ -1230,7 +1230,9 @@ def test_gui_selection_state_uses_only_native_read_only_calls(
 
 
 @pytest.mark.parametrize("changed", ["input", "foreground", "hit"])
-def test_gui_selection_state_rejects_handoff_changes(changed: str) -> None:
+def test_gui_selection_state_rejects_handoff_changes(
+    changed: str, caplog: pytest.LogCaptureFixture
+) -> None:
     """The parent cannot rebase the completed selection to a newer input/window."""
     native = object.__new__(ScrollSelectionState)
     native._user = Mock()
@@ -1239,6 +1241,11 @@ def test_gui_selection_state_rejects_handoff_changes(changed: str) -> None:
     native._user.GetAncestor.return_value = 3 if changed != "hit" else 4
     with pytest.raises(CaptureError, match="changed"):
         native.check(Point(2, 4), 3, 1)
+    assert f"input_changed={changed == 'input'}" in caplog.text
+    assert f"foreground_changed={changed == 'foreground'}" in caplog.text
+    assert f"hit_changed={changed == 'hit'}" in caplog.text
+    assert "expected_tick=1" in caplog.text
+    assert "expected_window=3" in caplog.text
 
 
 def test_gui_selection_rejects_non_windows(monkeypatch: pytest.MonkeyPatch) -> None:

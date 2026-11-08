@@ -179,11 +179,23 @@ class ScrollSelectionState:
     def check(self, point: Point, window: int, tick: int) -> None:
         """Require the same selected root and input after our selectors close."""
         hit = self._user.WindowFromPoint(w.POINT(round(point.x), round(point.y)))
-        if (
-            self.tick() != tick
-            or self._user.GetForegroundWindow() != window
-            or self._user.GetAncestor(hit, 2) != window
-        ):
+        observed_tick = self.tick()
+        foreground = self._user.GetForegroundWindow()
+        root = self._user.GetAncestor(hit, 2)
+        if observed_tick != tick or foreground != window or root != window:
+            logger.warning(
+                "Scrolling selection guard: input_changed=%s foreground_changed=%s "
+                "hit_changed=%s expected_tick=%s observed_tick=%s "
+                "expected_window=%s foreground=%s hit_root=%s",
+                observed_tick != tick,
+                foreground != window,
+                root != window,
+                tick,
+                observed_tick,
+                window,
+                foreground,
+                root,
+            )
             raise CaptureError("The selected window or mouse/keyboard input changed")
 
 
@@ -312,6 +324,12 @@ class UiaScrollTarget:
         self._provider_bounds = self._element.bounds()
         self._native_handle = self._element.native_handle()
         self._area = self._viewport()
+        logger.info(
+            "Scrolling viewport: provider=%s captured=%s native_handle=%s",
+            self._provider_bounds,
+            self._area,
+            self._native_handle,
+        )
         if (
             self._area.width < _MIN_SIZE
             or self._area.height < _MIN_SIZE

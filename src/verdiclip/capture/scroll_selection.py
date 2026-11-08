@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -31,6 +32,7 @@ from verdiclip.platform.scrolling import ScrollSelectionState
 from verdiclip.platform.windows import WindowInfo
 
 _CANCEL_ACTION = "scroll_cancel"
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,6 +246,7 @@ class ScrollSelection(QObject):
             self._helper.finished.connect(self._completed)
             self._helper.start(point, window=window.handle, input_tick=tick)
         except (AppError, OSError) as error:
+            logger.warning("Scrolling failure stage=launch: %s", error)
             self._fail(str(error))
 
     def _completed(self, result: ScrollResult) -> None:
@@ -262,6 +265,7 @@ class ScrollSelection(QObject):
             try:
                 self._state.check(choice[0], choice[1].handle, choice[2])
             except (AppError, OSError) as error:
+                logger.warning("Scrolling failure stage=publication: %s", error)
                 image, message = None, str(error)
         title = "Scrolling capture" if choice is None else choice[1].title
         restoration = "" if result is None else result.restoration

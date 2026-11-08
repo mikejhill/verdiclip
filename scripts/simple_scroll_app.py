@@ -139,12 +139,11 @@ class AppCapture:
         _require(helper is not None, "Terminal without owned helper")
         if helper is not None:
             (self.output / "helper.log").write_text(
-                bytes(helper._process.readAllStandardError().data()).decode(
-                    "utf-8", errors="replace"
-                ),
+                helper.diagnostics,
                 encoding="utf-8",
             )
         self.report.update(
+            message=result.message,
             restoration=result.restoration,
             frames=result.frames,
             terminal_foreground=self.desktop.foreground(),
@@ -292,7 +291,11 @@ class AppCapture:
             active = next(
                 o for o in overlays if o.screen_geometry.physical.contains(self.point)
             )
-            self.desktop.click(active, self.point, enter=self.kind == "edge-app-hotkey")
+            self.desktop.click(
+                active,
+                self.point,
+                enter=self.kind == "edge-app-hotkey" or self.kind.endswith("-enter"),
+            )
         if (
             self.kind == "edge-app-escape"
             and not self.interrupted

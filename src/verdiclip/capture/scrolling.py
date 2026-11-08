@@ -7,6 +7,7 @@ recapturable desktop rectangle and must not enter ordinary Repeat history.
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -25,6 +26,7 @@ _MIN_DISTINCT_ROWS = 8
 _ROUNDING_FRACTION = 0.02
 _PREFIX_MISMATCH_FRACTION = 0.05
 END_PERCENT = 100.0
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +129,14 @@ class VerticalStitch:
             raise CaptureError("The scroll panel changed size")
         old, new = self._rows(self._previous), self._rows(image)
         advance, first, last = self._alignment(old, new)
+        logger.info(
+            "Scrolling alignment: measured_advance=%s expected_advance=%.3f "
+            "matching_band=(%s,%s)",
+            advance,
+            expected_advance,
+            first,
+            last,
+        )
         if abs(advance - expected_advance) > max(
             2.0, expected_advance * _ROUNDING_FRACTION
         ):
@@ -137,6 +147,13 @@ class VerticalStitch:
         after = memoryview(b"".join(new[:MIN_OVERLAP])).cast("I")
         mismatches = sum(a != b for a, b in zip(before, after, strict=True))
         if mismatches > len(before) * _PREFIX_MISMATCH_FRACTION:
+            logger.warning(
+                "Scrolling top mismatch: changed_pixels=%s compared_pixels=%s "
+                "limit_fraction=%s",
+                mismatches,
+                len(before),
+                _PREFIX_MISMATCH_FRACTION,
+            )
             raise CaptureError("The top of the scroll panel is fixed or changing")
         if image.width() * (self._height + advance) > MAX_PIXELS:
             raise CaptureError("The scrolling image exceeds the size limit")
@@ -282,6 +299,15 @@ class ScrollTransaction:
                 * (following.vertical - position.vertical)
                 / 100.0
             )
+            logger.info(
+                "Scrolling step: viewport_height=%s view_size=%.6f "
+                "from_vertical=%.6f to_vertical=%.6f expected_advance=%.3f",
+                self._target.area.height,
+                position.view_size,
+                position.vertical,
+                following.vertical,
+                expected,
+            )
             stitch.append(self._frame(following), expected)
             position = following
         self._check()
@@ -290,6 +316,14 @@ class ScrollTransaction:
         if abs(image.height() - expected_height) > max(
             2.0, expected_height * _ROUNDING_FRACTION
         ):
+            logger.warning(
+                "Scrolling extent mismatch: measured_height=%s expected_height=%.3f "
+                "viewport_height=%s view_size=%.6f",
+                image.height(),
+                expected_height,
+                self._target.area.height,
+                initial.view_size,
+            )
             raise CaptureError("The completed pixels disagree with the panel's extent")
         return image
 

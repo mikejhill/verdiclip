@@ -89,7 +89,9 @@ def test_one_complete_image_or_cancel_before_queued_publication(
 
 
 def test_changed_input_after_child_exit_withholds_image(
-    qtbot: QtBot, operation: tuple[ScrollSelection, ScrollHelper, Mock]
+    qtbot: QtBot,
+    operation: tuple[ScrollSelection, ScrollHelper, Mock],
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """The parent preserves the release baseline through its last queued turn."""
     service, helper, state = operation
@@ -102,6 +104,7 @@ def test_changed_input_after_child_exit_withholds_image(
             ScrollResult(QImage(20, 50, QImage.Format.Format_RGB32), "", "restored", 3)
         )
     assert "Input changed" in failed.args[0]
+    assert "stage=publication" in caplog.text
     captures.assert_not_called()
     assert not service.busy
 
@@ -147,7 +150,10 @@ def test_cancel_before_launch_never_starts_helper(
 
 @pytest.mark.parametrize("failure", ["state", "escape", "start"])
 def test_launch_failure_has_no_image_and_releases_temporary_escape(
-    qtbot: QtBot, operation: tuple[ScrollSelection, ScrollHelper, Mock], failure: str
+    qtbot: QtBot,
+    operation: tuple[ScrollSelection, ScrollHelper, Mock],
+    failure: str,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Each start failure retires the session without touching ordinary capture."""
     service, helper, state = operation
@@ -164,6 +170,7 @@ def test_launch_failure_has_no_image_and_releases_temporary_escape(
     with qtbot.waitSignal(service.failed):
         service._selected(Point(30, 40))
     assert not service.busy
+    assert "stage=launch" in caplog.text
     assert not service.overlays
     assert "scroll_cancel" not in service._hotkeys.registered
 

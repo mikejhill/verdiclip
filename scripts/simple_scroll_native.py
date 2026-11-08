@@ -305,9 +305,7 @@ def _capture(
         helper.cancel()
         raise RuntimeError("The helper did not produce its bounded terminal result")
     (output / "helper.log").write_text(
-        bytes(helper._process.readAllStandardError().data()).decode(
-            "utf-8", errors="replace"
-        ),
+        helper.diagnostics,
         encoding="utf-8",
     )
     if mode in ("edge-cancel", "edge-input"):

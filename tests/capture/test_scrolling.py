@@ -495,7 +495,9 @@ def test_interior_seams_recover_content_under_bottom_chrome() -> None:
     assert result.copy(0, 367, 80, 8) == bar
 
 
-def test_broad_fixed_header_is_rejected_despite_interior_match() -> None:
+def test_broad_fixed_header_is_rejected_despite_interior_match(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """An exact interior seam cannot recover first rows hidden at every position."""
     source = document()
     first, second = source.copy(0, 0, 80, 120), source.copy(0, 60, 80, 120)
@@ -505,6 +507,7 @@ def test_broad_fixed_header_is_rejected_despite_interior_match() -> None:
                 frame.setPixelColor(x, y, QColor("white"))
     with pytest.raises(CaptureError, match="top of the scroll panel"):
         VerticalStitch(first).append(second, 60.0)
+    assert "changed_pixels=640 compared_pixels=2560" in caplog.text
 
 
 def test_one_meaningful_edge_column_is_not_masked_for_alignment() -> None:
@@ -551,21 +554,30 @@ class ReportedTarget(Target):
         self.offset = round((self.document.height() - 120) * vertical / 100)
 
 
-def test_registered_advance_must_agree_with_uia_extent() -> None:
+def test_registered_advance_must_agree_with_uia_extent(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """The review's reported 240px / observed 296px reproduction must fail."""
+    caplog.set_level("INFO")
     result = transaction(ReportedTarget(296, 50.0)).run()
     assert result.image is None
     assert "disagree with its scroll position" in result.message
     assert result.restoration == "restored"
+    assert "viewport_height=120 view_size=50.000000" in caplog.text
+    assert "from_vertical=0.000000 to_vertical=50.000000" in caplog.text
+    assert "measured_advance=88 expected_advance=60.000" in caplog.text
 
 
-def test_accumulated_small_displacements_must_agree_with_total_extent() -> None:
+def test_accumulated_small_displacements_must_agree_with_total_extent(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """Several tolerated 2px differences cannot silently expand the document."""
     result = transaction(ReportedTarget(616, 20.0)).run()
     assert result.frames == 9
     assert result.image is None
     assert "disagree with the panel's extent" in result.message
     assert result.restoration == "restored"
+    assert "measured_height=616 expected_height=600.000" in caplog.text
 
 
 class LineQuantizedTarget(Target):
