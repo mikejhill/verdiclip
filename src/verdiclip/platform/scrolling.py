@@ -452,7 +452,7 @@ class _ListSteps:
         self._right_clip = footer is not None and initial.horizontal == 0.0
         self._retained = ExitStack()
         self._items: list[_ListItem] = []
-        self._before: ScrollPosition | None = None
+        self._before: tuple[ScrollPosition, ScrollBarState] | None = None
         self._terminal: tuple[ScrollPosition, ScrollBarState] | None = None
         self._deadline = 0.0
         target._owners.callback(self.close)
@@ -487,6 +487,8 @@ class _ListSteps:
         if (
             target._element.control_type() != _LIST_CONTROL
             or position.horizontal != self._horizontal
+            or not math.isfinite(position.view_size)
+            or not 0.0 < position.view_size < END_PERCENT
             or target.position() != position
         ):
             raise CaptureError("The list step position or identity changed")
@@ -497,7 +499,6 @@ class _ListSteps:
             or not native.same_range(self._native)
             or not native.matches(position)
             or target.position() != position
-            or (not terminal and native.page != self._native.page)
             or (
                 terminal
                 and (
@@ -628,7 +629,7 @@ class _ListSteps:
             if self._state(position) != before:
                 raise CaptureError("The native list moved while retaining items")
             self._boundary()
-            self._before = position
+            self._before = position, before
         finally:
             if self._before is None:
                 self.close()
@@ -641,10 +642,12 @@ class _ListSteps:
             if (
                 self._before is None
                 or len(self._items) != _ITEM_PAIR
-                or position.vertical <= self._before.vertical
+                or position.vertical <= self._before[0].vertical
             ):
                 raise CaptureError("The list step has no forward retained pair")
             native = self._state(position, terminal=terminal)
+            if native.position <= self._before[1].position:
+                raise CaptureError("The native list did not advance")
             deltas = []
             for item in self._items:
                 raw = self._raw(item.element)

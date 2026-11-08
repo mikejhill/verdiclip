@@ -3569,3 +3569,273 @@ def test_late_initial_position_read_does_not_acknowledge_state(
     assert result.restoration == "unchanged"
     assert operation._expected is None
     assert not target.moves
+
+
+class NormalizingListTarget(ListTarget):
+    """Change native page during forward writes without changing content pixels."""
+
+    def __init__(
+        self,
+        pages: tuple[int, ...] = (1206, 1194, 1212),
+        *,
+        start: int = 0,
+        total: int = 592,
+    ) -> None:
+        super().__init__(start=start, total=total)
+        self.pages = iter(pages)
+
+    @override
+    def move(
+        self, vertical: float, *, before_write: Callable[[], None] | None = None
+    ) -> None:
+        if before_write is not None:
+            before_write()
+        if 0 < vertical < 100 and self.moves[-1:] != [100.0]:
+            self.page = next(self.pages, self.page)
+        super().move(vertical)
+        if 0 < vertical < 100:
+            # Native units are not pixels. Keep a visible final tail even when
+            # a smaller page requires one additional interior request.
+            self.offset = min(self.offset, self.document.height() - 140)
+
+
+@pytest.mark.parametrize("pages", [(1200, 1206), (1200, 1194), (1206, 1194, 1212)])
+@pytest.mark.parametrize("start", [0, 2400])
+def test_list_verified_interior_normalization_continues_without_rebasing(
+    monkeypatch: pytest.MonkeyPatch, pages: tuple[int, ...], start: int
+) -> None:
+    """Both page directions and repeated changes require every exact pixel proof."""
+    target = NormalizingListTarget(pages, start=start)
+    original = target.scrollbar_state()
+    operation = transaction(target)
+    finish = target.steps.finish
+    proven = []
+
+    def verify(position: ScrollPosition, *, terminal: bool = False) -> int:
+        assert operation._expected is None
+        assert operation._terminal is None
+        assert operation._native == original
+        result = finish(position, terminal=terminal)
+        proven.append(position)
+        return result
+
+    monkeypatch.setattr(target.steps, "finish", verify)
+    result = operation.run()
+    assert result.image is not None
+    assert result.image.copy(0, 25, 80, 592) == target.document
+    assert {position.view_size for position in proven[:-1]} >= {
+        100 * page / 5999 for page in pages
+    }
+    assert all(0 < position.vertical < 100 for position in proven[:-1])
+    assert target.steps.confirmed
+    assert target.steps.closed
+    assert target.native_position == original.position
+    assert operation._native == original
+    assert operation._terminal == proven[-1]
+    assert result.restoration == "restored"
+
+
+@pytest.mark.parametrize("phase", ["before-begin", "begin-return", "setter-admission"])
+def test_list_normalized_cutoff_keeps_confirmed_tuple_without_restoration(
+    monkeypatch: pytest.MonkeyPatch, phase: str
+) -> None:
+    """A no-write 33s rejection preserves completed proof but permits no inverse."""
+    now = [0.0]
+    target = NormalizingListTarget()
+    operation = ScrollTransaction(
+        target, lambda: False, clock=lambda: now[0], pause=lambda _: None
+    )
+    begin, move = target.steps.begin, target.move
+
+    def cutoff_begin(position: ScrollPosition) -> None:
+        begin(position)
+        if target.moves and phase == "begin-return":
+            now[0] = 33.0
+
+    def cutoff_move(
+        vertical: float, *, before_write: Callable[[], None] | None = None
+    ) -> None:
+        if target.moves and phase == "setter-admission":
+            now[0] = 33.0
+        move(vertical, before_write=before_write)
+
+    def clock() -> float:
+        if phase == "before-begin" and target.moves and operation._expected is not None:
+            now[0] = 33.0
+        return now[0]
+
+    monkeypatch.setattr(operation, "_clock", clock)
+    monkeypatch.setattr(target.steps, "begin", cutoff_begin)
+    monkeypatch.setattr(target, "move", cutoff_move)
+    result = operation.run()
+    assert result.image is None
+    assert "traversal time limit" in result.message
+    assert result.restoration == (
+        "not restored: confirmed List normalization has no restoration proof"
+    )
+    assert len(target.moves) == 1
+    assert operation._expected == target.position()
+    assert operation._expected.view_size == 100 * 1206 / 5999
+    assert operation._terminal is None
+    assert not target.steps.confirmed
+    assert len(target.steps.finishes) == 1
+    assert target.steps.closed
+
+
+def test_list_normalized_cancellation_keeps_only_confirmed_interior_tuple() -> None:
+    """Cancellation after append is confirmed normalization, never an inverse right."""
+    target = NormalizingListTarget()
+    operation = ScrollTransaction(
+        target,
+        lambda: bool(target.moves) and operation._expected is not None,
+        pause=lambda _: None,
+    )
+    result = operation.run()
+    assert result.image is None
+    assert "cancelled" in result.message
+    assert result.restoration == (
+        "not restored: confirmed List normalization has no restoration proof"
+    )
+    assert len(target.moves) == 1
+    assert operation._expected == target.position()
+    assert operation._terminal is None
+    assert not target.steps.confirmed
+
+
+@pytest.mark.parametrize("phase", ["begin", "issued", "spontaneous", "guard"])
+def test_list_normalized_later_failure_never_gains_inverse_authority(
+    monkeypatch: pytest.MonkeyPatch, phase: str
+) -> None:
+    """Rejected writes stay unresolved; current-state failures cannot authorize undo."""
+    target = NormalizingListTarget()
+    operation = transaction(target)
+    begin, move = target.steps.begin, target.move
+
+    def fail_begin(position: ScrollPosition) -> None:
+        if target.moves:
+            if phase == "begin":
+                raise CaptureError("retained pair lost")
+            if phase == "spontaneous":
+                target.page += 1
+                raise CaptureError("native page changed before begin")
+        begin(position)
+
+    def fail_move(
+        vertical: float, *, before_write: Callable[[], None] | None = None
+    ) -> None:
+        issued = bool(target.moves)
+        move(vertical, before_write=before_write)
+        if issued and phase == "issued":
+            raise CaptureError("issued setter failed")
+
+    def guard() -> None:
+        if target.moves and operation._expected is not None and phase == "guard":
+            raise CaptureError("lost current state")
+
+    monkeypatch.setattr(target.steps, "begin", fail_begin)
+    monkeypatch.setattr(target, "move", fail_move)
+    monkeypatch.setattr(target, "check", guard)
+    result = operation.run()
+    assert result.image is None
+    assert result.restoration == (
+        "not restored: the target or user state changed"
+        if phase == "guard"
+        else "not restored: the provider write is unresolved"
+    )
+    assert len(target.moves) == (2 if phase == "issued" else 1)
+    assert (operation._expected is None) == (phase != "guard")
+    assert operation._terminal is None
+    assert not target.steps.confirmed
+    assert target.steps.closed
+
+
+@pytest.mark.parametrize("view", [0.0, -1.0, 100.0, 101.0, float("nan"), float("inf")])
+def test_list_interior_changed_view_must_remain_finite_and_scrollable(
+    monkeypatch: pytest.MonkeyPatch, view: float
+) -> None:
+    """Forward List admission never treats invalid provider fractions as candidates."""
+    target = NormalizingListTarget()
+    read = target.position
+    monkeypatch.setattr(
+        target,
+        "position",
+        lambda: replace(read(), view_size=view) if target.moves else read(),
+    )
+    operation = transaction(target)
+    result = operation.run()
+    assert result.image is None
+    assert "moved unexpectedly" in result.message
+    assert result.restoration == "not restored: the provider write is unresolved"
+    assert operation._expected is None
+    assert operation._terminal is None
+    assert len(target.moves) == 1
+    assert not target.steps.finishes
+
+
+@pytest.mark.parametrize("failure", ["delta", "zero", "pixels", "header", "footer"])
+def test_list_normalization_does_not_bypass_physical_proof(
+    monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    """Changed pages still need item agreement, true motion and exact fixed pixels."""
+    target = NormalizingListTarget()
+    operation = transaction(target)
+    frame = target.frame
+    if failure == "delta":
+        monkeypatch.setattr(target.steps, "finish", lambda *_args, **_kwargs: 1)
+
+    def changed_frame() -> QImage:
+        if failure == "zero":
+            offset = target.offset
+            target.offset = 0
+            image = frame()
+            target.offset = offset
+        else:
+            image = frame()
+        if target.moves and failure in ("pixels", "header", "footer"):
+            row = {"pixels": 60, "header": 0, "footer": 161}[failure]
+            image.setPixelColor(20, row, QColor("red"))
+        return image
+
+    monkeypatch.setattr(target, "frame", changed_frame)
+    result = operation.run()
+    assert result.image is None
+    assert result.restoration == "not restored: the provider write is unresolved"
+    assert operation._expected is None
+    assert operation._terminal is None
+    assert len(target.moves) == 1
+    assert not target.steps.confirmed
+
+
+@pytest.mark.parametrize("total", [580, 610])
+def test_list_interior_normalization_keeps_both_final_height_bounds(total: int) -> None:
+    """Neither verified interior motion nor a native endpoint relaxes either2% gate."""
+    target = NormalizingListTarget(total=total)
+    operation = transaction(target)
+    result = operation.run()
+    assert result.image is None
+    assert "disagree with the panel's extent" in result.message
+    assert result.restoration == "not restored: the provider write is unresolved"
+    assert operation._expected is None
+    assert operation._terminal is None
+    assert target.moves[-1] == 100.0
+    assert not target.steps.confirmed
+
+
+@pytest.mark.parametrize(
+    ("requested", "observed"), [(0.0, 0.0), (20.0, 20.0), (30.0, 35.0)]
+)
+def test_list_changed_view_does_not_admit_backward_requests_or_overshoot(
+    monkeypatch: pytest.MonkeyPatch, requested: float, observed: float
+) -> None:
+    """Only forward candidates within the existing direction/overshoot gate survive."""
+    target = ListTarget()
+    operation = transaction(target)
+    operation._list_steps = target.steps
+    before = ScrollPosition(0, 25, 20)
+    current = ScrollPosition(0, observed, 20.1)
+    monkeypatch.setattr(target, "position", lambda: current)
+    with pytest.raises(CaptureError, match="moved unexpectedly"):
+        operation._settle(before, requested)
+    assert not target.moves
+    assert operation._expected is None
+    assert operation._terminal is None

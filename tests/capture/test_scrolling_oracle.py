@@ -5,8 +5,10 @@ from __future__ import annotations
 import ctypes as c
 import ctypes.wintypes as w
 import json
+import math
 from collections.abc import Callable
 from contextlib import ExitStack
+from copy import deepcopy
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -882,7 +884,7 @@ def test_overflow_oracle_preserves_layout_horizontal_and_fullwidth_pixel_guards(
         verify_sequence(image, tmp_path)
 
 
-def _native_list_sequence(output: Path) -> QImage:
+def _native_list_sequence(output: Path, *, interior_page: int = 492) -> QImage:
     """A complete raw sequence whose two extent estimates straddle actual height."""
     source = _overflow_sequence(output)
     geometry_path = output / "header-geometry.json"
@@ -938,7 +940,7 @@ def _native_list_sequence(output: Path) -> QImage:
         painter.drawImage(0, 125, frame.copy(0, 65, 24, 4))
         painter.end()
         assert enlarged.save(str(output / f"frame-{index}.png"))
-        page = 508 if index == 2 else 492
+        page = (492, interior_page, 508)[index]
         native_position = (0, 254, 492)[index]
         position["view_size"] = 100 * page / 999
         position["vertical"] = 100 * native_position / (1000 - page)
@@ -946,7 +948,7 @@ def _native_list_sequence(output: Path) -> QImage:
             {**vertical, "page": page, "pos": native_position},
             horizontal,
         ]
-        if index == 2:
+        if index == 2 or (index == 1 and interior_page != 492):
             position["native_scroll_info_after"] = [
                 {**row, "parent": identity["parent"], "root": 42, "pid": 123}
                 for row, identity in zip(
@@ -965,6 +967,151 @@ def _native_list_sequence(output: Path) -> QImage:
     painter.drawImage(0, 245, source.copy(0, 125, 24, 4))
     painter.end()
     return image
+
+
+def _native_page_changes(output: Path, pages: tuple[int, ...]) -> QImage:
+    """Split the known complete pixels into five independently witnessed frames."""
+    image = _native_list_sequence(output)
+    path = output / "frames.json"
+    original = json.loads(path.read_text())
+    positions = []
+    for index, (page, current) in enumerate(
+        zip(pages, (0, 120, 240, 360, 492), strict=True)
+    ):
+        position = deepcopy(original[1] if index else original[0])
+        state = position["native_scroll_info"][0]
+        state.update(page=page, pos=current)
+        position.update(
+            view_size=100 * page / 999, vertical=100 * current / (1000 - page)
+        )
+        if index == 4 or (index and page != pages[index - 1]):
+            repeated = deepcopy(original[-1]["native_scroll_info_after"])
+            repeated[0].update(state)
+            position["native_scroll_info_after"] = repeated
+        witness = position["native_item_witness"]
+        witness["from_frame"] = index - 1 if index else None
+        for item in witness["items"]:
+            for phase in ("after", "visible_after"):
+                item[phase]["y"] += 30  # Two retained items both moved 30px.
+        frame = QImage(24, 129, QImage.Format.Format_RGB32)
+        painter = QPainter(frame)
+        painter.drawImage(0, 0, image.copy(0, 0, 24, 5))
+        painter.drawImage(0, 5, image.copy(0, 5 + index * 30, 24, 120))
+        painter.drawImage(0, 125, image.copy(0, 245, 24, 4))
+        painter.end()
+        assert frame.save(str(output / f"frame-{index}.png"))
+        positions.append(position)
+    path.write_text(json.dumps(positions))
+    return image
+
+
+@pytest.mark.parametrize(
+    "pages",
+    [(492, 500, 500, 497, 508), (492, 480, 480, 492, 508), (492, 500, 480, 497, 508)],
+)
+def test_native_oracle_requires_fresh_proof_for_each_page_change(
+    tmp_path: Path, pages: tuple[int, ...]
+) -> None:
+    """Increases, decreases and returns to the original page need current receipts."""
+    image = _native_page_changes(tmp_path, pages)
+    assert verify_sequence(image, tmp_path)["oracle_verified_rows"] == 249
+    path = tmp_path / "frames.json"
+    positions = json.loads(path.read_text())
+    for index in range(1, len(positions)):
+        if "native_scroll_info_after" not in positions[index]:
+            continue
+        incomplete = deepcopy(positions)
+        del incomplete[index]["native_scroll_info_after"]
+        path.write_text(json.dumps(incomplete))
+        with pytest.raises(RuntimeError, match="native frame evidence"):
+            verify_sequence(image, tmp_path)
+
+
+@pytest.mark.parametrize("index", [1, 3])
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("min", 1),
+        ("max", 1000),
+        ("page", 501),
+        ("pos", 121),
+        ("native_handle", 1000),
+        ("parent", 120),
+        ("root", 43),
+        ("pid", 124),
+        ("bar", 1),
+        ("success", False),
+        ("window_valid", False),
+        ("root_matches", False),
+        ("parent", None),
+        ("page", True),
+    ],
+)
+def test_native_oracle_rejects_inconsistent_page_change_repeat(
+    tmp_path: Path, index: int, field: str, value: object
+) -> None:
+    """Every changed page independently repeats native scalars and original identity."""
+    image = _native_page_changes(tmp_path, (492, 500, 500, 497, 508))
+    path = tmp_path / "frames.json"
+    positions = json.loads(path.read_text())
+    positions[index]["native_scroll_info_after"][0][field] = value
+    path.write_text(json.dumps(positions))
+    with pytest.raises(RuntimeError, match="Whole-image oracle"):
+        verify_sequence(image, tmp_path)
+
+
+@pytest.mark.parametrize("progress", [0, -1])
+def test_native_page_change_requires_native_progress(
+    tmp_path: Path, progress: int
+) -> None:
+    """A larger percentage and matching repeat cannot conceal stalled/reversed nPos."""
+    image = _native_page_changes(tmp_path, (492, 500, 500, 505, 508))
+    path = tmp_path / "frames.json"
+    positions = json.loads(path.read_text())
+    position = positions[3]
+    position["native_scroll_info"][0]["pos"] = 240 + progress
+    position["native_scroll_info_after"][0]["pos"] = 240 + progress
+    position["vertical"] = 100 * (240 + progress) / 495
+    assert position["vertical"] > positions[2]["vertical"]
+    path.write_text(json.dumps(positions))
+    with pytest.raises(RuntimeError, match="native continuity"):
+        verify_sequence(image, tmp_path)
+
+
+def test_native_oracle_repeats_even_an_adjacent_mapped_view_change(
+    tmp_path: Path,
+) -> None:
+    """The mapping's existing one-ULP allowance never omits a changed-view receipt."""
+    image = _native_list_sequence(tmp_path)
+    path = tmp_path / "frames.json"
+    positions = json.loads(path.read_text())
+    positions[1]["view_size"] = math.nextafter(positions[1]["view_size"], math.inf)
+    path.write_text(json.dumps(positions))
+    with pytest.raises(RuntimeError, match="native frame evidence"):
+        verify_sequence(image, tmp_path)
+    repeated = deepcopy(positions[-1]["native_scroll_info_after"])
+    repeated[0].update(positions[1]["native_scroll_info"][0])
+    positions[1]["native_scroll_info_after"] = repeated
+    path.write_text(json.dumps(positions))
+    assert verify_sequence(image, tmp_path)["oracle_verified_rows"] == 249
+
+
+def test_native_oracle_never_imports_post_transaction_failure_frames(
+    tmp_path: Path,
+) -> None:
+    """Unaccepted failure evidence is neither needed nor usable as an endpoint."""
+    image = _native_list_sequence(tmp_path, interior_page=500)
+    path = tmp_path / "frames.json"
+    positions = json.loads(path.read_text())
+    target_path = tmp_path / "target.json"
+    target = json.loads(target_path.read_text())
+    target["failure_observation"] = {"stable": True, "position": positions[-1]}
+    target_path.write_text(json.dumps(target))
+    (tmp_path / "failure-observation.json").write_text("not valid JSON")
+    assert verify_sequence(image, tmp_path)["oracle_frames"] == 3
+    path.write_text(json.dumps(positions[:-1]))
+    with pytest.raises(RuntimeError, match="both document ends"):
+        verify_sequence(image, tmp_path)
 
 
 def test_native_oracle_replaces_only_the_early_estimate_comparison(
@@ -1026,13 +1173,15 @@ def test_native_oracle_rejects_evidence_lost_anywhere(
         ("page", None),
     ],
 )
+@pytest.mark.parametrize("interior_page", [492, 500])
 def test_native_oracle_rejects_changed_or_malformed_native_fields(
     tmp_path: Path,
     field: str,
     value: object,
+    interior_page: int,
 ) -> None:
     """Each recorded native field must retain its identity, range and mapping."""
-    image = _native_list_sequence(tmp_path)
+    image = _native_list_sequence(tmp_path, interior_page=interior_page)
     path = tmp_path / "frames.json"
     positions = json.loads(path.read_text())
     positions[1]["native_scroll_info"][0][field] = value
@@ -1055,12 +1204,14 @@ def test_native_oracle_rejects_changed_or_malformed_native_fields(
         "horizontal-pos",
     ],
 )
+@pytest.mark.parametrize("interior_page", [492, 500])
 def test_native_oracle_rejects_incomplete_or_inconsistent_native_frames(
     tmp_path: Path,
     change: str,
+    interior_page: int,
 ) -> None:
     """A frame cannot substitute another rail or mapping or move horizontally."""
-    image = _native_list_sequence(tmp_path)
+    image = _native_list_sequence(tmp_path, interior_page=interior_page)
     path = tmp_path / "frames.json"
     positions = json.loads(path.read_text())
     rows = positions[1]["native_scroll_info"]
@@ -1098,11 +1249,12 @@ def test_native_oracle_rejects_incomplete_or_inconsistent_native_frames(
         "initial-page",
     ],
 )
+@pytest.mark.parametrize("interior_page", [492, 500])
 def test_native_oracle_rejects_unproved_initial_or_terminal_evidence(
-    tmp_path: Path, change: str
+    tmp_path: Path, change: str, interior_page: int
 ) -> None:
     """Initial identity/range and a repeated exact endpoint are mandatory."""
-    image = _native_list_sequence(tmp_path)
+    image = _native_list_sequence(tmp_path, interior_page=interior_page)
     path = tmp_path / "frames.json"
     positions = json.loads(path.read_text())
     if change == "false-endpoint":
@@ -1143,11 +1295,12 @@ def test_native_oracle_rejects_unproved_initial_or_terminal_evidence(
         "jump",
     ],
 )
+@pytest.mark.parametrize("interior_page", [492, 500])
 def test_native_oracle_requires_all_pixels_and_continuous_raw_pairs(
-    tmp_path: Path, change: str
+    tmp_path: Path, change: str, interior_page: int
 ) -> None:
     """Any single fixed/moving pixel or a direct endpoint jump invalidates the proof."""
-    image = _native_list_sequence(tmp_path)
+    image = _native_list_sequence(tmp_path, interior_page=interior_page)
     if change in ("pair", "visible", "jump"):
         path = tmp_path / "frames.json"
         positions = json.loads(path.read_text())
@@ -1184,23 +1337,27 @@ def test_native_oracle_requires_all_pixels_and_continuous_raw_pairs(
 @pytest.mark.parametrize(
     ("first_page", "last_page"), [(480, 508), (492, 520), (480, 480)]
 )
+@pytest.mark.parametrize("interior_page", [492, 500])
 def test_native_oracle_keeps_both_actual_height_bounds(
     tmp_path: Path,
     first_page: int,
     last_page: int,
+    interior_page: int,
 ) -> None:
     """Even globally proved pixels cannot override either original or final extent."""
-    image = _native_list_sequence(tmp_path)
+    image = _native_list_sequence(tmp_path, interior_page=interior_page)
     path = tmp_path / "frames.json"
     positions = json.loads(path.read_text())
     for index, position in enumerate(positions):
-        page = last_page if index == 2 else first_page
+        page = (first_page, 500 if interior_page == 500 else first_page, last_page)[
+            index
+        ]
         row = position["native_scroll_info"][0]
         row["page"] = page
         row["pos"] = 1000 - page if index == 2 else row["pos"]
         position["vertical"] = 100 * row["pos"] / (1000 - page)
         position["view_size"] = 100 * page / 999
-        if index == 2:
+        if "native_scroll_info_after" in position:
             position["native_scroll_info_after"][0].update(row)
     path.write_text(json.dumps(positions))
     target_path = tmp_path / "target.json"
@@ -1212,13 +1369,15 @@ def test_native_oracle_keeps_both_actual_height_bounds(
 
 
 @pytest.mark.parametrize("failure", [None, "read", "position", "input"])
-def test_terminal_frame_records_independent_repeated_native_evidence(
+@pytest.mark.parametrize("vertical", [52.0, 100.0])
+def test_changed_or_terminal_frame_records_guarded_repeated_native_evidence(
     monkeypatch: pytest.MonkeyPatch,
     failure: str | None,
+    vertical: float,
 ) -> None:
-    """Only the terminal frame adds a guarded receipt; it does not reuse restoration."""
+    """Changed/terminal frames get a fresh guarded receipt, not a restoration result."""
     target = Mock()
-    position = ScrollPosition(0.0, 100.0, 50.0)
+    position = ScrollPosition(0.0, vertical, 51.0)
     target.position.return_value = position
     evidence = Mock(target=target, geometry={})
     raw = [{"native_handle": 19, "bar": 2, "pos": 500}]
@@ -1235,11 +1394,19 @@ def test_terminal_frame_records_independent_repeated_native_evidence(
     if failure is not None:
         with pytest.raises(CaptureError):
             native._frame_observation(
-                Mock(_target=target), position, evidence, "explorer-click"
+                Mock(_target=target),
+                position,
+                evidence,
+                "explorer-click",
+                previous_view=50.0,
             )
     else:
         result = native._frame_observation(
-            Mock(_target=target), position, evidence, "explorer-click"
+            Mock(_target=target),
+            position,
+            evidence,
+            "explorer-click",
+            previous_view=50.0,
         )
         assert result["native_scroll_info"] == raw
         assert result["native_scroll_info_after"] == terminal
@@ -1248,15 +1415,97 @@ def test_terminal_frame_records_independent_repeated_native_evidence(
     target.move.assert_not_called()
 
 
+@pytest.mark.parametrize("failed", [False, True])
+def test_trace_repeats_only_changed_pages_and_endpoint_in_existing_order(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, failed: bool
+) -> None:
+    """One extra observation per change preserves frame/write order and outcome."""
+    target = Mock(_window=17, _input_tick=12, area=Rect(0, 0, 24, 60))
+    operation, evidence = Mock(_target=target), Mock(target=target, geometry={})
+    frame = QImage(24, 60, QImage.Format.Format_RGB32)
+    frame.fill(QColor("white"))
+    calls: list[str] = []
+    error, result = (
+        CaptureError("Original frame failure"),
+        ScrollResult(None, "Original result", "unchanged", 5),
+    )
+    monkeypatch.setattr(native.UiaScrollTarget, "_open", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(native, "_target_evidence", Mock(return_value=evidence))
+
+    def acquire(_operation: object, _position: ScrollPosition) -> QImage:
+        calls.append("acquire")
+        if failed and calls.count("acquire") == 3:
+            raise error
+        return frame
+
+    def raw(*_args: object) -> list[dict[str, object]]:
+        calls.append("native")
+        return [{"pos": 1}]
+
+    def witness(_position: ScrollPosition) -> dict[str, object]:
+        calls.append("witness")
+        return {"from_frame": None, "items": []}
+
+    def repeat(*_args: object) -> list[dict[str, object]]:
+        calls.append("repeat")
+        return [{"pos": 1, "parent": 2}]
+
+    monkeypatch.setattr(native.ScrollTransaction, "_frame", acquire)
+    monkeypatch.setattr(native, "_frame_scroll_info", raw)
+    monkeypatch.setattr(native, "_restoration_native", repeat)
+    monkeypatch.setattr(native, "_record_terminal_position", Mock())
+    evidence.observe.side_effect = witness
+    target.check.side_effect = lambda: calls.append("guard")
+
+    def run(_operation: object) -> ScrollResult:
+        for vertical, view in zip(
+            (0.0, 25.0, 50.0, 75.0, 100.0), (50, 51, 51, 50, 50), strict=True
+        ):
+            position = ScrollPosition(0.0, vertical, view)
+            target.position.return_value = position
+            assert native.ScrollTransaction._frame(operation, position) is frame
+            saved = json.loads((tmp_path / "frames.json").read_text())
+            assert saved[-1]["view_size"] == view
+            calls.append("saved")
+        return result
+
+    monkeypatch.setattr(native.ScrollTransaction, "run", run)
+
+    def capture() -> None:
+        native.UiaScrollTarget._open(target, Point(0, 0))
+        assert native.ScrollTransaction.run(operation) is result
+
+    monkeypatch.setattr(native, "helper_main", capture)
+    monkeypatch.setattr("sys.argv", ["-c", str(tmp_path), "explorer-click"])
+    if failed:
+        with pytest.raises(CaptureError) as caught:
+            native._trace_helper()
+        assert caught.value is error
+    else:
+        native._trace_helper()
+    ordinary = ["acquire", "native", "witness", "saved"]
+    changed = ["acquire", "native", "witness", "repeat", "guard", "saved"]
+    assert calls == ordinary + changed + (
+        ["acquire"] if failed else ordinary + changed * 2
+    )
+    saved = json.loads((tmp_path / "frames.json").read_text())
+    assert [i for i, row in enumerate(saved) if "native_scroll_info_after" in row] == (
+        [1] if failed else [1, 3, 4]
+    )
+    target.move.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "change", ["ambiguous", "no-texture", "nonrail-only", "wrong-delta"]
 )
+@pytest.mark.parametrize("interior_page", [492, 500])
 def test_native_oracle_cannot_select_pixels_using_raw_expected_delta(
     tmp_path: Path,
     change: str,
+    interior_page: int,
 ) -> None:
     """Global uniqueness and full-width texture precede raw-pair agreement."""
-    image = _native_list_sequence(tmp_path)
+    image = _native_list_sequence(tmp_path, interior_page=interior_page)
     if change == "wrong-delta":
         path = tmp_path / "frames.json"
         positions = json.loads(path.read_text())
@@ -1380,7 +1629,7 @@ def test_native_oracle_rejects_changed_ranges_even_with_matching_uia(
     field: str,
     index: int,
 ) -> None:
-    """A self-consistent mapping does not authorize range or interior page changes."""
+    """A matching mapping alone proves neither fixed ranges nor a page change."""
     image = _native_list_sequence(tmp_path)
     path = tmp_path / "frames.json"
     positions = json.loads(path.read_text())
@@ -1400,7 +1649,8 @@ def test_native_oracle_rejects_changed_ranges_even_with_matching_uia(
     if field == "page" and index == 2:
         assert verify_sequence(image, tmp_path)["oracle_verified_rows"] == 249
     else:
-        with pytest.raises(RuntimeError, match="native continuity"):
+        message = "native frame evidence" if field == "page" else "native continuity"
+        with pytest.raises(RuntimeError, match=message):
             verify_sequence(image, tmp_path)
 
 

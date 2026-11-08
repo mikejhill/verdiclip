@@ -921,7 +921,16 @@ class ScrollTransaction:
             return False
         if current.view_size == before.view_size:
             return True
-        return restoring is None and self._terminal_change(before, current, percent)
+        if restoring is not None:
+            return False
+        if self._list_steps is not None and percent > before.vertical:
+            # Changed metrics only admit a candidate. Raw items, entire nonrail
+            # overlap and late guards must still prove this write before commit.
+            return (
+                math.isfinite(current.view_size)
+                and 0.0 < current.view_size < END_PERCENT
+            )
+        return self._terminal_change(before, current, percent)
 
     def _settle(
         self,
@@ -1106,15 +1115,23 @@ class ScrollTransaction:
             self._check(restoring=True)
             current = self._target.position()
             self._check(restoring=True)
+            refusal = None
             if (
                 current != self._expected
                 or self._expected.horizontal != initial.horizontal
-                or (
-                    self._expected.view_size != initial.view_size
-                    and self._expected != self._terminal
-                )
             ):
-                return "not restored: scroll position changed unexpectedly"
+                refusal = "scroll position changed unexpectedly"
+            elif (
+                self._expected.view_size != initial.view_size
+                and self._expected != self._terminal
+            ):
+                refusal = (
+                    "confirmed List normalization has no restoration proof"
+                    if self._list_steps is not None
+                    else "scroll position changed unexpectedly"
+                )
+            if refusal is not None:
+                return f"not restored: {refusal}"
             if self._terminal is not None and self._native is not None:
                 self._restore_native(initial, current)
             elif self._expected != initial:

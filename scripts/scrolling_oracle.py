@@ -25,8 +25,8 @@ class _NativeListOracle:
     """Check raw native observations, never retained production model objects.
 
     Frame samples establish rail HWNDs/root membership and native values.
-    Parent/root/PID identity is separately observed initially and at the repeated
-    terminal sample, not freshly reconstructed at every intervening frame.
+    Parent/root/PID identity is separately observed initially and at repeated
+    metric-change/terminal samples, not freshly reconstructed at every frame.
     """
 
     def __init__(self, geometry: dict[str, object], target: dict[str, object]) -> None:
@@ -68,6 +68,7 @@ class _NativeListOracle:
             )
         self.original: list[dict[str, int]] = []
         self.previous: list[dict[str, int]] = []
+        self.previous_view: object = None
 
     def _rails(self, value: object, *, identity: bool = False) -> list[dict[str, int]]:
         if not isinstance(value, list) or any(not isinstance(r, dict) for r in value):
@@ -150,12 +151,17 @@ class _NativeListOracle:
                 any(vertical[key] != self.original[0][key] for key in fixed)
                 or states[1:] != self.original[1:]
                 or current <= self.previous[0]["pos"]
-                or (not final and page != self.original[0]["page"])
             ):
                 raise RuntimeError("Whole-image oracle native continuity changed")
-        if final:
-            if current != maximum - page + 1 or position["vertical"] != _FULL_PERCENT:
-                raise RuntimeError("Whole-image oracle lacks an exact native endpoint")
+        if final and (
+            current != maximum - page + 1 or position["vertical"] != _FULL_PERCENT
+        ):
+            raise RuntimeError("Whole-image oracle lacks an exact native endpoint")
+        changed = bool(self.previous) and (
+            page != self.previous[0]["page"]
+            or position["view_size"] != self.previous_view
+        )
+        if final or changed:
             repeated = self._rails(
                 position.get("native_scroll_info_after"), identity=True
             )
@@ -169,13 +175,14 @@ class _NativeListOracle:
                 for key in ("native_handle", "parent", "root", "pid")
             ):
                 raise RuntimeError(
-                    "Whole-image oracle native terminal observation changed"
+                    "Whole-image oracle native repeated observation changed"
                 )
         elif "native_scroll_info_after" in position:
             raise RuntimeError(
-                "Whole-image oracle has misplaced terminal native evidence"
+                "Whole-image oracle has misplaced repeated native evidence"
             )
         self.previous = states
+        self.previous_view = position["view_size"]
 
 
 def _same_float(value: object, expected: float) -> bool:
@@ -384,7 +391,7 @@ def _verify_view_size(
         header.native.observe(position, final=final)
         if final:
             header.terminal_size(original, current, height)
-            return
+        return
     if current == original:
         return
     if header is None or not final:

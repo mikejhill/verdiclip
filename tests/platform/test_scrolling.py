@@ -2704,10 +2704,10 @@ def test_list_steps_reject_raw_shape_or_displacement_disagreement(change: str) -
 
 
 @pytest.mark.parametrize(
-    "change", ["horizontal", "range", "page", "native-lost", "role"]
+    "change", ["horizontal", "range", "page-mapping", "native-lost", "role"]
 )
 def test_list_steps_reject_nonterminal_state_changes(change: str) -> None:
-    """Native minimum/maximum, page, H and standard List role stay retained."""
+    """Native range, current page mapping, H and standard List role stay retained."""
     fixture = ListStepFixture()
     steps = fixture.capability()
     steps.begin(fixture.position)
@@ -2716,7 +2716,7 @@ def test_list_steps_reject_nonterminal_state_changes(change: str) -> None:
         fixture.position = replace(fixture.position, horizontal=1)
     elif change == "range":
         fixture.native = replace(fixture.native, maximum=16000)
-    elif change == "page":
+    elif change == "page-mapping":
         fixture.native = replace(fixture.native, page=612)
         fixture.position = replace(fixture.position, view_size=100 * 612 / 15999)
     elif change == "native-lost":
@@ -2758,11 +2758,8 @@ def test_list_steps_terminal_page_change_requires_maximum_and_late_identity() ->
         steps.confirm_terminal(fixture.position)
 
 
-@pytest.mark.parametrize("terminal", [False, True])
-def test_list_steps_terminal_flag_never_authorizes_nonmaximum(
-    *, terminal: bool
-) -> None:
-    """Normalization midsequence fails with or without the terminal context flag."""
+def test_list_steps_terminal_flag_never_authorizes_nonmaximum() -> None:
+    """A normalized interior step can continue but cannot claim the endpoint."""
     fixture = ListStepFixture()
     steps = fixture.capability()
     steps.begin(fixture.position)
@@ -2770,7 +2767,7 @@ def test_list_steps_terminal_flag_never_authorizes_nonmaximum(
     fixture.native = replace(fixture.native, position=1000)
     fixture.position = replace(fixture.position, vertical=fixture.native.percent(1000))
     with pytest.raises(CaptureError):
-        steps.finish(fixture.position, terminal=terminal)
+        steps.finish(fixture.position, terminal=True)
 
 
 def test_list_steps_original_position_is_not_an_item_anchor() -> None:
@@ -3416,3 +3413,156 @@ def test_setter_admission_has_no_intervening_native_work(
     mock(native._scroll.call).side_effect = lambda *_: events.append("setter")
     native.move(50.0, before_write=lambda: events.append("admit"))
     assert events == ["full", "horizontal", "full", "window", "admit", "setter", "full"]
+
+
+@pytest.mark.parametrize("pages", [(612,), (590,), (612, 590, 604)])
+@pytest.mark.parametrize("start", [4000, 8000, 13000])
+def test_list_steps_accept_exact_current_page_with_immutable_baseline(
+    pages: tuple[int, ...], start: int
+) -> None:
+    """Interior pages may move either way; no original range or anchor is rebased."""
+    fixture = ListStepFixture()
+    fixture.native = replace(fixture.native, position=start)
+    fixture.position = replace(fixture.position, vertical=fixture.native.percent(start))
+    steps = fixture.capability()
+    original = fixture.native
+    for page in pages:
+        before = fixture.position
+        native = fixture.native
+        steps.begin(before)
+        assert steps._before == (before, native)
+        fixture.advance(40)
+        fixture.native = replace(fixture.native, page=page)
+        fixture.position = ScrollPosition(
+            0, fixture.native.percent(fixture.native.position), 100 * page / 15999
+        )
+        assert steps.finish(fixture.position) == 40
+        assert steps._before is None
+        assert steps._terminal is None
+        assert steps._native == original
+        with pytest.raises(CaptureError):
+            steps.confirm_terminal(fixture.position)
+    assert all(release.call_count == 1 for release in fixture.releases)
+    mock(fixture.target._scroll.call).assert_not_called()
+
+
+@pytest.mark.parametrize("phase", ["begin", "finish"])
+def test_list_steps_reject_page_changes_between_paired_native_reads(phase: str) -> None:
+    """Each native pair must agree exactly, even when each maps to adjacent floats."""
+    fixture = ListStepFixture()
+    steps = fixture.capability()
+    if phase == "finish":
+        steps.begin(fixture.position)
+        fixture.advance()
+    read = fixture.target.scrollbar_state
+    calls = 0
+
+    def unstable() -> ScrollBarState:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            fixture.native = replace(fixture.native, page=fixture.native.page + 1)
+        result = read()
+        assert result is not None
+        return result
+
+    fixture.target.scrollbar_state = Mock(side_effect=unstable)
+    with pytest.raises(CaptureError):
+        (steps.begin if phase == "begin" else steps.finish)(fixture.position)
+    assert calls == 2
+    assert steps._before is None
+    assert steps._terminal is None
+    assert all(release.call_count == 1 for release in fixture.releases)
+
+
+@pytest.mark.parametrize("view", [0.0, -1.0, 100.0, 101.0, float("nan"), float("inf")])
+@pytest.mark.parametrize("phase", ["begin", "finish"])
+def test_list_steps_reject_invalid_current_view(view: float, phase: str) -> None:
+    """Changed native pages do not admit invalid scrollable UIA fractions."""
+    fixture = ListStepFixture()
+    steps = fixture.capability()
+    if phase == "finish":
+        steps.begin(fixture.position)
+        fixture.advance()
+    fixture.position = replace(fixture.position, view_size=view)
+    with pytest.raises(CaptureError):
+        (steps.begin if phase == "begin" else steps.finish)(fixture.position)
+    assert steps._before is None
+    assert all(release.call_count == 1 for release in fixture.releases)
+
+
+@pytest.mark.parametrize(
+    "change", ["rail", "parent", "root", "pid", "minimum", "maximum"]
+)
+def test_list_steps_normalization_preserves_original_owner_and_range(
+    change: str,
+) -> None:
+    """A valid changed page cannot hide any owner or content-range change."""
+    fixture = ListStepFixture()
+    steps = fixture.capability()
+    steps.begin(fixture.position)
+    fixture.advance()
+    fixture.native = replace(
+        fixture.native, page=612, **{change: getattr(fixture.native, change) + 1}
+    )
+    fixture.position = ScrollPosition(
+        0,
+        fixture.native.percent(fixture.native.position),
+        100 * fixture.native.page / (fixture.native.maximum - fixture.native.minimum),
+    )
+    with pytest.raises(CaptureError):
+        steps.finish(fixture.position)
+    assert steps._terminal is None
+    assert all(release.call_count == 1 for release in fixture.releases)
+
+
+@pytest.mark.parametrize("change", [0, -1])
+def test_list_steps_normalized_percentage_progress_needs_native_progress(
+    change: int,
+) -> None:
+    """A larger page can advance percent with no forward native movement at all."""
+    fixture = ListStepFixture()
+    fixture.native = replace(fixture.native, position=5000)
+    fixture.position = replace(fixture.position, vertical=fixture.native.percent(5000))
+    steps = fixture.capability()
+    before = fixture.position
+    steps.begin(before)
+    fixture.advance()
+    fixture.native = replace(fixture.native, page=612, position=5000 + change)
+    fixture.position = ScrollPosition(
+        0, fixture.native.percent(fixture.native.position), 100 * 612 / 15999
+    )
+    assert fixture.position.vertical > before.vertical
+    with pytest.raises(CaptureError, match="did not advance"):
+        steps.finish(fixture.position)
+    assert steps._terminal is None
+    assert all(release.call_count == 1 for release in fixture.releases)
+
+
+@pytest.mark.parametrize("page", [0, -1, 16000, 16001])
+def test_list_steps_reject_invalid_native_page(page: int) -> None:
+    """Normalization does not accept a degenerate native range or page."""
+    fixture = ListStepFixture()
+    steps = fixture.capability()
+    steps.begin(fixture.position)
+    fixture.advance()
+    fixture.native = replace(fixture.native, page=page)
+    with pytest.raises(CaptureError):
+        steps.finish(fixture.position)
+    assert all(release.call_count == 1 for release in fixture.releases)
+
+
+def test_list_steps_spontaneous_page_change_before_begin_is_not_acknowledged() -> None:
+    """A coherent current mapping still cannot replace the caller's accepted tuple."""
+    fixture = ListStepFixture()
+    steps = fixture.capability()
+    accepted = fixture.position
+    fixture.native = replace(fixture.native, page=612)
+    fixture.position = replace(fixture.position, view_size=100 * 612 / 15999)
+    assert fixture.native.matches(fixture.position)
+    with pytest.raises(CaptureError, match="position or identity changed"):
+        steps.begin(accepted)
+    assert not fixture.releases
+    assert steps._before is None
+    assert steps._terminal is None
+    mock(fixture.target._scroll.call).assert_not_called()

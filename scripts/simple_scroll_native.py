@@ -244,6 +244,8 @@ def _frame_observation(
     position: ScrollPosition,
     evidence: ListItemWitness | None,
     mode: str,
+    *,
+    previous_view: float | None = None,
 ) -> dict[str, object]:
     """Extend only Explorer's existing frame records with native metadata."""
     observation: dict[str, object] = {
@@ -258,12 +260,14 @@ def _frame_observation(
             evidence.target, position, evidence.geometry
         )
         observation["native_item_witness"] = evidence.observe(position)
-        if position.vertical == END_PERCENT:
+        if position.vertical == END_PERCENT or (
+            previous_view is not None and position.view_size != previous_view
+        ):
             observation["native_scroll_info_after"] = _restoration_native(
                 evidence.target, evidence.geometry
             )
             if evidence.target.position() != position:
-                raise CaptureError("The terminal frame moved during native observation")
+                raise CaptureError("The frame moved during repeated native observation")
             evidence.target.check()
     return observation
 
@@ -787,7 +791,17 @@ def _trace_helper() -> None:
             retained_pixels += frame.width() * frame.height()
             if retained_pixels > MAX_PIXELS:
                 raise CaptureError("Diagnostic frame evidence exceeds its pixel limit")
-            observation = observe(operation, position, evidence, mode)
+            observation = observe(
+                operation,
+                position,
+                evidence,
+                mode,
+                previous_view=(
+                    cast("float", observations[-1]["view_size"])
+                    if observations
+                    else None
+                ),
+            )
             _save_timed_frame(timing, frame, observation, observations, output)
             if len(observations) == 1 and mode in (
                 "edge-cancel",
