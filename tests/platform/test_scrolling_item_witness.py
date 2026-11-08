@@ -552,3 +552,138 @@ def test_overflow_observation_emits_raw_and_visible_but_preserves_original_h(
             "width": 592,
             "height": 48,
         }
+
+
+@pytest.fixture
+def retained_failure_witness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[witness.ListItemWitness, Mock, Mock]:
+    """Use retained raw elements and real identity/visibility checks only."""
+    reader = _reader()
+    reader._index = 7
+    first, last = _item(Rect(15, 70, 50, 20)), _item(Rect(15, 100, 50, 20))
+    reader._anchors = [
+        witness._Anchor(first, Rect(15, 100, 50, 20)),
+        witness._Anchor(last, Rect(15, 130, 50, 20)),
+    ]
+    reader._seed = Mock()
+    _mock(reader.target.position).return_value = ScrollPosition(0.0, 94.0, 18.5)
+    _mock(reader._automation.pointer_result).side_effect = [first, last]
+    monkeypatch.setattr(witness.time, "monotonic", lambda: 0.0)
+    return reader, first, last
+
+
+@pytest.mark.parametrize("change", ["none", "unequal-delta", "different-size"])
+def test_failure_pair_records_raw_geometry_without_accepting_or_reseeding(
+    retained_failure_witness: tuple[witness.ListItemWitness, Mock, Mock],
+    change: str,
+) -> None:
+    """Post-failure raw rectangles are observations, never a displacement proof."""
+    reader, first, last = retained_failure_witness
+    if change == "unequal-delta":
+        last.bounds.return_value = Rect(15, 101, 50, 20)
+    elif change == "different-size":
+        last.bounds.return_value = Rect(15, 100, 49, 20)
+    anchors, retained, deadline = reader._anchors, reader._retained, reader._deadline
+    released = Mock()
+    retained.callback(released)
+    position = _mock(reader.target.position).return_value
+    result = reader.observe_retained(position, deadline=1.0)
+    assert result == {
+        "retained_from_frame": 6,
+        "items": [
+            {
+                "retained": {"x": 15, "y": 100, "width": 50, "height": 20},
+                "observed": {"x": 15, "y": 70, "width": 50, "height": 20},
+                "visible_observed": {"x": 15, "y": 70, "width": 50, "height": 20},
+                "same_identity": True,
+                "same_parent": True,
+            },
+            {
+                "retained": {"x": 15, "y": 130, "width": 50, "height": 20},
+                "observed": {
+                    "x": 15,
+                    "y": 101 if change == "unequal-delta" else 100,
+                    "width": 49 if change == "different-size" else 50,
+                    "height": 20,
+                },
+                "visible_observed": {
+                    "x": 15,
+                    "y": 101 if change == "unequal-delta" else 100,
+                    "width": 49 if change == "different-size" else 50,
+                    "height": 20,
+                },
+                "same_identity": True,
+                "same_parent": True,
+            },
+        ],
+    }
+    assert reader._anchors is anchors
+    assert reader._retained is retained
+    assert reader._index == 7
+    assert reader._deadline == deadline
+    assert first.bounds.call_count == last.bounds.call_count == 2
+    _mock(reader._walker.relative).assert_not_called()
+    _mock(reader.target.move).assert_not_called()
+    _mock(reader._seed).assert_not_called()
+    released.assert_not_called()
+    reader.close()
+    released.assert_called_once_with()
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "hidden",
+        "identity",
+        "parent",
+        "geometry",
+        "position",
+        "input",
+        "budget",
+        "missing",
+        "stale",
+        "horizontal",
+    ],
+)
+def test_failure_pair_keeps_guards_and_lineage_on_unavailable_reads(
+    monkeypatch: pytest.MonkeyPatch,
+    retained_failure_witness: tuple[witness.ListItemWitness, Mock, Mock],
+    change: str,
+) -> None:
+    """No failed identity/read may consume, replace or invent a retained pair."""
+    reader, first, last = retained_failure_witness
+    position = _mock(reader.target.position).return_value
+    if change == "hidden":
+        last.offscreen.return_value = True
+    elif change == "identity":
+        _mock(reader._automation.pointer_result).side_effect = [last]
+    elif change == "parent":
+        _mock(reader._walker.parent).return_value = None
+    elif change == "geometry":
+        first.bounds.side_effect = [Rect(15, 70, 50, 20), Rect(15, 71, 50, 20)]
+    elif change == "position":
+        _mock(reader.target.position).side_effect = [
+            position,
+            ScrollPosition(0, 95, 18.5),
+        ]
+    elif change == "input":
+        _mock(reader.target.check).side_effect = [None, CaptureError("Input changed")]
+    elif change == "budget":
+        monkeypatch.setattr(witness.time, "monotonic", lambda: 1.0)
+    elif change == "missing":
+        reader._anchors.pop()
+    elif change == "stale":
+        last.bounds.side_effect = OSError("Stale element")
+    else:
+        reader._horizontal = -1.0
+    anchors, retained, deadline = reader._anchors, reader._retained, reader._deadline
+    with pytest.raises((CaptureError, OSError)):
+        reader.observe_retained(position, deadline=1.0)
+    assert reader._anchors is anchors
+    assert reader._retained is retained
+    assert reader._index == 7
+    assert reader._deadline == deadline
+    _mock(reader._walker.relative).assert_not_called()
+    _mock(reader.target.move).assert_not_called()
+    _mock(reader._seed).assert_not_called()

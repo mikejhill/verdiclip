@@ -1508,6 +1508,132 @@ def _scaled_restoration_pair() -> tuple[QImage, QImage]:
     return first, after
 
 
+def _fractional_restoration_pair(
+    *, border: int = 3, exterior: int = 0
+) -> tuple[QImage, QImage]:
+    """Keep the observed 120-DPI three-pixel ring distinct from its upper bound."""
+    first = QImage(90, 60, QImage.Format.Format_RGB32)
+    first.fill(0xFFFFFFFF)
+    after = first.copy()
+    for y in range(exterior, 60 - exterior):
+        for x in range(exterior, 90 - exterior):
+            if (
+                x < exterior + border
+                or x >= 90 - exterior - border
+                or y < exterior + border
+                or y >= 60 - exterior - border
+            ):
+                first.setPixel(x, y, 0xFFB1B5BA)
+                after.setPixel(x, y, 0xFF101010 if x % 2 else 0xFF505050)
+    return first, after
+
+
+@pytest.mark.parametrize("exterior", [0, 1])
+@pytest.mark.parametrize(
+    "damage", ["none", "interior_gray", "protrusion", "nonmember", "missing_ring"]
+)
+def test_120_ring_derives_members_and_preserves_exact_complement(
+    exterior: int, damage: str
+) -> None:
+    """Neither the four-pixel cap nor a content color selects ignored pixels."""
+    first, after = _fractional_restoration_pair(exterior=exterior)
+    inner = exterior + 3
+    if damage == "interior_gray":
+        first.setPixel(40, 30, 0xFFB1B5BA)
+    elif damage == "protrusion":
+        first.setPixel(inner, 20, 0xFFB1B5BA)
+        after.setPixel(inner, 20, 0xFFB1B5BA)
+    elif damage == "nonmember":
+        after.setPixel(inner, 20, 0xFF000000)
+    elif damage == "missing_ring":
+        first.setPixel(exterior, 20, 0xFFFFFFFF)
+    assert diagnostics._scaled_fixture_ring_restored(first, after, dpi=120) == (
+        damage == "none"
+    )
+
+
+@pytest.mark.parametrize("textured_before", [False, True])
+def test_120_ring_preserves_every_exterior_pixel(*, textured_before: bool) -> None:
+    """Changed exterior and unchanged textured exterior are both rejected."""
+    first, after = _fractional_restoration_pair(exterior=1)
+    after.setPixel(89, 20, 0xFF000000)
+    if textured_before:
+        first.setPixel(89, 20, 0xFF000000)
+    assert not diagnostics._scaled_fixture_ring_restored(first, after, dpi=120)
+
+
+@pytest.mark.parametrize("border", [3, 4, 5, 6])
+def test_120_ring_cap_is_derived_from_css_not_192_dpi(border: int) -> None:
+    """Ceil(3 CSS pixels at 1.25 scale) bounds, but does not assume, ring width."""
+    first, after = _fractional_restoration_pair(border=border)
+    accepted = border <= math.ceil(diagnostics._FIXTURE_CSS_BORDER * 120 / 96)
+    assert diagnostics._scaled_fixture_ring_restored(first, after, dpi=120) == accepted
+    if accepted:
+        diagnostics._focused_panel_evidence(first, after, after, dpi=120)
+    else:
+        with pytest.raises(RuntimeError, match="original fixture border ring"):
+            diagnostics._focused_panel_evidence(first, after, after, dpi=120)
+
+
+@pytest.mark.parametrize("dpi", [96, 120, 144, 192])
+@pytest.mark.parametrize("geometry", ["valid", "null", "small", "changed"])
+def test_ring_helper_rejects_unsupported_dpi_and_invalid_geometry(
+    dpi: int, geometry: str
+) -> None:
+    """Direct helper calls cannot bypass supported DPI or nonempty equal shapes."""
+    first, after = _fractional_restoration_pair()
+    if geometry == "null":
+        first, after = QImage(), QImage()
+    elif geometry == "small":
+        first, after = first.copy(0, 0, 8, 8), after.copy(0, 0, 8, 8)
+    elif geometry == "changed":
+        after = after.copy(0, 0, 89, 60)
+    assert diagnostics._scaled_fixture_ring_restored(first, after, dpi=dpi) == (
+        dpi in (120, 192) and geometry == "valid"
+    )
+
+
+def test_120_unchanged_isolated_gray_content_stays_in_exact_complement() -> None:
+    """An isolated gray content pixel remains content even when unchanged."""
+    first, after = _fractional_restoration_pair()
+    first.setPixel(40, 30, 0xFFB1B5BA)
+    after.setPixel(40, 30, 0xFFB1B5BA)
+    assert diagnostics._scaled_fixture_ring_restored(first, after, dpi=120)
+
+
+@pytest.mark.parametrize("kind", ["edge-panel-click", "edge-panel-enter"])
+@pytest.mark.parametrize("damage", ["none", "state", "geometry", "prose", "scrollbar"])
+def test_120_panel_restoration_keeps_state_shape_and_content_gates(
+    tmp_path: Path, kind: str, damage: str
+) -> None:
+    """Only the owned CSS panel can use its measured ring with exact scroll state."""
+    capture = _start_capture(tmp_path)
+    _start_evidence(capture)
+    capture.kind = "edge-prose-click" if damage == "prose" else kind
+    capture.result = None
+    first, after = _fractional_restoration_pair()
+    assert first.save(str(tmp_path / "frame-0.png"))
+    (tmp_path / "target.json").write_text(json.dumps({"window_dpi": 120}))
+    if damage == "state":
+        path = tmp_path / "restoration.json"
+        state = json.loads(path.read_text())
+        state["final"]["horizontal"] += 1
+        path.write_text(json.dumps(state))
+    elif damage == "geometry":
+        after = after.copy(0, 0, 89, 60)
+    elif damage == "scrollbar":
+        after.setPixel(86, 30, 0xFF000000)
+    if damage == "none":
+        diagnostics._verify_restored(capture, after)
+        assert capture.report["restored_pixels"] == (
+            "exact complement; original border ring changed"
+        )
+    else:
+        with pytest.raises(RuntimeError, match=r"restored|Restored"):
+            diagnostics._verify_restored(capture, after)
+        assert "restored_pixels" not in capture.report
+
+
 @pytest.mark.parametrize(
     "invalid",
     [
@@ -1861,13 +1987,16 @@ def test_focused_start_is_proved_from_pixels_not_input_gestures(invalid: str) ->
 @pytest.mark.parametrize(
     "invalid", ["none", "dpi", "window", "position", "frame0", "restoration"]
 )
+@pytest.mark.parametrize("dpi", [96, 192])
 def test_focused_start_matches_actual_post_setup_crop_and_exact_state(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     invalid: str,
+    dpi: int,
 ) -> None:
     """The diagnostic cannot claim focus from a different crop, state or DPI."""
     capture = _focused_capture(tmp_path)
+    capture.report["expected_target_dpi"] = dpi
     before, first = _scaled_restoration_pair()
     capture._focus_before = FrozenScreen(before, capture.window.bounds)
     capture._focus_after = FrozenScreen(first, capture.window.bounds)
@@ -1878,7 +2007,7 @@ def test_focused_start_matches_actual_post_setup_crop_and_exact_state(
         state["vertical"] = 1.0
     target = {
         "window": 8 if invalid == "window" else 9,
-        "window_dpi": 96 if invalid == "dpi" else 192,
+        "window_dpi": 144 if invalid == "dpi" else dpi,
         "area": asdict(capture.window.bounds),
         "initial_position": state,
     }
@@ -3147,7 +3276,7 @@ def test_focused_scale_changes_only_expected_target_dpi(
     diagnostics._case("edge-panel-focused-click", tmp_path, report)
     assert report["expected_target_dpi"] == dpi
     assert diagnostics._SCALED_FIXTURE_DPI == 192
-    assert diagnostics._SCALED_FIXTURE_BORDER == 6
+    assert diagnostics._FIXTURE_CSS_BORDER == 3
     capture.run.assert_called_once_with()
 
 
@@ -3210,14 +3339,14 @@ def test_taller_layout_cannot_assume_h0_or_two_rails(
     ["edge-panel-click", "edge-panel-enter", *diagnostics._FOCUSED_PANELS],
 )
 @pytest.mark.parametrize("damage", ["none", "outer_nonring", "ring"])
-def test_120_dpi_panel_restoration_requires_every_final_pixel(
+def test_120_dpi_already_focused_restoration_requires_every_final_pixel(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, kind: str, damage: str
 ) -> None:
     """A valid focused start cannot excuse final damage inside the legacy inset."""
     capture = _focused_capture(tmp_path)
     capture.kind = kind
     capture.report["expected_target_dpi"] = 120
-    before, first = _scaled_restoration_pair()
+    before, first = _fractional_restoration_pair(exterior=1)
     capture._focus_before = FrozenScreen(before, capture.window.bounds)
     capture._focus_after = FrozenScreen(first, capture.window.bounds)
     assert first.save(str(tmp_path / "frame-0.png"))
@@ -3239,7 +3368,7 @@ def test_120_dpi_panel_restoration_requires_every_final_pixel(
     )
     after = first.copy()
     if damage != "none":
-        x, y = (89, 30) if damage == "outer_nonring" else (0, 30)
+        x, y = (89, 30) if damage == "outer_nonring" else (1, 30)
         assert (before.pixel(x, y) == 0xFFB1B5BA) == (damage == "ring")
         after.setPixel(x, y, 0xFF000000)
         # Demonstrate the exact old false-positive: its entire inset is unchanged.
@@ -3253,7 +3382,7 @@ def test_120_dpi_panel_restoration_requires_every_final_pixel(
         verify(after)
         assert capture.report["restored_pixels"] == "exact"
     else:
-        with pytest.raises(RuntimeError, match=r"120-DPI.*exact whole-frame"):
+        with pytest.raises(RuntimeError, match="original fixture border ring"):
             verify(after)
         assert "restored_pixels" not in capture.report
     if kind in diagnostics._FOCUSED_PANELS:

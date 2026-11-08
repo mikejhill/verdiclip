@@ -1896,3 +1896,380 @@ def test_timing_write_failure_does_not_replace_original_outcome(
     run.assert_called_once()
     assert not (tmp_path / "phase-timing.json").exists()
     assert (tmp_path / "movement.json").exists()
+
+
+@pytest.fixture
+def failure_snapshot(monkeypatch: pytest.MonkeyPatch) -> tuple[Mock, Mock, Mock]:
+    """Fake only existing read APIs; leave failure snapshot guards real."""
+    position = ScrollPosition(0.0, 94.0, 18.5)
+    frame = QImage(24, 60, QImage.Format.Format_RGB32)
+    frame.fill(QColor("white"))
+    target = Mock(area=Rect(0, 0, 24, 60))
+    target.position.return_value = position
+    target.frame.return_value = frame
+    evidence = Mock(target=target, geometry={"retained": True})
+    evidence.observe_retained.return_value = {"retained_from_frame": 12, "items": []}
+    row = {
+        "native_handle": 17,
+        "bar": 2,
+        "parent": 8,
+        "root": 9,
+        "pid": 123,
+        "success": True,
+        "window_valid": True,
+        "root_matches": True,
+        "min": 0,
+        "max": 999,
+        "page": 185,
+        "pos": 766,
+    }
+    read = Mock(return_value=[row])
+    monkeypatch.setattr(native, "_restoration_native", read)
+    monkeypatch.setattr(native.time, "monotonic", lambda: 0.0)
+    return target, evidence, read
+
+
+@pytest.mark.parametrize("restoration", ["restored", "not restored: unresolved"])
+def test_failure_snapshot_is_unaccepted_and_preserves_failed_result(
+    tmp_path: Path, failure_snapshot: tuple[Mock, Mock, Mock], restoration: str
+) -> None:
+    """Exact post-result evidence can never become a capture/restoration receipt."""
+    target, evidence, read = failure_snapshot
+    initial_native = [{**read.return_value[0], "page": 180, "pos": 0}]
+    selected: dict[str, object] = {"initial_native": initial_native}
+    result = ScrollResult(None, "Original view size failure", restoration, 13)
+    frames = tmp_path / "frames.json"
+    frames.write_text("accepted frames remain unchanged")
+    native._record_terminal_position(target, result, selected, tmp_path, evidence)
+    receipt = selected["failure_observation"]
+    assert isinstance(receipt, dict)
+    assert receipt["status"] == "stable_read_only_snapshot"
+    assert receipt["accepted"] is False
+    assert receipt["product_capture_qualification"] is False
+    assert receipt["phase"] == "after_transaction"
+    assert receipt["original_result"] == {
+        "message": result.message,
+        "restoration": restoration,
+        "frames": 13,
+        "has_image": False,
+    }
+    assert receipt["initial_native"] == initial_native
+    assert receipt["native_before"] == receipt["native_after"] == read.return_value
+    assert receipt["items_before"] == receipt["items_after"]
+    assert receipt["position"] == {
+        "horizontal": 0.0,
+        "vertical": 94.0,
+        "view_size": 18.5,
+    }
+    assert receipt["pixels_equal"] is True
+    assert (
+        QImage(str(tmp_path / "failure-observation.png")) == target.frame.return_value
+    )
+    assert result == ScrollResult(None, "Original view size failure", restoration, 13)
+    assert frames.read_text() == "accepted frames remain unchanged"
+    assert not (tmp_path / "restoration.json").exists()
+    assert target.frame.call_count == read.call_count == 2
+    assert evidence.observe_retained.call_count == 2
+    assert all(
+        call.kwargs == {"deadline": 1.0}
+        for call in evidence.observe_retained.call_args_list
+    )
+    target.move.assert_not_called()
+    evidence.observe.assert_not_called()
+    evidence._seed.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "target",
+        "input-before",
+        "input-final",
+        "position-final",
+        "native",
+        "native-owner",
+        "native-unavailable",
+        "items",
+        "items-unavailable",
+        "pixels",
+        "pixel-size",
+        "read-error",
+        "save-error",
+        "budget",
+    ],
+)
+def test_failed_snapshot_never_labels_raced_or_unavailable_evidence_stable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    failure_snapshot: tuple[Mock, Mock, Mock],
+    change: str,
+) -> None:
+    """Any incomplete guard/read leaves an unaccepted receipt and original failure."""
+    target, evidence, read = failure_snapshot
+    selected: dict[str, object] = {"initial_native": read.return_value}
+    if change == "target":
+        evidence.target = Mock()
+    elif change == "input-before":
+        target.check.side_effect = CaptureError("Input changed")
+    elif change == "input-final":
+        target.check.side_effect = [None] * 16 + [CaptureError("Input changed")]
+    elif change == "position-final":
+        target.position.side_effect = [target.position.return_value] * 8 + [
+            ScrollPosition(0.0, 95.0, 18.5)
+        ]
+    elif change == "budget":
+        # Start and all guard entries pass; the final post-guard budget expires.
+        ticks = iter([0.0] * 14 + [1.0])
+        monkeypatch.setattr(native.time, "monotonic", lambda: next(ticks))
+    else:
+        _change_failure_reads(monkeypatch, target, evidence, read, change)
+    result = ScrollResult(None, "Original failure", "restored", 13)
+    native._record_terminal_position(target, result, selected, tmp_path, evidence)
+    receipt = selected["failure_observation"]
+    assert isinstance(receipt, dict)
+    assert receipt["status"] == "unavailable"
+    assert receipt["error"]
+    assert receipt["accepted"] is False
+    assert receipt["original_result"] == {
+        "message": "Original failure",
+        "restoration": "restored",
+        "frames": 13,
+        "has_image": False,
+    }
+    assert not (tmp_path / "frames.json").exists()
+    assert not (tmp_path / "restoration.json").exists()
+    assert target.frame.call_count <= 2
+    assert read.call_count <= 2
+    assert evidence.observe_retained.call_count <= 2
+    target.move.assert_not_called()
+    evidence.observe.assert_not_called()
+    evidence._seed.assert_not_called()
+    if change in ("target", "input-before"):
+        target.frame.assert_not_called()
+        read.assert_not_called()
+
+
+def test_optional_failure_position_exception_cannot_replace_original_result(
+    tmp_path: Path,
+) -> None:
+    """Unexpected diagnostic exceptions cannot escape even without item evidence."""
+    target = Mock()
+    target.check.side_effect = RuntimeError("Optional guard failed")
+    result = ScrollResult(None, "Original failure", "restored", 3)
+    selected: dict[str, object] = {}
+    native._record_terminal_position(target, result, selected, tmp_path)
+    assert selected == {"final_observation_error": "Optional guard failed"}
+    assert result.message == "Original failure"
+    assert list(tmp_path.iterdir()) == []
+    target.move.assert_not_called()
+
+
+def _change_failure_reads(
+    monkeypatch: pytest.MonkeyPatch,
+    target: Mock,
+    evidence: Mock,
+    read: Mock,
+    change: str,
+) -> None:
+    """Perturb one optional read, without replacing the snapshot implementation."""
+    if change == "native":
+        read.side_effect = [read.return_value, [{**read.return_value[0], "page": 186}]]
+    elif change == "native-owner":
+        read.return_value = [{**read.return_value[0], "parent": 99}]
+    elif change == "native-unavailable":
+        read.return_value = [{**read.return_value[0], "success": False}]
+    elif change == "items":
+        evidence.observe_retained.side_effect = [{"items": [1]}, {"items": [2]}]
+    elif change == "items-unavailable":
+        evidence.observe_retained.side_effect = CaptureError("Pair no longer visible")
+    elif change == "pixels":
+        changed = target.frame.return_value.copy()
+        changed.setPixelColor(0, 0, QColor("red"))
+        target.frame.side_effect = [target.frame.return_value, changed]
+    elif change == "pixel-size":
+        target.area = Rect(0, 0, 25, 60)
+    elif change == "read-error":
+        read.side_effect = RuntimeError("Broken optional read")
+    elif change == "save-error":
+        monkeypatch.setattr(QImage, "save", Mock(return_value=False))
+
+
+@pytest.mark.parametrize("unavailable", [False, True])
+def test_trace_returns_identical_failure_with_optional_retained_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    failure_snapshot: tuple[Mock, Mock, Mock],
+    *,
+    unavailable: bool,
+) -> None:
+    """Actual tracer plumbing cannot promote or replace the failed product result."""
+    target, evidence, read = failure_snapshot
+    target._window, target._input_tick = 9, 12
+    result = ScrollResult(None, "Original view size failure", "not restored", 13)
+    returned: list[ScrollResult] = []
+
+    def retain(
+        opened: object, _output: Path, _mode: str, selected: dict[str, object]
+    ) -> Mock:
+        assert opened is target
+        selected["initial_native"] = read.return_value
+        return evidence
+
+    def capture() -> None:
+        native.UiaScrollTarget._open(target, Point(0, 0))
+        returned.append(native.ScrollTransaction.run(Mock(_target=target)))
+
+    if unavailable:
+        read.side_effect = RuntimeError("Optional native read failed")
+    monkeypatch.setattr(native.ScrollTransaction, "run", lambda _: result)
+    monkeypatch.setattr(native.UiaScrollTarget, "_open", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(native, "_target_evidence", retain)
+    monkeypatch.setattr(native, "helper_main", capture)
+    monkeypatch.setattr("sys.argv", ["-c", str(tmp_path), "explorer-enter"])
+    native._trace_helper()
+    assert returned == [result]
+    assert returned[0] is result
+    receipt = json.loads((tmp_path / "target.json").read_text())["failure_observation"]
+    assert receipt["status"] == (
+        "unavailable" if unavailable else "stable_read_only_snapshot"
+    )
+    assert receipt["accepted"] is False
+    assert receipt["original_result"]["message"] == result.message
+    assert not (tmp_path / "frames.json").exists()
+    assert not (tmp_path / "restoration.json").exists()
+    target.move.assert_not_called()
+
+
+@pytest.mark.parametrize("vertical_success", [False, True])
+def test_failure_native_requires_vertical_control_not_just_any_success(
+    tmp_path: Path,
+    failure_snapshot: tuple[Mock, Mock, Mock],
+    *,
+    vertical_success: bool,
+) -> None:
+    """Unsupported List SB_VERT cannot conceal a missing retained vertical SB_CTL."""
+    target, evidence, read = failure_snapshot
+    base = read.return_value[0]
+    read.return_value = [
+        {**base, "native_handle": 18, "bar": 1, "success": False, "page": None},
+        {**base, "native_handle": 19, "bar": 2, "success": True},
+        {
+            **base,
+            "native_handle": 20,
+            "bar": 2,
+            "success": vertical_success,
+            "page": 185 if vertical_success else None,
+        },
+    ]
+    selected: dict[str, object] = {"initial_native": read.return_value}
+    result = ScrollResult(None, "Original failure", "not restored", 13)
+    native._record_terminal_position(target, result, selected, tmp_path, evidence)
+    receipt = selected["failure_observation"]
+    assert isinstance(receipt, dict)
+    assert receipt["status"] == (
+        "stable_read_only_snapshot" if vertical_success else "unavailable"
+    )
+    assert receipt["native_before"] == read.return_value
+    assert receipt["accepted"] is False
+    target.move.assert_not_called()
+
+
+@pytest.mark.parametrize("change", ["none", "partial", "final-input", "budget"])
+def test_edge_ancestor_failure_receipt_keeps_final_guard_and_original_result(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    change: str,
+) -> None:
+    """Ancestry has no boundary authority, including on partial/error paths."""
+    target = Mock()
+    target.position.return_value = ScrollPosition(-1.0, 85.0, 22.4)
+    result = ScrollResult(None, "Original Edge failure", "not restored", 9)
+    selected: dict[str, object] = {"mode": "edge-prose-enter"}
+    now = 0.0
+
+    def ancestors(
+        observed_target: object,
+        receipt: dict[str, object],
+        guard: object,
+    ) -> None:
+        nonlocal now
+        assert observed_target is target
+        assert callable(guard)
+        guard()
+        receipt["semantic_boundary"] = "unavailable"
+        receipt["ancestor_nodes"] = [{"native_handle": None}]
+        if change == "partial":
+            raise CaptureError("Parent read unavailable")
+        if change == "final-input":
+            target.check.side_effect = CaptureError("Input changed at final guard")
+        if change == "budget":
+            now = 1.0
+
+    monkeypatch.setattr(native, "probe_ancestors", ancestors)
+    monkeypatch.setattr(native.time, "monotonic", lambda: now)
+    native._record_terminal_position(target, result, selected, tmp_path)
+    receipt = selected["failure_observation"]
+    assert isinstance(receipt, dict)
+    assert receipt["semantic_boundary"] == "unavailable"
+    assert receipt["scope"] == "selected_provider_ancestor_provenance"
+    assert receipt["status"] == (
+        "stable_read_only_snapshot" if change == "none" else "unavailable"
+    )
+    assert receipt["original_result"] == {
+        "message": "Original Edge failure",
+        "restoration": "not restored",
+        "frames": 9,
+        "has_image": False,
+    }
+    assert receipt["accepted"] is False
+    assert (
+        target.check.call_count
+        == {"none": 7, "partial": 7, "final-input": 6, "budget": 5}[change]
+    )
+    if change == "partial":
+        assert receipt["ancestor_read_error"] == "CaptureError: Parent read unavailable"
+    target.move.assert_not_called()
+    target.frame.assert_not_called()
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "mode", ["edge-prose-click", "edge-prose-enter", "edge-panel-enter"]
+)
+def test_trace_routes_only_prose_failures_to_same_ancestor_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    mode: str,
+) -> None:
+    """Existing prose jobs gain failure provenance without a new case or protocol."""
+    target = Mock(_window=17, _input_tick=12, area=Rect(24, 110, 973, 647))
+    target.position.return_value = ScrollPosition(-1.0, 85.0, 22.4)
+    result = ScrollResult(None, "Original failure", "not restored", 9)
+    returned: list[ScrollResult] = []
+
+    def ancestors(_target: object, receipt: dict[str, object], _guard: object) -> None:
+        receipt.update(semantic_boundary="unavailable", ancestor_nodes=[])
+
+    def capture() -> None:
+        native.UiaScrollTarget._open(target, Point(100, 150))
+        returned.append(native.ScrollTransaction.run(Mock(_target=target)))
+
+    probe = Mock(side_effect=ancestors)
+    monkeypatch.setattr(native, "probe_ancestors", probe)
+    monkeypatch.setattr(native.ScrollTransaction, "run", lambda _: result)
+    monkeypatch.setattr(native.UiaScrollTarget, "_open", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(native, "_target_evidence", Mock(return_value=None))
+    monkeypatch.setattr(native, "helper_main", capture)
+    monkeypatch.setattr(native.time, "monotonic", lambda: 0.0)
+    monkeypatch.setattr("sys.argv", ["-c", str(tmp_path), mode])
+    native._trace_helper()
+    assert returned[0] is result
+    selected = json.loads((tmp_path / "target.json").read_text())
+    assert selected["mode"] == mode
+    assert selected["area"] == {"x": 24, "y": 110, "width": 973, "height": 647}
+    assert probe.call_count == int(mode.startswith("edge-prose-"))
+    assert ("failure_observation" in selected) == mode.startswith("edge-prose-")
+    assert not (tmp_path / "frames.json").exists()
+    assert not (tmp_path / "restoration.json").exists()
+    target.move.assert_not_called()
+    target.frame.assert_not_called()

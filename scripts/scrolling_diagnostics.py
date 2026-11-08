@@ -63,7 +63,9 @@ _MAX_SCROLLBAR_CHILDREN = 64
 _MAX_SCROLLBAR_ANCESTORS = 8
 _TALL_EXPLORER_HEIGHT = 1000
 _SCALED_FIXTURE_DPI = 192
-_SCALED_FIXTURE_BORDER = 6
+_SCALED_FIXTURE_DPIS = (120, _SCALED_FIXTURE_DPI)
+_FIXTURE_CSS_BORDER = 3
+_FIXTURE_CSS_DPI = 96
 _FOCUSED_PANELS = ("edge-panel-focused-click", "edge-panel-focused-enter")
 _EXPLORER_STARTS = {
     "explorer-middle-click": 50.0,
@@ -106,7 +108,7 @@ def document(layout: str) -> str:
         "p{margin:0 0 1.1em;white-space:pre-line}"
         "section{height:385.5px;width:740.5px;margin:24px;"
         "max-width:calc(100% - 78px);max-height:calc(100vh - 206px);"
-        "border:3px solid #b1b5ba;padding:12px;overflow:scroll}"
+        f"border:{_FIXTURE_CSS_BORDER}px solid #b1b5ba;padding:12px;overflow:scroll}}"
         "section article{width:820px;max-width:none;margin:0}"
         "body>h1,body>p{margin-left:24px}.outside{height:800px}"
         "@media(max-height:500px){"
@@ -174,8 +176,10 @@ def _case(kind: str, output: Path, report: dict[str, object]) -> None:
         app._case(kind, output, report)
 
 
-def _scaled_fixture_ring_restored(first: QImage, after: QImage) -> bool:
-    """Prove this 192-DPI CSS fixture's original ring and exact complement.
+def _scaled_fixture_ring_restored(
+    first: QImage, after: QImage, *, dpi: int = _SCALED_FIXTURE_DPI
+) -> bool:
+    """Prove this supported-DPI CSS fixture's original ring and exact complement.
 
     This is a fixture-only color oracle, independent of production registration.
     The original 3 CSS pixel border is rectangular; focused corner antialiasing
@@ -183,7 +187,14 @@ def _scaled_fixture_ring_restored(first: QImage, after: QImage) -> bool:
     """
     gray = 0xFFB1B5BA
     width, height = first.width(), first.height()
-    if min(width, height) <= 2 * (_SCALED_FIXTURE_BORDER + 1):
+    # Round upward only for a conservative physical cap, never to select pixels.
+    # Actual side widths (3 pixels in the retained 120-DPI evidence) come below.
+    border = math.ceil(_FIXTURE_CSS_BORDER * dpi / _FIXTURE_CSS_DPI)
+    if (
+        dpi not in _SCALED_FIXTURE_DPIS
+        or first.size() != after.size()
+        or min(width, height) <= 2 * (border + 1)
+    ):
         return False
 
     def side(length: int, *, vertical: bool, reverse: bool) -> tuple[int, int]:
@@ -205,16 +216,13 @@ def _scaled_fixture_ring_restored(first: QImage, after: QImage) -> bool:
         if onset and any(color != pixel(0) for color in exterior):
             return 0, 0
         end = onset
-        while end <= onset + _SCALED_FIXTURE_BORDER and pixel(end) == gray:
+        while end <= onset + border and pixel(end) == gray:
             end += 1
         return onset, end
 
     left, right = (side(width, vertical=False, reverse=r) for r in (False, True))
     top, bottom = (side(height, vertical=True, reverse=r) for r in (False, True))
-    if any(
-        not 1 <= end - start <= _SCALED_FIXTURE_BORDER
-        for start, end in (left, right, top, bottom)
-    ):
+    if any(not 1 <= end - start <= border for start, end in (left, right, top, bottom)):
         return False
     for y in range(height):
         for x in range(width):
@@ -274,19 +282,10 @@ def _verify_restored(capture: app.AppCapture, after: QImage) -> None:
         if target_path.is_file()
         else {}
     )
-    native._require(
-        not (
-            capture.kind.startswith("edge-panel-")
-            and target.get("window_dpi") == target_dpi(125)
-        ),
-        "120-DPI panel restoration requires exact whole-frame pixels",
-    )
-    if (
-        capture.kind.startswith("edge-panel-")
-        and target.get("window_dpi") == _SCALED_FIXTURE_DPI
-    ):
+    dpi = target.get("window_dpi")
+    if capture.kind.startswith("edge-panel-") and dpi in _SCALED_FIXTURE_DPIS:
         native._require(
-            _scaled_fixture_ring_restored(first, after),
+            _scaled_fixture_ring_restored(first, after, dpi=dpi),
             "Restored content pixels differ beyond the original fixture border ring",
         )
         capture.report["restored_pixels"] = (
@@ -462,22 +461,27 @@ class HumanDesktop(Desktop):
 
 
 def _focused_panel_evidence(
-    before: QImage, first: QImage, second: QImage
+    before: QImage,
+    first: QImage,
+    second: QImage,
+    *,
+    dpi: int = _SCALED_FIXTURE_DPI,
 ) -> dict[str, object]:
     """Independently prove a changed original ring and unchanged focused sides."""
     native._require(
         not before.isNull()
         and before.size() == first.size() == second.size()
         and before != first
-        and _scaled_fixture_ring_restored(before, first),
+        and _scaled_fixture_ring_restored(before, first, dpi=dpi),
         "Focus setup did not change only the original fixture border ring",
     )
     gray = 0xFFB1B5BA
     width, height = first.width(), first.height()
     middle = range(height // 4, 3 * height // 4)
+    border = math.ceil(_FIXTURE_CSS_BORDER * dpi / _FIXTURE_CSS_DPI)
     sides = (
-        range(_SCALED_FIXTURE_BORDER + 1),
-        range(width - _SCALED_FIXTURE_BORDER - 1, width),
+        range(border + 1),
+        range(width - border - 1, width),
     )
     changed: list[list[int]] = []
     for columns in sides:
@@ -610,7 +614,15 @@ class EdgeFocusedCapture(app.AppCapture):
             "The actual first frame did not retain the focused "
             f"{expected_dpi}-DPI starting state",
         )
-        evidence = _focused_panel_evidence(before, first, second)
+        evidence = _focused_panel_evidence(
+            before,
+            first,
+            second,
+            # Preserve the prior 96-DPI focused-start check without extending it.
+            dpi=_SCALED_FIXTURE_DPI
+            if target["window_dpi"] == _FIXTURE_CSS_DPI
+            else target["window_dpi"],
+        )
         native._require(
             before.save(str(self.output / "focus-panel-before.png"))
             and focused.save(str(self.output / "focus-panel-after.png")),

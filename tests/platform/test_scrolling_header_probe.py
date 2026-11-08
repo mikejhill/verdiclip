@@ -375,3 +375,227 @@ def test_probe_native_signature_isolated_from_production(
             probe_getter(19, 2, c.byref(production._ScrollInfo()))
     assert calls == ["probe", "production", "probe", "production"]
     assert library.call_count == 2
+
+
+@pytest.fixture
+def ancestor_target() -> tuple[Mock, list[Mock], Mock]:
+    """Retain one selected provider plus two ancestors without any tree search."""
+    nodes = [Mock(spec=production._Interface) for _ in range(3)]
+    for node, role, handle in zip(
+        nodes, (50030, 50033, 50032), (None, 31, 17), strict=True
+    ):
+        node.control_type.return_value = role
+        node.native_handle.return_value = handle
+        node.bounds.return_value = Rect(24, 110, 973, 647)
+        node.offscreen.return_value = False
+    target = Mock(_element=nodes[0], _window=17, area=Rect(24, 110, 973, 647))
+    released = Mock()
+
+    def parent(node: Mock, owners: ExitStack) -> Mock:
+        assert node is not nodes[-1], "Never walk beyond the owned root"
+        owners.callback(released)
+        return nodes[nodes.index(node) + 1]
+
+    def process(_handle: int, pointer: c._CArgObject) -> int:
+        c.cast(pointer, c.POINTER(w.DWORD)).contents.value = 123
+        return 456
+
+    def client(_handle: int, pointer: c._CArgObject) -> bool:
+        rect = c.cast(pointer, c.POINTER(w.RECT)).contents
+        rect.right, rect.bottom = 1000, 760
+        return True
+
+    def screen(handle: int, pointer: c._CArgObject) -> bool:
+        point = c.cast(pointer, c.POINTER(w.POINT)).contents
+        point.x += handle
+        point.y += 20
+        return True
+
+    target._walker.parent.side_effect = parent
+    target._automation.same_element.side_effect = lambda first, last: first is last
+    target._user.IsWindow.return_value = True
+    target._user.IsWindowVisible.return_value = True
+    target._user.GetAncestor.return_value = 17
+    target._user.GetParent.side_effect = lambda handle: 17 if handle == 31 else 0
+    target._user.GetWindowThreadProcessId.side_effect = process
+    target._user.GetClientRect.side_effect = client
+    target._user.ClientToScreen.side_effect = screen
+    return target, nodes, released
+
+
+def test_ancestor_provenance_repeats_retained_links_without_content_boundary(
+    ancestor_target: tuple[Mock, list[Mock], Mock],
+) -> None:
+    """Raw roles/RECTs/client mappings do not establish a crop or content boundary."""
+    target, nodes, released = ancestor_target
+    guard = Mock()
+    receipt: dict[str, object] = {}
+    probe.probe_ancestors(target, receipt, guard)
+    assert receipt["semantic_boundary"] == "unavailable"
+    assert receipt["ancestor_node_limit"] == 8
+    assert receipt["ancestor_root_reached"] is True
+    assert (
+        receipt["ancestor_nodes"]
+        == receipt["ancestor_nodes_repeated"]
+        == [
+            {
+                "index": index,
+                "control_type": role,
+                "bounds": {"x": 24, "y": 110, "width": 973, "height": 647},
+                "native_handle": handle,
+                "offscreen": False,
+                "native_client": None
+                if handle is None
+                else {
+                    "x": handle,
+                    "y": 20,
+                    "width": 1000,
+                    "height": 760,
+                },
+                **(
+                    {}
+                    if handle is None
+                    else {
+                        "native": {
+                            "valid": True,
+                            "root": 17,
+                            "pid": 123,
+                            "thread": 456,
+                            "parent": 17 if handle == 31 else 0,
+                            "visible": True,
+                        }
+                    }
+                ),
+            }
+            for index, (role, handle) in enumerate(
+                zip((50030, 50033, 50032), (None, 31, 17), strict=True)
+            )
+        ]
+    )
+    assert receipt["ancestor_parent_links"] == [
+        {"child": 0, "parent": 1, "same_identity": True},
+        {"child": 1, "parent": 2, "same_identity": True},
+    ]
+    assert target._element is nodes[0]
+    assert target.area == Rect(24, 110, 973, 647)
+    assert target._walker.parent.call_count == released.call_count == 4
+    assert target._automation.same_element.call_count == 2
+    assert target._user.GetClientRect.call_count == 4
+    assert target._user.ClientToScreen.call_count == 8
+    target._walker.relative.assert_not_called()
+    target._automation.pointer_result.assert_not_called()
+    target.move.assert_not_called()
+    target.frame.assert_not_called()
+    guard.assert_called()
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "role",
+        "rect",
+        "visibility",
+        "handle",
+        "parent-identity",
+        "native-parent",
+        "pid",
+        "client",
+        "outside-root",
+        "dead-window",
+        "missing-parent",
+        "guard",
+    ],
+)
+def test_ancestor_partial_reads_release_references_and_cannot_verify_changed_state(
+    ancestor_target: tuple[Mock, list[Mock], Mock],
+    change: str,
+) -> None:
+    """Metadata coincidence never replaces UIA identity or actual native ownership."""
+    target, nodes, released = ancestor_target
+    guard = Mock()
+    if change == "role":
+        nodes[0].control_type.side_effect = [50030, 50033]
+    elif change == "rect":
+        nodes[0].bounds.side_effect = [Rect(24, 110, 973, 647), Rect(24, 111, 973, 647)]
+    elif change == "visibility":
+        nodes[0].offscreen.side_effect = [False, True]
+    elif change == "handle":
+        nodes[0].native_handle.side_effect = [None, 31]
+    elif change == "parent-identity":
+        target._automation.same_element.return_value = False
+        target._automation.same_element.side_effect = None
+    elif change == "missing-parent":
+        target._walker.parent.side_effect = None
+        target._walker.parent.return_value = None
+    elif change == "guard":
+        guard.side_effect = [None] * 6 + [CaptureError("Budget or input changed")]
+    else:
+        _change_ancestor_native(target, change)
+    receipt: dict[str, object] = {}
+    with pytest.raises(CaptureError):
+        probe.probe_ancestors(target, receipt, guard)
+    assert receipt["semantic_boundary"] == "unavailable"
+    assert "status" not in receipt
+    assert released.call_count == (
+        0 if change == "missing-parent" else target._walker.parent.call_count
+    )
+    target.move.assert_not_called()
+    target.frame.assert_not_called()
+    target._walker.relative.assert_not_called()
+    if change in ("outside-root", "dead-window"):
+        target._user.GetClientRect.assert_not_called()
+
+
+def _change_ancestor_native(target: Mock, change: str) -> None:
+    if change == "native-parent":
+        target._user.GetParent.side_effect = [17, 0, 19]
+    elif change == "pid":
+        original = target._user.GetWindowThreadProcessId.side_effect
+
+        def changed_process(handle: int, pointer: c._CArgObject) -> int:
+            result = original(handle, pointer)
+            if target._user.GetWindowThreadProcessId.call_count > 2:
+                c.cast(pointer, c.POINTER(w.DWORD)).contents.value = 987
+            assert isinstance(result, int)
+            return result
+
+        target._user.GetWindowThreadProcessId.side_effect = changed_process
+    elif change == "client":
+        original = target._user.GetClientRect.side_effect
+
+        def changed_client(handle: int, pointer: c._CArgObject) -> bool:
+            result = original(handle, pointer)
+            if target._user.GetClientRect.call_count > 2:
+                c.cast(pointer, c.POINTER(w.RECT)).contents.right += 1
+            assert isinstance(result, bool)
+            return result
+
+        target._user.GetClientRect.side_effect = changed_client
+    elif change == "outside-root":
+        target._user.GetAncestor.return_value = 99
+    else:
+        target._user.IsWindow.return_value = False
+
+
+def test_ancestor_limit_retains_no_more_than_seven_parents(
+    ancestor_target: tuple[Mock, list[Mock], Mock],
+) -> None:
+    """A missing owned root reports partial evidence without searching farther."""
+    target, nodes, released = ancestor_target
+    nodes[1].native_handle.return_value = None
+
+    def repeated_parent(_node: Mock, owners: ExitStack) -> Mock:
+        owners.callback(released)
+        return nodes[1]
+
+    target._walker.parent.side_effect = repeated_parent
+    receipt: dict[str, object] = {}
+    with pytest.raises(CaptureError, match="node limit"):
+        probe.probe_ancestors(target, receipt, Mock())
+    assert receipt["ancestor_root_reached"] is False
+    assert target._walker.parent.call_count == released.call_count == 7
+    rows = receipt["ancestor_nodes"]
+    assert isinstance(rows, list)
+    assert len(rows) == 8
+    assert receipt["ancestor_nodes_repeated"] == []
+    target._user.GetClientRect.assert_not_called()

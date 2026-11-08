@@ -251,6 +251,50 @@ class ListItemWitness:
                     anchors.append(_Anchor(element, anchor.bounds))
                 self._retained, self._anchors = retained.pop_all(), anchors
 
+    def observe_retained(
+        self, position: ScrollPosition, *, deadline: float
+    ) -> dict[str, object]:
+        """Read the existing pair only; never accept, replace or advance its lineage.
+
+        This failure-only receipt allows differing raw geometry/displacements.
+        Identity, visible hit areas and parent checks remain mandatory. The
+        caller owns one shared soft read budget, not a new capture deadline.
+        """
+        previous_deadline, self._deadline = self._deadline, deadline
+        try:
+            self._budget()
+            self.target.check()
+            if (
+                self.target.position() != position
+                or position.horizontal != self._horizontal
+                or not self._index
+                or len(self._anchors) != _PAIR_SIZE
+            ):
+                raise CaptureError("No unchanged retained pair for failure evidence")
+            items = []
+            for anchor in self._anchors:
+                current = self._visible(anchor.element)
+                self._confirm(anchor.element, current)
+                visible = self._visible_bounds(current)
+                if visible is None:
+                    raise CaptureError("Failure item has no supported visible hit area")
+                items.append(
+                    {
+                        "retained": asdict(anchor.bounds),
+                        "observed": asdict(current),
+                        "visible_observed": asdict(visible),
+                        "same_identity": True,
+                        "same_parent": True,
+                    }
+                )
+            if self.target.position() != position:
+                raise CaptureError("The panel moved during retained failure evidence")
+            self.target.check()
+            self._budget()
+            return {"retained_from_frame": self._index - 1, "items": items}
+        finally:
+            self._deadline = previous_deadline
+
     def observe(self, position: ScrollPosition) -> dict[str, object]:
         """Verify prior anchors, then retain the next pair unless at the final frame."""
         self._deadline = time.monotonic() + _SECONDS

@@ -22,11 +22,17 @@ from dataclasses import asdict, dataclass
 from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import cast
 from unittest.mock import patch
 
 from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer
 from PySide6.QtGui import QImage
-from scripts.scrolling_header_probe import probe_target, scroll_info, window_dpi
+from scripts.scrolling_header_probe import (
+    probe_ancestors,
+    probe_target,
+    scroll_info,
+    window_dpi,
+)
 from scripts.scrolling_item_witness import ListItemWitness
 
 from verdiclip.capture.grabber import MssScreenSource
@@ -59,6 +65,8 @@ _BLUE = 160
 # Shared scheduling/acceptance deadline, not a preemptive filesystem timeout.
 # The workflow owns the outer bound if a synchronous cleanup call stalls.
 _CLEANUP_SECONDS = 20.0
+_FAILURE_READ_SECONDS = 1.0
+_NATIVE_CONTROL_BAR = 2
 _SHARING_VIOLATION = 32
 _REPRESENTATIVE_PREFIXES = (
     "edge-prose-",
@@ -314,10 +322,164 @@ def _record_failure_position(target: ScrollTarget, selected: dict[str, object]) 
         target.check()
         observed = asdict(target.position())
         target.check()
-    except (CaptureError, OSError) as error:
+    except Exception as error:  # noqa: BLE001 - diagnostics cannot replace failure
         selected["final_observation_error"] = str(error)
     else:
         selected["final_observed_position"] = observed
+
+
+def _failure_guard(
+    target: ScrollTarget, position: ScrollPosition, deadline: float
+) -> None:
+    """Bound optional reads between calls while keeping all retained guards."""
+    if time.monotonic() >= deadline:
+        raise CaptureError("Failure observation exceeded its soft read budget")
+    target.check()
+    if target.position() != position:
+        raise CaptureError("The panel moved during failure observation")
+    target.check()
+    if time.monotonic() >= deadline:
+        raise CaptureError("Failure observation exceeded its soft read budget")
+
+
+def _failure_native_identity(rows: list[dict[str, object]], original: object) -> None:
+    """Require the original native owners, not merely two equal recycled HWNDs."""
+    keys = ("native_handle", "bar", "parent", "root", "pid")
+    required = [row for row in rows if row.get("bar") == _NATIVE_CONTROL_BAR]
+    if (
+        not isinstance(original, list)
+        or len(rows) != len(original)
+        or not rows
+        or not required
+        or any(row.get("success") is not True for row in required)
+        or any(
+            not isinstance(before, dict)
+            or any(row.get(key) != before.get(key) for key in keys)
+            or row.get("window_valid") is not True
+            or row.get("root_matches") is not True
+            for row, before in zip(rows, original, strict=True)
+        )
+    ):
+        raise CaptureError("Failure native identity is unavailable or changed")
+
+
+def _failure_snapshot(
+    evidence: ListItemWitness, receipt: dict[str, object], output: Path
+) -> None:
+    """Two fixed read passes, never discovery, settling, restoration or acceptance.
+
+    At most two viewport images, two retained-pair reads and four native batches
+    (each native pass independently repeats identity/scalars). The soft budget
+    cannot preempt a synchronous read; the existing process bound still applies.
+    Partial fields/files are unverified unless the final snapshot status is set.
+    """
+    target = evidence.target
+    deadline = time.monotonic() + _FAILURE_READ_SECONDS
+    target.check()
+    position = target.position()
+    _failure_guard(target, position, deadline)
+    receipt["position"] = asdict(position)
+    frame = target.frame()
+    if (
+        frame.isNull()
+        or frame.width() != target.area.width
+        or frame.height() != target.area.height
+        or frame.width() * frame.height() > MAX_PIXELS
+    ):
+        raise CaptureError("Failure observation has unsupported viewport pixels")
+    _failure_guard(target, position, deadline)
+    if not frame.save(str(output / "failure-observation.png")):
+        raise OSError("Could not save the unaccepted failure observation")
+    receipt["pixels"] = {
+        "file": "failure-observation.png",
+        "width": frame.width(),
+        "height": frame.height(),
+    }
+    receipt["native_before"] = _restoration_native(target, evidence.geometry)
+    _failure_native_identity(receipt["native_before"], receipt["initial_native"])
+    _failure_guard(target, position, deadline)
+    receipt["items_before"] = evidence.observe_retained(position, deadline=deadline)
+    _failure_guard(target, position, deadline)
+    repeated = target.frame()
+    receipt["pixels_equal"] = frame == repeated
+    _failure_guard(target, position, deadline)
+    receipt["items_after"] = evidence.observe_retained(position, deadline=deadline)
+    _failure_guard(target, position, deadline)
+    receipt["native_after"] = _restoration_native(target, evidence.geometry)
+    _failure_guard(target, position, deadline)
+    if (
+        not receipt["pixels_equal"]
+        or receipt["native_before"] != receipt["native_after"]
+        or receipt["items_before"] != receipt["items_after"]
+    ):
+        raise CaptureError("Failure observation changed between repeated reads")
+    receipt["status"] = "stable_read_only_snapshot"
+
+
+def _failure_ancestor_snapshot(
+    target: UiaScrollTarget, receipt: dict[str, object]
+) -> None:
+    """Guard only numeric ancestry provenance, never selected capture geometry."""
+    deadline = time.monotonic() + _FAILURE_READ_SECONDS
+    target.check()
+    position = target.position()
+    receipt["position"] = asdict(position)
+    receipt["scope"] = "selected_provider_ancestor_provenance"
+    try:
+        probe_ancestors(
+            target, receipt, lambda: _failure_guard(target, position, deadline)
+        )
+    except Exception as error:
+        receipt["ancestor_read_error"] = f"{type(error).__name__}: {error}"
+        raise
+    finally:
+        _failure_guard(target, position, deadline)
+    receipt["status"] = "stable_read_only_snapshot"
+
+
+def _record_failure_evidence(
+    target: ScrollTarget,
+    result: ScrollResult,
+    selected: dict[str, object],
+    output: Path,
+    evidence: ListItemWitness | None,
+) -> None:
+    """Keep optional post-result evidence separate from every accepted frame.
+
+    This is not the instant of the failed call: the original transaction may
+    already have attempted restoration. Neither stability nor raw geometry gives
+    this receipt any capture, displacement or restoration authority.
+    """
+    _record_failure_position(target, selected)
+    if evidence is None and not str(selected.get("mode", "")).startswith("edge-prose-"):
+        return
+    receipt: dict[str, object] = {
+        "accepted": False,
+        "product_capture_qualification": False,
+        "phase": "after_transaction",
+        "original_result": {
+            "message": result.message,
+            "restoration": result.restoration,
+            "frames": result.frames,
+            "has_image": result.image is not None,
+        },
+        "status": "unavailable",
+        "initial_native": selected.get("initial_native"),
+    }
+    selected["failure_observation"] = receipt
+    if "final_observation_error" in selected:
+        receipt["error"] = selected["final_observation_error"]
+        return
+    if evidence is not None and evidence.target is not target:
+        receipt["error"] = "Failure evidence target was not retained"
+        return
+    try:
+        if evidence is None:
+            _failure_ancestor_snapshot(cast("UiaScrollTarget", target), receipt)
+        else:
+            _failure_snapshot(evidence, receipt, output)
+    except Exception as error:  # noqa: BLE001 - preserve the original failed result
+        receipt["error"] = f"{type(error).__name__}: {error}"
 
 
 def _record_terminal_position(
@@ -329,7 +491,8 @@ def _record_terminal_position(
 ) -> None:
     """Observe terminal metadata without changing the transaction's outcome."""
     if result.image is None:
-        _record_failure_position(target, selected)
+        _record_failure_evidence(target, result, selected, output, evidence)
+        return
     if result.restoration == "restored":
         target.check()
         final = asdict(target.position())
@@ -589,6 +752,7 @@ def _trace_helper() -> None:
         nonlocal evidence
         opening(target, point, window=window, input_tick=input_tick)
         selected.update(
+            mode=mode,
             window=target._window,
             input_tick=target._input_tick,
             area=asdict(target.area),

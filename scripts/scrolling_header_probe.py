@@ -22,6 +22,7 @@ import ctypes as c
 import ctypes.wintypes as w
 import time
 from collections import deque
+from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import asdict
 from typing import cast
@@ -33,6 +34,7 @@ from verdiclip.platform.scrolling import UiaScrollTarget, _Guid, _Interface
 _MAX_NODES = 256
 _MAX_DEPTH = 2
 _MAX_SECONDS = 2.0
+_FAILURE_ANCESTOR_NODES = 8
 _HEADER = 50034
 _HEADER_ITEM = 50035
 _SCROLLBAR = 50014
@@ -195,6 +197,11 @@ def _native_client(target: UiaScrollTarget) -> dict[str, object] | None:
     handle = target._native_handle
     if handle is None:
         return None
+    return _mapped_client(target, handle)
+
+
+def _mapped_client(target: UiaScrollTarget, handle: int) -> dict[str, object]:
+    """Use the existing typed Win32 bindings without changing any signatures."""
     bounds = w.RECT()
     if not target._user.GetClientRect(handle, c.byref(bounds)):
         raise CaptureError("Header probe could not read the native client rectangle")
@@ -250,3 +257,93 @@ def probe_target(target: UiaScrollTarget) -> dict[str, object]:
         result["scroll_info"] = scroll_info(target, result)
     target.check()
     return result
+
+
+def _append_ancestor(
+    target: UiaScrollTarget, element: _Interface, rows: list[dict[str, object]]
+) -> dict[str, object]:
+    """Append numeric raw metadata before any optional native client read."""
+    row: dict[str, object] = {
+        "index": len(rows),
+        "control_type": element.control_type(),
+        "bounds": asdict(element.bounds()),
+        "native_handle": element.native_handle(),
+        "offscreen": element.offscreen(),
+        "native_client": None,
+    }
+    rows.append(row)
+    handle = row["native_handle"]
+    if handle is None:
+        return row
+    pid = w.DWORD()
+    valid = bool(target._user.IsWindow(handle))
+    root = int(target._user.GetAncestor(handle, 2) or 0) if valid else 0
+    thread = int(target._user.GetWindowThreadProcessId(handle, c.byref(pid)))
+    row["native"] = {
+        "valid": valid,
+        "root": root,
+        "pid": int(pid.value),
+        "thread": thread,
+        "parent": int(target._user.GetParent(handle) or 0),
+        "visible": bool(target._user.IsWindowVisible(handle)),
+    }
+    if not valid or root != target._window or not pid.value or not thread:
+        raise CaptureError("Failure ancestor has no verified same-root native owner")
+    row["native_client"] = _mapped_client(target, handle)["bounds"]
+    return row
+
+
+def probe_ancestors(
+    target: UiaScrollTarget,
+    receipt: dict[str, object],
+    guard: Callable[[], None],
+) -> None:
+    """Repeat selected-provider ancestry only, never search or infer a boundary.
+
+    Retain at most seven raw parents until both passes complete. Every parent
+    link uses fresh CompareElements evidence; HWND/client scalars are repeated.
+    The caller supplies its existing shared soft budget and final guard.
+    """
+    rows: list[dict[str, object]] = []
+    repeated: list[dict[str, object]] = []
+    links: list[dict[str, object]] = []
+    receipt.update(
+        semantic_boundary="unavailable",
+        ancestor_node_limit=_FAILURE_ANCESTOR_NODES,
+        ancestor_nodes=rows,
+        ancestor_nodes_repeated=repeated,
+        ancestor_parent_links=links,
+        ancestor_root_reached=False,
+    )
+    guard()
+    with ExitStack() as owners:
+        elements = [target._element]
+        for index in range(_FAILURE_ANCESTOR_NODES):
+            guard()
+            row = _append_ancestor(target, elements[-1], rows)
+            if row["native_handle"] == target._window:
+                receipt["ancestor_root_reached"] = True
+                break
+            if index + 1 == _FAILURE_ANCESTOR_NODES:
+                raise CaptureError("Failure ancestor chain exceeded its node limit")
+            guard()
+            parent = target._walker.parent(elements[-1], owners)
+            if parent is None:
+                raise CaptureError("Failure ancestor chain ended before the owned root")
+            elements.append(parent)
+            links.append({"child": index, "parent": index + 1, "same_identity": False})
+        for index, element in enumerate(elements):
+            guard()
+            row = _append_ancestor(target, element, repeated)
+            if row != rows[index]:
+                raise CaptureError("Failure ancestor metadata changed between reads")
+            if index < len(links):
+                guard()
+                with ExitStack() as temporary:
+                    parent = target._walker.parent(element, temporary)
+                    if parent is None or not target._automation.same_element(
+                        parent, elements[index + 1]
+                    ):
+                        raise CaptureError("Failure ancestor parent identity changed")
+                links[index]["same_identity"] = True
+        guard()
