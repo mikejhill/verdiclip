@@ -25,6 +25,7 @@ from verdiclip.capture.grabber import MssScreenSource
 from verdiclip.capture.scrolling import END_PERCENT, ScrollPosition
 from verdiclip.exceptions import CaptureError
 from verdiclip.geometry import Point, Rect
+from verdiclip.platform.windows import WindowInfo, WindowLocator
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +145,46 @@ class _Interface:
         return Rect.from_points(
             Point(native.left, native.top), Point(native.right, native.bottom)
         )
+
+
+class ScrollSelectionState:
+    """Read only native selection state, without entering COM on the GUI thread."""
+
+    def __init__(self) -> None:
+        if sys.platform != "win32":
+            raise CaptureError("Scrolling capture requires Windows")
+        self._user = c.WinDLL("user32", use_last_error=True)
+        signatures = {
+            "GetLastInputInfo": ((c.POINTER(_LastInput),), w.BOOL),
+            "GetForegroundWindow": ((), w.HWND),
+            "WindowFromPoint": ((w.POINT,), w.HWND),
+            "GetAncestor": ((w.HWND, w.UINT), w.HWND),
+        }
+        for name, (arguments, result) in signatures.items():
+            function = getattr(self._user, name)
+            function.argtypes, function.restype = arguments, result
+
+    @staticmethod
+    def windows() -> list[WindowInfo]:
+        """Snapshot normal top-level selection targets before showing overlays."""
+        return WindowLocator().visible_windows()
+
+    def tick(self) -> int:
+        """Read the latest Windows input tick, including the completed release."""
+        info = _LastInput(c.sizeof(_LastInput), 0)
+        if not self._user.GetLastInputInfo(c.byref(info)):
+            raise CaptureError("Could not observe user input")
+        return int(info.tick)
+
+    def check(self, point: Point, window: int, tick: int) -> None:
+        """Require the same selected root and input after our selectors close."""
+        hit = self._user.WindowFromPoint(w.POINT(round(point.x), round(point.y)))
+        if (
+            self.tick() != tick
+            or self._user.GetForegroundWindow() != window
+            or self._user.GetAncestor(hit, 2) != window
+        ):
+            raise CaptureError("The selected window or mouse/keyboard input changed")
 
 
 class UiaScrollTarget:

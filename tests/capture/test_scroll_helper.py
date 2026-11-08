@@ -287,3 +287,64 @@ def test_launch_retains_the_selected_window_and_release_input(
     ]
     start.assert_called_once()
     helper._complete(ScrollResult(None, "Not launched in this test", "unchanged", 0))
+
+
+def test_shutdown_retires_a_live_owned_child_once(
+    qtbot: QtBot, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Teardown confirms real process exit before cleanup and withholds all pixels."""
+    directories = program(monkeypatch, "import time; time.sleep(60)")
+    helper = ScrollHelper()
+    results: list[ScrollResult] = []
+    helper.finished.connect(results.append)
+    helper.start(Point(10, 20), window=45, input_tick=67)
+    assert helper._process.waitForStarted(1000)
+    helper.shutdown()
+    qtbot.waitUntil(lambda: len(results) == 1)
+    helper.shutdown()
+    assert len(results) == 1
+    assert results[0].image is None
+    assert helper._process.state() == QProcess.ProcessState.NotRunning
+    assert all(not directory.exists() for directory in directories)
+
+
+@pytest.mark.parametrize("raced_exit", [False, True])
+def test_shutdown_requires_confirmed_exit_before_releasing_scratch(
+    monkeypatch: pytest.MonkeyPatch, *, raced_exit: bool
+) -> None:
+    """A refused kill retains ownership; an observed raced exit permits cleanup."""
+    program(monkeypatch, "print('{}')")
+    monkeypatch.setattr(QProcess, "start", Mock())
+    helper = ScrollHelper()
+    results: list[ScrollResult] = []
+    helper.finished.connect(results.append)
+    helper.start(Point(10, 20), window=45, input_tick=67)
+    assert helper._directory is not None
+    directory = Path(helper._directory.name)
+    process = helper._process
+    state = Mock(
+        side_effect=[
+            QProcess.ProcessState.Running,
+            QProcess.ProcessState.NotRunning
+            if raced_exit
+            else QProcess.ProcessState.Running,
+        ]
+    )
+    monkeypatch.setattr(process, "state", state)
+    monkeypatch.setattr(process, "kill", Mock())
+    monkeypatch.setattr(process, "waitForFinished", Mock(return_value=False))
+    if raced_exit:
+        helper.shutdown()
+    else:
+        with pytest.raises(CaptureError, match="has not stopped"):
+            helper.shutdown()
+        assert directory.exists()
+        assert not results
+        assert not helper._terminal
+        monkeypatch.setattr(
+            process, "state", Mock(return_value=QProcess.ProcessState.NotRunning)
+        )
+        helper.shutdown()
+    assert len(results) == 1
+    assert results[0].image is None
+    assert not directory.exists()

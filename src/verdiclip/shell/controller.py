@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 from verdiclip import APP_NAME, DOCS_URL, VERSION
 from verdiclip.capture.grabber import ScreenSource
 from verdiclip.capture.models import Capture
+from verdiclip.capture.scroll_selection import ScrollingCapture, ScrollSelection
 from verdiclip.capture.service import CaptureService, WindowSource
 from verdiclip.document.admission import CaptureProvenance
 from verdiclip.document.document import Document
@@ -94,6 +95,15 @@ class AppController(QObject):
         self._capture = CaptureService(
             screens, windows, show_magnifier=self._settings.capture.show_magnifier
         )
+        self._scrolling = ScrollSelection(screens, hotkeys)
+        self._pending_capture: tuple[str, bool] | None = None
+        self._capture_handoff = QTimer(self)
+        self._capture_handoff.setSingleShot(True)
+        self._capture_handoff.timeout.connect(self._resume_capture)
+        self._closing = self._hotkeys_paused = self._hotkey_refresh_pending = False
+        self._scrolling.captured.connect(self._on_scrolled)
+        self._scrolling.failed.connect(self._on_scroll_failed)
+        self._scrolling.finished.connect(self._after_scrolling)
         self._editors: list[EditorWindow] = []
         self._workspace = Workspace()
         self._workspace.window_added.connect(self._wire_editor)
@@ -179,6 +189,10 @@ class AppController(QObject):
             self._update_status.hide()
             self._update_status.deleteLater()
             self._update_status = None
+        self._closing = True
+        self._pending_capture = None
+        self._capture_handoff.stop()
+        self._scrolling.shutdown()
         self._capture.cancel()
         self._workspace.cancel_drag()
         self._hotkeys.close()
@@ -198,7 +212,15 @@ class AppController(QObject):
     # Capture entry points
 
     def _on_hotkey(self, action: str) -> None:
-        """Dispatch a global hotkey."""
+        """Dispatch configured shortcuts through one capture owner."""
+        if action == "scrolling":
+            self.capture_scrolling()
+        else:
+            self._request_capture(action, freeze_first=True)
+
+    def _request_capture(self, action: str, *, freeze_first: bool = False) -> None:
+        if self._closing:
+            return
         handlers = {
             "region": self._capture.capture_region,
             "window": self._capture.capture_active_window,
@@ -206,12 +228,72 @@ class AppController(QObject):
             "repeat": self._capture.repeat_last,
         }
         handler = handlers.get(action)
-        if handler is not None:
-            self._workspace.cancel_drag()
-            handler(freeze_first=True)
+        if handler is None:
+            return
+        self._capture_handoff.stop()
+        if self._scrolling.busy:
+            self._pending_capture = action, freeze_first
+            self._scrolling.cancel()
+            return
+        self._pending_capture = None
+        self._workspace.cancel_drag()
+        handler(freeze_first=freeze_first)
+
+    def capture_scrolling(self) -> None:
+        """Choose one scrolling area; a second request cancels the active one."""
+        self._pending_capture = None
+        self._capture_handoff.stop()
+        if self._scrolling.busy:
+            self._scrolling.cancel()
+            return
+        self._capture.cancel()
+        self._workspace.cancel_drag()
+        self._scrolling.capture()
+
+    def _after_scrolling(self) -> None:
+        if self._closing:
+            return
+        if self._hotkeys_paused:
+            self._hotkeys.unregister_all()
+        elif self._hotkey_refresh_pending:
+            self._hotkey_refresh_pending = False
+            self._apply_hotkeys(report=False)
+        if self._pending_capture is not None:
+            self._capture_handoff.start(0)
+
+    def _resume_capture(self) -> None:
+        pending, self._pending_capture = self._pending_capture, None
+        if pending is None or self._closing:
+            return
+        action, freeze_first = pending
+        if action == "settings":
+            self.show_settings()
+        elif action == "update":
+            self.install_update(manual=True)
+        else:
+            self._request_capture(action, freeze_first=freeze_first)
+
+    def _on_scroll_failed(self, message: str) -> None:
+        if not self._closing and self._pending_capture is None:
+            self._notify("Scrolling capture stopped", message, warning=True)
+
+    def _on_scrolled(self, capture: ScrollingCapture) -> None:
+        delivered = self._deliver_capture(capture)
+        if delivered and capture.warning:
+            self._notify("Scrolling capture finished", capture.warning, warning=True)
 
     def _on_captured(self, capture: Capture) -> None:
-        """Run every enabled after-capture action (UX-CAP-11..13)."""
+        """Deliver an ordinary capture without changing its Repeat semantics."""
+        self._deliver_capture(capture)
+
+    def _deliver_capture(self, capture: Capture | ScrollingCapture) -> bool:
+        """Deliver once; retain error/recovery precedence over cleanup warnings."""
+        warning = (
+            f"\n{capture.warning}"
+            if isinstance(capture, ScrollingCapture) and capture.warning
+            else ""
+        )
+        delivery_ok = True
         actions = self._settings.capture
         delivery = ImageDelivery(self._settings.output)
         saved: Path | None = None
@@ -230,13 +312,16 @@ class AppController(QObject):
                 copied = True
                 done.append("Copied to clipboard")
         except AppError as err:
-            self._notify("Could not deliver the capture", str(err), warning=True)
+            delivery_ok = False
+            self._notify(
+                "Could not deliver the capture", str(err) + warning, warning=True
+            )
         if actions.open_editor or not actions.has_action:
             options = EditorOptions(
                 title=capture.title,
                 source_path=saved,
                 confirm_close=self._settings.editor.confirm_unsaved_close,
-                provenance=CaptureProvenance.from_capture(capture),
+                provenance=CaptureProvenance.create(capture.title, capture.taken_at),
             )
             try:
                 self._open_document(
@@ -254,20 +339,21 @@ class AppController(QObject):
                     self._notify(
                         "Editor work retained",
                         "The screenshot could not be shown. "
-                        "Click to recover retained tabs.",
+                        "Click to recover retained tabs." + warning,
                         warning=True,
                         on_click=self._recover_editor_work,
                     )
                 else:
                     self._notify(
                         "Could not open the capture",
-                        "The editor could not accept the screenshot.",
+                        "The editor could not accept the screenshot." + warning,
                         warning=True,
                     )
-                return  # Keep the recovery action; never repeat save/copy delivery.
-        if done:
+                return False  # Keep recovery; never repeat save/copy delivery.
+        if done and delivery_ok:
             hint = "\nClick to open the folder." if saved is not None else ""
             self._notify("Screenshot captured", "\n".join(done) + hint)
+        return delivery_ok
 
     def _recover_editor_work(self) -> None:
         """Retry retained views only, never repeat capture or output delivery."""
@@ -364,16 +450,17 @@ class AppController(QObject):
     def _tray_commands(self) -> TrayCommands:
         """Return the callbacks for the tray menu."""
         return TrayCommands(
-            capture_region=self._capture.capture_region,
-            capture_window=self._capture.capture_active_window,
-            capture_fullscreen=self._capture.capture_fullscreen,
-            repeat_last=self._capture.repeat_last,
+            capture_region=lambda: self._request_capture("region"),
+            capture_window=lambda: self._request_capture("window"),
+            capture_fullscreen=lambda: self._request_capture("fullscreen"),
+            repeat_last=lambda: self._request_capture("repeat"),
             open_image=self._ask_open_image,
             open_folder=self.open_screenshots_folder,
             settings=self.show_settings,
             about=self._show_about,
             exit=self.request_exit,
             update=self.check_for_updates if self._updater is not None else None,
+            capture_scrolling=self.capture_scrolling,
         )
 
     def _ask_open_image(self) -> None:
@@ -399,6 +486,10 @@ class AppController(QObject):
 
     def show_settings(self, parent: QWidget | None = None) -> None:
         """Edit and apply settings, from the tray or an editor (UX-TRY-04)."""
+        if self._scrolling.busy:
+            self._pending_capture = "settings", False
+            self._scrolling.cancel()
+            return
         dialog = SettingsDialog(self._settings, parent, key_capture=self._key_capture)
         dialog.setWindowIcon(self._icon)
         dialog.make_default_requested.connect(self.make_default_image_app)
@@ -459,6 +550,13 @@ class AppController(QObject):
     def request_exit(self) -> None:
         """Close editors (each may ask about unsaved work), then quit."""
         if self._close_editors():
+            try:
+                self._scrolling.shutdown()
+            except AppError as error:
+                self._notify(
+                    "Could not stop scrolling capture", str(error), warning=True
+                )
+                return
             QApplication.quit()
 
     # Updates
@@ -530,7 +628,7 @@ class AppController(QObject):
         about unsaved work; an automatic one only runs with none open.
         """
         updater = self._updater
-        if updater is None:
+        if updater is None or self._defer_scroll_update(manual=manual):
             return
         if not manual and self._defer_automatic_install():
             return
@@ -547,7 +645,8 @@ class AppController(QObject):
                 )
             return
         if manual:
-            if not self._close_editors():
+            # Preparation or editor-close prompts can admit a new capture.
+            if not self._close_editors() or self._defer_scroll_update(manual=True):
                 return
         elif self._defer_automatic_install():
             # Preparation can synchronously admit new work or show application UI.
@@ -635,11 +734,19 @@ class AppController(QObject):
             )
             self._notify("Could not check for updates", reason, warning=True)
 
+    def _defer_scroll_update(self, *, manual: bool) -> bool:
+        if not manual or not self._scrolling.busy:
+            return False
+        self._pending_capture = "update", False
+        self._scrolling.cancel()
+        return True
+
     def _defer_automatic_install(self) -> bool:
         """Keep background updates away from retained work and visible UI."""
         busy = (
             self._workspace.has_work
             or self._capture.is_selecting
+            or self._scrolling.busy
             or any(widget.isVisible() for widget in QApplication.topLevelWidgets())
         )
         if busy:
@@ -666,13 +773,22 @@ class AppController(QObject):
 
     def _pause_hotkeys(self, paused: bool) -> None:  # noqa: FBT001 - Qt signal
         """Release hotkeys while Settings records one, so the keys reach it."""
-        if paused:
+        self._hotkeys_paused = paused
+        if self._scrolling.busy:
+            self._hotkey_refresh_pending = True
+            self._scrolling.cancel()
+        elif paused:
             self._hotkeys.unregister_all()
         else:
             self._apply_hotkeys(report=False)
 
     def _apply_hotkeys(self, *, report: bool = True) -> None:
         """Register configured hotkeys and report any that are taken (UX-CAP-10)."""
+        if self._scrolling.busy:
+            self._hotkey_refresh_pending = True
+            self._scrolling.cancel()
+            return
+        self._hotkey_refresh_pending = False
         self._hotkeys.unregister_all()
         labels: dict[str, str] = {}
         problems: list[str] = []

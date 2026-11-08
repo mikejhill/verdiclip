@@ -18,4 +18,9 @@ class CaptureProvenance:
     @classmethod
     def from_capture(cls, capture: Capture) -> "CaptureProvenance":
         """Assign tab identity after the original capture lifecycle has completed."""
-        return cls(uuid4().hex, capture.title, capture.taken_at)
+        return cls.create(capture.title, capture.taken_at)
+
+    @classmethod
+    def create(cls, title: str, created_at: datetime) -> "CaptureProvenance":
+        """Assign completed-image identity without inventing a screen rectangle."""
+        return cls(uuid4().hex, title, created_at)

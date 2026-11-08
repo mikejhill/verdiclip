@@ -578,8 +578,8 @@ class TestHotkeysAndSettings:
         app.controller.tray.action("settings").trigger()
         qtbot.wait(0)
 
-        assert registered == 4
-        assert seen == [0, 4]
+        assert registered == 5
+        assert seen == [0, 5]
         assert recorded == ["PrtSc"]
         assert not app.controller.editors
         assert not app.controller.capture.is_selecting

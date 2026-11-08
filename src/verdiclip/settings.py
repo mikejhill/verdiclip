@@ -78,6 +78,7 @@ class HotkeySettings:
     window: str = "alt+print_screen"
     fullscreen: str = "ctrl+print_screen"
     repeat: str = "shift+print_screen"
+    scrolling: str = "ctrl+alt+print_screen"
 
 
 @dataclass(frozen=True, slots=True)

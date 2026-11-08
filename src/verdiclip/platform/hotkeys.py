@@ -298,6 +298,13 @@ class HotkeyService(QObject):
         action = self._actions.pop(identifier)
         self._registered.pop(action)
 
+    def unregister(self, action_id: str) -> None:
+        """Release one temporary action without disturbing other registrations."""
+        for identifier, action in list(self._actions.items()):
+            if action == action_id:
+                self._unregister(identifier)
+        self._failed.discard(action_id)
+
     def unregister_all(self) -> None:
         """Release every shortcut owned by this service."""
         for identifier in list(self._actions):

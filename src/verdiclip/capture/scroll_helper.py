@@ -79,6 +79,20 @@ class ScrollHelper(QObject):
         self._process.write(b"cancel\n")
         self._timer.start(_CANCEL_GRACE_MS)
 
+    def shutdown(self) -> None:
+        """Kill and retire the owned child before the application closes."""
+        if self._terminal:
+            return
+        self._cancelled = True
+        if self._process.state() != QProcess.ProcessState.NotRunning:
+            self._process.kill()
+            if (
+                not self._process.waitForFinished(1000)
+                and self._process.state() != QProcess.ProcessState.NotRunning
+            ):
+                raise CaptureError("The scrolling helper has not stopped")
+        self._complete(ScrollResult(None, "Scrolling capture stopped", "unknown", 0))
+
     def _timeout(self) -> None:
         self._cancelled = True
         self._timeout_message = (

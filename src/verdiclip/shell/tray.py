@@ -29,6 +29,7 @@ class TrayCommands:
     about: Callable[[], None]
     exit: Callable[[], None]
     update: Callable[[], None] | None = None  # None: no update entry
+    capture_scrolling: Callable[[], None] | None = None
 
 
 class TrayIcon(QSystemTrayIcon):
@@ -86,11 +87,17 @@ class TrayIcon(QSystemTrayIcon):
             "Checking for updates..." if self._update_checking else self._update_label
         )
         update = [("update", label, check)] if check is not None else []
+        scrolling = (
+            [("scrolling", "Capture scrolling area", c.capture_scrolling)]
+            if c.capture_scrolling is not None
+            else []
+        )
         entries: list[tuple[str, str, Callable[[], None]] | None] = [
             ("region", "Capture region or window", c.capture_region),
             ("window", "Capture active window", c.capture_window),
             ("fullscreen", "Capture full screen", c.capture_fullscreen),
             ("repeat", "Repeat last capture", c.repeat_last),
+            *scrolling,
             None,
             ("open", "Open image…", c.open_image),
             ("folder", "Open screenshots folder", c.open_folder),

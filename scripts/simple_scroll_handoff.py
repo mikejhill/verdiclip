@@ -13,10 +13,9 @@ import os
 from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
-from typing import override
 
-from PySide6.QtCore import QEventLoop, QPoint, Qt, QTimer, Signal
-from PySide6.QtGui import QIcon, QImage, QKeyEvent
+from PySide6.QtCore import QEventLoop, QPoint, QTimer
+from PySide6.QtGui import QIcon, QImage
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QWidget
 from scripts.simple_scroll_native import (
@@ -33,37 +32,12 @@ from scripts.simple_scroll_native import (
 
 from verdiclip.capture.grabber import MssScreenSource
 from verdiclip.capture.models import ScreenGeometry
-from verdiclip.capture.overlay import SelectionOverlay, SharedSelection
+from verdiclip.capture.overlay import SharedSelection
+from verdiclip.capture.scroll_selection import PointOverlay
 from verdiclip.geometry import Point, Rect
 from verdiclip.platform.scrolling import _LastInput
 from verdiclip.platform.windows import WindowInfo, WindowLocator
 from verdiclip.shell.tray import TrayCommands, TrayIcon
-
-
-class PointOverlay(SelectionOverlay):
-    """Prototype: a completed click or Enter release chooses one physical point."""
-
-    chosen = Signal(object)
-
-    @override
-    def _finish(self, at: Point) -> None:
-        self.shared.release(at)
-        self.chosen.emit(at)
-
-    @override
-    def keyPressEvent(self, event: QKeyEvent) -> None:
-        if event.key() not in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-            super().keyPressEvent(event)
-
-    @override
-    def keyReleaseEvent(self, event: QKeyEvent) -> None:
-        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-            if not event.isAutoRepeat():
-                self.sync_cursor()
-                if self.shared.pointer is not None:
-                    self._finish(self.shared.pointer)
-        else:
-            super().keyReleaseEvent(event)
 
 
 class Desktop:

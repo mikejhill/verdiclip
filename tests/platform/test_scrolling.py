@@ -22,7 +22,12 @@ from verdiclip.capture.grabber import FrozenScreen
 from verdiclip.capture.scrolling import ScrollPosition, ScrollResult
 from verdiclip.exceptions import CaptureError
 from verdiclip.geometry import Point, Rect
-from verdiclip.platform.scrolling import UiaScrollTarget, _Interface
+from verdiclip.platform import scrolling
+from verdiclip.platform.scrolling import (
+    ScrollSelectionState,
+    UiaScrollTarget,
+    _Interface,
+)
 
 
 def mock(value: object) -> Mock:
@@ -1192,3 +1197,52 @@ def test_native_cleanup_does_not_force_an_owned_process_that_just_exited(
     request.assert_called_once_with(process, 123)
     force.assert_not_called()
     process.wait.assert_not_called()
+
+
+def test_gui_selection_state_uses_only_native_read_only_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The GUI observes HWND/input only and never initializes UI Automation."""
+    user = Mock()
+    monkeypatch.setattr(scrolling.sys, "platform", "win32")
+    monkeypatch.setattr(c, "WinDLL", Mock(return_value=user), raising=False)
+    native = scrolling.ScrollSelectionState()
+    assert user.WindowFromPoint.argtypes == (w.POINT,)
+    assert user.GetAncestor.restype is w.HWND
+
+    def input_info(pointer: c.c_void_p) -> bool:
+        c.cast(pointer, c.POINTER(scrolling._LastInput)).contents.tick = 123
+        return True
+
+    user.GetLastInputInfo.side_effect = input_info
+    user.GetForegroundWindow.return_value = 456
+    user.GetAncestor.return_value = 456
+    native.check(Point(2.2, 3.8), 456, 123)
+    point = user.WindowFromPoint.call_args.args[0]
+    assert (point.x, point.y) == (2, 4)
+    locator = Mock()
+    monkeypatch.setattr(scrolling, "WindowLocator", Mock(return_value=locator))
+    assert native.windows() is locator.visible_windows.return_value
+    user.GetLastInputInfo.side_effect = None
+    user.GetLastInputInfo.return_value = False
+    with pytest.raises(CaptureError, match="observe user input"):
+        native.tick()
+
+
+@pytest.mark.parametrize("changed", ["input", "foreground", "hit"])
+def test_gui_selection_state_rejects_handoff_changes(changed: str) -> None:
+    """The parent cannot rebase the completed selection to a newer input/window."""
+    native = object.__new__(ScrollSelectionState)
+    native._user = Mock()
+    native.tick = Mock(return_value=1 if changed != "input" else 2)
+    native._user.GetForegroundWindow.return_value = 3 if changed != "foreground" else 4
+    native._user.GetAncestor.return_value = 3 if changed != "hit" else 4
+    with pytest.raises(CaptureError, match="changed"):
+        native.check(Point(2, 4), 3, 1)
+
+
+def test_gui_selection_rejects_non_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unsupported hosts fail explicitly before loading any Windows DLL."""
+    monkeypatch.setattr(scrolling.sys, "platform", "linux")
+    with pytest.raises(CaptureError, match="requires Windows"):
+        scrolling.ScrollSelectionState()

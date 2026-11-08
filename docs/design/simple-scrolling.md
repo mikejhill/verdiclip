@@ -1,8 +1,10 @@
-# Scrolling capture: isolated feasibility slice
+# Scrolling capture: small integration candidate
 
 Base: main `a4c68010a3b9d8d8d7d88e60974f1e487f5b773b` (0.13.3).
 This replaces neither the normal capture lifecycle nor the paused PR #126.
-There is no menu, shortcut, release, Qt upgrade, or end-user feature enabled yet.
+The reviewed isolated slice is now being connected to the existing tray and
+delivery. Integrated exact-head native qualification remains pending; this is not
+a release. The Qt and packaging baseline remains unchanged.
 
 ## Small boundary
 
@@ -18,9 +20,27 @@ There is no menu, shortcut, release, Qt upgrade, or end-user feature enabled yet
   result and temporary PNG. Cooperative cancel, bounded kill, and stdin EOF on
   parent death handle blocking providers. No per-frame IPC or second helper.
 
-Only after actual-app feasibility and source review will a small selection UI
-and existing delivery be connected. Ordinary region/window/menu capture code,
-settings, hotkeys, packaging and dependency baseline are untouched.
+- `capture/scroll_selection.py`: a separate frozen point chooser retains the root
+  HWND and completed release tick before closing selectors. One owner keeps the
+  helper and temporary Escape registration until terminal retirement. Cancelled
+  queued results never publish; failed synchronous shutdown retains ownership
+  until the later real terminal signal retires the child.
+
+Tray → Capture scrolling area and the configurable Ctrl+Alt+PrtSc shortcut use
+this chooser without another configuration dialog. Completed images use the
+same save, clipboard and editor/tab delivery; scrolling metadata never invents a
+physical screen rectangle. `CaptureService`, `SelectionOverlay` algorithms and
+ordinary Repeat history are unchanged. Settings and manual updates wait for
+retirement; automatic updates remain busy. A second scrolling request cancels.
+Actual Escape is user input and never promises a restoration write. Temporary
+file cleanup warnings preserve delivery errors and retained-editor recovery
+callbacks rather than replacing their notifications.
+
+The actual-controller native matrix adds `edge-app-tray`, `edge-app-hotkey` and
+`edge-app-escape` to the existing ten isolated cases. These use a real existing
+editor, production chooser/helper/hotkeys and delivery, then verify ordinary
+Repeat. The tray job also runs the unchanged native capture popup/modal and tab
+baseline suites. Passing portable tests alone does not qualify these boundaries.
 
 ## Limits and user state
 
@@ -73,7 +93,7 @@ changed state, cancel, deadlines and subprocess cleanup. Native runs also prove
 actual screen capture and keep the existing popup/modal and tab gates. A green
 synthetic test suite alone does not qualify native capture or a release.
 
-## Independent pre-publication review
+## Historical isolated-slice review
 
 The isolated slice passed focused source review and 49 portable core, helper
 and mocked-native-boundary tests. Real QProcess pipe tests cover crash, timeout,
@@ -352,3 +372,42 @@ other applications. Graceful wait and the existing exact-owned-PID force fallbac
 share the original 20-second cleanup budget. Unknown/mismatched HWNDs receive no
 message. Process and profile cleanup remain mandatory, and their failures remain
 fatal. This changes test teardown only; capture/runtime behavior is unchanged.
+
+
+### Qualified isolated handoff milestone
+
+Head `0950edc923ceb674416356a94ca46c53c750a45a` passed
+[all ten native cases](https://github.com/mikejhill/verdiclip/actions/runs/42449844717),
+[full CI](https://github.com/mikejhill/verdiclip/actions/runs/42449844726) and
+[CodeQL](https://github.com/mikejhill/verdiclip/actions/runs/42449844742).
+All seven review threads were resolved after substantive fixes. Actual mouse and
+Enter selection used the exact physical point; tray ownership naturally returned
+foreground to Edge. The child retained HWND/input tick, and startup interference
+produced zero frames/writes. All five composites matched the previously reviewed
+pixels; process and profile cleanup passed. This is an isolated pre-integration
+gate, not product or release qualification.
+
+### Reconstructed integration candidate
+
+The cloud workspace reset before the integration was committed. The candidate
+was reconstructed in a fresh isolated checkout from verified published head
+`0950edc923ceb674416356a94ca46c53c750a45a`, tree
+`cab20ddd1941f98fab79c79c9308712b907ac00a`. The former uncommitted tree did not
+survive, and its earlier test outcomes do not qualify this reconstruction.
+
+Runtime, harness and most tests were reconstructed from retained source/edit
+payloads. Helper shutdown and selective-hotkey removal tests were newly adapted
+from their retained coverage requirements; this documentation records current
+status rather than claiming an identical recovered tree. Fresh source review,
+portable tests, visual review, exact-head hosted native/ordinary regressions,
+full CI and security review are required. No merge or release is authorized.
+
+Fresh reconstruction checks passed Ruff, formatting and strict ty. The portable
+run passed 1,982 tests with 38 native-only skips and two socket journeys deselected;
+the previously restricted local socket/main/feed suites were omitted rather than
+retried. Combined coverage was 93.11% (93.98% lines, 89.13% branches with those
+omissions). Changed executable-line coverage calculated from the fresh XML was
+96.59% for the integration and 98.27% for the full PR. These are scoped local
+results; full hosted CI remains required. Light/dark chooser snapshots were
+inspected, and the gallery rendered successfully. Linux offscreen ignored native
+color-scheme changes in the gallery, so Windows theme evidence remains required.

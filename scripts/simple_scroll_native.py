@@ -215,7 +215,11 @@ def _trace_helper() -> None:
             (output / "frames.json").write_text(
                 json.dumps(observations, indent=2), encoding="utf-8"
             )
-            if len(observations) == 1 and mode in ("edge-cancel", "edge-input"):
+            if len(observations) == 1 and mode in (
+                "edge-cancel",
+                "edge-input",
+                "edge-app-escape",
+            ):
                 # Give the parent a deterministic confirmed-state boundary.
                 # The real stdin watcher/input check remains unchanged.
                 time.sleep(0.4)
@@ -238,11 +242,32 @@ def _trace_helper() -> None:
         )
 
 
+def _traced_helper(output: Path, mode: str) -> ScrollHelper:
+    """Use the same owned child, adding only existing test-frame diagnostics."""
+    helper = ScrollHelper()
+    start = helper._process.start
+
+    def trace_start(*_args: object, **_kwargs: object) -> None:
+        script = (
+            "from scripts.simple_scroll_native import _trace_helper; _trace_helper()"
+        )
+        arguments = helper._process.arguments()[2:]
+        helper._process.setArguments(
+            ["-c", script, *arguments, str(output.resolve()), mode]
+        )
+        start()
+
+    tracing = patch.object(helper._process, "start", trace_start)
+    tracing.start()
+    helper.finished.connect(lambda _result: tracing.stop())
+    return helper
+
+
 def _capture(
     point: Point, output: Path, mode: str, *, window: int, input_tick: int
 ) -> ScrollResult:
     loop = QEventLoop()
-    helper = ScrollHelper()
+    helper = _traced_helper(output, mode)
     results: list[ScrollResult] = []
 
     def completed(result: ScrollResult) -> None:
@@ -254,26 +279,7 @@ def _capture(
     timer.setSingleShot(True)
     timer.timeout.connect(loop.quit)
     timer.start(30_000)
-    start = helper._process.start
-
-    def trace_start() -> None:
-        script = (
-            "from scripts.simple_scroll_native import _trace_helper; _trace_helper()"
-        )
-        arguments = helper._process.arguments()[2:]
-        helper._process.setArguments(
-            [
-                "-c",
-                script,
-                *arguments,
-                str(output.resolve()),
-                mode,
-            ]
-        )
-        start()
-
-    with patch.object(helper._process, "start", trace_start):
-        helper.start(point, window=window, input_tick=input_tick)
+    helper.start(point, window=window, input_tick=input_tick)
     interrupt = QTimer()
     interrupt.setInterval(20)
     acted = False
@@ -726,6 +732,7 @@ def main(
             if kind
             in (
                 "edge-cancel",
+                "edge-app-escape",
                 "edge-input",
                 "edge-covered",
                 "edge-select-input",
