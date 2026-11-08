@@ -1,4 +1,10 @@
-# Corrective release scope
+# Historical corrective release scope (0.13.1)
+
+This document records the completed corrective release, not the current feature
+set. Menu capture was subsequently qualified and released in 0.13.2. Bounded
+scrolling capture follows separately in 0.14.0; see the current
+[capture instructions](../README.md#scrolling-capture) and
+[scrolling qualification](design/simple-scrolling.md).
 
 The first corrective release restores the capture implementation shipped in 0.12.1, including its native Qt mouse movement, region/window/fullscreen/repeat selection and original menu behavior. It retains tabs, capture destination settings, completed-capture editor activation, retained-document recovery, and independent startup, IPC, publishing and CI hardening.
 

@@ -1,10 +1,13 @@
-# Scrolling capture: small integration candidate
+# Bounded scrolling capture
 
 Base: main `a4c68010a3b9d8d8d7d88e60974f1e487f5b773b` (0.13.3).
 This replaces neither the normal capture lifecycle nor the paused PR #126.
-The reviewed isolated slice is now being connected to the existing tray and
-delivery. Integrated exact-head native qualification remains pending; this is not
-a release. The Qt and packaging baseline remains unchanged.
+The small scrolling implementation is connected to the existing tray and
+delivery. Integrated head `d95f20dab2d485466597596841d352a919276052` passed
+all 13 hosted native cases and 18 unchanged native capture/tab regressions.
+The Qt and packaging baseline remains unchanged. Final release-source and main
+verification are separate gates; the historical entries below retain the state
+and failures known at each earlier milestone.
 
 ## Small boundary
 
@@ -435,3 +438,29 @@ foreground and Qt ApplicationInactive before opening the test menu, instead of
 opening it ahead of pending activation/deactivation events. This is a bounded
 setup observation, not a menu retry, arbitrary longer delay or runtime focus
 change. A new exact-head run must still qualify the tray flow and ordinary suites.
+
+### Qualified integrated milestone
+
+Head `d95f20dab2d485466597596841d352a919276052`, tree
+`566cc5787fe34993269168b6b95fdf7a2fd7451c`, passed
+[all 13 native cases](https://github.com/mikejhill/verdiclip/actions/runs/42454539412),
+[full CI](https://github.com/mikejhill/verdiclip/actions/runs/42454539403) and
+[CodeQL](https://github.com/mikejhill/verdiclip/actions/runs/42454539389).
+The tray job passed all 18 ordinary popup/modal and tab-focus tests with zero
+skips. Python 3.13 and 3.14 each passed 2,040 tests; Python 3.13 had 97.70% line,
+91.98% branch and 98.27% changed-line coverage. CodeQL and zizmor reported no new
+alerts; all seven historical review threads were resolved.
+
+Independent source, pixel, editor, cleanup and Windows light/dark visual review
+passed. All five isolated positive composites are pixel-identical to 0950edc9.
+Actual tray and configured-hotkey/Enter capture produce the same complete Edge
+image, add one focused tab to the existing editor and preserve fixed-area Repeat.
+Real Escape publishes nothing and makes no restoration write after new input.
+Cooperative cancellation restores only when eligible. The bounded setup gate
+resolved the observed tray failure; queued deactivation remains a plausible
+explanation rather than an established root cause.
+
+The visible scrollbar and boundary artifacts described above remain deliberate
+limits, not claims of hidden-pixel reconstruction. They do not remove the tested
+supported body sequence. This evidence qualifies the integrated feature source;
+versioned release and exact-main checks still run separately before publication.
