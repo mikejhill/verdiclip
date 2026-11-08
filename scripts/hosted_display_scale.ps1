@@ -7,15 +7,88 @@ if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hoste
 }
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
+Add-Type @'
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+public static class HostedScaleWindows {
+    private delegate bool Visit(IntPtr window, IntPtr data);
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool EnumWindows(Visit callback, IntPtr data);
+    [DllImport("user32.dll")]
+    private static extern bool EnumChildWindows(IntPtr parent, Visit callback, IntPtr data);
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);
+    [DllImport("user32.dll")]
+    public static extern bool IsWindow(IntPtr window);
+    [DllImport("user32.dll")]
+    public static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetAncestor(IntPtr window, uint flags);
+    public static int Owner(IntPtr window) {
+        uint process;
+        if (GetWindowThreadProcessId(window, out process) == 0)
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        return (int)process;
+    }
+    public static IntPtr[] Windows(IntPtr parent) {
+        var windows = new List<IntPtr>();
+        bool overflow = false;
+        Visit callback = (window, data) => {
+            if (windows.Count == 64) { overflow = true; return false; }
+            windows.Add(window); return true;
+        };
+        bool result = parent == IntPtr.Zero
+            ? EnumWindows(callback, IntPtr.Zero)
+            : EnumChildWindows(parent, callback, IntPtr.Zero);
+        if (overflow) throw new InvalidOperationException("Native window limit exceeded");
+        if (parent == IntPtr.Zero && !result)
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        return windows.ToArray();
+    }
+}
+'@
 $clock = [Diagnostics.Stopwatch]::StartNew()
 $walker = [Windows.Automation.TreeWalker]::ControlViewWalker
 $root = $null
+$settingsRoot = $null
+$identity = $null
 $process = $null
 $started = $null
 $outcome = @{ status = 'unsupported'; stage = 'preflight'; selection_attempted = $false }
 
 function Assert-Budget {
     if ($clock.Elapsed.TotalSeconds -ge 45) { throw 'Settings discovery budget exhausted' }
+}
+
+function Assert-Owned($element) {
+    $frame = [IntPtr]$identity.frame
+    $content = [IntPtr]$identity.content
+    if ((Get-Process -Id $identity.frame_pid).StartTime.Ticks -ne $identity.frame_start_ticks -or
+        (Get-Process -Id $identity.settings_pid).StartTime.Ticks -ne $identity.settings_start_ticks -or
+        -not [HostedScaleWindows]::IsWindow($frame) -or
+        -not [HostedScaleWindows]::IsWindow($content) -or
+        [HostedScaleWindows]::Owner($frame) -ne $identity.frame_pid -or
+        [HostedScaleWindows]::Owner($content) -ne $identity.settings_pid -or
+        [HostedScaleWindows]::GetAncestor($content, 2) -ne $frame -or
+        ($root.GetRuntimeId() -join ',') -ne $identity.frame_runtime_id -or
+        ($settingsRoot.GetRuntimeId() -join ',') -ne $identity.content_runtime_id -or
+        $settingsRoot.Current.ProcessId -ne $identity.settings_pid) {
+        throw 'Retained Settings ownership changed'
+    }
+    if ($null -ne $element) {
+        if ($element.Current.ProcessId -ne $identity.settings_pid) {
+            throw 'Mutation target is not owned by Settings'
+        }
+        $ancestor = $element
+        for ($depth = 0; $depth -le 16 -and $null -ne $ancestor; $depth++) {
+            Assert-Budget
+            if ([Windows.Automation.Automation]::Compare($ancestor, $settingsRoot)) { return }
+            $ancestor = $walker.GetParent($ancestor)
+        }
+        throw 'Mutation target left the retained Settings subtree'
+    }
 }
 
 function Get-BoundedTree($start) {
@@ -64,6 +137,8 @@ try {
     if (@(Get-Process -Name SystemSettings -ErrorAction SilentlyContinue).Count -ne 0) {
         throw 'Settings already exists; ownership is ambiguous'
     }
+    $baseline = @([HostedScaleWindows]::Windows([IntPtr]::Zero) | ForEach-Object { $_.ToInt64() })
+    $launchedAfter = [DateTime]::Now
     $outcome.stage = 'launch'
     Start-Process 'ms-settings:display'
     while ($null -eq $root) {
@@ -71,29 +146,77 @@ try {
         $found = @(Get-Process -Name SystemSettings -ErrorAction SilentlyContinue)
         if ($found.Count -gt 1) { throw 'Multiple Settings processes appeared' }
         if ($found.Count -eq 1) {
-            $process = $found[0]
-            if ($process.Path -ine (Join-Path $env:WINDIR 'ImmersiveControlPanel\SystemSettings.exe')) {
+            if ($null -eq $process) { $process = $found[0]; $started = $process.StartTime }
+            if ($found[0].Id -ne $process.Id -or $found[0].StartTime -ne $started) {
+                throw 'The newly launched Settings process was replaced'
+            }
+            if ($started -lt $launchedAfter -or
+                $process.Path -ine (Join-Path $env:WINDIR 'ImmersiveControlPanel\SystemSettings.exe')) {
                 throw 'Unexpected Settings executable'
             }
+            $outcome.settings_pid = $process.Id
+            $outcome.settings_start_ticks = $started.Ticks
             $roots = @()
-            $node = $walker.GetFirstChild([Windows.Automation.AutomationElement]::RootElement)
-            $count = 0
-            while ($null -ne $node) {
+            $observed = @()
+            foreach ($window in [HostedScaleWindows]::Windows([IntPtr]::Zero)) {
                 Assert-Budget
-                if (++$count -gt 64) { throw 'Too many top-level windows' }
-                if ($node.Current.ProcessId -eq $process.Id) { $roots += $node }
-                $node = $walker.GetNextSibling($node)
+                $owner = [HostedScaleWindows]::Owner($window)
+                $new = $baseline -notcontains $window.ToInt64()
+                if ($observed.Count -lt 16) {
+                    $observed += @{ hwnd = $window.ToInt64(); pid = $owner; new_window = $new }
+                }
+                $outcome.observed_roots = $observed
+                if (-not $new -or -not [HostedScaleWindows]::IsWindowVisible($window)) { continue }
+                $frameProcess = Get-Process -Id $owner
+                $content = $window
+                if ($owner -ne $process.Id) {
+                    if ($frameProcess.Path -ine (Join-Path $env:WINDIR 'System32\ApplicationFrameHost.exe')) { continue }
+                    $children = @([HostedScaleWindows]::Windows($window) | ForEach-Object {
+                        @{ hwnd = $_.ToInt64(); pid = [HostedScaleWindows]::Owner($_) }
+                    })
+                    $outcome.observed_host_frame = $window.ToInt64()
+                    $outcome.observed_host_pid = $owner
+                    $outcome.observed_host_children = @($children | Select-Object -First 16)
+                    if (@($children | Where-Object { $_.pid -notin @($owner, $process.Id) }).Count -ne 0) {
+                        throw 'New frame contains an unrelated process; ownership is ambiguous'
+                    }
+                    $settingsChildren = @($children | Where-Object {
+                        $_.pid -eq $process.Id -and
+                        [HostedScaleWindows]::Owner([HostedScaleWindows]::GetAncestor([IntPtr]$_.hwnd, 1)) -ne $process.Id
+                    })
+                    if ($settingsChildren.Count -gt 1) { throw 'New frame has ambiguous Settings children' }
+                    if ($settingsChildren.Count -eq 0) { continue }
+                    $content = [IntPtr]$settingsChildren[0].hwnd
+                }
+                if ([HostedScaleWindows]::GetAncestor($content, 2) -ne $window) {
+                    throw 'Settings child no longer belongs to the new frame'
+                }
+                $roots += @{ frame = $window; content = $content; owner = $frameProcess }
             }
+            $outcome.observed_roots = $observed
+            $outcome.verified_root_candidates = $roots.Count
             if ($roots.Count -gt 1) { throw 'Multiple Settings roots appeared' }
-            if ($roots.Count -eq 1) { $root = $roots[0] }
+            if ($roots.Count -eq 1) {
+                $candidate = $roots[0]
+                $root = [Windows.Automation.AutomationElement]::FromHandle($candidate.frame)
+                $settingsRoot = [Windows.Automation.AutomationElement]::FromHandle($candidate.content)
+                $identity = @{
+                    frame = $candidate.frame.ToInt64(); content = $candidate.content.ToInt64()
+                    frame_pid = $candidate.owner.Id; settings_pid = $process.Id
+                    frame_start_ticks = $candidate.owner.StartTime.Ticks; settings_start_ticks = $started.Ticks
+                    frame_runtime_id = ($root.GetRuntimeId() -join ',')
+                    content_runtime_id = ($settingsRoot.GetRuntimeId() -join ',')
+                }
+                $outcome.ownership = $identity
+                Assert-Owned $null
+            }
         }
         if ($null -eq $root) { Start-Sleep -Milliseconds 100 }
     }
-    $started = $process.StartTime
     $outcome.stage = 'find_scale'
     $pageDeadline = $clock.Elapsed.TotalSeconds + 5
     do {
-        $nodes = @(Get-BoundedTree $root)
+        $nodes = @(Get-BoundedTree $settingsRoot)
         $combos = @($nodes | Where-Object {
             $_.Current.ControlType -eq [Windows.Automation.ControlType]::ComboBox -and
             $_.Current.Name -in @('Scale', 'Change the size of text, apps, and other items')
@@ -116,6 +239,7 @@ try {
     if (-not $combo.TryGetCurrentPattern([Windows.Automation.ExpandCollapsePattern]::Pattern, [ref]$pattern)) {
         throw 'Scale control lacks ExpandCollapse support'
     }
+    Assert-Owned $combo
     $pattern.Expand()
     Start-Sleep -Milliseconds 200
     $outcome.stage = 'find_200'
@@ -139,11 +263,12 @@ try {
         throw '200% option lacks SelectionItem support'
     }
     $outcome.stage = 'select_200'
+    Assert-Owned $options[0]
     $outcome.selection_attempted = $true
     $outcome | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $OutputDirectory 'settings-outcome.json')
     $pattern.Select()
     Start-Sleep -Milliseconds 500
-    $nodes = @(Get-BoundedTree $root)
+    $nodes = @(Get-BoundedTree $settingsRoot)
     if (@($nodes | Where-Object { $_.Current.Name -match '(?i)sign out|restart' }).Count -ne 0) {
         throw 'Settings requires a sign-out or restart; not permitted by this setup'
     }
@@ -156,22 +281,17 @@ try {
 } finally {
     $outcome.close_requested = $false
     $outcome.closed_owned_window = $false
-    if ($null -ne $root -and $null -ne $process -and $null -ne $started) {
+    if ($null -ne $root -and $null -ne $identity) {
         try {
-            $current = Get-Process -Id $process.Id
+            Assert-Owned $null
             $pattern = $null
-            if ($current.StartTime -eq $started -and $root.Current.ProcessId -eq $process.Id -and
-                $root.TryGetCurrentPattern([Windows.Automation.WindowPattern]::Pattern, [ref]$pattern)) {
+            if ($root.TryGetCurrentPattern([Windows.Automation.WindowPattern]::Pattern, [ref]$pattern)) {
                 $pattern.Close()
                 $outcome.close_requested = $true
                 $closeClock = [Diagnostics.Stopwatch]::StartNew()
                 while ($closeClock.Elapsed.TotalSeconds -lt 2) {
-                    try { $null = $root.Current.ProcessId }
-                    catch {
-                        if ($_.Exception -is [Windows.Automation.ElementNotAvailableException] -or
-                            $_.Exception.InnerException -is [Windows.Automation.ElementNotAvailableException]) {
-                            $outcome.closed_owned_window = $true
-                        }
+                    if (-not [HostedScaleWindows]::IsWindow([IntPtr]$identity.frame)) {
+                        $outcome.closed_owned_window = $true
                         break
                     }
                     Start-Sleep -Milliseconds 100

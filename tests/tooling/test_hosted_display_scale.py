@@ -236,6 +236,25 @@ def test_child_launch_errors_are_retained_bounded(
 
 
 @pytest.mark.usefixtures("hosted")
+def test_windows_utf8_bom_cleanup_receipt_is_accepted(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Windows PowerShell's literal EF BB BF prefix is not malformed JSON."""
+    payload = (
+        b'\xef\xbb\xbf{\r\n "status": "selection_completed",\r\n'
+        b' "closed_owned_window": true\r\n}\r\n'
+    )
+
+    def complete(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        (tmp_path / "settings-outcome.json").write_bytes(payload)
+        return subprocess.CompletedProcess([], 0, "", "")
+
+    monkeypatch.setattr(scale.subprocess, "run", Mock(side_effect=complete))
+    scale.select_scale(tmp_path)
+    assert (tmp_path / "settings-outcome.json").read_bytes() == payload
+
+
+@pytest.mark.usefixtures("hosted")
 @pytest.mark.parametrize("returncode", [0, 1])
 @pytest.mark.parametrize("closed", [False, None])
 def test_cleanup_failure_cannot_become_late_scale_success(

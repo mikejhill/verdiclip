@@ -15,13 +15,26 @@ installation are used. It does not override PowerShell execution policy.
 
 The Settings companion runs once in an MTA child with a 60-second process
 timeout, a 45-second traversal budget, 256-node/depth-8 Settings traversal, and
-64 top-level window limit. It refuses any pre-existing Settings process and
-requests closure only for the newly identified Settings window when its process
-identity still matches. It records confirmed closure only after the retained
-UIA element becomes unavailable within two seconds; otherwise closure remains
-unverified and the setup fails. If ownership cannot be verified, it leaves the
-window alone. Python independently requires the current attempt's successful
-cleanup receipt, even if the child exits zero and native scale reaches 200%.
+64-window limits for native top-level/child enumeration. It refuses any
+pre-existing Settings process and snapshots all native top-level HWNDs before
+launch, including windows not exposed by UIA.
+
+Only one newly appeared visible root can be adopted. It must belong to the
+uniquely new verified SystemSettings process, or to the verified Windows
+ApplicationFrameHost executable with exactly one topmost Settings child from
+that new process. The child's native root must be that exact new frame; a
+shared host process does not authorize another window. Pre-existing HWNDs,
+multiple candidates, unrelated hosted children, and process replacement fail
+closed. Discovery records at most 16 numeric root/child observations.
+
+Controls are read through `AutomationElement.FromHandle` on the retained
+Settings child. Before expanding/selecting a control or closing the frame, the
+helper rechecks both process start times, native PID/parent links, retained UIA
+identities, and the mutation target's Settings ownership/ancestry. Cleanup
+closes only that frame, never its host process. Confirmed closure requires the
+exact native frame HWND to disappear within two seconds; otherwise setup fails.
+Python independently requires a fresh successful cleanup receipt, accepting
+Windows PowerShell's UTF-8 BOM, even if native scale reaches 200% after failure.
 A child timeout may leave Settings open or the display change applied. The
 probe never retries and never converts a late successful readback into a pass.
 
@@ -72,9 +85,12 @@ target application. Require monitor scale 200 and target HWND DPI 192 there too,
 before and after the actual scrolling capture. A setup probe alone is not Edge,
 Explorer, scrolling, or physical hardware qualification.
 
-Current limitations: the exact hosted image's Settings labels, UIA hierarchy,
-available scale options, and display-resolution limits are not known until the
-first Windows execution. The Linux tests exercise guards, measurements,
+Current limitations: an initial hosted run confirmed actual 100%/96-DPI
+readback and visibly opened Display settings, but exposed a cross-process root
+discovery gap before any selection. That is not evidence that 200% is
+unavailable. The corrected ownership path, Settings labels/UIA hierarchy,
+available scale options, and display-resolution limits still require a reviewed
+native run. The Linux tests exercise guards, measurements,
 subprocess boundaries, failure handling, and cleanup with doubles. They do not
 execute PowerShell, Settings, or Windows APIs. An unavailable 200% selection is
 a platform/setup limitation to report, not a reason to use an undocumented API.
