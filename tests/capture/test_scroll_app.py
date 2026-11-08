@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
-from PySide6.QtCore import QProcess
+from PySide6.QtCore import QProcess, Qt
 from PySide6.QtGui import QImage
 from pytestqt.qtbot import QtBot
 from scripts.simple_scroll_app import AppCapture
@@ -139,3 +139,41 @@ def test_native_seed_requires_real_chooser_and_fixed_area(
             case._seed_editor()
         assert not case.report
     case.controller.tray.action.assert_called_once_with("region")
+
+
+@pytest.mark.parametrize("boundary", ["settled", "native_foreign", "qt_active"])
+def test_native_setup_requires_observed_qt_and_native_foreground(
+    monkeypatch: pytest.MonkeyPatch, boundary: str
+) -> None:
+    """A menu must not open ahead of the prior application's queued deactivate."""
+    case = object.__new__(AppCapture)
+    case.window = WindowInfo(123, "Owned Edge", Rect(0, 0, 200, 100))
+    case.desktop = Mock()
+    case.desktop.foreground.return_value = 456 if boundary == "native_foreign" else 123
+    case.report = {}
+    events = Mock()
+    monkeypatch.setattr("scripts.simple_scroll_app.QApplication.processEvents", events)
+    monkeypatch.setattr("scripts.simple_scroll_app.QTest.qWait", Mock())
+    monkeypatch.setattr(
+        "scripts.simple_scroll_app.QApplication.applicationState",
+        lambda: (
+            Qt.ApplicationState.ApplicationActive
+            if boundary == "qt_active"
+            else Qt.ApplicationState.ApplicationInactive
+        ),
+    )
+    if boundary == "settled":
+        case._settle_target_foreground()
+        assert case.report == {
+            "setup_qt_inactive": True,
+            "setup_foreground": 123,
+            "setup_qt_state": "ApplicationInactive",
+        }
+        events.assert_called_once()
+    else:
+        with pytest.raises(RuntimeError, match="did not settle"):
+            case._settle_target_foreground()
+        assert "setup_qt_inactive" not in case.report
+        assert case.report["setup_foreground"] == case.desktop.foreground.return_value
+        assert events.call_count == 100
+    case.desktop.user.SetForegroundWindow.assert_not_called()

@@ -13,7 +13,7 @@ from dataclasses import asdict, replace
 from pathlib import Path
 from unittest.mock import Mock
 
-from PySide6.QtCore import QEventLoop, QPoint, QTimer
+from PySide6.QtCore import QEventLoop, QPoint, Qt, QTimer
 from PySide6.QtGui import QImage
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
@@ -365,6 +365,22 @@ class AppCapture:
             asdict(self.repeat_area) if self.repeat_area is not None else None
         )
 
+    def _settle_target_foreground(self) -> None:
+        """Observe Qt acknowledge foreign focus before opening the test menu."""
+        for _ in range(100):
+            QApplication.processEvents()
+            foreground = self.desktop.foreground()
+            state = QApplication.applicationState()
+            self.report.update(setup_foreground=foreground, setup_qt_state=state.name)
+            if (
+                foreground == self.window.handle
+                and state == Qt.ApplicationState.ApplicationInactive
+            ):
+                self.report["setup_qt_inactive"] = True
+                return
+            QTest.qWait(10)
+        raise RuntimeError("Target foreground did not settle before capture entry")
+
     def run(self) -> None:
         """Exercise app wiring and always close owned UI, helper and hotkeys."""
         timeout = QTimer()
@@ -378,6 +394,7 @@ class AppCapture:
             )
             self._seed_editor()
             self.window = _prepare(self.window)  # Setup only, before entry/selection.
+            self._settle_target_foreground()
             self.report["window"] = asdict(self.window)
             self.report["initial_foreground"] = self.desktop.foreground()
             if self.kind == "edge-app-escape":

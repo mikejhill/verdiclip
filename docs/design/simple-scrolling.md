@@ -423,3 +423,15 @@ a native click on its owned overlay. It still requires the selected physical
 rectangle, the existing document, exact scrolling output and ordinary Repeat.
 Runtime behavior is unchanged; no previously failed integration result is claimed
 as qualification.
+
+At `87ade9671f730fa71bcdc5c2c2344ae489477d10`,
+[run 42454194423](https://github.com/mikejhill/verdiclip/actions/runs/42454194423)
+passed the ten isolated cases and the actual configured-hotkey/Enter and Escape
+cases. The tray case failed before selection because the test popup was no longer
+active when its click was due. The setup returned native foreground to Edge but
+blocked Qt event processing; the otherwise identical Escape setup pumped events
+while preparing its non-top view. The harness now requires observed native Edge
+foreground and Qt ApplicationInactive before opening the test menu, instead of
+opening it ahead of pending activation/deactivation events. This is a bounded
+setup observation, not a menu retry, arbitrary longer delay or runtime focus
+change. A new exact-head run must still qualify the tray flow and ordinary suites.
