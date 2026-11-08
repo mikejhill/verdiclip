@@ -147,8 +147,8 @@ class ScrollTransaction:
         self._moved = False
         self._expected: ScrollPosition | None = None
 
-    def _check(self) -> None:
-        if self._cancelled():
+    def _check(self, *, restoring: bool = False) -> None:
+        if not restoring and self._cancelled():
             raise CaptureError("Scrolling capture cancelled")
         if self._clock() >= self._deadline:
             raise CaptureError("Scrolling capture reached its time limit")
@@ -172,15 +172,52 @@ class ScrollTransaction:
             previous = current
         raise CaptureError("The scroll panel is still changing")
 
+    def _settle(
+        self, before: ScrollPosition, percent: float, *, restoring: bool = False
+    ) -> ScrollPosition:
+        """Observe one write; unchanged reads never acknowledge pending movement."""
+        previous = None
+        for _ in range(8):
+            self._pause(0.08)
+            self._check(restoring=restoring)
+            current = self._target.position()
+            self._check(restoring=restoring)
+            if (
+                current.horizontal != before.horizontal
+                or current.view_size != before.view_size
+            ):
+                raise CaptureError("The scroll panel moved unexpectedly")
+            if (
+                not restoring
+                and percent not in (0.0, END_PERCENT)
+                and abs(current.vertical - before.vertical)
+                > abs(percent - before.vertical) * 1.5
+            ):
+                raise CaptureError("The scroll panel moved unexpectedly")
+            reached = (
+                current.vertical == percent
+                if restoring or percent in (0.0, END_PERCENT)
+                else (current.vertical - before.vertical) * (percent - before.vertical)
+                > 0.0
+            )
+            if reached and current == previous:
+                return current
+            previous = current
+        raise CaptureError("The scroll panel did not settle; its position is uncertain")
+
     def _move(self, percent: float) -> ScrollPosition:
         self._check()
+        before = self._target.position()
+        self._check()
+        if before != self._expected:
+            raise CaptureError("The scroll panel changed position unexpectedly")
+        if before.vertical == percent:
+            return before
         # Mark before crossing COM: a failed call may already have scrolled.
         self._moved = True
         self._expected = None
         self._target.move(percent)
-        self._pause(0.08)
-        self._target.check()
-        self._expected = self._target.position()
+        self._expected = self._settle(before, percent)
         self._check()
         return self._expected
 
@@ -217,18 +254,22 @@ class ScrollTransaction:
             # ignore user input, lost focus, changed geometry, or the deadline.
             if self._clock() >= self._deadline:
                 return "not restored: time limit"
+            if self._expected is None:
+                return "not restored: the provider write is unresolved"
             self._target.check()
+            current = self._target.position()
+            self._check(restoring=True)
             if (
-                self._expected is None
-                or self._target.position() != self._expected
+                current != self._expected
                 or self._expected.horizontal != initial.horizontal
+                or self._expected.view_size != initial.view_size
             ):
                 return "not restored: scroll position changed unexpectedly"
-            self._target.move(initial.vertical)
-            self._target.check()
-            position = self._target.position()
-            if position != initial:
-                return "not restored: provider did not return to the starting position"
+            if self._expected != initial:
+                before = self._expected
+                self._expected = None
+                self._target.move(initial.vertical)
+                self._expected = self._settle(before, initial.vertical, restoring=True)
         except (CaptureError, OSError):
             return "not restored: the target or user state changed"
         return "restored"

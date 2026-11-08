@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import override
 
 import pytest
 from PySide6.QtGui import QColor, QImage
@@ -168,7 +169,7 @@ def test_cooperative_cancel_restores_when_user_state_unchanged() -> None:
 
     def interrupt(_seconds: float) -> None:
         nonlocal cancelled
-        cancelled = True
+        cancelled = target.count > 0
 
     result = ScrollTransaction(target, lambda: cancelled, pause=interrupt).run()
     assert result.image is None
@@ -277,15 +278,161 @@ def test_input_after_complete_restore_invalidates_image(
 ) -> None:
     """A result pending final publication still belongs to the cancelled request."""
     target = Target()
-    position = target.position
+    operation = transaction(target)
+    restore = operation._restore
 
-    def interrupt_after_restore() -> ScrollPosition:
-        current = position()
-        if len(target.moves) == 10:
-            target.input_changed = True
-        return current
+    def interrupt_after_restore(initial: ScrollPosition) -> str:
+        outcome = restore(initial)
+        target.input_changed = True
+        return outcome
 
-    monkeypatch.setattr(target, "position", interrupt_after_restore)
-    result = transaction(target).run()
+    monkeypatch.setattr(operation, "_restore", interrupt_after_restore)
+    result = operation.run()
     assert result.image is None
     assert "User input" in result.message
+
+
+class DelayedTarget(Target):
+    """A public UIA action returns before the provider's pixels/state change."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.pending: float | None = None
+        self.polls = 0
+
+    @override
+    def move(self, vertical: float) -> None:
+        """Queue one mutation; a second pending write is always a test failure."""
+        assert self.pending is None
+        self.moves.append(vertical)
+        self.pending = vertical
+        self.polls = 0
+
+    def pause(self, _seconds: float) -> None:
+        """Resolve after several stale samples, including during restoration."""
+        if self.pending is not None:
+            self.polls += 1
+            if self.polls == 3:
+                self.offset = round(480 * self.pending / 100)
+                self.pending = None
+
+
+def test_delayed_scroll_and_restore_are_observed_without_reissuing() -> None:
+    """Real-app style asynchronous writes still produce one complete image."""
+    target = DelayedTarget()
+    initial = target.position()
+    result = ScrollTransaction(target, lambda: False, pause=target.pause).run()
+    assert result.image == target.document
+    assert result.restoration == "restored"
+    assert target.position() == initial
+    assert len(target.moves) == 10
+
+
+@pytest.mark.parametrize("interruption", ["never", "cancel", "input", "deadline"])
+def test_unresolved_move_never_becomes_restore_eligible(interruption: str) -> None:
+    """Timeout or cancellation cannot send a second write over an unresolved one."""
+    target = DelayedTarget()
+    cancelled = False
+    now = 0.0
+
+    def pause(_seconds: float) -> None:
+        nonlocal cancelled, now
+        cancelled = interruption == "cancel"
+        target.input_changed = interruption == "input"
+        if interruption == "deadline":
+            now = 30.0
+
+    result = ScrollTransaction(
+        target, lambda: cancelled, clock=lambda: now, pause=pause
+    ).run()
+    assert result.image is None
+    assert target.moves == [0.0]
+    assert target.pending == 0.0
+    assert result.restoration.startswith("not restored")
+
+
+def test_input_during_delayed_restore_withholds_image() -> None:
+    """A restore in progress must stop observing success after user interference."""
+    target = DelayedTarget()
+
+    def pause(seconds: float) -> None:
+        if len(target.moves) == 10:
+            target.input_changed = True
+        else:
+            target.pause(seconds)
+
+    result = ScrollTransaction(target, lambda: False, pause=pause).run()
+    assert result.image is None
+    assert result.restoration.startswith("not restored")
+    assert len(target.moves) == 10
+
+
+def test_programmatic_movement_between_frames_prevents_next_write() -> None:
+    """An unexpected position after a frame is not attributed to the next action."""
+    target = Target()
+    operation = transaction(target)
+    operation._expected = target.position()
+    target.offset += 1
+    with pytest.raises(CaptureError, match="changed position"):
+        operation._move(0.0)
+    assert target.moves == []
+
+
+@pytest.mark.parametrize("offset", [0, 480])
+def test_noop_endpoint_writes_are_never_sent(offset: int) -> None:
+    """Already-top starts and already-restored ends need no pending no-op action."""
+    target = DelayedTarget()
+    target.offset = offset
+    initial = target.position()
+    result = ScrollTransaction(target, lambda: False, pause=target.pause).run()
+    assert result.image == target.document
+    assert result.restoration == "restored"
+    assert target.position() == initial
+    assert len(target.moves) == 9
+    assert target.moves[0] != initial.vertical
+    assert target.moves[-1] == initial.vertical
+
+
+def test_input_during_final_restore_read_is_not_reported_as_restored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Even a failed capture rechecks eligibility after its final provider read."""
+    target = Target()
+    target.fail_frame = True
+    position = target.position
+    restore_reads = 0
+
+    def interrupt() -> ScrollPosition:
+        nonlocal restore_reads
+        current = position()
+        if len(target.moves) == 2:
+            restore_reads += 1
+            if restore_reads == 2:
+                target.input_changed = True
+        return current
+
+    monkeypatch.setattr(target, "position", interrupt)
+    result = transaction(target).run()
+    assert result.image is None
+    assert result.message == "Capture failed"
+    assert result.restoration.startswith("not restored")
+    assert len(target.moves) == 2
+
+
+def test_already_restored_state_still_rechecks_user_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Skipping a no-op write must not skip the last ownership observation."""
+    target = Target()
+    initial = target.position()
+    operation = transaction(target)
+    operation._moved = True
+    operation._expected = initial
+
+    def interrupt() -> ScrollPosition:
+        target.input_changed = True
+        return initial
+
+    monkeypatch.setattr(target, "position", interrupt)
+    assert operation._restore(initial).startswith("not restored")
+    assert target.moves == []

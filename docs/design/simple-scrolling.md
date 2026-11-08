@@ -115,3 +115,19 @@ one combined setup write and bounded read-only polling before recording its
 starting state. No runtime tolerance, wait, matching, or deadline is changed by
 this diagnostic correction. Browser-drawn scrollbars remain visible in the
 saved Edge viewport and unqualified for full-width registration.
+
+
+Run 42440536721 confirms the setup correction: both Edge cases started from
+stable middle positions, with nested horizontal position 34.8837%. The helper
+captured its top frame but read unchanged state after its next asynchronous UIA
+write. Its immediate restore check failed even though later UIA reads matched
+the starting state. Notepad succeeded again with identical result pixels.
+
+The core now observes each single provider write for at most eight 80-ms
+read/check slots, inside the unchanged total deadline. Two identical readings
+must show advancement in the requested direction and within the existing step
+bound; endpoints and restoration require exact requested percentages. Unchanged
+reads cannot acknowledge pending motion. Until completion is observed, the
+position is unknown and no restoration write is eligible. Input, cancellation,
+or deadline during unresolved movement returns failure without another write.
+This fixes that safety regression without adding provider-specific tolerances.
