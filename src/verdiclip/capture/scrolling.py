@@ -709,7 +709,14 @@ class ScrollTransaction:
         if self._list_steps is not None:
             self._list_body = self._list_steps.body
             self._list_width()
-            if self._native is None or initial.horizontal != 0.0:
+            if (
+                self._native is None
+                or initial.horizontal not in (-1.0, 0.0)
+                or (
+                    initial.horizontal == -1.0
+                    and getattr(self._target, "footer", None) is not None
+                )
+            ):
                 raise CaptureError("The List's original native state is unsupported")
 
     def _list_width(self) -> int | None:
@@ -739,7 +746,9 @@ class ScrollTransaction:
             raise CaptureError("The List's nonrail geometry changed or is unsupported")
         return round(header.width)
 
-    def _confirm_list_start(self, position: ScrollPosition) -> None:
+    def _confirm_list_start(
+        self, position: ScrollPosition, original_horizontal: float
+    ) -> None:
         """Keep the top seek outside item lineage but prove its native state first."""
         native, original = self._native_state(), self._native
         if (
@@ -750,7 +759,7 @@ class ScrollTransaction:
             or native.position != native.minimum
             or position.vertical != 0.0
             or not native.matches(position)
-            or position.horizontal != 0.0
+            or position.horizontal != original_horizontal
             or self._target.position() != position
         ):
             raise CaptureError("The List changed native state while seeking the top")
@@ -1037,7 +1046,7 @@ class ScrollTransaction:
         )
         self._check()
         if self._list_steps is not None:
-            self._confirm_list_start(position)
+            self._confirm_list_start(position, initial.horizontal)
         while position.vertical < END_PERCENT:
             self._admit_traversal()
             if self._frames >= MAX_FRAMES:

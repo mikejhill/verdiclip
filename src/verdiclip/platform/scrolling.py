@@ -1311,7 +1311,8 @@ class UiaScrollTarget:
             self._header is None
             or self._header.scrollbar is None
             or self._element.control_type() != _LIST_CONTROL
-            or initial.horizontal != 0.0
+            or initial.horizontal not in (-1.0, 0.0)
+            or (initial.horizontal == -1.0 and self._header.footer is not None)
         ):
             return None
         native = self.scrollbar_state()

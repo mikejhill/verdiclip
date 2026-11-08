@@ -700,7 +700,7 @@ def test_native_diagnostics_keep_only_two_accepted_frames(
     results = []
     original = ScrollTransaction._frame
     monkeypatch.setattr(
-        "sys.argv", ["-c", "10", "20", "scratch", str(tmp_path), "edge"]
+        "sys.argv", ["-c", "10", "20", "scratch", str(tmp_path), "edge-app-tray"]
     )
     monkeypatch.setattr(
         "scripts.simple_scroll_native.helper_main",
@@ -2834,12 +2834,20 @@ class ListEvidence:
 class ListTarget(FooterTarget):
     """Standard layout with native units independent of exact body displacement."""
 
-    def __init__(self, *, start: int = 0, total: int = 592) -> None:
+    def __init__(
+        self, *, start: int = 0, total: int = 592, no_hbar: bool = False
+    ) -> None:
         super().__init__(start)
-        self.horizontal = 0.0
+        self.horizontal = -1.0 if no_hbar else 0.0
+        if no_hbar:
+            self.area, self.footer = Rect(10, 20, 80, 145), None
         self.document = document(total)
         self.steps = ListEvidence(self)
         self.selected = 0
+
+    @override
+    def frame(self) -> QImage:
+        return HeaderTarget.frame(self) if self.footer is None else super().frame()
 
     def list_steps(
         self,
@@ -3834,8 +3842,9 @@ class NormalizingListTarget(ListTarget):
         *,
         start: int = 0,
         total: int = 592,
+        no_hbar: bool = False,
     ) -> None:
-        super().__init__(start=start, total=total)
+        super().__init__(start=start, total=total, no_hbar=no_hbar)
         self.pages = iter(pages)
 
     @override
@@ -3890,12 +3899,13 @@ def test_list_verified_interior_normalization_continues_without_rebasing(
 
 
 @pytest.mark.parametrize("phase", ["before-begin", "begin-return", "setter-admission"])
+@pytest.mark.parametrize("no_hbar", [False, True])
 def test_list_normalized_cutoff_keeps_confirmed_tuple_without_restoration(
-    monkeypatch: pytest.MonkeyPatch, phase: str
+    monkeypatch: pytest.MonkeyPatch, phase: str, *, no_hbar: bool
 ) -> None:
     """A no-write 33s rejection preserves completed proof but permits no inverse."""
     now = [0.0]
-    target = NormalizingListTarget()
+    target = NormalizingListTarget(no_hbar=no_hbar)
     operation = ScrollTransaction(
         target, lambda: False, clock=lambda: now[0], pause=lambda _: None
     )
@@ -3936,9 +3946,12 @@ def test_list_normalized_cutoff_keeps_confirmed_tuple_without_restoration(
     assert target.steps.closed
 
 
-def test_list_normalized_cancellation_keeps_only_confirmed_interior_tuple() -> None:
+@pytest.mark.parametrize("no_hbar", [False, True])
+def test_list_normalized_cancellation_keeps_only_confirmed_interior_tuple(
+    *, no_hbar: bool
+) -> None:
     """Cancellation after append is confirmed normalization, never an inverse right."""
-    target = NormalizingListTarget()
+    target = NormalizingListTarget(no_hbar=no_hbar)
     operation = ScrollTransaction(
         target,
         lambda: bool(target.moves) and operation._expected is not None,
@@ -3957,11 +3970,12 @@ def test_list_normalized_cancellation_keeps_only_confirmed_interior_tuple() -> N
 
 
 @pytest.mark.parametrize("phase", ["begin", "issued", "spontaneous", "guard"])
+@pytest.mark.parametrize("no_hbar", [False, True])
 def test_list_normalized_later_failure_never_gains_inverse_authority(
-    monkeypatch: pytest.MonkeyPatch, phase: str
+    monkeypatch: pytest.MonkeyPatch, phase: str, *, no_hbar: bool
 ) -> None:
     """Rejected writes stay unresolved; current-state failures cannot authorize undo."""
-    target = NormalizingListTarget()
+    target = NormalizingListTarget(no_hbar=no_hbar)
     operation = transaction(target)
     begin, move = target.steps.begin, target.move
 
@@ -4027,11 +4041,12 @@ def test_list_interior_changed_view_must_remain_finite_and_scrollable(
 
 
 @pytest.mark.parametrize("failure", ["delta", "zero", "pixels", "header", "footer"])
+@pytest.mark.parametrize("no_hbar", [False, True])
 def test_list_normalization_does_not_bypass_physical_proof(
-    monkeypatch: pytest.MonkeyPatch, failure: str
+    monkeypatch: pytest.MonkeyPatch, failure: str, *, no_hbar: bool
 ) -> None:
     """Changed pages still need item agreement, true motion and exact fixed pixels."""
-    target = NormalizingListTarget()
+    target = NormalizingListTarget(no_hbar=no_hbar)
     operation = transaction(target)
     frame = target.frame
     if failure == "delta":
@@ -4046,7 +4061,7 @@ def test_list_normalization_does_not_bypass_physical_proof(
         else:
             image = frame()
         if target.moves and failure in ("pixels", "header", "footer"):
-            row = {"pixels": 60, "header": 0, "footer": 161}[failure]
+            row = {"pixels": 60, "header": 0, "footer": 60 if no_hbar else 161}[failure]
             image.setPixelColor(20, row, QColor("red"))
         return image
 
@@ -4061,9 +4076,12 @@ def test_list_normalization_does_not_bypass_physical_proof(
 
 
 @pytest.mark.parametrize("total", [580, 610])
-def test_list_interior_normalization_keeps_both_final_height_bounds(total: int) -> None:
+@pytest.mark.parametrize("no_hbar", [False, True])
+def test_list_interior_normalization_keeps_both_final_height_bounds(
+    total: int, *, no_hbar: bool
+) -> None:
     """Neither verified interior motion nor a native endpoint relaxes either2% gate."""
-    target = NormalizingListTarget(total=total)
+    target = NormalizingListTarget(total=total, no_hbar=no_hbar)
     operation = transaction(target)
     result = operation.run()
     assert result.image is None
@@ -4093,3 +4111,138 @@ def test_list_changed_view_does_not_admit_backward_requests_or_overshoot(
     assert not target.moves
     assert operation._expected is None
     assert operation._terminal is None
+
+
+@pytest.mark.parametrize("start", ["top", "middle", "bottom"])
+@pytest.mark.parametrize("normalize", [False, True])
+def test_no_hbar_list_keeps_complete_pixels_and_exact_original_native_position(
+    start: str, *, normalize: bool
+) -> None:
+    """H=-1 keeps the List path and original native/H/nonrail anchor."""
+    target = NormalizingListTarget(
+        (1206, 1194, 1212) if normalize else (),
+        start=2400 if start == "middle" else 0,
+        no_hbar=True,
+    )
+    if start == "bottom":
+        target.move(100.0)
+        target.moves.clear()
+    original, position, pixels = (
+        target.scrollbar_state(),
+        target.position(),
+        target.frame(),
+    )
+    operation = transaction(target)
+    result = operation.run()
+    assert result.image is not None
+    assert result.image.size() == QImage(80, 617, QImage.Format.Format_RGB32).size()
+    assert result.image.copy(0, 25, 80, 592) == target.document
+    assert result.image.copy(0, 0, 80, 25) == ListTarget(no_hbar=True).frame().copy(
+        0, 0, 80, 25
+    )
+    assert target.frame().copy(0, 0, 63, 145) == pixels.copy(0, 0, 63, 145)
+    assert target.selected == 1
+    assert len(target.steps.finishes) == len(target.steps.begins) >= 8
+    assert sum(target.steps.finishes) == 472
+    assert target.steps.confirmed
+    assert target.steps.closed
+    assert target.position().horizontal == position.horizontal == -1.0
+    assert target.scrollbar_state().position == original.position
+    assert operation._native == original
+    assert result.restoration == "restored"
+    assert (operation._terminal is None) == (start == "bottom")
+    if start == "bottom":
+        assert target.position() == position
+        assert target.frame() == pixels
+
+
+@pytest.mark.parametrize("horizontal", [-1.0, -0.5, 0.5, 20.0])
+def test_no_hbar_capture_rejects_footer_or_unsupported_horizontal_state(
+    horizontal: float,
+) -> None:
+    """A faulty capability factory cannot extend NoScroll to the footer layout."""
+    target = ListTarget(no_hbar=horizontal != -1.0)
+    target.horizontal = horizontal
+    result = transaction(target).run()
+    assert result.image is None
+    assert "original native state is unsupported" in result.message
+    assert not target.moves
+    assert result.restoration == "unchanged"
+
+
+@pytest.mark.parametrize("horizontal", [-1.0, 0.0])
+def test_list_top_confirmation_requires_exact_original_horizontal(
+    horizontal: float,
+) -> None:
+    """A fresh native top mapping cannot substitute another supported H after seek."""
+    target = ListTarget(no_hbar=True)
+    target.horizontal = horizontal
+    operation = transaction(target)
+    operation._native = target.scrollbar_state()
+    operation._confirm_list_start(target.position(), horizontal)
+    original = operation._expected
+    target.horizontal = -1.0 - horizontal
+    with pytest.raises(CaptureError, match="seeking the top"):
+        operation._confirm_list_start(target.position(), horizontal)
+    assert operation._expected == original
+    assert not target.moves
+
+
+@pytest.mark.parametrize("horizontal", [-1.0, 0.0])
+@pytest.mark.parametrize("phase", ["seek", "begin", "finish", "terminal", "restore"])
+def test_list_horizontal_switch_never_commits_or_issues_recovery_write(
+    monkeypatch: pytest.MonkeyPatch, horizontal: float, phase: str
+) -> None:
+    """NoScroll/zero transitions invalidate ownership at every write boundary."""
+    target = ListTarget(start=2400, no_hbar=True)
+    target.horizontal = horizontal
+    operation = transaction(target)
+    begin = target.steps.begin
+    move, finish, confirm, close = (
+        target.move,
+        target.steps.finish,
+        target.steps.confirm_terminal,
+        target.steps.close,
+    )
+
+    def change_if(stage: str) -> None:
+        if phase == stage:
+            target.horizontal = -1.0 - horizontal
+
+    def changed_move(
+        vertical: float, *, before_write: Callable[[], None] | None = None
+    ) -> None:
+        move(vertical, before_write=before_write)
+        change_if("seek")
+
+    def changed_begin(position: ScrollPosition) -> None:
+        begin(position)
+        change_if("begin")
+
+    def changed_finish(position: ScrollPosition, *, terminal: bool = False) -> int:
+        delta = finish(position, terminal=terminal)
+        change_if("finish")
+        return delta
+
+    def changed_terminal(position: ScrollPosition) -> None:
+        confirm(position)
+        change_if("terminal")
+
+    def changed_close() -> None:
+        close()
+        change_if("restore")
+
+    monkeypatch.setattr(target, "move", changed_move)
+    monkeypatch.setattr(target.steps, "begin", changed_begin)
+    monkeypatch.setattr(target.steps, "finish", changed_finish)
+    monkeypatch.setattr(target.steps, "confirm_terminal", changed_terminal)
+    monkeypatch.setattr(target.steps, "close", changed_close)
+    result = operation.run()
+    assert result.image is None
+    assert result.restoration.startswith("not restored")
+    assert (
+        len(target.moves)
+        == {"seek": 1, "begin": 1, "finish": 2, "terminal": 9, "restore": 9}[phase]
+    )
+    assert target.moves[-1] != 100 * 2400 / 4764
+    assert target.steps.closed

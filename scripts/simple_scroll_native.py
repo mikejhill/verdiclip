@@ -16,8 +16,8 @@ import subprocess
 import sys
 import time
 from collections import Counter
-from collections.abc import Callable
-from contextlib import ExitStack
+from collections.abc import Callable, Generator
+from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, dataclass
 from functools import partial
 from pathlib import Path
@@ -27,6 +27,7 @@ from unittest.mock import patch
 
 from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer
 from PySide6.QtGui import QImage
+from scripts.hosted_display_scale import target_dpi
 from scripts.scrolling_header_probe import (
     probe_ancestors,
     probe_target,
@@ -34,6 +35,7 @@ from scripts.scrolling_header_probe import (
     window_dpi,
 )
 from scripts.scrolling_item_witness import ListItemWitness
+from scripts.scrolling_oracle import verify_sequence
 
 from verdiclip.capture.grabber import MssScreenSource
 from verdiclip.capture.scroll_helper import ScrollHelper
@@ -56,8 +58,13 @@ from verdiclip.platform.windows import WindowInfo, WindowLocator
 
 _ROWS = 120
 _LINE_HEIGHT = 24
+_CSS_DPI = 96
+_EDGE_ROW_DPIS = (96, 120)
+_EDGE_ROW_MODES = ("edge", "edge-nested")
 _START_PERCENT = 37.0
 _DIAGNOSTIC_FRAMES = 2
+_INITIAL_SAMPLE_LIMIT = 8
+_INITIAL_SAMPLE_BYTES = 32 * 1024 * 1024
 _WINDOW_WIDTH = 1000
 _WINDOW_HEIGHT = 760
 _GREEN = 80
@@ -208,7 +215,7 @@ def _target_evidence(
     target: UiaScrollTarget, output: Path, mode: str, selected: dict[str, object]
 ) -> ListItemWitness | None:
     """Record extra geometry only for the explicitly owned representative cases."""
-    if not mode.startswith(_REPRESENTATIVE_PREFIXES):
+    if mode not in _EDGE_ROW_MODES and not mode.startswith(_REPRESENTATIVE_PREFIXES):
         return None
     selected["initial_position"] = asdict(target.position())
     selected["window_dpi"] = window_dpi(target)
@@ -497,6 +504,8 @@ def _record_terminal_position(
     if result.image is None:
         _record_failure_evidence(target, result, selected, output, evidence)
         return
+    if selected.get("mode") in _EDGE_ROW_MODES:
+        selected["final_window_dpi"] = window_dpi(cast("UiaScrollTarget", target))
     if result.restoration == "restored":
         target.check()
         final = asdict(target.position())
@@ -727,7 +736,121 @@ def _record_setter(
     writes.append(percent)
 
 
-def _trace_helper() -> None:
+@contextmanager
+def _retain_initial_samples(
+    receipt: dict[str, object],
+    samples: list[tuple[dict[str, object], QImage]],
+    writes: list[float],
+    *,
+    position: ScrollPosition,
+    selected: dict[str, object],
+) -> Generator[None]:
+    """Copy only already-returned pixels, before the caller's position check.
+
+    These are NOT individually accepted frames. The original method includes
+    its own guards; the unchanged transaction still owns position and equality.
+    Bounds omit diagnostic copies only, including a possible ninth acquisition.
+    """
+    original = UiaScrollTarget.frame
+    retained_bytes = 0
+    attempted = 0
+    rows: list[dict[str, object]] = []
+    errors = cast("list[str]", receipt.setdefault("errors", []))
+    receipt.update(
+        accepted=False,
+        product_capture_qualification=False,
+        phase="target_frame_return_before_position_check",
+        mode=selected.get("mode"),
+        original_window=selected.get("window"),
+        original_input_tick=selected.get("input_tick"),
+        setter_writes=len(writes),
+        samples=rows,
+        truncated=False,
+    )
+    try:
+        receipt["requested_position"] = asdict(position)
+    except Exception as error:  # noqa: BLE001 - metadata is not acceptance
+        errors.append(f"{type(error).__name__}: {error}")
+
+    def retain(target: UiaScrollTarget) -> QImage:
+        nonlocal retained_bytes, attempted
+        index, attempted = attempted, attempted + 1
+        row: dict[str, object] = {"index": index, "setter_writes": len(writes)}
+        try:
+            row["start_monotonic_ns"] = time.perf_counter_ns()
+        except Exception as error:  # noqa: BLE001 - still call the original once
+            errors.append(f"{type(error).__name__}: {error}")
+        image = original(target)
+        try:
+            row["return_monotonic_ns"] = time.perf_counter_ns()
+            rows.append(row)
+            size = image.sizeInBytes()
+            if (
+                len(samples) >= _INITIAL_SAMPLE_LIMIT
+                or size > _INITIAL_SAMPLE_BYTES - retained_bytes
+            ):
+                row["omitted"] = "retention_limit"
+                receipt["truncated"] = True
+            else:
+                detached = image.copy()
+                if detached.isNull():
+                    errors.append("Could not copy initial acquisition sample")
+                else:
+                    samples.append((row, detached))
+                    retained_bytes += detached.sizeInBytes()
+        except Exception as error:  # noqa: BLE001 - preserve the returned QImage
+            errors.append(f"{type(error).__name__}: {error}")
+        return image
+
+    receipt["first_frame"] = "raised"
+    try:
+        with patch.object(UiaScrollTarget, "frame", retain):
+            yield
+        receipt["first_frame"] = "returned"
+    except BaseException as error:
+        receipt["first_frame_error"] = f"{type(error).__name__}: {error}"
+        raise
+    finally:
+        receipt.update(
+            attempted=attempted,
+            retained=len(samples),
+            omitted=attempted - len(samples),
+            retained_bytes=retained_bytes,
+            incomplete=bool(errors)
+            or attempted != len(samples)
+            or receipt["first_frame"] != "returned",
+        )
+
+
+def _save_initial_samples(
+    output: Path,
+    receipt: dict[str, object],
+    samples: list[tuple[dict[str, object], QImage]],
+) -> None:
+    """Flush separate optional evidence only after the existing terminal work."""
+    if not receipt:
+        return
+    errors = cast("list[str]", receipt["errors"])
+    for row, image in samples:
+        try:
+            name = f"initial-sample-{row['index']}.png"
+            if not image.save(str(output / name)):
+                errors.append("Could not save initial acquisition sample")
+            else:
+                row["file"] = name
+        except Exception as error:  # noqa: BLE001 - never replace helper outcome
+            errors.append(f"{type(error).__name__}: {error}")
+    receipt["incomplete"] = receipt["incomplete"] or bool(errors)
+    try:
+        (output / "initial-samples.json").write_text(
+            json.dumps(receipt, indent=2), encoding="utf-8"
+        )
+    except Exception as error:  # noqa: BLE001 - no diagnostic retry
+        errors.append(f"{type(error).__name__}: {error}")
+        receipt["incomplete"] = True
+
+
+def _trace_helper() -> None:  # noqa: PLR0915 - keep the owned patch scope together
     """Save bounded native evidence in this owned test child, never production."""
     logging.basicConfig(level=logging.INFO)
     mode = sys.argv.pop()
@@ -739,7 +862,11 @@ def _trace_helper() -> None:
     observations: list[dict[str, object]] = []
     evidence: ListItemWitness | None = None
     writes: list[float] = []
-    complete_sequence = mode.startswith(_REPRESENTATIVE_PREFIXES)
+    initial_receipt: dict[str, object] = {}
+    initial_samples: list[tuple[dict[str, object], QImage]] = []
+    complete_sequence = mode in _EDGE_ROW_MODES or mode.startswith(
+        _REPRESENTATIVE_PREFIXES
+    )
     frame_limit = MAX_FRAMES if complete_sequence else _DIAGNOSTIC_FRAMES
     retained_pixels = 0
     timing = _PhaseTiming()
@@ -786,7 +913,17 @@ def _trace_helper() -> None:
     def record_frame(operation: ScrollTransaction, position: ScrollPosition) -> QImage:
         nonlocal retained_pixels
         timing.next_frame()
-        frame = acquire(operation, position)
+        if not initial_receipt and mode in ("edge-prose-click", "edge-prose-enter"):
+            with _retain_initial_samples(
+                initial_receipt,
+                initial_samples,
+                writes,
+                position=position,
+                selected=selected,
+            ):
+                frame = acquire(operation, position)
+        else:
+            frame = acquire(operation, position)
         if len(observations) < frame_limit:
             retained_pixels += frame.width() * frame.height()
             if retained_pixels > MAX_PIXELS:
@@ -824,6 +961,7 @@ def _trace_helper() -> None:
             _time_helper_calls(timing, wrappers)
             helper_main()
     finally:
+        _save_initial_samples(output, initial_receipt, initial_samples)
         timing.save(output)
         (output / "target.json").write_text(json.dumps(selected), encoding="utf-8")
         (output / "movement.json").write_text(
@@ -1079,12 +1217,65 @@ def _boundary_rows(labels: list[int | None]) -> tuple[int, int]:
     return content[0], len(labels) - content[-1] - 1
 
 
+def _edge_row_height(output: Path, report: dict[str, object]) -> int:
+    """Scale authored CSS, never measured row spans, for the two qualified cases."""
+    if report.get("application") not in _EDGE_ROW_MODES:
+        return _LINE_HEIGHT
+    selected = json.loads((output / "target.json").read_text(encoding="utf-8"))
+    scale = os.environ.get("DISPLAY_SCALE")
+    expected = _CSS_DPI if scale is None else target_dpi(int(scale))
+    dpi = selected.get("window_dpi")
+    report.update(expected_target_dpi=expected, observed_target_dpi=dpi)
+    if (
+        type(dpi) is not int
+        or dpi not in _EDGE_ROW_DPIS
+        or dpi != expected
+        or type(selected.get("final_window_dpi")) is not int
+        or selected["final_window_dpi"] != dpi
+        or selected.get("mode") != report["application"]
+    ):
+        raise RuntimeError("Independent target DPI does not match the qualified scale")
+    height, remainder = divmod(_LINE_HEIGHT * dpi, _CSS_DPI)
+    _require(not remainder, "Authored CSS row height is not an integral physical span")
+    report["physical_row_height"] = height
+    return height
+
+
+def _verify_edge_sequence(
+    result: ScrollResult, output: Path, report: dict[str, object]
+) -> None:
+    """Require complete independent pixels and exact original footer retention."""
+    if result.image is None:
+        raise RuntimeError(result.message)
+    first = QImage(str(output / "frame-0.png"))
+    _, bottom = _boundary_rows(_row_labels(first))
+    _require(
+        bottom == 0
+        or result.image.copy(
+            0, result.image.height() - bottom, result.image.width(), bottom
+        )
+        == first.copy(0, first.height() - bottom, first.width(), bottom),
+        "The original bottom boundary pixels were changed",
+    )
+    before, after = (QImage(str(output / name)) for name in ("before.png", "after.png"))
+    _require(
+        not before.isNull() and before == after,
+        "Restored pixels differ from the original middle-start view",
+    )
+    report.update(verify_sequence(result.image, output))
+    _require(
+        report["oracle_frames"] == result.frames,
+        "Whole-image oracle did not retain every accepted frame",
+    )
+
+
 def _verify_edge_rows(
     result: ScrollResult, output: Path, report: dict[str, object]
 ) -> None:
     """Verify all visible numbered rows, retaining original boundary chrome."""
     if result.image is None:
         raise RuntimeError(result.message)
+    height = _edge_row_height(output, report)
     first = QImage(str(output / "frame-0.png"))
     top, bottom = _boundary_rows(_row_labels(first))
     labels = _row_labels(result.image)
@@ -1113,13 +1304,15 @@ def _verify_edge_rows(
     # The original top border may cover part of the first authored row. It is
     # retained visibly, not claimed as recovered hidden document pixels.
     _require(
-        all(counts[row] == _LINE_HEIGHT - (top if row == 0 else 0) for row in seen),
+        all(counts[row] == height - (top if row == 0 else 0) for row in seen),
         "Document row spans were lost or duplicated",
     )
     _require(
-        result.image.height() == _ROWS * _LINE_HEIGHT + bottom,
+        result.image.height() == _ROWS * height + bottom,
         "Unexpected document and retained-chrome height",
     )
+    if report.get("application") in _EDGE_ROW_MODES:
+        _verify_edge_sequence(result, output, report)
 
 
 def _require(condition: object, message: str) -> None:

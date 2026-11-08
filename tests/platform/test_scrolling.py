@@ -1148,6 +1148,321 @@ def test_native_row_oracle_counts_content_and_original_chrome(
             _verify_edge_rows(result, tmp_path, report)
 
 
+def _edge_row_sequence(output: Path, dpi: int, mode: str) -> ScrollResult:
+    """Retain authored rows and independent overlapping raw viewport images."""
+    height, bottom = 24 * dpi // 96, 19 if mode == "edge-nested" else 0
+    source = QImage(80, 120 * height + bottom, QImage.Format.Format_RGB32)
+    source.fill(QColor("gray"))
+    painter = QPainter(source)
+    for row in range(120):
+        painter.fillRect(0, row * height, 80, height, QColor(row + 30, 80, 160))
+        painter.fillRect(5, row * height + 12, 2, 2, QColor("black"))
+    painter.fillRect(0, 0, 80, 2, QColor("black"))
+    painter.end()
+    viewport = 360
+    end = source.height() - viewport
+    origins = [*range(0, end, 180), end]
+    positions = []
+    for index, top in enumerate(origins):
+        frame = source.copy(0, top, 80, viewport)
+        if bottom:
+            painter = QPainter(frame)
+            painter.fillRect(0, viewport - bottom, 80, bottom, QColor("gray"))
+            painter.end()
+        assert frame.save(str(output / f"frame-{index}.png"))
+        positions.append(
+            {
+                "horizontal": 35.0,
+                "vertical": 100 * top / end,
+                "view_size": 100 * viewport / source.height(),
+            }
+        )
+    (output / "frames.json").write_text(json.dumps(positions))
+    (output / "target.json").write_text(
+        json.dumps(
+            {
+                "mode": mode,
+                "window_dpi": dpi,
+                "final_window_dpi": dpi,
+                "initial_position": {
+                    "horizontal": 35.0,
+                    "vertical": 37.0,
+                    "view_size": positions[0]["view_size"],
+                },
+            }
+        )
+    )
+    for name in ("before.png", "after.png"):
+        assert source.copy(0, 540, 80, viewport).save(str(output / name))
+    return ScrollResult(source, "", "restored", len(positions))
+
+
+@pytest.mark.parametrize("dpi", [96, 120])
+@pytest.mark.parametrize("mode", ["edge", "edge-nested"])
+def test_edge_rows_require_scaled_authored_spans_and_every_raw_pixel(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, dpi: int, mode: str
+) -> None:
+    """Both scales retain 120 IDs, measured chrome, and the full independent proof."""
+    monkeypatch.delenv("DISPLAY_SCALE", raising=False)
+    if dpi == 120:
+        monkeypatch.setenv("DISPLAY_SCALE", "125")
+    result = _edge_row_sequence(tmp_path, dpi, mode)
+    report: dict[str, object] = {"application": mode}
+    _verify_edge_rows(result, tmp_path, report)
+    height = 24 * dpi // 96
+    assert report["expected_target_dpi"] == report["observed_target_dpi"] == dpi
+    assert report["physical_row_height"] == height
+    assert report["boundary_rows"] == {
+        "top": 2,
+        "bottom": 19 if mode == "edge-nested" else 0,
+    }
+    assert report["content_row_heights"] == [height - 2, *([height] * 119)]
+    assert report["oracle_frames"] == result.frames
+    assert result.image is not None
+    assert report["oracle_verified_rows"] == result.image.height()
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "missing",
+        "null",
+        "string",
+        "bool",
+        "fraction",
+        "wrong",
+        "unsupported",
+        "missing-final",
+        "changed-final",
+        "string-final",
+        "wrong-mode",
+        "missing-scale",
+        "malformed-scale",
+        "empty-scale",
+        "wrong-scale",
+    ],
+)
+def test_edge_row_oracle_rejects_unverified_dpi(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, change: str
+) -> None:
+    """Missing, malformed or disagreeing independent DPI cannot calibrate pixels."""
+    monkeypatch.setenv("DISPLAY_SCALE", "125")
+    result = _edge_row_sequence(tmp_path, 120, "edge")
+    path = tmp_path / "target.json"
+    selected = json.loads(path.read_text())
+    if change == "missing":
+        del selected["window_dpi"]
+    elif change == "missing-final":
+        del selected["final_window_dpi"]
+    elif change in ("changed-final", "string-final"):
+        selected["final_window_dpi"] = 96 if change == "changed-final" else "120"
+    elif change == "wrong-mode":
+        selected["mode"] = "edge-app-click"
+    elif change.endswith("scale"):
+        if change == "missing-scale":
+            monkeypatch.delenv("DISPLAY_SCALE")
+        else:
+            monkeypatch.setenv(
+                "DISPLAY_SCALE",
+                {
+                    "malformed-scale": "one hundred twenty five",
+                    "empty-scale": "",
+                    "wrong-scale": "200",
+                }[change],
+            )
+    else:
+        selected["window_dpi"] = {
+            "null": None,
+            "string": "120",
+            "bool": True,
+            "fraction": 120.5,
+            "wrong": 96,
+            "unsupported": 121,
+        }[change]
+    path.write_text(json.dumps(selected))
+    with pytest.raises((RuntimeError, ValueError)):
+        _verify_edge_rows(result, tmp_path, {"application": "edge"})
+
+
+def _change_edge_span(image: QImage, row: int, delta: int) -> QImage:
+    """Remove or duplicate physical scanlines without altering other row labels."""
+    cut = row * 30 + 15
+    changed = QImage(image.width(), image.height() + delta, image.format())
+    painter = QPainter(changed)
+    painter.drawImage(0, 0, image.copy(0, 0, image.width(), cut))
+    if delta > 0:
+        painter.drawImage(0, cut, image.copy(0, cut, image.width(), delta))
+    painter.drawImage(
+        0,
+        cut + max(delta, 0),
+        image.copy(
+            0,
+            cut + max(-delta, 0),
+            image.width(),
+            image.height() - cut - max(-delta, 0),
+        ),
+    )
+    painter.end()
+    return changed
+
+
+@pytest.mark.parametrize("span", [28, 29, 31])
+@pytest.mark.parametrize("row", [0, 60])
+def test_scaled_edge_oracle_rejects_wrong_authored_spans(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, span: int, row: int
+) -> None:
+    """An interior physical span cannot set its own scale or tolerance."""
+    monkeypatch.setenv("DISPLAY_SCALE", "125")
+    result = _edge_row_sequence(tmp_path, 120, "edge")
+    assert result.image is not None
+    result = replace(result, image=_change_edge_span(result.image, row, span - 30))
+    with pytest.raises(RuntimeError, match="row spans"):
+        _verify_edge_rows(result, tmp_path, {"application": "edge"})
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "lost-id",
+        "duplicate-id",
+        "reordered-ids",
+        "interior-chrome",
+        "top-pixel",
+        "footer-pixel",
+        "text-pixel",
+        "missing-frame",
+        "truncated-frame",
+        "missing-endpoint",
+        "wrong-frame-count",
+        "horizontal",
+    ],
+)
+def test_scaled_edge_oracle_rejects_corruption_and_incomplete_proof(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, change: str
+) -> None:
+    """Color IDs alone cannot qualify corrupted text, boundaries or missing frames."""
+    monkeypatch.setenv("DISPLAY_SCALE", "125")
+    result = _edge_row_sequence(tmp_path, 120, "edge-nested")
+    image = result.image
+    assert image is not None
+    message = "Document rows"
+    if change in ("lost-id", "duplicate-id", "reordered-ids", "interior-chrome"):
+        painter = QPainter(image)
+        if change == "lost-id":
+            painter.fillRect(0, 60 * 30, 80, 30, QColor(89, 80, 160))
+        elif change == "duplicate-id":
+            painter.fillRect(0, 60 * 30 + 15, 80, 15, QColor(89, 80, 160))
+        elif change == "reordered-ids":
+            painter.fillRect(0, 60 * 30, 80, 30, QColor(91, 80, 160))
+            painter.fillRect(0, 61 * 30, 80, 30, QColor(90, 80, 160))
+        else:
+            painter.fillRect(0, 60 * 30, 80, 1, QColor("black"))
+            message = "Unexpected chrome"
+        painter.end()
+    elif change.endswith("pixel"):
+        y = {
+            "top-pixel": 0,
+            "footer-pixel": image.height() - 1,
+            "text-pixel": 60 * 30 + 12,
+        }[change]
+        image.setPixelColor(5, y, QColor("red"))
+        message = {
+            "top-pixel": "top boundary",
+            "footer-pixel": "bottom boundary",
+            "text-pixel": "unverified output rows",
+        }[change]
+    elif change == "missing-frame":
+        (tmp_path / "frame-2.png").unlink()
+        message = "frame geometry"
+    elif change == "truncated-frame":
+        path = tmp_path / "frame-2.png"
+        assert QImage(str(path)).copy(0, 0, 80, 359).save(str(path))
+        message = "frame geometry"
+    elif change == "wrong-frame-count":
+        result = replace(result, frames=result.frames + 1)
+        message = "every accepted frame"
+    else:
+        path = tmp_path / "frames.json"
+        positions = json.loads(path.read_text())
+        if change == "missing-endpoint":
+            positions = positions[:-1]
+            message = "document ends"
+        else:
+            positions[2]["horizontal"] = 36.0
+            message = "frame geometry"
+        path.write_text(json.dumps(positions))
+    with pytest.raises(RuntimeError, match=message):
+        _verify_edge_rows(result, tmp_path, {"application": "edge-nested"})
+
+
+@pytest.mark.parametrize(
+    "change", ["none", "horizontal", "vertical", "view-size", "outer", "pixels"]
+)
+def test_scaled_nested_case_keeps_middle_start_and_exact_restoration_guards(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, change: str
+) -> None:
+    """The real case still rejects any H/V/outer change or one restored pixel."""
+    from scripts import simple_scroll_native as native  # noqa: PLC0415
+
+    monkeypatch.setenv("DISPLAY_SCALE", "125")
+    result = _edge_row_sequence(tmp_path, 120, "edge-nested")
+    start = ScrollPosition(35.0, 37.0, 360 / 3619 * 100)
+    final = {
+        "horizontal": replace(start, horizontal=36.0),
+        "vertical": replace(start, vertical=38.0),
+        "view-size": replace(start, view_size=start.view_size + 1),
+    }.get(change, start)
+    before = QImage(str(tmp_path / "before.png"))
+    after = before.copy()
+    if change == "pixels":
+        after.setPixelColor(3, 3, QColor("red"))
+    area = Rect(0, 0, 80, 360)
+    opened = []
+    for position, frame in (
+        (start, before),
+        (ScrollPosition(-1.0, 0.0, 25.0), before),
+        (final, after),
+        (ScrollPosition(-1.0, 1.0 if change == "outer" else 0.0, 25.0), after),
+    ):
+        target = MagicMock(area=area, _provider_bounds=area, _input_tick=12)
+        target.position.return_value = position
+        target.frame.return_value = frame
+        target.__enter__.return_value = target
+        opened.append(target)
+    window = WindowInfo(17, "VerdiClip scrolling check", Rect(0, 0, 1000, 760))
+    monkeypatch.setattr(native, "_window", lambda: window)
+    monkeypatch.setattr(native, "_prepare", lambda value: value)
+    monkeypatch.setattr(native, "_desktop_evidence", Mock())
+    monkeypatch.setattr(native, "UiaScrollTarget", Mock(side_effect=opened))
+    setup = Mock(return_value=start)
+    monkeypatch.setattr(native, "_position_start", setup)
+    monkeypatch.setattr(native, "_capture", Mock(return_value=result))
+    report: dict[str, object] = {"application": "edge-nested"}
+    if change == "none":
+        native._case("edge-nested", tmp_path, report)
+        assert report["success"] is True
+        assert report["oracle_frames"] == result.frames
+    else:
+        with pytest.raises(
+            RuntimeError,
+            match={
+                "horizontal": "position was not restored",
+                "vertical": "position was not restored",
+                "view-size": "position was not restored",
+                "outer": "moved the outer page",
+                "pixels": "Restored pixels differ",
+            }[change],
+        ):
+            native._case("edge-nested", tmp_path, report)
+        assert not report.get("success")
+    setup.assert_called_once_with(opened[0], report, nested=True)
+    assert report["start"] == {
+        "horizontal": 35.0,
+        "vertical": 37.0,
+        "view_size": start.view_size,
+    }
+
+
 @pytest.mark.parametrize(
     "state",
     [
@@ -2421,20 +2736,28 @@ def test_failed_header_discovery_logs_context_without_replacing_exception(
 class ListStepFixture:
     """Real retained layout and item references with read-only native doubles."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, no_hbar: bool = False) -> None:
         self.target = native_target()
         area, header, rail, footer = footer_parts()
         self.target._area = area
-        self.target._header = _ScrollHeader(header, rail, area, footer=footer)
+        if no_hbar:
+            header.bounds.return_value = Rect(343, 282, 620, 52)
+            rail.bounds.return_value = Rect(963, 282, 34, 425)
+        self.target._header = _ScrollHeader(
+            header, rail, area, footer=None if no_hbar else footer
+        )
         mock(self.target._element.control_type).return_value = 50008
         self.native = ScrollBarState(101, 102, 1, 104, 0, 15999, 597, 0)
-        self.position = ScrollPosition(0, 0, 100 * 597 / 15999)
+        self.position = ScrollPosition(-1 if no_hbar else 0, 0, 100 * 597 / 15999)
         self.target.position = Mock(side_effect=lambda: self.position)
         self.target.scrollbar_state = Mock(side_effect=lambda: self.native)
-        self.items = [header_element(50007, Rect(371, y, 1350, 48)) for y in (514, 570)]
+        self.items = [
+            header_element(50007, Rect(371, y, 592 if no_hbar else 1350, 48))
+            for y in (514, 570)
+        ]
         self.releases: list[Mock] = []
         self.temporary_releases: list[Mock] = []
-        self.children = [header, rail, footer, *self.items]
+        self.children = [header, rail, *([] if no_hbar else [footer]), *self.items]
         self.target._walker = Mock()
         self.target._automation = Mock()
         mock(self.target._automation.same_element).side_effect = lambda a, b: a is b
@@ -2504,7 +2827,7 @@ class ListStepFixture:
             page=612 if terminal else self.native.page,
         )
         self.position = ScrollPosition(
-            0,
+            self.position.horizontal,
             self.native.percent(self.native.position),
             100 * self.native.page / (self.native.maximum - self.native.minimum),
         )
@@ -2706,9 +3029,12 @@ def test_list_steps_reject_raw_shape_or_displacement_disagreement(change: str) -
 @pytest.mark.parametrize(
     "change", ["horizontal", "range", "page-mapping", "native-lost", "role"]
 )
-def test_list_steps_reject_nonterminal_state_changes(change: str) -> None:
+@pytest.mark.parametrize("no_hbar", [False, True])
+def test_list_steps_reject_nonterminal_state_changes(
+    change: str, *, no_hbar: bool
+) -> None:
     """Native range, current page mapping, H and standard List role stay retained."""
-    fixture = ListStepFixture()
+    fixture = ListStepFixture(no_hbar=no_hbar)
     steps = fixture.capability()
     steps.begin(fixture.position)
     fixture.advance()
@@ -3417,11 +3743,12 @@ def test_setter_admission_has_no_intervening_native_work(
 
 @pytest.mark.parametrize("pages", [(612,), (590,), (612, 590, 604)])
 @pytest.mark.parametrize("start", [4000, 8000, 13000])
+@pytest.mark.parametrize("no_hbar", [False, True])
 def test_list_steps_accept_exact_current_page_with_immutable_baseline(
-    pages: tuple[int, ...], start: int
+    pages: tuple[int, ...], start: int, *, no_hbar: bool
 ) -> None:
     """Interior pages may move either way; no original range or anchor is rebased."""
-    fixture = ListStepFixture()
+    fixture = ListStepFixture(no_hbar=no_hbar)
     fixture.native = replace(fixture.native, position=start)
     fixture.position = replace(fixture.position, vertical=fixture.native.percent(start))
     steps = fixture.capability()
@@ -3434,7 +3761,9 @@ def test_list_steps_accept_exact_current_page_with_immutable_baseline(
         fixture.advance(40)
         fixture.native = replace(fixture.native, page=page)
         fixture.position = ScrollPosition(
-            0, fixture.native.percent(fixture.native.position), 100 * page / 15999
+            fixture.position.horizontal,
+            fixture.native.percent(fixture.native.position),
+            100 * page / 15999,
         )
         assert steps.finish(fixture.position) == 40
         assert steps._before is None
@@ -3494,11 +3823,14 @@ def test_list_steps_reject_invalid_current_view(view: float, phase: str) -> None
 @pytest.mark.parametrize(
     "change", ["rail", "parent", "root", "pid", "minimum", "maximum"]
 )
+@pytest.mark.parametrize("no_hbar", [False, True])
 def test_list_steps_normalization_preserves_original_owner_and_range(
     change: str,
+    *,
+    no_hbar: bool,
 ) -> None:
     """A valid changed page cannot hide any owner or content-range change."""
-    fixture = ListStepFixture()
+    fixture = ListStepFixture(no_hbar=no_hbar)
     steps = fixture.capability()
     steps.begin(fixture.position)
     fixture.advance()
@@ -3506,7 +3838,7 @@ def test_list_steps_normalization_preserves_original_owner_and_range(
         fixture.native, page=612, **{change: getattr(fixture.native, change) + 1}
     )
     fixture.position = ScrollPosition(
-        0,
+        fixture.position.horizontal,
         fixture.native.percent(fixture.native.position),
         100 * fixture.native.page / (fixture.native.maximum - fixture.native.minimum),
     )
@@ -3565,4 +3897,111 @@ def test_list_steps_spontaneous_page_change_before_begin_is_not_acknowledged() -
     assert not fixture.releases
     assert steps._before is None
     assert steps._terminal is None
+    mock(fixture.target._scroll.call).assert_not_called()
+
+
+@pytest.mark.parametrize("start", [0, 8000, 15403])
+def test_no_hbar_list_selects_contained_items_from_any_original_position(
+    start: int,
+) -> None:
+    """NoScroll selects the same native proof only with whole raw item rectangles."""
+    fixture = ListStepFixture(no_hbar=True)
+    fixture.native = replace(fixture.native, position=start)
+    fixture.position = replace(fixture.position, vertical=fixture.native.percent(start))
+    original = fixture.native
+    steps = fixture.capability()
+    assert not steps._right_clip
+    assert steps.body == Rect(343, 334, 620, 373)
+    fixture.native = replace(fixture.native, position=0)
+    fixture.position = replace(fixture.position, vertical=0)
+    steps.begin(fixture.position)
+    assert len(fixture.releases) == 2
+    assert all(
+        steps.body.intersected(item.bounds()) == item.bounds() for item in fixture.items
+    )
+    fixture.advance(175, terminal=True)
+    assert steps.finish(fixture.position, terminal=True) == 175
+    steps.confirm_terminal(fixture.position)
+    assert steps._native == original
+    assert fixture.position.horizontal == -1
+    assert all(release.call_count == 1 for release in fixture.releases)
+    mock(fixture.target._scroll.call).assert_not_called()
+
+
+@pytest.mark.parametrize("horizontal", [-1.0, -0.5, 0.5, 20.0])
+def test_no_hbar_list_never_enables_footer_or_other_horizontal_values(
+    horizontal: float,
+) -> None:
+    """NoScroll with a footer and other nonzero states stay outside the capability."""
+    fixture = ListStepFixture(no_hbar=horizontal != -1.0)
+    fixture.position = replace(fixture.position, horizontal=horizontal)
+    assert (
+        fixture.target.list_steps(fixture.position, fixture.check, poll=fixture.poll)
+        is None
+    )
+    mock(fixture.target._walker.relative).assert_not_called()
+    mock(fixture.target._scroll.call).assert_not_called()
+
+
+@pytest.mark.parametrize("part", ["short-rail", "overflowing-header", "missing-rail"])
+def test_no_hbar_list_cannot_construct_an_unproven_layout(part: str) -> None:
+    """The existing no-footer proof rejects clipping or a non-full-height rail."""
+    fixture = ListStepFixture(no_hbar=True)
+    header, rail = fixture.children[:2]
+    if part == "short-rail":
+        rail.bounds.return_value = Rect(963, 282, 34, 391)
+    elif part == "overflowing-header":
+        header.bounds.return_value = Rect(343, 282, 1406, 52)
+    with pytest.raises(CaptureError):
+        _ScrollHeader(
+            header, None if part == "missing-rail" else rail, fixture.target.area
+        )
+    mock(fixture.target._scroll.call).assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        Rect(371, 514, 593, 48),  # right clipping is never allowed for NoScroll
+        Rect(342, 514, 592, 48),
+        Rect(371, 333, 592, 48),
+        Rect(371, 660, 592, 48),
+        Rect(962.75, 514, 0.25, 48),
+        Rect(371, 514, 592, 0.25),
+    ],
+)
+def test_no_hbar_list_rejects_every_clipped_item_and_hit_sliver(raw: Rect) -> None:
+    """Both whole raw rectangles need a strictly interior rounded hit point."""
+    fixture = ListStepFixture(no_hbar=True)
+    fixture.items[0].bounds.return_value = raw
+    steps = fixture.capability()
+    with pytest.raises(CaptureError, match="bounded item pair"):
+        steps.begin(fixture.position)
+    assert not fixture.releases
+    mock(fixture.target._scroll.call).assert_not_called()
+
+
+@pytest.mark.parametrize("horizontal", [-1.0, 0.0])
+@pytest.mark.parametrize("phase", ["begin", "finish", "terminal"])
+def test_list_no_scroll_and_zero_are_not_interchangeable(
+    horizontal: float, phase: str
+) -> None:
+    """Even two individually supported states cannot replace the retained H."""
+    fixture = ListStepFixture(no_hbar=True)
+    fixture.position = replace(fixture.position, horizontal=horizontal)
+    steps = fixture.capability()
+    if phase != "begin":
+        steps.begin(fixture.position)
+        fixture.advance(175, terminal=phase == "terminal")
+    if phase == "terminal":
+        assert steps.finish(fixture.position, terminal=True) == 175
+    fixture.position = replace(fixture.position, horizontal=-1.0 - horizontal)
+    action = {
+        "begin": steps.begin,
+        "finish": steps.finish,
+        "terminal": steps.confirm_terminal,
+    }[phase]
+    with pytest.raises(CaptureError):
+        action(fixture.position)
+    assert all(release.call_count == 1 for release in fixture.releases)
     mock(fixture.target._scroll.call).assert_not_called()

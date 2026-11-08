@@ -132,7 +132,10 @@ def _inspect_result(
     if result.image is None:
         raise RuntimeError(result.message)
     if report.get("explorer_layout") is not None:
-        _taller_target_layout(output, report)
+        if cast("dict[str, object]", report["explorer_layout"])["name"] == "no-hbar":
+            _no_hbar_target_layout(output, report)
+        else:
+            _taller_target_layout(output, report)
     report.update(verify_sequence(result.image, output))
     native._require(
         report["oracle_frames"] == result.frames,
@@ -163,6 +166,62 @@ def _taller_target_layout(output: Path, report: dict[str, object]) -> None:
     )
     if footer is not None:
         report["explorer_body_height"] = footer.top - header.bottom
+
+
+def _no_hbar_geometry(geometry: dict[str, object]) -> dict[str, object]:
+    """Require raw, unclipped no-footer geometry before accepting this fixture."""
+    area, header, footer, rail = list_layout(geometry)
+    body = Rect(area.left, header.bottom, header.width, area.bottom - header.bottom)
+    tree = cast("dict[str, object]", geometry["uia"])
+    nodes = cast("list[dict[str, object]]", tree["nodes"])
+    items = [
+        raw_bounds(node["bounds"])
+        for node in nodes
+        if node["parent"] == 0
+        and node["control_type"] == _LIST_ITEM_ROLE
+        and not node["offscreen"]
+    ]
+    contained = [
+        item for item in items if not item.is_empty and body.intersected(item) == item
+    ]
+    native._require(
+        cast("dict[str, object]", geometry["position"])["horizontal"] == -1.0
+        and footer is None
+        and rail is not None
+        and rail.top == area.top
+        and rail.bottom == area.bottom
+        and len(contained) >= _GEOMETRY_PAIR,
+        "No-hbar Explorer requires H=-1, full-height rail and two contained raw items",
+    )
+    return {
+        "area": asdict(area),
+        "header": asdict(header),
+        "rail": asdict(cast("Rect", rail)),
+        "body": asdict(body),
+        "items": [asdict(item) for item in contained[:_GEOMETRY_PAIR]],
+    }
+
+
+def _no_hbar_target_layout(output: Path, report: dict[str, object]) -> None:
+    geometry = json.loads((output / "header-geometry.json").read_text())
+    target = json.loads((output / "target.json").read_text())
+    layout = _no_hbar_geometry(geometry)
+    timing = json.loads((output / "phase-timing.json").read_text())
+    frames = json.loads((output / "frames.json").read_text())
+    native._require(
+        target["initial_position"]["horizontal"] == -1.0
+        and target["area"] == layout["area"]
+        and timing["errors"] == 0
+        and len(frames) > 1
+        and all(
+            timing["totals"].get(name, {}).get("count", 0) == len(frames) - 1
+            and timing["totals"][name]["exceptions"] == 0
+            for name in ("list_begin", "list_finish")
+        ),
+        "No-hbar capture did not use the native List capability",
+    )
+    report["explorer_target_layout"] = layout
+    report["native_list_capability_used"] = True
 
 
 def _case(kind: str, output: Path, report: dict[str, object]) -> None:
@@ -1704,8 +1763,9 @@ def _window_pid(window: int) -> int:
 class ExplorerCase:
     """Own one new fixture window, never the shell or Explorer broker process."""
 
-    def __init__(self, *, taller: bool = False) -> None:
+    def __init__(self, *, taller: bool = False, no_hbar: bool = False) -> None:
         self.taller = taller
+        self.no_hbar = no_hbar
         self.process: subprocess.Popen[bytes] | None = None
         self.folder: Path | None = None
         self.before: set[int] = set()
@@ -1760,6 +1820,12 @@ class ExplorerCase:
             current.handle == window.handle,
             "Capture setup tried to change the fixture window",
         )
+        if self.no_hbar:
+            current = self._prepare_taller(current)
+            self._hide_navigation_pane(current)
+            # Raw geometry comes from the existing isolated traced helper, not
+            # UIA/MTA construction on this QApplication/OLE thread.
+            return self._verified_window()
         return self._prepare_taller(current) if self.taller else self.prepare(current)
 
     def _prepare_taller(self, window: WindowInfo) -> WindowInfo:
@@ -1782,15 +1848,20 @@ class ExplorerCase:
         requested = Rect(
             area.left + 10,
             area.top + 10,
-            min(native._WINDOW_WIDTH, area.width - 20),
+            area.width - 20
+            if self.no_hbar
+            else min(native._WINDOW_WIDTH, area.width - 20),
             min(_TALL_EXPLORER_HEIGHT, area.height - 20),
         )
         native._require(
             requested.width > 0 and requested.height > native._WINDOW_HEIGHT,
             "Work area cannot fit a taller representative Explorer window",
         )
-        # Reuse exactly the owned fixture positioning path; only its height changes.
-        with patch.object(native, "_WINDOW_HEIGHT", _TALL_EXPLORER_HEIGHT):
+        # Reuse the owned positioning path, widening only to the measured work area.
+        with (
+            patch.object(native, "_WINDOW_HEIGHT", _TALL_EXPLORER_HEIGHT),
+            patch.object(native, "_WINDOW_WIDTH", requested.width),
+        ):
             prepared = self.prepare(window)
         current = self._verified_window()
         bounds = w.RECT()
@@ -1805,7 +1876,7 @@ class ExplorerCase:
             bounds.bottom - bounds.top,
         )
         self.report["explorer_layout"] = {
-            "name": "taller-h0",
+            "name": "no-hbar" if self.no_hbar else "taller-h0",
             "work_area": asdict(area),
             "requested_outer": asdict(requested),
             "actual_outer": asdict(actual),
@@ -1819,6 +1890,193 @@ class ExplorerCase:
             "Taller fixture geometry changed or exceeded its verified work area",
         )
         return current
+
+    def _hide_navigation_pane(self, window: WindowInfo) -> None:
+        """One supported View/Show toggle, only on the verified disposable owner."""
+        native._require(
+            os.environ.get("GITHUB_ACTIONS") == "true"
+            and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted"
+            and self._verified_window() == window,
+            "Navigation-pane setup requires the verified hosted fixture",
+        )
+        native._require(
+            self.pid is not None and self.folder is not None,
+            "Navigation-pane setup lacks retained owner identity",
+        )
+        layout = cast("dict[str, object]", self.report["explorer_layout"])
+        expected = {
+            "pid": self.pid,
+            "folder": str(self.folder),
+            "outer": layout["actual_outer"],
+            "work": layout["work_area"],
+        }
+        powershell = (
+            Path(os.environ["WINDIR"])
+            / "System32/WindowsPowerShell/v1.0/powershell.exe"
+        )
+        script = r"""
+$ErrorActionPreference='Stop'
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class FixtureNative {
+  [DllImport("user32.dll")]
+  public static extern bool SetProcessDpiAwarenessContext(IntPtr context);
+  [DllImport("user32.dll")]
+  public static extern IntPtr GetThreadDpiAwarenessContext();
+  [DllImport("user32.dll")]
+  public static extern bool AreDpiAwarenessContextsEqual(IntPtr a, IntPtr b);
+  [StructLayout(LayoutKind.Sequential)]
+  public struct Rect { public int Left, Top, Right, Bottom; }
+  [DllImport("user32.dll")]
+  public static extern bool GetWindowRect(IntPtr hwnd, out Rect rect);
+  [DllImport("user32.dll")]
+  public static extern bool SystemParametersInfo(
+    uint action, uint param, out Rect rect, uint flags);
+  [DllImport("user32.dll")]
+  public static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+  [DllImport("user32.dll")]
+  public static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
+}
+'@
+if (-not [FixtureNative]::SetProcessDpiAwarenessContext([IntPtr](-4))) {
+  throw 'Could not establish physical per-monitor DPI context'
+}
+function CheckDpi {
+  $context=[FixtureNative]::GetThreadDpiAwarenessContext()
+  if (-not [FixtureNative]::AreDpiAwarenessContextsEqual($context, [IntPtr](-4))) {
+    throw 'Physical per-monitor DPI context changed'
+  }
+}
+CheckDpi
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+$expected='EXPECTED_JSON' | ConvertFrom-Json
+$handle=[IntPtr]HANDLE
+$pidValue=[int]$expected.pid
+$shell=New-Object -ComObject Shell.Application
+function SameRect($actual, $expectedRect) {
+  return ($actual.Left -eq $expectedRect.x -and
+    $actual.Top -eq $expectedRect.y -and
+    $actual.Right -eq ($expectedRect.x + $expectedRect.width) -and
+    $actual.Bottom -eq ($expectedRect.y + $expectedRect.height))
+}
+function Guard($control=$null) {
+  CheckDpi
+  $matches=@($shell.Windows() | Where-Object {
+    [long]$_.HWND -eq $handle.ToInt64() -and
+    [IO.Path]::GetFileName($_.FullName) -ieq 'explorer.exe' -and
+    [IO.Path]::GetFullPath($_.Document.Folder.Self.Path) -eq
+      [IO.Path]::GetFullPath($expected.folder)
+  })
+  [uint32]$actualPid=0
+  $thread=[FixtureNative]::GetWindowThreadProcessId($handle, [ref]$actualPid)
+  $outer=New-Object FixtureNative+Rect
+  $work=New-Object FixtureNative+Rect
+  if ($matches.Count -ne 1 -or $thread -eq 0 -or
+      $actualPid -ne $pidValue -or
+      -not [FixtureNative]::GetWindowRect($handle, [ref]$outer) -or
+      -not [FixtureNative]::SystemParametersInfo(48, 0, [ref]$work, 0) -or
+      -not (SameRect $outer $expected.outer) -or
+      -not (SameRect $work $expected.work)) {
+    throw 'Owned fixture identity or work-area geometry changed'
+  }
+  $current=[Windows.Automation.AutomationElement]::FromHandle($handle)
+  if ($current.Current.ProcessId -ne $pidValue -or
+      $current.Current.IsOffscreen -or -not $current.Current.IsEnabled) {
+    throw 'Owned fixture UIA root changed'
+  }
+  if ($null -ne $control -and
+      ($control.Current.ProcessId -ne $pidValue -or
+       $control.Current.IsOffscreen -or -not $control.Current.IsEnabled -or
+       -not (OwnedControl $control))) {
+    throw 'Retained menu control changed ownership or availability'
+  }
+}
+function OwnedControl($element) {
+  $walker=[Windows.Automation.TreeWalker]::ControlViewWalker
+  for ($depth=0; $depth -lt 16 -and $null -ne $element; $depth++) {
+    $native=[IntPtr]$element.Current.NativeWindowHandle
+    if ($native -ne [IntPtr]::Zero) {
+      return ([FixtureNative]::GetAncestor($native, 3) -eq $handle)
+    }
+    $element=$walker.GetParent($element)
+  }
+  return $false
+}
+function Exact($root, $name, $pidValue) {
+  $condition = [Windows.Automation.AndCondition]::new(
+    [Windows.Automation.PropertyCondition]::new(
+      [Windows.Automation.AutomationElement]::NameProperty, $name),
+    [Windows.Automation.PropertyCondition]::new(
+      [Windows.Automation.AutomationElement]::ProcessIdProperty, [int]$pidValue))
+  $items=$root.FindAll([Windows.Automation.TreeScope]::Descendants, $condition)
+  $visible=@($items | Where-Object {
+    -not $_.Current.IsOffscreen -and $_.Current.IsEnabled })
+  if ($visible.Count -ne 1) { throw "Expected one enabled visible $name control" }
+  if (-not (OwnedControl $visible[0])) {
+    throw "The $name control does not belong to the retained fixture"
+  }
+  return $visible[0]
+}
+Guard
+$root=[Windows.Automation.AutomationElement]::FromHandle([IntPtr]HANDLE)
+$desktop=[Windows.Automation.AutomationElement]::RootElement
+$pattern=[Windows.Automation.ExpandCollapsePattern]::Pattern
+$collapsed=[Windows.Automation.ExpandCollapseState]::Collapsed
+$expanded=[Windows.Automation.ExpandCollapseState]::Expanded
+$view=Exact $root 'View' $pidValue
+$viewPattern=$view.GetCurrentPattern($pattern)
+if ($viewPattern.Current.ExpandCollapseState -ne $collapsed) {
+  throw 'View was not initially collapsed'
+}
+try {
+  Guard $view
+  $viewPattern.Expand()
+  Start-Sleep -Milliseconds 300
+  $show=Exact $desktop 'Show' $pidValue
+  $showPattern=$show.GetCurrentPattern($pattern)
+  Guard $show
+  $showPattern.Expand()
+  Start-Sleep -Milliseconds 300
+  $pane=Exact $desktop 'Navigation pane' $pidValue
+  $toggle=$pane.GetCurrentPattern([Windows.Automation.TogglePattern]::Pattern)
+  $before=$toggle.Current.ToggleState
+  if ($before -eq [Windows.Automation.ToggleState]::Indeterminate) {
+    throw 'Indeterminate navigation pane'
+  }
+  if ($before -eq [Windows.Automation.ToggleState]::On) {
+    Guard $pane
+    $toggle.Toggle()
+  }
+} finally {
+  # Toggle may dismiss both menus. Never dereference their stale wrappers.
+  $currentView=Exact $root 'View' $pidValue
+  $currentPattern=$currentView.GetCurrentPattern($pattern)
+  if ($currentPattern.Current.ExpandCollapseState -eq $expanded) {
+    Guard $currentView
+    $currentPattern.Collapse()
+  }
+  if ($currentPattern.Current.ExpandCollapseState -ne $collapsed) {
+    throw 'Owned View menu did not close'
+  }
+}
+@{ navigation_pane_was_enabled=($before -eq
+  [Windows.Automation.ToggleState]::On) } | ConvertTo-Json -Compress
+""".replace("HANDLE", str(window.handle)).replace(
+            "EXPECTED_JSON", json.dumps(expected).replace("'", "''")
+        )
+        result = subprocess.run(  # noqa: S603 - supported UI on disposable owned fixture
+            [str(powershell), "-NoProfile", "-NonInteractive", "-Command", script],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        self.report["navigation_pane_setup"] = json.loads(result.stdout)
+        native._require(
+            self._verified_window() == window, "Fixture changed during View/Show setup"
+        )
 
     def run(self, kind: str, output: Path, report: dict[str, object]) -> None:
         """Verify exact newly created folder identity before moving or focusing."""
@@ -2264,11 +2522,17 @@ def main() -> None:
     )
     is_explorer = layout.startswith("explorer")
     taller = sys.argv[2:] == ["--taller-explorer"]
+    no_hbar = sys.argv[2:] == ["--no-hbar-explorer"]
     native._require(
-        not sys.argv[2:] or (taller and is_explorer and kind not in _EXPERIMENTS),
-        "Only Explorer capture cases accept --taller-explorer",
+        not sys.argv[2:]
+        or (
+            (taller or no_hbar)
+            and is_explorer
+            and kind not in (*_EXPERIMENTS, _HELPER_OUTPUT)
+        ),
+        "Only Explorer capture cases accept --taller-explorer or --no-hbar-explorer",
     )
-    explorer = ExplorerCase(taller=taller)
+    explorer = ExplorerCase(no_hbar=True) if no_hbar else ExplorerCase(taller=taller)
     with (
         patch.object(native, "_document", lambda **_kwargs: document(layout)),
         patch.object(app, "_verify_edge_rows", _inspect_result),

@@ -3110,14 +3110,20 @@ def test_exact_region_success_rechecks_after_both_handles_close(
     run.target.move.assert_not_called()
 
 
+@pytest.mark.parametrize("no_hbar", [False, True])
 @pytest.mark.parametrize(("work_height", "expected_height"), [(1080, 1000), (980, 960)])
 def test_taller_explorer_changes_only_the_existing_height_cap(
-    monkeypatch: pytest.MonkeyPatch, work_height: int, expected_height: int
+    monkeypatch: pytest.MonkeyPatch,
+    work_height: int,
+    expected_height: int,
+    *,
+    no_hbar: bool,
 ) -> None:
-    """Use unchanged width, fit real work bounds, and retain the exact owner."""
+    """Widen only no-hbar, fit real work bounds, and retain the exact owner."""
     monkeypatch.setenv("GITHUB_ACTIONS", "true")
     monkeypatch.setenv("RUNNER_ENVIRONMENT", "github-hosted")
-    window = WindowInfo(9, "fixture", Rect(10, 10, 1000, expected_height))
+    width = 1900 if no_hbar else 1000
+    window = WindowInfo(9, "fixture", Rect(10, 10, width, expected_height))
     user = Mock()
 
     def work(_action: int, _parameter: int, pointer: c.c_void_p, _flags: int) -> int:
@@ -3129,7 +3135,7 @@ def test_taller_explorer_changes_only_the_existing_height_cap(
         assert handle == 9
         value = c.cast(pointer, c.POINTER(w.RECT)).contents
         value.left, value.top = 10, 10
-        value.right, value.bottom = 1010, 10 + expected_height
+        value.right, value.bottom = 10 + width, 10 + expected_height
         return 1
 
     user.SystemParametersInfoW.side_effect = work
@@ -3138,14 +3144,14 @@ def test_taller_explorer_changes_only_the_existing_height_cap(
 
     def prepare(current: WindowInfo) -> WindowInfo:
         assert current is window
-        assert diagnostics.native._WINDOW_WIDTH == 1000
+        assert width == diagnostics.native._WINDOW_WIDTH
         assert diagnostics.native._WINDOW_HEIGHT == 1000
         return window
 
-    runner = diagnostics.ExplorerCase(taller=True)
+    runner = diagnostics.ExplorerCase(taller=True, no_hbar=no_hbar)
     runner.prepare = Mock(side_effect=prepare)
     monkeypatch.setattr(runner, "_verified_window", lambda: window)
-    assert runner._prepare(window) == window
+    assert runner._prepare_taller(window) == window
     assert diagnostics.native._WINDOW_HEIGHT == 760
     layout = cast("dict[str, object]", runner.report["explorer_layout"])
     assert layout["requested_outer"] == layout["actual_outer"] == asdict(window.bounds)
@@ -3914,3 +3920,246 @@ def test_capture_missing_terminal_retires_owner_without_success(
     helper.shutdown.assert_called_once_with()
     helper.cancel.assert_not_called()
     assert not (tmp_path / "helper.log").exists()
+
+
+@pytest.mark.parametrize(
+    "kind", ["explorer-click", "explorer-enter", *diagnostics._EXPLORER_STARTS]
+)
+def test_no_hbar_option_preserves_case(
+    monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    """The additional fixture preserves all six existing gesture/start paths."""
+    runner = Mock(spec=diagnostics.ExplorerCase)
+    constructor = Mock(return_value=runner)
+    monkeypatch.setattr(diagnostics, "ExplorerCase", constructor)
+    monkeypatch.setattr(
+        diagnostics.sys, "argv", ["diagnostics", kind, "--no-hbar-explorer"]
+    )
+    main = Mock()
+    monkeypatch.setattr(diagnostics.native, "main", main)
+    diagnostics.main()
+    constructor.assert_called_once_with(no_hbar=True)
+    main.assert_called_once_with(gui=True, case=runner.run)
+
+
+def _no_hbar_sample() -> dict[str, object]:
+    area = Rect(0, 0, 654, 425)
+    nodes = [
+        {
+            "parent": -1,
+            "control_type": 50008,
+            "offscreen": False,
+            "bounds": asdict(area),
+        },
+        {
+            "parent": 0,
+            "control_type": 50034,
+            "offscreen": False,
+            "bounds": asdict(Rect(0, 0, 620, 52)),
+        },
+        {
+            "parent": 0,
+            "control_type": 50014,
+            "offscreen": False,
+            "bounds": asdict(Rect(620, 0, 34, 425)),
+        },
+        *[
+            {
+                "parent": 0,
+                "control_type": 50007,
+                "offscreen": False,
+                "bounds": asdict(Rect(0, top, 620, 30)),
+            }
+            for top in (60, 90)
+        ],
+    ]
+    return {
+        "captured_bounds": asdict(area),
+        "position": asdict(ScrollPosition(-1, 0, 10)),
+        "uia": {"nodes": nodes, "truncated": False},
+    }
+
+
+@pytest.mark.parametrize(
+    "change", ["valid", "horizontal", "item", "header", "rail", "truncated"]
+)
+def test_no_hbar_requires_raw_geometry(change: str) -> None:
+    """No clipped raw item, incomplete tree or guessed no-scroll sentinel passes."""
+    geometry = _no_hbar_sample()
+    tree = cast("dict[str, object]", geometry["uia"])
+    nodes = cast("list[dict[str, object]]", tree["nodes"])
+    if change == "horizontal":
+        cast("dict[str, object]", geometry["position"])["horizontal"] = 0
+    elif change == "item":
+        cast("dict[str, object]", nodes[-1]["bounds"])["width"] = 621
+    elif change == "header":
+        cast("dict[str, object]", nodes[1]["bounds"])["width"] = 655
+    elif change == "rail":
+        cast("dict[str, object]", nodes[2]["bounds"])["height"] = 400
+    elif change == "truncated":
+        tree["truncated"] = True
+    if change == "valid":
+        assert (
+            len(cast("list[object]", diagnostics._no_hbar_geometry(geometry)["items"]))
+            == 2
+        )
+    else:
+        with pytest.raises((CaptureError, RuntimeError)):
+            diagnostics._no_hbar_geometry(geometry)
+
+
+@pytest.mark.parametrize("native_calls", [0, 1, 2, 3])
+def test_no_hbar_capture_requires_actual_list_calls(
+    tmp_path: Path, native_calls: int
+) -> None:
+    """A successful generic capture cannot qualify the native List path."""
+    geometry = _no_hbar_sample()
+    (tmp_path / "header-geometry.json").write_text(json.dumps(geometry))
+    (tmp_path / "target.json").write_text(
+        json.dumps(
+            {
+                "initial_position": geometry["position"],
+                "area": geometry["captured_bounds"],
+            }
+        )
+    )
+    (tmp_path / "phase-timing.json").write_text(
+        json.dumps(
+            {
+                "errors": 0,
+                "totals": {
+                    name: {"count": native_calls, "exceptions": 0}
+                    for name in ("list_begin", "list_finish")
+                },
+            }
+        )
+    )
+    report: dict[str, object] = {}
+    (tmp_path / "frames.json").write_text(json.dumps([{}, {}, {}]))
+    if native_calls == 2:
+        diagnostics._no_hbar_target_layout(tmp_path, report)
+        assert report["native_list_capability_used"] is True
+    else:
+        with pytest.raises(RuntimeError, match="native List"):
+            diagnostics._no_hbar_target_layout(tmp_path, report)
+
+
+@pytest.mark.parametrize(
+    "failure", ["host", "identity", "missing_pid", "missing_folder", "command", "none"]
+)
+def test_no_hbar_navigation_is_owned_hosted_and_single_attempt(
+    monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    """Unsupported UI fails without repeated toggling or guessed shortcuts."""
+    monkeypatch.setenv("GITHUB_ACTIONS", "false" if failure == "host" else "true")
+    monkeypatch.setenv("RUNNER_ENVIRONMENT", "github-hosted")
+    monkeypatch.setenv("WINDIR", "C:/Windows")
+    runner = diagnostics.ExplorerCase(no_hbar=True)
+    runner.pid = None if failure == "missing_pid" else 123
+    runner.folder = None if failure == "missing_folder" else Path("C:/fixture's folder")
+    window = WindowInfo(9, "fixture", Rect(10, 10, 1900, 1000))
+    runner.report["explorer_layout"] = {
+        "actual_outer": asdict(window.bounds),
+        "work_area": asdict(Rect(0, 0, 1920, 1080)),
+    }
+    monkeypatch.setattr(
+        runner,
+        "_verified_window",
+        Mock(return_value=None if failure == "identity" else window),
+    )
+    command = Mock(
+        return_value=Mock(stdout='{"navigation_pane_was_enabled": true}'),
+        side_effect=RuntimeError("unsupported UI") if failure == "command" else None,
+    )
+    monkeypatch.setattr(diagnostics.subprocess, "run", command)
+    if failure == "none":
+        runner._hide_navigation_pane(window)
+        assert runner.report["navigation_pane_setup"] == {
+            "navigation_pane_was_enabled": True
+        }
+    else:
+        with pytest.raises(RuntimeError):
+            runner._hide_navigation_pane(window)
+    assert command.call_count == int(failure in ("command", "none"))
+    if command.called:
+        assert command.call_args.kwargs["timeout"] == 10
+        script = command.call_args.args[0][-1]
+        assert "FromHandle([IntPtr]9)" in script
+        assert "'View'" in script
+        assert "'Show'" in script
+        assert "'Navigation pane'" in script
+        assert script.count("$toggle.Toggle()") == 1
+        assert "finally {" in script
+        assert "$show.GetCurrentPattern($pattern).Collapse()" not in script
+        assert "InvokePattern" not in script
+        assert "$currentView=Exact $root" in script
+        assert "Owned View menu did not close" in script
+        assert "$pidValue=$root.Current.ProcessId" not in script
+        assert "$pidValue=[int]$expected.pid" in script
+        assert '"pid": 123' in script
+        assert "fixture''s folder" in script
+        assert "SameRect $outer $expected.outer" in script
+        assert "SameRect $work $expected.work" in script
+        assert "if (-not (OwnedControl $visible[0]))" in script
+        assert "SetProcessDpiAwarenessContext([IntPtr](-4))" in script
+        assert "AreDpiAwarenessContextsEqual($context, [IntPtr](-4))" in script
+        assert script.index("CheckDpi\n") < script.index("$expected=")
+        assert "function Guard($control=$null) {\n  CheckDpi" in script
+        assert "$control.Current.ProcessId -ne $pidValue" in script
+        assert "-not (OwnedControl $control)" in script
+        for mutation, control in (
+            ("$viewPattern.Expand()", "$view"),
+            ("$showPattern.Expand()", "$show"),
+            ("$toggle.Toggle()", "$pane"),
+            ("$currentPattern.Collapse()", "$currentView"),
+        ):
+            assert (
+                script[: script.index(mutation)].rstrip().endswith(f"Guard {control}")
+            )
+        assert "if ($before -eq [Windows.Automation.ToggleState]::On)" in script
+
+
+def test_no_hbar_workflow_retains_original_cases_and_budgets() -> None:
+    """No-hbar capture adds distinct jobs without replacing existing qualification."""
+    source = Path(".github/workflows/simple-scroll-native.yml").read_text()
+    _, representative = source.split("  representative-layout:", 1)
+    assert "layout: [taller]" in representative
+    assert (
+        "name: Representative layout / ${{ matrix.scale }}% / ${{ matrix.application }}"
+        "${{ matrix.layout == 'no-hbar' && ' / no-hbar' || '' }}"
+    ) in representative
+    assert (
+        "name: scrolling-representative-${{ matrix.scale }}-${{ matrix.application }}"
+        "${{ matrix.layout == 'no-hbar' && '-no-hbar' || '' }}"
+    ) in representative
+    assert "matrix.layout || 'taller'" not in representative
+    for scale in (125, 200):
+        for case in ("explorer-click", "explorer-enter", *diagnostics._EXPLORER_STARTS):
+            assert (
+                f"{{scale: {scale}, application: {case}, layout: no-hbar}}"
+                in representative
+            )
+    assert "--no-hbar-explorer" in representative
+    assert "--taller-explorer" in representative
+    assert "timeout-minutes: 8" in representative
+    assert "timeout-minutes: 2" in representative
+    assert "continue-on-error" not in representative
+
+
+def test_no_hbar_setup_never_opens_uia_on_gui_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The existing isolated helper owns geometry/UIA, not QApplication/OLE."""
+    runner = diagnostics.ExplorerCase(no_hbar=True)
+    window = WindowInfo(9, "fixture", Rect(10, 10, 1900, 1000))
+    monkeypatch.setattr(runner, "_verified_window", Mock(return_value=window))
+    prepare = Mock(return_value=window)
+    hide = Mock()
+    monkeypatch.setattr(runner, "_prepare_taller", prepare)
+    monkeypatch.setattr(runner, "_hide_navigation_pane", hide)
+    factory = Mock(side_effect=AssertionError("GUI-thread UIA construction"))
+    monkeypatch.setattr(diagnostics, "UiaScrollTarget", factory)
+    assert runner._prepare(window) == window
+    prepare.assert_called_once_with(window)
+    hide.assert_called_once_with(window)
+    factory.assert_not_called()

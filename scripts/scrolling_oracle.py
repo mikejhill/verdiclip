@@ -57,6 +57,9 @@ class _NativeListOracle:
             raise RuntimeError("Whole-image oracle native List bounds changed")
         if not isinstance(target, dict):
             raise TypeError("Whole-image oracle has malformed raw native target")
+        self.horizontal = cast("dict[str, object]", target["initial_position"])[
+            "horizontal"
+        ]
         self.initial = self._rails(target.get("initial_native"), identity=True)
         if any(state["pos"] != state["min"] for state in self.initial[1:]):
             raise RuntimeError("Whole-image oracle native horizontal origin changed")
@@ -129,7 +132,7 @@ class _NativeListOracle:
         if not (
             _same_float(position["vertical"], percent)
             and _same_float(position["view_size"], view)
-            and position["horizontal"] == 0.0
+            and position["horizontal"] == self.horizontal
             and (len(states) == 1 or states[1]["pos"] == states[1]["min"])
         ):
             raise RuntimeError("Whole-image oracle native/UIA mapping differs")
@@ -273,8 +276,9 @@ class _HeaderOracle:
             return False
         visible = raw.intersected(self._body)
         if visible == raw:
-            return recorded is None or raw_bounds(recorded) == visible
-        if not (
+            if recorded is not None and raw_bounds(recorded) != visible:
+                return False
+        elif not (
             self.footer_height > 0
             and self._horizontal == horizontal == 0.0
             and self._body.left <= raw.left < self._body.right < raw.right
@@ -462,7 +466,11 @@ def _native_selected(
         raise TypeError("Whole-image oracle has malformed raw native target")
     horizontal = _original_horizontal(geometry, target, positions)
     _area, _header, footer, rail = list_layout(geometry)
-    if horizontal != 0.0 or rail is None:
+    if (
+        horizontal not in (-1.0, 0.0)
+        or rail is None
+        or (horizontal == -1.0 and footer is not None)
+    ):
         return False
     tree = cast("dict[str, object]", geometry["uia"])
     nodes = cast("list[dict[str, object]]", tree["nodes"])

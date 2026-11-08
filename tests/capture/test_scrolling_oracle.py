@@ -16,7 +16,11 @@ import pytest
 from PySide6.QtGui import QColor, QImage, QPainter
 from scripts import simple_scroll_native as native
 from scripts.scrolling_diagnostics import _inspect_result, _verify_restored
-from scripts.scrolling_oracle import _native_displacement, verify_sequence
+from scripts.scrolling_oracle import (
+    _native_displacement,
+    _oracle_header,
+    verify_sequence,
+)
 
 from verdiclip.capture.scrolling import ScrollPosition, ScrollResult
 from verdiclip.exceptions import CaptureError
@@ -127,7 +131,10 @@ def test_failure_position_is_guarded_read_only_evidence(failure: str | None) -> 
         }
 
 
-@pytest.mark.parametrize("mode", ["explorer-enter", "edge-panel-enter", "edge"])
+@pytest.mark.parametrize(
+    "mode",
+    ["explorer-enter", "edge-panel-enter", "edge", "edge-nested", "edge-app-click"],
+)
 def test_trace_failure_keeps_original_result_and_adds_only_final_observation(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: str
 ) -> None:
@@ -148,7 +155,7 @@ def test_trace_failure_keeps_original_result_and_adds_only_final_observation(
     assert results[0] is result
     target.move.assert_not_called()
     selected = json.loads((tmp_path / "target.json").read_text())
-    if mode == "edge":
+    if mode == "edge-app-click":
         assert selected == {}
         target.position.assert_not_called()
     else:
@@ -406,7 +413,21 @@ def test_independent_oracle_rejects_corrupt_output(tmp_path: Path, change: str) 
         verify_sequence(source, tmp_path)
 
 
-@pytest.mark.parametrize("mode", ["edge", "edge-panel-enter"])
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "edge",
+        "edge-nested",
+        "edge-panel-enter",
+        "edge-cancel",
+        "edge-input",
+        "edge-covered",
+        "edge-app-escape",
+        "edge-app-click",
+        "edge-select",
+        "edge-unqualified",
+    ],
+)
 @pytest.mark.parametrize("budget", [3000, 10000])
 def test_trace_retention_is_explicit_and_bounded(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: str, budget: int
@@ -423,13 +444,106 @@ def test_trace_retention_is_explicit_and_bounded(
             native.ScrollTransaction._frame(Mock(), ScrollPosition(0.0, percent, 50.0))
 
     monkeypatch.setattr(native, "helper_main", capture)
-    if mode == "edge-panel-enter" and budget == 3000:
+    complete = mode in ("edge", "edge-nested", "edge-panel-enter")
+    if complete and budget == 3000:
         with pytest.raises(CaptureError, match="Diagnostic frame evidence"):
             native._trace_helper()
     else:
         native._trace_helper()
-    expected = 3 if mode == "edge-panel-enter" and budget == 10000 else 2
+    expected = 3 if complete and budget == 10000 else 2
     assert len(list(tmp_path.glob("*.png"))) == expected
+
+
+@pytest.mark.parametrize("mode", ["edge", "edge-nested"])
+def test_edge_trace_retains_independent_initial_and_final_dpi(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: str
+) -> None:
+    """Use the native probe twice and no List witness or product DPI evidence."""
+    frame = QImage(24, 60, QImage.Format.Format_RGB32)
+    frame.fill(QColor("white"))
+    target = Mock(_window=17, _input_tick=12, area=Rect(0, 0, 24, 60))
+    target.position.return_value = ScrollPosition(35.0, 37.0, 50.0)
+    dpi = Mock(side_effect=[120, 96])
+    witness, probe = Mock(), Mock()
+    result = ScrollResult(frame, "", "restored", 1)
+    monkeypatch.setattr(native, "window_dpi", dpi)
+    monkeypatch.setattr(native, "ListItemWitness", witness)
+    monkeypatch.setattr(native, "probe_target", probe)
+    monkeypatch.setattr(native.UiaScrollTarget, "_open", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(native.ScrollTransaction, "run", lambda _: result)
+    monkeypatch.setattr("sys.argv", ["-c", str(tmp_path), mode])
+    returned = []
+
+    def capture() -> None:
+        native.UiaScrollTarget._open(target, Point(0, 0))
+        returned.append(native.ScrollTransaction.run(Mock(_target=target)))
+
+    monkeypatch.setattr(native, "helper_main", capture)
+    native._trace_helper()
+    assert returned == [result]
+    selected = json.loads((tmp_path / "target.json").read_text())
+    assert selected["mode"] == mode
+    assert selected["window_dpi"] == 120
+    assert selected["final_window_dpi"] == 96
+    assert selected["initial_position"] == {
+        "horizontal": 35.0,
+        "vertical": 37.0,
+        "view_size": 50.0,
+    }
+    assert [call.args for call in dpi.call_args_list] == [(target,), (target,)]
+    witness.assert_not_called()
+    probe.assert_not_called()
+    target.move.assert_not_called()
+    monkeypatch.setenv("DISPLAY_SCALE", "125")
+    with pytest.raises(RuntimeError, match="target DPI"):
+        native._edge_row_height(tmp_path, {"application": mode})
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "edge-cancel",
+        "edge-input",
+        "edge-covered",
+        "edge-app-escape",
+        "edge-app-click",
+        "edge-select",
+        "edge-unqualified",
+    ],
+)
+def test_edge_target_probe_does_not_extend_other_modes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: str
+) -> None:
+    """Broad Edge-prefix matching must not alter interruption or tray semantics."""
+    target, read = Mock(), Mock()
+    monkeypatch.setattr(native, "window_dpi", read)
+    selected: dict[str, object] = {}
+    assert native._target_evidence(target, tmp_path, mode, selected) is None
+    assert selected == {}
+    read.assert_not_called()
+    target.position.assert_not_called()
+
+
+@pytest.mark.parametrize("mode", ["edge", "edge-nested"])
+def test_edge_complete_trace_retains_existing_frame_limit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: str
+) -> None:
+    """Additional raw coverage cannot grow the existing eighty-frame budget."""
+    assert native.MAX_FRAMES == 80
+    assert native.MAX_PIXELS == 40_000_000
+    frame = QImage(24, 60, QImage.Format.Format_RGB32)
+    frame.fill(QColor("white"))
+    monkeypatch.setattr(native.ScrollTransaction, "_frame", lambda *_: frame)
+    monkeypatch.setattr("sys.argv", ["-c", str(tmp_path), mode])
+
+    def capture() -> None:
+        for index in range(81):
+            native.ScrollTransaction._frame(Mock(), ScrollPosition(0.0, index, 50.0))
+
+    monkeypatch.setattr(native, "helper_main", capture)
+    native._trace_helper()
+    assert len(json.loads((tmp_path / "frames.json").read_text())) == 80
+    assert len(list(tmp_path.glob("frame-*.png"))) == 80
 
 
 @pytest.mark.parametrize(
@@ -1588,13 +1702,14 @@ def test_native_oracle_requires_exact_raw_role_geometry(
         verify_sequence(image, tmp_path)
 
 
-def test_native_oracle_supports_one_rail_without_inventing_a_footer(
-    tmp_path: Path,
-) -> None:
+def _one_rail_sequence(
+    tmp_path: Path, *, horizontal: float, interior_page: int = 492
+) -> QImage:
     """The optional-footer route needs contained raw items and the same full proof."""
-    image = _native_list_sequence(tmp_path)
+    image = _native_list_sequence(tmp_path, interior_page=interior_page)
     geometry_path = tmp_path / "header-geometry.json"
     geometry = json.loads(geometry_path.read_text())
+    geometry["position"]["horizontal"] = horizontal
     nodes = geometry["uia"]["nodes"]
     nodes.pop()
     nodes[1]["bounds"]["width"] = 20
@@ -1603,23 +1718,42 @@ def test_native_oracle_supports_one_rail_without_inventing_a_footer(
     path = tmp_path / "frames.json"
     positions = json.loads(path.read_text())
     for index, position in enumerate(positions):
+        position["horizontal"] = horizontal
         position["native_scroll_info"].pop()
+        if "native_scroll_info_after" in position:
+            position["native_scroll_info_after"].pop()
         for item in position["native_item_witness"]["items"]:
             for phase in ("before", "after", "visible_before", "visible_after"):
                 item[phase]["width"] = 16
         frame = QImage(str(tmp_path / f"frame-{index}.png"))
         assert frame.copy(0, 0, 24, 125).save(str(tmp_path / f"frame-{index}.png"))
-    positions[-1]["native_scroll_info_after"].pop()
     path.write_text(json.dumps(positions))
     target_path = tmp_path / "target.json"
     target = json.loads(target_path.read_text())
+    target["initial_position"]["horizontal"] = horizontal
     target["initial_native"].pop()
     target["area"]["height"] = 125
     target_path.write_text(json.dumps(target))
-    assert (
-        verify_sequence(image.copy(0, 0, 24, 245), tmp_path)["oracle_verified_rows"]
-        == 245
+    return image.copy(0, 0, 24, 245)
+
+
+@pytest.mark.parametrize("horizontal", [-1.0, 0.0])
+@pytest.mark.parametrize("interior_page", [480, 492, 500])
+def test_native_oracle_supports_one_rail_without_inventing_a_footer(
+    tmp_path: Path, horizontal: float, interior_page: int
+) -> None:
+    """Whole raw items and fresh native proof qualify either exact original H."""
+    image = _one_rail_sequence(
+        tmp_path, horizontal=horizontal, interior_page=interior_page
     )
+    report = verify_sequence(image, tmp_path)
+    assert report["oracle_verified_rows"] == 245
+    header = _oracle_header(
+        tmp_path, json.loads((tmp_path / "frames.json").read_text())
+    )
+    assert header is not None
+    assert header.native is not None
+    assert header.native.horizontal == horizontal
 
 
 @pytest.mark.parametrize("field", ["min", "max", "page"])
@@ -1828,10 +1962,10 @@ def test_native_selection_cross_checks_each_original_horizontal_observation(
         verify_sequence(image, tmp_path)
 
 
-def test_hminus_one_native_telemetry_does_not_select_the_h0_model(
+def test_hminus_one_partial_native_evidence_cannot_fall_back(
     tmp_path: Path,
 ) -> None:
-    """A one-rail generic List keeps legacy coverage without a new terminal receipt."""
+    """NoScroll with native support now needs complete owned List receipts."""
     image = _header_sequence(tmp_path)
     geometry_path = tmp_path / "header-geometry.json"
     geometry = json.loads(geometry_path.read_text())
@@ -1864,7 +1998,8 @@ def test_hminus_one_native_telemetry_does_not_select_the_h0_model(
             }
         )
     )
-    assert verify_sequence(image, tmp_path)["oracle_verified_rows"] == 125
+    with pytest.raises(RuntimeError, match="native owner"):
+        verify_sequence(image, tmp_path)
 
 
 @pytest.mark.parametrize("change", ["missing-geometry", "missing-role-handle"])
@@ -2523,3 +2658,60 @@ def test_trace_routes_only_prose_failures_to_same_ancestor_receipt(
     assert not (tmp_path / "restoration.json").exists()
     target.move.assert_not_called()
     target.frame.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "initial-native",
+        "frame-native",
+        "terminal-repeat",
+        "owner",
+        "range",
+        "mapping",
+        "right-clipping",
+        "hit-sliver",
+        "rail",
+        "horizontal",
+        "pixels",
+    ],
+)
+def test_no_hbar_oracle_never_downgrades_failed_native_or_raw_proof(
+    tmp_path: Path, failure: str
+) -> None:
+    """Failed native, item and pixel proof cannot downgrade to the generic route."""
+    image = _one_rail_sequence(tmp_path, horizontal=-1.0, interior_page=500)
+    assert verify_sequence(image, tmp_path)["oracle_verified_rows"] == 245
+    path = tmp_path / "frames.json"
+    positions = json.loads(path.read_text())
+    if failure == "initial-native":
+        target_path = tmp_path / "target.json"
+        target = json.loads(target_path.read_text())
+        target.pop("initial_native")
+        target_path.write_text(json.dumps(target))
+    elif failure == "rail":
+        geometry_path = tmp_path / "header-geometry.json"
+        geometry = json.loads(geometry_path.read_text())
+        geometry["uia"]["nodes"][2]["native_handle"] = None
+        geometry_path.write_text(json.dumps(geometry))
+    elif failure == "frame-native":
+        positions[1].pop("native_scroll_info")
+    elif failure == "terminal-repeat":
+        positions[-1].pop("native_scroll_info_after")
+    elif failure == "owner":
+        positions[1]["native_scroll_info_after"][0]["root"] += 1
+    elif failure in ("range", "mapping"):
+        positions[1]["native_scroll_info"][0][
+            "max" if failure == "range" else "pos"
+        ] += 1
+    elif failure in ("right-clipping", "hit-sliver"):
+        item = positions[1]["native_item_witness"]["items"][0]
+        for phase in ("before", "after", "visible_before", "visible_after"):
+            item[phase]["width"] = 40 if failure == "right-clipping" else 0.25
+    elif failure == "horizontal":
+        positions[1]["horizontal"] = 0.0
+    else:
+        image.setPixelColor(0, 80, QColor("red"))
+    path.write_text(json.dumps(positions))
+    with pytest.raises(RuntimeError):
+        verify_sequence(image, tmp_path)
