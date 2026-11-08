@@ -19,6 +19,7 @@ _READY = replace(
 )
 _SUCCESS = {
     "status": "selection_completed",
+    "scale_target": 200,
     "closed_owned_window": True,
     "resolution_verified": True,
     "resolution_target": {"width": 2560, "height": 1440},
@@ -109,7 +110,7 @@ def test_success_measures_again_after_selection(
     monkeypatch.setattr(scale, "select_scale", select)
     assert scale.qualify(tmp_path) == 0
     assert display.read.call_count == 2
-    select.assert_called_once_with(tmp_path)
+    select.assert_called_once_with(tmp_path, scale=200)
     report = json.loads((tmp_path / "display-scale.json").read_text())
     assert report["status"] == "setup_verified"
     assert report["before"]["monitor_scale"] == 100
@@ -127,7 +128,7 @@ def test_native_readback_can_settle_without_repeating_selection(
     monkeypatch.setattr(scale, "select_scale", select)
     assert scale.qualify(tmp_path) == 0
     assert display.read.call_count == 3
-    select.assert_called_once_with(tmp_path)
+    select.assert_called_once_with(tmp_path, scale=200)
 
 
 @pytest.mark.usefixtures("hosted")
@@ -254,7 +255,8 @@ def test_windows_utf8_bom_cleanup_receipt_is_accepted(
     """Windows PowerShell's literal EF BB BF prefix is not malformed JSON."""
     payload = (
         b'\xef\xbb\xbf{\r\n "status": "selection_completed",\r\n'
-        b' "closed_owned_window": true,\r\n "resolution_verified": true,\r\n'
+        b' "scale_target": 200, "closed_owned_window": true,\r\n'
+        b' "resolution_verified": true,\r\n'
         b' "resolution_target": {"width": 2560, "height": 1440},\r\n'
         b' "resolution_after": {"width": 2560, "height": 1440},\r\n'
         b' "resolution_selection_attempted": false,\r\n'
@@ -478,3 +480,81 @@ def test_native_readback_failure_still_releases_window_and_context() -> None:
         display.read()
     user.DestroyWindow.assert_called_once_with(22)
     assert user.SetThreadDpiAwarenessContext.call_args.args == (123,)
+
+
+@pytest.mark.parametrize(("percent", "dpi"), [(125, 120), (200, 192)])
+def test_actual_scale_requires_its_exact_native_dpi(percent: int, dpi: int) -> None:
+    """125% is 120 native DPI; neither 150 DPI nor a 200% reading qualifies it."""
+    reading = replace(_READY, monitor_scale=percent, window_dpi=dpi)
+    assert reading.qualifies(percent)
+    for wrong in (96, 150, 192 if dpi == 120 else 120):
+        assert not replace(reading, window_dpi=wrong).qualifies(percent)
+    assert not reading.qualifies(200 if percent == 125 else 125)
+
+
+@pytest.mark.parametrize("percent", [0, 100, 150, 201])
+def test_unsupported_scale_never_opens_settings(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, percent: int
+) -> None:
+    """The requested scale is a finite choice, not a generic UI mutation input."""
+    display, select = Mock(), Mock()
+    monkeypatch.setattr(scale, "Display", display)
+    monkeypatch.setattr(scale, "select_scale", select)
+    with pytest.raises(ValueError, match="Only actual 125% or 200%"):
+        scale.qualify(tmp_path / "absent", scale=percent)
+    display.assert_not_called()
+    select.assert_not_called()
+    assert not (tmp_path / "absent").exists()
+
+
+@pytest.mark.usefixtures("hosted")
+@pytest.mark.parametrize("actual_dpi", [120, 150, 192])
+def test_125_settings_selection_needs_independent_native_readback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, actual_dpi: int
+) -> None:
+    """Choosing 125% cannot bypass the independent target-scale readback."""
+    reading = replace(_READY, monitor_scale=125, window_dpi=actual_dpi)
+    _install_display(monkeypatch, _BASE, reading)
+    select = Mock(return_value=(2560, 1440))
+    monkeypatch.setattr(scale, "select_scale", select)
+    assert scale.qualify(tmp_path, scale=125) == (0 if actual_dpi == 120 else 1)
+    select.assert_called_once_with(tmp_path, scale=125)
+    report = json.loads((tmp_path / "display-scale.json").read_text())
+    assert report["scale_target"] == 125
+    assert report["dpi_target"] == 120
+    assert report["after"]["window_dpi"] == actual_dpi
+
+
+@pytest.mark.usefixtures("hosted")
+@pytest.mark.parametrize("receipt_scale", [125, 200, None])
+def test_settings_child_receipt_is_bound_to_the_requested_scale(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, receipt_scale: int | None
+) -> None:
+    """The existing one-shot Settings child must attest the exact offered choice."""
+
+    def complete(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        (tmp_path / "settings-outcome.json").write_text(
+            json.dumps({**_SUCCESS, "scale_target": receipt_scale}), encoding="utf-8"
+        )
+        return subprocess.CompletedProcess([], 0, "", "")
+
+    run = Mock(side_effect=complete)
+    monkeypatch.setattr(scale.subprocess, "run", run)
+    if receipt_scale == 125:
+        assert scale.select_scale(tmp_path, scale=125) == (2560, 1440)
+    else:
+        with pytest.raises(RuntimeError, match="requested scale"):
+            scale.select_scale(tmp_path, scale=125)
+    run.assert_called_once()
+    arguments = run.call_args.args[0]
+    assert arguments[arguments.index("-Scale") + 1] == "125"
+    assert run.call_args.kwargs["timeout"] == 60
+
+
+def test_settings_scale_choice_remains_exact_and_single_attempt() -> None:
+    """Both finite offered choices use the original bounded owned Settings path."""
+    script = Path(scale.__file__).with_suffix(".ps1").read_text()
+    assert "[ValidateSet(125, 200)][int]$Scale = 200" in script
+    assert "('^' + $Scale + '%([ ]+\\(Recommended\\))?$')" in script
+    assert script.count("$pattern.Select()") == 1
+    assert "scale_target = $Scale" in script

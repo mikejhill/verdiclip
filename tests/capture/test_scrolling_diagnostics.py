@@ -2979,3 +2979,282 @@ def test_exact_region_success_rechecks_after_both_handles_close(
     ]
     assert cast("dict[str, object]", evidence["exact_region"])["passed"] is True
     run.target.move.assert_not_called()
+
+
+@pytest.mark.parametrize(("work_height", "expected_height"), [(1080, 1000), (980, 960)])
+def test_taller_explorer_changes_only_the_existing_height_cap(
+    monkeypatch: pytest.MonkeyPatch, work_height: int, expected_height: int
+) -> None:
+    """Use unchanged width, fit real work bounds, and retain the exact owner."""
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("RUNNER_ENVIRONMENT", "github-hosted")
+    window = WindowInfo(9, "fixture", Rect(10, 10, 1000, expected_height))
+    user = Mock()
+
+    def work(_action: int, _parameter: int, pointer: c.c_void_p, _flags: int) -> int:
+        value = c.cast(pointer, c.POINTER(w.RECT)).contents
+        value.left, value.top, value.right, value.bottom = 0, 0, 1920, work_height
+        return 1
+
+    def rectangle(handle: int, pointer: c.c_void_p) -> int:
+        assert handle == 9
+        value = c.cast(pointer, c.POINTER(w.RECT)).contents
+        value.left, value.top = 10, 10
+        value.right, value.bottom = 1010, 10 + expected_height
+        return 1
+
+    user.SystemParametersInfoW.side_effect = work
+    user.GetWindowRect.side_effect = rectangle
+    monkeypatch.setattr(c, "WinDLL", Mock(return_value=user), raising=False)
+
+    def prepare(current: WindowInfo) -> WindowInfo:
+        assert current is window
+        assert diagnostics.native._WINDOW_WIDTH == 1000
+        assert diagnostics.native._WINDOW_HEIGHT == 1000
+        return window
+
+    runner = diagnostics.ExplorerCase(taller=True)
+    runner.prepare = Mock(side_effect=prepare)
+    monkeypatch.setattr(runner, "_verified_window", lambda: window)
+    assert runner._prepare(window) == window
+    assert diagnostics.native._WINDOW_HEIGHT == 760
+    layout = cast("dict[str, object]", runner.report["explorer_layout"])
+    assert layout["requested_outer"] == layout["actual_outer"] == asdict(window.bounds)
+    assert layout["work_area"] == asdict(Rect(0, 0, 1920, work_height))
+
+
+@pytest.mark.parametrize(
+    "failure", ["host", "work", "small", "prepare", "bounds", "identity"]
+)
+def test_taller_explorer_never_accepts_unverified_or_offscreen_geometry(
+    monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    """No retry or fallback follows an unavailable area or changed native HWND."""
+    monkeypatch.setenv("GITHUB_ACTIONS", "false" if failure == "host" else "true")
+    monkeypatch.setenv("RUNNER_ENVIRONMENT", "github-hosted")
+    user = Mock()
+
+    def work(_action: int, _parameter: int, pointer: c.c_void_p, _flags: int) -> int:
+        value = c.cast(pointer, c.POINTER(w.RECT)).contents
+        value.left, value.top = 0, 0
+        value.right, value.bottom = 1920, 760 if failure == "small" else 1080
+        return int(failure != "work")
+
+    user.SystemParametersInfoW.side_effect = work
+    # A true return with absent/mismatched bounds must not be accepted.
+    user.GetWindowRect.return_value = 1
+    monkeypatch.setattr(c, "WinDLL", Mock(return_value=user), raising=False)
+    runner = diagnostics.ExplorerCase(taller=True)
+    window = WindowInfo(9, "fixture", Rect(10, 10, 1000, 1000))
+    prepare = Mock(
+        return_value=window,
+        side_effect=RuntimeError("Move failed") if failure == "prepare" else None,
+    )
+    runner.prepare = prepare
+    monkeypatch.setattr(
+        runner,
+        "_verified_window",
+        Mock(
+            return_value=window,
+            side_effect=RuntimeError("Identity changed")
+            if failure == "identity"
+            else None,
+        ),
+    )
+    with pytest.raises(RuntimeError):
+        runner._prepare_taller(window)
+    assert diagnostics.native._WINDOW_HEIGHT == 760
+    assert prepare.call_count == int(failure in ("prepare", "bounds", "identity"))
+
+
+@pytest.mark.parametrize(
+    "kind", ["explorer-click", "explorer-enter", *diagnostics._EXPLORER_STARTS]
+)
+def test_taller_option_retains_the_existing_gesture_and_start_case(
+    monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    """An explicit fixture flag does not rename product cases or change routing."""
+    runner = Mock(spec=diagnostics.ExplorerCase)
+    constructor = Mock(return_value=runner)
+    monkeypatch.setattr(diagnostics, "ExplorerCase", constructor)
+    monkeypatch.setattr(
+        diagnostics.sys, "argv", ["diagnostics", kind, "--taller-explorer"]
+    )
+    main = Mock()
+    monkeypatch.setattr(diagnostics.native, "main", main)
+    diagnostics.main()
+    constructor.assert_called_once_with(taller=True)
+    main.assert_called_once_with(gui=True, case=runner.run)
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["edge-prose-click", "--taller-explorer"],
+        ["explorer-step-geometry", "--taller-explorer"],
+        ["explorer-click", "--anything"],
+    ],
+)
+def test_taller_option_rejects_nonfixture_or_unrecognized_requests(
+    monkeypatch: pytest.MonkeyPatch, arguments: list[str]
+) -> None:
+    """Only the explicitly owned Explorer capture fixture receives taller setup."""
+    monkeypatch.setattr(diagnostics.sys, "argv", ["diagnostics", *arguments])
+    main = Mock()
+    monkeypatch.setattr(diagnostics.native, "main", main)
+    with pytest.raises(RuntimeError, match="Only Explorer capture"):
+        diagnostics.main()
+    main.assert_not_called()
+
+
+@pytest.mark.parametrize("horizontal", [0.0, 50.0, -1.0])
+def test_taller_layout_records_actual_header_rails_and_body(
+    tmp_path: Path, horizontal: float
+) -> None:
+    """The representative label is earned from raw roles, not outer-window size."""
+    position = ScrollPosition(horizontal, 0.0, 10.0)
+    geometry = _step_geometry(position)
+    target = {
+        "initial_position": asdict(position),
+        "area": geometry["captured_bounds"],
+        "window_dpi": 192,
+    }
+    (tmp_path / "header-geometry.json").write_text(json.dumps(geometry))
+    (tmp_path / "target.json").write_text(json.dumps(target))
+    report: dict[str, object] = {}
+    if horizontal == 0.0:
+        diagnostics._taller_target_layout(tmp_path, report)
+        assert report["explorer_body_height"] == 339
+    else:
+        with pytest.raises(RuntimeError, match="measured H0/two-rail"):
+            diagnostics._taller_target_layout(tmp_path, report)
+    layout = cast("dict[str, object]", report["explorer_target_layout"])
+    assert layout["horizontal"] == horizontal
+    assert layout["header"] == asdict(Rect(0, 0, 620, 52))
+    assert layout["footer"] == asdict(Rect(0, 391, 620, 34))
+    assert layout["rail"] == asdict(Rect(620, 0, 34, 391))
+
+
+@pytest.mark.parametrize(("percent", "dpi"), [(125, 120), (200, 192)])
+def test_focused_scale_changes_only_expected_target_dpi(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, percent: int, dpi: int
+) -> None:
+    """125% runs the same strict outline witness, without inventing a new mask."""
+    monkeypatch.setenv("DISPLAY_SCALE", str(percent))
+    capture = Mock()
+    monkeypatch.setattr(diagnostics, "EdgeFocusedCapture", Mock(return_value=capture))
+    report: dict[str, object] = {}
+    diagnostics._case("edge-panel-focused-click", tmp_path, report)
+    assert report["expected_target_dpi"] == dpi
+    assert diagnostics._SCALED_FIXTURE_DPI == 192
+    assert diagnostics._SCALED_FIXTURE_BORDER == 6
+    capture.run.assert_called_once_with()
+
+
+def test_representative_cases_are_independent_from_unchanged_stress_job() -> None:
+    """Failure isolation needs no unsafe post-cleanup continuation or false green."""
+    workflow = Path(".github/workflows/simple-scroll-native.yml").read_text()
+    original, representative = workflow.split("  representative-layout:", 1)
+    assert "Native 200% capture failed: $case" in original
+    assert "--taller-explorer" not in original
+    assert "fail-fast: false" in representative
+    assert "continue-on-error" not in representative
+    assert "needs:" not in representative
+    assert "scale: [125, 200]" in representative
+    for case in ("explorer-click", "explorer-enter", *diagnostics._EXPLORER_STARTS):
+        assert case in representative
+    for case in (
+        "edge-prose-click",
+        "edge-prose-enter",
+        "edge-panel-click",
+        "edge-panel-enter",
+        *diagnostics._FOCUSED_PANELS,
+    ):
+        assert f"{{scale: 125, application: {case}}}" in representative
+        assert f"{{scale: 200, application: {case}}}" not in representative
+    assert "'125' = 120; '200' = 192" in representative
+    assert "steps.setup.outcome == 'success'" in representative
+    assert "QT_SCALE_FACTOR" not in representative
+
+
+@pytest.mark.parametrize("failure", ["area", "raw_horizontal", "one_rail"])
+def test_taller_layout_cannot_assume_h0_or_two_rails(
+    tmp_path: Path, failure: str
+) -> None:
+    """A well-formed but different actual layout cannot earn the fixture label."""
+    position = ScrollPosition(0.0, 0.0, 10.0)
+    geometry = _step_geometry(position)
+    target = {
+        "initial_position": asdict(position),
+        "area": geometry["captured_bounds"],
+        "window_dpi": 192,
+    }
+    if failure == "area":
+        target["area"] = asdict(Rect(0, 0, 654, 424))
+    elif failure == "raw_horizontal":
+        geometry["position"] = asdict(ScrollPosition(20.0, 0.0, 10.0))
+    else:
+        tree = cast("dict[str, object]", geometry["uia"])
+        nodes = cast("list[dict[str, object]]", tree["nodes"])
+        nodes[1]["bounds"] = asdict(Rect(0, 0, 620, 52))
+        nodes[2]["bounds"] = asdict(Rect(620, 0, 34, 425))
+        del nodes[3]
+    (tmp_path / "header-geometry.json").write_text(json.dumps(geometry))
+    (tmp_path / "target.json").write_text(json.dumps(target))
+    with pytest.raises(RuntimeError, match="measured H0/two-rail"):
+        diagnostics._taller_target_layout(tmp_path, {})
+
+
+@pytest.mark.parametrize(
+    "kind",
+    ["edge-panel-click", "edge-panel-enter", *diagnostics._FOCUSED_PANELS],
+)
+@pytest.mark.parametrize("damage", ["none", "outer_nonring", "ring"])
+def test_120_dpi_panel_restoration_requires_every_final_pixel(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, kind: str, damage: str
+) -> None:
+    """A valid focused start cannot excuse final damage inside the legacy inset."""
+    capture = _focused_capture(tmp_path)
+    capture.kind = kind
+    capture.report["expected_target_dpi"] = 120
+    before, first = _scaled_restoration_pair()
+    capture._focus_before = FrozenScreen(before, capture.window.bounds)
+    capture._focus_after = FrozenScreen(first, capture.window.bounds)
+    assert first.save(str(tmp_path / "frame-0.png"))
+    assert first.save(str(tmp_path / "frame-1.png"))
+    state = {"horizontal": 0.0, "vertical": 0.0, "view_size": 10.0}
+    target = {
+        "window": capture.window.handle,
+        "window_dpi": 120,
+        "area": asdict(capture.window.bounds),
+        "initial_position": state,
+    }
+    (tmp_path / "target.json").write_text(json.dumps(target), encoding="utf-8")
+    (tmp_path / "restoration.json").write_text(
+        json.dumps({"initial": state, "final": state}), encoding="utf-8"
+    )
+    # This is the actual main() helper binding, not a mocked restoration verdict.
+    monkeypatch.setattr(
+        diagnostics.app.AppCapture, "_verify_restored", diagnostics._verify_restored
+    )
+    after = first.copy()
+    if damage != "none":
+        x, y = (89, 30) if damage == "outer_nonring" else (0, 30)
+        assert (before.pixel(x, y) == 0xFFB1B5BA) == (damage == "ring")
+        after.setPixel(x, y, 0xFF000000)
+        # Demonstrate the exact old false-positive: its entire inset is unchanged.
+        assert first.copy(4, 4, 82, 52) == after.copy(4, 4, 82, 52)
+    verify = (
+        capture._verify_restored
+        if kind in diagnostics._FOCUSED_PANELS
+        else lambda image: diagnostics._verify_restored(capture, image)
+    )
+    if damage == "none":
+        verify(after)
+        assert capture.report["restored_pixels"] == "exact"
+    else:
+        with pytest.raises(RuntimeError, match=r"120-DPI.*exact whole-frame"):
+            verify(after)
+        assert "restored_pixels" not in capture.report
+    if kind in diagnostics._FOCUSED_PANELS:
+        assert "focused_start_evidence" in capture.report

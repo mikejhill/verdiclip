@@ -195,3 +195,79 @@ jobs:
           path: artifacts/simple-scroll
           if-no-files-found: warn
           retention-days: 14
+
+  representative-layout:
+    if: >-
+      github.repository == 'mikejhill/verdiclip' &&
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
+      github.head_ref == 'diagnostics/scrolling-0140' &&
+      github.event.pull_request.draft == true
+    name: Representative layout / ${{ matrix.scale }}% / ${{ matrix.application }}
+    runs-on: windows-2025
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        scale: [125, 200]
+        application: [explorer-click, explorer-enter,
+          explorer-middle-click, explorer-middle-enter,
+          explorer-bottom-click, explorer-bottom-enter]
+        include:
+          - {scale: 125, application: edge-prose-click}
+          - {scale: 125, application: edge-prose-enter}
+          - {scale: 125, application: edge-panel-click}
+          - {scale: 125, application: edge-panel-enter}
+          - {scale: 125, application: edge-panel-focused-click}
+          - {scale: 125, application: edge-panel-focused-enter}
+    env:
+      QT_QPA_PLATFORM: windows
+      PYTHONUTF8: "1"
+      SCROLL_APPLICATION: ${{ matrix.application }}
+      DISPLAY_SCALE: ${{ matrix.scale }}
+      QUALIFICATION_HEAD: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Require exact representative source
+        run: |
+          $actual = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0 -or $actual -ne $env:QUALIFICATION_HEAD) { throw 'Source mismatch' }
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - run: uv sync --locked
+      - name: Set the offered real display scale in this disposable runner
+        id: setup
+        timeout-minutes: 2
+        run: uv run python -m scripts.hosted_display_scale --scale "$env:DISPLAY_SCALE"
+      - name: Capture the existing owned representative fixture
+        timeout-minutes: 2
+        run: |
+          uv run python -c "import os; from scripts.hosted_display_scale import Display; assert Display().read().qualifies(int(os.environ['DISPLAY_SCALE']))"
+          if ($LASTEXITCODE -ne 0) { throw 'Display changed before representative capture' }
+          if ($env:SCROLL_APPLICATION.StartsWith('explorer-')) {
+            uv run python -m scripts.scrolling_diagnostics "$env:SCROLL_APPLICATION" --taller-explorer
+          } else {
+            uv run python -m scripts.scrolling_diagnostics "$env:SCROLL_APPLICATION"
+          }
+          if ($LASTEXITCODE -ne 0) { throw "Representative capture failed: $env:SCROLL_APPLICATION" }
+      - name: Verify native target DPI and the same display after capture
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        timeout-minutes: 1
+        run: |
+          $target = Get-Content -Raw "artifacts/simple-scroll/$env:SCROLL_APPLICATION/target.json" | ConvertFrom-Json
+          $dpi = @{ '125' = 120; '200' = 192 }[$env:DISPLAY_SCALE]
+          if ($target.window_dpi -ne $dpi) { throw 'Representative target DPI does not match the actual requested scale' }
+          uv run python -c "import os; from scripts.hosted_display_scale import Display; assert Display().read().qualifies(int(os.environ['DISPLAY_SCALE']))"
+          if ($LASTEXITCODE -ne 0) { throw 'Display changed during representative capture' }
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: scrolling-representative-${{ matrix.scale }}-${{ matrix.application }}
+          path: artifacts/simple-scroll
+          if-no-files-found: warn
+          retention-days: 14

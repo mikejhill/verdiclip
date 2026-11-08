@@ -30,6 +30,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QWidget
 from scripts import simple_scroll_app as app
 from scripts import simple_scroll_native as native
+from scripts.hosted_display_scale import target_dpi
 from scripts.scrolling_header_probe import _scroll_info, probe_target
 from scripts.scrolling_item_witness import (
     ListItemWitness,
@@ -60,6 +61,7 @@ _SCROLLBAR_ROLE = 50014
 _SB_CTL = 2
 _MAX_SCROLLBAR_CHILDREN = 64
 _MAX_SCROLLBAR_ANCESTORS = 8
+_TALL_EXPLORER_HEIGHT = 1000
 _SCALED_FIXTURE_DPI = 192
 _SCALED_FIXTURE_BORDER = 6
 _FOCUSED_PANELS = ("edge-panel-focused-click", "edge-panel-focused-enter")
@@ -124,11 +126,38 @@ def _inspect_result(
 ) -> None:
     if result.image is None:
         raise RuntimeError(result.message)
+    if report.get("explorer_layout") is not None:
+        _taller_target_layout(output, report)
     report.update(verify_sequence(result.image, output))
     native._require(
         report["oracle_frames"] == result.frames,
         "Whole-image oracle did not retain every accepted frame",
     )
+
+
+def _taller_target_layout(output: Path, report: dict[str, object]) -> None:
+    """Record actual H0/header/two-rail geometry, without assumed pixel sizes."""
+    geometry = json.loads((output / "header-geometry.json").read_text())
+    target = json.loads((output / "target.json").read_text())
+    area, header, footer, rail = list_layout(geometry)
+    report["explorer_target_layout"] = {
+        "area": asdict(area),
+        "header": asdict(header),
+        "footer": None if footer is None else asdict(footer),
+        "rail": None if rail is None else asdict(rail),
+        "horizontal": target["initial_position"]["horizontal"],
+        "window_dpi": target["window_dpi"],
+    }
+    native._require(
+        target["initial_position"]["horizontal"] == 0.0
+        and geometry["position"]["horizontal"] == 0.0
+        and target["area"] == asdict(area)
+        and footer is not None
+        and rail is not None,
+        "Taller Explorer did not expose the measured H0/two-rail layout",
+    )
+    if footer is not None:
+        report["explorer_body_height"] = footer.top - header.bottom
 
 
 def _case(kind: str, output: Path, report: dict[str, object]) -> None:
@@ -137,6 +166,9 @@ def _case(kind: str, output: Path, report: dict[str, object]) -> None:
     if kind in _EXPLORER_STARTS:
         ExplorerStartCapture(kind, output, report).run()
     elif kind in _FOCUSED_PANELS:
+        report["expected_target_dpi"] = target_dpi(
+            int(os.environ.get("DISPLAY_SCALE", "200"))
+        )
         EdgeFocusedCapture(kind, output, report).run()
     else:
         app._case(kind, output, report)
@@ -241,6 +273,13 @@ def _verify_restored(capture: app.AppCapture, after: QImage) -> None:
         json.loads(target_path.read_text(encoding="utf-8"))
         if target_path.is_file()
         else {}
+    )
+    native._require(
+        not (
+            capture.kind.startswith("edge-panel-")
+            and target.get("window_dpi") == target_dpi(125)
+        ),
+        "120-DPI panel restoration requires exact whole-frame pixels",
     )
     if (
         capture.kind.startswith("edge-panel-")
@@ -557,8 +596,9 @@ class EdgeFocusedCapture(app.AppCapture):
         first = QImage(str(self.output / "frame-0.png"))
         second = QImage(str(self.output / "frame-1.png"))
         before, focused = self._focus_before.crop(area), self._focus_after.crop(area)
+        expected_dpi = self.report.get("expected_target_dpi", _SCALED_FIXTURE_DPI)
         native._require(
-            target["window_dpi"] == _SCALED_FIXTURE_DPI
+            target["window_dpi"] == expected_dpi
             and target["window"] == self.window.handle
             and area.contains(
                 Point(**cast("dict[str, float]", self.report["focus_setup_point"]))
@@ -567,7 +607,8 @@ class EdgeFocusedCapture(app.AppCapture):
             and state["initial"]["horizontal"] == state["initial"]["vertical"] == 0.0
             and (first.width(), first.height()) == (area.width, area.height)
             and first == focused,
-            "The actual first frame did not retain the focused 192-DPI starting state",
+            "The actual first frame did not retain the focused "
+            f"{expected_dpi}-DPI starting state",
         )
         evidence = _focused_panel_evidence(before, first, second)
         native._require(
@@ -1648,7 +1689,8 @@ def _window_pid(window: int) -> int:
 class ExplorerCase:
     """Own one new fixture window, never the shell or Explorer broker process."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, taller: bool = False) -> None:
+        self.taller = taller
         self.process: subprocess.Popen[bytes] | None = None
         self.folder: Path | None = None
         self.before: set[int] = set()
@@ -1703,7 +1745,65 @@ class ExplorerCase:
             current.handle == window.handle,
             "Capture setup tried to change the fixture window",
         )
-        return self.prepare(current)
+        return self._prepare_taller(current) if self.taller else self.prepare(current)
+
+    def _prepare_taller(self, window: WindowInfo) -> WindowInfo:
+        native._require(
+            os.environ.get("GITHUB_ACTIONS") == "true"
+            and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted",
+            "Taller Explorer setup requires a disposable hosted runner",
+        )
+        user = c.WinDLL("user32", use_last_error=True)
+        user.SystemParametersInfoW.argtypes = (w.UINT, w.UINT, c.c_void_p, w.UINT)
+        user.SystemParametersInfoW.restype = w.BOOL
+        user.GetWindowRect.argtypes = (w.HWND, c.POINTER(w.RECT))
+        user.GetWindowRect.restype = w.BOOL
+        work = w.RECT()
+        native._require(
+            user.SystemParametersInfoW(48, 0, c.byref(work), 0),
+            "Could not read the taller fixture work area",
+        )
+        area = Rect(work.left, work.top, work.right - work.left, work.bottom - work.top)
+        requested = Rect(
+            area.left + 10,
+            area.top + 10,
+            min(native._WINDOW_WIDTH, area.width - 20),
+            min(_TALL_EXPLORER_HEIGHT, area.height - 20),
+        )
+        native._require(
+            requested.width > 0 and requested.height > native._WINDOW_HEIGHT,
+            "Work area cannot fit a taller representative Explorer window",
+        )
+        # Reuse exactly the owned fixture positioning path; only its height changes.
+        with patch.object(native, "_WINDOW_HEIGHT", _TALL_EXPLORER_HEIGHT):
+            prepared = self.prepare(window)
+        current = self._verified_window()
+        bounds = w.RECT()
+        native._require(
+            user.GetWindowRect(current.handle, c.byref(bounds)),
+            "Could not read the taller fixture outer rectangle",
+        )
+        actual = Rect(
+            bounds.left,
+            bounds.top,
+            bounds.right - bounds.left,
+            bounds.bottom - bounds.top,
+        )
+        self.report["explorer_layout"] = {
+            "name": "taller-h0",
+            "work_area": asdict(area),
+            "requested_outer": asdict(requested),
+            "actual_outer": asdict(actual),
+            "visible_bounds": asdict(current.bounds),
+        }
+        native._require(
+            prepared == current
+            and actual == requested
+            and area.intersected(actual) == actual
+            and area.intersected(current.bounds) == current.bounds,
+            "Taller fixture geometry changed or exceeded its verified work area",
+        )
+        return current
 
     def run(self, kind: str, output: Path, report: dict[str, object]) -> None:
         """Verify exact newly created folder identity before moving or focusing."""
@@ -1874,8 +1974,13 @@ def main() -> None:
         ),
         "Unknown representative document layout",
     )
-    explorer = ExplorerCase()
     is_explorer = layout.startswith("explorer")
+    taller = sys.argv[2:] == ["--taller-explorer"]
+    native._require(
+        not sys.argv[2:] or (taller and is_explorer and kind not in _EXPERIMENTS),
+        "Only Explorer capture cases accept --taller-explorer",
+    )
+    explorer = ExplorerCase(taller=taller)
     with (
         patch.object(native, "_document", lambda **_kwargs: document(layout)),
         patch.object(app, "_verify_edge_rows", _inspect_result),

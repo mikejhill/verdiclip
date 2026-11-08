@@ -1,6 +1,9 @@
 # Test-only companion to hosted_display_scale.py. All UIA calls are isolated
 # behind the Python parent's 60-second timeout. No registry or private APIs.
-param([Parameter(Mandatory = $true)][string]$OutputDirectory)
+param(
+    [Parameter(Mandatory = $true)][string]$OutputDirectory,
+    [ValidateSet(125, 200)][int]$Scale = 200
+)
 $ErrorActionPreference = 'Stop'
 if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted') {
     throw 'Only a disposable GitHub-hosted runner may run this helper'
@@ -94,6 +97,7 @@ $identity = $null
 $process = $null
 $started = $null
 $outcome = @{
+    scale_target = $Scale
     status = 'unsupported'; stage = 'preflight'; selection_attempted = $false
     resolution_selection_attempted = $false; keep_changes_attempted = $false
     keep_changes_confirmed = $false; resolution_verified = $false
@@ -476,7 +480,7 @@ try {
     Assert-Owned $combo
     $pattern.Expand()
     Start-Sleep -Milliseconds 200
-    $outcome.stage = 'find_200'
+    $outcome.stage = 'find_scale_option'
     $optionNodes = @(Get-BoundedTree $combo)
     $outcome.observed_list_items = @($optionNodes | Where-Object {
         $_.Current.ControlType -eq [Windows.Automation.ControlType]::ListItem
@@ -487,16 +491,16 @@ try {
     })
     $options = @($optionNodes | Where-Object {
         $_.Current.ControlType -eq [Windows.Automation.ControlType]::ListItem -and
-        $_.Current.Name -match '^200%([ ]+\(Recommended\))?$'
+        $_.Current.Name -match ('^' + $Scale + '%([ ]+\(Recommended\))?$')
     })
     $outcome.target_candidates = $options.Count
     if ($options.Count -ne 1 -or -not $options[0].Current.IsEnabled) {
-        throw 'No unique enabled 200% scale option'
+        throw "No unique enabled $Scale% scale option"
     }
     if (-not $options[0].TryGetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern, [ref]$pattern)) {
-        throw '200% option lacks SelectionItem support'
+        throw "$Scale% option lacks SelectionItem support"
     }
-    $outcome.stage = 'select_200'
+    $outcome.stage = 'select_scale_option'
     Assert-Owned $options[0]
     $outcome.selection_attempted = $true
     $outcome | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $OutputDirectory 'settings-outcome.json')

@@ -1,12 +1,14 @@
-"""Qualify real 200% scaling on one disposable hosted Windows display.
+"""Qualify real 125% or 200% scaling on one disposable hosted Windows display.
 
 This probe uses only offered Windows Settings resolution and Scale selections.
 It does not qualify scrolling: the eventual target HWND must separately report
-192 DPI on a monitor reporting 200%. Run before starting the application tests.
+120/192 DPI on a monitor reporting 125%/200%, respectively.
+Run before starting the application tests.
 """
 
 from __future__ import annotations
 
+import argparse
 import ctypes as c
 import ctypes.wintypes as w
 import json
@@ -19,7 +21,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 _SCALE = 200
-_DPI = 192
+_TARGETS = {125: 120, 200: 192}
 _RESOLUTIONS = ((2560, 1440), (1920, 1200), (1600, 1200))
 _PER_MONITOR_AWARE = 2
 _TIMEOUT = 60
@@ -57,14 +59,26 @@ class Reading:
 
     @property
     def qualified(self) -> bool:
-        """A successful-looking output from a failed HRESULT is not evidence."""
+        """Keep the existing real-200% qualification contract."""
+        return self.qualifies(_SCALE)
+
+    def qualifies(self, scale: int) -> bool:
+        """Require matching monitor and native DPI, never synthetic scaling."""
+        dpi = target_dpi(scale)
         return (
             self.monitor_count == 1
             and self.scale_hresult == 0
-            and self.monitor_scale == _SCALE
-            and self.window_dpi == _DPI
+            and self.monitor_scale == scale
+            and self.window_dpi == dpi
             and self.window_awareness == _PER_MONITOR_AWARE
         )
+
+
+def target_dpi(scale: int) -> int:
+    """Reject unsupported requests before any native operation or UI mutation."""
+    if scale not in _TARGETS:
+        raise ValueError("Only actual 125% or 200% scaling is supported")
+    return _TARGETS[scale]
 
 
 class _MonitorInfo(c.Structure):
@@ -172,8 +186,9 @@ class Display:
                 raise RuntimeError("Could not close the owned DPI probe window")
 
 
-def select_scale(output: Path) -> tuple[int, int]:
+def select_scale(output: Path, *, scale: int = _SCALE) -> tuple[int, int]:
     """One Settings-only UIA attempt; a timeout is uncertain, never retried."""
+    target_dpi(scale)
     require_hosted()
     receipt = output / "settings-outcome.json"
     receipt.write_text('{"status": "not_started"}', encoding="utf-8")
@@ -191,6 +206,8 @@ def select_scale(output: Path) -> tuple[int, int]:
             str(script),
             "-OutputDirectory",
             str(output.resolve()),
+            "-Scale",
+            str(scale),
         ],
         capture_output=True,
         text=True,
@@ -214,6 +231,8 @@ def select_scale(output: Path) -> tuple[int, int]:
         and outcome.get("closed_owned_window") is True
     ):
         raise RuntimeError("Settings owned-window disappearance was not confirmed")
+    if outcome.get("scale_target") != scale:
+        raise RuntimeError("Settings receipt does not match the requested scale")
     resolution = next(
         (
             (width, height)
@@ -244,12 +263,19 @@ def select_scale(output: Path) -> tuple[int, int]:
 
 
 def _require_reading(
-    reading: Reading, *, initial: bool, resolution: tuple[int, int] | None = None
+    reading: Reading,
+    *,
+    initial: bool,
+    scale: int = _SCALE,
+    resolution: tuple[int, int] | None = None,
 ) -> None:
     if reading.monitor_count != 1 or reading.scale_hresult != 0:
         raise RuntimeError("Setup requires one monitor with successful scale readback")
-    if not initial and not reading.qualified:
-        raise RuntimeError("Actual monitor scale=200 and owned window DPI=192 required")
+    if not initial and not reading.qualifies(scale):
+        raise RuntimeError(
+            f"Actual monitor scale={scale} and owned window "
+            f"DPI={target_dpi(scale)} required"
+        )
     if (
         resolution is not None
         and (
@@ -290,12 +316,15 @@ def _screenshot(path: Path) -> None:
         mss.tools.to_png(shot.rgb, shot.size, output=str(path))
 
 
-def qualify(output: Path = _OUTPUT) -> int:
+def qualify(output: Path = _OUTPUT, *, scale: int = _SCALE) -> int:
     """Write a truthful setup result; unsupported setup is always nonzero."""
+    dpi = target_dpi(scale)
     require_hosted()
     output.mkdir(parents=True, exist_ok=True)
     report: dict[str, object] = {
         "status": "failed",
+        "scale_target": scale,
+        "dpi_target": dpi,
         "scope": "display setup only; target application not yet qualified",
         "image_version": os.environ.get("IMAGEVERSION", "unknown"),
         "source_head": os.environ.get("QUALIFICATION_HEAD", "unknown"),
@@ -306,15 +335,17 @@ def qualify(output: Path = _OUTPUT) -> int:
         before = display.read()
         report["before"] = asdict(before)
         _require_reading(before, initial=True)
-        resolution = select_scale(output) if before.monitor_scale != _SCALE else None
+        resolution = (
+            select_scale(output, scale=scale) if before.monitor_scale != scale else None
+        )
         report["resolution_target"] = resolution
         deadline = time.monotonic() + 2.0
         after = display.read()
-        while not after.qualified and time.monotonic() < deadline:
+        while not after.qualifies(scale) and time.monotonic() < deadline:
             time.sleep(0.1)
             after = display.read()
         report["after"] = asdict(after)
-        _require_reading(after, initial=False, resolution=resolution)
+        _require_reading(after, initial=False, scale=scale, resolution=resolution)
     except (OSError, RuntimeError, subprocess.SubprocessError) as error:
         report["error"] = f"{type(error).__name__}: {error}"[:1024]
         report["selection_outcome_uncertain"] = isinstance(
@@ -344,4 +375,6 @@ if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] == "--failure-screenshot":  # noqa: PLR2004
         _screenshot(Path(sys.argv[2]))
         raise SystemExit(0)
-    raise SystemExit(qualify())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--scale", type=int, choices=tuple(_TARGETS), default=_SCALE)
+    raise SystemExit(qualify(scale=parser.parse_args().scale))

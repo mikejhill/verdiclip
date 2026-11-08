@@ -464,3 +464,40 @@ The visible scrollbar and boundary artifacts described above remain deliberate
 limits, not claims of hidden-pixel reconstruction. They do not remove the tested
 supported body sequence. This evidence qualifies the integrated feature source;
 versioned release and exact-main checks still run separately before publication.
+
+### Taller owned Explorer qualification cases
+
+The original 760-physical-pixel outer-height case remains in the existing real
+200% Edge/Explorer job, with its existing failure status and artifacts. Its
+654×425 List viewport (52-pixel Header, 34-pixel footer, 339-pixel moving body)
+has exhausted the unchanged 25-second budget. A taller case does not replace or
+qualify that stress case.
+
+The independent `representative-layout` matrix reuses the same six top, middle
+and bottom click/Enter captures and full 160-item disposable folder. The explicit
+`--taller-explorer` option changes only the existing outer-height cap to 1000
+physical pixels, still clamped inside the measured work area with the same
+margins and width cap. It verifies and records requested/actual outer bounds and
+visible bounds against that work area. Native List/Header/rail rectangles,
+initial H0 and actual body height are recorded and checked rather than inferred
+from outer size. A missing H0/two-rail layout is a failure, not a layout coercion.
+The existing output, gesture, ownership, restoration and cleanup checks remain.
+
+Each named case runs on its own disposable runner, so an uncertain setup or
+cleanup cannot leak into another case. The existing supported Settings helper
+accepts only offered 125% or 200% choices, retains its single resolution/selection
+attempt and cleanup guards, and independently requires monitor scale plus native
+DPI. Real 125% means **120 DPI**; real 200% means **192 DPI**. Each application's
+retained target HWND must independently match that DPI before the case can
+qualify. No Qt scale override, user machine setting, navigation-pane change,
+item-count reduction, longer product deadline or new scrolling stride is used.
+These are test configurations, not evidence of a successful native run.
+
+The same matrix also runs the six existing prose/panel/already-focused Edge
+click/Enter cases at real 125%, without duplicating the original 200% Edge run.
+The focused case's target-DPI expectation is parameterized; its existing start
+outline witness remains strict. At 120 DPI, final restoration requires exact
+whole-frame pixels, including all outer pixels. Neither the legacy four-pixel
+inset nor the 192-DPI ring allowance qualifies 125% restoration. Existing 96/192
+behavior is unchanged. A 125% border change therefore fails until separate native
+evidence and review support a strict scale-specific witness.
