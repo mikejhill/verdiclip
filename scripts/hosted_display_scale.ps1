@@ -13,6 +13,10 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 public static class HostedScaleWindows {
+    public const int WindowLimit = 256;
+    public static int ObservedCount;
+    public static bool Overflow;
+    public static IntPtr[] RetainedWindows = new IntPtr[0];
     private delegate bool Visit(IntPtr window, IntPtr data);
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool EnumWindows(Visit callback, IntPtr data);
@@ -34,18 +38,25 @@ public static class HostedScaleWindows {
     }
     public static IntPtr[] Windows(IntPtr parent) {
         var windows = new List<IntPtr>();
-        bool overflow = false;
+        ObservedCount = 0;
+        Overflow = false;
+        RetainedWindows = new IntPtr[0];
         Visit callback = (window, data) => {
-            if (windows.Count == 64) { overflow = true; return false; }
+            ObservedCount++;
+            if (windows.Count == WindowLimit) { Overflow = true; return false; }
             windows.Add(window); return true;
         };
         bool result = parent == IntPtr.Zero
             ? EnumWindows(callback, IntPtr.Zero)
             : EnumChildWindows(parent, callback, IntPtr.Zero);
-        if (overflow) throw new InvalidOperationException("Native window limit exceeded");
+        RetainedWindows = windows.ToArray();
+        if (Overflow) throw new InvalidOperationException(
+            "Native " + (parent == IntPtr.Zero ? "top-level" : "child") +
+            " enumeration exceeded " + WindowLimit + "; parent=" + parent.ToInt64() +
+            "; observed=" + ObservedCount);
         if (parent == IntPtr.Zero && !result)
             throw new Win32Exception(Marshal.GetLastWin32Error());
-        return windows.ToArray();
+        return RetainedWindows;
     }
 }
 '@
@@ -60,6 +71,22 @@ $outcome = @{ status = 'unsupported'; stage = 'preflight'; selection_attempted =
 
 function Assert-Budget {
     if ($clock.Elapsed.TotalSeconds -ge 45) { throw 'Settings discovery budget exhausted' }
+}
+
+function Get-NativeWindows([IntPtr]$parent, [string]$phase) {
+    try { [HostedScaleWindows]::Windows($parent) }
+    finally {
+        # Retain each kind separately, even when native enumeration throws.
+        $outcome[$phase + '_enumeration'] = @{
+            parent_hwnd = $parent.ToInt64()
+            limit = [HostedScaleWindows]::WindowLimit
+            observed_count = [HostedScaleWindows]::ObservedCount
+            retained_count = [HostedScaleWindows]::RetainedWindows.Length
+            overflow = [HostedScaleWindows]::Overflow
+            sample_hwnds = @([HostedScaleWindows]::RetainedWindows |
+                Select-Object -First 16 | ForEach-Object { $_.ToInt64() })
+        }
+    }
 }
 
 function Assert-Owned($element) {
@@ -137,7 +164,7 @@ try {
     if (@(Get-Process -Name SystemSettings -ErrorAction SilentlyContinue).Count -ne 0) {
         throw 'Settings already exists; ownership is ambiguous'
     }
-    $baseline = @([HostedScaleWindows]::Windows([IntPtr]::Zero) | ForEach-Object { $_.ToInt64() })
+    $baseline = @(Get-NativeWindows ([IntPtr]::Zero) 'before_launch' | ForEach-Object { $_.ToInt64() })
     $launchedAfter = [DateTime]::Now
     $outcome.stage = 'launch'
     Start-Process 'ms-settings:display'
@@ -158,7 +185,7 @@ try {
             $outcome.settings_start_ticks = $started.Ticks
             $roots = @()
             $observed = @()
-            foreach ($window in [HostedScaleWindows]::Windows([IntPtr]::Zero)) {
+            foreach ($window in (Get-NativeWindows ([IntPtr]::Zero) 'after_launch')) {
                 Assert-Budget
                 $owner = [HostedScaleWindows]::Owner($window)
                 $new = $baseline -notcontains $window.ToInt64()
@@ -171,7 +198,7 @@ try {
                 $content = $window
                 if ($owner -ne $process.Id) {
                     if ($frameProcess.Path -ine (Join-Path $env:WINDIR 'System32\ApplicationFrameHost.exe')) { continue }
-                    $children = @([HostedScaleWindows]::Windows($window) | ForEach-Object {
+                    $children = @(Get-NativeWindows $window 'host_children' | ForEach-Object {
                         @{ hwnd = $_.ToInt64(); pid = [HostedScaleWindows]::Owner($_) }
                     })
                     $outcome.observed_host_frame = $window.ToInt64()

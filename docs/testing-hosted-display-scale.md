@@ -15,7 +15,7 @@ installation are used. It does not override PowerShell execution policy.
 
 The Settings companion runs once in an MTA child with a 60-second process
 timeout, a 45-second traversal budget, 256-node/depth-8 Settings traversal, and
-64-window limits for native top-level/child enumeration. It refuses any
+256-window limits for native top-level/child enumeration. It refuses any
 pre-existing Settings process and snapshots all native top-level HWNDs before
 launch, including windows not exposed by UIA.
 
@@ -26,6 +26,12 @@ that new process. The child's native root must be that exact new frame; a
 shared host process does not authorize another window. Pre-existing HWNDs,
 multiple candidates, unrelated hosted children, and process replacement fail
 closed. Discovery records at most 16 numeric root/child observations.
+Native enumeration retains separate before-launch, after-launch, and host-child
+records, including on failure: parent HWND, limit, observed and retained counts,
+overflow flag, and at most 16 sample HWNDs. On overflow, the observed count is
+257 (a lower bound), not the desktop's total. The original 64-HWND limit was
+increased only after a hosted run exceeded it before any selection. Ownership
+requirements, UIA control matching, and the existing time budgets are unchanged.
 
 Controls are read through `AutomationElement.FromHandle` on the retained
 Settings child. Before expanding/selecting a control or closing the frame, the
