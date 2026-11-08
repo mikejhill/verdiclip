@@ -53,6 +53,7 @@ HOTKEY_FIELDS: Final = (
     ("window", "Active window"),
     ("fullscreen", "Full screen"),
     ("repeat", "Repeat last capture"),
+    ("scrolling", "Scrolling area"),
 )
 THEME_LABELS: Final = {
     Theme.SYSTEM: "Match Windows",

@@ -1,11 +1,11 @@
-"""Legacy settings retain ordinary capture choices without scrolling commands."""
+"""Legacy settings retain supported capture choices without obsolete limits."""
 
 from verdiclip.settings import CaptureDestination, SettingsCodec
 from verdiclip.shell.settings_dialog import HOTKEY_FIELDS
 
 
-def test_013_scrolling_settings_are_ignored_without_losing_user_choices() -> None:
-    """Obsolete fields cannot register a ghost scrolling hotkey."""
+def test_legacy_scrolling_limits_are_ignored_without_losing_supported_choices() -> None:
+    """Obsolete limits are ignored; the supported scrolling shortcut is retained."""
     settings = SettingsCodec.decode(
         {
             "capture": {"destination": "windows", "open_editor": True},
@@ -20,12 +20,14 @@ def test_013_scrolling_settings_are_ignored_without_losing_user_choices() -> Non
         "window",
         "fullscreen",
         "repeat",
+        "scrolling",
     }
     encoded = SettingsCodec.encode(settings)
     assert "scrolling" not in encoded
     hotkeys = encoded["hotkeys"]
     assert isinstance(hotkeys, dict)
-    assert "scrolling" not in hotkeys
+    assert hotkeys["scrolling"] == "ctrl+f9"
+    assert settings.hotkeys.scrolling == "ctrl+f9"
 
 
 def test_new_default_is_tabs() -> None:

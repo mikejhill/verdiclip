@@ -321,3 +321,30 @@ class TestWin32HotkeyApi:
 
         with pytest.raises(PlatformError, match="Windows"):
             Win32HotkeyApi()
+
+
+def test_unregister_one_action_preserves_other_bindings(qtbot: QtBot) -> None:
+    """Temporary Escape retirement never removes ordinary capture shortcuts."""
+    del qtbot
+    api = FakeHotkeyApi()
+    service = HotkeyService(api)
+    try:
+        ordinary = Hotkey.parse("print_screen")
+        assert service.register("ordinary", ordinary)
+        assert service.register("scroll_cancel", Hotkey.parse("escape"))
+        ordinary_id, cancel_id = api.calls[0][1], api.calls[1][1]
+        service.unregister("scroll_cancel")
+        assert dict(service.registered) == {"ordinary": ordinary}
+        assert api.removed == [(0, cancel_id)]
+        assert service.handle_hotkey_message(ordinary_id)
+        assert not service.handle_hotkey_message(cancel_id)
+        service.unregister("scroll_cancel")
+        assert api.removed == [(0, cancel_id)]
+        api.accept = False
+        assert not service.register("scroll_cancel", Hotkey.parse("escape"))
+        assert "scroll_cancel" in service.failed
+        service.unregister("scroll_cancel")
+        assert not service.failed
+        assert dict(service.registered) == {"ordinary": ordinary}
+    finally:
+        service.close()
