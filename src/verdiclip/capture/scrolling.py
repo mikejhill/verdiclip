@@ -25,6 +25,12 @@ MIN_OVERLAP = 32
 _MIN_DISTINCT_ROWS = 8
 _ROUNDING_FRACTION = 0.02
 _PREFIX_MISMATCH_FRACTION = 0.05
+# Measured Edge focus outlines, in physical pixels; not a content crop budget.
+_MAX_EDGE_WIDTH = 2
+_EDGE_CORNER_ROWS = 8
+_MAX_PERIMETER_WIDTH = 3
+_MAX_TOP_PERIMETER_ROWS = 4
+_TOP_CORNER_COLUMNS = 8
 END_PERCENT = 100.0
 logger = logging.getLogger(__name__)
 
@@ -69,10 +75,10 @@ class ScrollResult:
 
 
 class VerticalStitch:
-    """Join uniquely matching full-width rows, rejecting ambiguous evidence.
+    """Join unique exact bands, retaining the entire width in the result.
 
-    No fixed sidebar or toolbar is silently thrown away. Repeating or animated
-    content that cannot be matched is unsupported, rather than guessed.
+    Only measured narrow, uniform edge changes may be ignored for registration.
+    Repeating or animated content without a unique match remains unsupported.
     """
 
     def __init__(self, first: QImage) -> None:
@@ -95,8 +101,8 @@ class VerticalStitch:
         return [raw[y * stride : (y + 1) * stride] for y in range(image.height())]
 
     @staticmethod
-    def _alignment(old: list[bytes], new: list[bytes]) -> tuple[int, int, int]:
-        """Find one displacement globally, using exact textured full-width bands."""
+    def _alignment(old: list[bytes], new: list[bytes]) -> tuple[int, int, int] | None:
+        """Find one displacement globally, using exact textured row bands."""
         ids: dict[bytes, int] = {}
         before = [ids.setdefault(row, len(ids)) for row in old]
         after = [ids.setdefault(row, len(ids)) for row in new]
@@ -118,9 +124,121 @@ class VerticalStitch:
                 if match is not None:
                     raise CaptureError("The panel's scrolling pixels are ambiguous")
                 match = (advance, *longest)
-        if match is None:
-            raise CaptureError("The panel's scrolling pixels cannot be joined reliably")
         return match
+
+    @staticmethod
+    def _edge_width(old: list[bytes], new: list[bytes], *, right: bool) -> int:
+        """Measure a changed uniform outer strip, rejecting widths over the cap.
+
+        Ignore only bounded corner rows when testing vertical uniformity. Stop
+        at the first unchanged or textured column, never search for a crop that
+        makes the alignment pass. Narrow solid content can look like an outline.
+        """
+        if len(old) <= 2 * _EDGE_CORNER_ROWS:
+            return 0
+        before = old[_EDGE_CORNER_ROWS:-_EDGE_CORNER_ROWS]
+        after = new[_EDGE_CORNER_ROWS:-_EDGE_CORNER_ROWS]
+        for width in range(min(_MAX_EDGE_WIDTH + 1, len(old[0]) // 4)):
+            column = len(old[0]) - 4 * (width + 1) if right else 4 * width
+            first = before[0][column : column + 4]
+            second = after[0][column : column + 4]
+            if (
+                first == second
+                or any(row[column : column + 4] != first for row in before)
+                or any(row[column : column + 4] != second for row in after)
+            ):
+                return width
+        return 0
+
+    @classmethod
+    def _registration(cls, old: list[bytes], new: list[bytes]) -> tuple[int, int, int]:
+        """Try all columns first; only no match permits a measured-edge retry."""
+        match = cls._alignment(old, new)
+        if match is not None:
+            return match
+        left = cls._edge_width(old, new, right=False)
+        right = cls._edge_width(old, new, right=True)
+        if left or right:
+            end = len(old[0]) - right * 4
+            match = cls._alignment(
+                [row[left * 4 : end] for row in old],
+                [row[left * 4 : end] for row in new],
+            )
+            if match is not None:
+                logger.info(
+                    "Scrolling registration edges: left_columns=%s right_columns=%s",
+                    left,
+                    right,
+                )
+                return match
+        raise CaptureError("The panel's scrolling pixels cannot be joined reliably")
+
+    @staticmethod
+    def _edge_colors(rows: list[bytes], *, right: bool) -> set[bytes]:
+        """Find uniform side colors, excluding a color continuing past the cap."""
+        body = rows[_EDGE_CORNER_ROWS:-_EDGE_CORNER_ROWS]
+        colors: set[bytes] = set()
+        for width in range(_MAX_PERIMETER_WIDTH + 1):
+            column = len(rows[0]) - 4 * (width + 1) if right else 4 * width
+            color = body[0][column : column + 4]
+            if any(row[column : column + 4] != color for row in body):
+                break
+            if width < _MAX_PERIMETER_WIDTH:
+                colors.add(color)
+            else:
+                colors.discard(color)
+        return colors
+
+    @classmethod
+    def _top_perimeter(cls, rows: list[bytes]) -> set[int]:
+        """Identify bounded uniform top rows connected to both side perimeters."""
+        if (
+            len(rows) <= 2 * _EDGE_CORNER_ROWS
+            or len(rows[0]) <= 2 * _TOP_CORNER_COLUMNS * 4
+        ):
+            return set()
+        colors = cls._edge_colors(rows, right=False) & cls._edge_colors(
+            rows, right=True
+        )
+        perimeter = set()
+        for y, row in enumerate(rows[: _MAX_TOP_PERIMETER_ROWS + 1]):
+            interior = row[_TOP_CORNER_COLUMNS * 4 : -_TOP_CORNER_COLUMNS * 4]
+            color = interior[:4]
+            if color in colors and interior == color * (len(interior) // 4):
+                if y == _MAX_TOP_PERIMETER_ROWS:
+                    return set()
+                perimeter.add(y)
+        return perimeter
+
+    @staticmethod
+    def _difference(old: list[bytes], new: list[bytes]) -> tuple[int, int]:
+        before = memoryview(b"".join(old)).cast("I")
+        after = memoryview(b"".join(new)).cast("I")
+        return sum(a != b for a, b in zip(before, after, strict=True)), len(before)
+
+    @classmethod
+    def _check_top(cls, old: list[bytes], new: list[bytes], advance: int) -> None:
+        """Keep the 5% guard, allowing only independently measured perimeter rows."""
+        before, after = old[advance : advance + MIN_OVERLAP], new[:MIN_OVERLAP]
+        mismatches, compared = cls._difference(before, after)
+        if mismatches <= compared * _PREFIX_MISMATCH_FRACTION:
+            return
+        perimeter = cls._top_perimeter(old)
+        if perimeter and perimeter == cls._top_perimeter(new):
+            mismatches, compared = cls._difference(
+                [row for y, row in enumerate(before) if y not in perimeter],
+                [row for y, row in enumerate(after) if y not in perimeter],
+            )
+            logger.info("Scrolling top perimeter: rows=%s", sorted(perimeter))
+        if mismatches > compared * _PREFIX_MISMATCH_FRACTION:
+            logger.warning(
+                "Scrolling top mismatch: changed_pixels=%s compared_pixels=%s "
+                "limit_fraction=%s",
+                mismatches,
+                compared,
+                _PREFIX_MISMATCH_FRACTION,
+            )
+            raise CaptureError("The top of the scroll panel is fixed or changing")
 
     def append(self, image: QImage, expected_advance: float) -> None:
         """Join at an interior seam; never discard a column or infer a chrome crop."""
@@ -128,7 +246,7 @@ class VerticalStitch:
         if image.size() != self._previous.size():
             raise CaptureError("The scroll panel changed size")
         old, new = self._rows(self._previous), self._rows(image)
-        advance, first, last = self._alignment(old, new)
+        advance, first, last = self._registration(old, new)
         logger.info(
             "Scrolling alignment: measured_advance=%s expected_advance=%.3f "
             "matching_band=(%s,%s)",
@@ -143,18 +261,7 @@ class VerticalStitch:
             raise CaptureError("The panel's pixels disagree with its scroll position")
         # Reject broad fixed headers. This practical check cannot establish
         # pixels hidden by a tiny overlay at every position.
-        before = memoryview(b"".join(old[advance : advance + MIN_OVERLAP])).cast("I")
-        after = memoryview(b"".join(new[:MIN_OVERLAP])).cast("I")
-        mismatches = sum(a != b for a, b in zip(before, after, strict=True))
-        if mismatches > len(before) * _PREFIX_MISMATCH_FRACTION:
-            logger.warning(
-                "Scrolling top mismatch: changed_pixels=%s compared_pixels=%s "
-                "limit_fraction=%s",
-                mismatches,
-                len(before),
-                _PREFIX_MISMATCH_FRACTION,
-            )
-            raise CaptureError("The top of the scroll panel is fixed or changing")
+        self._check_top(old, new, advance)
         if image.width() * (self._height + advance) > MAX_PIXELS:
             raise CaptureError("The scrolling image exceeds the size limit")
         # Keep earlier pixels above a verified seam and later pixels below it.

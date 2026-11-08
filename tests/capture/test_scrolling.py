@@ -20,12 +20,12 @@ from verdiclip.exceptions import CaptureError
 from verdiclip.geometry import Rect
 
 
-def document(height: int = 600) -> QImage:
+def document(height: int = 600, *, width: int = 80) -> QImage:
     """Make unique rows whose exact final pixels can be compared."""
-    result = QImage(80, height, QImage.Format.Format_RGB32)
+    result = QImage(width, height, QImage.Format.Format_RGB32)
     for y in range(height):
         for x in range(result.width()):
-            result.setPixelColor(x, y, QColor((y + x) % 251, y // 251, x))
+            result.setPixelColor(x, y, QColor((y + x) % 251, y // 251, x % 251))
     return result
 
 
@@ -519,6 +519,401 @@ def test_one_meaningful_edge_column_is_not_masked_for_alignment() -> None:
         second.setPixelColor(0, y, QColor(y, 255, 255))
     with pytest.raises(CaptureError, match="cannot be joined"):
         VerticalStitch(first).append(second, 60.0)
+
+
+def outlined_frame(
+    source: QImage, offset: int, *, left: int = 2, right: int = 2
+) -> QImage:
+    """Model the native panel's uniform changing focus outline, including corners."""
+    result = source.copy(0, offset, source.width(), 120)
+    color = QColor("gray") if offset == 0 else QColor("black")
+    for y in range(result.height()):
+        for x in (*range(left), *range(result.width() - right, result.width())):
+            result.setPixelColor(x, y, color)
+    return result
+
+
+@pytest.mark.parametrize(("left", "right"), [(1, 0), (0, 1), (2, 1), (2, 2)])
+def test_changed_uniform_edges_preserve_entire_image_at_exact_seam(
+    left: int, right: int, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Registration ignores only measured edge columns; output retains them all."""
+    caplog.set_level("INFO")
+    source = document(180, width=120)
+    first = outlined_frame(source, 0, left=left, right=right)
+    second = outlined_frame(source, 60, left=left, right=right)
+    # Corner deviations are confined to the same measured edge columns.
+    for frame in (first, second):
+        for y in (*range(8), *range(112, 120)):
+            for x in (*range(left), *range(120 - right, 120)):
+                frame.setPixelColor(x, y, QColor(y, x, 255))
+    stitch = VerticalStitch(first)
+    stitch.append(second, 60.0)
+    expected = QImage(120, 180, QImage.Format.Format_RGB32)
+    painter = QPainter(expected)
+    painter.drawImage(0, 0, first.copy(0, 0, 120, 90))
+    painter.drawImage(0, 90, second.copy(0, 30, 120, 90))
+    painter.end()
+    assert stitch.finish() == expected
+    assert f"left_columns={left} right_columns={right}" in caplog.text
+    assert "measured_advance=60 expected_advance=60.000" in caplog.text
+    assert "matching_band=(0,60)" in caplog.text
+
+
+def test_edge_fallback_keeps_all_interior_pixels_through_short_final_join() -> None:
+    """Repeated joins retain all source rows and columns, without padding a seam."""
+    source = document(367, width=120)
+    first = outlined_frame(source, 0)
+    stitch = VerticalStitch(first)
+    previous = 0
+    for offset in (60, 120, 180, 240, 247):
+        stitch.append(outlined_frame(source, offset), offset - previous)
+        previous = offset
+    expected = source.copy()
+    painter = QPainter(expected)
+    for x in (0, 118):
+        painter.fillRect(x, 0, 2, 90, QColor("gray"))
+        painter.fillRect(x, 90, 2, 277, QColor("black"))
+    painter.end()
+    assert stitch.finish() == expected
+
+
+def test_unchanged_uniform_adjacent_column_is_not_part_of_edge_mask(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The native panel's third gray border column stays in registration."""
+    caplog.set_level("INFO")
+    source = document(180, width=120)
+    painter = QPainter(source)
+    for x in (0, 117):
+        painter.fillRect(x, 0, 3, 180, QColor("gray"))
+    painter.end()
+    first, second = outlined_frame(source, 0), outlined_frame(source, 60)
+    stitch = VerticalStitch(first)
+    stitch.append(second, 60.0)
+    expected = source.copy()
+    painter = QPainter(expected)
+    for x in (0, 118):
+        painter.fillRect(x, 90, 2, 90, QColor("black"))
+    painter.end()
+    assert stitch.finish() == expected
+    assert "left_columns=2 right_columns=2" in caplog.text
+
+
+@pytest.mark.parametrize("side", ["left", "right"])
+@pytest.mark.parametrize("width", [3, 16])
+def test_wide_changed_solid_edges_are_not_partially_masked(
+    side: str, width: int
+) -> None:
+    """The hard cap rejects the entire wider strip, not just its first columns."""
+    source = document(width=120)
+    left, right = (width, 0) if side == "left" else (0, width)
+    first = outlined_frame(source, 0, left=left, right=right)
+    second = outlined_frame(source, 60, left=left, right=right)
+    with pytest.raises(CaptureError, match="cannot be joined"):
+        VerticalStitch(first).append(second, 60.0)
+
+
+@pytest.mark.parametrize("column", [0, 1, 2, 117, 118, 119])
+@pytest.mark.parametrize("frame_number", [0, 1])
+def test_textured_edge_or_adjacent_column_is_never_discarded(
+    column: int, frame_number: int
+) -> None:
+    """Meaningful edge pixels and the first interior column must still agree."""
+    source = document(width=120)
+    frames = [outlined_frame(source, 0), outlined_frame(source, 60)]
+    for y in range(120):
+        frames[frame_number].setPixelColor(column, y, QColor(255, y, 255))
+    with pytest.raises(CaptureError, match="cannot be joined"):
+        VerticalStitch(frames[0]).append(frames[1], 60.0)
+
+
+@pytest.mark.parametrize("row", [8, 111])
+def test_edge_corner_exception_does_not_extend_into_interior(row: int) -> None:
+    """Even one nonuniform pixel beyond the bounded corners invalidates a strip."""
+    source = document(width=120)
+    first, second = outlined_frame(source, 0), outlined_frame(source, 60)
+    second.setPixelColor(0, row, QColor("red"))
+    with pytest.raises(CaptureError, match="cannot be joined"):
+        VerticalStitch(first).append(second, 60.0)
+
+
+def test_changed_edges_do_not_hide_a_broad_fixed_header() -> None:
+    """The top guard still examines original full-width pixels after fallback."""
+    source = document(width=120)
+    first, second = outlined_frame(source, 0), outlined_frame(source, 60)
+    for frame in (first, second):
+        painter = QPainter(frame)
+        painter.fillRect(2, 0, 116, 8, QColor("white"))
+        painter.end()
+    with pytest.raises(CaptureError, match="top of the scroll panel"):
+        VerticalStitch(first).append(second, 60.0)
+
+
+def test_top_border_without_matching_side_evidence_is_rejected(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Uniform top rows alone are not evidence of a connected narrow perimeter."""
+    caplog.set_level("INFO")
+    source = document(width=771)
+    first, second = outlined_frame(source, 0), outlined_frame(source, 60)
+    for frame in (first, second):
+        painter = QPainter(frame)
+        painter.fillRect(0, 1, 771, 2, QColor("black"))
+        painter.fillRect(0, 3, 771, 1, QColor("gray"))
+        painter.end()
+    with pytest.raises(CaptureError, match="top of the scroll panel"):
+        VerticalStitch(first).append(second, 60.0)
+    assert "left_columns=2 right_columns=2" in caplog.text
+    assert "measured_advance=60 expected_advance=60.000" in caplog.text
+
+
+def perimeter_frame(source: QImage, offset: int) -> QImage:
+    """Model the observed three-column border with a two-pixel focus outline."""
+    result = source.copy(0, offset, source.width(), 120)
+    painter = QPainter(result)
+    for x in (0, source.width() - 3):
+        painter.fillRect(x, 0, 3, 120, QColor("gray"))
+    painter.fillRect(0, 1, source.width(), 3, QColor("gray"))
+    if offset:
+        for x in (0, source.width() - 2):
+            painter.fillRect(x, 0, 2, 120, QColor("black"))
+        painter.fillRect(0, 1, source.width(), 2, QColor("black"))
+    painter.end()
+    return result
+
+
+def scaled_perimeter_frame(source: QImage, offset: int, percent: int) -> QImage:
+    """Model scaled 2px outlines and 3px borders, not a native DPI observation."""
+    result = source.copy(0, offset, source.width(), 120)
+    border = (3 * percent + 99) // 100
+    outline = (2 * percent + 99) // 100
+    top = (percent + 99) // 100
+    gray, black = QColor(177, 181, 186), QColor(16, 16, 16)
+    painter = QPainter(result)
+    for x in (0, source.width() - border):
+        painter.fillRect(x, 0, border, 120, gray)
+    painter.fillRect(0, top, source.width(), border, gray)
+    if offset:
+        for x in (0, source.width() - outline):
+            painter.fillRect(x, 0, outline, 120, black)
+        painter.fillRect(0, top, source.width(), outline, black)
+        # At 125%, model the 2.5px outline's last changed column at half coverage.
+        # This is an illustrative rasterization, not a browser rendering oracle.
+        fraction = 2 * percent % 100
+        if fraction:
+            blend = QColor(
+                *[
+                    round((component * (100 - fraction) + 16 * fraction) / 100)
+                    for component in (177, 181, 186)
+                ]
+            )
+            for x in (outline - 1, source.width() - outline):
+                painter.fillRect(x, 0, 1, 120, blend)
+            painter.fillRect(0, top + outline - 1, source.width(), 1, blend)
+    painter.end()
+    return result
+
+
+@pytest.mark.parametrize("percent", [100, 125, 150, 200])
+def test_synthetic_scaled_outline_bounds_are_explicit(percent: int) -> None:
+    """Only the 2-column model passes; wider scaled outlines remain unsupported."""
+    source = document(180, width=120)
+    first = scaled_perimeter_frame(source, 0, percent)
+    second = scaled_perimeter_frame(source, 60, percent)
+    stitch = VerticalStitch(first)
+    if percent != 100:
+        with pytest.raises(CaptureError, match="cannot be joined"):
+            stitch.append(second, 60.0)
+        return
+    stitch.append(second, 60.0)
+    expected = QImage(120, 180, QImage.Format.Format_RGB32)
+    painter = QPainter(expected)
+    painter.drawImage(0, 0, first.copy(0, 0, 120, 92))
+    painter.drawImage(0, 92, second.copy(0, 32, 120, 88))
+    painter.end()
+    assert stitch.finish() == expected
+
+
+@pytest.mark.parametrize("percent", [100, 125, 150, 200])
+def test_synthetic_scaled_outline_does_not_hide_textured_edge(percent: int) -> None:
+    """Scale-labelled fixtures still reject meaningful fixed outer-column pixels."""
+    source = document(width=120)
+    first = scaled_perimeter_frame(source, 0, percent)
+    second = scaled_perimeter_frame(source, 60, percent)
+    for frame in (first, second):
+        for y in range(120):
+            frame.setPixelColor(0, y, QColor(255, y, 255))
+    with pytest.raises(CaptureError, match="cannot be joined"):
+        VerticalStitch(first).append(second, 60.0)
+
+
+def test_bounded_perimeter_retains_every_output_pixel_over_complete_sequence(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The complete oracle covers all rows, side columns and every interior seam."""
+    caplog.set_level("INFO")
+    source = document(367, width=120)
+    stitch = VerticalStitch(perimeter_frame(source, 0))
+    previous = 0
+    for offset in (60, 120, 180, 240, 247):
+        stitch.append(perimeter_frame(source, offset), offset - previous)
+        previous = offset
+    expected = source.copy()
+    painter = QPainter(expected)
+    for x in (0, 117):
+        painter.fillRect(x, 0, 3, 367, QColor("gray"))
+    painter.fillRect(0, 1, 120, 3, QColor("gray"))
+    for x in (0, 118):
+        painter.fillRect(x, 92, 2, 275, QColor("black"))
+    painter.end()
+    assert stitch.finish() == expected
+    assert "Scrolling top perimeter: rows=[1, 2, 3]" in caplog.text
+
+
+@pytest.mark.parametrize("column", [8, 111])
+@pytest.mark.parametrize("frame_number", [0, 1])
+def test_textured_top_perimeter_is_not_masked(column: int, frame_number: int) -> None:
+    """A meaningful pixel outside the corner allowance invalidates the top mask."""
+    source = document(width=120)
+    frames = [perimeter_frame(source, 0), perimeter_frame(source, 60)]
+    frames[frame_number].setPixelColor(column, 1, QColor("red"))
+    with pytest.raises(CaptureError, match="top of the scroll panel"):
+        VerticalStitch(frames[0]).append(frames[1], 60.0)
+
+
+@pytest.mark.parametrize("frame_number", [0, 1])
+def test_top_perimeter_corner_pixels_remain_in_the_output(frame_number: int) -> None:
+    """The corner allowance never deletes original corner or other output pixels."""
+    source = document(180, width=120)
+    frames = [perimeter_frame(source, 0), perimeter_frame(source, 60)]
+    for y in (1, 2, 3):
+        for x in (*range(8), *range(112, 120)):
+            frames[frame_number].setPixelColor(x, y, QColor(x, y, 255))
+    stitch = VerticalStitch(frames[0])
+    stitch.append(frames[1], 60.0)
+    expected = QImage(120, 180, QImage.Format.Format_RGB32)
+    painter = QPainter(expected)
+    painter.drawImage(0, 0, frames[0].copy(0, 0, 120, 92))
+    painter.drawImage(0, 92, frames[1].copy(0, 32, 120, 88))
+    painter.end()
+    assert stitch.finish() == expected
+
+
+@pytest.mark.parametrize("height", [4, 8])
+def test_top_perimeter_does_not_partially_mask_a_taller_solid_header(
+    height: int,
+) -> None:
+    """A matching uniform row beyond the absolute four-row depth rejects the mask."""
+    source = document(width=120)
+    first, second = perimeter_frame(source, 0), perimeter_frame(source, 60)
+    for frame in (first, second):
+        painter = QPainter(frame)
+        painter.fillRect(3, 1, 114, height, QColor("gray"))
+        painter.end()
+    with pytest.raises(CaptureError, match="top of the scroll panel"):
+        VerticalStitch(first).append(second, 60.0)
+
+
+@pytest.mark.parametrize("side", ["left", "right"])
+def test_top_perimeter_cannot_use_a_wider_solid_sidebar(side: str) -> None:
+    """A side color continuing beyond the three-column cap is not perimeter proof."""
+    source = document(width=120)
+    first, second = perimeter_frame(source, 0), perimeter_frame(source, 60)
+    x = 3 if side == "left" else 116
+    for frame in (first, second):
+        painter = QPainter(frame)
+        painter.fillRect(x, 0, 1, 120, QColor("gray"))
+        painter.end()
+    with pytest.raises(CaptureError, match="top of the scroll panel"):
+        VerticalStitch(first).append(second, 60.0)
+
+
+def test_perimeter_retry_still_rejects_a_header_inside_the_border() -> None:
+    """A real border cannot excuse broad fixed content immediately below it."""
+    source = document(width=120)
+    first, second = perimeter_frame(source, 0), perimeter_frame(source, 60)
+    for frame in (first, second):
+        painter = QPainter(frame)
+        painter.fillRect(3, 4, 114, 8, QColor("white"))
+        painter.end()
+    with pytest.raises(CaptureError, match="top of the scroll panel"):
+        VerticalStitch(first).append(second, 60.0)
+
+
+def test_perimeter_retry_keeps_five_percent_of_remaining_pixels(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Omitted rows cannot increase the general mismatch budget or denominator."""
+    source = document(width=120)
+    first, second = perimeter_frame(source, 0), perimeter_frame(source, 60)
+    for x in range(3, 62):
+        second.setPixelColor(x, 4, QColor("red"))
+    with pytest.raises(CaptureError, match="top of the scroll panel"):
+        VerticalStitch(first).append(second, 60.0)
+    assert "changed_pixels=175 compared_pixels=3480 limit_fraction=0.05" in caplog.text
+    # One fewer changed pixel is exactly 5% of the remaining comparison.
+    second.setPixelColor(61, 4, source.pixelColor(61, 64))
+    VerticalStitch(first).append(second, 60.0)
+
+
+def test_narrow_image_cannot_supply_top_perimeter_evidence() -> None:
+    """No interior remains to prove uniformity inside the allowed corner widths."""
+    source = document(width=16)
+    first, second = source.copy(0, 0, 16, 120), source.copy(0, 60, 16, 120)
+    for frame in (first, second):
+        painter = QPainter(frame)
+        painter.fillRect(0, 0, 16, 3, QColor("gray"))
+        painter.end()
+    with pytest.raises(CaptureError, match="top of the scroll panel"):
+        VerticalStitch(first).append(second, 60.0)
+
+
+def test_changed_edges_do_not_override_uia_displacement() -> None:
+    """A matching interior cannot change the independently reported movement."""
+    source = document(width=120)
+    with pytest.raises(CaptureError, match="disagree with its scroll position"):
+        VerticalStitch(outlined_frame(source, 0)).append(
+            outlined_frame(source, 60), 70.0
+        )
+
+
+@pytest.mark.parametrize("change_edges", [False, True])
+def test_edge_registration_preserves_global_ambiguity_rejection(
+    caplog: pytest.LogCaptureFixture, *, change_edges: bool
+) -> None:
+    """Neither exact-first nor fallback matching can choose a repeated band."""
+    caplog.set_level("INFO")
+    source = document(180, width=120)
+    painter = QPainter(source)
+    for y in (40, 80, 120):
+        painter.drawImage(0, y, source.copy(0, 0, 120, 40))
+    painter.end()
+    left = 2 if change_edges else 0
+    first = outlined_frame(source, 0, left=left, right=0)
+    second = outlined_frame(source, 60, left=left, right=0)
+    with pytest.raises(CaptureError, match="ambiguous"):
+        VerticalStitch(first).append(second, 60.0)
+    assert "Scrolling registration edges" not in caplog.text
+
+
+def test_exact_full_width_match_never_uses_edge_fallback(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Existing exact registration stays the first choice."""
+    caplog.set_level("INFO")
+    source = document(180)
+    stitch = VerticalStitch(source.copy(0, 0, 80, 120))
+    stitch.append(source.copy(0, 60, 80, 120), 60.0)
+    assert stitch.finish() == source
+    assert "Scrolling registration edges" not in caplog.text
+
+
+def test_tiny_unmatchable_frame_is_rejected_without_edge_guessing() -> None:
+    """A viewport shorter than the corner allowance cannot supply edge evidence."""
+    source = document()
+    with pytest.raises(CaptureError, match="cannot be joined"):
+        VerticalStitch(source.copy(0, 0, 80, 16)).append(source.copy(0, 8, 80, 16), 8.0)
 
 
 def test_repeated_textured_bands_have_no_unique_displacement() -> None:
