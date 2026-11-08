@@ -28,6 +28,7 @@ _SCROLLBAR = 50014
 _MAX_CHILDREN = 64
 _MAX_ANCESTORS = 8
 _PAIR_SIZE = 2
+_TWO_SCROLLBARS = 2
 _SECONDS = 1.0
 _ELEMENT_IID = "d22108aa-8ac5-49a5-837b-37bbb3d7591e"
 
@@ -38,7 +39,15 @@ def raw_bounds(value: object) -> Rect:
 
 
 def header_layout(geometry: dict[str, object]) -> tuple[Rect, Rect]:
-    """Derive the fixed band only from the raw standard control-role evidence."""
+    """Retain the original area/Header API for diagnostic consumers."""
+    area, header, _footer, _rail = list_layout(geometry)
+    return area, header
+
+
+def list_layout(
+    geometry: dict[str, object],
+) -> tuple[Rect, Rect, Rect | None, Rect | None]:
+    """Derive only the standard Header and two-scrollbar partition from raw roles."""
     area = raw_bounds(geometry["captured_bounds"])
     tree = cast("dict[str, object]", geometry["uia"])
     nodes = cast("list[dict[str, object]]", tree["nodes"])
@@ -52,17 +61,46 @@ def header_layout(geometry: dict[str, object]) -> tuple[Rect, Rect]:
     if (
         header.left != area.left
         or header.top != area.top
-        or not 0 < header.width <= area.width
+        or header.width <= 0
         or not 0 < header.height < area.height
         or header.width != round(header.width)
         or header.height != round(header.height)
     ):
         raise CaptureError("Native item witness Header geometry is inconsistent")
-    remainder = Rect(header.right, area.top, area.right - header.right, area.height)
     bars = [raw_bounds(n["bounds"]) for n in direct if n["control_type"] == _SCROLLBAR]
-    if remainder.width and bars.count(remainder) != 1:
+    if len(bars) == _TWO_SCROLLBARS:
+        return _footer_layout(area, header, bars)
+    if header.right > area.right:
+        raise CaptureError("Native item witness Header geometry is inconsistent")
+    remainder = Rect(header.right, area.top, area.right - header.right, area.height)
+    if bars != ([remainder] if remainder.width else []):
         raise CaptureError("Native item witness lacks the adjacent ScrollBar evidence")
-    return area, header
+    return area, header, None, remainder if remainder.width else None
+
+
+def _footer_layout(
+    area: Rect, header: Rect, bars: list[Rect]
+) -> tuple[Rect, Rect, Rect, Rect]:
+    footer, rail = sorted(bars, key=lambda bar: bar.left)
+    if (
+        footer.left != area.left
+        or footer.bottom != area.bottom
+        or not header.bottom < footer.top < area.bottom
+        or not area.left < footer.right < area.right
+        or rail
+        != Rect(
+            footer.right, area.top, area.right - footer.right, footer.top - area.top
+        )
+        or header.right < rail.left
+        or any(
+            value != round(value)
+            for bar in bars
+            for value in (bar.x, bar.y, bar.width, bar.height)
+        )
+    ):
+        raise CaptureError("Native item witness scrollbar partition is inconsistent")
+    visible_header = Rect(area.left, area.top, footer.width, header.height)
+    return area, visible_header, footer, rail
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,9 +120,10 @@ class ListItemWitness:
 
     def __init__(self, target: UiaScrollTarget, geometry: dict[str, object]) -> None:
         self.target, self.geometry = target, geometry
-        area, header = header_layout(geometry)
+        area, header, footer, _rail = list_layout(geometry)
+        bottom = area.bottom if footer is None else footer.top
         self._body = Rect(
-            area.left, header.bottom, header.width, area.bottom - header.bottom
+            area.left, header.bottom, header.width, bottom - header.bottom
         )
         self._owners, self._retained = ExitStack(), ExitStack()
         self._anchors: list[_Anchor] = []

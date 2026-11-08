@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import cast
 
 from PySide6.QtGui import QImage
-from scripts.scrolling_item_witness import header_layout, raw_bounds
+from scripts.scrolling_item_witness import list_layout, raw_bounds
 
 from verdiclip.capture.scrolling import MAX_FRAMES, MAX_PIXELS
 from verdiclip.geometry import Rect
@@ -21,24 +21,27 @@ class _HeaderOracle:
     """Map raw Header geometry and independent retained-item displacement evidence."""
 
     def __init__(self, path: Path) -> None:
-        self.area, self.header = header_layout(
+        self.area, self.header, footer, _rail = list_layout(
             json.loads(path.read_text(encoding="utf-8"))
         )
         self.height = round(self.header.height)
+        self.footer_height = 0 if footer is None else round(footer.height)
         self._body = Rect(
             self.area.left,
             self.header.bottom,
             self.header.width,
-            self.area.bottom - self.header.bottom,
+            self.area.bottom - self.header.bottom - self.footer_height,
         )
         self._prefix: list[bytes] | None = None
+        self._footer: list[bytes] | None = None
 
     def terminal_size(self, original: float, terminal: float, height: int) -> None:
         """Check both independent total extents without using stitcher decisions."""
         if not math.isfinite(terminal) or not 0.0 < terminal < _FULL_PERCENT:
             raise RuntimeError("Whole-image oracle terminal view size is invalid")
-        first = self.height + self._body.height * _FULL_PERCENT / original
-        last = self.height + self._body.height * _FULL_PERCENT / terminal
+        fixed = self.height + self.footer_height
+        first = fixed + self._body.height * _FULL_PERCENT / original
+        last = fixed + self._body.height * _FULL_PERCENT / terminal
         # The prototype's existing extent tolerance, not an exact offset source.
         if abs(last - first) > max(2.0, first * 0.02) or any(
             abs(height - expected) > max(2.0, expected * 0.02)
@@ -104,7 +107,16 @@ class _HeaderOracle:
             self._prefix = prefix
         elif prefix != self._prefix:
             raise RuntimeError("Whole-image oracle Header changed during acquisition")
-        return rows[self.height :]
+        if self.footer_height:
+            suffix = rows[-self.footer_height :]
+            if result[-self.footer_height :] != suffix or (
+                self._footer is not None and self._footer != suffix
+            ):
+                raise RuntimeError("Whole-image oracle footer or corner changed")
+            self._footer = suffix
+            matched[-self.footer_height :] = b"\1" * self.footer_height
+        bottom = len(rows) - self.footer_height
+        return rows[self.height : bottom]
 
 
 def _rows(image: QImage) -> list[bytes]:

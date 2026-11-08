@@ -24,11 +24,12 @@ from typing import cast, override
 from unittest.mock import patch
 
 from PySide6.QtGui import QImage
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QWidget
 from scripts import simple_scroll_app as app
 from scripts import simple_scroll_native as native
 from scripts.scrolling_header_probe import _scroll_info, probe_target
-from scripts.scrolling_item_witness import header_layout
+from scripts.scrolling_item_witness import header_layout, list_layout
 from scripts.scrolling_oracle import verify_sequence
 from scripts.simple_scroll_handoff import Desktop
 
@@ -47,6 +48,7 @@ _MAX_SCROLLBAR_CHILDREN = 64
 _MAX_SCROLLBAR_ANCESTORS = 8
 _SCALED_FIXTURE_DPI = 192
 _SCALED_FIXTURE_BORDER = 6
+_FOCUSED_PANELS = ("edge-panel-focused-click", "edge-panel-focused-enter")
 _EXPLORER_STARTS = {
     "explorer-middle-click": 50.0,
     "explorer-middle-enter": 50.0,
@@ -120,6 +122,8 @@ def _case(kind: str, output: Path, report: dict[str, object]) -> None:
     report["gesture_hold_ms"] = 120
     if kind in _EXPLORER_STARTS:
         ExplorerStartCapture(kind, output, report).run()
+    elif kind in _FOCUSED_PANELS:
+        EdgeFocusedCapture(kind, output, report).run()
     else:
         app._case(kind, output, report)
 
@@ -268,13 +272,17 @@ def _verify_restored(capture: app.AppCapture, after: QImage) -> None:
     )
 
 
-def _native_rail(rows: list[dict[str, object]], handle: int) -> dict[str, int]:
+def _native_rail(
+    rows: list[dict[str, object]], handle: int, horizontal: int | None = None
+) -> dict[str, int]:
     candidates = [row for row in rows if row["bar"] == _SB_CTL]
+    expected = {handle} if horizontal is None else {handle, horizontal}
     native._require(
-        len(candidates) == 1 and candidates[0]["native_handle"] == handle,
+        len(candidates) == len(expected)
+        and {row["native_handle"] for row in candidates} == expected,
         "Restoration lacks one exact native ScrollBar",
     )
-    row = candidates[0]
+    row = next(row for row in candidates if row["native_handle"] == handle)
     native._require(
         row["success"] is True
         and row["window_valid"] is True
@@ -310,7 +318,9 @@ def _verify_normalized_restore(
         "Only a top/middle Explorer normalization has this independent oracle",
     )
     geometry = json.loads((capture.output / "header-geometry.json").read_text())
-    area, header = header_layout(geometry)
+    area, header, footer, rail = list_layout(geometry)
+    if rail is None:
+        raise RuntimeError("Restoration requires a separately identified native rail")
     bars = [
         node
         for node in geometry["uia"]["nodes"]
@@ -319,17 +329,29 @@ def _verify_normalized_restore(
         and not node["offscreen"]
     ]
     native._require(
-        len(bars) == 1 and 0 < header.width < area.width,
+        len(bars) == (1 if footer is None else 2) and 0 < header.width < area.width,
         "Restoration requires a separately identified native rail",
     )
-    handle = bars[0]["native_handle"]
-    original = _native_rail(
-        cast("list[dict[str, object]]", state["initial_native"]), handle
+    handle = next(
+        node["native_handle"] for node in bars if node["bounds"] == asdict(rail)
     )
-    final = _native_rail(cast("list[dict[str, object]]", state["final_native"]), handle)
+    horizontal = next(
+        (
+            node["native_handle"]
+            for node in bars
+            if footer is not None and node["bounds"] == asdict(footer)
+        ),
+        None,
+    )
+    original = _native_rail(
+        cast("list[dict[str, object]]", state["initial_native"]), handle, horizontal
+    )
+    final = _native_rail(
+        cast("list[dict[str, object]]", state["final_native"]), handle, horizontal
+    )
     frames = json.loads((capture.output / "frames.json").read_text())
     terminal = frames[-1]
-    endpoint = _native_rail(terminal["native_scroll_info"], handle)
+    endpoint = _native_rail(terminal["native_scroll_info"], handle, horizontal)
     initial = cast("dict[str, float]", state["initial"])
     restored = cast("dict[str, float]", state["final"])
     native._require(
@@ -361,7 +383,12 @@ def _verify_normalized_restore(
         and before.size() == after.size()
         and (before.width(), before.height()) == (area.width, area.height)
         and before.copy(0, 0, round(header.width), before.height())
-        == after.copy(0, 0, round(header.width), after.height()),
+        == after.copy(0, 0, round(header.width), after.height())
+        and (
+            footer is None
+            or before.copy(0, round(rail.height), before.width(), round(footer.height))
+            == after.copy(0, round(rail.height), after.width(), round(footer.height))
+        ),
         "Restoration changed target geometry or original non-rail pixels",
     )
     capture.report.update(
@@ -379,6 +406,163 @@ class HumanDesktop(Desktop):
     ) -> None:
         """Complete a held gesture on the already-verified owned test widget."""
         super().click(widget, point, enter=enter, hold_ms=hold_ms)
+
+
+def _focused_panel_evidence(
+    before: QImage, first: QImage, second: QImage
+) -> dict[str, object]:
+    """Independently prove a changed original ring and unchanged focused sides."""
+    native._require(
+        not before.isNull()
+        and before.size() == first.size() == second.size()
+        and before != first
+        and _scaled_fixture_ring_restored(before, first),
+        "Focus setup did not change only the original fixture border ring",
+    )
+    gray = 0xFFB1B5BA
+    width, height = first.width(), first.height()
+    middle = range(height // 4, 3 * height // 4)
+    sides = (
+        range(_SCALED_FIXTURE_BORDER + 1),
+        range(width - _SCALED_FIXTURE_BORDER - 1, width),
+    )
+    changed: list[list[int]] = []
+    for columns in sides:
+        ring = [x for x in columns if all(before.pixel(x, y) == gray for y in middle)]
+        outline = [x for x in ring if first.pixel(x, height // 2) != gray]
+        native._require(
+            bool(outline)
+            and all(
+                first.pixel(x, y) == first.pixel(x, height // 2)
+                for x in outline
+                for y in middle
+            )
+            and all(
+                first.pixel(x, y) == second.pixel(x, y)
+                for x in ring
+                for y in range(height)
+            ),
+            "The initial focused side outline was absent or changed while scrolling",
+        )
+        changed.append(outline)
+    return {
+        "changed_side_columns": changed,
+        "initial_ring_changed_pixels": sum(
+            before.pixel(x, y) != first.pixel(x, y)
+            for y in range(height)
+            for x in range(width)
+        ),
+        "nonborder_pixels": "exact",
+        "focused_sides": "unchanged through frame 1",
+    }
+
+
+class EdgeFocusedCapture(app.AppCapture):
+    """One ordinary focus attempt before the unchanged production chooser flow."""
+
+    def _focus_owner(self) -> None:
+        native._require(
+            self.kind in _FOCUSED_PANELS
+            and os.environ.get("GITHUB_ACTIONS") == "true"
+            and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted",
+            "Focus setup requires the owned hosted Edge panel case",
+        )
+        native._require(
+            app._window() == self.window
+            and self.desktop.foreground() == self.window.handle
+            and self.window.bounds.contains(self.point),
+            "The owned focus setup window or point changed",
+        )
+        hit = self.desktop.user.WindowFromPoint(
+            w.POINT(round(self.point.x), round(self.point.y))
+        )
+        native._require(
+            self.desktop.user.GetAncestor(hit, 2) == self.window.handle,
+            "The focus setup point is not covered by the owned window",
+        )
+
+    def _focus_gesture(self, keys: tuple[int, ...]) -> None:
+        self._focus_owner()
+        if keys:
+            try:
+                for key in keys:
+                    self.desktop.user.keybd_event(key, 0, 0, 0)
+                QTest.qWait(120)
+            finally:
+                for key in reversed(keys):
+                    self.desktop.user.keybd_event(key, 0, 2, 0)
+        else:
+            native._require(
+                self.desktop.user.SetCursorPos(
+                    round(self.point.x), round(self.point.y)
+                ),
+                "Could not position the owned focus setup pointer",
+            )
+            try:
+                self.desktop.user.mouse_event(2, 0, 0, 0, 0)
+                QTest.qWait(120)
+            finally:
+                self.desktop.user.mouse_event(4, 0, 0, 0, 0)
+
+    @override
+    def _settle_target_foreground(self) -> None:
+        super()._settle_target_foreground()
+        self._focus_owner()
+        self._focus_before = self.source.freeze()
+        native._require(
+            self._focus_before.image.save(str(self.output / "focus-before.png")),
+            "Could not retain the actual pre-focus desktop",
+        )
+        self.report["focus_setup_point"] = asdict(
+            Point(round(self.point.x), round(self.point.y))
+        )
+        self.report["focus_setup"] = {
+            "attempts": 1,
+            "gestures": ["click", "Shift+Tab", "Tab"],
+        }
+        for keys in ((), (0x10, 0x09), (0x09,)):
+            self._focus_gesture(keys)
+        # This is setup evidence only. Production still takes its own input tick
+        # after the later real chooser gesture, without substituting this value.
+        self.report["focus_setup_completed_input_tick"] = self.desktop.input_tick()
+        QTest.qWait(120)
+        self._focus_owner()
+        self._focus_after = self.source.freeze()
+        native._require(
+            self._focus_after.image.save(str(self.output / "focus-after.png")),
+            "Could not retain the actual post-focus desktop",
+        )
+
+    @override
+    def _verify_restored(self, after: QImage) -> None:
+        target = json.loads((self.output / "target.json").read_text(encoding="utf-8"))
+        state = json.loads(
+            (self.output / "restoration.json").read_text(encoding="utf-8")
+        )
+        area = Rect(**target["area"])
+        first = QImage(str(self.output / "frame-0.png"))
+        second = QImage(str(self.output / "frame-1.png"))
+        before, focused = self._focus_before.crop(area), self._focus_after.crop(area)
+        native._require(
+            target["window_dpi"] == _SCALED_FIXTURE_DPI
+            and target["window"] == self.window.handle
+            and area.contains(
+                Point(**cast("dict[str, float]", self.report["focus_setup_point"]))
+            )
+            and target["initial_position"] == state["initial"] == state["final"]
+            and state["initial"]["horizontal"] == state["initial"]["vertical"] == 0.0
+            and (first.width(), first.height()) == (area.width, area.height)
+            and first == focused,
+            "The actual first frame did not retain the focused 192-DPI starting state",
+        )
+        evidence = _focused_panel_evidence(before, first, second)
+        native._require(
+            before.save(str(self.output / "focus-panel-before.png"))
+            and focused.save(str(self.output / "focus-panel-after.png")),
+            "Could not retain the focus setup target crops",
+        )
+        self.report["focused_start_evidence"] = evidence
+        super()._verify_restored(after)
 
 
 class ExplorerStartCapture(app.AppCapture):
@@ -1141,6 +1325,8 @@ def main() -> None:
     """Keep diagnostics separate from the colored-row qualification oracle."""
     kind = sys.argv[1]
     layout = kind.removesuffix("-click").removesuffix("-enter")
+    if kind in _FOCUSED_PANELS:
+        layout = "edge-panel"
     native._require(
         kind == _INVERSE_EXPERIMENT
         or (

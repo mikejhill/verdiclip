@@ -134,8 +134,8 @@ def test_header_discovery_records_raw_bars_without_changing_eligibility(
     area = Rect(178, 146, 824, 532)
     root = header_element(50008, area)
     header = header_element(50034, Rect(178, 146, 807, 25))
-    short = header_element(50014, Rect(968, 146, 34, 498))
-    horizontal = header_element(50014, Rect(178, 644, 790, 34))
+    short = header_element(50014, Rect(967, 146, 34, 498))
+    horizontal = header_element(50014, Rect(179, 644, 789, 34))
     hidden = header_element(50014, Rect(985, 146, 17, 532))
     hidden.offscreen.return_value = True
     bar = header_element(50014, Rect(985, 146, 17, 532))
@@ -161,6 +161,167 @@ def test_header_discovery_records_raw_bars_without_changing_eligibility(
     assert caplog.text.count("height_matches=False") == 2
     assert caplog.text.count("height_matches=True") == 1 + eligible
     assert walker.relative.call_count == len(raw) + 2
+
+
+def footer_parts() -> tuple[Rect, Mock, Mock, Mock]:
+    """Use the exact native37 rectangles, not dimensions inferred from scaling."""
+    return (
+        Rect(343, 282, 654, 425),
+        header_element(50034, Rect(343, 282, 1406, 52)),
+        header_element(50014, Rect(963, 282, 34, 391)),
+        header_element(50014, Rect(343, 673, 620, 34)),
+    )
+
+
+@pytest.mark.parametrize("order", [(0, 1, 2), (0, 2, 1), (1, 0, 2), (2, 1, 0)])
+def test_header_footer_discovery_proves_exact_native_partition(
+    order: tuple[int, int, int],
+) -> None:
+    """Direct roles prove the clipped Header, short V rail and exact H footer."""
+    area, header, vertical, horizontal = footer_parts()
+    root, parts = header_element(50008, area), [header, vertical, horizontal]
+    walker = Mock(relative=Mock(side_effect=[*(parts[i] for i in order), None]))
+    native = target()
+    native._area = area
+    with ExitStack() as owners:
+        native._header = _ScrollHeader.discover(root, walker, owners, area)
+    assert native.header == Rect(343, 282, 620, 52)
+    assert native.footer == Rect(343, 673, 620, 34)
+    assert native.vertical_scrollbar == Rect(963, 282, 34, 391)
+    assert native._header is not None
+    assert native._header.scrollbar is vertical
+    assert native._header._parts[0][2] == Rect(343, 282, 1406, 52)
+    assert walker.relative.call_count == 4
+    assert native.footer.top - native.header.bottom == 339
+    # The footer corner is outside V, so an exact V mask cannot omit it.
+    corner = Rect(963, 673, 34, 34)
+    assert native.vertical_scrollbar.intersected(corner).is_empty
+    assert native.header.width + native.vertical_scrollbar.width == area.width
+    assert native.footer.right == corner.left
+    assert native.footer.bottom == corner.bottom == area.bottom
+
+
+def test_clipped_header_must_cover_the_whole_content_top_strip() -> None:
+    """Clip only the measured right overflow from the exact visible left origin."""
+    area, header, vertical, horizontal = footer_parts()
+    layout = _ScrollHeader(header, vertical, area, footer=horizontal)
+    assert layout.bounds == Rect(343, 282, 620, 52)
+    assert layout._parts[0][2] == header.bounds.return_value
+
+
+@pytest.mark.parametrize(
+    ("part", "bounds"),
+    [
+        ("vertical", Rect(962, 282, 35, 391)),
+        ("vertical", Rect(964, 282, 33, 391)),
+        ("vertical", Rect(963, 283, 34, 390)),
+        ("vertical", Rect(963, 282, 34, 390)),
+        ("vertical", Rect(963, 282, 34, 392)),
+        ("vertical", Rect(963, 282, 34, 425)),
+        ("vertical", Rect(963, 282, 35, 391)),
+        ("horizontal", Rect(344, 673, 619, 34)),
+        ("horizontal", Rect(343, 673, 619, 34)),
+        ("horizontal", Rect(343, 673, 621, 34)),
+        ("horizontal", Rect(343, 674, 620, 33)),
+        ("horizontal", Rect(343, 673, 620, 33)),
+        ("horizontal", Rect(343, 707, 620, 0)),
+        ("horizontal", Rect(343, 282, 620, 425)),
+    ],
+)
+def test_footer_partition_rejects_any_gap_overlap_or_wrong_edge(
+    part: str, bounds: Rect
+) -> None:
+    """No tolerance or guessed strip accounts for missing viewport pixels."""
+    area, header, vertical, horizontal = footer_parts()
+    changed = vertical if part == "vertical" else horizontal
+    changed.bounds.return_value = bounds
+    with pytest.raises(CaptureError, match="partition"):
+        _ScrollHeader(header, vertical, area, footer=horizontal)
+
+
+@pytest.mark.parametrize(
+    "bounds",
+    [
+        Rect(293, 282, 1406, 52),
+        Rect(344, 282, 1406, 52),
+        Rect(343, 283, 1406, 51),
+        Rect(343, 281, 1406, 53),
+        Rect(343, 282, 619, 52),
+        Rect(343, 282, 1406, 0),
+        Rect(343, 282, 1406, 328),
+    ],
+)
+def test_footer_header_still_requires_coverage_and_minimum_body(bounds: Rect) -> None:
+    """The fixed bands cannot conceal content gaps or consume the minimum body."""
+    area, header, vertical, horizontal = footer_parts()
+    header.bounds.return_value = bounds
+    with pytest.raises(CaptureError, match="unsupported geometry"):
+        _ScrollHeader(header, vertical, area, footer=horizontal)
+
+
+@pytest.mark.parametrize("change", ["missing", "hidden", "role", "duplicate"])
+@pytest.mark.parametrize("part", ["vertical", "horizontal"])
+def test_footer_discovery_requires_unique_visible_direct_roles(
+    part: str, change: str
+) -> None:
+    """A shortened rail needs its own exact companion, never an inferred footer."""
+    area, header, vertical, horizontal = footer_parts()
+    parts = [header, vertical, horizontal]
+    changed = vertical if part == "vertical" else horizontal
+    if change == "missing":
+        parts.remove(changed)
+    elif change == "hidden":
+        changed.offscreen.return_value = True
+    elif change == "role":
+        changed.control_type.return_value = 50033
+    else:
+        parts.append(changed)
+    walker = Mock(relative=Mock(side_effect=[*parts, None]))
+    with ExitStack() as owners, pytest.raises(CaptureError):
+        _ScrollHeader.discover(header_element(50008, area), walker, owners, area)
+    assert walker.relative.call_count == len(parts) + 1
+
+
+@pytest.mark.parametrize("part", ["header", "vertical", "horizontal"])
+@pytest.mark.parametrize(
+    "change", ["none", "bounds", "role", "hidden", "parent", "identity"]
+)
+def test_footer_retains_raw_control_bounds_and_identity_guards(
+    part: str, change: str
+) -> None:
+    """Even changes outside the clipped Header reject through retained raw bounds."""
+    area, header, vertical, horizontal = footer_parts()
+    root = header_element(50008, area)
+    layout = _ScrollHeader(header, vertical, area, footer=horizontal)
+    changed = {"header": header, "vertical": vertical, "horizontal": horizontal}[part]
+    walker = Mock()
+    walker.parent.return_value = root
+    automation = Mock(same_element=Mock(return_value=True))
+    if change == "bounds":
+        changed.bounds.return_value = replace(changed.bounds.return_value, width=1407)
+    elif change == "role":
+        changed.control_type.return_value = 50033
+    elif change == "hidden":
+        changed.offscreen.return_value = True
+    elif change == "parent":
+        walker.parent.side_effect = lambda element, _: (
+            None if element is changed else root
+        )
+    elif change == "identity":
+        automation.same_element.return_value = False
+    if change == "none":
+        layout.check(root, automation, walker)
+        assert walker.parent.call_count == 3
+    else:
+        with pytest.raises(CaptureError, match="header or scrollbar changed"):
+            layout.check(root, automation, walker)
+    walker.relative.assert_not_called()
+
+
+def test_no_header_exposes_no_footer_or_vertical_mask() -> None:
+    """Ordinary targets never acquire inferred fixed bands or restoration masks."""
+    native = target()
+    assert native.header is native.footer is native.vertical_scrollbar is None
 
 
 def test_header_discovery_rejects_ambiguity_and_truncation(
@@ -2017,6 +2178,24 @@ def test_native_snapshot_reuses_retained_rail_and_typed_sb_ctl() -> None:
     assert mock(item._user.GetScrollInfo).call_args.args[:2] == (101, 2)
     mock(item._walker.relative).assert_not_called()
     assert mock(item.check).call_count == 4
+
+
+def test_footer_native_snapshot_uses_only_the_retained_short_vertical_rail() -> None:
+    """The horizontal bar cannot replace the V identity in the native-unit proof."""
+    item = native_target()
+    area, header, vertical, horizontal = footer_parts()
+    vertical.native_handle.return_value = 101
+    horizontal.native_handle.return_value = 201
+    item._area = area
+    item._header = _ScrollHeader(header, vertical, area, footer=horizontal)
+    mock(item._automation.pointer_result).return_value = vertical
+    assert item.scrollbar_state() == ScrollBarState(
+        101, 102, 1, 104, 0, 15999, 1787, 7106
+    )
+    assert item.vertical_scrollbar == Rect(963, 282, 34, 391)
+    assert mock(item._user.GetScrollInfo).call_args.args[:2] == (101, 2)
+    horizontal.native_handle.assert_not_called()
+    mock(item._walker.relative).assert_not_called()
 
 
 @pytest.mark.parametrize(

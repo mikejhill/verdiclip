@@ -12,10 +12,11 @@ from typing import cast
 from unittest.mock import Mock
 
 import pytest
-from PySide6.QtGui import QImage
+from PySide6.QtGui import QImage, QPainter
 from PySide6.QtWidgets import QWidget
 from scripts import scrolling_diagnostics as diagnostics
 
+from verdiclip.capture.grabber import FrozenScreen
 from verdiclip.capture.scrolling import ScrollPosition, ScrollResult
 from verdiclip.exceptions import CaptureError
 from verdiclip.geometry import Point, Rect
@@ -1579,3 +1580,441 @@ def test_scaled_fixture_exterior_must_be_uniform() -> None:
     first.setPixel(89, 20, 0xFF000000)
     after.setPixel(89, 20, 0xFF000000)
     assert not diagnostics._scaled_fixture_ring_restored(first, after)
+
+
+def _normalized_footer_evidence(capture: diagnostics.ExplorerStartCapture) -> QImage:
+    """Raw geometry identifies both rails independently of production layout."""
+    before = _normalized_evidence(capture)
+    path = capture.output / "header-geometry.json"
+    geometry = json.loads(path.read_text())
+    geometry["uia"]["nodes"][1]["bounds"] = asdict(Rect(1, 2, 25, 3))
+    geometry["uia"]["nodes"][2]["bounds"] = asdict(Rect(9, 2, 2, 17))
+    geometry["uia"]["nodes"].append(
+        {
+            "parent": 0,
+            "control_type": 50014,
+            "bounds": asdict(Rect(1, 19, 8, 3)),
+            "offscreen": False,
+            "native_handle": 78,
+        }
+    )
+    path.write_text(json.dumps(geometry))
+    path = capture.output / "restoration.json"
+    state = json.loads(path.read_text())
+    horizontal = {**state["initial_native"][0], "native_handle": 78}
+    state["initial_native"].insert(0, horizontal)
+    state["final_native"].insert(0, horizontal)
+    path.write_text(json.dumps(state))
+    path = capture.output / "frames.json"
+    frames = json.loads(path.read_text())
+    frames[-1]["native_scroll_info"].insert(0, horizontal)
+    path.write_text(json.dumps(frames))
+    return before
+
+
+@pytest.mark.parametrize("kind", ["explorer-click", "explorer-middle-click"])
+def test_normalized_footer_oracle_excludes_only_geometry_selected_vertical_rail(
+    tmp_path: Path,
+    kind: str,
+) -> None:
+    """A leading horizontal SB_CTL row is never confused with the vertical one."""
+    capture = _start_capture(tmp_path)
+    capture.kind = kind
+    after = _normalized_footer_evidence(capture)
+    for x, y in ((8, 0), (9, 0), (8, 16), (9, 16)):
+        after.setPixel(x, y, 0xFFFFFFFF)
+    if "middle" in kind:
+        capture._verify_restored(after)
+    else:
+        diagnostics._verify_restored(capture, after)
+    assert capture.report["restored_pixels"] == (
+        "exact non-rail; native position exact; normalized page"
+    )
+
+
+@pytest.mark.parametrize("column", [0, 7, 8, 9])
+def test_normalized_footer_oracle_rejects_one_footer_or_corner_pixel(
+    tmp_path: Path,
+    column: int,
+) -> None:
+    """Restoration cannot hide horizontal rail/corner changes in the V exclusion."""
+    capture = _start_capture(tmp_path)
+    after = _normalized_footer_evidence(capture)
+    after.setPixel(column, 19, 0xFFFFFFFF)
+    with pytest.raises(RuntimeError, match="non-rail pixels"):
+        capture._verify_restored(after)
+
+
+@pytest.mark.parametrize(
+    "damage", ["missing", "duplicate", "extra", "swapped", "rail-height"]
+)
+def test_normalized_footer_oracle_rejects_ambiguous_native_rail(
+    tmp_path: Path,
+    damage: str,
+) -> None:
+    """Both declared controls must remain present, distinct and exactly partitioned."""
+    capture = _start_capture(tmp_path)
+    after = _normalized_footer_evidence(capture)
+    if damage == "rail-height":
+        path = tmp_path / "header-geometry.json"
+        geometry = json.loads(path.read_text())
+        geometry["uia"]["nodes"][2]["bounds"]["height"] = 20
+        path.write_text(json.dumps(geometry))
+    else:
+        path = tmp_path / "restoration.json"
+        state = json.loads(path.read_text())
+        rows = state["final_native"]
+        if damage == "missing":
+            rows.pop(0)
+        elif damage == "duplicate":
+            rows[0]["native_handle"] = 77
+        elif damage == "extra":
+            rows.append({**rows[0], "native_handle": 79})
+        else:
+            rows[0]["native_handle"], rows[1]["native_handle"] = 77, 78
+        path.write_text(json.dumps(state))
+    with pytest.raises((RuntimeError, CaptureError)):
+        capture._verify_restored(after)
+
+
+def _focused_capture(output: Path) -> diagnostics.EdgeFocusedCapture:
+    capture = object.__new__(diagnostics.EdgeFocusedCapture)
+    capture.kind, capture.output, capture.report = (
+        "edge-panel-focused-click",
+        output,
+        {},
+    )
+    capture.window = WindowInfo(9, "Owned fixture", Rect(0, 0, 90, 60))
+    capture.point = Point(40, 30)
+    capture.report["focus_setup_point"] = asdict(capture.point)
+    capture.result = None
+    capture.desktop = Mock()
+    capture.desktop.foreground.return_value = 9
+    capture.desktop.user.GetAncestor.return_value = 9
+    capture.desktop.user.SetCursorPos.return_value = True
+    capture.desktop.input_tick.return_value = 123
+    before, after = _scaled_restoration_pair()
+    capture.source = Mock()
+    capture.source.freeze.side_effect = [
+        FrozenScreen(before, capture.window.bounds),
+        FrozenScreen(after, capture.window.bounds),
+    ]
+    return capture
+
+
+@pytest.mark.parametrize("kind", diagnostics._FOCUSED_PANELS)
+def test_focused_case_uses_unchanged_panel_document_and_production_harness(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    kind: str,
+) -> None:
+    """Focus cases differ only in the explicitly named pre-chooser subclass."""
+    runner = Mock()
+    monkeypatch.setattr(diagnostics, "EdgeFocusedCapture", Mock(return_value=runner))
+    monkeypatch.setattr(diagnostics.sys, "argv", ["diagnostics", kind])
+    document = diagnostics.document("edge-panel")
+    original_launch = diagnostics.native._launch
+
+    def main(*, gui: bool, case: object) -> None:
+        assert gui
+        assert case == diagnostics._case
+        assert diagnostics.native._launch == original_launch
+        assert diagnostics.native._document(nested=False) == document
+
+    monkeypatch.setattr(diagnostics.native, "main", main)
+    diagnostics.main()
+    diagnostics._case(kind, tmp_path, {})
+    runner.run.assert_called_once_with()
+
+
+@pytest.mark.parametrize("failure", ["none", "click", "shift_tab", "tab"])
+def test_focus_setup_has_one_attempt_releases_inputs_and_baselines_last(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    failure: str,
+) -> None:
+    """No failed gesture is retried and no incomplete sequence gets a baseline."""
+    capture = _focused_capture(tmp_path)
+    desktop = cast("Mock", capture.desktop)
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("RUNNER_ENVIRONMENT", "github-hosted")
+    monkeypatch.setattr(diagnostics.app, "_window", lambda: capture.window)
+    monkeypatch.setattr(diagnostics.app.AppCapture, "_settle_target_foreground", Mock())
+    waits: list[int] = []
+
+    def wait(milliseconds: int) -> None:
+        waits.append(milliseconds)
+        if (
+            failure != "none"
+            and len(waits) == {"click": 1, "shift_tab": 2, "tab": 3}[failure]
+        ):
+            raise RuntimeError("setup interrupted")
+        if len(waits) <= 3:
+            desktop.input_tick.assert_not_called()
+
+    monkeypatch.setattr(diagnostics.QTest, "qWait", wait)
+    if failure == "none":
+        capture._settle_target_foreground()
+        assert capture.report["focus_setup_completed_input_tick"] == 123
+        assert desktop.user.GetAncestor.call_count == 5
+        assert (tmp_path / "focus-before.png").exists()
+        assert (tmp_path / "focus-after.png").exists()
+    else:
+        with pytest.raises(RuntimeError, match="setup interrupted"):
+            capture._settle_target_foreground()
+        desktop.input_tick.assert_not_called()
+        assert "focus_setup_completed_input_tick" not in capture.report
+    assert desktop.user.mouse_event.call_args_list[-1].args == (4, 0, 0, 0, 0)
+    keys = [call.args for call in desktop.user.keybd_event.call_args_list]
+    if failure != "click":
+        assert keys[:4] == [(16, 0, 0, 0), (9, 0, 0, 0), (9, 0, 2, 0), (16, 0, 2, 0)]
+    if failure in ("none", "tab"):
+        assert keys[4:] == [(9, 0, 0, 0), (9, 0, 2, 0)]
+
+
+@pytest.mark.parametrize(
+    "invalid", ["host", "kind", "window", "foreground", "point", "hit", "cursor"]
+)
+def test_focus_setup_requires_owned_window_and_point_before_input(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    invalid: str,
+) -> None:
+    """Any ownership failure blocks input rather than redirecting the gesture."""
+    capture = _focused_capture(tmp_path)
+    desktop = cast("Mock", capture.desktop)
+    monkeypatch.setenv("GITHUB_ACTIONS", "false" if invalid == "host" else "true")
+    monkeypatch.setenv("RUNNER_ENVIRONMENT", "github-hosted")
+    monkeypatch.setattr(
+        diagnostics.app,
+        "_window",
+        lambda: None if invalid == "window" else capture.window,
+    )
+    if invalid == "kind":
+        capture.kind = "edge-panel-click"
+    elif invalid == "foreground":
+        desktop.foreground.return_value = 8
+    elif invalid == "point":
+        capture.point = Point(-1, -1)
+    elif invalid == "hit":
+        desktop.user.GetAncestor.return_value = 8
+    elif invalid == "cursor":
+        desktop.user.SetCursorPos.return_value = False
+    with pytest.raises(RuntimeError):
+        capture._focus_gesture(())
+    desktop.user.mouse_event.assert_not_called()
+    desktop.user.keybd_event.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "none",
+        "unchanged",
+        "content",
+        "gray_content",
+        "exterior",
+        "side",
+        "textured_side",
+        "top_only",
+        "missing_second",
+    ],
+)
+def test_focused_start_is_proved_from_pixels_not_input_gestures(invalid: str) -> None:
+    """Initial focus needs a real original-ring change and stable focused sides."""
+    before, first = _scaled_restoration_pair()
+    second = first.copy()
+    if invalid == "unchanged":
+        first = before.copy()
+    elif invalid == "content":
+        first.setPixel(40, 20, 0xFF000000)
+    elif invalid == "gray_content":
+        before.setPixel(40, 20, 0xFFB1B5BA)
+    elif invalid == "exterior":
+        first.setPixel(89, 20, 0xFF000000)
+    elif invalid == "side":
+        second.setPixel(0, 20, 0xFFFFFFFF)
+    elif invalid == "textured_side":
+        first.setPixel(0, 20, 0xFFFFFFFF)
+    elif invalid == "top_only":
+        first = before.copy()
+        first.setPixel(40, 2, 0xFF000000)
+    elif invalid == "missing_second":
+        second = QImage()
+    if invalid == "none":
+        second.setPixel(40, 20, 0xFF000000)  # Scrolling content is expected to move.
+        report = diagnostics._focused_panel_evidence(before, first, second)
+        assert report["changed_side_columns"] == [[0, 1, 2], [85, 86, 87, 88]]
+        assert report["nonborder_pixels"] == "exact"
+    else:
+        with pytest.raises(RuntimeError):
+            diagnostics._focused_panel_evidence(before, first, second)
+
+
+@pytest.mark.parametrize(
+    "invalid", ["none", "dpi", "window", "position", "frame0", "restoration"]
+)
+def test_focused_start_matches_actual_post_setup_crop_and_exact_state(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    invalid: str,
+) -> None:
+    """The diagnostic cannot claim focus from a different crop, state or DPI."""
+    capture = _focused_capture(tmp_path)
+    before, first = _scaled_restoration_pair()
+    capture._focus_before = FrozenScreen(before, capture.window.bounds)
+    capture._focus_after = FrozenScreen(first, capture.window.bounds)
+    assert first.save(str(tmp_path / "frame-0.png"))
+    assert first.save(str(tmp_path / "frame-1.png"))
+    state = {"horizontal": 0.0, "vertical": 0.0, "view_size": 10.0}
+    if invalid == "position":
+        state["vertical"] = 1.0
+    target = {
+        "window": 8 if invalid == "window" else 9,
+        "window_dpi": 96 if invalid == "dpi" else 192,
+        "area": asdict(capture.window.bounds),
+        "initial_position": state,
+    }
+    (tmp_path / "target.json").write_text(json.dumps(target), encoding="utf-8")
+    (tmp_path / "restoration.json").write_text(
+        json.dumps({"initial": state, "final": state}), encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        diagnostics.app.AppCapture, "_verify_restored", diagnostics._verify_restored
+    )
+    after = first.copy()
+    if invalid == "frame0":
+        altered = first.copy()
+        altered.setPixel(40, 20, 0xFF000000)
+        assert altered.save(str(tmp_path / "frame-0.png"))
+    elif invalid == "restoration":
+        after.setPixel(40, 20, 0xFF000000)
+    if invalid == "none":
+        capture._verify_restored(after)
+        assert capture.report["restored_pixels"] == "exact"
+        assert "focused_start_evidence" in capture.report
+    else:
+        with pytest.raises(RuntimeError):
+            capture._verify_restored(after)
+
+
+def test_focused_native_cases_run_at_200_percent_before_explorer() -> None:
+    """Focus variants share the existing same-session display and deadline gates."""
+    workflow = Path(".github/workflows/simple-scroll-native.yml").read_text(
+        encoding="utf-8"
+    )
+    cases = workflow[
+        workflow.index("$cases = @(") : workflow.index("foreach ($case in $cases)")
+    ]
+    assert cases.index("'edge-panel-enter'") < cases.index("'edge-panel-focused-click'")
+    assert cases.index("'edge-panel-focused-click'") < cases.index(
+        "'edge-panel-focused-enter'"
+    )
+    assert cases.index("'edge-panel-focused-enter'") < cases.index("'explorer-click'")
+    assert "if ($target.window_dpi -ne 192)" in workflow
+
+
+def test_focus_setup_rechecks_ownership_before_keyboard_after_click(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A different root after the completed click stops the sole setup attempt."""
+    capture = _focused_capture(tmp_path)
+    desktop = cast("Mock", capture.desktop)
+    desktop.user.GetAncestor.side_effect = [9, 9, 8]
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("RUNNER_ENVIRONMENT", "github-hosted")
+    monkeypatch.setattr(diagnostics.app, "_window", lambda: capture.window)
+    monkeypatch.setattr(diagnostics.app.AppCapture, "_settle_target_foreground", Mock())
+    monkeypatch.setattr(diagnostics.QTest, "qWait", Mock())
+    with pytest.raises(RuntimeError, match="not covered"):
+        capture._settle_target_foreground()
+    desktop.user.keybd_event.assert_not_called()
+    desktop.input_tick.assert_not_called()
+    assert desktop.user.mouse_event.call_count == 2
+
+
+def test_focus_setup_releases_shift_when_tab_press_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A partial key chord cannot leave the setup modifier held."""
+    capture = _focused_capture(tmp_path)
+    desktop = cast("Mock", capture.desktop)
+    monkeypatch.setattr(capture, "_focus_owner", Mock())
+
+    def key_event(key: int, _scan: int, flags: int, _extra: int) -> None:
+        if key == 9 and flags == 0:
+            raise RuntimeError("Tab press failed")
+
+    desktop.user.keybd_event.side_effect = key_event
+    with pytest.raises(RuntimeError, match="Tab press failed"):
+        capture._focus_gesture((16, 9))
+    assert [call.args for call in desktop.user.keybd_event.call_args_list] == [
+        (16, 0, 0, 0),
+        (9, 0, 0, 0),
+        (9, 0, 2, 0),
+        (16, 0, 2, 0),
+    ]
+
+
+def test_fractional_focus_point_records_native_pixel_used_by_target_proof(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Setup records the OS point without changing the later chooser's center."""
+    capture = _focused_capture(tmp_path)
+    capture.point = Point(40.6, 30.4)
+    capture.window = WindowInfo(9, "Owned fixture", Rect(0, 0, 140, 60))
+    area = Rect(41, 0, 90, 60)
+    before, focused = _scaled_restoration_pair()
+
+    def desktop_image(panel: QImage) -> FrozenScreen:
+        image = QImage(140, 60, QImage.Format.Format_RGB32)
+        image.fill(0xFFFFFFFF)
+        painter = QPainter(image)
+        painter.drawImage(41, 0, panel)
+        painter.end()
+        return FrozenScreen(image, capture.window.bounds)
+
+    source = cast("Mock", capture.source)
+    source.freeze.side_effect = [desktop_image(before), desktop_image(focused)]
+    desktop = cast("Mock", capture.desktop)
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("RUNNER_ENVIRONMENT", "github-hosted")
+    monkeypatch.setattr(diagnostics.app, "_window", lambda: capture.window)
+    monkeypatch.setattr(diagnostics.app.AppCapture, "_settle_target_foreground", Mock())
+    monkeypatch.setattr(diagnostics.QTest, "qWait", Mock())
+    capture._settle_target_foreground()
+    assert capture.point == Point(40.6, 30.4)
+    assert capture.report["focus_setup_point"] == {"x": 41, "y": 30}
+    desktop.user.SetCursorPos.assert_called_once_with(41, 30)
+    assert [
+        (call.args[0].x, call.args[0].y)
+        for call in desktop.user.WindowFromPoint.call_args_list
+    ] == [(41, 30)] * 5
+
+    assert focused.save(str(tmp_path / "frame-0.png"))
+    assert focused.save(str(tmp_path / "frame-1.png"))
+    state = {"horizontal": 0.0, "vertical": 0.0, "view_size": 10.0}
+    target = {
+        "window": 9,
+        "window_dpi": 192,
+        "area": asdict(area),
+        "initial_position": state,
+    }
+    (tmp_path / "target.json").write_text(json.dumps(target), encoding="utf-8")
+    (tmp_path / "restoration.json").write_text(
+        json.dumps({"initial": state, "final": state}), encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        diagnostics.app.AppCapture, "_verify_restored", diagnostics._verify_restored
+    )
+    assert not area.contains(capture.point)
+    assert area.contains(Point(41, 30))
+    capture._verify_restored(focused)
+    assert "focused_start_evidence" in capture.report
+    # The former fractional record would reject this exact valid native point.
+    capture.report["focus_setup_point"] = asdict(capture.point)
+    with pytest.raises(RuntimeError, match="focused 192-DPI starting state"):
+        capture._verify_restored(focused)

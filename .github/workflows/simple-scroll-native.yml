@@ -163,7 +163,8 @@ jobs:
         timeout-minutes: 9
         run: |
           $cases = @('edge-prose-click', 'edge-prose-enter', 'edge-panel-click', 'edge-panel-enter',
-            'explorer-click', 'explorer-enter', 'explorer-middle-click', 'explorer-middle-enter',
+            'edge-panel-focused-click', 'edge-panel-focused-enter', 'explorer-click', 'explorer-enter',
+            'explorer-middle-click', 'explorer-middle-enter',
             'explorer-bottom-click', 'explorer-bottom-enter')
           foreach ($case in $cases) {
             uv run python -c "import json; from dataclasses import asdict; from scripts.hosted_display_scale import Display; value = Display().read(); print(json.dumps(asdict(value))); assert value.qualified"

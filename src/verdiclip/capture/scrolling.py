@@ -14,7 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
-from PySide6.QtGui import QImage, QPainter
+from PySide6.QtGui import QColor, QImage, QPainter
 
 from verdiclip.exceptions import CaptureError
 from verdiclip.geometry import Rect
@@ -438,10 +438,30 @@ class VerticalStitch:
         return result
 
 
+def _footer_height(area: Rect, header: Rect | None, footer: Rect | None) -> int:
+    """Accept only the horizontal rail paired with the visible Header/right rail."""
+    if footer is None:
+        return 0
+    if (
+        header is None
+        or footer.left != area.left
+        or footer.right != header.right
+        or not 0 < footer.width < area.width
+        or footer.bottom != area.bottom
+        or footer.top <= header.bottom
+        or footer.height <= 0
+        or footer.height != round(footer.height)
+    ):
+        raise CaptureError("The fixed footer geometry is inconsistent")
+    return round(footer.height)
+
+
 class _HeaderFrames:
     """Separate verified Header pixels from the moving body without losing width."""
 
-    def __init__(self, first: QImage, area: Rect, header: Rect | None) -> None:
+    def __init__(
+        self, first: QImage, area: Rect, header: Rect | None, footer: Rect | None = None
+    ) -> None:
         VerticalStitch._validate(first)
         self._first = first
         self.height, self._width = 0, 0
@@ -460,7 +480,18 @@ class _HeaderFrames:
             ):
                 raise CaptureError("The fixed header geometry is inconsistent")
             self.height, self._width = round(header.height), round(header.width)
-        self.body_height = first.height() - self.height
+        self.footer_height = _footer_height(area, header, footer)
+        self.body_height = first.height() - self.height - self.footer_height
+        self._footer = (
+            first.copy(
+                0,
+                first.height() - self.footer_height,
+                first.width(),
+                self.footer_height,
+            )
+            if self.footer_height
+            else QImage()
+        )
         self._header = (
             first.copy(0, 0, self._width, self.height) if self.height else QImage()
         )
@@ -471,6 +502,17 @@ class _HeaderFrames:
             raise CaptureError("The scroll panel changed size")
         if self.height and frame.copy(0, 0, self._width, self.height) != self._header:
             raise CaptureError("The list header changed during scrolling capture")
+        if (
+            self.footer_height
+            and frame.copy(
+                0,
+                frame.height() - self.footer_height,
+                frame.width(),
+                self.footer_height,
+            )
+            != self._footer
+        ):
+            raise CaptureError("The list footer changed during scrolling capture")
         return (
             frame.copy(0, self.height, frame.width(), self.body_height)
             if self.height
@@ -481,7 +523,7 @@ class _HeaderFrames:
         """Keep the first full-width prefix once, including its scrollbar corner."""
         if not self.height:
             return body
-        height = body.height() + self.height
+        height = body.height() + self.height + self.footer_height
         if body.width() * height > MAX_PIXELS:
             raise CaptureError("The scrolling image exceeds the size limit")
         image = QImage(body.width(), height, QImage.Format.Format_RGB32)
@@ -490,12 +532,18 @@ class _HeaderFrames:
         painter = QPainter(image)
         painter.drawImage(0, 0, self._first.copy(0, 0, body.width(), self.height))
         painter.drawImage(0, self.height, body)
+        if self.footer_height:
+            painter.drawImage(0, self.height + body.height(), self._footer)
         painter.end()
         return image
 
     def extent(self, view_size: float) -> float:
         """Use the original fixed prefix and full-width body for provider extent."""
-        return self.height + self.body_height * END_PERCENT / view_size
+        return (
+            self.height
+            + self.footer_height
+            + self.body_height * END_PERCENT / view_size
+        )
 
 
 class ScrollTransaction:
@@ -575,7 +623,30 @@ class ScrollTransaction:
         if self._target.position() != position or self._native_state() != native:
             raise CaptureError("The native scrollbar moved during capture")
         self._check(restoring=restoring)
-        return image.copy(0, 0, round(header.width), image.height())
+        footer_height = _footer_height(
+            area, header, getattr(self._target, "footer", None)
+        )
+        rail = getattr(self._target, "vertical_scrollbar", None)
+        if rail != Rect(
+            header.right,
+            area.top,
+            area.right - header.right,
+            area.height - footer_height,
+        ):
+            raise CaptureError("The native scrollbar rail geometry is inconsistent")
+        # Exclude only the independently retained vertical rail. The horizontal
+        # scrollbar and its bottom-right corner remain exact original pixels.
+        image = image.copy()
+        painter = QPainter(image)
+        painter.fillRect(
+            round(header.width),
+            0,
+            round(area.width - header.width),
+            round(area.height - footer_height),
+            QColor(0, 0, 0),
+        )
+        painter.end()
+        return image
 
     def _save_anchor(self, initial: ScrollPosition) -> None:
         native = self._native_state()
@@ -655,9 +726,12 @@ class ScrollTransaction:
             or not 0.0 < current.view_size < END_PERCENT
         ):
             return False
-        body = self._target.area.height - header.height
-        original = header.height + body * END_PERCENT / before.view_size
-        terminal = header.height + body * END_PERCENT / current.view_size
+        fixed = header.height + _footer_height(
+            self._target.area, header, getattr(self._target, "footer", None)
+        )
+        body = self._target.area.height - fixed
+        original = fixed + body * END_PERCENT / before.view_size
+        terminal = fixed + body * END_PERCENT / current.view_size
         return _extent_agrees(terminal, original)
 
     def _settle_state(
@@ -759,7 +833,12 @@ class ScrollTransaction:
     def _sequence(self, initial: ScrollPosition) -> QImage:
         position = self._move(0.0)
         first = self._frame(position)
-        frames = _HeaderFrames(first, self._target.area, self._target.header)
+        frames = _HeaderFrames(
+            first,
+            self._target.area,
+            self._target.header,
+            getattr(self._target, "footer", None),
+        )
         stitch = VerticalStitch(frames.body(first), dpi=self._target.registration_dpi)
         while position.vertical < END_PERCENT:
             if self._frames >= MAX_FRAMES:

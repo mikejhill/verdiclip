@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import ExitStack
+from typing import cast
 from unittest.mock import Mock
 
 import pytest
@@ -269,3 +270,124 @@ def test_witness_read_cannot_outlive_position_or_soft_budget(
         monkeypatch.setattr(witness.time, "monotonic", Mock(side_effect=[0.0, 2.0]))
     with pytest.raises(CaptureError, match=r"moved during|read budget"):
         reader.observe(position)
+
+
+def _footer_geometry() -> dict[str, object]:
+    """Use actual measured200% raw role rectangles, not product layout output."""
+    return {
+        "captured_bounds": {"x": 343, "y": 282, "width": 654, "height": 425},
+        "uia": {
+            "truncated": False,
+            "nodes": [
+                {"parent": None, "control_type": 50008},
+                {
+                    "parent": 0,
+                    "offscreen": False,
+                    "control_type": 50034,
+                    "bounds": {"x": 343, "y": 282, "width": 1406, "height": 52},
+                },
+                {
+                    "parent": 0,
+                    "offscreen": False,
+                    "control_type": 50014,
+                    "bounds": {"x": 343, "y": 673, "width": 620, "height": 34},
+                },
+                {
+                    "parent": 0,
+                    "offscreen": False,
+                    "control_type": 50014,
+                    "bounds": {"x": 963, "y": 282, "width": 34, "height": 391},
+                },
+            ],
+        },
+    }
+
+
+def test_raw_footer_layout_clips_only_proven_header_overflow() -> None:
+    """Visible Header620x52, body339px and rails partition measured654x425."""
+    geometry = _footer_geometry()
+    area, header, footer, rail = witness.list_layout(geometry)
+    assert area == Rect(343, 282, 654, 425)
+    assert header == Rect(343, 282, 620, 52)
+    assert footer == Rect(343, 673, 620, 34)
+    assert rail == Rect(963, 282, 34, 391)
+    assert witness.header_layout(geometry) == (area, header)
+    assert footer.top - header.bottom == 339
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "header-left",
+        "header-top",
+        "header-short",
+        "header-height",
+        "footer-left",
+        "footer-width",
+        "footer-bottom",
+        "rail-top",
+        "rail-width",
+        "rail-bottom",
+        "fractional",
+        "missing",
+        "duplicate",
+        "hidden",
+        "nested",
+        "wrong-role",
+    ],
+)
+def test_raw_footer_layout_rejects_incomplete_or_ambiguous_partition(
+    change: str,
+) -> None:
+    """Neither overflow alone nor guessed toolbar geometry can certify cropping."""
+    geometry = _footer_geometry()
+    tree = cast("dict[str, object]", geometry["uia"])
+    nodes = cast("list[dict[str, object]]", tree["nodes"])
+    header, footer, rail = [
+        cast("dict[str, float]", node["bounds"]) for node in nodes[1:]
+    ]
+    changes = {
+        "header-left": (header, "x", 344),
+        "header-top": (header, "y", 283),
+        "header-short": (header, "width", 619),
+        "header-height": (header, "height", 392),
+        "footer-left": (footer, "x", 344),
+        "footer-width": (footer, "width", 619),
+        "footer-bottom": (footer, "height", 33),
+        "rail-top": (rail, "y", 283),
+        "rail-width": (rail, "width", 33),
+        "rail-bottom": (rail, "height", 390),
+        "fractional": (footer, "height", 33.5),
+    }
+    if change in changes:
+        bounds, field, value = changes[change]
+        bounds[field] = value
+    elif change == "missing":
+        nodes.pop()
+    elif change == "duplicate":
+        nodes.append(nodes[-1])
+    elif change == "hidden":
+        nodes[-1]["offscreen"] = True
+    elif change == "nested":
+        nodes[-1]["parent"] = 2
+    else:
+        nodes[-1]["control_type"] = 50000
+    with pytest.raises(CaptureError):
+        witness.list_layout(geometry)
+
+
+def test_footer_witness_body_excludes_horizontal_scrollbar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Retained displacement witnesses must be visible content above the footer."""
+    automation = Mock()
+    item = _item(Rect(350, 670, 50, 20))
+    monkeypatch.setattr(witness, "_Interface", Mock(return_value=automation))
+    target = Mock(_owners=ExitStack())
+    reader = witness.ListItemWitness(target, _footer_geometry())
+    assert reader._body == Rect(343, 334, 620, 339)
+    reader._deadline = float("inf")
+    with pytest.raises(CaptureError, match="fully visible"):
+        reader._visible(item)
+    reader.close()
+    target._owners.close()

@@ -209,14 +209,27 @@ class _ScrollHeader:
     Only direct standard roles establish this layout; no application profile,
     pixel inference, or discarded width. Public Header bounds identify the fixed
     prefix, while a separate ScrollBar must account for any remaining width.
+    A bottom ScrollBar and its exact adjacent V rail can also prove a footer.
+    UIA bounding rectangles enclose the whole control, not just visible pixels:
+    https://learn.microsoft.com/windows/win32/winauto/uiauto-automation-element-propids
     """
 
     def __init__(
-        self, header: _Interface, scrollbar: _Interface | None, area: Rect
+        self,
+        header: _Interface,
+        scrollbar: _Interface | None,
+        area: Rect,
+        *,
+        footer: _Interface | None = None,
     ) -> None:
         self.scrollbar: _Interface | None = None
+        self.vertical_scrollbar: Rect | None = None
+        self.footer: Rect | None = None
         self.bounds = header.bounds()
         self._parts = [(header, _HEADER_CONTROL, self.bounds)]
+        if footer is not None:
+            self._footer_layout(scrollbar, footer, area)
+            return
         if (
             self.bounds.left != area.left
             or self.bounds.top != area.top
@@ -237,6 +250,73 @@ class _ScrollHeader:
                 )
             self._parts.append((scrollbar, _SCROLLBAR_CONTROL, expected))
             self.scrollbar = scrollbar
+            self.vertical_scrollbar = expected
+
+    def _footer_layout(
+        self, scrollbar: _Interface | None, footer: _Interface, area: Rect
+    ) -> None:
+        """Prove the two edge rails before clipping a horizontally extended Header."""
+        bottom = footer.bounds()
+        rail = None if scrollbar is None else scrollbar.bounds()
+        if (
+            scrollbar is None
+            or rail is None
+            or not 0 < rail.width < area.width
+            or not 0 < bottom.height < area.height
+            or bottom.left != area.left
+            or bottom.bottom != area.bottom
+            or rail
+            != Rect(
+                bottom.right,
+                area.top,
+                area.right - bottom.right,
+                bottom.top - area.top,
+            )
+        ):
+            raise CaptureError("The list scrollbars do not partition the viewport")
+        content = Rect(area.left, area.top, bottom.width, rail.height)
+        visible = Rect(area.left, area.top, content.width, self.bounds.height)
+        if (
+            self.bounds.left != area.left
+            or self.bounds.top != area.top
+            or self.bounds.height <= 0
+            or content.width < _MIN_SIZE
+            or bottom.top - self.bounds.bottom < _MIN_SIZE
+            or self.bounds.intersected(content) != visible
+        ):
+            logger.warning(
+                "Scrolling footer Header geometry rejected: captured=%s header=%s "
+                "vertical_scrollbar=%s footer=%s",
+                area,
+                self.bounds,
+                rail,
+                bottom,
+            )
+            raise CaptureError("The list header has unsupported geometry")
+        # Keep the raw Header in _parts: clipping never conceals later changes.
+        self.bounds, self.footer, self.vertical_scrollbar = visible, bottom, rail
+        self.scrollbar = scrollbar
+        self._parts.extend(
+            [
+                (scrollbar, _SCROLLBAR_CONTROL, rail),
+                (footer, _SCROLLBAR_CONTROL, bottom),
+            ]
+        )
+
+    @staticmethod
+    def _part(kind: int, rail: Rect | None, area: Rect) -> str | None:
+        """Identify only standard roles on exact viewport edges, not inferred chrome."""
+        if kind == _HEADER_CONTROL:
+            return "header"
+        if rail is None:
+            return None
+        if rail.height == area.height or (
+            rail.top == area.top and rail.right == area.right
+        ):
+            return "vertical"
+        if rail.left == area.left and rail.bottom == area.bottom:
+            return "footer"
+        return None
 
     def _log_rejected_geometry(self, area: Rect, scrollbar: _Interface | None) -> None:
         """Record bounded numeric evidence without replacing the original rejection."""
@@ -278,7 +358,7 @@ class _ScrollHeader:
         """Inspect only a bounded shallow List view; other targets are unchanged."""
         if element.control_type() != _LIST_CONTROL:
             return None
-        parts: dict[int, _Interface] = {}
+        parts: dict[str, _Interface] = {}
         ambiguous = False
         child = walker.relative(element, owners, 4)
         for _ in range(_MAX_HEADER_CHILDREN):
@@ -296,22 +376,20 @@ class _ScrollHeader:
                     area,
                     rail.height == area.height,
                 )
-            if (
-                kind == _HEADER_CONTROL
-                or (rail is not None and rail.height == area.height)
-            ) and not child.offscreen():
-                if kind in parts:
+            part = cls._part(kind, rail, area)
+            if part is not None and not child.offscreen():
+                if part in parts:
                     ambiguous = True
-                parts[kind] = child
+                parts[part] = child
             child = walker.relative(child, owners, 6)
-        header = parts.get(_HEADER_CONTROL)
+        header = parts.get("header")
         if child is not None:
             raise CaptureError("The list header discovery exceeded its limit")
         if header is None:
             return None
         if ambiguous:
             raise CaptureError("The list has ambiguous header geometry")
-        return cls(header, parts.get(_SCROLLBAR_CONTROL), area)
+        return cls(header, parts.get("vertical"), area, footer=parts.get("footer"))
 
     def check(
         self, root: _Interface, automation: _Interface, walker: _Interface
@@ -772,6 +850,16 @@ class UiaScrollTarget:
     def header(self) -> Rect | None:
         """Return the verified standard Header rectangle, never an inferred crop."""
         return None if self._header is None else self._header.bounds
+
+    @property
+    def footer(self) -> Rect | None:
+        """Return the exact horizontal rail; its remaining corner is retained too."""
+        return None if self._header is None else self._header.footer
+
+    @property
+    def vertical_scrollbar(self) -> Rect | None:
+        """Return only the verified vertical rail, excluding the footer corner."""
+        return None if self._header is None else self._header.vertical_scrollbar
 
     @property
     def registration_dpi(self) -> int | None:

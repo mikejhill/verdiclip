@@ -1621,6 +1621,8 @@ def test_interior_metric_change_still_leaves_provider_write_unresolved(
 class NativeEndpointTarget(HeaderTarget):
     """Native units deliberately differ from pixels, with persistent normalization."""
 
+    vertical_scrollbar: Rect | None = Rect(73, 20, 17, 145)
+
     def __init__(self, start: int = 2400) -> None:
         super().__init__()
         self.native_position = start
@@ -2238,3 +2240,180 @@ def test_already_focused_start_rejects_textured_sticky_header() -> None:
         painter.end()
     with pytest.raises(CaptureError, match="top of the scroll panel"):
         VerticalStitch(frames[0], dpi=192).append(frames[1], 60.0)
+
+
+class FooterTarget(NativeEndpointTarget):
+    """Known horizontal rail/corner below the full-width moving content."""
+
+    area = Rect(10, 20, 80, 162)
+    footer: Rect | None = Rect(10, 165, 63, 17)
+
+    @override
+    def frame(self) -> QImage:
+        first = super().frame()
+        result = QImage(80, 162, QImage.Format.Format_RGB32)
+        result.fill(QColor(42, 75, 111))
+        painter = QPainter(result)
+        painter.drawImage(0, 0, first)
+        painter.end()
+        return result
+
+
+@pytest.mark.parametrize("start", [0, 2400])
+def test_footer_kept_once_with_exact_normalized_restoration(start: int) -> None:
+    """Both fixed bands surround the complete full-width document exactly once."""
+    target = FooterTarget(start)
+    before = target.frame()
+    result = transaction(target).run()
+    assert result.image is not None
+    assert result.image.size() == QImage(80, 642, QImage.Format.Format_RGB32).size()
+    assert result.image.copy(0, 0, 80, 25) == FooterTarget(0).frame().copy(0, 0, 80, 25)
+    assert result.image.copy(0, 25, 80, 600) == target.document
+    assert result.image.copy(0, 625, 80, 17) == before.copy(0, 145, 80, 17)
+    assert result.restoration == "restored"
+    assert target.native_position == start
+    assert target.frame().copy(0, 145, 80, 17) == before.copy(0, 145, 80, 17)
+    assert target.moves[-2:] == [100.0, 100 * start / 4782]
+    assert result.frames == 9
+
+
+def test_measured_200_percent_header_footer_extent_uses_only_moving_body() -> None:
+    """Native37's339px body is separate from52px Header and34px footer."""
+    area = Rect(343, 282, 654, 425)
+    header = Rect(343, 282, 620, 52)
+    footer = Rect(343, 673, 620, 34)
+    image = QImage(654, 425, QImage.Format.Format_RGB32)
+    image.fill(QColor(0, 80, 160))
+    frames = _HeaderFrames(image, area, header, footer)
+    assert frames.body_height == 339
+    assert frames.body(image).width() == 654
+    assert frames.extent(20) == 52 + 339 * 5 + 34
+    body = document(1695, width=654)
+    result = frames.finish(body)
+    assert result.height() == 1781
+    assert result.copy(0, 52, 654, 1695) == body
+    assert result.copy(0, 1747, 654, 34) == image.copy(0, 391, 654, 34)
+
+
+@pytest.mark.parametrize("column", [0, 62, 63, 79])
+def test_footer_and_corner_must_remain_stable_during_capture(
+    monkeypatch: pytest.MonkeyPatch, column: int
+) -> None:
+    """One changed horizontal scrollbar or corner pixel rejects capture."""
+    target = FooterTarget(0)
+    frame = target.frame
+
+    def changed_frame() -> QImage:
+        image = frame()
+        if target.offset:
+            image.setPixelColor(column, 150, QColor(255, 0, 0))
+        return image
+
+    monkeypatch.setattr(target, "frame", changed_frame)
+    result = transaction(target).run()
+    assert result.image is None
+    assert "footer changed" in result.message
+    assert result.restoration == "restored"
+    assert target.native_position == 0
+
+
+@pytest.mark.parametrize("column", [0, 62, 63, 79])
+def test_native_footer_restore_proof_includes_entire_footer_and_corner(
+    monkeypatch: pytest.MonkeyPatch, column: int
+) -> None:
+    """The vertical rail exclusion never hides a changed bottom-right corner."""
+    target = FooterTarget()
+    operation = transaction(target)
+    initial = target.position()
+    operation._save_anchor(initial)
+    target.move(100.0)
+    operation._moved = True
+    operation._expected = operation._terminal = target.position()
+    frame = target.frame
+
+    def changed_frame() -> QImage:
+        image = frame()
+        image.setPixelColor(column, 150, QColor(255, 0, 0))
+        return image
+
+    monkeypatch.setattr(target, "frame", changed_frame)
+    assert operation._restore(initial).startswith("not restored")
+    assert operation._expected is None
+    assert len(target.moves) == 2
+    assert target.native_position == 2400
+
+
+def test_native_footer_restore_excludes_only_verified_vertical_rail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rail changes above the footer do not alter any compared content pixels."""
+    target = FooterTarget()
+    operation = transaction(target)
+    initial = target.position()
+    operation._save_anchor(initial)
+    target.move(100.0)
+    operation._moved = True
+    operation._expected = operation._terminal = target.position()
+    frame = target.frame
+
+    def changed_frame() -> QImage:
+        image = frame()
+        image.setPixelColor(79, 144, QColor(255, target.count % 255, 0))
+        return image
+
+    monkeypatch.setattr(target, "frame", changed_frame)
+    assert operation._restore(initial) == "restored"
+    assert target.native_position == 2400
+    assert len(target.moves) == 2
+
+
+@pytest.mark.parametrize(
+    "footer",
+    [
+        Rect(11, 165, 62, 17),
+        Rect(10, 165, 80, 17),
+        Rect(10, 165, 62, 17),
+        Rect(10, 164, 63, 17),
+        Rect(10, 45, 63, 137),
+        Rect(10, 182, 63, 0),
+        Rect(10, 164.5, 63, 17.5),
+    ],
+)
+def test_footer_partition_rejects_unproven_geometry(footer: Rect) -> None:
+    """No approximate edges, gaps, overlapping bands or fractional crop budget."""
+    target = FooterTarget()
+    target.footer = footer
+    result = transaction(target).run()
+    assert result.image is None
+    assert target.moves == []
+    assert result.frames == 0
+
+
+def test_footer_without_header_cannot_enable_fixed_band() -> None:
+    """A footer alone is not evidence of the proven standard list layout."""
+    target = FooterTarget()
+    with pytest.raises(CaptureError, match="footer geometry"):
+        _HeaderFrames(target.frame(), target.area, None, target.footer)
+
+
+@pytest.mark.parametrize("rail", [None, Rect(73, 20, 17, 162), Rect(73, 20, 17, 144)])
+def test_native_footer_anchor_rejects_missing_or_wrong_vertical_rail(
+    rail: Rect | None,
+) -> None:
+    """A full-height exclusion would omit corner pixels and must be rejected."""
+    target = FooterTarget()
+    target.vertical_scrollbar = rail
+    result = transaction(target).run()
+    assert result.image is None
+    assert target.moves == []
+
+
+def test_footer_counts_against_existing_output_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Appending the fixed footer cannot exceed the unchanged pixel cap."""
+    target = FooterTarget()
+    frames = _HeaderFrames(target.frame(), target.area, target.header, target.footer)
+    monkeypatch.setattr("verdiclip.capture.scrolling.MAX_PIXELS", 80 * 630)
+    with pytest.raises(CaptureError, match="size limit"):
+        frames.finish(target.document)

@@ -608,3 +608,109 @@ def test_restoration_record_rejects_races_after_native_observation(
         )
     assert not (tmp_path / "restoration.json").exists()
     target.move.assert_not_called()
+
+
+def _footer_sequence(output: Path) -> QImage:
+    """Add a full-width exact footer/corner to the independent raw-item sequence."""
+    source = _header_sequence(output)
+    path = output / "header-geometry.json"
+    geometry = json.loads(path.read_text())
+    geometry["captured_bounds"]["height"] = 69
+    nodes = geometry["uia"]["nodes"]
+    nodes[1]["bounds"]["width"] = 40  # Raw header extends past the viewport.
+    nodes.append(
+        {
+            "parent": 0,
+            "control_type": 50014,
+            "offscreen": False,
+            "bounds": {"x": 10, "y": 85, "width": 20, "height": 4},
+        }
+    )
+    path.write_text(json.dumps(geometry))
+    footer = QImage(24, 4, QImage.Format.Format_RGB32)
+    for y in range(4):
+        for x in range(24):
+            footer.setPixelColor(x, y, QColor(40 + x, 170 + y, 80))
+    for index in range(3):
+        before = QImage(str(output / f"frame-{index}.png"))
+        frame = QImage(24, 69, QImage.Format.Format_RGB32)
+        painter = QPainter(frame)
+        painter.drawImage(0, 0, before)
+        painter.drawImage(0, 65, footer)
+        painter.end()
+        assert frame.save(str(output / f"frame-{index}.png"))
+    result = QImage(24, 129, QImage.Format.Format_RGB32)
+    painter = QPainter(result)
+    painter.drawImage(0, 0, source)
+    painter.drawImage(0, 125, footer)
+    painter.end()
+    return result
+
+
+@pytest.mark.parametrize("normalized", [False, True])
+def test_footer_oracle_covers_full_width_and_retains_footer_once(
+    tmp_path: Path,
+    *,
+    normalized: bool,
+) -> None:
+    """Footer/corner rows are exact and both normalized extents count fixed bands."""
+    image = _footer_sequence(tmp_path)
+    if normalized:
+        path = tmp_path / "frames.json"
+        frames = json.loads(path.read_text())
+        frames[-1]["view_size"] = 49.5
+        path.write_text(json.dumps(frames))
+    result = verify_sequence(image, tmp_path)
+    assert result["oracle_verified_rows"] == 129
+    assert result["oracle_frames"] == 3
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "output-footer",
+        "output-corner",
+        "middle-footer",
+        "last-corner",
+        "duplicate",
+        "first-body",
+        "last-body",
+        "footer-witness",
+    ],
+)
+def test_footer_oracle_rejects_one_pixel_or_displaced_band(
+    tmp_path: Path,
+    change: str,
+) -> None:
+    """Every footer/corner pixel and all moving rows remain independently proved."""
+    image = _footer_sequence(tmp_path)
+    if change in ("middle-footer", "last-corner"):
+        index = 1 if change == "middle-footer" else 2
+        path = tmp_path / f"frame-{index}.png"
+        frame = QImage(str(path))
+        frame.setPixelColor(
+            23 if change == "last-corner" else 0, 68, QColor(255, 0, 255)
+        )
+        assert frame.save(str(path))
+    elif change == "duplicate":
+        duplicated = QImage(24, 133, QImage.Format.Format_RGB32)
+        painter = QPainter(duplicated)
+        painter.drawImage(0, 0, image)
+        painter.drawImage(0, 129, image.copy(0, 125, 24, 4))
+        painter.end()
+        image = duplicated
+    elif change == "footer-witness":
+        path = tmp_path / "frames.json"
+        positions = json.loads(path.read_text())
+        positions[1]["native_item_witness"]["items"][0]["before"]["y"] = 85
+        path.write_text(json.dumps(positions))
+    else:
+        x, y = {
+            "output-footer": (0, 125),
+            "output-corner": (23, 128),
+            "first-body": (0, 5),
+            "last-body": (0, 124),
+        }[change]
+        image.setPixelColor(x, y, QColor(255, 0, 255))
+    with pytest.raises(RuntimeError):
+        verify_sequence(image, tmp_path)
