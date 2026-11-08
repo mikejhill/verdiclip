@@ -217,11 +217,15 @@ class UiaScrollTarget:
     ) -> tuple[_Interface, _Interface]:
         for _ in range(_MAX_ANCESTORS):
             pattern = element.scroll_pattern(self._owners)
-            logger.debug(
-                "UIA ancestor bounds=%s scroll=%s",
-                element.bounds(),
-                pattern is not None,
-            )
+            if logger.isEnabledFor(logging.DEBUG):
+                control_type = c.c_int()
+                element.call(21, (c.POINTER(c.c_int),), c.byref(control_type))
+                logger.debug(
+                    "UIA ancestor type=%s bounds=%s scroll=%s",
+                    control_type.value,
+                    element.bounds(),
+                    pattern is not None,
+                )
             if pattern is not None and 0.0 <= pattern.number(6) <= END_PERCENT:
                 return element, pattern
             element = walker.pointer_result(

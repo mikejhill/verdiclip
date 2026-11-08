@@ -24,6 +24,7 @@ from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer
 from verdiclip.capture.grabber import MssScreenSource
 from verdiclip.capture.scroll_helper import ScrollHelper
 from verdiclip.capture.scrolling import ScrollResult
+from verdiclip.exceptions import CaptureError
 from verdiclip.geometry import Point
 from verdiclip.platform.scrolling import UiaScrollTarget
 from verdiclip.platform.windows import WindowInfo, WindowLocator
@@ -113,7 +114,19 @@ def _prepare(window: WindowInfo) -> WindowInfo:
     user.MoveWindow.restype = w.BOOL
     user.SetForegroundWindow.argtypes = (w.HWND,)
     user.SetForegroundWindow.restype = w.BOOL
-    if not user.MoveWindow(window.handle, 10, 10, _WINDOW_WIDTH, _WINDOW_HEIGHT, 1):
+    user.SystemParametersInfoW.argtypes = (w.UINT, w.UINT, c.c_void_p, w.UINT)
+    user.SystemParametersInfoW.restype = w.BOOL
+    work = w.RECT()
+    if not user.SystemParametersInfoW(48, 0, c.byref(work), 0):
+        raise RuntimeError("Could not read the hosted desktop work area")
+    if not user.MoveWindow(
+        window.handle,
+        work.left + 10,
+        work.top + 10,
+        min(_WINDOW_WIDTH, work.right - work.left - 20),
+        min(_WINDOW_HEIGHT, work.bottom - work.top - 20),
+        1,
+    ):
         raise RuntimeError("Could not position the owned test application")
     if not user.SetForegroundWindow(window.handle):
         raise RuntimeError("The owned test application could not become foreground")
@@ -167,6 +180,24 @@ def _require(condition: object, message: str) -> None:
         raise RuntimeError(message)
 
 
+def _open_target(point: Point, report: dict[str, object]) -> UiaScrollTarget:
+    """Preserve first failure; observe one delayed read without accepting it."""
+    try:
+        return UiaScrollTarget(point)
+    except (CaptureError, OSError) as first:
+        report["first_discovery_error"] = str(first)
+        time.sleep(0.5)
+        try:
+            with UiaScrollTarget(point) as observation:
+                report["delayed_discovery"] = {
+                    "viewport": asdict(observation.area),
+                    "position": asdict(observation.position()),
+                }
+        except (CaptureError, OSError) as second:
+            report["delayed_discovery_error"] = str(second)
+        raise
+
+
 def _case(kind: str, output: Path, report: dict[str, object]) -> None:
     window = _prepare(_window())
     report["window"] = asdict(window)
@@ -183,7 +214,7 @@ def _case(kind: str, output: Path, report: dict[str, object]) -> None:
         else window.bounds.center
     )
     report["selected_point"] = asdict(point)
-    with UiaScrollTarget(point) as target:
+    with _open_target(point, report) as target:
         report["viewport"] = asdict(target.area)
         report["initial"] = asdict(target.position())
         if kind == "edge-nested":
