@@ -378,12 +378,19 @@ try {
     })
     # Inspect the finite preference list before making ONE selection. Never try
     # a second mode after selection, confirmation, or scale discovery fails.
-    $allowedResolutions = @(
-        @{ width = 2560; height = 1440 }
-        @{ width = 1920; height = 1200 }
-        @{ width = 1920; height = 1080 }
-        @{ width = 1600; height = 1200 }
-    )
+    $allowedResolutions = @{
+        125 = @(
+            @{ width = 2560; height = 1440 }
+            @{ width = 1920; height = 1200 }
+            @{ width = 1920; height = 1080 }
+            @{ width = 1600; height = 1200 }
+        )
+        200 = @(
+            @{ width = 2560; height = 1440 }
+            @{ width = 1920; height = 1200 }
+            @{ width = 1600; height = 1200 }
+        )
+    }[$Scale]
     $outcome.resolution_target = $null
     foreach ($mode in $allowedResolutions) {
         # ASCII x or U+00D7 multiplication sign, with the optional standard suffix.

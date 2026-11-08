@@ -2751,6 +2751,9 @@ class ListStepFixture:
         self.position = ScrollPosition(-1 if no_hbar else 0, 0, 100 * 597 / 15999)
         self.target.position = Mock(side_effect=lambda: self.position)
         self.target.scrollbar_state = Mock(side_effect=lambda: self.native)
+        self.target._read_scrollbar_state = Mock(
+            side_effect=lambda _validate: self.target.scrollbar_state()
+        )
         self.items = [
             header_element(50007, Rect(371, y, 592 if no_hbar else 1350, 48))
             for y in (514, 570)
@@ -2768,6 +2771,42 @@ class ListStepFixture:
             item.pointer_result.side_effect = self.retain(item)
         self.check = Mock(side_effect=self.layout_check)
         self.poll = Mock()
+
+    def use_native_reads(self) -> None:
+        """Exercise the real native reader with typed metadata and rail hit testing."""
+        target = self.target
+        assert target._header is not None
+        rail = target._header.scrollbar
+        assert rail is not None
+        mock(rail.native_handle).return_value = 101
+        target.check = self.check
+        target._read_scrollbar_state = Mock(
+            side_effect=lambda validate: UiaScrollTarget._read_scrollbar_state(
+                target, validate
+            )
+        )
+        target.scrollbar_state = Mock(
+            side_effect=lambda: UiaScrollTarget.scrollbar_state(target)
+        )
+
+        def read(_handle: int, _bar: int, output: c._CArgObject) -> bool:
+            info = c.cast(output, c.POINTER(scrolling._ScrollInfo)).contents
+            native = self.native
+            info.minimum, info.maximum = native.minimum, native.maximum
+            info.page, info.position = native.page, native.position
+            return True
+
+        def hit(slot: int, owners: ExitStack, *args: object) -> Mock:
+            argument = args[0]
+            assert isinstance(argument, tuple)
+            point = argument[1]
+            assert isinstance(point, w.POINT)
+            if rail.bounds().contains(Point(point.x, point.y)):
+                return mock(rail)
+            return self.hit(slot, owners, *args)
+
+        mock(target._user.GetScrollInfo).side_effect = read
+        mock(target._automation.pointer_result).side_effect = hit
 
     def layout_check(self) -> None:
         """Keep the actual retained Header/rail checker active during evidence."""
@@ -3495,12 +3534,16 @@ def test_list_steps_late_full_check_rejects_persistent_changes(
 
 
 @pytest.mark.parametrize("phase", ["begin", "finish"])
-@pytest.mark.parametrize("change", ["input", "focus", "process", "cancel", "deadline"])
+@pytest.mark.parametrize(
+    "change",
+    ["input", "focus", "process", "window", "cancel", "deadline", "local-deadline"],
+)
 def test_list_steps_release_changes_cannot_authorize_evidence(
-    phase: str, change: str
+    phase: str, change: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Temporary and retained COM Release calls are followed by fresh checks."""
     fixture = ListStepFixture()
+    fixture.use_native_reads()
     steps = fixture.capability()
 
     def change_during_release() -> None:
@@ -3510,6 +3553,10 @@ def test_list_steps_release_changes_cannot_authorize_evidence(
             mock(fixture.target._user.GetForegroundWindow).return_value = 9
         elif change == "process":
             mock(fixture.target._kernel.WaitForSingleObject).return_value = 0
+        elif change == "window":
+            mock(fixture.target._window_bounds).return_value = (0, 0, 1, 1)
+        elif change == "local-deadline":
+            monkeypatch.setattr(scrolling.time, "monotonic", lambda: steps._deadline)
         else:
             fixture.poll.side_effect = CaptureError(change)
 
@@ -3569,48 +3616,35 @@ def test_list_steps_cleanup_failure_never_leaves_usable_pair(phase: str) -> None
     assert all(release.call_count == 1 for release in fixture.releases)
 
 
-def test_list_steps_keep_native_getter_full_guards_and_all_four_reads() -> None:
-    """Each completed phase has two full boundaries plus four native full checks."""
+def test_list_steps_deduplicate_native_guards_and_keep_all_four_reads() -> None:
+    """Each completed phase keeps two full boundaries and both native observations."""
     fixture = ListStepFixture()
+    fixture.use_native_reads()
     target = fixture.target
-    assert target._header is not None
-    rail = target._header.scrollbar
-    assert rail is not None
-    mock(rail.native_handle).return_value = 101
-    target.check = fixture.check
-    target.scrollbar_state = Mock(
-        side_effect=lambda: UiaScrollTarget.scrollbar_state(target)
-    )
-
-    def read(_handle: int, _bar: int, output: c._CArgObject) -> bool:
-        info = c.cast(output, c.POINTER(scrolling._ScrollInfo)).contents
-        native = fixture.native
-        info.minimum, info.maximum = native.minimum, native.maximum
-        info.page, info.position = native.page, native.position
-        return True
-
-    def hit(slot: int, owners: ExitStack, *args: object) -> Mock:
-        argument = args[0]
-        assert isinstance(argument, tuple)
-        point = argument[1]
-        assert isinstance(point, w.POINT)
-        if rail.bounds().contains(Point(point.x, point.y)):
-            return mock(rail)
-        return fixture.hit(slot, owners, *args)
-
-    mock(target._user.GetScrollInfo).side_effect = read
-    mock(target._automation.pointer_result).side_effect = hit
     steps = fixture.capability()
+    released = []
+
+    def boundary() -> None:
+        fixture.layout_check()
+        released.append(sum(release.call_count for release in fixture.releases))
+
+    fixture.check.side_effect = boundary
     for phase in ("begin", "finish"):
         fixture.check.reset_mock()
         mock(target._user.GetScrollInfo).reset_mock()
         if phase == "begin":
             steps.begin(fixture.position)
         else:
-            fixture.advance()
-            assert steps.finish(fixture.position) == 175
-        assert fixture.check.call_count == 6
+            fixture.advance(terminal=True)
+            assert steps.finish(fixture.position, terminal=True) == 175
+        assert released == ([0, 0] if phase == "begin" else [0, 0, 0, 2])
+        assert fixture.check.call_count == 2
         assert mock(target._user.GetScrollInfo).call_count == 2
+    fixture.check.reset_mock()
+    mock(target._user.GetScrollInfo).reset_mock()
+    steps.confirm_terminal(fixture.position)
+    assert fixture.check.call_count == 4
+    assert mock(target._user.GetScrollInfo).call_count == 1
     mock(target._scroll.call).assert_not_called()
 
 
@@ -4005,3 +4039,132 @@ def test_list_no_scroll_and_zero_are_not_interchangeable(
         action(fixture.position)
     assert all(release.call_count == 1 for release in fixture.releases)
     mock(fixture.target._scroll.call).assert_not_called()
+
+
+@pytest.mark.parametrize("phase", ["begin", "finish"])
+@pytest.mark.parametrize("observation", [1, 2])
+@pytest.mark.parametrize(
+    "change",
+    [
+        "cancel",
+        "hard-deadline",
+        "local-deadline",
+        "input",
+        "focus",
+        "process",
+        "window",
+    ],
+)
+def test_list_native_reads_reject_late_eligibility_changes(
+    phase: str, observation: int, change: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each native read retains a fresh cheap guard before evidence can escape."""
+    fixture = ListStepFixture()
+    fixture.use_native_reads()
+    steps = fixture.capability()
+    if phase == "finish":
+        steps.begin(fixture.position)
+        fixture.advance(terminal=True)
+    read = mock(fixture.target._user.GetScrollInfo)
+    original = read.side_effect
+    assert callable(original)
+    read.reset_mock()
+
+    def changed_read(*args: object) -> object:
+        result = original(*args)
+        if read.call_count == observation:
+            if change in ("cancel", "hard-deadline"):
+                fixture.poll.side_effect = CaptureError(change)
+            elif change == "local-deadline":
+                monkeypatch.setattr(
+                    scrolling.time, "monotonic", lambda: steps._deadline
+                )
+            elif change == "input":
+                mock(fixture.target._input).return_value = 13
+            elif change == "focus":
+                mock(fixture.target._user.GetForegroundWindow).return_value = 9
+            elif change == "process":
+                mock(fixture.target._kernel.WaitForSingleObject).return_value = 0
+            else:
+                mock(fixture.target._window_bounds).return_value = (0, 0, 1, 1)
+        return result
+
+    read.side_effect = changed_read
+    action = steps.begin if phase == "begin" else partial(steps.finish, terminal=True)
+    with pytest.raises(CaptureError):
+        action(fixture.position)
+    assert read.call_count == observation
+    assert not steps._items
+    assert steps._before is None
+    assert steps._terminal is None
+    assert all(release.call_count == 1 for release in fixture.releases)
+    mock(fixture.target._scroll.call).assert_not_called()
+    mock(fixture.target._screens.freeze).assert_not_called()
+
+
+@pytest.mark.parametrize("phase", ["begin", "finish"])
+@pytest.mark.parametrize("observation", [1, 2])
+@pytest.mark.parametrize("change", ["dpi", "header", "viewport", "occlusion"])
+def test_list_native_reads_reject_persistent_layout_changes_at_exit(
+    phase: str, observation: int, change: str
+) -> None:
+    """Read-only provisional native evidence cannot bypass the full late boundary."""
+    fixture = ListStepFixture()
+    fixture.use_native_reads()
+    target = fixture.target
+    target._provider_bounds = target.area
+    mock(target._element.bounds).return_value = target.area
+    mock(target._viewport).return_value = target.area
+    fixture.check.side_effect = lambda: UiaScrollTarget.check(target)
+    steps = fixture.capability()
+    if phase == "finish":
+        steps.begin(fixture.position)
+        fixture.advance(terminal=True)
+    read = mock(target._user.GetScrollInfo)
+    original = read.side_effect
+    assert callable(original)
+    read.reset_mock()
+    fixture.check.reset_mock()
+
+    def changed_read(*args: object) -> object:
+        result = original(*args)
+        if read.call_count == observation:
+            if change == "dpi":
+                target._observe_display = Mock(side_effect=CaptureError("DPI changed"))
+            elif change == "header":
+                fixture.children[0].bounds.return_value = Rect(344, 282, 1406, 52)
+            elif change == "viewport":
+                mock(target._viewport).return_value = Rect(0, 0, 1, 1)
+            else:
+                mock(target._user.GetTopWindow).return_value = 0
+        return result
+
+    read.side_effect = changed_read
+    action = steps.begin if phase == "begin" else partial(steps.finish, terminal=True)
+    with pytest.raises(CaptureError):
+        action(fixture.position)
+    assert read.call_count == 2
+    assert fixture.check.call_count == 2
+    assert not steps._items
+    assert steps._before is None
+    assert steps._terminal is None
+    assert all(release.call_count == 1 for release in fixture.releases)
+    mock(target._scroll.call).assert_not_called()
+    mock(target._screens.freeze).assert_not_called()
+
+
+@pytest.mark.parametrize("boundary", [1, 2])
+def test_public_native_read_requires_both_full_checks(boundary: int) -> None:
+    """Standalone native reads keep full validation on both sides of native IO."""
+    item = native_target()
+    checks = mock(item.check)
+    checks.side_effect = (
+        [CaptureError("full check")]
+        if boundary == 1
+        else [None, CaptureError("full check")]
+    )
+    with pytest.raises(CaptureError, match="full check"):
+        item.scrollbar_state()
+    assert checks.call_count == boundary
+    assert mock(item._user.GetScrollInfo).call_count == boundary - 1
+    assert item._scrollbar_identity is None

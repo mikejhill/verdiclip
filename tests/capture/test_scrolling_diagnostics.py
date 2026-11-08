@@ -4355,7 +4355,7 @@ def test_no_hbar_setup_stages_use_only_fixed_stderr_labels(
         ("list_lookup", "$root=[Windows.Automation.AutomationElement]::FromHandle"),
         ("horizontal_readback", "GuardList\n$horizontal="),
         ("view_lookup", "$desktop=[Windows.Automation.AutomationElement]::RootElement"),
-        ("view_expand", "Guard $view"),
+        ("view_expand", "Guard $view\n  $viewPattern.Expand()"),
         ("show_lookup", "$show=Exact"),
         ("show_expand", "Guard $show"),
         ("pane_lookup", "$pane=Exact"),
@@ -4642,3 +4642,116 @@ def test_prose_source_hash_pins_the_white_padding_contract() -> None:
     ).hexdigest()
     for mode in ("edge-prose-click", "edge-prose-enter"):
         assert digest == diagnostics.native._CONTENT_FIXTURE_SOURCES[mode]
+
+
+def test_view_receipt_is_optional_and_before_unchanged_show_lookup(
+    owned_navigation_setup: tuple[diagnostics.ExplorerCase, WindowInfo, Mock, Mock],
+    tmp_path: Path,
+) -> None:
+    """One read-only receipt does not change the one-toggle navigation sequence."""
+    runner, window, command, _verify = owned_navigation_setup
+    runner.setup_output = tmp_path / "case's output"
+    runner._hide_navigation_pane(window)
+    script = command.call_args.args[0][-1]
+    expected = script.split("$expected='", 1)[1].split("' | ConvertFrom-Json", 1)[0]
+    assert json.loads(expected.replace("''", "'"))["evidence"] == str(
+        runner.setup_output
+    )
+    assert (
+        "  Guard $view\n  $viewPattern.Expand()\n"
+        "  Start-Sleep -Milliseconds 300\n  ViewReceipt\n"
+        "  Stage 'show_lookup'\n  $show=Exact $desktop 'Show' $pidValue"
+    ) in script
+    assert script.count("\n  ViewReceipt\n") == 1
+    assert script.index("Stage 'width_already_no_hbar'") < script.index(
+        "\n  ViewReceipt\n"
+    )
+    receipt = script.split("function ViewReceipt {", 1)[1].split(
+        "Stage 'owner_guard'", 1
+    )[0]
+    for forbidden in (
+        "Start-Sleep",
+        "FindAll",
+        "FindFirst",
+        "FromPoint",
+        "Exact ",
+        ".Expand()",
+        ".Collapse()",
+        ".Toggle()",
+        "Stage ",
+    ):
+        assert forbidden not in receipt
+    assert "} catch {\n    # Fixed label only:" in receipt
+    assert 'WriteLine("navigation_pane_view_receipt=$status")' in receipt
+    assert script.count("$toggle.Toggle()") == 1
+    assert script.count("Start-Sleep -Milliseconds 300") == 2
+    assert command.call_args.kwargs["timeout"] == 10
+    command.assert_called_once()
+
+
+def test_view_receipt_bounds_names_traversal_and_owned_screenshot(
+    owned_navigation_setup: tuple[diagnostics.ExplorerCase, WindowInfo, Mock, Mock],
+) -> None:
+    """Static contracts bound diagnostic reads and keep all image ownership guards."""
+    runner, window, command, _verify = owned_navigation_setup
+    runner._hide_navigation_pane(window)
+    script = command.call_args.args[0][-1]
+    receipt = script.split("function ViewReceipt {", 1)[1].split(
+        "Stage 'owner_guard'", 1
+    )[0]
+    for contract in (
+        "$roots -lt 64",
+        "$visited -lt 64",
+        "($visited + $queue.Count) -lt 64",
+        "$depth -ge 4",
+        "[Math]::Min(80, $name.Length)",
+        "$info.ProcessId -eq $pidValue",
+        "if (OwnedControl $top)",
+        "$info.ProcessId -ne $pidValue -or -not (OwnedControl $element)",
+        "$info.ControlType -eq [Windows.Automation.ControlType]::Menu -or",
+        "$info.ControlType -eq [Windows.Automation.ControlType]::MenuItem",
+        "same_pid_roots=$samePidRoots; unowned_roots=$unownedRoots",
+        "root_owner=$owner",
+        "bounds=@($bounds.X, $bounds.Y, $bounds.Width, $bounds.Height)",
+        "truncated=($limited -or $queue.Count -gt 0)",
+        "screenshot_scope='owned_window_only'; screenshot_bounds=$expected.outer",
+        "$width -gt 4096",
+        "$height -gt 2160",
+        "($width * $height) -gt 8847360",
+        "if ($null -ne $graphics) { $graphics.Dispose() }",
+        "if ($null -ne $bitmap) { $bitmap.Dispose() }",
+    ):
+        assert contract in receipt
+    assert receipt.count("$info.Name") == 1
+    assert receipt.count("Guard $view") == 4
+    assert receipt.count("::GetForegroundWindow()") == 2
+    assert receipt.index("Guard $view") < receipt.index("GetFirstChild($desktop)")
+    copy = receipt.index("$graphics.CopyFromScreen")
+    save = receipt.index("$bitmap.Save")
+    assert receipt.rindex("Guard $view", 0, copy) < copy
+    assert copy < receipt.index("Guard $view", copy) < save
+    assert "[int]$expected.outer.x, [int]$expected.outer.y" in receipt
+    assert receipt.index("'view-popup.json'") < copy < save
+
+
+def test_view_receipt_status_does_not_replace_original_setup_error(
+    owned_navigation_setup: tuple[diagnostics.ExplorerCase, WindowInfo, Mock, Mock],
+) -> None:
+    """Evidence statuses accompany the exact subprocess failure."""
+    runner, window, command, _verify = owned_navigation_setup
+    error = diagnostics.subprocess.CalledProcessError(
+        1,
+        "powershell",
+        stderr=(
+            "navigation_pane_view_receipt=uia_saved\n"
+            "navigation_pane_setup_failed_stage=show_lookup\n"
+            "Expected one enabled visible Show control"
+        ),
+    )
+    command.side_effect = error
+    with pytest.raises(diagnostics.subprocess.CalledProcessError) as raised:
+        runner._hide_navigation_pane(window)
+    assert raised.value is error
+    result = cast("dict[str, object]", runner.report["navigation_pane_setup"])
+    assert result["stderr_tail"] == error.stderr
+    command.assert_called_once()

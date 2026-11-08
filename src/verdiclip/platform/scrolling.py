@@ -480,7 +480,11 @@ class _ListSteps:
         self._guard()
 
     def _state(
-        self, position: ScrollPosition, *, terminal: bool = False
+        self,
+        position: ScrollPosition,
+        validate: Callable[[], None],
+        *,
+        terminal: bool = False,
     ) -> ScrollBarState:
         self._guard()
         target = self._target
@@ -492,7 +496,7 @@ class _ListSteps:
             or target.position() != position
         ):
             raise CaptureError("The list step position or identity changed")
-        native = target.scrollbar_state()
+        native = target._read_scrollbar_state(validate)
         self._guard()
         if (
             native is None
@@ -624,9 +628,9 @@ class _ListSteps:
         self._deadline = time.monotonic() + _ITEM_SECONDS
         try:
             self._boundary()
-            before = self._state(position)
+            before = self._state(position, self._guard)
             self._seed()
-            if self._state(position) != before:
+            if self._state(position, self._guard) != before:
                 raise CaptureError("The native list moved while retaining items")
             self._boundary()
             self._before = position, before
@@ -645,7 +649,7 @@ class _ListSteps:
                 or position.vertical <= self._before[0].vertical
             ):
                 raise CaptureError("The list step has no forward retained pair")
-            native = self._state(position, terminal=terminal)
+            native = self._state(position, self._guard, terminal=terminal)
             if native.position <= self._before[1].position:
                 raise CaptureError("The native list did not advance")
             deltas = []
@@ -667,7 +671,7 @@ class _ListSteps:
                 or deltas != [delta, delta]
             ):
                 raise CaptureError("The list items disagree about pixel displacement")
-            if self._state(position, terminal=terminal) != native:
+            if self._state(position, self._guard, terminal=terminal) != native:
                 raise CaptureError("The native list moved during item evidence")
             if self._target._automation.same_element(
                 self._items[0].element, self._items[1].element
@@ -684,7 +688,7 @@ class _ListSteps:
         """Recheck the proven native maximum after all independent pixel proofs."""
         self._deadline = time.monotonic() + _ITEM_SECONDS
         self._boundary()
-        native = self._state(position, terminal=True)
+        native = self._state(position, self._target.check, terminal=True)
         if self._terminal != (position, native):
             raise CaptureError("The terminal list state is unconfirmed")
         self._boundary()
@@ -1251,6 +1255,12 @@ class UiaScrollTarget:
 
     def scrollbar_state(self) -> ScrollBarState | None:
         """Read optional exact native units only for the already proven Header rail."""
+        return self._read_scrollbar_state(self.check)
+
+    def _read_scrollbar_state(
+        self, validate: Callable[[], None]
+    ) -> ScrollBarState | None:
+        """Read the retained rail under public or bracketed List validation."""
         if self._header is None or self._header.scrollbar is None:
             return None
         element = self._header.scrollbar
@@ -1258,7 +1268,7 @@ class UiaScrollTarget:
         previous = getattr(self, "_scrollbar_identity", None)
         if (handle is None or handle <= 0) and previous is None:
             return None
-        self.check()
+        validate()
         if handle is None or handle <= 0 or not self._user.IsWindow(handle):
             raise CaptureError("The native scrollbar is no longer available")
         self._rail_identity(element)
@@ -1292,7 +1302,7 @@ class UiaScrollTarget:
             previous is not None and not state.same_range(previous)
         ) or not state.matches(self.position()):
             raise CaptureError("The native scrollbar mapping or identity changed")
-        self.check()
+        validate()
         if element.native_handle() != handle:
             raise CaptureError("The native scrollbar handle changed during observation")
         self._scrollbar_identity = state

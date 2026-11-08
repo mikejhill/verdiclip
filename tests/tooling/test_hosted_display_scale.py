@@ -276,38 +276,77 @@ def test_windows_utf8_bom_cleanup_receipt_is_accepted(
 
 @pytest.mark.usefixtures("hosted")
 @pytest.mark.parametrize(
-    "size", [(2560, 1440), (1920, 1200), (1920, 1080), (1600, 1200)]
+    ("percent", "size"),
+    [
+        (125, (2560, 1440)),
+        (125, (1920, 1200)),
+        (125, (1920, 1080)),
+        (125, (1600, 1200)),
+        (200, (2560, 1440)),
+        (200, (1920, 1200)),
+        (200, (1600, 1200)),
+    ],
 )
 def test_allowed_resolution_receipt_matches_independent_readback(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, size: tuple[int, int]
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, percent: int, size: tuple[int, int]
 ) -> None:
     """Each finite allowed mode must match both receipt and final native pixels."""
-    _install_display(monkeypatch, _BASE, replace(_READY, physical_bounds=(0, 0, *size)))
+    _install_display(
+        monkeypatch,
+        _BASE,
+        replace(
+            _READY,
+            monitor_scale=percent,
+            window_dpi=scale.target_dpi(percent),
+            physical_bounds=(0, 0, *size),
+        ),
+    )
 
     def complete(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
         mode = {"width": size[0], "height": size[1]}
-        outcome = {**_SUCCESS, "resolution_target": mode, "resolution_after": mode}
+        outcome = {
+            **_SUCCESS,
+            "scale_target": percent,
+            "resolution_target": mode,
+            "resolution_after": mode,
+        }
         (tmp_path / "settings-outcome.json").write_text(json.dumps(outcome))
         return subprocess.CompletedProcess([], 0, "", "")
 
     run = Mock(side_effect=complete)
     monkeypatch.setattr(scale.subprocess, "run", run)
-    assert scale.qualify(tmp_path) == 0
+    assert scale.qualify(tmp_path, scale=percent) == 0
     run.assert_called_once()
     report = json.loads((tmp_path / "display-scale.json").read_text())
     assert report["resolution_target"] == list(size)
 
 
 @pytest.mark.usefixtures("hosted")
-@pytest.mark.parametrize("size", [(1680, 1050), (3840, 2160), (1440, 2560)])
+@pytest.mark.parametrize(
+    ("percent", "size"),
+    [
+        (125, (1680, 1050)),
+        (125, (3840, 2160)),
+        (125, (1440, 2560)),
+        (200, (1680, 1050)),
+        (200, (3840, 2160)),
+        (200, (1440, 2560)),
+        (200, (1920, 1080)),
+    ],
+)
 def test_unlisted_resolution_receipt_is_rejected(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, size: tuple[int, int]
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, percent: int, size: tuple[int, int]
 ) -> None:
     """Matching readback and confirmation cannot authorize an unlisted mode."""
 
     def complete(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
         mode = {"width": size[0], "height": size[1]}
-        outcome = {**_SUCCESS, "resolution_target": mode, "resolution_after": mode}
+        outcome = {
+            **_SUCCESS,
+            "scale_target": percent,
+            "resolution_target": mode,
+            "resolution_after": mode,
+        }
         (tmp_path / "settings-outcome.json").write_text(json.dumps(outcome))
         return subprocess.CompletedProcess([], 0, "", "")
 
@@ -316,7 +355,7 @@ def test_unlisted_resolution_receipt_is_rejected(
     with pytest.raises(
         RuntimeError, match="resolution or Keep changes was not verified"
     ):
-        scale.select_scale(tmp_path)
+        scale.select_scale(tmp_path, scale=percent)
     run.assert_called_once()
 
 
@@ -563,12 +602,21 @@ def test_settings_scale_choice_remains_exact_and_single_attempt() -> None:
     assert "scale_target = $Scale" in script
 
 
-def test_resolution_preferences_match_the_owned_settings_order() -> None:
-    """Prefer offered width before 1600 without expanding the finite mode list."""
-    expected = ((2560, 1440), (1920, 1200), (1920, 1080), (1600, 1200))
-    assert expected == scale._RESOLUTIONS
+@pytest.mark.parametrize(
+    ("percent", "expected"),
+    [
+        (125, ((2560, 1440), (1920, 1200), (1920, 1080), (1600, 1200))),
+        (200, ((2560, 1440), (1920, 1200), (1600, 1200))),
+    ],
+)
+def test_resolution_preferences_match_the_owned_settings_order(
+    percent: int, expected: tuple[tuple[int, int], ...]
+) -> None:
+    """Select the finite requested-scale order before the only mode mutation."""
+    assert scale._RESOLUTIONS[percent] == expected
     script = Path(scale.__file__).with_suffix(".ps1").read_text()
-    modes = script.split("$allowedResolutions = @(", 1)[1].split(")", 1)[0]
+    choices = script.split("$allowedResolutions = @{", 1)[1].split("}[$Scale]", 1)[0]
+    modes = choices.split(f"{percent} = @(", 1)[1].split(")", 1)[0]
     actual = tuple(
         (int(width), int(height))
         for width, height in re.findall(r"width = (\d+); height = (\d+)", modes)

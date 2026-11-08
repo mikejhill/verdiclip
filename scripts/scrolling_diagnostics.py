@@ -1831,6 +1831,7 @@ class ExplorerCase:
         self.window: WindowInfo | None = None
         self.pid: int | None = None
         self.report: dict[str, object] = {}
+        self.setup_output: Path | None = None
         self.prepare = native._prepare
 
     def launch(
@@ -1965,6 +1966,7 @@ class ExplorerCase:
         layout = cast("dict[str, object]", self.report["explorer_layout"])
         expected = {
             "pid": self.pid,
+            "evidence": str(self.setup_output) if self.setup_output else None,
             "folder": str(self.folder),
             "outer": layout["actual_outer"],
             "work": layout["work_area"],
@@ -2004,6 +2006,8 @@ public static class FixtureNative {
   public static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
   [DllImport("user32.dll")]
   public static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
+  [DllImport("user32.dll")]
+  public static extern IntPtr GetForegroundWindow();
 }
 '@
 Stage 'dpi_setup'
@@ -2093,6 +2097,112 @@ function Exact($root, $name, $pidValue) {
   }
   return $visible[0]
 }
+# Optional read-only evidence; never supplies controls or authority to Exact.
+function ViewReceipt {
+  $status='unavailable'
+  try {
+    Guard $view
+    if (-not $expected.evidence) { throw 'No evidence directory' }
+    $walker=[Windows.Automation.TreeWalker]::ControlViewWalker
+    $nodes=New-Object System.Collections.ArrayList
+    $queue=New-Object System.Collections.Queue
+    $top=$walker.GetFirstChild($desktop)
+    $roots=0
+    $samePidRoots=0
+    $unownedRoots=0
+    for (; $null -ne $top -and $roots -lt 64; $roots++) {
+      $info=$top.Current
+      if ($info.ProcessId -eq $pidValue) {
+        $samePidRoots++
+        if (OwnedControl $top) { $queue.Enqueue(@($top, 0)) }
+        else { $unownedRoots++ }
+      }
+      $top=$walker.GetNextSibling($top)
+    }
+    $visited=0
+    $limited=($null -ne $top)
+    while ($queue.Count -gt 0 -and $visited -lt 64) {
+      $entry=$queue.Dequeue()
+      $element=$entry[0]
+      $depth=[int]$entry[1]
+      $visited++
+      $info=$element.Current
+      if ($info.ProcessId -ne $pidValue -or -not (OwnedControl $element)) {
+        continue
+      }
+      $bounds=$info.BoundingRectangle
+      $hwnd=[IntPtr]$info.NativeWindowHandle
+      $owner=0L
+      if ($hwnd -ne [IntPtr]::Zero) {
+        $owner=[FixtureNative]::GetAncestor($hwnd, 3).ToInt64()
+      }
+      # Names only for menu roles; never root titles or file/list contents.
+      $name=$null
+      if ($info.ControlType -eq [Windows.Automation.ControlType]::Menu -or
+          $info.ControlType -eq [Windows.Automation.ControlType]::MenuItem) {
+        $name=[string]$info.Name
+        $name=$name.Substring(0, [Math]::Min(80, $name.Length))
+      }
+      [void]$nodes.Add(@{ depth=$depth; role=$info.ControlType.Id; name=$name;
+        pid=$info.ProcessId; hwnd=$hwnd.ToInt64(); root_owner=$owner;
+        owned=$true; offscreen=$info.IsOffscreen; enabled=$info.IsEnabled;
+        bounds=@($bounds.X, $bounds.Y, $bounds.Width, $bounds.Height) })
+      # Avoid fixture contents. Only descend root/popup/menu containers.
+      if ($info.ControlType -eq [Windows.Automation.ControlType]::List -or
+          $info.ControlType -eq [Windows.Automation.ControlType]::Tree -or
+          $info.ControlType -eq [Windows.Automation.ControlType]::DataGrid) {
+        continue
+      }
+      if ($depth -ge 4) { $limited=$true; continue }
+      $child=$walker.GetFirstChild($element)
+      for (; $null -ne $child -and ($visited + $queue.Count) -lt 64;) {
+        $queue.Enqueue(@($child, ($depth + 1)))
+        $child=$walker.GetNextSibling($child)
+      }
+      if ($null -ne $child) { $limited=$true }
+    }
+    Guard $view
+    @{ stage='after_view_expand'; roots_inspected=$roots; visited=$visited;
+      same_pid_roots=$samePidRoots; unowned_roots=$unownedRoots;
+      view_state=[int]$viewPattern.Current.ExpandCollapseState;
+      screenshot_scope='owned_window_only'; screenshot_bounds=$expected.outer;
+      truncated=($limited -or $queue.Count -gt 0); nodes=@($nodes.ToArray()) } |
+      ConvertTo-Json -Depth 6 -Compress |
+      Set-Content -Encoding UTF8 -LiteralPath (
+        Join-Path $expected.evidence 'view-popup.json')
+    $status='uia_saved'
+    $width=[int]$expected.outer.width
+    $height=[int]$expected.outer.height
+    if ($width -le 0 -or $height -le 0 -or $width -gt 4096 -or
+        $height -gt 2160 -or ($width * $height) -gt 8847360) {
+      throw 'Screenshot dimensions exceed diagnostic bound'
+    }
+    Add-Type -AssemblyName System.Drawing
+    $bitmap=$null
+    $graphics=$null
+    try {
+      $bitmap=New-Object System.Drawing.Bitmap($width, $height)
+      $graphics=[Drawing.Graphics]::FromImage($bitmap)
+      Guard $view
+      if ([FixtureNative]::GetAncestor([FixtureNative]::GetForegroundWindow(), 3) -ne
+          $handle) { throw 'Screenshot foreground is not the owned fixture' }
+      $graphics.CopyFromScreen([int]$expected.outer.x, [int]$expected.outer.y,
+        0, 0, $bitmap.Size)
+      Guard $view
+      if ([FixtureNative]::GetAncestor([FixtureNative]::GetForegroundWindow(), 3) -ne
+          $handle) { throw 'Screenshot foreground changed' }
+      $bitmap.Save((Join-Path $expected.evidence 'view-popup.png'),
+        [Drawing.Imaging.ImageFormat]::Png)
+      $status='uia_and_screenshot_saved'
+    } finally {
+      if ($null -ne $graphics) { $graphics.Dispose() }
+      if ($null -ne $bitmap) { $bitmap.Dispose() }
+    }
+  } catch {
+    # Fixed label only: optional provider/save errors cannot mask Show's result.
+  }
+  [Console]::Error.WriteLine("navigation_pane_view_receipt=$status")
+}
 Stage 'owner_guard'
 Guard
 Stage 'list_lookup'
@@ -2159,6 +2269,7 @@ try {
   Guard $view
   $viewPattern.Expand()
   Start-Sleep -Milliseconds 300
+  ViewReceipt
   Stage 'show_lookup'
   $show=Exact $desktop 'Show' $pidValue
   $showPattern=$show.GetCurrentPattern($pattern)
@@ -2246,6 +2357,7 @@ Stage 'result'
             native._desktop_evidence(output, report)
             raise
         self._verify(window)
+        self.setup_output = output
         self.window = window
         report["explorer_window_pid"] = self.pid
         report["explorer_launcher_pid"] = (
