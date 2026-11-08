@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes as c
 import ctypes.wintypes as w
 import json
+from collections.abc import Callable
 from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import Mock
@@ -1790,9 +1791,13 @@ def test_trace_timing_persists_after_exit_and_restores_every_wrapper(
     original_error = CaptureError("Original source failure")
     result = ScrollResult(None, "Original result", "unchanged", 1)
     monkeypatch.setattr(native.ScrollTransaction, "_frame", lambda *_: frame)
-    monkeypatch.setattr(
-        native.UiaScrollTarget, "move", lambda *_: callbacks.append("write")
-    )
+
+    def move(*_args: object, before_write: Callable[[], None] | None = None) -> None:
+        if before_write is not None:
+            before_write()
+        callbacks.append("write")
+
+    monkeypatch.setattr(native.UiaScrollTarget, "move", move)
     monkeypatch.setattr(
         native.UiaScrollTarget, "check", lambda *_: callbacks.append("guard")
     )

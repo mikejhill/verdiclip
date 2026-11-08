@@ -118,6 +118,7 @@ class PointOverlay(SelectionOverlay):
 class ScrollSelection(QObject):
     """Keep selection, cancellation and helper retirement under one owner."""
 
+    state_changed = Signal(bool, bool)  # active, cancelling
     captured = Signal(object)
     failed = Signal(str)
     finished = Signal()
@@ -173,6 +174,7 @@ class ScrollSelection(QObject):
         if self._active or self._closing:
             return
         self._active, self._cancelled = True, False
+        self.state_changed.emit(self._active, self._cancelled)
         dismissed: list[QWidget] = []
         popup = QApplication.activePopupWidget()
         while popup is not None:
@@ -333,7 +335,10 @@ class ScrollSelection(QObject):
         self._publish.start(0)
 
     def _deliver(self) -> None:
+        helper = self._helper
         result, choice = self._result, self._choice
+        if result is not None and self._helper is not None:
+            result = self._helper.publication_result(result)
         image = None if result is None or self._cancelled else result.image
         message = (
             result.message if result is not None else "Scrolling capture cancelled"
@@ -344,9 +349,15 @@ class ScrollSelection(QObject):
             except (AppError, OSError) as error:
                 logger.warning("Scrolling failure stage=publication: %s", error)
                 image, message = None, str(error)
+        if result is not None and self._helper is not None and image is not None:
+            result = self._helper.publication_result(result)
+            image, message = result.image, result.message
         title = "Scrolling capture" if choice is None else choice[1].title
         restoration = "" if result is None else result.restoration
         self._end(notify=False)
+        if result is not None and helper is not None and image is not None:
+            result = helper.publication_result(result)
+            image, message = result.image, result.message
         if image is not None and not self._closing and not self._cancelled:
             self.captured.emit(
                 ScrollingCapture(image, title, datetime.now().astimezone(), message)
@@ -360,6 +371,7 @@ class ScrollSelection(QObject):
         self._cancelled = True
         if not self._active:
             return
+        self.state_changed.emit(self._active, self._cancelled)
         self._start.stop()
         self._handoff.stop()
         self._close_selectors()
@@ -371,6 +383,8 @@ class ScrollSelection(QObject):
     def shutdown(self) -> None:
         """Retire the child before app teardown; never publish during shutdown."""
         self._closing = self._cancelled = True
+        if self._active:
+            self.state_changed.emit(self._active, self._cancelled)
         self._start.stop()
         self._handoff.stop()
         self._publish.stop()
@@ -388,6 +402,8 @@ class ScrollSelection(QObject):
     def _fail(self, message: str) -> None:
         self._close_selectors()
         self._cancelled = True
+        if self._active:
+            self.state_changed.emit(self._active, self._cancelled)
         try:
             if self._helper is not None:
                 self._helper.shutdown()
@@ -407,6 +423,7 @@ class ScrollSelection(QObject):
         self._hotkeys.unregister(_CANCEL_ACTION)
         helper, self._helper = self._helper, None
         self._active = False
+        self.state_changed.emit(self._active, self._cancelled)
         self._choice = self._result = None
         if helper is not None:
             helper.deleteLater()

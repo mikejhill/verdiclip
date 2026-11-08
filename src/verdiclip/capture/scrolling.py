@@ -20,7 +20,8 @@ from PySide6.QtGui import QColor, QImage, QPainter
 from verdiclip.exceptions import CaptureError
 from verdiclip.geometry import Rect
 
-MAX_SECONDS = 25.0
+MAX_SECONDS = 35.0
+_TRAVERSAL_RESERVE_SECONDS = 2.0
 MAX_FRAMES = 80
 MAX_PIXELS = 40_000_000
 MIN_OVERLAP = 32
@@ -156,8 +157,15 @@ class ScrollTarget(Protocol):
     def position(self) -> ScrollPosition:
         """Read the current scroll state."""
 
-    def move(self, vertical: float) -> None:
-        """Set the vertical percentage without changing horizontal position."""
+    def move(
+        self, vertical: float, *, before_write: Callable[[], None] | None = None
+    ) -> None:
+        """Set V, calling admission after preflight immediately before the setter.
+
+        A rejected callback means no write was attempted. Once it returns, the
+        setter may have executed even if the operation raises. No blocking work
+        may intervene between admission and the setter.
+        """
 
     def frame(self) -> QImage:
         """Capture the same entire viewport, with no guessed content crop."""
@@ -639,6 +647,22 @@ class ScrollTransaction:
     def _check(self, *, restoring: bool = False) -> None:
         self._poll(restoring=restoring)
         self._target.check()
+        self._poll(restoring=restoring)
+
+    def _admit_traversal(self) -> None:
+        """Leave at most two seconds for existing proof and guarded restoration."""
+        self._poll()
+        if self._clock() >= self._deadline - _TRAVERSAL_RESERVE_SECONDS:
+            raise CaptureError("Scrolling capture reached its traversal time limit")
+
+    def _before_write(self, *, restoring: bool = False) -> None:
+        """Revoke proven ownership only when the setter is about to be attempted."""
+        if restoring:
+            self._poll(restoring=True)
+        else:
+            self._admit_traversal()
+        self._moved = True
+        self._expected = None
 
     def _frame(self, position: ScrollPosition) -> QImage:
         """Wait briefly for two equal frames, bounded by the transaction limit."""
@@ -827,8 +851,9 @@ class ScrollTransaction:
         if self._target.position() != current or self._native_state() != native:
             raise CaptureError("The terminal scrollbar changed before restoration")
         self._check(restoring=True)
-        self._expected = None
-        self._target.move(percent)
+        self._target.move(
+            percent, before_write=partial(self._before_write, restoring=True)
+        )
         previous = None
         for _ in range(8):
             self._pause(0.08)
@@ -949,6 +974,7 @@ class ScrollTransaction:
                 )
             )
             if reached and current == previous:
+                self._poll(restoring=restoring is not None)
                 return current
             previous = current
         logger.warning(
@@ -962,6 +988,7 @@ class ScrollTransaction:
         raise CaptureError("The scroll panel did not settle; its position is uncertain")
 
     def _move(self, percent: float) -> ScrollPosition:
+        self._admit_traversal()
         self._check()
         before = self._target.position()
         self._check()
@@ -969,14 +996,11 @@ class ScrollTransaction:
             raise CaptureError("The scroll panel changed position unexpectedly")
         if before.vertical == percent:
             return before
-        # Mark before crossing COM: a failed call may already have scrolled.
-        self._moved = True
-        self._expected = None
-        self._target.move(percent)
+        self._target.move(percent, before_write=self._before_write)
         observed = self._settle(before, percent)
+        self._check()
         if self._list_steps is None and observed.view_size == before.view_size:
             self._expected = observed
-        self._check()
         return observed
 
     def _sequence(self, initial: ScrollPosition) -> QImage:
@@ -997,6 +1021,7 @@ class ScrollTransaction:
         if self._list_steps is not None:
             self._confirm_list_start(position)
         while position.vertical < END_PERCENT:
+            self._admit_traversal()
             if self._frames >= MAX_FRAMES:
                 raise CaptureError("Scrolling capture reached its page limit")
             # Half a viewport leaves ample overlap without wheel chaining.
@@ -1029,6 +1054,7 @@ class ScrollTransaction:
                 if self._list_steps is not None
                 else None,
             )
+            self._poll()
             if self._list_steps is not None and following.vertical != END_PERCENT:
                 self._expected = following
             position = following
@@ -1077,7 +1103,7 @@ class ScrollTransaction:
                 return "not restored: time limit"
             if self._expected is None:
                 return "not restored: the provider write is unresolved"
-            self._target.check()
+            self._check(restoring=True)
             current = self._target.position()
             self._check(restoring=True)
             if (
@@ -1093,8 +1119,10 @@ class ScrollTransaction:
                 self._restore_native(initial, current)
             elif self._expected != initial:
                 before = self._expected
-                self._expected = None
-                self._target.move(initial.vertical)
+                self._target.move(
+                    initial.vertical,
+                    before_write=partial(self._before_write, restoring=True),
+                )
                 self._expected = self._settle(
                     before, initial.vertical, restoring=initial
                 )
@@ -1115,6 +1143,7 @@ class ScrollTransaction:
         try:
             self._check()
             initial = self._target.position()
+            self._check()
             self._validate_position(initial)
             self._expected = initial
             self._save_anchor(initial)

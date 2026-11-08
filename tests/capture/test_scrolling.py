@@ -14,6 +14,7 @@ from PySide6.QtGui import QColor, QImage, QPainter, QTransform
 from scripts.simple_scroll_native import _trace_helper
 
 from verdiclip.capture.scrolling import (
+    MAX_SECONDS,
     ScrollBarState,
     ScrollPosition,
     ScrollTransaction,
@@ -65,8 +66,12 @@ class Target:
         """Model quantized UIA percentages for finite pixels."""
         return ScrollPosition(self.horizontal, self.offset / 480 * 100, 20.0)
 
-    def move(self, vertical: float) -> None:
+    def move(
+        self, vertical: float, *, before_write: Callable[[], None] | None = None
+    ) -> None:
         """Record writes, including failed writes with uncertain side effects."""
+        if before_write is not None:
+            before_write()
         self.moves.append(vertical)
         if not self.ignore_move:
             self.offset = round(480 * vertical / 100)
@@ -303,11 +308,12 @@ def test_deadline_does_not_attempt_late_restore() -> None:
 
     def expire(_seconds: float) -> None:
         nonlocal now
-        now = 30.0
+        now = operation._deadline
 
-    result = ScrollTransaction(
+    operation = ScrollTransaction(
         target, lambda: False, clock=lambda: now, pause=expire
-    ).run()
+    )
+    result = operation.run()
     assert result.image is None
     assert target.moves == [0.0]
     assert result.restoration == "not restored: time limit"
@@ -352,7 +358,13 @@ def test_poll_extraction_preserves_generic_guard_order(
     else:
         guard(restoring=restoring)
         assert events == (
-            ([] if restoring else ["cancel"]) + ["clock"] + (["target"] if full else [])
+            ([] if restoring else ["cancel"])
+            + ["clock"]
+            + (
+                ["target"] + ([] if restoring else ["cancel"]) + ["clock"]
+                if full
+                else []
+            )
         )
     assert not target.moves
 
@@ -493,7 +505,11 @@ def test_restore_failure_withholds_complete_image(
     target = Target()
     move = target.move
 
-    def refuse_restore(percent: float) -> None:
+    def refuse_restore(
+        percent: float, *, before_write: Callable[[], None] | None = None
+    ) -> None:
+        if before_write is not None:
+            before_write()
         if len(target.moves) >= 9:
             target.moves.append(percent)
         else:
@@ -534,8 +550,12 @@ class DelayedTarget(Target):
         self.polls = 0
 
     @override
-    def move(self, vertical: float) -> None:
+    def move(
+        self, vertical: float, *, before_write: Callable[[], None] | None = None
+    ) -> None:
         """Queue one mutation; a second pending write is always a test failure."""
+        if before_write is not None:
+            before_write()
         assert self.pending is None
         self.moves.append(vertical)
         self.pending = vertical
@@ -573,11 +593,12 @@ def test_unresolved_move_never_becomes_restore_eligible(interruption: str) -> No
         cancelled = interruption == "cancel"
         target.input_changed = interruption == "input"
         if interruption == "deadline":
-            now = 30.0
+            now = operation._deadline
 
-    result = ScrollTransaction(
+    operation = ScrollTransaction(
         target, lambda: cancelled, clock=lambda: now, pause=pause
-    ).run()
+    )
+    result = operation.run()
     assert result.image is None
     assert target.moves == [0.0]
     assert target.pending == 0.0
@@ -1300,7 +1321,11 @@ class ReportedTarget(Target):
         return ScrollPosition(self.horizontal, self.percent, self.view)
 
     @override
-    def move(self, vertical: float) -> None:
+    def move(
+        self, vertical: float, *, before_write: Callable[[], None] | None = None
+    ) -> None:
+        if before_write is not None:
+            before_write()
         self.moves.append(vertical)
         self.percent = vertical
         self.offset = round((self.document.height() - 120) * vertical / 100)
@@ -1345,7 +1370,11 @@ class LineQuantizedTarget(Target):
         return ScrollPosition(self.horizontal, self.offset / 1566 * 100, 27.5)
 
     @override
-    def move(self, vertical: float) -> None:
+    def move(
+        self, vertical: float, *, before_write: Callable[[], None] | None = None
+    ) -> None:
+        if before_write is not None:
+            before_write()
         self.moves.append(vertical)
         self.offset = 18 * round(87 * vertical / 100)
 
@@ -1380,7 +1409,11 @@ class EndpointTarget(HeaderTarget):
         return ScrollPosition(self.horizontal, self.percent, view)
 
     @override
-    def move(self, vertical: float) -> None:
+    def move(
+        self, vertical: float, *, before_write: Callable[[], None] | None = None
+    ) -> None:
+        if before_write is not None:
+            before_write()
         self.moves.append(vertical)
         self.percent = vertical
         # Individually admissible 1px rounding accumulates. The final jump is 67px,
@@ -1574,7 +1607,11 @@ def test_normalized_restore_requires_exact_original_tuple(
     restoring = False
     move = target.move
 
-    def incorrect_restore(vertical: float) -> None:
+    def incorrect_restore(
+        vertical: float, *, before_write: Callable[[], None] | None = None
+    ) -> None:
+        if before_write is not None:
+            before_write()
         nonlocal restoring
         restoring = target.percent == 100.0
         move(vertical)
@@ -1601,7 +1638,11 @@ def test_normalized_restore_waits_for_pending_terminal_then_exact_original(
     pending: float | None = None
     polls = 0
 
-    def delayed_restore(vertical: float) -> None:
+    def delayed_restore(
+        vertical: float, *, before_write: Callable[[], None] | None = None
+    ) -> None:
+        if before_write is not None:
+            before_write()
         nonlocal pending
         if target.percent == 100.0:
             target.moves.append(vertical)
@@ -1709,7 +1750,11 @@ class NativeEndpointTarget(HeaderTarget):
         )
 
     @override
-    def move(self, vertical: float) -> None:
+    def move(
+        self, vertical: float, *, before_write: Callable[[], None] | None = None
+    ) -> None:
+        if before_write is not None:
+            before_write()
         self.moves.append(vertical)
         if vertical == 100.0:
             self.page = 1218
@@ -1779,7 +1824,11 @@ def test_native_restore_never_retries_or_acknowledges_inexact_write(
     target, operation, initial = prepared_native_restore()
     move, frame, read = target.move, target.frame, target.scrollbar_state
 
-    def corrupt_move(vertical: float) -> None:
+    def corrupt_move(
+        vertical: float, *, before_write: Callable[[], None] | None = None
+    ) -> None:
+        if before_write is not None:
+            before_write()
         move(vertical)
         if change == "unit":
             target.native_position += 1
@@ -1985,7 +2034,11 @@ def test_native_deadline_after_write_keeps_it_unresolved(
     target, operation, initial = prepared_native_restore()
     move = target.move
 
-    def delayed_move(vertical: float) -> None:
+    def delayed_move(
+        vertical: float, *, before_write: Callable[[], None] | None = None
+    ) -> None:
+        if before_write is not None:
+            before_write()
         move(vertical)
         operation._clock = lambda: operation._deadline
 
@@ -2550,7 +2603,11 @@ class ListTarget(FooterTarget):
         return self.steps
 
     @override
-    def move(self, vertical: float) -> None:
+    def move(
+        self, vertical: float, *, before_write: Callable[[], None] | None = None
+    ) -> None:
+        if before_write is not None:
+            before_write()
         self.moves.append(vertical)
         if vertical == 100.0:
             self.page = 1236
@@ -2665,7 +2722,11 @@ def test_list_unchanged_post_write_body_never_gains_restore_authority(
     target = ListTarget(total=600)
     original = target.frame()
 
-    def move(vertical: float) -> None:
+    def move(
+        vertical: float, *, before_write: Callable[[], None] | None = None
+    ) -> None:
+        if before_write is not None:
+            before_write()
         target.moves.append(vertical)
         target.native_position = round((6000 - target.page) * vertical / 100)
         target.offset = round(target.native_position / 10)
@@ -2775,7 +2836,11 @@ def test_list_step_uses_raw_pixels_not_percentage_prediction(
     target = ListTarget()
     move = target.move
 
-    def offset_move(vertical: float) -> None:
+    def offset_move(
+        vertical: float, *, before_write: Callable[[], None] | None = None
+    ) -> None:
+        if before_write is not None:
+            before_write()
         move(vertical)
         if 0 < vertical < 100:
             target.offset += 8
@@ -2892,7 +2957,7 @@ def test_list_late_state_change_cannot_commit_or_restore(
         if interrupt in ("input", "focus"):
             target.input_changed = True
         elif interrupt == "deadline":
-            elapsed[0] = 26.0
+            elapsed[0] = operation._deadline
         else:
             target.horizontal = 1.0
         return result
@@ -3009,7 +3074,11 @@ def test_list_changed_top_seek_metric_cannot_start_forward_lineage(
     target = ListTarget(start=2400)
     move = target.move
 
-    def changed(vertical: float) -> None:
+    def changed(
+        vertical: float, *, before_write: Callable[[], None] | None = None
+    ) -> None:
+        if before_write is not None:
+            before_write()
         move(vertical)
         if vertical == 0.0:
             target.page += 1
@@ -3045,7 +3114,11 @@ def test_list_cancel_during_unaccepted_write_does_not_restore(
     cancelled = [False]
     move = target.move
 
-    def cancel_after_move(vertical: float) -> None:
+    def cancel_after_move(
+        vertical: float, *, before_write: Callable[[], None] | None = None
+    ) -> None:
+        if before_write is not None:
+            before_write()
         move(vertical)
         cancelled[0] = True
 
@@ -3225,3 +3298,274 @@ def test_list_factory_poll_detects_interruption_during_full_validation(
     assert operation._terminal is None
     assert target.selected == 1
     assert target.steps.closed
+
+
+@pytest.mark.parametrize("elapsed", [32.999, 33.0, 33.001, 34.999, 35.0, 35.001])
+def test_traversal_admission_preserves_unissued_proven_state(elapsed: float) -> None:
+    """The immutable 35s budget reserves its last 2s without revoking safe recovery."""
+    now = [100.0]
+    target = Target()
+    operation = ScrollTransaction(target, lambda: False, clock=lambda: now[0])
+    original = target.position()
+    operation._expected = original
+    now[0] += elapsed
+    if elapsed < 33.0:
+        operation._admit_traversal()
+    else:
+        with pytest.raises(CaptureError, match="time limit"):
+            operation._admit_traversal()
+    assert operation._deadline == 135.0
+    assert operation._expected == original
+    assert not operation._moved
+    assert not target.moves
+
+
+@pytest.mark.parametrize("elapsed", [34.999, 35.0, 35.001])
+@pytest.mark.parametrize("restoring", [False, True])
+def test_full_check_rejects_blocking_target_return_at_deadline(
+    monkeypatch: pytest.MonkeyPatch, elapsed: float, *, restoring: bool
+) -> None:
+    """A full provider validation returning late cannot count as a current guard."""
+    now = [0.0]
+    target = Target()
+    operation = ScrollTransaction(target, lambda: False, clock=lambda: now[0])
+    monkeypatch.setattr(target, "check", lambda: now.__setitem__(0, elapsed))
+    if elapsed < MAX_SECONDS:
+        operation._check(restoring=restoring)
+    else:
+        with pytest.raises(CaptureError, match="time limit"):
+            operation._check(restoring=restoring)
+    assert not target.moves
+
+
+@pytest.mark.parametrize("start", [0, 2400])
+@pytest.mark.parametrize("elapsed", [33.0, 34.999, 35.0])
+def test_cutoff_during_list_begin_keeps_only_previous_proof(
+    monkeypatch: pytest.MonkeyPatch, start: int, elapsed: float
+) -> None:
+    """A slow pre-write item read does not make an unissued setter uncertain."""
+    now = [0.0]
+    target = ListTarget(start=start)
+    initial = target.position()
+    operation = ScrollTransaction(
+        target, lambda: False, clock=lambda: now[0], pause=lambda _: None
+    )
+    begin = target.steps.begin
+
+    def slow_begin(position: ScrollPosition) -> None:
+        begin(position)
+        now[0] = elapsed
+
+    monkeypatch.setattr(target.steps, "begin", slow_begin)
+    result = operation.run()
+    assert result.image is None
+    assert "time limit" in result.message
+    assert target.steps.closed
+    assert target.steps.begins == [0]
+    assert not target.steps.finishes
+    if start and elapsed < MAX_SECONDS:
+        assert target.moves == [0.0, initial.vertical]
+        assert result.restoration == "restored"
+        assert target.position() == initial
+    else:
+        assert target.moves == ([0.0] if start else [])
+        assert result.restoration == (
+            "not restored: time limit" if start else "unchanged"
+        )
+    assert operation._expected is not None
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+@pytest.mark.parametrize("elapsed", [33.0, 34.999, 35.0])
+def test_admitted_list_write_may_finish_proof_in_reserve(
+    monkeypatch: pytest.MonkeyPatch, elapsed: float, *, terminal: bool
+) -> None:
+    """Existing proof may finish, but the reserve admits no new forward setter."""
+    now = [0.0]
+    target = ListTarget()
+    operation = ScrollTransaction(
+        target, lambda: False, clock=lambda: now[0], pause=lambda _: None
+    )
+    move = target.move
+
+    def crossing_move(
+        vertical: float, *, before_write: Callable[[], None] | None = None
+    ) -> None:
+        # Arrive just before the cutoff, then emulate a blocking admitted setter.
+        crosses = vertical == 100.0 if terminal else not target.moves
+        if crosses:
+            now[0] = 32.999
+        move(vertical, before_write=before_write)
+        if crosses:
+            now[0] = elapsed
+
+    monkeypatch.setattr(target, "move", crossing_move)
+    result = operation.run()
+    if elapsed >= MAX_SECONDS:
+        assert result.image is None
+        assert operation._expected is None
+        assert result.restoration == "not restored: time limit"
+        assert target.moves[-1] == (100.0 if terminal else target.moves[0])
+    else:
+        assert result.restoration == "restored"
+        assert target.native_position == 0
+        assert operation._expected is not None
+        if terminal:
+            assert result.image is not None
+            assert target.steps.confirmed
+            assert target.steps.finishes == [60] * 7 + [52]
+        else:
+            assert result.image is None
+            assert len(target.moves) == 2
+            assert 0.0 < target.moves[0] < 100.0
+            assert target.moves[-1] == 0.0
+            assert target.steps.begins == [0]
+            assert target.steps.finishes == [60]
+            assert not target.steps.confirmed
+    assert target.steps.closed
+
+
+@pytest.mark.parametrize("stage", ["composition", "terminal", "cleanup", "restore"])
+def test_late_terminal_work_cannot_restore_or_publish(
+    monkeypatch: pytest.MonkeyPatch, stage: str
+) -> None:
+    """No final-image work or cleanup can reset the transaction's hard deadline."""
+    now = [0.0]
+    target = ListTarget()
+    operation = ScrollTransaction(
+        target, lambda: False, clock=lambda: now[0], pause=lambda _: None
+    )
+    if stage == "composition":
+        compose = VerticalStitch.finish
+
+        def late_compose(stitch: VerticalStitch) -> QImage:
+            image = compose(stitch)
+            now[0] = MAX_SECONDS
+            return image
+
+        monkeypatch.setattr(VerticalStitch, "finish", late_compose)
+    elif stage == "terminal":
+        confirm = target.steps.confirm_terminal
+
+        def late_terminal(position: ScrollPosition) -> None:
+            confirm(position)
+            now[0] = MAX_SECONDS
+
+        monkeypatch.setattr(target.steps, "confirm_terminal", late_terminal)
+    elif stage == "cleanup":
+        close = target.steps.close
+
+        def late_cleanup() -> None:
+            close()
+            now[0] = MAX_SECONDS
+
+        monkeypatch.setattr(target.steps, "close", late_cleanup)
+    else:
+        move = target.move
+
+        def late_restore(
+            vertical: float, *, before_write: Callable[[], None] | None = None
+        ) -> None:
+            move(vertical, before_write=before_write)
+            if vertical == 0.0:
+                now[0] = MAX_SECONDS
+
+        monkeypatch.setattr(target, "move", late_restore)
+    result = operation.run()
+    assert result.image is None
+    assert result.restoration.startswith("not restored")
+    assert len(target.moves) == (9 if stage == "restore" else 8)
+    assert target.moves[-1] == (0.0 if stage == "restore" else 100.0)
+    if stage in ("composition", "terminal"):
+        assert operation._terminal is None
+
+
+@pytest.mark.parametrize("issued", [False, True])
+def test_native_trace_counts_only_admitted_setter_attempts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, issued: bool
+) -> None:
+    """A rejected preflight call is not movement evidence; an uncertain setter is."""
+    from verdiclip.platform.scrolling import UiaScrollTarget  # noqa: PLC0415
+
+    def fake_move(
+        _target: UiaScrollTarget,
+        _percent: float,
+        *,
+        before_write: Callable[[], None] | None = None,
+    ) -> None:
+        assert before_write is not None
+        before_write()
+        raise OSError("Setter failed after admission")
+
+    def admission() -> None:
+        if not issued:
+            raise CaptureError("Traversal cutoff")
+
+    def helper() -> None:
+        with pytest.raises((CaptureError, OSError)):
+            UiaScrollTarget.move(
+                object.__new__(UiaScrollTarget), 50.0, before_write=admission
+            )
+
+    monkeypatch.setattr(UiaScrollTarget, "move", fake_move)
+    monkeypatch.setattr("scripts.simple_scroll_native.helper_main", helper)
+    monkeypatch.setattr("sys.argv", ["-c", str(tmp_path), "edge"])
+    _trace_helper()
+    assert json.loads((tmp_path / "movement.json").read_text()) == {
+        "writes": int(issued),
+        "last_vertical": 50.0 if issued else None,
+    }
+
+
+@pytest.mark.parametrize("elapsed", [32.999, 33.0, 33.001, 35.0])
+@pytest.mark.parametrize("percent", [0.0, 50.0])
+def test_top_and_forward_setters_recheck_slow_position_admission(
+    monkeypatch: pytest.MonkeyPatch, elapsed: float, percent: float
+) -> None:
+    """A blocking read never turns a missed admission into an uncertain write."""
+    target = Target()
+    now = [0.0]
+    operation = ScrollTransaction(
+        target, lambda: False, clock=lambda: now[0], pause=lambda _: None
+    )
+    original = target.position()
+    operation._expected = original
+    position = target.position
+
+    def slow_position() -> ScrollPosition:
+        now[0] = elapsed
+        return position()
+
+    monkeypatch.setattr(target, "position", slow_position)
+    if elapsed < 33.0:
+        observed = operation._move(percent)
+        assert operation._expected == observed
+        assert target.moves == [percent]
+    else:
+        with pytest.raises(CaptureError, match="time limit"):
+            operation._move(percent)
+        assert operation._expected == original
+        assert not operation._moved
+        assert not target.moves
+
+
+def test_late_initial_position_read_does_not_acknowledge_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Late initial discovery has no image, write, or restoration authority."""
+    target = Target()
+    now = [0.0]
+    operation = ScrollTransaction(target, lambda: False, clock=lambda: now[0])
+    position = target.position
+
+    def late_position() -> ScrollPosition:
+        now[0] = operation._deadline
+        return position()
+
+    monkeypatch.setattr(target, "position", late_position)
+    result = operation.run()
+    assert result.image is None
+    assert "time limit" in result.message
+    assert result.restoration == "unchanged"
+    assert operation._expected is None
+    assert not target.moves

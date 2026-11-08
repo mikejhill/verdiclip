@@ -1333,13 +1333,22 @@ class UiaScrollTarget:
             raise CaptureError("The selected panel has unsupported scroll state")
         return ScrollPosition(horizontal, vertical, size)
 
-    def move(self, vertical: float) -> None:
-        """Preserve observed H explicitly; some providers mishandle NoScroll."""
+    def move(
+        self, vertical: float, *, before_write: Callable[[], None] | None = None
+    ) -> None:
+        """Preserve H and admit the setter only after all blocking preflight.
+
+        The callback may reject without issuing a write. After it returns no
+        native/provider work precedes the setter; an exception then is uncertain.
+        """
         self.check()
         horizontal = self._scroll.number(5)
         if horizontal != -1.0 and not 0.0 <= horizontal <= END_PERCENT:
             raise CaptureError("The selected panel has unsupported horizontal state")
         self.check()
+        self._check_window()
+        if before_write is not None:
+            before_write()
         self._scroll.call(4, (c.c_double, c.c_double), horizontal, vertical)
         self.check()
 

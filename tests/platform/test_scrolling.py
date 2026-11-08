@@ -699,7 +699,7 @@ def test_write_keeps_horizontal_percent_and_checks_after_call(
     mock(native._scroll.call).assert_called_once_with(
         4, (c.c_double, c.c_double), horizontal, 50.0
     )
-    assert mock(native._input).call_count == 6
+    assert mock(native._input).call_count == 7
 
 
 def test_frame_keeps_full_provider_rectangle() -> None:
@@ -3308,3 +3308,111 @@ def test_list_steps_poll_after_window_observation(failure: str) -> None:
     mock(fixture.target.scrollbar_state).assert_not_called()
     assert not steps._items
     assert steps._before is None
+
+
+@pytest.mark.parametrize("stage", ["first-check", "horizontal", "last-check", "window"])
+@pytest.mark.parametrize("elapsed", [32.999, 33.0, 33.001, 34.999, 35.0, 35.001])
+@pytest.mark.parametrize("restoring", [False, True])
+def test_setter_admission_runs_after_blocking_native_preflight(
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+    elapsed: float,
+    *,
+    restoring: bool,
+) -> None:
+    """Only the actual setter boundary may revoke proven restoration ownership."""
+    from verdiclip.capture.scrolling import ScrollTransaction  # noqa: PLC0415
+
+    native = target()
+    now = [0.0]
+    operation = ScrollTransaction(native, lambda: False, clock=lambda: now[0])
+    original = ScrollPosition(0.0, 20.0, 30.0)
+    operation._expected = original
+    calls = [0]
+    check, window = native.check, native._check_window
+
+    def slow_check() -> None:
+        check()
+        calls[0] += 1
+        if (stage == "first-check" and calls[0] == 1) or (
+            stage == "last-check" and calls[0] == 2
+        ):
+            now[0] = elapsed
+
+    def horizontal(_property: int) -> float:
+        if stage == "horizontal":
+            now[0] = elapsed
+        return 0.0
+
+    def slow_window() -> None:
+        window()
+        if stage == "window" and calls[0] == 2:
+            now[0] = elapsed
+
+    monkeypatch.setattr(native, "check", slow_check)
+    monkeypatch.setattr(native, "_check_window", slow_window)
+    mock(native._scroll.number).side_effect = horizontal
+    admitted = elapsed < (35.0 if restoring else 33.0)
+    if admitted:
+        native.move(
+            50.0, before_write=partial(operation._before_write, restoring=restoring)
+        )
+    else:
+        with pytest.raises(CaptureError, match="time limit"):
+            native.move(
+                50.0, before_write=partial(operation._before_write, restoring=restoring)
+            )
+    assert mock(native._scroll.call).call_count == int(admitted)
+    assert operation._moved is admitted
+    assert operation._expected == (None if admitted else original)
+
+
+@pytest.mark.parametrize("change", ["input", "focus", "cancel"])
+def test_final_setter_guard_rejects_late_input_and_cancellation(
+    monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    """Fresh eligibility and transaction cancellation follow the last full check."""
+    from verdiclip.capture.scrolling import ScrollTransaction  # noqa: PLC0415
+
+    native = target()
+    cancelled = [False]
+    operation = ScrollTransaction(native, lambda: cancelled[0])
+    original = ScrollPosition(0.0, 20.0, 30.0)
+    operation._expected = original
+    check = native.check
+    calls = [0]
+    mock(native._scroll.number).return_value = 0.0
+
+    def changed() -> None:
+        check()
+        calls[0] += 1
+        if calls[0] == 2:
+            if change == "input":
+                mock(native._input).return_value = 13
+            elif change == "focus":
+                mock(native._user.GetForegroundWindow).return_value = 9
+            else:
+                cancelled[0] = True
+
+    monkeypatch.setattr(native, "check", changed)
+    with pytest.raises(CaptureError):
+        native.move(50.0, before_write=operation._before_write)
+    mock(native._scroll.call).assert_not_called()
+    assert not operation._moved
+    assert operation._expected == original
+
+
+def test_setter_admission_has_no_intervening_native_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Preserve both generic preflight checks and postflight around one admission."""
+    native = target()
+    events: list[str] = []
+    monkeypatch.setattr(native, "check", lambda: events.append("full"))
+    monkeypatch.setattr(native, "_check_window", lambda: events.append("window"))
+    mock(native._scroll.number).side_effect = lambda _: (
+        events.append("horizontal") or 0.0
+    )
+    mock(native._scroll.call).side_effect = lambda *_: events.append("setter")
+    native.move(50.0, before_write=lambda: events.append("admit"))
+    assert events == ["full", "horizontal", "full", "window", "admit", "setter", "full"]

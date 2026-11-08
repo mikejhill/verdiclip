@@ -369,20 +369,29 @@ def test_failed_start_with_live_child_keeps_owner_until_actual_exit(
     """An unconfirmed startup cleanup cannot enable a concurrent capture."""
     service, helper, _state = operation
     shutdown = helper.shutdown
-    monkeypatch.setattr(helper, "start", Mock(side_effect=CaptureError("Start failed")))
-    monkeypatch.setattr(
-        helper, "shutdown", Mock(side_effect=CaptureError("Still running"))
+    states: list[tuple[bool, bool]] = []
+    service.state_changed.connect(
+        lambda active, cancelling: states.append((active, cancelling))
     )
+
+    def refuse_shutdown() -> None:
+        assert states == [(True, False), (True, True)]
+        raise CaptureError("Still running")
+
+    monkeypatch.setattr(helper, "start", Mock(side_effect=CaptureError("Start failed")))
+    monkeypatch.setattr(helper, "shutdown", refuse_shutdown)
     service.capture()
     qtbot.waitUntil(lambda: bool(service.overlays))
     with qtbot.waitSignal(service.failed) as failure:
         service._selected(Point(30, 40))
     assert "Still running" in failure.args[0]
     assert service.busy
+    assert states == [(True, False), (True, True)]
     assert "scroll_cancel" in service._hotkeys.registered
     monkeypatch.setattr(helper, "shutdown", shutdown)
     helper.finished.emit(ScrollResult(None, "Stopped", "unknown", 0))
     qtbot.waitUntil(lambda: not service.busy)
+    assert states == [(True, False), (True, True), (False, True)]
     assert "scroll_cancel" not in service._hotkeys.registered
 
 

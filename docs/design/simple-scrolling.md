@@ -67,11 +67,31 @@ This replaces intermediate bottom chrome with later visible content while
 retaining the original top boundary and final bottom boundary. Repeated or
 unreliable pixels are rejected rather than assigned an arbitrary displacement.
 
-Limits: 25 seconds of transaction work, 80 frames, 40 million output pixels.
-The parent kills after 27 seconds or 1.5 seconds after cancellation. A blocked
-provider call or forced kill may leave the target scrolled; there is no claim
-that killing a client retracts a provider request already sent to another app.
-Never launch another helper to restore an uncertain target.
+Limits: one immutable 35-second transaction deadline, 80 frames and 40 million
+output pixels. New traversal phases and forward/top-seek setters stop at
+33 seconds. An already-issued step may finish its existing proof within the
+remaining time; the reserve is at most two seconds, not guaranteed restoration
+time. A cutoff before the setter retains only previously proven recovery state.
+Once the setter may have executed, the existing unresolved-write rules apply.
+All pixel, item, extent, terminal and restoration checks remain mandatory.
+
+The setter admission callback runs after the adapter's blocking preflight and
+fresh window/input guard, immediately before SetScrollPercent. It checks the
+transaction's deadline/cancellation and only then marks the write uncertain.
+Restore uses the hard deadline and ignores only cooperative cancellation. A late
+provider check, composition or cleanup cannot acknowledge or publish success.
+The 35-second bound adds headroom, not a performance fix or completion guarantee;
+the sequential 80ms observations and existing stride remain unchanged.
+
+The parent schedules retirement against its original monotonic 37-second
+launch deadline, preserving the two-second lifecycle margin. First cancellation
+can only shorten that deadline to at most 1.5 seconds from now. Repeated cancel
+cannot extend it. Decode, cleanup and queued publication reject expired success
+even if the Qt timeout callback was delayed. A stalled GUI event loop cannot
+promise wall-clock process termination. A blocked provider call or forced kill
+may leave the target scrolled; there is no claim that killing a client retracts
+a provider request already sent to another app. Never launch another helper to
+restore an uncertain target.
 
 Restore only while input, focus, process, geometry and observed scroll state
 still agree with this transaction. After real user activity, leave the user in
@@ -470,7 +490,7 @@ versioned release and exact-main checks still run separately before publication.
 The original 760-physical-pixel outer-height case remains in the existing real
 200% Edge/Explorer job, with its existing failure status and artifacts. Its
 654×425 List viewport (52-pixel Header, 34-pixel footer, 339-pixel moving body)
-has exhausted the unchanged 25-second budget. A taller case does not replace or
+exhausted the then-current 25-second budget. A taller case does not replace or
 qualify that stress case.
 
 The independent `representative-layout` matrix reuses the same six top, middle
@@ -490,7 +510,8 @@ attempt and cleanup guards, and independently requires monitor scale plus native
 DPI. Real 125% means **120 DPI**; real 200% means **192 DPI**. Each application's
 retained target HWND must independently match that DPI before the case can
 qualify. No Qt scale override, user machine setting, navigation-pane change,
-item-count reduction, longer product deadline or new scrolling stride is used.
+item-count reduction or new scrolling stride is used. The original qualification
+ran at 25 seconds; the bounded-deadline change above requires its own native run.
 These are test configurations, not evidence of a successful native run.
 
 The same matrix also runs the six existing prose/panel/already-focused Edge

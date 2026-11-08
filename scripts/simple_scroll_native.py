@@ -19,6 +19,7 @@ from collections import Counter
 from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import asdict, dataclass
+from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -35,6 +36,7 @@ from verdiclip.capture.scrolling import (
     END_PERCENT,
     MAX_FRAMES,
     MAX_PIXELS,
+    MAX_SECONDS,
     ScrollPosition,
     ScrollResult,
     ScrollTarget,
@@ -549,6 +551,15 @@ def _save_timed_frame(
     timing.timed("trace_json", write_frames, phase=True)()
 
 
+def _record_setter(
+    writes: list[float], percent: float, before_write: Callable[[], None] | None
+) -> None:
+    """Count admitted/possibly issued setters, not failed preflight calls."""
+    if before_write is not None:
+        before_write()
+    writes.append(percent)
+
+
 def _trace_helper() -> None:
     """Save bounded native evidence in this owned test child, never production."""
     logging.basicConfig(level=logging.INFO)
@@ -584,9 +595,17 @@ def _trace_helper() -> None:
         )
         evidence = _target_evidence(target, output, mode, selected)
 
-    def record_move(target: UiaScrollTarget, percent: float) -> None:
-        writes.append(percent)
-        move(target, percent)
+    def record_move(
+        target: UiaScrollTarget,
+        percent: float,
+        *,
+        before_write: Callable[[], None] | None = None,
+    ) -> None:
+        move(
+            target,
+            percent,
+            before_write=partial(_record_setter, writes, percent, before_write),
+        )
 
     def record_result(operation: ScrollTransaction) -> ScrollResult:
         result = timing.timed("transaction", run, phase=True)(operation)
@@ -673,7 +692,7 @@ def _capture(
     timer = QTimer()
     timer.setSingleShot(True)
     timer.timeout.connect(loop.quit)
-    timer.start(30_000)
+    timer.start(round((MAX_SECONDS + 5.0) * 1000))
     helper.start(point, window=window, input_tick=input_tick)
     interrupt = QTimer()
     interrupt.setInterval(20)

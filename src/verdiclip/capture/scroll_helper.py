@@ -10,14 +10,16 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import sys
 import threading
+import time
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from PySide6.QtCore import QObject, QProcess, QTimer, Signal
+from PySide6.QtCore import QObject, QProcess, Qt, QTimer, Signal
 from PySide6.QtGui import QImageReader
 
 from verdiclip.capture.scrolling import MAX_PIXELS, MAX_SECONDS, ScrollResult
@@ -43,12 +45,15 @@ class ScrollHelper(QObject):
         self._process.errorOccurred.connect(self._error)
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
+        self._timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._timer.timeout.connect(self._timeout)
         self._directory: TemporaryDirectory[str] | None = None
         self._cancelled = False
         self._terminal = False
         self._timeout_message = ""
         self._diagnostics = ""
+        self._deadline: float | None = None
+        self._cancel_deadline: float | None = None
 
     @property
     def diagnostics(self) -> str:
@@ -62,6 +67,7 @@ class ScrollHelper(QObject):
         """
         if self._directory is not None or self._terminal:
             raise RuntimeError("A scrolling helper can only be started once")
+        self._deadline = time.monotonic() + MAX_SECONDS + 2.0
         self._directory = TemporaryDirectory(prefix="verdiclip-scroll-")
         self._process.setProgram(sys.executable)
         self._process.setArguments(
@@ -75,7 +81,7 @@ class ScrollHelper(QObject):
                 self._directory.name,
             ]
         )
-        self._timer.start(round((MAX_SECONDS + 2.0) * 1000))
+        self._arm_deadline()
         self._process.start()
 
     def cancel(self) -> None:
@@ -84,7 +90,26 @@ class ScrollHelper(QObject):
             return
         self._cancelled = True
         self._process.write(b"cancel\n")
-        self._timer.start(_CANCEL_GRACE_MS)
+        self._cancel_deadline = min(
+            self._deadline if self._deadline is not None else float("inf"),
+            time.monotonic() + _CANCEL_GRACE_MS / 1000,
+        )
+        self._arm_deadline()
+
+    def _arm_deadline(self) -> None:
+        deadline = self._cancel_deadline or self._deadline
+        if deadline is not None:
+            self._timer.start(max(0, math.ceil((deadline - time.monotonic()) * 1000)))
+
+    def publication_result(self, result: ScrollResult) -> ScrollResult:
+        """Reject expired success even when Qt has not dispatched its timeout."""
+        if (
+            result.image is not None
+            and self._deadline is not None
+            and time.monotonic() >= self._deadline
+        ):
+            return replace(result, image=None, message="Scrolling capture timed out")
+        return result
 
     def shutdown(self) -> None:
         """Kill and retire the owned child before the application closes."""
@@ -101,6 +126,8 @@ class ScrollHelper(QObject):
         self._complete(ScrollResult(None, "Scrolling capture stopped", "unknown", 0))
 
     def _timeout(self) -> None:
+        if self._terminal:
+            return
         self._cancelled = True
         self._timeout_message = (
             "Scrolling capture stopped. The panel's position could not be restored."
@@ -184,7 +211,7 @@ class ScrollHelper(QObject):
                     message="Temporary scrolling files could not be removed. "
                     + result.message,
                 )
-        self.finished.emit(result)
+        self.finished.emit(self.publication_result(result))
 
 
 def _watch_parent(cancelled: threading.Event) -> None:

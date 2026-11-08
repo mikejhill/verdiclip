@@ -119,6 +119,7 @@ class AppController(QObject):
         self._icon_factory = IconFactory(QApplication.palette().windowText().color())
         self._icon = self._icon_factory.brand()
         self._tray = TrayIcon(self._icon, self._tray_commands())
+        self._scrolling.state_changed.connect(self._tray.set_scrolling_state)
         self._last_saved_folder: Path | None = None
         self._message_action: Callable[[], None] = self._open_last_folder
         self._manual_check = False
@@ -250,11 +251,11 @@ class AppController(QObject):
         if self._closing:
             return
         self._dismiss_scroll_status()
-        self._pending_capture = None
-        self._capture_handoff.stop()
         if self._scrolling.busy:
             self._scrolling.cancel()
             return
+        self._pending_capture = None
+        self._capture_handoff.stop()
         self._capture.cancel()
         self._workspace.cancel_drag()
         self._scrolling.capture()

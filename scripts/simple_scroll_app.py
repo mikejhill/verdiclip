@@ -33,7 +33,7 @@ from scripts.simple_scroll_native import main as native_main
 from verdiclip.capture.grabber import MssScreenSource
 from verdiclip.capture.models import ScreenGeometry
 from verdiclip.capture.scroll_helper import ScrollHelper
-from verdiclip.capture.scrolling import ScrollResult
+from verdiclip.capture.scrolling import MAX_SECONDS, ScrollResult
 from verdiclip.geometry import Point, Rect
 from verdiclip.platform.associations import FileAssociations
 from verdiclip.platform.hotkeys import HotkeyService
@@ -569,7 +569,7 @@ class AppCapture:
                     "Could not save non-top setup",
                 )
             self.timer.start()
-            timeout.start(35_000)
+            timeout.start(round((MAX_SECONDS + 10.0) * 1000))
             if self.kind == "edge-app-hotkey":
                 self._keys((0x11, 0x12, 0x78))  # Actual configured Ctrl+Alt+F9.
             else:

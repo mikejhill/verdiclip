@@ -49,6 +49,7 @@ class TrayIcon(QSystemTrayIcon):
         self._hotkey_labels: Mapping[str, str] = {}
         self._update_label = CHECK_UPDATES_LABEL
         self._update_checking = False
+        self._scroll_active = False
         self._click = QTimer(self)
         self._click.setSingleShot(True)
         self._click.timeout.connect(self._on_click)
@@ -76,6 +77,18 @@ class TrayIcon(QSystemTrayIcon):
         self._update_checking = checking
         self.rebuild_menu(self._hotkey_labels)
 
+    def set_scrolling_state(self, active: bool, cancelling: bool) -> None:  # noqa: FBT001 - Qt signal slot
+        """Keep cancellation discoverable until the helper retires (UX-CAP-18)."""
+        self._scroll_active = active
+        self.setToolTip(
+            "Cancelling scrolling capture…"
+            if active and cancelling
+            else "Scrolling capture… Esc cancels"
+            if active
+            else f"{APP_NAME} {VERSION} — click to capture"
+        )
+        self.rebuild_menu(self._hotkey_labels)
+
     def rebuild_menu(self, hotkey_labels: Mapping[str, str]) -> None:
         """Rebuild the menu, showing each capture's hotkey (UX-TRY-03)."""
         c = self._commands
@@ -88,7 +101,15 @@ class TrayIcon(QSystemTrayIcon):
         )
         update = [("update", label, check)] if check is not None else []
         scrolling = (
-            [("scrolling", "Capture scrolling area", c.capture_scrolling)]
+            [
+                (
+                    "scrolling",
+                    "Cancel scrolling capture"
+                    if self._scroll_active
+                    else "Capture scrolling area",
+                    c.capture_scrolling,
+                )
+            ]
             if c.capture_scrolling is not None
             else []
         )
