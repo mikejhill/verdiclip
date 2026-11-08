@@ -19,7 +19,7 @@ import sys
 import threading
 import time
 from collections.abc import Generator
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import asdict, dataclass
 from itertools import pairwise
 from pathlib import Path
@@ -69,6 +69,8 @@ _SCALED_FIXTURE_DPI = 192
 _SCALED_FIXTURE_DPIS = (120, _SCALED_FIXTURE_DPI)
 _FIXTURE_CSS_BORDER = 3
 _FIXTURE_CSS_DPI = 96
+_SETUP_STREAM_BYTES = 16 * 1024
+_FIXTURE_WHITE = 0xFFFFFFFF
 _FOCUSED_PANELS = ("edge-panel-focused-click", "edge-panel-focused-enter")
 _EXPLORER_STARTS = {
     "explorer-middle-click": 50.0,
@@ -141,6 +143,8 @@ def _inspect_result(
         report["oracle_frames"] == result.frames,
         "Whole-image oracle did not retain every accepted frame",
     )
+    if report.get("whole_viewport_equal") is True:
+        report["document_content_restored"] = True
 
 
 def _taller_target_layout(output: Path, report: dict[str, object]) -> None:
@@ -318,6 +322,43 @@ def _scaled_fixture_ring_restored(
     return True
 
 
+def _verify_prose_content(
+    capture: app.AppCapture, first: QImage, after: QImage
+) -> None:
+    """Only non-white edge-connected paint in source-proven white padding may vary."""
+    target = native._fixture_context(
+        capture.output,
+        capture.report,
+        first,
+        after,
+        mode=capture.kind,
+    )
+    position = cast("dict[str, float]", target["initial_position"])
+    native._require(position["vertical"] == 0.0, "Prose did not start at its exact top")
+    # The immutable plain article has 24 CSS pixels of padding and no negative
+    # left overflow. Only non-white grayscale membership here is non-document
+    # paint; the entire complement, including all white padding, remains exact.
+    padding = 24 * cast("int", target["window_dpi"]) // _FIXTURE_CSS_DPI
+
+    def member(index: int, pixel: int) -> bool:
+        red, green, blue = (pixel >> 16) & 255, (pixel >> 8) & 255, pixel & 255
+        if index % first.width() >= padding:
+            return False
+        native._require(red == green == blue, "Colored paint intrudes on white padding")
+        return pixel != _FIXTURE_WHITE
+
+    count = native._fixture_footprint(first, after, member)
+    native._require(
+        capture.result is not None and capture.result.restoration == "restored",
+        "Missing complete restored prose result",
+    )
+    capture.report.update(
+        document_content_restored=True,
+        nonpaint_pixels=count,
+        restored_pixels="exact document content; non-document paint changed",
+    )
+
+
 def _verify_restored(capture: app.AppCapture, after: QImage) -> None:
     """Separate exact scroll-state restoration from the measured panel outline."""
     if capture.result is not None and capture.result.image is not None:
@@ -335,8 +376,12 @@ def _verify_restored(capture: app.AppCapture, after: QImage) -> None:
     native._require(state["initial"] == state["final"], "Scroll state was not restored")
     capture.report["restored_scroll_state"] = state
     native._require(first.size() == after.size(), "Restored panel geometry changed")
+    capture.report.update(native._fixture_difference(first, after))
     if first == after:
         capture.report["restored_pixels"] = "exact"
+        return
+    if capture.kind in ("edge-prose-click", "edge-prose-enter"):
+        _verify_prose_content(capture, first, after)
         return
     target_path = capture.output / "target.json"
     target = (
@@ -1760,6 +1805,20 @@ def _window_pid(window: int) -> int:
     return pid.value
 
 
+def _setup_stream_tail(stream: bytes | str | None) -> tuple[str, bool]:
+    """Retain at most 16 KiB of UTF-8 failure output per stream."""
+    text = (
+        stream.decode("utf-8", errors="replace")
+        if isinstance(stream, bytes)
+        else stream
+    )
+    encoded = (text or "").encode("utf-8", errors="replace")
+    return (
+        encoded[-_SETUP_STREAM_BYTES:].decode("utf-8", errors="ignore"),
+        len(encoded) > _SETUP_STREAM_BYTES,
+    )
+
+
 class ExplorerCase:
     """Own one new fixture window, never the shell or Explorer broker process."""
 
@@ -1909,6 +1968,7 @@ class ExplorerCase:
             "folder": str(self.folder),
             "outer": layout["actual_outer"],
             "work": layout["work_area"],
+            "point": asdict(window.bounds.center),
         }
         powershell = (
             Path(os.environ["WINDIR"])
@@ -1916,12 +1976,19 @@ class ExplorerCase:
         )
         script = r"""
 $ErrorActionPreference='Stop'
+function Stage($name) {
+  $script:setupStage=$name
+  [Console]::Error.WriteLine("navigation_pane_setup_stage=$name")
+}
+Stage 'native_bindings'
 Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 public static class FixtureNative {
   [DllImport("user32.dll")]
-  public static extern bool SetProcessDpiAwarenessContext(IntPtr context);
+  public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
+  [DllImport("kernel32.dll")]
+  public static extern uint GetCurrentThreadId();
   [DllImport("user32.dll")]
   public static extern IntPtr GetThreadDpiAwarenessContext();
   [DllImport("user32.dll")]
@@ -1939,16 +2006,23 @@ public static class FixtureNative {
   public static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
 }
 '@
-if (-not [FixtureNative]::SetProcessDpiAwarenessContext([IntPtr](-4))) {
-  throw 'Could not establish physical per-monitor DPI context'
+Stage 'dpi_setup'
+$setupThread=[FixtureNative]::GetCurrentThreadId()
+$previousContext=[FixtureNative]::SetThreadDpiAwarenessContext([IntPtr](-4))
+if ($previousContext -eq [IntPtr]::Zero) {
+  throw 'Could not establish physical per-monitor thread DPI context'
 }
 function CheckDpi {
+  if ([FixtureNative]::GetCurrentThreadId() -ne $setupThread) {
+    throw 'Physical per-monitor DPI thread changed'
+  }
   $context=[FixtureNative]::GetThreadDpiAwarenessContext()
   if (-not [FixtureNative]::AreDpiAwarenessContextsEqual($context, [IntPtr](-4))) {
     throw 'Physical per-monitor DPI context changed'
   }
 }
 CheckDpi
+Stage 'uia_shell_setup'
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 $expected='EXPECTED_JSON' | ConvertFrom-Json
@@ -2019,8 +2093,58 @@ function Exact($root, $name, $pidValue) {
   }
   return $visible[0]
 }
+Stage 'owner_guard'
 Guard
+Stage 'list_lookup'
 $root=[Windows.Automation.AutomationElement]::FromHandle([IntPtr]HANDLE)
+$listCondition=[Windows.Automation.AndCondition]::new([Windows.Automation.Condition[]]@(
+  [Windows.Automation.PropertyCondition]::new(
+    [Windows.Automation.AutomationElement]::ControlTypeProperty,
+    [Windows.Automation.ControlType]::List),
+  [Windows.Automation.PropertyCondition]::new(
+    [Windows.Automation.AutomationElement]::IsScrollPatternAvailableProperty, $true),
+  [Windows.Automation.PropertyCondition]::new(
+    [Windows.Automation.AutomationElement]::ProcessIdProperty, $pidValue)))
+$lists=@($root.FindAll([Windows.Automation.TreeScope]::Descendants, $listCondition) |
+  Where-Object {
+    -not $_.Current.IsOffscreen -and $_.Current.IsEnabled -and
+    (OwnedControl $_) -and $_.Current.BoundingRectangle.Contains(
+      [double]$expected.point.x, [double]$expected.point.y)
+  })
+if ($lists.Count -ne 1) { throw 'Expected one owned List at the planned point' }
+$list=$lists[0]
+$listBounds=$list.Current.BoundingRectangle
+$listPattern=$list.GetCurrentPattern([Windows.Automation.ScrollPattern]::Pattern)
+function GuardList {
+  Guard $list
+  if ($list.Current.ControlType -ne [Windows.Automation.ControlType]::List -or
+      -not $list.GetCurrentPropertyValue(
+        [Windows.Automation.AutomationElement]::IsScrollPatternAvailableProperty) -or
+      -not $list.Current.BoundingRectangle.Equals($listBounds) -or
+      -not $listBounds.Contains([double]$expected.point.x, [double]$expected.point.y)) {
+    throw 'Retained List role, pattern or raw geometry changed'
+  }
+}
+Stage 'horizontal_readback'
+GuardList
+$horizontal=$listPattern.Current.HorizontalScrollPercent
+$scrollable=$listPattern.Current.HorizontallyScrollable
+GuardList
+$confirmedHorizontal=$listPattern.Current.HorizontalScrollPercent
+$confirmedScrollable=$listPattern.Current.HorizontallyScrollable
+GuardList
+if ($horizontal -ne $confirmedHorizontal -or $scrollable -ne $confirmedScrollable -or
+    -not (($horizontal -eq -1 -and -not $scrollable) -or
+          ($horizontal -eq 0 -and $scrollable))) {
+  throw 'Unsupported or unstable owned List horizontal state'
+}
+if ($horizontal -eq -1) {
+  Stage 'width_already_no_hbar'
+  @{ width_already_no_hbar=$true; horizontal_before=$horizontal } |
+    ConvertTo-Json -Compress
+  return
+}
+Stage 'view_lookup'
 $desktop=[Windows.Automation.AutomationElement]::RootElement
 $pattern=[Windows.Automation.ExpandCollapsePattern]::Pattern
 $collapsed=[Windows.Automation.ExpandCollapseState]::Collapsed
@@ -2031,14 +2155,18 @@ if ($viewPattern.Current.ExpandCollapseState -ne $collapsed) {
   throw 'View was not initially collapsed'
 }
 try {
+  Stage 'view_expand'
   Guard $view
   $viewPattern.Expand()
   Start-Sleep -Milliseconds 300
+  Stage 'show_lookup'
   $show=Exact $desktop 'Show' $pidValue
   $showPattern=$show.GetCurrentPattern($pattern)
+  Stage 'show_expand'
   Guard $show
   $showPattern.Expand()
   Start-Sleep -Milliseconds 300
+  Stage 'pane_lookup'
   $pane=Exact $desktop 'Navigation pane' $pidValue
   $toggle=$pane.GetCurrentPattern([Windows.Automation.TogglePattern]::Pattern)
   $before=$toggle.Current.ToggleState
@@ -2046,10 +2174,15 @@ try {
     throw 'Indeterminate navigation pane'
   }
   if ($before -eq [Windows.Automation.ToggleState]::On) {
+    Stage 'pane_toggle'
     Guard $pane
     $toggle.Toggle()
   }
+} catch {
+  [Console]::Error.WriteLine("navigation_pane_setup_failed_stage=$script:setupStage")
+  throw
 } finally {
+  Stage 'menu_cleanup'
   # Toggle may dismiss both menus. Never dereference their stale wrappers.
   $currentView=Exact $root 'View' $pidValue
   $currentPattern=$currentView.GetCurrentPattern($pattern)
@@ -2061,18 +2194,39 @@ try {
     throw 'Owned View menu did not close'
   }
 }
+Stage 'result'
 @{ navigation_pane_was_enabled=($before -eq
-  [Windows.Automation.ToggleState]::On) } | ConvertTo-Json -Compress
+  [Windows.Automation.ToggleState]::On); width_already_no_hbar=$false;
+  horizontal_before=$horizontal } | ConvertTo-Json -Compress
 """.replace("HANDLE", str(window.handle)).replace(
             "EXPECTED_JSON", json.dumps(expected).replace("'", "''")
         )
-        result = subprocess.run(  # noqa: S603 - supported UI on disposable owned fixture
-            [str(powershell), "-NoProfile", "-NonInteractive", "-Command", script],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
+        try:
+            result = subprocess.run(  # noqa: S603 - supported UI on disposable owned fixture
+                [str(powershell), "-NoProfile", "-NonInteractive", "-Command", script],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+            # Optional evidence must never replace the original failed attempt.
+            with suppress(Exception):
+                stdout, stdout_truncated = _setup_stream_tail(error.stdout)
+                stderr, stderr_truncated = _setup_stream_tail(error.stderr)
+                self.report["navigation_pane_setup"] = {
+                    "status": "timed_out"
+                    if isinstance(error, subprocess.TimeoutExpired)
+                    else "failed",
+                    "returncode": error.returncode
+                    if isinstance(error, subprocess.CalledProcessError)
+                    else None,
+                    "stdout_tail": stdout,
+                    "stderr_tail": stderr,
+                    "stdout_truncated": stdout_truncated,
+                    "stderr_truncated": stderr_truncated,
+                }
+            raise
         self.report["navigation_pane_setup"] = json.loads(result.stdout)
         native._require(
             self._verified_window() == window, "Fixture changed during View/Show setup"

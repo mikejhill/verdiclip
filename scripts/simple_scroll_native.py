@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ctypes as c
 import ctypes.wintypes as w
+import hashlib
 import json
 import logging
 import os
@@ -61,6 +62,18 @@ _LINE_HEIGHT = 24
 _CSS_DPI = 96
 _EDGE_ROW_DPIS = (96, 120)
 _EDGE_ROW_MODES = ("edge", "edge-nested")
+_CONTENT_FIXTURE_DPI = 120
+_OPAQUE_ALPHA = 0xFF
+_CONTENT_FIXTURE_MODES = ("edge", "edge-prose-click", "edge-prose-enter")
+_CONTENT_FIXTURE_SOURCES = {
+    "edge": "3418cba923f78b445a150713236f915e8a0ed196fddfa6c75736428d7b5b24f5",
+    "edge-prose-click": (
+        "a2d42ad75d0ed8cd6fd144d15c7cdb6debe8b0510951218d0b984d8691b71fd4"
+    ),
+    "edge-prose-enter": (
+        "a2d42ad75d0ed8cd6fd144d15c7cdb6debe8b0510951218d0b984d8691b71fd4"
+    ),
+}
 _START_PERCENT = 37.0
 _DIAGNOSTIC_FRAMES = 2
 _INITIAL_SAMPLE_LIMIT = 8
@@ -114,6 +127,9 @@ def _launch(
     if kind.startswith("edge"):
         path = directory / "scrolling.html"
         path.write_text(_document(nested=kind == "edge-nested"), encoding="utf-8")
+        report["owned_fixture_sha256"] = hashlib.sha256(
+            path.read_text(encoding="utf-8").encode("utf-8")
+        ).hexdigest()
         candidates = [
             Path(os.environ.get(key, "")) / "Microsoft/Edge/Application/msedge.exe"
             for key in ("ProgramFiles(x86)", "ProgramFiles")
@@ -219,6 +235,11 @@ def _target_evidence(
         return None
     selected["initial_position"] = asdict(target.position())
     selected["window_dpi"] = window_dpi(target)
+    if mode in _CONTENT_FIXTURE_MODES:
+        bounds = target._provider_bounds
+        selected["provider_bounds"] = (
+            asdict(bounds) if isinstance(bounds, Rect) else None
+        )
     if mode.startswith("explorer-"):
         geometry = probe_target(target)
         (output / "header-geometry.json").write_text(
@@ -1241,6 +1262,188 @@ def _edge_row_height(output: Path, report: dict[str, object]) -> int:
     return height
 
 
+def _fixture_pixels(image: QImage) -> list[int]:
+    image = image.convertToFormat(QImage.Format.Format_ARGB32)
+    pixels = list(memoryview(image.constBits()).cast("I"))
+    _require(
+        all(pixel >> 24 == _OPAQUE_ALPHA for pixel in pixels),
+        "Fixture pixels are not opaque",
+    )
+    return pixels
+
+
+def _fixture_difference(before: QImage, after: QImage) -> dict[str, object]:
+    """Keep whole-raster equality distinct from the narrower document check."""
+    _require(
+        not before.isNull() and before.size() == after.size(), "Fixture size changed"
+    )
+    differences = [
+        {"x": i % before.width(), "y": i // before.width(), "before": a, "after": b}
+        for i, (a, b) in enumerate(
+            zip(_fixture_pixels(before), _fixture_pixels(after), strict=True)
+        )
+        if a != b
+    ]
+    return {
+        "whole_viewport_equal": not differences,
+        "viewport_differences_argb": differences,
+    }
+
+
+def _fixture_footprint(
+    before: QImage, after: QImage, member: Callable[[int, int], bool]
+) -> int:
+    """Require stable source-derived membership, exact complement and no islands."""
+    old, new = _fixture_pixels(before), _fixture_pixels(after)
+    footprint = {i for i, pixel in enumerate(old) if member(i, pixel)}
+    _require(
+        footprint == {i for i, pixel in enumerate(new) if member(i, pixel)}
+        and all(
+            a == b or i in footprint
+            for i, (a, b) in enumerate(zip(old, new, strict=True))
+        ),
+        "Fixture paint or nonpaint footprint changed",
+    )
+    width, height = before.width(), before.height()
+    reached = {
+        i
+        for i in footprint
+        if i % width in (0, width - 1) or i // width in (0, height - 1)
+    }
+    pending = list(reached)
+    while pending:
+        i = pending.pop()
+        neighbors = [i - width, i + width]
+        if i % width:
+            neighbors.append(i - 1)
+        if i % width < width - 1:
+            neighbors.append(i + 1)
+        for neighbor in neighbors:
+            if neighbor in footprint and neighbor not in reached:
+                reached.add(neighbor)
+                pending.append(neighbor)
+    _require(reached == footprint, "Fixture nonpaint has an interior island")
+    return len(footprint)
+
+
+def _fixture_context(
+    output: Path,
+    report: dict[str, object],
+    before: QImage,
+    after: QImage,
+    *,
+    mode: str,
+) -> dict[str, object]:
+    """Fail closed without actual owned-source and unclipped native geometry proof."""
+    report.update(_fixture_difference(before, after))
+    _require(
+        mode in _CONTENT_FIXTURE_SOURCES
+        and report.get("owned_fixture_sha256") == _CONTENT_FIXTURE_SOURCES[mode],
+        "Restored content lacks the exact owned fixture source",
+    )
+    target = json.loads((output / "target.json").read_text(encoding="utf-8"))
+    state = json.loads((output / "restoration.json").read_text(encoding="utf-8"))
+    area = Rect(**target["area"])
+    _require(
+        target.get("mode") == mode
+        and type(target.get("window_dpi")) is int
+        and target.get("window_dpi") == _CONTENT_FIXTURE_DPI
+        and target.get("final_window_dpi", _CONTENT_FIXTURE_DPI) == _CONTENT_FIXTURE_DPI
+        and target["initial_position"] == state["initial"] == state["final"]
+        and state["initial"]["horizontal"] == -1.0
+        and (before.width(), before.height()) == (area.width, area.height)
+        and target.get("provider_bounds") == target["area"],
+        "Controlled fixture source, DPI, state or unclipped geometry is unproved",
+    )
+    return cast("dict[str, object]", target)
+
+
+def _fixture_row_offset(image: QImage, height: int) -> int:
+    """Derive integer source coordinates from every complete authored ID boundary."""
+    labels = _row_labels(image)
+    top, bottom = _boundary_rows(labels)
+    end = len(labels) - bottom
+    boundaries = [
+        (y, row)
+        for y, row in enumerate(labels)
+        if y > top and row is not None and labels[y - 1] != row
+    ]
+    _require(
+        len(boundaries) >= _DIAGNOSTIC_FRAMES,
+        "Insufficient complete authored row boundaries",
+    )
+    offsets = {height * row - y for y, row in boundaries}
+    _require(len(offsets) == 1, "Ambiguous authored row offset or phase")
+    offset = offsets.pop()
+    _require(
+        offset >= 0
+        and all(
+            row == (offset + y) // height
+            for y, row in enumerate(labels)
+            if top <= y < end
+        ),
+        "Authored row IDs, order or phase changed",
+    )
+    return offset
+
+
+def _fixture_row_paint(pixel: int, row: int) -> bool:
+    """Opaque black glyph coverage cannot exceed its authored RGB background."""
+    return (
+        ((pixel >> 16) & 255) <= row + 30
+        and ((pixel >> 8) & 255) <= _GREEN
+        and (pixel & 255) <= _BLUE
+    )
+
+
+def _verify_table_content(
+    before: QImage, after: QImage, frames: list[QImage], *, height: int
+) -> dict[str, object]:
+    offset = _fixture_row_offset(before, height)
+    _require(
+        _fixture_row_offset(after, height) == offset, "Document row position changed"
+    )
+    count = _fixture_footprint(
+        before,
+        after,
+        lambda i, pixel: (
+            not _fixture_row_paint(pixel, (offset + i // before.width()) // height)
+        ),
+    )
+    origins = [_fixture_row_offset(frame, height) for frame in frames]
+    boundaries = [_boundary_rows(_row_labels(frame)) for frame in frames]
+    _require(origins == sorted(set(origins)), "Raw frame document order changed")
+    witnesses = []
+    for i, (old, new) in enumerate(
+        zip(_fixture_pixels(before), _fixture_pixels(after), strict=True)
+    ):
+        if old == new:
+            continue
+        x, document_y = i % before.width(), offset + i // before.width()
+        row = document_y // height
+        samples = []
+        for index, (frame, origin) in enumerate(zip(frames, origins, strict=True)):
+            y = document_y - origin
+            row_top = row * height - origin
+            top, bottom = boundaries[index]
+            if top <= row_top and row_top + height <= frame.height() - bottom:
+                pixel = frame.pixel(x, y)
+                if _fixture_row_paint(pixel, row):
+                    samples.append((index, pixel))
+        _require(
+            len(samples) >= _DIAGNOSTIC_FRAMES
+            and len({pixel for _, pixel in samples}) == 1,
+            "Missing or disagreeing direct document witnesses",
+        )
+        witnesses.append({"x": x, "document_y": document_y, "frames_and_argb": samples})
+    return {
+        "document_offset": offset,
+        "raw_frame_offsets": origins,
+        "nonpaint_pixels": count,
+        "document_witnesses": witnesses,
+    }
+
+
 def _verify_edge_sequence(
     result: ScrollResult, output: Path, report: dict[str, object]
 ) -> None:
@@ -1258,15 +1461,45 @@ def _verify_edge_sequence(
         "The original bottom boundary pixels were changed",
     )
     before, after = (QImage(str(output / name)) for name in ("before.png", "after.png"))
-    _require(
-        not before.isNull() and before == after,
-        "Restored pixels differ from the original middle-start view",
-    )
+    report.update(_fixture_difference(before, after))
     report.update(verify_sequence(result.image, output))
     _require(
         report["oracle_frames"] == result.frames,
         "Whole-image oracle did not retain every accepted frame",
     )
+    if before == after:
+        report["document_content_restored"] = True
+        return
+    _require(
+        report.get("application") == "edge" and result.restoration == "restored",
+        "Restored pixels differ from the original middle-start view",
+    )
+    target = _fixture_context(
+        output,
+        report,
+        before,
+        after,
+        mode="edge",
+    )
+    _require(
+        target.get("final_window_dpi") == _CONTENT_FIXTURE_DPI,
+        "Final fixture DPI is unproved",
+    )
+    frames = [QImage(str(output / f"frame-{i}.png")) for i in range(result.frames)]
+    _require(
+        all(frame.size() == before.size() for frame in frames),
+        "Raw fixture frame size changed",
+    )
+    proof = _verify_table_content(
+        before, after, frames, height=_LINE_HEIGHT * _CONTENT_FIXTURE_DPI // _CSS_DPI
+    )
+    origins = cast("list[int]", proof["raw_frame_offsets"])
+    _require(
+        origins[0] == 0 and origins[-1] + after.height() == result.image.height(),
+        "Authored row coordinates do not reach both document endpoints",
+    )
+    report.update(proof)
+    report["document_content_restored"] = True
 
 
 def _verify_edge_rows(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes as c
 import ctypes.wintypes as w
+import hashlib
 import json
 import math
 from collections.abc import Callable
@@ -2715,3 +2716,187 @@ def test_no_hbar_oracle_never_downgrades_failed_native_or_raw_proof(
     path.write_text(json.dumps(positions))
     with pytest.raises(RuntimeError):
         verify_sequence(image, tmp_path)
+
+
+def _content_table(offset: int, *, rail: bool = False) -> QImage:
+    image = QImage(50, 210, QImage.Format.Format_RGB32)
+    for y in range(image.height()):
+        row = (offset + y) // 30
+        for x in range(image.width()):
+            image.setPixel(x, y, QColor(row + 30, 80, 160).rgb())
+        if rail:
+            image.setPixel(0, y, QColor("#eeeeee").rgb())
+    return image
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "none",
+        "glyph",
+        "background",
+        "new_nonpaint",
+        "footprint",
+        "island",
+        "missing_witness",
+        "disagreeing_witness",
+        "row_phase",
+        "row_id",
+        "order",
+    ],
+)
+def test_table_content_restoration_requires_source_paint_and_two_witnesses(
+    mutation: str,
+) -> None:
+    """Never turn unknown chrome, shifted rows or direct content changes into a pass."""
+    before = _content_table(90, rail=True)
+    after = before.copy()
+    after.setPixelColor(0, 45, QColor("#dddddd"))
+    frames = [_content_table(offset) for offset in (0, 30, 60)]
+    paints = {
+        "glyph": [(before, 5, "black"), (after, 5, "#010101")],
+        "background": [(before, 5, "black"), (after, 5, "#2250a0")],
+        "new_nonpaint": [(after, 5, "white")],
+        "footprint": [(after, 0, "#2250a0")],
+        "island": [(before, 10, "white"), (after, 10, "white")],
+    }
+    for image, x, color in paints.get(mutation, []):
+        image.setPixelColor(x, 45, QColor(color))
+    if mutation == "missing_witness":
+        frames = frames[:1]
+    elif mutation == "disagreeing_witness":
+        frames[0].setPixelColor(0, 135, QColor("black"))
+    elif mutation == "row_phase":
+        frames[0] = _content_table(1)
+        frames[0].setPixelColor(0, 134, QColor("black"))
+    elif mutation == "row_id":
+        for x in range(frames[0].width()):
+            frames[0].setPixelColor(x, 60, QColor(38, 80, 160))
+    elif mutation == "order":
+        frames.reverse()
+    if mutation == "none":
+        proof = native._verify_table_content(before, after, frames, height=30)
+        assert proof["document_offset"] == 90
+        assert proof["raw_frame_offsets"] == [0, 30, 60]
+        assert proof["nonpaint_pixels"] == 210
+        assert (
+            native._fixture_difference(before, after)["whole_viewport_equal"] is False
+        )
+    else:
+        with pytest.raises(RuntimeError):
+            native._verify_table_content(before, after, frames, height=30)
+
+
+def test_table_offset_uses_all_exact_integer_authored_boundaries() -> None:
+    """A wrong physical span or ambiguous ID transition cannot fit a displacement."""
+    frame = _content_table(17)
+    assert native._fixture_row_offset(frame, 30) == 17
+    with pytest.raises(RuntimeError, match="offset or phase"):
+        native._fixture_row_offset(frame, 29)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "none",
+        "source",
+        "mode",
+        "dpi",
+        "final_dpi",
+        "horizontal",
+        "vertical",
+        "view_size",
+        "clipping",
+        "size",
+        "missing_geometry",
+    ],
+)
+def test_fixture_context_requires_exact_owned_source_state_and_geometry(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    """The semantic oracle cannot apply to unknown documents or changed native state."""
+    image = _content_table(0)
+    area = {"x": 10, "y": 20, "width": 50, "height": 210}
+    position = {"horizontal": -1.0, "vertical": 0.0, "view_size": 10.0}
+    target = {
+        "mode": "edge",
+        "window_dpi": 120,
+        "final_window_dpi": 120,
+        "area": area,
+        "provider_bounds": area.copy(),
+        "initial_position": position,
+    }
+    state = {"initial": position, "final": position.copy()}
+    report: dict[str, object] = {
+        "owned_fixture_sha256": native._CONTENT_FIXTURE_SOURCES["edge"]
+    }
+    if mutation == "source":
+        report["owned_fixture_sha256"] = "unknown"
+    elif mutation == "mode":
+        target["mode"] = "edge-nested"
+    elif mutation in ("dpi", "final_dpi"):
+        target["window_dpi" if mutation == "dpi" else "final_window_dpi"] = 192
+    elif mutation in ("horizontal", "vertical", "view_size"):
+        state["final"][mutation] += 1
+    elif mutation == "clipping":
+        target["provider_bounds"] = {**area, "x": 0}
+    elif mutation == "missing_geometry":
+        del target["provider_bounds"]
+    elif mutation == "size":
+        image = image.copy(0, 0, 49, 210)
+    (tmp_path / "target.json").write_text(json.dumps(target))
+    (tmp_path / "restoration.json").write_text(json.dumps(state))
+    if mutation == "none":
+        native._fixture_context(tmp_path, report, image, image, mode="edge")
+    else:
+        with pytest.raises(RuntimeError, match=r"unproved|fixture source"):
+            native._fixture_context(tmp_path, report, image, image, mode="edge")
+
+
+def test_table_source_hash_pins_the_plain_owned_fixture() -> None:
+    """A source/layout change requires independent review, not automatic admission."""
+    source = native._document(nested=False).encode("utf-8")
+    assert hashlib.sha256(source).hexdigest() == native._CONTENT_FIXTURE_SOURCES["edge"]
+
+
+def test_content_fallback_cannot_bypass_complete_output_oracle(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Even eligible restoration differences cannot admit an incomplete output."""
+    before = _content_table(90, rail=True)
+    after = before.copy()
+    after.setPixelColor(0, 45, QColor("#dddddd"))
+    for name, image in (
+        ("before.png", before),
+        ("after.png", after),
+        ("frame-0.png", _content_table(0)),
+    ):
+        assert image.save(str(tmp_path / name))
+    oracle = Mock(side_effect=RuntimeError("Incomplete output"))
+    content = Mock()
+    monkeypatch.setattr(native, "verify_sequence", oracle)
+    monkeypatch.setattr(native, "_verify_table_content", content)
+    with pytest.raises(RuntimeError, match="Incomplete output"):
+        native._verify_edge_sequence(
+            ScrollResult(before, "", "restored", 3),
+            tmp_path,
+            {"application": "edge"},
+        )
+    content.assert_not_called()
+
+
+def test_fixture_difference_retains_raw_pixels_and_rejects_alpha() -> None:
+    """Raw differences cannot discard a changed channel while converting formats."""
+    before = _content_table(0)
+    after = before.copy()
+    after.setPixelColor(4, 8, QColor("black"))
+    report = native._fixture_difference(before, after)
+    assert report["viewport_differences_argb"] == [
+        {"x": 4, "y": 8, "before": before.pixel(4, 8), "after": after.pixel(4, 8)}
+    ]
+    transparent = after.convertToFormat(QImage.Format.Format_ARGB32)
+    transparent.setPixel(4, 8, 0x01000000)
+    with pytest.raises(RuntimeError, match="not opaque"):
+        native._fixture_difference(before, transparent)

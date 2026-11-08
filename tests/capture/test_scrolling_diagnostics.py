@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import ctypes as c
 import ctypes.wintypes as w
+import hashlib
 import json
 import math
+import subprocess
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import cast
@@ -4101,7 +4103,6 @@ def test_no_hbar_navigation_is_owned_hosted_and_single_attempt(
         assert "SameRect $outer $expected.outer" in script
         assert "SameRect $work $expected.work" in script
         assert "if (-not (OwnedControl $visible[0]))" in script
-        assert "SetProcessDpiAwarenessContext([IntPtr](-4))" in script
         assert "AreDpiAwarenessContextsEqual($context, [IntPtr](-4))" in script
         assert script.index("CheckDpi\n") < script.index("$expected=")
         assert "function Guard($control=$null) {\n  CheckDpi" in script
@@ -4117,6 +4118,388 @@ def test_no_hbar_navigation_is_owned_hosted_and_single_attempt(
                 script[: script.index(mutation)].rstrip().endswith(f"Guard {control}")
             )
         assert "if ($before -eq [Windows.Automation.ToggleState]::On)" in script
+
+
+@pytest.fixture
+def owned_navigation_setup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[diagnostics.ExplorerCase, WindowInfo, Mock, Mock]:
+    """Prepare only fake owned identities, never UI or a real subprocess."""
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("RUNNER_ENVIRONMENT", "github-hosted")
+    monkeypatch.setenv("WINDIR", "C:/Windows")
+    runner = diagnostics.ExplorerCase(no_hbar=True)
+    runner.pid = 123
+    runner.folder = Path("C:/owned fixture")
+    window = WindowInfo(9, "fixture", Rect(10, 10, 1900, 1000))
+    runner.report["explorer_layout"] = {
+        "actual_outer": asdict(window.bounds),
+        "work_area": asdict(Rect(0, 0, 1920, 1080)),
+    }
+    verify = Mock(return_value=window)
+    monkeypatch.setattr(runner, "_verified_window", verify)
+    command = Mock(return_value=Mock(stdout='{"navigation_pane_was_enabled": true}'))
+    monkeypatch.setattr(diagnostics.subprocess, "run", command)
+    return runner, window, command, verify
+
+
+def test_no_hbar_setup_thread_dpi_guards_remain_fail_closed(
+    owned_navigation_setup: tuple[diagnostics.ExplorerCase, WindowInfo, Mock, Mock],
+) -> None:
+    """Generated script rejects null setup and initial/per-Guard DPI or thread drift."""
+    runner, window, command, _verify = owned_navigation_setup
+    runner._hide_navigation_pane(window)
+    script = command.call_args.args[0][-1]
+    assert "SetProcessDpiAwarenessContext" not in script
+    assert script.count("::SetThreadDpiAwarenessContext([IntPtr](-4))") == 1
+    assert (
+        "public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);"
+        in script
+    )
+    assert (
+        "if ($previousContext -eq [IntPtr]::Zero) {\n"
+        "  throw 'Could not establish physical per-monitor thread DPI context'\n}"
+    ) in script
+    assert (
+        "function CheckDpi {\n"
+        "  if ([FixtureNative]::GetCurrentThreadId() -ne $setupThread) {\n"
+        "    throw 'Physical per-monitor DPI thread changed'\n  }\n"
+        "  $context=[FixtureNative]::GetThreadDpiAwarenessContext()\n"
+        "  if (-not [FixtureNative]::AreDpiAwarenessContextsEqual($context, "
+        "[IntPtr](-4))) {\n"
+        "    throw 'Physical per-monitor DPI context changed'\n  }\n}"
+    ) in script
+    assert script.index("CheckDpi\n") < script.index(
+        "Add-Type -AssemblyName UIAutomationClient"
+    )
+    assert script.index("$setupThread=") < script.index(
+        "$previousContext=[FixtureNative]::SetThreadDpiAwarenessContext"
+    )
+    assert "function Guard($control=$null) {\n  CheckDpi" in script
+    assert script.count("CheckDpi\n") == 2
+
+
+@pytest.mark.parametrize("kind", ["exit", "timeout"])
+@pytest.mark.parametrize(
+    ("stream", "tail", "truncated"),
+    [
+        (None, "", False),
+        ("retained output", "retained output", False),
+        (b"retained output", "retained output", False),
+        ("x" * 16384, "x" * 16384, False),
+        (b"x" * 16384, "x" * 16384, False),
+        ("x" * 16385, "x" * 16384, True),
+        (b"x" * 16385, "x" * 16384, True),
+        (b"invalid \xff bytes", "invalid \ufffd bytes", False),
+        ("x" * 20000 + "end", "x" * 16381 + "end", True),
+        (b"x" * 20000 + b"end", "x" * 16381 + "end", True),
+        ("\u20ac" * 6000 + "end", "\u20ac" * 5460 + "end", True),
+        (b"\xff" * 6000 + b"end", "\ufffd" * 5460 + "end", True),
+    ],
+)
+def test_no_hbar_setup_preserves_bounded_failure_streams(
+    owned_navigation_setup: tuple[diagnostics.ExplorerCase, WindowInfo, Mock, Mock],
+    kind: str,
+    stream: bytes | str | None,
+    tail: str,
+    *,
+    truncated: bool,
+) -> None:
+    """Exit one and timeouts retain bytes/text tails without retry or substitution."""
+    runner, window, command, verify = owned_navigation_setup
+    error = (
+        subprocess.CalledProcessError(1, ["not retained"], output=stream, stderr=stream)
+        if kind == "exit"
+        else subprocess.TimeoutExpired(
+            ["not retained"], 10, output=stream, stderr=stream
+        )
+    )
+    command.side_effect = error
+    with pytest.raises(type(error)) as raised:
+        runner._hide_navigation_pane(window)
+    assert raised.value is error
+    command.assert_called_once()
+    assert command.call_args.kwargs == {
+        "check": True,
+        "capture_output": True,
+        "text": True,
+        "timeout": 10,
+    }
+    assert runner.report["navigation_pane_setup"] == {
+        "status": "failed" if kind == "exit" else "timed_out",
+        "returncode": 1 if kind == "exit" else None,
+        "stdout_tail": tail,
+        "stderr_tail": tail,
+        "stdout_truncated": truncated,
+        "stderr_truncated": truncated,
+    }
+    assert len(tail.encode("utf-8")) <= 16 * 1024
+    verify.assert_called_once()
+
+
+@pytest.mark.parametrize("kind", ["exit", "timeout"])
+@pytest.mark.parametrize("failure", ["receipt", "metadata"])
+def test_no_hbar_setup_receipt_failure_preserves_original_exception(
+    monkeypatch: pytest.MonkeyPatch,
+    owned_navigation_setup: tuple[diagnostics.ExplorerCase, WindowInfo, Mock, Mock],
+    failure: str,
+    kind: str,
+) -> None:
+    """Optional receipt construction/storage failures cannot obscure the exit."""
+    runner, window, command, _verify = owned_navigation_setup
+    error = (
+        subprocess.CalledProcessError(1, ["not retained"], stderr="original")
+        if kind == "exit"
+        else subprocess.TimeoutExpired(["not retained"], 10, stderr=b"original")
+    )
+    command.side_effect = error
+    if failure == "receipt":
+        report = Mock(wraps=runner.report)
+        report.__getitem__ = Mock(side_effect=runner.report.__getitem__)
+        report.__setitem__ = Mock(side_effect=OSError("receipt unavailable"))
+        runner.report = report
+    else:
+        monkeypatch.setattr(
+            diagnostics, "_setup_stream_tail", Mock(side_effect=ValueError("metadata"))
+        )
+    with pytest.raises(type(error)) as raised:
+        runner._hide_navigation_pane(window)
+    assert raised.value is error
+    command.assert_called_once()
+
+
+def test_no_hbar_setup_keeps_stderr_stage_separate_from_stdout(
+    owned_navigation_setup: tuple[diagnostics.ExplorerCase, WindowInfo, Mock, Mock],
+) -> None:
+    """The failing phase survives a timeout independently of ordinary output."""
+    runner, window, command, _verify = owned_navigation_setup
+    stderr = b"navigation_pane_setup_stage=show_lookup\n"
+    error = subprocess.TimeoutExpired("not retained", 10, b"ordinary output", stderr)
+    command.side_effect = error
+    with pytest.raises(subprocess.TimeoutExpired) as raised:
+        runner._hide_navigation_pane(window)
+    assert raised.value is error
+    receipt = cast("dict[str, object]", runner.report["navigation_pane_setup"])
+    assert receipt["stderr_tail"] == stderr.decode()
+    assert receipt["stdout_tail"] == "ordinary output"
+    command.assert_called_once()
+
+
+def test_no_hbar_setup_failure_stage_survives_menu_cleanup(
+    owned_navigation_setup: tuple[diagnostics.ExplorerCase, WindowInfo, Mock, Mock],
+) -> None:
+    """Cleanup phase progress cannot replace the original failed-stage marker."""
+    runner, window, command, _verify = owned_navigation_setup
+    stderr = (
+        "navigation_pane_setup_stage=show_lookup\n"
+        "navigation_pane_setup_failed_stage=show_lookup\n"
+        "navigation_pane_setup_stage=menu_cleanup\n"
+        "Expected one enabled visible Show control\n"
+    )
+    error = subprocess.CalledProcessError(1, "not retained", stderr=stderr)
+    command.side_effect = error
+    with pytest.raises(subprocess.CalledProcessError) as raised:
+        runner._hide_navigation_pane(window)
+    assert raised.value is error
+    receipt = cast("dict[str, object]", runner.report["navigation_pane_setup"])
+    assert receipt["stderr_tail"] == stderr
+    assert receipt["stderr_truncated"] is False
+    script = command.call_args.args[0][-1]
+    assert "function Stage($name) {\n  $script:setupStage=$name" in script
+    assert (
+        "} catch {\n  [Console]::Error.WriteLine("
+        '"navigation_pane_setup_failed_stage=$script:setupStage")\n'
+        "  throw\n} finally {\n  Stage 'menu_cleanup'"
+    ) in script
+    command.assert_called_once()
+
+
+def test_no_hbar_setup_stages_use_only_fixed_stderr_labels(
+    owned_navigation_setup: tuple[diagnostics.ExplorerCase, WindowInfo, Mock, Mock],
+) -> None:
+    """Bounded phase labels accompany failed or timed-out existing setup calls."""
+    runner, window, command, _verify = owned_navigation_setup
+    runner._hide_navigation_pane(window)
+    script = command.call_args.args[0][-1]
+    assert '[Console]::Error.WriteLine("navigation_pane_setup_stage=$name")' in script
+    for stage, action in (
+        ("native_bindings", "Add-Type -TypeDefinition"),
+        ("dpi_setup", "$setupThread="),
+        ("uia_shell_setup", "Add-Type -AssemblyName UIAutomationClient"),
+        ("owner_guard", "Guard\nStage 'list_lookup'"),
+        ("list_lookup", "$root=[Windows.Automation.AutomationElement]::FromHandle"),
+        ("horizontal_readback", "GuardList\n$horizontal="),
+        ("view_lookup", "$desktop=[Windows.Automation.AutomationElement]::RootElement"),
+        ("view_expand", "Guard $view"),
+        ("show_lookup", "$show=Exact"),
+        ("show_expand", "Guard $show"),
+        ("pane_lookup", "$pane=Exact"),
+        ("pane_toggle", "Guard $pane"),
+        ("menu_cleanup", "# Toggle may dismiss"),
+        ("result", "@{ navigation_pane_was_enabled="),
+    ):
+        assert script.count(f"Stage '{stage}'") == 1
+        assert script.index(f"Stage '{stage}'") < script.index(action)
+    command.assert_called_once()
+
+
+def test_no_hbar_success_retains_json_and_post_owner_verification(
+    owned_navigation_setup: tuple[diagnostics.ExplorerCase, WindowInfo, Mock, Mock],
+) -> None:
+    """A zero exit is still rejected if the original owner changes afterward."""
+    runner, window, command, verify = owned_navigation_setup
+    verify.side_effect = [window, None]
+    with pytest.raises(RuntimeError, match="Fixture changed during View/Show setup"):
+        runner._hide_navigation_pane(window)
+    assert runner.report["navigation_pane_setup"] == {
+        "navigation_pane_was_enabled": True
+    }
+    command.assert_called_once()
+
+
+def test_no_hbar_width_probe_uses_one_owned_list_at_the_planned_point(
+    owned_navigation_setup: tuple[diagnostics.ExplorerCase, WindowInfo, Mock, Mock],
+) -> None:
+    """A source contract excludes desktop searches, alternate points and roles."""
+    runner, window, command, _verify = owned_navigation_setup
+    runner._hide_navigation_pane(window)
+    script = command.call_args.args[0][-1]
+    expected = script.split("$expected='", 1)[1].split("' | ConvertFrom-Json", 1)[0]
+    assert json.loads(expected)["point"] == asdict(window.bounds.center)
+    probe = script.split("Stage 'list_lookup'", 1)[1].split("Stage 'view_lookup'", 1)[0]
+    assert probe.count("$root.FindAll(") == 1
+    assert "[Windows.Automation.TreeScope]::Descendants, $listCondition" in probe
+    assert (
+        "[Windows.Automation.AutomationElement]::ControlTypeProperty,\n"
+        "    [Windows.Automation.ControlType]::List"
+    ) in probe
+    assert "IsScrollPatternAvailableProperty, $true" in probe
+    assert "ProcessIdProperty, $pidValue" in probe
+    assert "-not $_.Current.IsOffscreen -and $_.Current.IsEnabled" in probe
+    assert (
+        "(OwnedControl $_) -and $_.Current.BoundingRectangle.Contains(\n"
+        "      [double]$expected.point.x, [double]$expected.point.y)"
+    ) in probe
+    assert (
+        "if ($lists.Count -ne 1) { "
+        "throw 'Expected one owned List at the planned point' }"
+    ) in probe
+    assert "$list=$lists[0]" in probe
+    assert "$listBounds=$list.Current.BoundingRectangle" in probe
+    assert probe.count(".GetCurrentPattern(") == 1
+    assert "[Windows.Automation.ScrollPattern]::Pattern" in probe
+    for forbidden in (
+        "RootElement",
+        "FromPoint",
+        "FindFirst",
+        "Start-Sleep",
+        "while (",
+    ):
+        assert forbidden not in probe
+    command.assert_called_once()
+
+
+def test_no_hbar_width_probe_requires_stable_guarded_exact_horizontal_states(
+    owned_navigation_setup: tuple[diagnostics.ExplorerCase, WindowInfo, Mock, Mock],
+) -> None:
+    """Missing patterns, role/bounds/owner drift and unsupported H cannot pass."""
+    runner, window, command, _verify = owned_navigation_setup
+    runner._hide_navigation_pane(window)
+    script = command.call_args.args[0][-1]
+    assert (
+        "function GuardList {\n  Guard $list\n"
+        "  if ($list.Current.ControlType -ne "
+        "[Windows.Automation.ControlType]::List -or\n"
+        "      -not $list.GetCurrentPropertyValue(\n"
+        "        [Windows.Automation.AutomationElement]::"
+        "IsScrollPatternAvailableProperty) -or\n"
+        "      -not $list.Current.BoundingRectangle.Equals($listBounds) -or\n"
+        "      -not $listBounds.Contains([double]$expected.point.x, "
+        "[double]$expected.point.y)) {\n"
+        "    throw 'Retained List role, pattern or raw geometry changed'\n  }\n}"
+    ) in script
+    assert (
+        "GuardList\n$horizontal=$listPattern.Current.HorizontalScrollPercent\n"
+        "$scrollable=$listPattern.Current.HorizontallyScrollable\nGuardList\n"
+        "$confirmedHorizontal=$listPattern.Current.HorizontalScrollPercent\n"
+        "$confirmedScrollable=$listPattern.Current.HorizontallyScrollable\nGuardList\n"
+        "if ($horizontal -ne $confirmedHorizontal -or "
+        "$scrollable -ne $confirmedScrollable -or\n"
+        "    -not (($horizontal -eq -1 -and -not $scrollable) -or\n"
+        "          ($horizontal -eq 0 -and $scrollable))) {\n"
+        "  throw 'Unsupported or unstable owned List horizontal state'\n}"
+    ) in script
+    assert script.count(".Current.HorizontalScrollPercent") == 2
+    assert script.count(".Current.HorizontallyScrollable") == 2
+    command.assert_called_once()
+
+
+def test_no_hbar_width_only_returns_before_every_menu_lookup_or_action(
+    owned_navigation_setup: tuple[diagnostics.ExplorerCase, WindowInfo, Mock, Mock],
+) -> None:
+    """Exact no-scroll state emits its measured receipt and bypasses all menus."""
+    runner, window, command, verify = owned_navigation_setup
+    receipt = {"width_already_no_hbar": True, "horizontal_before": -1}
+    command.return_value.stdout = json.dumps(receipt)
+    runner._hide_navigation_pane(window)
+    assert runner.report["navigation_pane_setup"] == receipt
+    script = command.call_args.args[0][-1]
+    prefix, menus = script.split("Stage 'view_lookup'", 1)
+    assert prefix.endswith(
+        "if ($horizontal -eq -1) {\n  Stage 'width_already_no_hbar'\n"
+        "  @{ width_already_no_hbar=$true; horizontal_before=$horizontal } |\n"
+        "    ConvertTo-Json -Compress\n  return\n}\n"
+    )
+    for forbidden in (
+        "$view=Exact",
+        "$show=Exact",
+        "$pane=Exact",
+        "$currentView=Exact",
+        "RootElement",
+        ".Expand()",
+        ".Toggle()",
+        ".Collapse()",
+    ):
+        assert forbidden not in prefix
+        assert forbidden in menus
+    assert menus.count("$toggle.Toggle()") == 1
+    assert "width_already_no_hbar=$false" in menus
+    assert "horizontal_before=$horizontal" in menus
+    command.assert_called_once()
+    assert verify.call_count == 2
+
+
+@pytest.mark.parametrize(
+    ("stage", "failure"),
+    [
+        ("list_lookup", "Expected one owned List at the planned point"),
+        ("horizontal_readback", "Retained List role, pattern or raw geometry changed"),
+        (
+            "horizontal_readback",
+            "Retained menu control changed ownership or availability",
+        ),
+        ("horizontal_readback", "Unsupported or unstable owned List horizontal state"),
+    ],
+)
+def test_no_hbar_width_probe_failures_keep_failure_receipt_without_retry(
+    owned_navigation_setup: tuple[diagnostics.ExplorerCase, WindowInfo, Mock, Mock],
+    stage: str,
+    failure: str,
+) -> None:
+    """Rejected native observations remain setup errors, never width-only success."""
+    runner, window, command, verify = owned_navigation_setup
+    stderr = f"navigation_pane_setup_stage={stage}\n{failure}"
+    error = subprocess.CalledProcessError(1, "not retained", stderr=stderr)
+    command.side_effect = error
+    with pytest.raises(subprocess.CalledProcessError) as raised:
+        runner._hide_navigation_pane(window)
+    assert raised.value is error
+    receipt = cast("dict[str, object]", runner.report["navigation_pane_setup"])
+    assert receipt["status"] == "failed"
+    assert receipt["stderr_tail"] == stderr
+    assert "width_already_no_hbar" not in receipt
+    command.assert_called_once()
+    verify.assert_called_once()
 
 
 def test_no_hbar_workflow_retains_original_cases_and_budgets() -> None:
@@ -4163,3 +4546,74 @@ def test_no_hbar_setup_never_opens_uia_on_gui_thread(
     prepare.assert_called_once_with(window)
     hide.assert_called_once_with(window)
     factory.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "none",
+        "glyph",
+        "white_padding",
+        "footprint",
+        "island",
+        "color",
+        "colored_initial",
+        "missing_output",
+        "not_restored",
+    ],
+)
+def test_prose_content_restoration_keeps_every_pixel_outside_original_footprint(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    """Source-derived padding is not a strip mask or a coordinate whitelist."""
+    first = QImage(80, 90, QImage.Format.Format_RGB32)
+    first.fill(0xFFFFFFFF)
+    for y in range(first.height()):
+        first.setPixel(0, y, 0xFFEEEEEE)
+    after = first.copy()
+    after.setPixel(0, 20, 0xFFDDDDDD)
+    paints = {
+        "glyph": [(after, 40, 0xFF24292F)],
+        "white_padding": [(after, 10, 0xFFDDDDDD)],
+        "footprint": [(after, 0, 0xFFFFFFFF)],
+        "island": [(first, 10, 0xFFDDDDDD), (after, 10, 0xFFDDDDDD)],
+        "color": [(after, 0, 0xFFAABBCC)],
+        "colored_initial": [(first, 10, 0xFFAABBCC), (after, 10, 0xFFAABBCC)],
+    }
+    for image, x, color in paints.get(mutation, []):
+        image.setPixel(x, 20, color)
+    capture = Mock(kind="edge-prose-enter", output=tmp_path, report={})
+    capture.result = ScrollResult(first, "", "restored", 2)
+    if mutation == "missing_output":
+        capture.result = None
+    elif mutation == "not_restored":
+        capture.result = ScrollResult(first, "", "not restored", 2)
+    context = {"window_dpi": 120, "initial_position": {"vertical": 0.0}}
+    monkeypatch.setattr(
+        diagnostics.native, "_fixture_context", lambda *_a, **_kw: context
+    )
+    oracle = Mock(return_value={"oracle_frames": 2})
+    monkeypatch.setattr(diagnostics, "verify_sequence", oracle)
+    if mutation == "none":
+        diagnostics._verify_prose_content(capture, first, after)
+        assert capture.report["document_content_restored"] is True
+        assert capture.report["nonpaint_pixels"] == 90
+        oracle.assert_not_called()  # Terminal delivery separately requires full output.
+        assert capture.result is not None
+        diagnostics._inspect_result(capture.result, tmp_path, capture.report)
+        oracle.assert_called_once()
+    else:
+        with pytest.raises(RuntimeError):
+            diagnostics._verify_prose_content(capture, first, after)
+        assert "document_content_restored" not in capture.report
+
+
+def test_prose_source_hash_pins_the_white_padding_contract() -> None:
+    """A source/layout change must not silently broaden the semantic criterion."""
+    digest = hashlib.sha256(
+        diagnostics.document("edge-prose").encode("utf-8")
+    ).hexdigest()
+    for mode in ("edge-prose-click", "edge-prose-enter"):
+        assert digest == diagnostics.native._CONTENT_FIXTURE_SOURCES[mode]
