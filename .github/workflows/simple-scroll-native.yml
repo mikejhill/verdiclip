@@ -18,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        application: [edge, edge-nested, notepad]
+        application: [edge, edge-nested, notepad, edge-cancel, edge-input, edge-covered]
     env:
       QT_QPA_PLATFORM: windows
       PYTHONUTF8: "1"

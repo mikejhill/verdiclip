@@ -167,9 +167,16 @@ def _prepare(window: WindowInfo) -> WindowInfo:
 def _trace_helper() -> None:
     """Save two accepted frames in this owned test child, never in production."""
     logging.basicConfig(level=logging.INFO)
+    mode = sys.argv.pop()
     output = Path(sys.argv.pop())
     original = ScrollTransaction._frame
+    move = UiaScrollTarget.move
     observations: list[dict[str, float]] = []
+    writes: list[float] = []
+
+    def record_move(target: UiaScrollTarget, percent: float) -> None:
+        writes.append(percent)
+        move(target, percent)
 
     def record_frame(operation: ScrollTransaction, position: ScrollPosition) -> QImage:
         frame = original(operation, position)
@@ -180,13 +187,28 @@ def _trace_helper() -> None:
             (output / "frames.json").write_text(
                 json.dumps(observations, indent=2), encoding="utf-8"
             )
+            if len(observations) == 1 and mode in ("edge-cancel", "edge-input"):
+                # Give the parent a deterministic confirmed-state boundary.
+                # The real stdin watcher/input check remains unchanged.
+                time.sleep(0.4)
         return frame
 
-    with patch.object(ScrollTransaction, "_frame", record_frame):
-        helper_main()
+    try:
+        with (
+            patch.object(ScrollTransaction, "_frame", record_frame),
+            patch.object(UiaScrollTarget, "move", record_move),
+        ):
+            helper_main()
+    finally:
+        (output / "movement.json").write_text(
+            json.dumps(
+                {"writes": len(writes), "last_vertical": writes[-1] if writes else None}
+            ),
+            encoding="utf-8",
+        )
 
 
-def _capture(point: Point, output: Path) -> ScrollResult:
+def _capture(point: Point, output: Path, mode: str = "") -> ScrollResult:
     loop = QEventLoop()
     helper = ScrollHelper()
     results: list[ScrollResult] = []
@@ -203,21 +225,43 @@ def _capture(point: Point, output: Path) -> ScrollResult:
     start = helper._process.start
 
     def trace_start() -> None:
+        script = (
+            "from scripts.simple_scroll_native import _trace_helper; _trace_helper()"
+        )
         arguments = helper._process.arguments()[2:]
         helper._process.setArguments(
             [
                 "-c",
-                "from scripts.simple_scroll_native import _trace_helper; "
-                "_trace_helper()",
+                script,
                 *arguments,
                 str(output.resolve()),
+                mode,
             ]
         )
         start()
 
     with patch.object(helper._process, "start", trace_start):
         helper.start(point)
+    interrupt = QTimer()
+    interrupt.setInterval(20)
+    acted = False
+
+    def interfere() -> None:
+        nonlocal acted
+        if not (output / "frame-0.png").exists():
+            return
+        interrupt.stop()
+        if mode == "edge-cancel":
+            helper.cancel()
+        else:
+            _real_mouse_input()
+        acted = True
+
+    if mode in ("edge-cancel", "edge-input"):
+        interrupt.timeout.connect(interfere)
+        interrupt.start()
     loop.exec()
+    interrupt.stop()
     timer.stop()
     if not results:
         helper.cancel()
@@ -228,7 +272,103 @@ def _capture(point: Point, output: Path) -> ScrollResult:
         ),
         encoding="utf-8",
     )
+    if mode in ("edge-cancel", "edge-input"):
+        _require(acted, "The native interruption was not exercised")
     return results[0]
+
+
+def _real_mouse_input() -> None:
+    """Move one pixel only in the disposable hosted desktop; no held buttons."""
+    _require(
+        os.environ.get("GITHUB_ACTIONS") == "true"
+        and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted",
+        "Real input qualification requires a disposable hosted runner",
+    )
+    user = c.WinDLL("user32")
+    user.mouse_event.argtypes = (w.DWORD, w.DWORD, w.DWORD, w.DWORD, c.c_size_t)
+    user.mouse_event.restype = None
+    user.mouse_event(1, 1, 0, 0, 0)  # MOUSEEVENTF_MOVE, relative, no button state
+
+
+def _cover_panel(area: Rect, window: int, output: Path) -> int:
+    """Render an owned, non-activating tiny overlay between the nine samples."""
+    user = c.WinDLL("user32", use_last_error=True)
+    user.CreateWindowExW.argtypes = (
+        w.DWORD,
+        w.LPCWSTR,
+        w.LPCWSTR,
+        w.DWORD,
+        c.c_int,
+        c.c_int,
+        c.c_int,
+        c.c_int,
+        w.HWND,
+        w.HMENU,
+        w.HINSTANCE,
+        c.c_void_p,
+    )
+    user.CreateWindowExW.restype = w.HWND
+    user.GetForegroundWindow.restype = w.HWND
+    user.WindowFromPoint.argtypes, user.WindowFromPoint.restype = (w.POINT,), w.HWND
+    x, y = round(area.left + area.width / 4), round(area.top + area.height / 4)
+    handle = user.CreateWindowExW(
+        0x08000088,
+        "STATIC",
+        "",
+        0x90000004,
+        x,
+        y,
+        20,
+        20,
+        None,
+        None,
+        None,
+        None,
+    )  # NOACTIVATE | TOOLWINDOW | TOPMOST; visible popup black rectangle
+    _require(handle, "Could not create the owned overlay")
+    if not isinstance(handle, int):
+        raise TypeError("Overlay returned an invalid window handle")
+    time.sleep(0.1)
+    try:
+        _require(user.GetForegroundWindow() == window, "Overlay changed foreground")
+        _require(
+            user.WindowFromPoint(w.POINT(x + 10, y + 10)) == handle,
+            "Overlay is not above the panel",
+        )
+        for sample_x in (area.left, area.center.x, area.right - 1):
+            for sample_y in (area.top, area.center.y, area.bottom - 1):
+                _require(
+                    not (x <= sample_x < x + 20 and y <= sample_y < y + 20),
+                    "Overlay did not miss the old sample points",
+                )
+        screens = MssScreenSource()
+        try:
+            frozen = screens.freeze()
+            covered = frozen.crop(area)
+            _require(
+                covered.pixelColor(
+                    x + 10 - round(area.left), y + 10 - round(area.top)
+                ).name()
+                == "#000000",
+                "Overlay was not rendered",
+            )
+            _require(
+                covered.save(str(output / "covered.png")),
+                "Could not save overlay evidence",
+            )
+        finally:
+            screens.close()
+    except BaseException:
+        _close_overlay(handle)
+        raise
+    else:
+        return handle
+
+
+def _close_overlay(handle: int) -> None:
+    user = c.WinDLL("user32", use_last_error=True)
+    user.DestroyWindow.argtypes, user.DestroyWindow.restype = (w.HWND,), w.BOOL
+    _require(user.DestroyWindow(handle), "Could not remove the owned overlay")
 
 
 def _row_labels(image: QImage) -> list[int | None]:
@@ -345,9 +485,8 @@ def _verify_selected_target(output: Path, area: Rect, start: ScrollPosition) -> 
     )
 
 
-def _case(kind: str, output: Path, report: dict[str, object]) -> None:
-    window = _prepare(_window())
-    report["window"] = asdict(window)
+def _desktop_evidence(output: Path, report: dict[str, object]) -> None:
+    """Retain the physical desktop bounds before touching the test document."""
     screens = MssScreenSource()
     try:
         frozen = screens.freeze()
@@ -355,6 +494,12 @@ def _case(kind: str, output: Path, report: dict[str, object]) -> None:
         frozen.image.save(str(output / "desktop-before-discovery.png"))
     finally:
         screens.close()
+
+
+def _case(kind: str, output: Path, report: dict[str, object]) -> None:
+    window = _prepare(_window())
+    report["window"] = asdict(window)
+    _desktop_evidence(output, report)
     point = (
         Point(window.bounds.left + 350, window.bounds.top + 300)
         if kind == "edge-nested"
@@ -379,7 +524,14 @@ def _case(kind: str, output: Path, report: dict[str, object]) -> None:
         with UiaScrollTarget(outer_point) as outer:
             outer_before = outer.position()
             report["outer_before"] = asdict(outer_before)
-    result = _capture(point, output)
+    overlay = (
+        _cover_panel(area, window.handle, output) if kind == "edge-covered" else None
+    )
+    try:
+        result = _capture(point, output, kind)
+    finally:
+        if overlay is not None:
+            _close_overlay(overlay)
     report.update(
         message=result.message, restoration=result.restoration, frames=result.frames
     )
@@ -398,12 +550,16 @@ def _case(kind: str, output: Path, report: dict[str, object]) -> None:
                 outer_after == outer_before,
                 "Capturing the inner panel moved the outer page",
             )
+    if (output / "frame-0.png").is_file():
+        _verify_selected_target(output, area, initial)
+    if kind in ("edge-cancel", "edge-input", "edge-covered"):
+        report["movement"] = _verify_interruption(kind, result, initial, after, output)
+        report["success"] = True
+        return
     _require(
         after == initial,
         "The starting horizontal/vertical position was not restored",
     )
-    if (output / "frame-0.png").is_file():
-        _verify_selected_target(output, area, initial)
     _require(
         result.image is not None and result.restoration == "restored",
         result.message or result.restoration,
@@ -411,6 +567,57 @@ def _case(kind: str, output: Path, report: dict[str, object]) -> None:
     if kind.startswith("edge"):
         _verify_edge_rows(result, output, report)
     report["success"] = True
+
+
+def _verify_interruption(
+    kind: str,
+    result: ScrollResult,
+    initial: ScrollPosition,
+    after: ScrollPosition,
+    output: Path,
+) -> dict[str, object]:
+    """Validate terminal withholding and actual state without restoring in test."""
+    movement = json.loads((output / "movement.json").read_text(encoding="utf-8"))
+    if not isinstance(movement, dict):
+        raise TypeError("Invalid native movement evidence")
+    _require(result.image is None, "An interrupted capture published an image")
+    _require(not (output / "result.png").exists(), "An interrupted image was saved")
+    if kind == "edge-input":
+        _require(
+            "mouse or keyboard" in result.message, "Real input did not stop capture"
+        )
+        _require(
+            result.restoration.startswith("not restored"),
+            "Input was fought by restoration",
+        )
+        _require(
+            movement == {"writes": 1, "last_vertical": 0.0},
+            "Input allowed another provider write",
+        )
+        _require(
+            after == ScrollPosition(initial.horizontal, 0.0, initial.view_size),
+            "Input case did not retain the interrupted top state",
+        )
+    else:
+        _require(after == initial, "Interrupted case did not preserve starting state")
+        if kind == "edge-cancel":
+            _require(result.restoration == "restored", "Cancellation did not restore")
+            _require("cancelled" in result.message, "Cancellation was not observed")
+            _require(
+                movement == {"writes": 2, "last_vertical": initial.vertical},
+                "Cancellation did not use exactly one restore write",
+            )
+        else:
+            _require("covers" in result.message, "Small overlay was not rejected")
+            _require(
+                movement == {"writes": 0, "last_vertical": None},
+                "Covered target received a provider write",
+            )
+
+    writes, last = movement.get("writes"), movement.get("last_vertical")
+    if not isinstance(writes, int) or not isinstance(last, (float, type(None))):
+        raise TypeError("Invalid native movement values")
+    return {"writes": writes, "last_vertical": last}
 
 
 def main() -> None:
@@ -431,9 +638,13 @@ def main() -> None:
     report: dict[str, object] = {
         "application": kind,
         "success": False,
-        "oracle": "ordered rows, complete interior spans, retained boundary chrome"
-        if kind.startswith("edge")
-        else "capture and restore smoke; screenshot content review required",
+        "oracle": (
+            "interruption, withheld image and exact provider write/state outcome"
+            if kind in ("edge-cancel", "edge-input", "edge-covered")
+            else "ordered rows, complete interior spans, retained boundary chrome"
+            if kind.startswith("edge")
+            else "capture and restore smoke; screenshot content review required"
+        ),
     }
     with TemporaryDirectory(prefix="verdiclip-scroll-test-") as scratch:
         process = _launch(kind, Path(scratch), report)

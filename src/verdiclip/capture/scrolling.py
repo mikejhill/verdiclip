@@ -268,24 +268,13 @@ class ScrollTransaction:
 
     def _sequence(self, initial: ScrollPosition) -> QImage:
         position = self._move(0.0)
-        if position.vertical != 0.0:
-            raise CaptureError("The panel did not reach its top")
         stitch = VerticalStitch(self._frame(position))
         while position.vertical < END_PERCENT:
             if self._frames >= MAX_FRAMES:
                 raise CaptureError("Scrolling capture reached its page limit")
-            if position.view_size != initial.view_size:
-                raise CaptureError("The panel's content changed size")
             # Half a viewport leaves ample overlap without wheel chaining.
             step = 50.0 * position.view_size / (100.0 - position.view_size)
             following = self._move(min(100.0, position.vertical + step))
-            if (
-                following.vertical <= position.vertical
-                or following.vertical - position.vertical > step * 1.5
-                or following.horizontal != initial.horizontal
-                or following.view_size != initial.view_size
-            ):
-                raise CaptureError("The scroll panel moved unexpectedly")
             expected = (
                 self._target.area.height
                 * (100.0 - position.view_size)

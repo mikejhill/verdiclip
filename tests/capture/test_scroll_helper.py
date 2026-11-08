@@ -223,3 +223,46 @@ def test_helper_entry_produces_one_terminal_result(
         assert value["restoration"] == "unknown: provider cleanup failed"
         assert not (tmp_path / "capture.png").exists()
     thread.return_value.start.assert_called_once()
+
+
+def test_failed_start_and_duplicate_terminal_callbacks_deliver_once() -> None:
+    """A launch failure has one honest unchanged result, even with late signals."""
+    helper = ScrollHelper()
+    results: list[ScrollResult] = []
+    helper.finished.connect(results.append)
+    helper.cancel()  # No process to cancel.
+    helper._error(QProcess.ProcessError.FailedToStart)
+    helper._exited(1, QProcess.ExitStatus.CrashExit)
+    helper._complete(ScrollResult(None, "late", "unknown", 0))
+    assert len(results) == 1
+    assert results[0].restoration == "unchanged"
+    assert results[0].message == "Could not start scrolling capture"
+    with pytest.raises(ValueError, match="Missing capture directory"):
+        helper._read_result()
+
+
+@pytest.mark.parametrize("failure", ["oversized", "size", "decode"])
+def test_invalid_image_result_never_publishes(
+    qtbot: QtBot, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    """Check output and image bounds before decoding any child-owned pixels."""
+    source = "print('x' * 8193)" if failure == "oversized" else _SUCCESS
+    program(monkeypatch, source)
+    if failure != "oversized":
+        reader = Mock()
+        reader.size.return_value.width.return_value = 0 if failure == "size" else 10
+        reader.size.return_value.height.return_value = 20
+        reader.read.return_value = QImage()
+        monkeypatch.setattr(
+            "verdiclip.capture.scroll_helper.QImageReader", lambda _path: reader
+        )
+    helper = ScrollHelper()
+    with qtbot.waitSignal(helper.finished, timeout=5000) as signal:
+        helper.start(Point(10, 20))
+    assert signal.args[0].image is None
+    assert signal.args[0].restoration.startswith("unknown")
+    assert (
+        "Oversized" in signal.args[0].message
+        if failure == "oversized"
+        else "Invalid" in signal.args[0].message
+    )

@@ -33,6 +33,7 @@ _MAX_ANCESTORS = 32
 _DISCOVERY_OBSERVATIONS = 3
 _MIN_SIZE = 64
 _WAIT_TIMEOUT = 258
+_MAX_WINDOWS = 512
 
 
 class _NoScrollTargetError(CaptureError):
@@ -164,6 +165,7 @@ class UiaScrollTarget:
         self._user = c.WinDLL("user32", use_last_error=True)
         self._kernel = c.WinDLL("kernel32", use_last_error=True)
         self._ole = c.WinDLL("ole32")
+        self._dwm = c.WinDLL("dwmapi")
         self._bind()
         try:
             self._open(point)
@@ -183,6 +185,9 @@ class UiaScrollTarget:
             "GetWindowThreadProcessId": ((w.HWND, c.POINTER(w.DWORD)), w.DWORD),
             "IsWindowVisible": ((w.HWND,), w.BOOL),
             "IsIconic": ((w.HWND,), w.BOOL),
+            "GetTopWindow": ((w.HWND,), w.HWND),
+            "GetWindow": ((w.HWND, w.UINT), w.HWND),
+            "IsWindow": ((w.HWND,), w.BOOL),
         }
         for name, (arguments, result) in signatures.items():
             function = getattr(self._user, name)
@@ -205,6 +210,13 @@ class UiaScrollTarget:
             c.POINTER(c.c_void_p),
         )
         self._ole.CoCreateInstance.restype = c.HRESULT
+        self._dwm.DwmGetWindowAttribute.argtypes = (
+            w.HWND,
+            w.DWORD,
+            c.c_void_p,
+            w.DWORD,
+        )
+        self._dwm.DwmGetWindowAttribute.restype = c.HRESULT
 
     def _input(self) -> int:
         info = _LastInput(c.sizeof(_LastInput), 0)
@@ -361,6 +373,7 @@ class UiaScrollTarget:
         self._element.call(38, (c.POINTER(w.BOOL),), c.byref(offscreen))
         if offscreen.value:
             raise CaptureError("The scroll panel is no longer visible")
+        self._check_occlusion()
         # Reject overlaid windows at the viewport edges as well as the center.
         for x in (self._area.left, self._area.center.x, self._area.right - 1):
             for y in (self._area.top, self._area.center.y, self._area.bottom - 1):
@@ -372,6 +385,39 @@ class UiaScrollTarget:
                     )
         if self._input() != self._input_tick:
             raise CaptureError("Stopped because you used the mouse or keyboard")
+
+    def _check_occlusion(self) -> None:
+        """Conservatively reject top-level overlap, including tiny tool windows.
+
+        Do not filter titles, styles, opacity or minimum size. A bounding-box
+        false positive is safer than capturing an overlay. Same-window content
+        overlays remain outside this OS-level check.
+        """
+        window = self._user.GetTopWindow(None)
+        seen: set[int] = set()
+        for _ in range(_MAX_WINDOWS):
+            if not window or window in seen or not self._user.IsWindow(window):
+                break
+            if window == self._window:
+                return
+            seen.add(window)
+            if self._user.IsWindowVisible(window) and not self._user.IsIconic(window):
+                cloaked = w.DWORD()
+                self._dwm.DwmGetWindowAttribute(
+                    window, 14, c.byref(cloaked), c.sizeof(cloaked)
+                )  # DWMWA_CLOAKED; HRESULT errors propagate, never fail open.
+                if not cloaked.value:
+                    bounds = w.RECT()
+                    if not self._user.GetWindowRect(window, c.byref(bounds)):
+                        raise CaptureError("Could not inspect a window above the panel")
+                    rectangle = Rect.from_points(
+                        Point(bounds.left, bounds.top),
+                        Point(bounds.right, bounds.bottom),
+                    )
+                    if not rectangle.intersected(self._area).is_empty:
+                        raise CaptureError("Another window covers the scroll panel")
+            window = self._user.GetWindow(window, 2)  # GW_HWNDNEXT, top to bottom
+        raise CaptureError("Could not confirm the scroll panel's window order")
 
     def position(self) -> ScrollPosition:
         """Read percentages without asking the provider to change anything."""

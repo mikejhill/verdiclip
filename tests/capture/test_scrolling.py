@@ -34,9 +34,9 @@ class Target:
 
     area = Rect(10, 20, 80, 120)
 
-    def __init__(self) -> None:
-        self.document = document()
-        self.offset = 173
+    def __init__(self, *, total: int = 600, offset: int = 173) -> None:
+        self.document = document(total)
+        self.offset = offset
         self.horizontal = 27.0
         self.input_changed = False
         self.moves: list[float] = []
@@ -450,7 +450,9 @@ def test_native_diagnostics_keep_only_two_accepted_frames(
     target = Target()
     results = []
     original = ScrollTransaction._frame
-    monkeypatch.setattr("sys.argv", ["-c", "10", "20", "scratch", str(tmp_path)])
+    monkeypatch.setattr(
+        "sys.argv", ["-c", "10", "20", "scratch", str(tmp_path), "edge"]
+    )
     monkeypatch.setattr(
         "scripts.simple_scroll_native.helper_main",
         lambda: results.append(transaction(target).run()),
@@ -534,9 +536,7 @@ class ReportedTarget(Target):
     """A provider with self-consistent percentages but incompatible pixel extent."""
 
     def __init__(self, total: int, view: float) -> None:
-        super().__init__()
-        self.document = document(total)
-        self.offset = 0
+        super().__init__(total=total, offset=0)
         self.percent = 0.0
         self.view = view
 
@@ -574,9 +574,7 @@ class LineQuantizedTarget(Target):
     area = Rect(10, 20, 80, 601)
 
     def __init__(self) -> None:
-        super().__init__()
-        self.document = document(2167)
-        self.offset = 576
+        super().__init__(total=2167, offset=576)
 
     @override
     def position(self) -> ScrollPosition:

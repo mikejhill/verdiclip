@@ -25,10 +25,10 @@ settings, hotkeys, packaging and dependency baseline are untouched.
 ## Limits and user state
 
 Capture is vertical, finite, and visible on the current unlocked desktop.
-The selected app must remain foreground and unobscured. The current feasibility
-adapter samples nine viewport points for covering windows; small overlays between
-those points can escape detection. This is an explicit pre-integration gap, not a
-guarantee that every pixel is unobscured. Any keyboard or mouse
+The selected app must remain foreground and unobscured. The adapter checks
+whole-viewport intersections against higher visible top-level windows and keeps
+nine viewport ownership samples. Same-window overlays and changes between
+observations remain outside this practical check. Any keyboard or mouse
 activity, focus change, moved/resized window, changed viewport, missing provider,
 uncertain movement, or changed content size aborts. No synthetic scroll notch is
 sent at an inner panel's endpoint. Requests preserve the observed horizontal
@@ -84,8 +84,8 @@ the feature or release it.
 The initial review reproduction used a 120-pixel viewport and a 50% view size
 (240-pixel document), but misleading 32-pixel overlaps produced 296 pixels.
 The current candidate rejects this through independent UIA displacement checks.
-Its full native composition remains unqualified until the complete real-app
-row oracle passes; exact overlap alone is not a completeness guarantee.
+Full native composition was held until the complete real-app row oracle passed
+in run 42444418443 below; exact overlap alone is not a completeness guarantee.
 
 ### First real-application findings
 
@@ -216,3 +216,40 @@ with bottom chrome and a short final step. They reject an 8-pixel fixed header,
 a one-column mismatching sidebar, repeated offsets, incompatible advancement,
 and accumulated extent error. The native complete-document oracle, exact-head
 checks, remaining visibility gap and final coverage gate still block integration.
+
+### Complete installed-app outcome and remaining gates
+
+Run 42444418443 at 0f2dae89 uses the ordinary INFO path and passes all three
+installed applications. Edge produces 976×2880 in nine frames, with all 120
+numbered lines exactly 24 pixels high. The correct inner panel produces
+700×2895 in thirteen frames, with all interior lines complete, the original
+one-pixel focus border retained, and fifteen final bottom-chrome rows. The first
+visible line has 23 pixel rows; its hidden first row is not claimed recovered.
+The inner H/V is restored exactly and the outer document remains unchanged.
+Notepad produces 967×2167 in seven frames, visually retaining lines 000–119.
+All three before/after viewport images are pixel-identical.
+
+Visual review confirms intact body joins but repeated scrollbar thumbs along
+the right edge. These are retained visible chrome, not reconstructed document
+pixels. No columns are discarded to disguise them. This visual limitation and
+the original focus border need release assessment; successful numbered-content
+checks do not make the result indistinguishable from an ideal document render.
+
+The next small safety gate walks top-level windows above the retained root in
+z-order, bounded by 512 handles with cycle/missing-root rejection. It rejects any
+visible non-minimized, non-cloaked window whose rectangle overlaps the viewport,
+including untitled/tool/tiny windows. DWM or rectangle observation failures stop
+capture rather than being treated as hidden windows. Conservative transparent
+or shaped-window false positives are allowed. Same-window in-app overlays and
+changes between observations remain outside this OS-level check.
+
+The existing native harness adds three terminal-outcome cases: cooperative
+cancel after a confirmed top frame must restore exactly without publishing;
+one-pixel real mouse movement on the disposable hosted desktop must stop without
+another provider write or restoration; a rendered owned non-activating 20×20
+window between all nine old sample points must reject before any write. The
+same test helper records only a final movement count and last requested vertical
+percentage. No production protocol or injection is added. Existing deterministic
+subprocess tests cover timeout, malformed output, failed start, cancellation,
+owner EOF and cleanup. Required full CI, exact-head native interruption results,
+UI integration, ordinary capture/Repeat regressions and release gates remain.

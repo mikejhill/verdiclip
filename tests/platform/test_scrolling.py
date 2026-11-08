@@ -34,7 +34,7 @@ def target() -> UiaScrollTarget:
     """Retained target with a stable foreground process and exact viewport."""
     result = object.__new__(UiaScrollTarget)
     result._owners = ExitStack()
-    result._user, result._kernel = Mock(), Mock()
+    result._user, result._kernel, result._dwm = Mock(), Mock(), Mock()
     result._window, result._process = 1, 2
     result._window_rect = (0, 0, 500, 500)
     result._area = Rect(20, 20, 300, 300)
@@ -45,6 +45,8 @@ def target() -> UiaScrollTarget:
     result._element.bounds.return_value = result._area
     result._native_handle = None
     result._element.native_handle.return_value = None
+    result._user.GetTopWindow.return_value = 1
+    result._user.IsWindow.return_value = True
     result._user.GetForegroundWindow.return_value = 1
     result._user.IsWindowVisible.return_value = True
     result._user.IsIconic.return_value = False
@@ -489,7 +491,7 @@ def test_native_construction_binds_apis_and_closes_owned_resources(
     monkeypatch: pytest.MonkeyPatch, *, fail: bool
 ) -> None:
     """Mock only OS loading while exercising real binding and ownership setup."""
-    dlls = {name: Mock() for name in ("user32", "kernel32", "ole32")}
+    dlls = {name: Mock() for name in ("user32", "kernel32", "ole32", "dwmapi")}
     screens = Mock()
     monkeypatch.setattr("sys.platform", "win32")
     monkeypatch.setattr(c, "HRESULT", c.c_long, raising=False)
@@ -603,3 +605,252 @@ def test_native_row_oracle_counts_content_and_original_chrome(
     else:
         with pytest.raises(RuntimeError):
             _verify_edge_rows(result, tmp_path, report)
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        "clear",
+        "overlap",
+        "hidden",
+        "minimized",
+        "cloaked",
+        "dwm_error",
+        "rect_error",
+        "cycle",
+        "missing",
+        "limit",
+        "gone",
+    ],
+)
+def test_occlusion_checks_every_higher_window_without_filtering(
+    monkeypatch: pytest.MonkeyPatch, state: str
+) -> None:
+    """Even a one-pixel untitled overlay between the old samples is rejected."""
+    native = target()
+    mock(native._user.GetTopWindow).return_value = 9
+    mock(native._user.GetWindow).return_value = {"cycle": 9, "missing": None}.get(
+        state, 1
+    )
+    monkeypatch.setattr(
+        "verdiclip.platform.scrolling._MAX_WINDOWS", 1 if state == "limit" else 512
+    )
+    mock(native._user.IsWindow).return_value = state != "gone"
+    mock(native._user.IsWindowVisible).return_value = state != "hidden"
+    mock(native._user.IsIconic).return_value = state == "minimized"
+
+    def cloak(_window: int, _attribute: int, out: c._CArgObject, _size: int) -> None:
+        if state == "dwm_error":
+            raise OSError("DWM unavailable")
+        c.cast(out, c.POINTER(w.DWORD)).contents.value = int(state == "cloaked")
+
+    def bounds(_window: int, out: c._CArgObject) -> bool:
+        rect = c.cast(out, c.POINTER(w.RECT)).contents
+        rect.left, rect.top, rect.right, rect.bottom = (
+            (30, 30, 31, 31) if state == "overlap" else (600, 600, 610, 610)
+        )
+        return state != "rect_error"
+
+    mock(native._dwm.DwmGetWindowAttribute).side_effect = cloak
+    mock(native._user.GetWindowRect).side_effect = bounds
+    if state in ("clear", "hidden", "minimized", "cloaked"):
+        native._check_occlusion()
+    else:
+        with pytest.raises((CaptureError, OSError)):
+            native._check_occlusion()
+    mock(native._scroll.call).assert_not_called()
+    if state in ("hidden", "minimized"):
+        mock(native._dwm.DwmGetWindowAttribute).assert_not_called()
+    if state == "cloaked":
+        mock(native._user.GetWindowRect).assert_not_called()
+
+
+def test_interface_dispatch_and_release_use_retained_pointer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exercise ctypes vtable dispatch locally, without invoking native APIs."""
+    monkeypatch.setattr(c, "WINFUNCTYPE", c.CFUNCTYPE, raising=False)
+    monkeypatch.setattr(c, "HRESULT", c.c_long, raising=False)
+    seen: list[tuple[int, int | None]] = []
+    release_type = c.CFUNCTYPE(w.ULONG, c.c_void_p)
+    getter_type = c.CFUNCTYPE(c.c_long, c.c_void_p, c.POINTER(c.c_double))
+
+    @release_type
+    def release(pointer: int) -> int:
+        seen.append((2, pointer))
+        return 0
+
+    @getter_type
+    def getter(pointer: int, out: c._Pointer[c.c_double]) -> int:
+        seen.append((5, pointer))
+        out.contents.value = 37.0
+        return 0
+
+    table = (c.c_void_p * 6)()
+    table[2], table[5] = c.cast(release, c.c_void_p), c.cast(getter, c.c_void_p)
+    object_pointer = c.pointer(c.cast(table, c.POINTER(c.c_void_p)))
+    pointer = c.cast(object_pointer, c.c_void_p)
+    with ExitStack() as owners:
+        interface = _Interface(pointer, owners)
+        assert interface.number(5) == 37.0
+    assert seen == [(5, pointer.value), (2, pointer.value)]
+    with ExitStack() as owners, pytest.raises(CaptureError, match="no target"):
+        _Interface(c.c_void_p(), owners)
+
+
+def test_interface_output_wrappers_and_ownership(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Assert exact native output types, values and retained-reference cleanup."""
+    interface = object.__new__(_Interface)
+    release = Mock()
+    monkeypatch.setattr(_Interface, "_release", release)
+
+    def call(slot: int, _arguments: object, *values: object) -> None:
+        out = values[-1]
+        # The declared wrappers supply ctypes byref output arguments.
+        assert isinstance(out, type(c.byref(c.c_int())))
+        if slot in (7, 14):
+            c.cast(out, c.POINTER(c.c_void_p)).contents.value = 123
+        elif slot == 36:
+            c.cast(out, c.POINTER(w.HWND)).contents.value = 456
+        elif slot == 21:
+            c.cast(out, c.POINTER(c.c_int)).contents.value = 50030
+        elif slot == 43:
+            rect = c.cast(out, c.POINTER(w.RECT)).contents
+            rect.left, rect.top, rect.right, rect.bottom = 10, 20, 310, 420
+        elif slot == 5:
+            c.cast(out, c.POINTER(c.c_double)).contents.value = float("nan")
+
+    monkeypatch.setattr(interface, "call", call)
+    with ExitStack() as owners:
+        assert interface.pointer_result(7, owners)._pointer.value == 123
+        pattern = interface.scroll_pattern(owners)
+        assert pattern is not None
+        assert pattern._pointer.value == 123
+        interface._pointer = c.c_void_p(99)
+        assert interface.parent(interface, owners) is None
+        assert interface.native_handle() == 456
+        assert interface.control_type() == 50030
+        assert interface.bounds() == Rect(10, 20, 300, 400)
+        with pytest.raises(CaptureError, match="invalid scroll position"):
+            interface.number(5)
+    assert release.call_count == 2
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_input_and_window_bounds_observations(*, fail: bool) -> None:
+    """Unavailable native observations fail rather than inventing stable state."""
+    native = target()
+    del native._input
+    del native._window_bounds
+
+    def input_info(out: c._CArgObject) -> bool:
+        from verdiclip.platform.scrolling import _LastInput  # noqa: PLC0415
+
+        c.cast(out, c.POINTER(_LastInput)).contents.tick = 87
+        return not fail
+
+    def bounds(_window: int, out: c._CArgObject) -> bool:
+        rect = c.cast(out, c.POINTER(w.RECT)).contents
+        rect.left, rect.top, rect.right, rect.bottom = 10, 20, 500, 600
+        return not fail
+
+    mock(native._user.GetLastInputInfo).side_effect = input_info
+    mock(native._user.GetWindowRect).side_effect = bounds
+    if fail:
+        with pytest.raises(CaptureError, match="input"):
+            native._input()
+        with pytest.raises(CaptureError, match="no longer available"):
+            native._window_bounds()
+    else:
+        assert native._input() == 87
+        assert native._window_bounds() == (10, 20, 500, 600)
+
+
+@pytest.mark.parametrize(
+    "state", ["offscreen", "late_input", "client_rect", "client_to_screen"]
+)
+def test_native_read_failures_prevent_mutation(state: str) -> None:
+    """Late visibility/input changes and client lookup failures cannot write."""
+    native = target()
+    if state == "offscreen":
+
+        def offscreen(_slot: int, _arguments: object, out: c._CArgObject) -> None:
+            c.cast(out, c.POINTER(w.BOOL)).contents.value = 1
+
+        mock(native._element.call).side_effect = offscreen
+    elif state == "late_input":
+        mock(native._input).side_effect = [12, 13]
+    else:
+        del native._viewport
+        native._native_handle = 7
+        mock(native._element.native_handle).return_value = 7
+        mock(native._user.GetClientRect).return_value = state != "client_rect"
+        mock(native._user.ClientToScreen).return_value = False
+    with pytest.raises(CaptureError):
+        native.move(50.0)
+    mock(native._scroll.call).assert_not_called()
+
+
+@pytest.mark.parametrize("kind", ["edge-cancel", "edge-input", "edge-covered"])
+@pytest.mark.parametrize("fault", ["none", "extra_write", "image", "position"])
+def test_native_interruption_oracle_rejects_unsafe_outcomes(
+    tmp_path: Path, kind: str, fault: str
+) -> None:
+    """Require real restoration for cancel, and no later write after interference."""
+    from scripts.simple_scroll_native import _verify_interruption  # noqa: PLC0415
+
+    initial = ScrollPosition(-1.0, 37.0, 20.0)
+    image = QImage(10, 10, QImage.Format.Format_RGB32) if fault == "image" else None
+    if kind == "edge-cancel":
+        result = ScrollResult(image, "Scrolling capture cancelled", "restored", 1)
+        movement = {"writes": 2, "last_vertical": 37.0}
+        after = initial
+    elif kind == "edge-input":
+        result = ScrollResult(
+            image,
+            "Stopped because you used the mouse or keyboard",
+            "not restored: target changed",
+            1,
+        )
+        movement = {"writes": 1, "last_vertical": 0.0}
+        after = ScrollPosition(-1.0, 0.0, 20.0)
+    else:
+        result = ScrollResult(
+            image,
+            "Another window covers the scroll panel",
+            "unchanged: discovery failed",
+            0,
+        )
+        movement = {"writes": 0, "last_vertical": None}
+        after = initial
+    if fault == "extra_write":
+        movement["writes"] = 3
+    if fault == "position":
+        after = ScrollPosition(-1.0, 50.0, 20.0)
+    (tmp_path / "movement.json").write_text(json.dumps(movement))
+    if fault == "none":
+        assert _verify_interruption(kind, result, initial, after, tmp_path) == movement
+    else:
+        with pytest.raises(RuntimeError):
+            _verify_interruption(kind, result, initial, after, tmp_path)
+
+
+def test_native_input_is_hosted_only_and_has_no_button_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Never move a personal desktop pointer or leave pressed input behind."""
+    from scripts.simple_scroll_native import _real_mouse_input  # noqa: PLC0415
+
+    user = Mock()
+    loader = Mock(return_value=user)
+    monkeypatch.setattr(c, "WinDLL", loader, raising=False)
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    with pytest.raises(RuntimeError, match="hosted runner"):
+        _real_mouse_input()
+    loader.assert_not_called()
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("RUNNER_ENVIRONMENT", "github-hosted")
+    _real_mouse_input()
+    user.mouse_event.assert_called_once_with(1, 1, 0, 0, 0)
