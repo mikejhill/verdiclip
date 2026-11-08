@@ -64,6 +64,18 @@ branch and save exact native PNGs and numeric logs. The inverse experiment uses
 one native-range-derived UIA restoration request against an owned fixture; it
 does not exercise or qualify production restoration.
 
+The separate `explorer-step-geometry` experiment runs only in the verified 200%
+session. On a fresh owned Explorer fixture it records two ordinary half-view
+requests, one endpoint request, and one original-native-position restoration
+request. Raw retained-item geometry and exact PNG overlap measure the two local
+displacements independently of UIA percentage predictions. Endpoint items are
+observed separately, without claiming continuity across the direct jump. Any
+uncertain write, changed eligibility or expired budget stops further writes,
+including restoration. Success requires the original native position and every
+non-vertical-rail pixel, including Header, horizontal rail and corner, to be
+restored exactly. The experiment never produces a stitched image or qualifies
+production capture, and it does not change the product's extent tolerance.
+
 A rejection fails its diagnostic job and is evidence to investigate, not a
 qualified success. Representative sequences retain all frames within the existing
 80-frame/40-million-pixel limits. An offline oracle maps each original frame to

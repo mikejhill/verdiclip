@@ -390,7 +390,7 @@ def test_start_variants_leave_ordinary_app_cases_unchanged(
 
 
 @pytest.mark.parametrize(
-    "kind", [*diagnostics._EXPLORER_STARTS, "explorer-inverse-restore"]
+    "kind", [*diagnostics._EXPLORER_STARTS, *diagnostics._EXPERIMENTS]
 )
 def test_start_variants_keep_verified_explorer_launch_and_cleanup(
     monkeypatch: pytest.MonkeyPatch, kind: str
@@ -401,7 +401,7 @@ def test_start_variants_keep_verified_explorer_launch_and_cleanup(
     monkeypatch.setattr(diagnostics.sys, "argv", ["diagnostics", kind])
 
     def main(*, gui: bool, case: object) -> None:
-        assert gui == (kind != diagnostics._INVERSE_EXPERIMENT)
+        assert gui == (kind not in diagnostics._EXPERIMENTS)
         assert case == runner.run
         assert diagnostics.native._launch == runner.launch
         assert diagnostics.native._stop_owned_process == runner.cleanup
@@ -641,7 +641,7 @@ def test_setup_child_has_bounded_wait_kill_reap_and_owned_stdin(
 
 
 @pytest.mark.parametrize("fails", [False, True])
-@pytest.mark.parametrize("kind", ["explorer-middle-click", "explorer-inverse-restore"])
+@pytest.mark.parametrize("kind", ["explorer-middle-click", *diagnostics._EXPERIMENTS])
 def test_setup_child_rebuilds_ownership_without_constructing_gui(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, kind: str, *, fails: bool
 ) -> None:
@@ -685,6 +685,11 @@ def test_setup_child_rebuilds_ownership_without_constructing_gui(
     monkeypatch.setattr(
         diagnostics,
         "_inverse_explorer_restore",
+        lambda point, output, owner, setup: position(kind, point, output, owner, setup),
+    )
+    monkeypatch.setattr(
+        diagnostics,
+        "_explorer_step_geometry",
         lambda point, output, owner, setup: position(kind, point, output, owner, setup),
     )
     if fails:
@@ -2018,3 +2023,606 @@ def test_fractional_focus_point_records_native_pixel_used_by_target_proof(
     capture.report["focus_setup_point"] = asdict(capture.point)
     with pytest.raises(RuntimeError, match="focused 192-DPI starting state"):
         capture._verify_restored(focused)
+
+
+def _step_image(offset: int) -> QImage:
+    """Each body row is unique, with fixed Header/footer and a mutable short rail."""
+    image = QImage(654, 425, QImage.Format.Format_RGB32)
+    image.fill(0xFF334455)
+    painter = QPainter(image)
+    for y in range(339):
+        painter.fillRect(0, 52 + y, 620, 1, 0xFF000000 | ((offset + y) * 127))
+    painter.fillRect(620, 0, 34, 391, 0xFF112200 | (offset % 256))
+    painter.end()
+    return image
+
+
+def _step_samples() -> list[diagnostics._InverseSample]:
+    samples = []
+    for index, position in enumerate((0, 298, 596, 15400, 0)):
+        page = 597 if index < 3 else 600
+        state = {"min": 0, "max": 15999, "page": page, "pos": position}
+        samples.append(
+            diagnostics._InverseSample(
+                ScrollPosition(
+                    0.0,
+                    diagnostics._native_inverse_percent(state, position),
+                    100 * page / 15999,
+                ),
+                state,
+                _step_image((0, 175, 350, 9000, 0)[index]),
+            )
+        )
+    return samples
+
+
+def _step_items(index: int) -> dict[str, object]:
+    body = Rect(0, 52, 620, 339)
+    items = []
+    for y in (252, 308):
+        first, last = Rect(28, y, 1350, 48), Rect(28, y - 175, 1350, 48)
+        items.append(
+            {
+                "before": asdict(first),
+                "after": asdict(last),
+                "visible_before": asdict(first.intersected(body)),
+                "visible_after": asdict(last.intersected(body)),
+                "same_identity": True,
+                "same_parent": True,
+            }
+        )
+    return {"from_frame": index, "items": items}
+
+
+def _step_geometry(position: ScrollPosition) -> dict[str, object]:
+    return {
+        "captured_bounds": asdict(Rect(0, 0, 654, 425)),
+        "window_dpi": 192,
+        "position": asdict(position),
+        "uia": {
+            "truncated": False,
+            "nodes": [
+                {"control_type": 50008, "parent": None, "offscreen": False},
+                {
+                    "control_type": 50034,
+                    "parent": 0,
+                    "offscreen": False,
+                    "bounds": asdict(Rect(0, 0, 1405, 52)),
+                },
+                {
+                    "control_type": 50014,
+                    "parent": 0,
+                    "offscreen": False,
+                    "bounds": asdict(Rect(620, 0, 34, 391)),
+                    "native_handle": 73,
+                },
+                {
+                    "control_type": 50014,
+                    "parent": 0,
+                    "offscreen": False,
+                    "bounds": asdict(Rect(0, 391, 620, 34)),
+                    "native_handle": 74,
+                },
+                {
+                    "control_type": 50007,
+                    "parent": 0,
+                    "offscreen": False,
+                    "bounds": asdict(Rect(28, 308, 1350, 48)),
+                },
+            ],
+        },
+    }
+
+
+class _GeometryRun:
+    """Simulate the OS boundary while executing real bounded experiment control."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, output: Path) -> None:
+        self.output = output
+        self.samples = _step_samples()
+        self.target = Mock(registration_dpi=192)
+        self.bar = object.__new__(diagnostics._InverseScrollBar)
+        self.bar.target = self.target
+        self.bar.area, self.bar.header = Rect(0, 0, 654, 425), Rect(0, 0, 620, 52)
+        self.bar.footer, self.bar.rail = Rect(0, 391, 620, 34), Rect(620, 0, 34, 391)
+        self.bar.geometry = _step_geometry(self.samples[0].position)
+        self.owner = Mock(spec=diagnostics.ExplorerCase)
+        self.owner.pid = 456
+        self.owner.window = WindowInfo(9, "Owned", Rect(0, 0, 654, 425))
+        self.owner._verified_window.return_value = self.owner.window
+        self.reader = Mock(
+            side_effect=lambda: self.samples[self.target.move.call_count]
+        )
+        monkeypatch.setattr(self.bar, "read", self.reader)
+        monkeypatch.setattr(self.bar, "check", Mock(side_effect=self.target.check))
+        monkeypatch.setattr(diagnostics.time, "sleep", Mock())
+        monkeypatch.setattr(
+            diagnostics,
+            "probe_target",
+            lambda _target: _step_geometry(
+                self.samples[self.target.move.call_count].position
+            ),
+        )
+        context = Mock()
+        context.__enter__, context.__exit__ = Mock(return_value=self.target), Mock()
+        context.__exit__.return_value = False
+        monkeypatch.setattr(diagnostics, "UiaScrollTarget", Mock(return_value=context))
+        self.constructor = Mock(return_value=self.bar)
+        monkeypatch.setattr(diagnostics, "_InverseScrollBar", self.constructor)
+        self.witness, self.endpoint = Mock(), Mock()
+        self.witness.observe.side_effect = [
+            {"items": []},
+            _step_items(0),
+            _step_items(1),
+        ]
+        monkeypatch.setattr(
+            diagnostics,
+            "ListItemWitness",
+            Mock(side_effect=[self.witness, self.endpoint]),
+        )
+        monkeypatch.setattr(diagnostics, "_geometry_pair", Mock(return_value=[{}, {}]))
+        monkeypatch.setenv("GITHUB_ACTIONS", "true")
+        monkeypatch.setenv("RUNNER_ENVIRONMENT", "github-hosted")
+        self.setup: dict[str, object] = {}
+
+    def run(self) -> None:
+        diagnostics._explorer_step_geometry(
+            Point(50, 100), self.output, self.owner, self.setup
+        )
+
+    def evidence(self) -> dict[str, object]:
+        return cast("dict[str, object]", self.setup["step_geometry"])
+
+
+def test_step_geometry_four_writes_leave_prediction_mismatch_as_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Independent 175px raw/PNG movement survives a 169px UIA prediction."""
+    run = _GeometryRun(monkeypatch, tmp_path)
+    run.run()
+    assert run.setup["experiment_passed"] is True
+    assert run.setup["success"] is False
+    assert run.setup["product_capture_qualification"] is False
+    requests = [call.args[0] for call in run.target.move.call_args_list]
+    step = (
+        50
+        * run.samples[0].position.view_size
+        / (100 - run.samples[0].position.view_size)
+    )
+    assert requests == [step, run.samples[1].position.vertical + step, 100.0, 0.0]
+    assert run.target.move.call_count == 4
+    evidence = run.evidence()
+    for index in (1, 2):
+        proof = cast("dict[str, object]", evidence[f"step-{index}_overlap"])
+        assert proof["raw_displacements"] == [175, 175]
+        assert proof["png_overlap_exact"] is True
+        assert proof["png_overlap_rows"] == 164
+        assert cast("float", proof["raw_minus_uia_pixels"]) > 5
+    assert evidence["endpoint_item_continuity"] is False
+    assert evidence["endpoint_raw_list_items"]
+    run.endpoint._seed.assert_called_once()
+    run.endpoint.observe.assert_not_called()
+    run.witness.close.assert_called_once()
+    run.endpoint.close.assert_called_once()
+    run.constructor.assert_called_once_with(run.target, 456, two_rails=True)
+    for phase in ("original", "step-1", "step-2", "endpoint", "restore"):
+        observations = cast("list[object]", evidence[f"geometry-{phase}_observations"])
+        assert len(observations) == 2
+        image = QImage(str(tmp_path / f"inverse-geometry-{phase}.png"))
+        assert (image.width(), image.height()) == (654, 425)
+
+
+@pytest.mark.parametrize("boundary", [0, 1, 2, 3, 4])
+@pytest.mark.parametrize(
+    "failure", ["read", "write", "input", "focus", "identity", "unstable"]
+)
+def test_step_geometry_uncertainty_stops_all_later_writes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    boundary: int,
+    failure: str,
+) -> None:
+    """Any failed write/sample or guard ends the run, including any restoration."""
+    run = _GeometryRun(monkeypatch, tmp_path)
+    if failure == "write" and boundary == 0:
+        return  # There is no original-view write.
+    ticks = 0
+
+    def read() -> diagnostics._InverseSample:
+        nonlocal ticks
+        index = int(run.target.move.call_count)
+        if index == boundary and failure in ("read", "input", "focus"):
+            raise CaptureError(f"{failure} changed")
+        sample = run.samples[index]
+        if index == boundary and failure == "unstable":
+            ticks += 1
+            image = sample.image.copy()
+            image.setPixel(1, 1, ticks)
+            return replace(sample, image=image)
+        return sample
+
+    run.reader.side_effect = read
+
+    def write(_percent: float) -> None:
+        if failure == "write" and run.target.move.call_count == boundary:
+            raise CaptureError("write failed")
+
+    run.target.move.side_effect = write
+
+    def owned() -> WindowInfo:
+        if failure == "identity" and run.target.move.call_count == boundary:
+            raise CaptureError("identity changed")
+        return cast("WindowInfo", run.owner.window)
+
+    run.owner._verified_window.side_effect = owned
+    with pytest.raises((CaptureError, RuntimeError)):
+        run.run()
+    assert run.target.move.call_count == boundary
+    assert run.setup["experiment_passed"] is False
+    assert run.setup["success"] is False
+    assert run.setup["product_capture_qualification"] is False
+    if boundary:
+        writes = cast("list[dict[str, object]]", run.evidence()["write_requests"])
+        assert len(writes) == boundary
+        assert writes[-1]["outcome"] == "unresolved"
+
+
+def _change_step_geometry(
+    monkeypatch: pytest.MonkeyPatch, run: _GeometryRun, failure: str, writes: int
+) -> None:
+    def geometry(_target: object) -> dict[str, object]:
+        result = _step_geometry(run.samples[run.target.move.call_count].position)
+        if run.target.move.call_count == writes:
+            if failure == "dpi":
+                result["window_dpi"] = 96
+            else:
+                tree = cast("dict[str, object]", result["uia"])
+                nodes = cast("list[dict[str, object]]", tree["nodes"])
+                node = nodes[1 if failure == "header" else 3]
+                bounds = cast("dict[str, float]", node["bounds"])
+                bounds["height"] += 1
+        return result
+
+    monkeypatch.setattr(diagnostics, "probe_target", geometry)
+
+
+@pytest.mark.parametrize(
+    ("failure", "writes"),
+    [
+        ("dpi", 0),
+        ("registration_dpi", 0),
+        ("horizontal", 0),
+        ("start", 0),
+        ("header", 1),
+        ("footer", 1),
+        ("page", 1),
+        ("movement", 1),
+        ("witness", 1),
+        ("overlap", 1),
+        ("endpoint", 3),
+        ("restore_pos", 4),
+        ("restore_page", 4),
+        ("restore_header", 4),
+        ("restore_body", 4),
+        ("restore_footer", 4),
+        ("restore_corner", 4),
+    ],
+)
+def test_step_geometry_rejects_invalid_evidence_without_a_corrective_write(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    failure: str,
+    writes: int,
+) -> None:
+    """Full footer/corner, raw witnesses and native position are never waived."""
+    run = _GeometryRun(monkeypatch, tmp_path)
+    if failure in ("dpi", "header", "footer"):
+        _change_step_geometry(monkeypatch, run, failure, writes)
+    elif failure == "registration_dpi":
+        run.target.registration_dpi = 96
+    elif failure == "horizontal":
+        run.samples[0] = replace(
+            run.samples[0], position=replace(run.samples[0].position, horizontal=1.0)
+        )
+    elif failure == "start":
+        run.samples[0].native["pos"] = 1
+    elif failure in ("page", "movement", "endpoint"):
+        index = 3 if failure == "endpoint" else 1
+        position = run.samples[index].position
+        position = replace(
+            position,
+            **(
+                {"view_size": position.view_size + 0.01}
+                if failure == "page"
+                else {"vertical": 0.0}
+            ),
+        )
+        run.samples[index] = replace(run.samples[index], position=position)
+    elif failure == "witness":
+        run.witness.observe.side_effect = [
+            {"items": []},
+            {"items": [], "from_frame": 0},
+        ]
+    elif failure == "overlap":
+        run.samples[1].image.setPixel(10, 70, 0xFF123456)
+    elif failure in ("restore_pos", "restore_page"):
+        run.samples[4].native["pos" if failure == "restore_pos" else "page"] += 1
+    else:
+        x, y = {
+            "restore_header": (3, 4),
+            "restore_body": (10, 70),
+            "restore_footer": (10, 400),
+            "restore_corner": (640, 400),
+        }[failure]
+        run.samples[4].image.setPixel(x, y, 0xFF123456)
+    with pytest.raises((RuntimeError, CaptureError)):
+        run.run()
+    assert run.target.move.call_count == writes
+    assert run.setup["experiment_passed"] is False
+    assert run.setup["success"] is False
+    if failure == "overlap":
+        assert (
+            cast("dict[str, object]", run.evidence()["step-1_overlap"])[
+                "png_overlap_exact"
+            ]
+            is False
+        )
+
+
+@pytest.mark.parametrize(
+    "phase", ["original", "step-1", "step-2", "endpoint", "restore"]
+)
+def test_step_geometry_late_input_after_second_png_save_stops_further_writes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    phase: str,
+) -> None:
+    """A valid second snapshot cannot hide input arriving while it is saved."""
+    run = _GeometryRun(monkeypatch, tmp_path)
+    save = QImage.save
+    count = 0
+
+    def changed_save(image: QImage, path: str) -> bool:
+        nonlocal count
+        result = save(image, path)
+        if path.endswith(f"inverse-geometry-{phase}.png"):
+            count += 1
+            if count == 2:
+                run.target.check.side_effect = CaptureError("late input")
+        return result
+
+    monkeypatch.setattr(QImage, "save", changed_save)
+    with pytest.raises(CaptureError, match="late input"):
+        run.run()
+    assert count == 2
+    assert run.target.move.call_count == (
+        "original",
+        "step-1",
+        "step-2",
+        "endpoint",
+        "restore",
+    ).index(phase)
+    assert run.setup["experiment_passed"] is False
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "identity",
+        "parent",
+        "delta",
+        "size",
+        "visible",
+        "duplicate",
+        "fractional",
+        "offscreen",
+    ],
+)
+def test_step_geometry_forged_visible_or_raw_witnesses_cannot_validate_overlap(
+    failure: str,
+) -> None:
+    """Clipped hit bounds never replace raw displacements or pair identity."""
+    first, second = _step_samples()[:2]
+    items = _step_items(0)
+    pair = cast("list[dict[str, object]]", items["items"])
+    item = pair[0]
+    if failure in ("identity", "parent"):
+        item[f"same_{failure}"] = False
+    elif failure == "duplicate":
+        pair[1] = pair[0]
+    else:
+        key, field, value = {
+            "delta": ("after", "y", 78),
+            "size": ("after", "width", 1300),
+            "visible": ("visible_after", "width", 591),
+            "fractional": ("after", "y", 77.5),
+            "offscreen": ("after", "y", 0),
+        }[failure]
+        cast("dict[str, object]", item[key])[field] = value
+    with pytest.raises(RuntimeError):
+        diagnostics._geometry_step(
+            Rect(0, 52, 620, 339),
+            replace(first, image=first.image.copy(0, 52, 620, 339)),
+            replace(second, image=second.image.copy(0, 52, 620, 339)),
+            items,
+        )
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "none",
+        "missing_footer",
+        "duplicate_vertical",
+        "footer_handle",
+        "rail_handle",
+        "footer_bounds",
+        "header",
+        "footer",
+        "identity",
+    ],
+)
+def test_step_geometry_retains_short_vertical_rail_among_two_native_bars(
+    monkeypatch: pytest.MonkeyPatch,
+    change: str,
+) -> None:
+    """Native percent mapping binds to V, never the full-width footer or corner."""
+    sample = _step_samples()[0]
+    geometry = _step_geometry(sample.position)
+    area, header, footer, rail = diagnostics.list_layout(geometry)
+    vertical, horizontal = Mock(), Mock()
+    for element, bounds, handle in ((vertical, rail, 73), (horizontal, footer, 74)):
+        element.control_type.return_value = 50014
+        element.offscreen.return_value = False
+        element.bounds.return_value = bounds
+        element.native_handle.return_value = handle
+    target = Mock(
+        area=area, header=header, footer=footer, vertical_scrollbar=rail, _window=9
+    )
+    children = [horizontal, vertical, None]
+    if change == "missing_footer":
+        children = [vertical, None]
+    elif change == "duplicate_vertical":
+        children = [vertical, vertical, None]
+    elif change in ("footer_handle", "rail_handle"):
+        (
+            horizontal if change == "footer_handle" else vertical
+        ).native_handle.return_value = 75
+    elif change == "footer_bounds":
+        horizontal.bounds.return_value = Rect(1, 391, 620, 34)
+    target._walker.relative.side_effect = children
+    target._walker.parent.return_value = target._element
+    target._automation.pointer_result.return_value = vertical
+    target._automation.same_element.return_value = True
+    target._user.GetParent.return_value = 70
+    target._user.GetAncestor.return_value = 9
+    target.position.return_value = sample.position
+    monkeypatch.setattr(diagnostics, "probe_target", Mock(return_value=geometry))
+    monkeypatch.setattr(diagnostics, "_window_pid", Mock(return_value=456))
+    if change in (
+        "missing_footer",
+        "duplicate_vertical",
+        "footer_handle",
+        "rail_handle",
+        "footer_bounds",
+    ):
+        with pytest.raises(RuntimeError, match="two-rail identity"):
+            diagnostics._InverseScrollBar(target, 456, two_rails=True)
+    else:
+        bar = diagnostics._InverseScrollBar(target, 456, two_rails=True)
+        assert bar.rail == Rect(620, 0, 34, 391)
+        assert bar.footer == Rect(0, 391, 620, 34)
+        assert bar.element is vertical
+        assert bar.handle == 73
+        if change in ("header", "footer"):
+            setattr(
+                target,
+                change,
+                {
+                    "header": Rect(0, 0, 620, 53),
+                    "footer": Rect(0, 392, 620, 33),
+                }[change],
+            )
+        elif change == "identity":
+            target._automation.same_element.return_value = False
+        if change == "none":
+            bar.check()
+        else:
+            with pytest.raises(RuntimeError):
+                bar.check()
+    target.move.assert_not_called()
+
+
+@pytest.mark.parametrize("passed", [False, True])
+def test_step_geometry_report_never_claims_product_success(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    passed: bool,
+) -> None:
+    """Even a successful experiment is separate from complete production capture."""
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("RUNNER_ENVIRONMENT", "github-hosted")
+    owner = diagnostics.ExplorerCase()
+    owner.folder, owner.pid, owner.before = tmp_path / "fixture", 456, {8}
+    window = WindowInfo(9, "Owned", Rect(0, 0, 654, 425))
+    monkeypatch.setattr(owner, "_verified_window", Mock(return_value=window))
+    monkeypatch.setattr(owner, "_prepare", Mock(return_value=window))
+
+    def run(output: Path) -> None:
+        request = json.loads((output / "setup-request.json").read_text())
+        assert request["kind"] == diagnostics._GEOMETRY_EXPERIMENT
+        (output / "setup.json").write_text(
+            json.dumps(
+                {
+                    "experiment_passed": passed,
+                    "success": False,
+                    "step_geometry": {"write_requests": [{"outcome": "unresolved"}]},
+                }
+            ),
+            encoding="utf-8",
+        )
+        if not passed:
+            raise RuntimeError("partial experiment")
+
+    monkeypatch.setattr(diagnostics, "_run_explorer_setup", run)
+    report: dict[str, object] = {"success": True}
+    if passed:
+        owner._inverse_case(tmp_path, report, kind=diagnostics._GEOMETRY_EXPERIMENT)
+    else:
+        with pytest.raises(RuntimeError, match="partial experiment"):
+            owner._inverse_case(tmp_path, report, kind=diagnostics._GEOMETRY_EXPERIMENT)
+    assert report["success"] is False
+    assert report["product_capture_qualification"] is False
+    assert report["experiment_passed"] is passed
+    assert cast("dict[str, object]", report["step_geometry_experiment"])[
+        "step_geometry"
+    ]
+
+
+@pytest.mark.parametrize("requested", [math.nan, math.inf, -1.0, 101.0, 1.0])
+def test_step_geometry_write_bound_cannot_be_exceeded(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    requested: float,
+) -> None:
+    """There is no fifth-write or non-finite corrective path."""
+    run = _GeometryRun(monkeypatch, tmp_path)
+    experiment = diagnostics._StepGeometry(run.owner, run.bar, tmp_path, {})
+    if requested == 1.0:
+        experiment.writes.extend([{}] * 4)
+    with pytest.raises(RuntimeError, match="out of bounds"):
+        experiment.move("forbidden", requested, run.samples[0])
+    run.target.move.assert_not_called()
+
+
+@pytest.mark.parametrize("changed", ["none", "bounds", "visible", "pair"])
+def test_step_geometry_pair_records_raw_overflow_and_exact_hit_intersection(
+    changed: str,
+) -> None:
+    """Endpoint and original pairs expose raw geometry, without displacement claims."""
+    witness = Mock()
+    bounds = [Rect(28, y, 1350, 48) for y in (252, 308)]
+    witness._anchors = [Mock(bounds=rect) for rect in bounds]
+    witness._visible.side_effect = bounds
+    witness._visible_bounds.side_effect = [
+        rect.intersected(Rect(0, 52, 620, 339)) for rect in bounds
+    ]
+    if changed == "bounds":
+        witness._visible.side_effect = [Rect(28, 251, 1350, 48), bounds[1]]
+    elif changed == "visible":
+        witness._visible_bounds.side_effect = [None]
+    elif changed == "pair":
+        witness._anchors = witness._anchors[:1]
+    if changed == "none":
+        result = diagnostics._geometry_pair(witness)
+        assert len(result) == 2
+        assert result[0] == {
+            "raw": asdict(bounds[0]),
+            "visible": asdict(Rect(28, 252, 592, 48)),
+        }
+        assert witness._confirm.call_count == 2
+    else:
+        with pytest.raises(RuntimeError):
+            diagnostics._geometry_pair(witness)

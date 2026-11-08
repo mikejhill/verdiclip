@@ -163,7 +163,8 @@ jobs:
         timeout-minutes: 9
         run: |
           $cases = @('edge-prose-click', 'edge-prose-enter', 'edge-panel-click', 'edge-panel-enter',
-            'edge-panel-focused-click', 'edge-panel-focused-enter', 'explorer-click', 'explorer-enter',
+            'edge-panel-focused-click', 'edge-panel-focused-enter', 'explorer-step-geometry',
+            'explorer-click', 'explorer-enter',
             'explorer-middle-click', 'explorer-middle-enter',
             'explorer-bottom-click', 'explorer-bottom-enter')
           foreach ($case in $cases) {
@@ -171,8 +172,19 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'Display is not at verified 200% before capture' }
             uv run python -m scripts.scrolling_diagnostics "$case"
             if ($LASTEXITCODE -ne 0) { throw "Native 200% capture failed: $case" }
-            $target = Get-Content -Raw "artifacts/simple-scroll/$case/target.json" | ConvertFrom-Json
-            if ($target.window_dpi -ne 192) { throw "Target DPI is not 192: $case" }
+            if ($case -eq 'explorer-step-geometry') {
+              $setup = Get-Content -Raw "artifacts/simple-scroll/$case/setup.json" | ConvertFrom-Json
+              $result = Get-Content -Raw "artifacts/simple-scroll/$case/result.json" | ConvertFrom-Json
+              if ($setup.step_geometry.original_geometry.window_dpi -ne 192 -or
+                  $setup.step_geometry.restore_geometry.window_dpi -ne 192 -or
+                  $result.experiment_passed -ne $true -or $result.success -ne $false -or
+                  $result.product_capture_qualification -ne $false) {
+                throw 'The isolated geometry experiment lacks its exact non-product receipt'
+              }
+            } else {
+              $target = Get-Content -Raw "artifacts/simple-scroll/$case/target.json" | ConvertFrom-Json
+              if ($target.window_dpi -ne 192) { throw "Target DPI is not 192: $case" }
+            }
             uv run python -c "import json; from dataclasses import asdict; from scripts.hosted_display_scale import Display; value = Display().read(); print(json.dumps(asdict(value))); assert value.qualified"
             if ($LASTEXITCODE -ne 0) { throw 'Display changed during capture' }
           }
