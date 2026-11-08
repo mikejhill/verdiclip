@@ -161,11 +161,13 @@ def test_native_input_is_restricted_to_owned_hit_and_focus(
 ) -> None:
     """The hosted test refuses to click a foreign foreground or covered widget."""
     widget = overlay(qtbot)
+    owned = int(widget.winId())
+    foreign = owned + 1
     user = Mock()
     user.GetForegroundWindow.return_value = (
-        9 if changed == "foreground" else int(widget.winId())
+        foreign if changed == "foreground" else owned
     )
-    user.GetAncestor.return_value = 9 if changed == "hit" else int(widget.winId())
+    user.GetAncestor.return_value = foreign if changed == "hit" else owned
     user.SetCursorPos.return_value = True
     monkeypatch.setattr("ctypes.WinDLL", Mock(return_value=user), raising=False)
     monkeypatch.setenv("GITHUB_ACTIONS", "true")

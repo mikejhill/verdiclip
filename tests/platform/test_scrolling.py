@@ -28,6 +28,7 @@ from verdiclip.platform.scrolling import (
     UiaScrollTarget,
     _Interface,
 )
+from verdiclip.platform.windows import WindowInfo
 
 
 def mock(value: object) -> Mock:
@@ -1199,16 +1200,19 @@ def test_native_cleanup_does_not_force_an_owned_process_that_just_exited(
     process.wait.assert_not_called()
 
 
-def test_gui_selection_state_uses_only_native_read_only_calls(
+def test_gui_selection_checks_are_read_only_and_do_not_enter_com(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The GUI observes HWND/input only and never initializes UI Automation."""
     user = Mock()
     monkeypatch.setattr(scrolling.sys, "platform", "win32")
     monkeypatch.setattr(c, "WinDLL", Mock(return_value=user), raising=False)
+    monkeypatch.setattr(scrolling, "Win32WindowApi", Mock())
     native = scrolling.ScrollSelectionState()
     assert user.WindowFromPoint.argtypes == (w.POINT,)
     assert user.GetAncestor.restype is w.HWND
+    assert user.SetForegroundWindow.argtypes == (w.HWND,)
+    assert user.SetForegroundWindow.restype is w.BOOL
 
     def input_info(pointer: c.c_void_p) -> bool:
         c.cast(pointer, c.POINTER(scrolling._LastInput)).contents.tick = 123
@@ -1218,6 +1222,7 @@ def test_gui_selection_state_uses_only_native_read_only_calls(
     user.GetForegroundWindow.return_value = 456
     user.GetAncestor.return_value = 456
     native.check(Point(2.2, 3.8), 456, 123)
+    user.SetForegroundWindow.assert_not_called()
     point = user.WindowFromPoint.call_args.args[0]
     assert (point.x, point.y) == (2, 4)
     locator = Mock()
@@ -1253,3 +1258,117 @@ def test_gui_selection_rejects_non_windows(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(scrolling.sys, "platform", "linux")
     with pytest.raises(CaptureError, match="requires Windows"):
         scrolling.ScrollSelectionState()
+
+
+def selection_state() -> tuple[ScrollSelectionState, WindowInfo]:
+    """Native GUI adapter with stable frozen geometry and selected point root."""
+    native = object.__new__(ScrollSelectionState)
+    native._user = Mock()
+    native._frames = Mock()
+    native.tick = Mock(return_value=12)
+    native._user.GetForegroundWindow.return_value = 7
+    native._user.GetAncestor.return_value = 9
+    window = WindowInfo(9, "Selected document", Rect(0, 0, 500, 400))
+    native._frames.frame_bounds.return_value = window.bounds
+    return native, window
+
+
+@pytest.mark.parametrize("foreground", [None, 0, 7, 9])
+def test_selection_observation_allows_pending_focus_but_is_read_only(
+    foreground: int | None,
+) -> None:
+    """NULL, previous focus and completion can be observed without a write."""
+    native, window = selection_state()
+    mock(native._user).GetForegroundWindow.return_value = foreground
+    assert native.observe(Point(20, 30), window, 12) == (foreground or 0)
+    mock(native._user).SetForegroundWindow.assert_not_called()
+    mock(native._frames.frame_bounds).assert_called_once_with(9)
+
+
+@pytest.mark.parametrize("change", ["input", "hit", "geometry"])
+def test_selection_observation_preserves_original_input_hit_and_geometry(
+    change: str,
+) -> None:
+    """No foreground settling can make changed targets or user input eligible."""
+    native, window = selection_state()
+    if change == "input":
+        native.tick = Mock(return_value=13)
+    elif change == "hit":
+        mock(native._user).GetAncestor.return_value = 10
+    else:
+        mock(native._frames.frame_bounds).return_value = Rect(1, 0, 500, 400)
+    with pytest.raises(CaptureError, match=r"changed|moved or resized"):
+        native.observe(Point(20, 30), window, 12)
+    mock(native._user).SetForegroundWindow.assert_not_called()
+
+
+@pytest.mark.parametrize("foreground", [0, 7])
+def test_selection_activation_uses_exact_chosen_window_once(foreground: int) -> None:
+    """The ordinary request uses no synthetic input or thread-input attachment."""
+    native, window = selection_state()
+    mock(native._user).GetForegroundWindow.return_value = foreground
+    native.activate(Point(20, 30), window, 12, foreground)
+    mock(native._user).SetForegroundWindow.assert_called_once_with(9)
+    assert {call[0] for call in mock(native._user).mock_calls} == {
+        "WindowFromPoint",
+        "GetForegroundWindow",
+        "GetAncestor",
+        "SetForegroundWindow",
+    }
+
+
+def test_selection_activation_skips_target_already_in_foreground() -> None:
+    """Asynchronous normal focus restoration wins without a redundant request."""
+    native, window = selection_state()
+    mock(native._user).GetForegroundWindow.return_value = 9
+    native.activate(Point(20, 30), window, 12, 7)
+    mock(native._user).SetForegroundWindow.assert_not_called()
+
+
+@pytest.mark.parametrize("change", ["input", "hit", "geometry", "foreground"])
+def test_selection_activation_rechecks_every_guard_before_request(change: str) -> None:
+    """An interleaved change after the prior observation prevents activation."""
+    native, window = selection_state()
+    assert native.observe(Point(20, 30), window, 12) == 7
+    if change == "input":
+        native.tick = Mock(return_value=13)
+    elif change == "hit":
+        mock(native._user).GetAncestor.return_value = 10
+    elif change == "geometry":
+        mock(native._frames.frame_bounds).return_value = Rect(0, 0, 501, 400)
+    else:
+        mock(native._user).GetForegroundWindow.return_value = 8
+    with pytest.raises(CaptureError, match=r"changed|moved or resized"):
+        native.activate(Point(20, 30), window, 12, 7)
+    mock(native._user).SetForegroundWindow.assert_not_called()
+
+
+def test_selection_activation_refusal_is_not_bypassed() -> None:
+    """A rejected ordinary activation has no fallback or second native write."""
+    native, window = selection_state()
+    mock(native._user).SetForegroundWindow.return_value = False
+    with pytest.raises(CaptureError, match="did not allow activation"):
+        native.activate(Point(20, 30), window, 12, 7)
+    mock(native._user).SetForegroundWindow.assert_called_once_with(9)
+
+
+@pytest.mark.parametrize("change", ["input", "foreground", "hit"])
+def test_activation_checks_state_after_the_potentially_slow_frame_read(
+    change: str,
+) -> None:
+    """Changes during DWM observation must prevent the subsequent focus write."""
+    native, window = selection_state()
+
+    def changed_during_bounds(_handle: int) -> Rect:
+        if change == "input":
+            native.tick = Mock(return_value=13)
+        elif change == "foreground":
+            mock(native._user).GetForegroundWindow.return_value = 8
+        else:
+            mock(native._user).GetAncestor.return_value = 10
+        return window.bounds
+
+    mock(native._frames.frame_bounds).side_effect = changed_during_bounds
+    with pytest.raises(CaptureError, match="changed"):
+        native.activate(Point(20, 30), window, 12, 7)
+    mock(native._user).SetForegroundWindow.assert_not_called()

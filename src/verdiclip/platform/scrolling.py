@@ -25,7 +25,7 @@ from verdiclip.capture.grabber import MssScreenSource
 from verdiclip.capture.scrolling import END_PERCENT, ScrollPosition
 from verdiclip.exceptions import CaptureError
 from verdiclip.geometry import Point, Rect
-from verdiclip.platform.windows import WindowInfo, WindowLocator
+from verdiclip.platform.windows import Win32WindowApi, WindowInfo, WindowLocator
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +148,7 @@ class _Interface:
 
 
 class ScrollSelectionState:
-    """Read only native selection state, without entering COM on the GUI thread."""
+    """Observe selection and request normal activation, without entering COM."""
 
     def __init__(self) -> None:
         if sys.platform != "win32":
@@ -157,12 +157,14 @@ class ScrollSelectionState:
         signatures = {
             "GetLastInputInfo": ((c.POINTER(_LastInput),), w.BOOL),
             "GetForegroundWindow": ((), w.HWND),
+            "SetForegroundWindow": ((w.HWND,), w.BOOL),
             "WindowFromPoint": ((w.POINT,), w.HWND),
             "GetAncestor": ((w.HWND, w.UINT), w.HWND),
         }
         for name, (arguments, result) in signatures.items():
             function = getattr(self._user, name)
             function.argtypes, function.restype = arguments, result
+        self._frames = Win32WindowApi()
 
     @staticmethod
     def windows() -> list[WindowInfo]:
@@ -176,13 +178,49 @@ class ScrollSelectionState:
             raise CaptureError("Could not observe user input")
         return int(info.tick)
 
+    def foreground(self) -> int:
+        """Return zero while Windows temporarily has no foreground window."""
+        return int(self._user.GetForegroundWindow() or 0)
+
+    def observe(self, point: Point, window: WindowInfo, tick: int) -> int:
+        """Preserve the frozen target geometry while its activation settles."""
+        if self._frames.frame_bounds(window.handle) != window.bounds:
+            raise CaptureError("The selected window moved or resized")
+        # DWM can take time. Read input and foreground after it, immediately
+        # before the caller decides whether the activation is still eligible.
+        return self._selected(point, window.handle, tick)
+
+    def activate(
+        self, point: Point, window: WindowInfo, tick: int, foreground: int
+    ) -> None:
+        """Make one ordinary activation request for the user's exact choice."""
+        observed = self.observe(point, window, tick)
+        if observed == window.handle:
+            return
+        if observed != foreground:
+            raise CaptureError("The foreground window changed before scrolling capture")
+        if not self._user.SetForegroundWindow(window.handle):
+            raise CaptureError(
+                "Windows did not allow activation of the selected window. "
+                "Activate it and try scrolling capture again"
+            )
+
     def check(self, point: Point, window: int, tick: int) -> None:
         """Require the same selected root and input after our selectors close."""
+        self._selected(point, window, tick, require_foreground=True)
+
+    def _selected(
+        self, point: Point, window: int, tick: int, *, require_foreground: bool = False
+    ) -> int:
         hit = self._user.WindowFromPoint(w.POINT(round(point.x), round(point.y)))
         observed_tick = self.tick()
-        foreground = self._user.GetForegroundWindow()
+        foreground = self.foreground()
         root = self._user.GetAncestor(hit, 2)
-        if observed_tick != tick or foreground != window or root != window:
+        if (
+            observed_tick != tick
+            or (require_foreground and foreground != window)
+            or root != window
+        ):
             logger.warning(
                 "Scrolling selection guard: input_changed=%s foreground_changed=%s "
                 "hit_changed=%s expected_tick=%s observed_tick=%s "
@@ -197,6 +235,7 @@ class ScrollSelectionState:
                 root,
             )
             raise CaptureError("The selected window or mouse/keyboard input changed")
+        return foreground
 
 
 class UiaScrollTarget:
