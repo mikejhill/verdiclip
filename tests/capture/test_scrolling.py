@@ -329,6 +329,61 @@ def test_provider_jump_is_rejected_before_stitching() -> None:
     assert "unexpectedly" in result.message
 
 
+@pytest.mark.parametrize("restoring", [False, True])
+@pytest.mark.parametrize("changed", ["horizontal", "view_size"])
+def test_settle_logs_exact_state_change_without_more_reads(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    changed: str,
+    *,
+    restoring: bool,
+) -> None:
+    """An endpoint rejection identifies H or extent without accepting the write."""
+    target = Target()
+    before = ScrollPosition(-1.0, 94.24470555125589, 11.169448090505657)
+    observed = replace(before, vertical=100.0, **{changed: 0.0})
+    reads: list[ScrollPosition] = []
+    pauses: list[float] = []
+
+    def position() -> ScrollPosition:
+        reads.append(observed)
+        return observed
+
+    monkeypatch.setattr(target, "position", position)
+    operation = ScrollTransaction(target, lambda: False, pause=pauses.append)
+    with pytest.raises(CaptureError, match="moved unexpectedly"):
+        operation._settle(before, 100.0, restoring=restoring)
+    assert reads == [observed]
+    assert pauses == [0.08]
+    assert target.moves == []
+    assert "stage=state-change" in caplog.text
+    assert f"restoring={restoring} requested_percent=100.0" in caplog.text
+    assert f"before={before} observed={observed}" in caplog.text
+
+
+@pytest.mark.parametrize("overshoot", [False, True])
+def test_settle_logs_overshoot_or_unsettled_with_unchanged_poll_budget(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    *,
+    overshoot: bool,
+) -> None:
+    """Diagnostic warnings distinguish rejected movement from a pending write."""
+    target = Target()
+    before = ScrollPosition(-1.0, 20.0, 20.0)
+    observed = replace(before, vertical=40.0) if overshoot else before
+    monkeypatch.setattr(target, "position", lambda: observed)
+    pauses: list[float] = []
+    operation = ScrollTransaction(target, lambda: False, pause=pauses.append)
+    with pytest.raises(CaptureError):
+        operation._settle(before, 30.0)
+    assert pauses == [0.08] * (1 if overshoot else 8)
+    assert target.moves == []
+    assert f"stage={'overshoot' if overshoot else 'unsettled'}" in caplog.text
+    assert "restoring=False requested_percent=30.0" in caplog.text
+    assert f"before={before} observed={observed}" in caplog.text
+
+
 def test_spontaneous_movement_during_capture_prevents_restore() -> None:
     """Don't reset a target whose position changed independently of our writes."""
     target = Target()

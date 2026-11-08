@@ -432,6 +432,14 @@ class ScrollTransaction:
                 current.horizontal != before.horizontal
                 or current.view_size != before.view_size
             ):
+                logger.warning(
+                    "Scrolling settle rejected: stage=state-change restoring=%s "
+                    "requested_percent=%r before=%s observed=%s",
+                    restoring,
+                    percent,
+                    before,
+                    current,
+                )
                 raise CaptureError("The scroll panel moved unexpectedly")
             if (
                 not restoring
@@ -439,6 +447,14 @@ class ScrollTransaction:
                 and abs(current.vertical - before.vertical)
                 > abs(percent - before.vertical) * 1.5
             ):
+                logger.warning(
+                    "Scrolling settle rejected: stage=overshoot restoring=%s "
+                    "requested_percent=%r before=%s observed=%s",
+                    restoring,
+                    percent,
+                    before,
+                    current,
+                )
                 raise CaptureError("The scroll panel moved unexpectedly")
             reached = (
                 current.vertical == percent
@@ -449,6 +465,14 @@ class ScrollTransaction:
             if reached and current == previous:
                 return current
             previous = current
+        logger.warning(
+            "Scrolling settle rejected: stage=unsettled restoring=%s "
+            "requested_percent=%r before=%s observed=%s",
+            restoring,
+            percent,
+            before,
+            previous,
+        )
         raise CaptureError("The scroll panel did not settle; its position is uncertain")
 
     def _move(self, percent: float) -> ScrollPosition:

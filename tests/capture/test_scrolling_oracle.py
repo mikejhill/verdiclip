@@ -88,6 +88,69 @@ def test_explorer_frame_rejects_missing_or_different_target_evidence() -> None:
         )
 
 
+@pytest.mark.parametrize("failure", [None, "before", "read", "after"])
+def test_failure_position_is_guarded_read_only_evidence(failure: str | None) -> None:
+    """A diagnostic sample cannot hide failure or request another provider write."""
+    target = Mock()
+    observed = ScrollPosition(-1.0, 100.0, 11.2)
+    target.position.return_value = observed
+    if failure == "read":
+        target.position.side_effect = OSError("Unavailable")
+    elif failure in ("before", "after"):
+        target.check.side_effect = (
+            [CaptureError("Changed")]
+            if failure == "before"
+            else [None, CaptureError("Changed")]
+        )
+    selected: dict[str, object] = {}
+    native._record_failure_position(target, selected)
+    target.move.assert_not_called()
+    assert target.position.call_count == int(failure != "before")
+    assert target.check.call_count == (1 if failure in ("before", "read") else 2)
+    if failure is not None:
+        assert selected == {
+            "final_observation_error": "Unavailable" if failure == "read" else "Changed"
+        }
+    else:
+        assert selected == {
+            "final_observed_position": {
+                "horizontal": -1.0,
+                "vertical": 100.0,
+                "view_size": 11.2,
+            }
+        }
+
+
+@pytest.mark.parametrize("mode", ["explorer-enter", "edge-panel-enter", "edge"])
+def test_trace_failure_keeps_original_result_and_adds_only_final_observation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: str
+) -> None:
+    """Only representative failures gain evidence in the existing target record."""
+    target = Mock()
+    target.position.return_value = ScrollPosition(-1.0, 100.0, 11.2)
+    result = ScrollResult(None, "Original failure", "not restored: unresolved", 16)
+    monkeypatch.setattr(native.ScrollTransaction, "run", lambda _: result)
+    monkeypatch.setattr("sys.argv", ["-c", str(tmp_path), mode])
+    results: list[ScrollResult] = []
+    monkeypatch.setattr(
+        native,
+        "helper_main",
+        lambda: results.append(native.ScrollTransaction.run(Mock(_target=target))),
+    )
+    native._trace_helper()
+    assert results == [result]
+    assert results[0] is result
+    target.move.assert_not_called()
+    selected = json.loads((tmp_path / "target.json").read_text())
+    if mode == "edge":
+        assert selected == {}
+        target.position.assert_not_called()
+    else:
+        assert selected["final_observed_position"]["vertical"] == 100.0
+        target.position.assert_called_once_with()
+    assert not (tmp_path / "restoration.json").exists()
+
+
 def _sequence(output: Path) -> QImage:
     source = QImage(24, 120, QImage.Format.Format_RGB32)
     for y in range(source.height()):

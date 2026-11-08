@@ -36,6 +36,7 @@ from verdiclip.capture.scrolling import (
     MAX_PIXELS,
     ScrollPosition,
     ScrollResult,
+    ScrollTarget,
     ScrollTransaction,
 )
 from verdiclip.exceptions import CaptureError
@@ -241,6 +242,37 @@ def _frame_observation(
     return observation
 
 
+def _record_failure_position(target: ScrollTarget, selected: dict[str, object]) -> None:
+    """Keep a guarded final sample, never a settling or restoration assertion."""
+    try:
+        target.check()
+        observed = asdict(target.position())
+        target.check()
+    except (CaptureError, OSError) as error:
+        selected["final_observation_error"] = str(error)
+    else:
+        selected["final_observed_position"] = observed
+
+
+def _record_terminal_position(
+    target: ScrollTarget,
+    result: ScrollResult,
+    selected: dict[str, object],
+    output: Path,
+) -> None:
+    """Observe terminal metadata without changing the transaction's outcome."""
+    if result.image is None:
+        _record_failure_position(target, selected)
+    if result.restoration == "restored":
+        target.check()
+        final = asdict(target.position())
+        target.check()
+        (output / "restoration.json").write_text(
+            json.dumps({"initial": selected["initial_position"], "final": final}),
+            encoding="utf-8",
+        )
+
+
 def _trace_helper() -> None:
     """Save bounded native evidence in this owned test child, never production."""
     logging.basicConfig(level=logging.INFO)
@@ -279,14 +311,8 @@ def _trace_helper() -> None:
 
     def record_result(operation: ScrollTransaction) -> ScrollResult:
         result = run(operation)
-        if complete_sequence and result.restoration == "restored":
-            operation._target.check()
-            final = asdict(operation._target.position())
-            operation._target.check()
-            (output / "restoration.json").write_text(
-                json.dumps({"initial": selected["initial_position"], "final": final}),
-                encoding="utf-8",
-            )
+        if complete_sequence:
+            _record_terminal_position(operation._target, result, selected, output)
         return result
 
     def record_frame(operation: ScrollTransaction, position: ScrollPosition) -> QImage:
