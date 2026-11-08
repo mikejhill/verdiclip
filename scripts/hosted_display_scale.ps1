@@ -89,29 +89,41 @@ function Get-NativeWindows([IntPtr]$parent, [string]$phase) {
     }
 }
 
-function Assert-Owned($element) {
-    $frame = [IntPtr]$identity.frame
-    $content = [IntPtr]$identity.content
-    if ((Get-Process -Id $identity.frame_pid).StartTime.Ticks -ne $identity.frame_start_ticks -or
-        (Get-Process -Id $identity.settings_pid).StartTime.Ticks -ne $identity.settings_start_ticks -or
-        -not [HostedScaleWindows]::IsWindow($frame) -or
-        -not [HostedScaleWindows]::IsWindow($content) -or
-        [HostedScaleWindows]::Owner($frame) -ne $identity.frame_pid -or
-        [HostedScaleWindows]::Owner($content) -ne $identity.settings_pid -or
-        [HostedScaleWindows]::GetAncestor($content, 2) -ne $frame -or
-        ($root.GetRuntimeId() -join ',') -ne $identity.frame_runtime_id -or
-        ($settingsRoot.GetRuntimeId() -join ',') -ne $identity.content_runtime_id -or
-        $settingsRoot.Current.ProcessId -ne $identity.settings_pid) {
+function Assert-Owned($element, $expected = $identity, $frameElement = $root, $contentElement = $settingsRoot) {
+    $frame = [IntPtr]$expected.frame
+    $content = [IntPtr]$expected.content
+    $observed = @{}
+    $outcome.last_ownership_observation = $observed
+    # Keep partial numeric evidence if a provisional HWND disappears mid-read.
+    $observed.frame_exists = [HostedScaleWindows]::IsWindow($frame)
+    $observed.content_exists = [HostedScaleWindows]::IsWindow($content)
+    $observed.frame_start_ticks = (Get-Process -Id $expected.frame_pid).StartTime.Ticks
+    $observed.settings_start_ticks = (Get-Process -Id $expected.settings_pid).StartTime.Ticks
+    $observed.frame_pid = [HostedScaleWindows]::Owner($frame)
+    $observed.content_pid = [HostedScaleWindows]::Owner($content)
+    $observed.content_native_root = [HostedScaleWindows]::GetAncestor($content, 2).ToInt64()
+    $observed.frame_runtime_id = ($frameElement.GetRuntimeId() -join ',')
+    $observed.content_runtime_id = ($contentElement.GetRuntimeId() -join ',')
+    $observed.content_uia_pid = $contentElement.Current.ProcessId
+    if (-not $observed.frame_exists -or -not $observed.content_exists -or
+        $observed.frame_start_ticks -ne $expected.frame_start_ticks -or
+        $observed.settings_start_ticks -ne $expected.settings_start_ticks -or
+        $observed.frame_pid -ne $expected.frame_pid -or
+        $observed.content_pid -ne $expected.settings_pid -or
+        $observed.content_native_root -ne $expected.frame -or
+        $observed.frame_runtime_id -ne $expected.frame_runtime_id -or
+        $observed.content_runtime_id -ne $expected.content_runtime_id -or
+        $observed.content_uia_pid -ne $expected.settings_pid) {
         throw 'Retained Settings ownership changed'
     }
     if ($null -ne $element) {
-        if ($element.Current.ProcessId -ne $identity.settings_pid) {
+        if ($element.Current.ProcessId -ne $expected.settings_pid) {
             throw 'Mutation target is not owned by Settings'
         }
         $ancestor = $element
         for ($depth = 0; $depth -le 16 -and $null -ne $ancestor; $depth++) {
             Assert-Budget
-            if ([Windows.Automation.Automation]::Compare($ancestor, $settingsRoot)) { return }
+            if ([Windows.Automation.Automation]::Compare($ancestor, $contentElement)) { return }
             $ancestor = $walker.GetParent($ancestor)
         }
         throw 'Mutation target left the retained Settings subtree'
@@ -168,8 +180,12 @@ try {
     $launchedAfter = [DateTime]::Now
     $outcome.stage = 'launch'
     Start-Process 'ms-settings:display'
+    $pendingKey = $null
+    $outcome.provisional_rejections = 0
+    $outcome.stable_observations = 0
     while ($null -eq $root) {
         Assert-Budget
+        $observationKey = $null
         $found = @(Get-Process -Name SystemSettings -ErrorAction SilentlyContinue)
         if ($found.Count -gt 1) { throw 'Multiple Settings processes appeared' }
         if ($found.Count -eq 1) {
@@ -225,42 +241,71 @@ try {
             if ($roots.Count -gt 1) { throw 'Multiple Settings roots appeared' }
             if ($roots.Count -eq 1) {
                 $candidate = $roots[0]
-                $root = [Windows.Automation.AutomationElement]::FromHandle($candidate.frame)
-                $settingsRoot = [Windows.Automation.AutomationElement]::FromHandle($candidate.content)
-                $identity = @{
-                    frame = $candidate.frame.ToInt64(); content = $candidate.content.ToInt64()
-                    frame_pid = $candidate.owner.Id; settings_pid = $process.Id
-                    frame_start_ticks = $candidate.owner.StartTime.Ticks; settings_start_ticks = $started.Ticks
-                    frame_runtime_id = ($root.GetRuntimeId() -join ',')
-                    content_runtime_id = ($settingsRoot.GetRuntimeId() -join ',')
+                $outcome.last_ownership_observation = $null
+                try {
+                    $candidateRoot = [Windows.Automation.AutomationElement]::FromHandle($candidate.frame)
+                    $candidateContent = [Windows.Automation.AutomationElement]::FromHandle($candidate.content)
+                    $candidateIdentity = [ordered]@{
+                        frame = $candidate.frame.ToInt64(); content = $candidate.content.ToInt64()
+                        frame_pid = $candidate.owner.Id; settings_pid = $process.Id
+                        frame_start_ticks = $candidate.owner.StartTime.Ticks; settings_start_ticks = $started.Ticks
+                        frame_runtime_id = ($candidateRoot.GetRuntimeId() -join ',')
+                        content_runtime_id = ($candidateContent.GetRuntimeId() -join ',')
+                    }
+                    $outcome.provisional_identity = $candidateIdentity
+                    Assert-Owned $null $candidateIdentity $candidateRoot $candidateContent
+                    # A stable splash is not ready: require the existing Display
+                    # Scale control, read-only, before retaining any cleanup root.
+                    $candidateNodes = @(Get-BoundedTree $candidateContent)
+                    $candidateCombos = @($candidateNodes | Where-Object {
+                        $_.Current.ControlType -eq [Windows.Automation.ControlType]::ComboBox -and
+                        $_.Current.Name -in @('Scale', 'Change the size of text, apps, and other items')
+                    })
+                    $outcome.scale_candidates = $candidateCombos.Count
+                    $outcome.observed_combo_boxes = @($candidateNodes | Where-Object {
+                        $_.Current.ControlType -eq [Windows.Automation.ControlType]::ComboBox
+                    } | Select-Object -First 16 | ForEach-Object {
+                        $name = $_.Current.Name; $id = $_.Current.AutomationId
+                        @{ name = $name.Substring(0, [Math]::Min(128, $name.Length))
+                           automation_id = $id.Substring(0, [Math]::Min(128, $id.Length))
+                           enabled = $_.Current.IsEnabled }
+                    })
+                    if ($candidateCombos.Count -ne 1 -or -not $candidateCombos[0].Current.IsEnabled) {
+                        throw 'Provisional Display page lacks one enabled labeled Scale combo'
+                    }
+                    Assert-Owned $candidateCombos[0] $candidateIdentity $candidateRoot $candidateContent
+                    $scaleRuntime = $candidateCombos[0].GetRuntimeId() -join ','
+                    $outcome.provisional_scale_runtime_id = $scaleRuntime
+                    $observationKey = ($candidateIdentity | ConvertTo-Json -Compress) + '|' + $scaleRuntime
+                    if ($observationKey -eq $pendingKey) {
+                        Assert-Budget
+                        $root = $candidateRoot
+                        $settingsRoot = $candidateContent
+                        $identity = $candidateIdentity
+                        $combo = $candidateCombos[0]
+                        $outcome.ownership = $identity
+                        $outcome.stable_observations = 2
+                    } else { $outcome.stable_observations = 1 }
+                } catch {
+                    # Observation only: no root has been adopted or control invoked.
+                    # The unchanged outer deadline and process checks still apply.
+                    $observationKey = $null
+                    $outcome.stable_observations = 0
+                    $outcome.provisional_rejections++
+                    $outcome.last_provisional_failure = $_.Exception.GetType().Name
+                    $outcome.last_provisional_reason = $_.Exception.Message.Substring(0, [Math]::Min(512, $_.Exception.Message.Length))
+                    $outcome.last_rejected_observation = $outcome.last_ownership_observation
                 }
-                $outcome.ownership = $identity
-                Assert-Owned $null
             }
         }
-        if ($null -eq $root) { Start-Sleep -Milliseconds 100 }
+        if ($null -eq $root) {
+            $pendingKey = $observationKey
+            if ($null -eq $pendingKey) { $outcome.stable_observations = 0 }
+            Start-Sleep -Milliseconds 100
+        }
     }
     $outcome.stage = 'find_scale'
-    $pageDeadline = $clock.Elapsed.TotalSeconds + 5
-    do {
-        $nodes = @(Get-BoundedTree $settingsRoot)
-        $combos = @($nodes | Where-Object {
-            $_.Current.ControlType -eq [Windows.Automation.ControlType]::ComboBox -and
-            $_.Current.Name -in @('Scale', 'Change the size of text, apps, and other items')
-        })
-        if ($combos.Count -eq 0) { Start-Sleep -Milliseconds 100 }
-    } while ($combos.Count -eq 0 -and $clock.Elapsed.TotalSeconds -lt $pageDeadline)
-    $outcome.scale_candidates = $combos.Count
-    $outcome.observed_combo_boxes = @($nodes | Where-Object {
-        $_.Current.ControlType -eq [Windows.Automation.ControlType]::ComboBox
-    } | Select-Object -First 16 | ForEach-Object {
-        $name = $_.Current.Name; $id = $_.Current.AutomationId
-        @{ name = $name.Substring(0, [Math]::Min(128, $name.Length))
-           automation_id = $id.Substring(0, [Math]::Min(128, $id.Length))
-           enabled = $_.Current.IsEnabled }
-    })
-    if ($combos.Count -ne 1) { throw 'Expected exactly one labeled Scale combo box' }
-    $combo = $combos[0]
+    # Reuse only the control validated in the adopted observation. No retargeting.
     if (-not $combo.Current.IsEnabled) { throw 'Scale control is disabled' }
     $pattern = $null
     if (-not $combo.TryGetCurrentPattern([Windows.Automation.ExpandCollapsePattern]::Pattern, [ref]$pattern)) {

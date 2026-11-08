@@ -26,6 +26,17 @@ that new process. The child's native root must be that exact new frame; a
 shared host process does not authorize another window. Pre-existing HWNDs,
 multiple candidates, unrelated hosted children, and process replacement fail
 closed. Discovery records at most 16 numeric root/child observations.
+Before adoption, each observation must validate ownership, find exactly one
+enabled Scale ComboBox using the existing exact labels and bounded read-only
+Settings traversal, then revalidate identity and that control's ancestry. The
+same complete ownership identity and Scale control runtime ID must pass in two
+consecutive observations at least 100 ms apart. A stable splash without the
+Display control is not ready. Missing controls, changed identities, and startup
+reparenting reset provisional readiness under the original 45-second deadline.
+The uniquely new Settings process and its start time stay fixed. Only then are
+the root and validated control retained; there is no post-adoption retargeting.
+The helper records the last provisional identity, control observations, and
+bounded rejection reason on failure.
 Native enumeration retains separate before-launch, after-launch, and host-child
 records, including on failure: parent HWND, limit, observed and retained counts,
 overflow flag, and at most 16 sample HWNDs. On overflow, the observed count is
