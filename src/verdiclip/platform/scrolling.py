@@ -156,7 +156,9 @@ class UiaScrollTarget:
     than be guessed or cropped.
     """
 
-    def __init__(self, point: Point) -> None:
+    def __init__(
+        self, point: Point, *, window: int | None = None, input_tick: int | None = None
+    ) -> None:
         if sys.platform != "win32":
             raise CaptureError("Scrolling capture requires Windows")
         self._owners = ExitStack()
@@ -168,7 +170,7 @@ class UiaScrollTarget:
         self._dwm = c.WinDLL("dwmapi")
         self._bind()
         try:
-            self._open(point)
+            self._open(point, window=window, input_tick=input_tick)
         except BaseException:
             self._owners.close()
             raise
@@ -230,10 +232,20 @@ class UiaScrollTarget:
             raise CaptureError("The target window is no longer available")
         return bounds.left, bounds.top, bounds.right, bounds.bottom
 
-    def _open(self, point: Point) -> None:
-        self._input_tick = self._input()
-        window = self._user.WindowFromPoint(w.POINT(round(point.x), round(point.y)))
-        self._window = self._user.GetAncestor(window, 2)  # GA_ROOT
+    def _open(
+        self, point: Point, *, window: int | None = None, input_tick: int | None = None
+    ) -> None:
+        observed = self._input()
+        if input_tick is not None and observed != input_tick:
+            raise CaptureError(
+                "Mouse or keyboard input changed before scrolling capture"
+            )
+        self._input_tick = observed if input_tick is None else input_tick
+        expected_window = window
+        hit = self._user.WindowFromPoint(w.POINT(round(point.x), round(point.y)))
+        self._window = self._user.GetAncestor(hit, 2)  # GA_ROOT
+        if expected_window is not None and self._window != expected_window:
+            raise CaptureError("The selected window changed before scrolling capture")
         if not self._window or self._user.GetForegroundWindow() != self._window:
             raise CaptureError("Select a panel in the foreground window")
         self._window_rect = self._window_bounds()

@@ -294,3 +294,26 @@ as version unknown with version_error, without retry or timeout widening. Actual
 launch, capture and all image/state assertions remain mandatory. Launch failures
 now also reach result.json, and an artifact-write failure cannot bypass owned
 process cleanup. No production behavior changes in this harness correction.
+
+
+## Next isolated gate: point-selection handoff (not product wiring)
+
+The test-only `simple_scroll_handoff.py` reuses `SelectionOverlay` and the actual
+`TrayIcon.menu`. Its region callback is substituted only inside the harness.
+A completed native mouse release or Enter key release selects a physical point
+from the frozen window list. The release handler retains that window HWND and
+input tick, dismisses every selector, then queues handoff. No helper starts while
+a selector, popup, mouse grab or keyboard grab remains, or if input/focus changed.
+The helper carries the same two integers in its existing launch arguments and
+rejects a mismatched root/tick before UIA discovery. It never chooses a new root
+merely because another application became foreground during process startup.
+
+Four additional hosted cases exercise click, Enter release, real input between
+selection and helper startup, and a new owned foreground window at that boundary.
+Native test clicks/keys target only verified owned tray/selector windows; Edge is
+positioned/focused during setup only, never forced to the foreground during
+handoff. Positive cases require the complete existing Edge row oracle, the exact
+retained child HWND/tick, and restored top pixels. Negative cases require zero
+frames, zero provider writes and no image. This proof does not add any product
+tray action, change ordinary selection behavior, or touch Capture/Repeat/delivery.
+Its first exact-head native result is still pending.

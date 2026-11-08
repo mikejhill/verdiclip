@@ -48,8 +48,11 @@ class ScrollHelper(QObject):
         self._terminal = False
         self._timeout_message = ""
 
-    def start(self, point: Point) -> None:
-        """Start once; caller must keep this owner alive until ``finished``."""
+    def start(self, point: Point, *, window: int, input_tick: int) -> None:
+        """Start with the selected root and completed-input tick, without rebasing.
+
+        The caller closes selectors first and keeps this owner until ``finished``.
+        """
         if self._directory is not None or self._terminal:
             raise RuntimeError("A scrolling helper can only be started once")
         self._directory = TemporaryDirectory(prefix="verdiclip-scroll-")
@@ -60,6 +63,8 @@ class ScrollHelper(QObject):
                 "verdiclip.capture.scroll_helper",
                 str(round(point.x)),
                 str(round(point.y)),
+                str(window),
+                str(input_tick),
                 self._directory.name,
             ]
         )
@@ -171,7 +176,7 @@ def main() -> None:
     from verdiclip.capture.scrolling import ScrollTransaction  # noqa: PLC0415
     from verdiclip.platform.scrolling import UiaScrollTarget  # noqa: PLC0415
 
-    x, y, directory = sys.argv[1:]
+    x, y, window, input_tick, directory = sys.argv[1:]
     user = ctypes.WinDLL("user32", use_last_error=True)
     user.SetProcessDpiAwarenessContext.argtypes = (ctypes.c_void_p,)
     user.SetProcessDpiAwarenessContext.restype = ctypes.c_int
@@ -181,7 +186,9 @@ def main() -> None:
     threading.Thread(target=_watch_parent, args=(cancelled,), daemon=True).start()
     result: ScrollResult | None = None
     try:
-        with UiaScrollTarget(Point(int(x), int(y))) as target:
+        with UiaScrollTarget(
+            Point(int(x), int(y)), window=int(window), input_tick=int(input_tick)
+        ) as target:
             result = ScrollTransaction(target, cancelled.is_set).run()
     except (CaptureError, OSError) as error:
         restoration = (

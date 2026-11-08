@@ -506,7 +506,7 @@ def test_native_construction_binds_apis_and_closes_owned_resources(
         with UiaScrollTarget(Point(30, 40)) as native:
             assert native._user is dlls["user32"]
     screens.close.assert_called_once()
-    opening.assert_called_once_with(Point(30, 40))
+    opening.assert_called_once_with(Point(30, 40), window=None, input_tick=None)
     assert dlls["user32"].GetForegroundWindow.restype is w.HWND
     assert dlls["user32"].ClientToScreen.argtypes == (w.HWND, c.POINTER(w.POINT))
     assert dlls["kernel32"].WaitForSingleObject.argtypes == (w.HANDLE, w.DWORD)
@@ -538,7 +538,7 @@ def test_native_open_keeps_original_process_and_releases_com(
         mock(native._viewport).return_value = Rect(20, 20, 10, 10)
     try:
         if failure == "none":
-            native._open(Point(30, 40))
+            native._open(Point(30, 40), window=1, input_tick=12)
             assert native._input_tick == 12
             assert native._window_rect == (0, 0, 500, 500)
             assert native._process == 2
@@ -546,7 +546,7 @@ def test_native_open_keeps_original_process_and_releases_com(
             automation.pointer_result.assert_called_once_with(16, native._owners)
         else:
             with pytest.raises(CaptureError):
-                native._open(Point(30, 40))
+                native._open(Point(30, 40), window=1, input_tick=12)
     finally:
         native._owners.close()
     if failure in ("none", "area"):
@@ -1030,3 +1030,21 @@ def test_native_entry_preserves_real_failures_and_owned_cleanup(
         )
         assert report["success"] is False
         assert report["error"] == f"{failure} failed"
+
+
+@pytest.mark.parametrize("changed", ["window", "input"])
+def test_expected_selection_is_rejected_before_com_discovery(changed: str) -> None:
+    """A delayed helper may not rebase the user's selected root or release tick."""
+    native = target()
+    native._ole = Mock()
+    native._discover = Mock()
+    with pytest.raises(CaptureError, match="before scrolling"):
+        native._open(
+            Point(30, 40),
+            window=99 if changed == "window" else 1,
+            input_tick=99 if changed == "input" else 12,
+        )
+    native._ole.CoInitializeEx.assert_not_called()
+    mock(native._kernel.OpenProcess).assert_not_called()
+    mock(native._discover).assert_not_called()
+    mock(native._scroll.call).assert_not_called()

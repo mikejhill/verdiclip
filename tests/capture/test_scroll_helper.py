@@ -58,7 +58,7 @@ def test_one_result_and_temporary_image_cleanup(
     results: list[ScrollResult] = []
     helper.finished.connect(results.append)
     with qtbot.waitSignal(helper.finished, timeout=5000):
-        helper.start(Point(10, 20))
+        helper.start(Point(10, 20), window=45, input_tick=67)
     assert len(results) == 1
     assert results[0].image is not None
     assert results[0].image.pixelColor(0, 0).name() == "#123456"
@@ -67,7 +67,7 @@ def test_one_result_and_temporary_image_cleanup(
     helper.cancel()
     assert len(results) == 1
     with pytest.raises(RuntimeError):
-        helper.start(Point(10, 20))
+        helper.start(Point(10, 20), window=45, input_tick=67)
 
 
 @pytest.mark.parametrize(
@@ -80,7 +80,7 @@ def test_bad_or_crashed_helper_never_publishes(
     program(monkeypatch, source)
     helper = ScrollHelper()
     with qtbot.waitSignal(helper.finished, timeout=5000) as signal:
-        helper.start(Point(10, 20))
+        helper.start(Point(10, 20), window=45, input_tick=67)
     result = signal.args[0]
     assert result.image is None
     assert result.message
@@ -94,7 +94,7 @@ def test_cancel_discards_success_already_in_flight(
     program(monkeypatch, _SUCCESS)
     helper = ScrollHelper()
     with qtbot.waitSignal(helper.finished, timeout=5000) as signal:
-        helper.start(Point(10, 20))
+        helper.start(Point(10, 20), window=45, input_tick=67)
         helper.cancel()
     assert signal.args[0].image is None
     assert "cancelled" in signal.args[0].message
@@ -107,7 +107,7 @@ def test_unresponsive_process_is_killed_before_cleanup(
     directories = program(monkeypatch, "import time; time.sleep(60)")
     helper = ScrollHelper()
     with qtbot.waitSignal(helper.finished, timeout=5000) as signal:
-        helper.start(Point(10, 20))
+        helper.start(Point(10, 20), window=45, input_tick=67)
         assert helper._process.waitForStarted(1000)
         helper._timeout()
     assert signal.args[0].image is None
@@ -138,7 +138,7 @@ def test_repeated_cancel_does_not_extend_deadline(
     program(monkeypatch, "import time; time.sleep(60)")
     helper = ScrollHelper()
     with qtbot.waitSignal(helper.finished, timeout=5000):
-        helper.start(Point(10, 20))
+        helper.start(Point(10, 20), window=45, input_tick=67)
         assert helper._process.waitForStarted(1000)
         helper.cancel()
         helper._timer.setInterval(100)
@@ -153,7 +153,7 @@ def test_cleanup_failure_still_delivers_terminal_result(
     program(monkeypatch, _SUCCESS)
     helper = ScrollHelper()
     with qtbot.waitSignal(helper.finished, timeout=5000) as signal:
-        helper.start(Point(10, 20))
+        helper.start(Point(10, 20), window=45, input_tick=67)
         assert helper._directory is not None
         directory = helper._directory
         cleanup = directory.cleanup
@@ -180,7 +180,7 @@ def test_helper_entry_produces_one_terminal_result(
     user = Mock()
     user.SetProcessDpiAwarenessContext.return_value = failure != "dpi"
     monkeypatch.setattr("ctypes.WinDLL", Mock(return_value=user), raising=False)
-    monkeypatch.setattr("sys.argv", ["helper", "10", "20", str(tmp_path)])
+    monkeypatch.setattr("sys.argv", ["helper", "10", "20", "45", "67", str(tmp_path)])
     thread = Mock()
     monkeypatch.setattr("verdiclip.capture.scroll_helper.threading.Thread", thread)
     target = MagicMock()
@@ -208,6 +208,7 @@ def test_helper_entry_produces_one_terminal_result(
             thread.assert_not_called()
         return
     main()
+    constructor.assert_called_once_with(Point(10, 20), window=45, input_tick=67)
     value = json.loads(capsys.readouterr().out)
     assert value["success"] is (failure == "none")
     assert value["frames"] == (3 if failure == "none" else 0)
@@ -258,7 +259,7 @@ def test_invalid_image_result_never_publishes(
         )
     helper = ScrollHelper()
     with qtbot.waitSignal(helper.finished, timeout=5000) as signal:
-        helper.start(Point(10, 20))
+        helper.start(Point(10, 20), window=45, input_tick=67)
     assert signal.args[0].image is None
     assert signal.args[0].restoration.startswith("unknown")
     assert (
@@ -266,3 +267,23 @@ def test_invalid_image_result_never_publishes(
         if failure == "oversized"
         else "Invalid" in signal.args[0].message
     )
+
+
+def test_launch_retains_the_selected_window_and_release_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ordinary QProcess argv carries both expected values, not a new baseline."""
+    helper = ScrollHelper()
+    start = Mock()
+    monkeypatch.setattr(helper._process, "start", start)
+    helper.start(Point(10, 20), window=45, input_tick=67)
+    assert helper._process.arguments()[:6] == [
+        "-m",
+        "verdiclip.capture.scroll_helper",
+        "10",
+        "20",
+        "45",
+        "67",
+    ]
+    start.assert_called_once()
+    helper._complete(ScrollResult(None, "Not launched in this test", "unchanged", 0))

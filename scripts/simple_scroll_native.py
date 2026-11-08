@@ -181,8 +181,24 @@ def _trace_helper() -> None:
     output = Path(sys.argv.pop())
     original = ScrollTransaction._frame
     move = UiaScrollTarget.move
+    opening = UiaScrollTarget._open
+    selected: dict[str, object] = {}
     observations: list[dict[str, float]] = []
     writes: list[float] = []
+
+    def record_open(
+        target: UiaScrollTarget,
+        point: Point,
+        *,
+        window: int | None = None,
+        input_tick: int | None = None,
+    ) -> None:
+        opening(target, point, window=window, input_tick=input_tick)
+        selected.update(
+            window=target._window,
+            input_tick=target._input_tick,
+            area=asdict(target.area),
+        )
 
     def record_move(target: UiaScrollTarget, percent: float) -> None:
         writes.append(percent)
@@ -207,9 +223,11 @@ def _trace_helper() -> None:
         with (
             patch.object(ScrollTransaction, "_frame", record_frame),
             patch.object(UiaScrollTarget, "move", record_move),
+            patch.object(UiaScrollTarget, "_open", record_open),
         ):
             helper_main()
     finally:
+        (output / "target.json").write_text(json.dumps(selected), encoding="utf-8")
         (output / "movement.json").write_text(
             json.dumps(
                 {"writes": len(writes), "last_vertical": writes[-1] if writes else None}
@@ -218,7 +236,9 @@ def _trace_helper() -> None:
         )
 
 
-def _capture(point: Point, output: Path, mode: str = "") -> ScrollResult:
+def _capture(
+    point: Point, output: Path, mode: str, *, window: int, input_tick: int
+) -> ScrollResult:
     loop = QEventLoop()
     helper = ScrollHelper()
     results: list[ScrollResult] = []
@@ -251,7 +271,7 @@ def _capture(point: Point, output: Path, mode: str = "") -> ScrollResult:
         start()
 
     with patch.object(helper._process, "start", trace_start):
-        helper.start(point)
+        helper.start(point, window=window, input_tick=input_tick)
     interrupt = QTimer()
     interrupt.setInterval(20)
     acted = False
@@ -577,7 +597,9 @@ def _case(kind: str, output: Path, report: dict[str, object]) -> None:
         else None
     )
     try:
-        result = _capture(point, output, kind)
+        result = _capture(
+            point, output, kind, window=window.handle, input_tick=target._input_tick
+        )
     finally:
         if overlay is not None:
             _close_overlay(overlay)
@@ -682,7 +704,13 @@ def main() -> None:
         user.SetProcessDpiAwarenessContext(c.c_void_p(-4)),
         "Could not set physical-pixel coordinates",
     )
-    app = QCoreApplication(sys.argv[:1])
+    if kind.startswith("edge-select"):
+        from PySide6.QtWidgets import QApplication  # noqa: PLC0415
+
+        app = QApplication(sys.argv[:1])
+        app.setQuitOnLastWindowClosed(False)
+    else:
+        app = QCoreApplication(sys.argv[:1])
     app.setApplicationName("VerdiClip scrolling qualification")
     report: dict[str, object] = {
         "application": kind,
@@ -699,7 +727,14 @@ def main() -> None:
         process = None
         try:
             process = _launch(kind, Path(scratch), report)
-            _case(kind, output, report)
+            if kind.startswith("edge-select"):
+                from scripts.simple_scroll_handoff import (  # noqa: PLC0415
+                    _case as handoff,
+                )
+
+                handoff(kind, output, report)
+            else:
+                _case(kind, output, report)
         except Exception as error:
             report["error"] = str(error)
             raise
