@@ -21,6 +21,9 @@ MAX_SECONDS = 25.0
 MAX_FRAMES = 80
 MAX_PIXELS = 40_000_000
 MIN_OVERLAP = 32
+_MIN_DISTINCT_ROWS = 8
+_ROUNDING_FRACTION = 0.02
+_PREFIX_MISMATCH_FRACTION = 0.05
 END_PERCENT = 100.0
 
 
@@ -75,6 +78,7 @@ class VerticalStitch:
         self._frames = [first.copy()]
         self._previous = first.copy()
         self._height = first.height()
+        self._tail_start = 0
 
     @staticmethod
     def _validate(image: QImage) -> None:
@@ -88,25 +92,66 @@ class VerticalStitch:
         stride = image.bytesPerLine()
         return [raw[y * stride : (y + 1) * stride] for y in range(image.height())]
 
-    def append(self, image: QImage) -> None:
-        """Append only the new rows after one unique full-width overlap."""
+    @staticmethod
+    def _alignment(old: list[bytes], new: list[bytes]) -> tuple[int, int, int]:
+        """Find one displacement globally, using exact textured full-width bands."""
+        ids: dict[bytes, int] = {}
+        before = [ids.setdefault(row, len(ids)) for row in old]
+        after = [ids.setdefault(row, len(ids)) for row in new]
+        match = None
+        for advance in range(1, len(before) - MIN_OVERLAP + 1):
+            start = 0
+            longest = (0, 0)
+            for row in range(len(before) - advance + 1):
+                if row < len(before) - advance and before[row + advance] == after[row]:
+                    continue
+                if (
+                    row - start >= MIN_OVERLAP
+                    and row - start > longest[1] - longest[0]
+                    and len(set(after[start:row])) >= _MIN_DISTINCT_ROWS
+                ):
+                    longest = (start, row)
+                start = row + 1
+            if longest[1] > longest[0]:
+                if match is not None:
+                    raise CaptureError("The panel's scrolling pixels are ambiguous")
+                match = (advance, *longest)
+        if match is None:
+            raise CaptureError("The panel's scrolling pixels cannot be joined reliably")
+        return match
+
+    def append(self, image: QImage, expected_advance: float) -> None:
+        """Join at an interior seam; never discard a column or infer a chrome crop."""
         self._validate(image)
         if image.size() != self._previous.size():
             raise CaptureError("The scroll panel changed size")
         old, new = self._rows(self._previous), self._rows(image)
-        matches = [
-            overlap
-            for overlap in range(MIN_OVERLAP, len(old))
-            if old[-overlap:] == new[:overlap]
-        ]
-        if len(matches) != 1:
-            raise CaptureError("The panel's scrolling pixels cannot be joined reliably")
-        overlap = matches[0]
-        added = image.height() - overlap
-        if image.width() * (self._height + added) > MAX_PIXELS:
+        advance, first, last = self._alignment(old, new)
+        if abs(advance - expected_advance) > max(
+            2.0, expected_advance * _ROUNDING_FRACTION
+        ):
+            raise CaptureError("The panel's pixels disagree with its scroll position")
+        # Reject broad fixed headers. This practical check cannot establish
+        # pixels hidden by a tiny overlay at every position.
+        before = memoryview(b"".join(old[advance : advance + MIN_OVERLAP])).cast("I")
+        after = memoryview(b"".join(new[:MIN_OVERLAP])).cast("I")
+        mismatches = sum(a != b for a, b in zip(before, after, strict=True))
+        if mismatches > len(before) * _PREFIX_MISMATCH_FRACTION:
+            raise CaptureError("The top of the scroll panel is fixed or changing")
+        if image.width() * (self._height + advance) > MAX_PIXELS:
             raise CaptureError("The scrolling image exceeds the size limit")
-        self._frames.append(image.copy(0, overlap, image.width(), added))
-        self._height += added
+        # Keep earlier pixels above a verified seam and later pixels below it.
+        # Later content replaces any earlier bottom chrome; final chrome stays.
+        seam = max((first + last) // 2, self._tail_start - advance)
+        if seam >= last:
+            raise CaptureError("The panel has no consistent interior join")
+        retained = advance + seam - self._tail_start
+        self._frames[-1] = self._previous.copy(
+            0, self._tail_start, image.width(), retained
+        )
+        self._frames.append(image.copy(0, seam, image.width(), image.height() - seam))
+        self._height += advance
+        self._tail_start = seam
         self._previous = image.copy()
 
     def finish(self) -> QImage:
@@ -241,10 +286,23 @@ class ScrollTransaction:
                 or following.view_size != initial.view_size
             ):
                 raise CaptureError("The scroll panel moved unexpectedly")
-            stitch.append(self._frame(following))
+            expected = (
+                self._target.area.height
+                * (100.0 - position.view_size)
+                / position.view_size
+                * (following.vertical - position.vertical)
+                / 100.0
+            )
+            stitch.append(self._frame(following), expected)
             position = following
         self._check()
-        return stitch.finish()
+        image = stitch.finish()
+        expected_height = self._target.area.height * 100.0 / initial.view_size
+        if abs(image.height() - expected_height) > max(
+            2.0, expected_height * _ROUNDING_FRACTION
+        ):
+            raise CaptureError("The completed pixels disagree with the panel's extent")
+        return image
 
     def _restore(self, initial: ScrollPosition) -> str:
         if not self._moved:

@@ -31,16 +31,18 @@ those points can escape detection. This is an explicit pre-integration gap, not 
 guarantee that every pixel is unobscured. Any keyboard or mouse
 activity, focus change, moved/resized window, changed viewport, missing provider,
 uncertain movement, or changed content size aborts. No synthetic scroll notch is
-sent at an inner panel's endpoint. Horizontal position is never changed.
+sent at an inner panel's endpoint. Requests preserve the observed horizontal
+position; an unexpected provider change stops capture.
 
 The UIA viewport is retained, intersected only with the selected element's own
 native client rectangle when it exposes an HWND. This excludes known OS
 non-client scrollbars/borders; an ancestor HWND is never substituted. No sidebar
-is guessed or trimmed. Exact
-full-width overlap is the initial conservative registration method; repeated
-rows, sticky chrome, animation, fractional rendering and UIA bounds that include
-scrollbars may be unsupported. Real-app results, not fixture-specific profiles,
-will determine whether a small general registration improvement is warranted.
+is guessed or trimmed. Registration requires one globally unique displacement
+with an exact, textured, full-width band of at least 32 rows. It joins inside
+that band, preserving earlier pixels above and later pixels below the seam.
+This replaces intermediate bottom chrome with later visible content while
+retaining the original top boundary and final bottom boundary. Repeated or
+unreliable pixels are rejected rather than assigned an arbitrary displacement.
 
 Limits: 25 seconds of transaction work, 80 frames, 40 million output pixels.
 The parent kills after 27 seconds or 1.5 seconds after cancellation. A blocked
@@ -79,12 +81,11 @@ cancellation, repeated cancellation and cleanup failure. No existing runtime
 files are changed. This is permission to gather native evidence, not to enable
 the feature or release it.
 
-Before integration, also compare registered pixel displacement with UIA extent
-and reported advancement. A review reproduction used a 120-pixel viewport and
-a 50% view size (240-pixel document), but misleading 32-pixel overlaps produced
-296 pixels. Exact overlap alone does not establish correct completeness. Add
-this regression and an explicit rounding tolerance when real-app results guide
-the registration choice.
+The initial review reproduction used a 120-pixel viewport and a 50% view size
+(240-pixel document), but misleading 32-pixel overlaps produced 296 pixels.
+The current candidate rejects this through independent UIA displacement checks.
+Its full native composition remains unqualified until the complete real-app
+row oracle passes; exact overlap alone is not a completeness guarantee.
 
 ### First real-application findings
 
@@ -180,3 +181,38 @@ vertical request. All exact H/V checks remain; no provider-specific exception or
 rounding tolerance is added. The next cold run uses INFO, with no additional
 DEBUG COM reads. The harness records outer state even when inner restoration
 fails. Correct inner frames are still required before changing composition.
+
+
+### Focused interior-seam candidate
+
+Run 42443103991 uses INFO and verifies the intended 700×420 inner panel, exact
+horizontal preservation/restoration, and unchanged outer state for the two-frame
+failure path. The correct inner pair has one exact full-width displacement of
+210 pixels, independently predicted by UIA. Its matching bands are [12,44) and
+[96,183). Ordinary Edge retains its unique 304-pixel alignment. No column mask
+or scrollbar rectangle is needed for either pair.
+
+The current stitcher uses those general exact-band semantics, requiring at least
+eight distinct rows to exclude uninformative solid bands. Measured advancement
+must agree with UIA within max(2 pixels, 2% of predicted advancement); final
+height must agree with the provider's extent within max(2 pixels, 2%). The real
+Notepad line quantization (288 observed pixels versus 291.394 predicted) is
+covered without fitting, stretching, or cropping the output.
+
+A separate first-32-row check requires 95% pixel agreement. It rejects the
+concrete broad fixed-header case but is not proof that every hidden pixel was
+recovered: a one-pixel overlay can pass. This limitation is visible in the real
+inner panel, whose original black focus border covers its first pixel row.
+The native oracle compares that original top boundary pixel-for-pixel, reports
+both boundary extents, and requires every numbered line in order and every
+interior line's full 24-pixel span. It checks final chrome's extent against the
+original frame, not its scrollbar appearance, which may change at the endpoint. It never changes the image to fit an
+expected height. Residual stitched scrollbar appearance is possible. Sticky,
+animated, hidden, or fractional content remains unqualified outside the tested
+visible-panel contract.
+
+Portable tests now compare every content row and column across multiple joins
+with bottom chrome and a short final step. They reject an 8-pixel fixed header,
+a one-column mismatching sidebar, repeated offsets, incompatible advancement,
+and accumulated extent error. The native complete-document oracle, exact-head
+checks, remaining visibility gap and final coverage gate still block integration.

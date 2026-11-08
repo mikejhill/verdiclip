@@ -15,6 +15,7 @@ import os
 import subprocess
 import sys
 import time
+from collections import Counter
 from dataclasses import asdict
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -230,22 +231,75 @@ def _capture(point: Point, output: Path) -> ScrollResult:
     return results[0]
 
 
-def _verify_edge_rows(result: ScrollResult) -> None:
+def _row_labels(image: QImage) -> list[int | None]:
+    """Read authored background landmarks without cropping the screenshot."""
+    image = image.convertToFormat(QImage.Format.Format_RGB32)
+    pixels = memoryview(image.constBits()).cast("I")
+    stride = image.bytesPerLine() // 4
+    labels: list[int | None] = []
+    for y in range(image.height()):
+        color = Counter(pixels[y * stride : y * stride + image.width()]).most_common(1)[
+            0
+        ][0]
+        row = ((color >> 16) & 0xFF) - 30
+        labels.append(
+            row
+            if (color >> 8) & 0xFF == _GREEN
+            and color & 0xFF == _BLUE
+            and 0 <= row < _ROWS
+            else None
+        )
+    return labels
+
+
+def _boundary_rows(labels: list[int | None]) -> tuple[int, int]:
+    content = [index for index, row in enumerate(labels) if row is not None]
+    if not content:
+        raise RuntimeError("No document landmarks were visible")
+    return content[0], len(labels) - content[-1] - 1
+
+
+def _verify_edge_rows(
+    result: ScrollResult, output: Path, report: dict[str, object]
+) -> None:
+    """Verify all visible numbered rows, retaining original boundary chrome."""
     if result.image is None:
         raise RuntimeError(result.message)
-    seen: list[int] = []
-    for y in range(result.image.height()):
-        color = result.image.pixelColor(4, y)
-        if color.green() == _GREEN and color.blue() == _BLUE:
-            row = color.red() - 30
-            if not seen or seen[-1] != row:
-                seen.append(row)
-    if seen != list(range(_ROWS)):
-        raise RuntimeError(
-            f"Document rows were missing, duplicated, or out of order: {seen}"
-        )
-    if result.image.height() != _ROWS * _LINE_HEIGHT:
-        raise RuntimeError(f"Unexpected document height: {result.image.height()}")
+    first = QImage(str(output / "frame-0.png"))
+    top, bottom = _boundary_rows(_row_labels(first))
+    labels = _row_labels(result.image)
+    report["boundary_rows"] = {"top": top, "bottom": bottom}
+    _require(
+        _boundary_rows(labels) == (top, bottom),
+        "The original panel boundary extent was not retained",
+    )
+    _require(
+        top == 0
+        or result.image.copy(0, 0, result.image.width(), top)
+        == first.copy(0, 0, first.width(), top),
+        "The original top boundary pixels were changed",
+    )
+    content = labels[top : len(labels) - bottom]
+    _require(None not in content, "Unexpected chrome interrupts document rows")
+    seen: list[int | None] = []
+    for row in content:
+        if not seen or seen[-1] != row:
+            seen.append(row)
+    _require(seen == list(range(_ROWS)), "Document rows are missing or out of order")
+    counts = Counter(content)
+    report["content_row_heights"] = [counts[row] for row in range(_ROWS)]
+    report["first_content_row_height"] = counts[0]
+    report["last_content_row_height"] = counts[_ROWS - 1]
+    # The original top border may cover part of the first authored row. It is
+    # retained visibly, not claimed as recovered hidden document pixels.
+    _require(
+        all(counts[row] == _LINE_HEIGHT - (top if row == 0 else 0) for row in seen),
+        "Document row spans were lost or duplicated",
+    )
+    _require(
+        result.image.height() == _ROWS * _LINE_HEIGHT + bottom,
+        "Unexpected document and retained-chrome height",
+    )
 
 
 def _require(condition: object, message: str) -> None:
@@ -355,7 +409,7 @@ def _case(kind: str, output: Path, report: dict[str, object]) -> None:
         result.message or result.restoration,
     )
     if kind.startswith("edge"):
-        _verify_edge_rows(result)
+        _verify_edge_rows(result, output, report)
     report["success"] = True
 
 
@@ -377,7 +431,7 @@ def main() -> None:
     report: dict[str, object] = {
         "application": kind,
         "success": False,
-        "oracle": "ordered rows and exact height"
+        "oracle": "ordered rows, complete interior spans, retained boundary chrome"
         if kind.startswith("edge")
         else "capture and restore smoke; screenshot content review required",
     }

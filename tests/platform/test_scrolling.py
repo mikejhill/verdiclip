@@ -3,17 +3,22 @@
 from __future__ import annotations
 
 import ctypes as c
+import ctypes.wintypes as w
 import json
 from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
-from PySide6.QtGui import QImage
-from scripts.simple_scroll_native import _position_start, _verify_selected_target
+from PySide6.QtGui import QColor, QImage, QPainter
+from scripts.simple_scroll_native import (
+    _position_start,
+    _verify_edge_rows,
+    _verify_selected_target,
+)
 
 from verdiclip.capture.grabber import FrozenScreen
-from verdiclip.capture.scrolling import ScrollPosition
+from verdiclip.capture.scrolling import ScrollPosition, ScrollResult
 from verdiclip.exceptions import CaptureError
 from verdiclip.geometry import Point, Rect
 from verdiclip.platform.scrolling import UiaScrollTarget, _Interface
@@ -477,3 +482,124 @@ def test_fractional_negative_horizontal_position_is_not_noscroll() -> None:
     mock(native._scroll.number).side_effect = [-0.5, 50.0, 20.0]
     with pytest.raises(CaptureError, match="unsupported scroll state"):
         native.position()
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_native_construction_binds_apis_and_closes_owned_resources(
+    monkeypatch: pytest.MonkeyPatch, *, fail: bool
+) -> None:
+    """Mock only OS loading while exercising real binding and ownership setup."""
+    dlls = {name: Mock() for name in ("user32", "kernel32", "ole32")}
+    screens = Mock()
+    monkeypatch.setattr("sys.platform", "win32")
+    monkeypatch.setattr(c, "HRESULT", c.c_long, raising=False)
+    monkeypatch.setattr(c, "WinDLL", lambda name, **_kwargs: dlls[name], raising=False)
+    monkeypatch.setattr("verdiclip.platform.scrolling.MssScreenSource", lambda: screens)
+    opening = Mock(side_effect=CaptureError("Discovery failed") if fail else None)
+    monkeypatch.setattr(UiaScrollTarget, "_open", opening)
+    if fail:
+        with pytest.raises(CaptureError, match="Discovery failed"):
+            UiaScrollTarget(Point(30, 40))
+    else:
+        with UiaScrollTarget(Point(30, 40)) as native:
+            assert native._user is dlls["user32"]
+    screens.close.assert_called_once()
+    opening.assert_called_once_with(Point(30, 40))
+    assert dlls["user32"].GetForegroundWindow.restype is w.HWND
+    assert dlls["user32"].ClientToScreen.argtypes == (w.HWND, c.POINTER(w.POINT))
+    assert dlls["kernel32"].WaitForSingleObject.argtypes == (w.HANDLE, w.DWORD)
+    assert dlls["ole32"].CoInitializeEx.argtypes == (c.c_void_p, w.DWORD)
+
+
+@pytest.mark.parametrize("failure", ["none", "foreground", "process", "area"])
+def test_native_open_keeps_original_process_and_releases_com(
+    monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    """Exercise the real retained-target setup around mocked native calls."""
+    native = target()
+    native._ole = Mock()
+    automation = Mock()
+    monkeypatch.setattr(
+        "verdiclip.platform.scrolling._Interface", Mock(return_value=automation)
+    )
+    native._discover = Mock(return_value=(native._element, native._scroll))
+
+    def process_id(_window: object, out: c._CArgObject) -> int:
+        c.cast(out, c.POINTER(w.DWORD)).contents.value = 42
+        return 7
+
+    mock(native._user.GetWindowThreadProcessId).side_effect = process_id
+    mock(native._kernel.OpenProcess).return_value = 0 if failure == "process" else 2
+    if failure == "foreground":
+        mock(native._user.GetForegroundWindow).return_value = 99
+    if failure == "area":
+        mock(native._viewport).return_value = Rect(20, 20, 10, 10)
+    try:
+        if failure == "none":
+            native._open(Point(30, 40))
+            assert native._input_tick == 12
+            assert native._window_rect == (0, 0, 500, 500)
+            assert native._process == 2
+            mock(native._kernel.OpenProcess).assert_called_once_with(0x00100000, 0, 42)
+            automation.pointer_result.assert_called_once_with(16, native._owners)
+        else:
+            with pytest.raises(CaptureError):
+                native._open(Point(30, 40))
+    finally:
+        native._owners.close()
+    if failure in ("none", "area"):
+        mock(native._kernel.CloseHandle).assert_called_once_with(2)
+        mock(native._ole.CoUninitialize).assert_called_once()
+    else:
+        mock(native._kernel.CloseHandle).assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ["none", "missing_span", "duplicate", "boundary", "recolor", "interior_chrome"],
+)
+def test_native_row_oracle_counts_content_and_original_chrome(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failure: str
+) -> None:
+    """Visible source rows are checked separately from retained endpoint chrome."""
+    monkeypatch.setattr("scripts.simple_scroll_native._ROWS", 4)
+    source = QImage(80, 104, QImage.Format.Format_RGB32)
+    source.fill(QColor("gray"))
+    painter = QPainter(source)
+    for row in range(4):
+        painter.fillRect(0, row * 24, 80, 24, QColor(row + 30, 80, 160))
+    painter.fillRect(0, 0, 80, 1, QColor("black"))
+    painter.end()
+    first = QImage(80, 64, QImage.Format.Format_RGB32)
+    first.fill(QColor("gray"))
+    painter = QPainter(first)
+    painter.drawImage(0, 0, source.copy(0, 0, 80, 56))
+    painter.end()
+    assert first.save(str(tmp_path / "frame-0.png"))
+    if failure == "missing_span":
+        damaged = QImage(80, 103, QImage.Format.Format_RGB32)
+        painter = QPainter(damaged)
+        painter.drawImage(0, 0, source.copy(0, 0, 80, 47))
+        painter.drawImage(0, 47, source.copy(0, 48, 80, 56))
+        painter.end()
+        source = damaged
+    else:
+        painter = QPainter(source)
+        if failure == "duplicate":
+            painter.fillRect(0, 48, 80, 24, QColor(31, 80, 160))
+        elif failure == "boundary":
+            painter.fillRect(0, 1, 80, 1, QColor("black"))
+        elif failure == "recolor":
+            painter.fillRect(0, 0, 80, 1, QColor("magenta"))
+        elif failure == "interior_chrome":
+            painter.fillRect(0, 50, 80, 1, QColor("black"))
+        painter.end()
+    report: dict[str, object] = {}
+    result = ScrollResult(source, "", "restored", 3)
+    if failure == "none":
+        _verify_edge_rows(result, tmp_path, report)
+        assert report["boundary_rows"] == {"top": 1, "bottom": 8}
+        assert report["content_row_heights"] == [23, 24, 24, 24]
+    else:
+        with pytest.raises(RuntimeError):
+            _verify_edge_rows(result, tmp_path, report)

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import override
 
 import pytest
-from PySide6.QtGui import QColor, QImage
+from PySide6.QtGui import QColor, QImage, QPainter
 from scripts.simple_scroll_native import _trace_helper
 
 from verdiclip.capture.scrolling import (
@@ -107,8 +107,10 @@ def test_partial_bottom_overlap() -> None:
     """The final movement may be shorter than half a viewport."""
     source = document(287)
     stitch = VerticalStitch(source.copy(0, 0, 80, 120))
+    previous = 0
     for y in (60, 120, 167):
-        stitch.append(source.copy(0, y, 80, 120))
+        stitch.append(source.copy(0, y, 80, 120), y - previous)
+        previous = y
     assert stitch.finish() == source
 
 
@@ -129,7 +131,7 @@ def test_ambiguous_or_incomplete_pixels_are_rejected(failure: str) -> None:
             first.setPixelColor(0, y, QColor(y, 0, 0))
             second.setPixelColor(0, y, QColor(y, 0, 0))
     with pytest.raises(CaptureError):
-        VerticalStitch(first).append(second)
+        VerticalStitch(first).append(second, 60.0)
 
 
 def test_null_frame_rejected() -> None:
@@ -463,3 +465,138 @@ def test_native_diagnostics_keep_only_two_accepted_frames(
     assert len(list(tmp_path.glob("*.png"))) == 2
     observations = json.loads((tmp_path / "frames.json").read_text())
     assert [item["vertical"] for item in observations] == [0.0, 12.5]
+
+
+def test_interior_seams_recover_content_under_bottom_chrome() -> None:
+    """Every content pixel survives several joins and a short final movement."""
+    source = document(367)
+    bar = QImage(80, 8, QImage.Format.Format_RGB32)
+    bar.fill(QColor("gray"))
+
+    def frame(offset: int) -> QImage:
+        result = QImage(80, 120, QImage.Format.Format_RGB32)
+        painter = QPainter(result)
+        painter.drawImage(0, 0, source.copy(0, offset, 80, 112))
+        painter.drawImage(0, 112, bar)
+        painter.end()
+        return result
+
+    stitch = VerticalStitch(frame(0))
+    previous = 0
+    for offset in (56, 112, 168, 224, 255):
+        stitch.append(frame(offset), offset - previous)
+        previous = offset
+    result = stitch.finish()
+    assert result.size().width() == source.width()
+    assert result.height() == source.height() + bar.height()
+    assert result.copy(0, 0, 80, 367) == source
+    assert result.copy(0, 367, 80, 8) == bar
+
+
+def test_broad_fixed_header_is_rejected_despite_interior_match() -> None:
+    """An exact interior seam cannot recover first rows hidden at every position."""
+    source = document()
+    first, second = source.copy(0, 0, 80, 120), source.copy(0, 60, 80, 120)
+    for frame in (first, second):
+        for y in range(8):
+            for x in range(80):
+                frame.setPixelColor(x, y, QColor("white"))
+    with pytest.raises(CaptureError, match="top of the scroll panel"):
+        VerticalStitch(first).append(second, 60.0)
+
+
+def test_one_meaningful_edge_column_is_not_masked_for_alignment() -> None:
+    """A narrow changing or fixed sidebar cannot be discarded to find a shift."""
+    source = document()
+    first, second = source.copy(0, 0, 80, 120), source.copy(0, 60, 80, 120)
+    for y in range(120):
+        first.setPixelColor(0, y, QColor(y, 255, 255))
+        second.setPixelColor(0, y, QColor(y, 255, 255))
+    with pytest.raises(CaptureError, match="cannot be joined"):
+        VerticalStitch(first).append(second, 60.0)
+
+
+def test_repeated_textured_bands_have_no_unique_displacement() -> None:
+    """Do not use UIA proximity to select one arbitrary repeated-content shift."""
+    period = document(40)
+    source = QImage(80, 240, QImage.Format.Format_RGB32)
+    painter = QPainter(source)
+    for y in range(0, 240, 40):
+        painter.drawImage(0, y, period)
+    painter.end()
+    with pytest.raises(CaptureError, match="ambiguous"):
+        VerticalStitch(source.copy(0, 0, 80, 120)).append(
+            source.copy(0, 60, 80, 120), 60.0
+        )
+
+
+class ReportedTarget(Target):
+    """A provider with self-consistent percentages but incompatible pixel extent."""
+
+    def __init__(self, total: int, view: float) -> None:
+        super().__init__()
+        self.document = document(total)
+        self.offset = 0
+        self.percent = 0.0
+        self.view = view
+
+    @override
+    def position(self) -> ScrollPosition:
+        return ScrollPosition(self.horizontal, self.percent, self.view)
+
+    @override
+    def move(self, vertical: float) -> None:
+        self.moves.append(vertical)
+        self.percent = vertical
+        self.offset = round((self.document.height() - 120) * vertical / 100)
+
+
+def test_registered_advance_must_agree_with_uia_extent() -> None:
+    """The review's reported 240px / observed 296px reproduction must fail."""
+    result = transaction(ReportedTarget(296, 50.0)).run()
+    assert result.image is None
+    assert "disagree with its scroll position" in result.message
+    assert result.restoration == "restored"
+
+
+def test_accumulated_small_displacements_must_agree_with_total_extent() -> None:
+    """Several tolerated 2px differences cannot silently expand the document."""
+    result = transaction(ReportedTarget(616, 20.0)).run()
+    assert result.frames == 9
+    assert result.image is None
+    assert "disagree with the panel's extent" in result.message
+    assert result.restoration == "restored"
+
+
+class LineQuantizedTarget(Target):
+    """The measured Notepad geometry: 601px viewport, 33 of 120 visible lines."""
+
+    area = Rect(10, 20, 80, 601)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.document = document(2167)
+        self.offset = 576
+
+    @override
+    def position(self) -> ScrollPosition:
+        return ScrollPosition(self.horizontal, self.offset / 1566 * 100, 27.5)
+
+    @override
+    def move(self, vertical: float) -> None:
+        self.moves.append(vertical)
+        self.offset = 18 * round(87 * vertical / 100)
+
+    @override
+    def frame(self) -> QImage:
+        return self.document.copy(0, self.offset, 80, 601)
+
+
+def test_observed_notepad_line_rounding_preserves_all_pixels() -> None:
+    """A small UIA line-count quantization is accepted without fitting the image."""
+    target = LineQuantizedTarget()
+    initial = target.position()
+    result = transaction(target).run()
+    assert result.image == target.document
+    assert result.restoration == "restored"
+    assert target.position() == initial
