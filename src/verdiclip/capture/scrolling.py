@@ -640,13 +640,10 @@ class ScrollTransaction:
             return "not restored: the target or user state changed"
         return "restored"
 
-    def _validate_position(self, initial: ScrollPosition) -> None:
+    @staticmethod
+    def _validate_position(initial: ScrollPosition) -> None:
         if not 0.0 < initial.view_size < END_PERCENT:
             raise CaptureError("The selected panel is not vertically scrollable")
-        if initial.vertical == END_PERCENT and self._target.header is not None:
-            raise CaptureError(
-                "Scrolling capture from this list's bottom is not yet supported"
-            )
 
     def run(self) -> ScrollResult:
         """Return a single terminal outcome, discarding incomplete pixels."""

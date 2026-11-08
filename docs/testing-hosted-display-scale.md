@@ -6,9 +6,31 @@ computer. The `display-setup` job in `.github/workflows/simple-scroll-native.yml
 runs this availability probe only for the exact head of the same-repository
 draft diagnostic branch.
 
-The helper uses the supported Windows Settings Display > Scale dropdown. It
-requires exactly one enabled, explicitly labeled Scale combo and an existing
-200% option inside that combo. Missing, ambiguous, disabled, or differently
+The helper uses the supported Windows Settings Display resolution and Scale
+dropdowns. If setup is needed, it enumerates the owned resolution combo's
+offered choices and chooses the first uniquely enabled exact option in this
+preference order: **2560 × 1440, 1920 × 1200, 1600 × 1200**. No other mode is
+allowed, including 1920 × 1080. If none is offered and enabled, setup fails
+without selecting a resolution. It selects the chosen option at most once,
+only if the display is not already at that resolution. A later failure never
+causes a second mode to be tried.
+`EnumDisplaySettingsW(ENUM_CURRENT_SETTINGS)` independently reads physical
+pixels before selection, before confirmation, and afterward. No mode is forced.
+
+After a resolution selection, the exact `Keep these display settings?` Text and
+one enabled `Keep changes` Button must appear within the same retained Settings
+subtree within five seconds. Both controls' ownership/ancestry are checked;
+the button is invoked at most once and must disappear within two seconds.
+The physical mode must remain exactly the chosen allowed dimensions. Missing,
+disabled, ambiguous, outside-root, or differently structured confirmation fails without trying another
+window or accepting a different dialog. Windows may automatically revert an
+unconfirmed change; the helper only records readback and never claims rollback.
+Python also requires the resolution/confirmation receipt and independently
+checks physical dimensions after the Settings child exits.
+
+Only then does the helper require one enabled, explicitly labeled Scale combo
+and an existing 200% option inside that combo. Changing resolution does not
+guarantee that 200% is offered. Missing, ambiguous, disabled, or differently
 structured UI fails closed. No guessed coordinates, custom scale, registry
 writes, private display APIs, sign-out, reboot, RDP configuration, or driver
 installation are used. It does not override PowerShell execution policy.
@@ -45,7 +67,7 @@ increased only after a hosted run exceeded it before any selection. Ownership
 requirements, UIA control matching, and the existing time budgets are unchanged.
 
 Controls are read through `AutomationElement.FromHandle` on the retained
-Settings child. Before expanding/selecting a control or closing the frame, the
+Settings child. Before expanding/selecting/invoking a control or closing the frame, the
 helper rechecks both process start times, native PID/parent links, retained UIA
 identities, and the mutation target's Settings ownership/ancestry. Cleanup
 closes only that frame, never its host process. Confirmed closure requires the
@@ -92,17 +114,19 @@ these reads. Failure stops the sequence and uploads its bounded observations as
 Each hosted job receives a different VM, so another job cannot inherit this
 setup. The bordered panel needs fully visible responsive geometry and a successful
 native 200% result before it is qualified; clipping guards remain unchanged.
-The draft bottom-start Header rejection remains a failed diagnostic, even when
-its zero-write and unchanged-state checks succeed. All three Explorer starting
-positions must capture and restore correctly before release.
+The draft bottom-start Header path now tries the ordinary strict capture path;
+success remains unqualified until native evidence passes. Any failed capture
+remains a failed diagnostic. All three Explorer starting positions must capture
+and restore correctly before release.
 A setup probe alone is not Edge, Explorer, scrolling, or hardware qualification.
 
-Current limitations: an initial hosted run confirmed actual 100%/96-DPI
-readback and visibly opened Display settings, but exposed a cross-process root
-discovery gap before any selection. That is not evidence that 200% is
-unavailable. The corrected ownership path, Settings labels/UIA hierarchy,
-available scale options, and display-resolution limits still require a reviewed
-native run. The Linux tests exercise guards, measurements,
+Current limitations: a hosted run successfully retained the ready owned Settings
+window, expanded Scale, observed only 100% and 125% on its 1024 × 768 display,
+and confirmed cleanup without selecting a scale. The enabled Display resolution
+combo was observed, but its offered modes and the new resolution/confirmation
+path still need a reviewed native run. Neither an allowed resolution's
+availability nor 200% availability afterward has been demonstrated. The Linux
+tests exercise guards, measurements,
 subprocess boundaries, failure handling, and cleanup with doubles. They do not
 execute PowerShell, Settings, or Windows APIs. An unavailable 200% selection is
 a platform/setup limitation to report, not a reason to use an undocumented API.
@@ -110,6 +134,8 @@ a platform/setup limitation to report, not a reason to use an undocumented API.
 ## References
 
 - [Microsoft: launch Display settings](https://learn.microsoft.com/windows/apps/develop/launch/launch-settings)
+- [Microsoft: change display resolution in Settings](https://support.microsoft.com/en-us/windows/hardware/display-graphics/change-your-screen-resolution-and-layout-in-windows)
+- [Microsoft: read physical display modes](https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-enumdisplaysettingsw)
 - [Microsoft: monitor-scale result and failure semantics](https://learn.microsoft.com/windows/win32/api/shellscalingapi/nf-shellscalingapi-getscalefactorformonitor)
 - [Microsoft: window DPI and awareness](https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-getdpiforwindow)
 - [Microsoft: ComboBox UI Automation patterns](https://learn.microsoft.com/windows/win32/winauto/uiauto-supportcomboboxcontroltype)

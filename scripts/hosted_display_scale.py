@@ -1,6 +1,6 @@
 """Qualify real 200% scaling on one disposable hosted Windows display.
 
-This setup probe changes only the existing Windows Settings Scale selection.
+This probe uses only offered Windows Settings resolution and Scale selections.
 It does not qualify scrolling: the eventual target HWND must separately report
 192 DPI on a monitor reporting 200%. Run before starting the application tests.
 """
@@ -20,6 +20,7 @@ from pathlib import Path
 
 _SCALE = 200
 _DPI = 192
+_RESOLUTIONS = ((2560, 1440), (1920, 1200), (1600, 1200))
 _PER_MONITOR_AWARE = 2
 _TIMEOUT = 60
 _OUTPUT = Path("artifacts/simple-scroll/display-scale")
@@ -171,7 +172,7 @@ class Display:
                 raise RuntimeError("Could not close the owned DPI probe window")
 
 
-def select_scale(output: Path) -> None:
+def select_scale(output: Path) -> tuple[int, int]:
     """One Settings-only UIA attempt; a timeout is uncertain, never retried."""
     require_hosted()
     receipt = output / "settings-outcome.json"
@@ -213,13 +214,51 @@ def select_scale(output: Path) -> None:
         and outcome.get("closed_owned_window") is True
     ):
         raise RuntimeError("Settings owned-window disappearance was not confirmed")
+    resolution = next(
+        (
+            (width, height)
+            for width, height in _RESOLUTIONS
+            if outcome.get("resolution_target") == {"width": width, "height": height}
+        ),
+        None,
+    )
+    if not (
+        resolution is not None
+        and outcome.get("resolution_verified") is True
+        and outcome.get("resolution_after") == outcome.get("resolution_target")
+        and (
+            (
+                outcome.get("resolution_selection_attempted") is False
+                and outcome.get("keep_changes_attempted") is False
+                and outcome.get("keep_changes_confirmed") is False
+            )
+            or (
+                outcome.get("resolution_selection_attempted") is True
+                and outcome.get("keep_changes_attempted") is True
+                and outcome.get("keep_changes_confirmed") is True
+            )
+        )
+    ):
+        raise RuntimeError("Settings resolution or Keep changes was not verified")
+    return resolution
 
 
-def _require_reading(reading: Reading, *, initial: bool) -> None:
+def _require_reading(
+    reading: Reading, *, initial: bool, resolution: tuple[int, int] | None = None
+) -> None:
     if reading.monitor_count != 1 or reading.scale_hresult != 0:
         raise RuntimeError("Setup requires one monitor with successful scale readback")
     if not initial and not reading.qualified:
         raise RuntimeError("Actual monitor scale=200 and owned window DPI=192 required")
+    if (
+        resolution is not None
+        and (
+            reading.physical_bounds[2] - reading.physical_bounds[0],
+            reading.physical_bounds[3] - reading.physical_bounds[1],
+        )
+        != resolution
+    ):
+        raise RuntimeError("Settings resolution did not remain at the chosen mode")
 
 
 def failure_image(output: Path) -> None:
@@ -267,15 +306,15 @@ def qualify(output: Path = _OUTPUT) -> int:
         before = display.read()
         report["before"] = asdict(before)
         _require_reading(before, initial=True)
-        if before.monitor_scale != _SCALE:
-            select_scale(output)
+        resolution = select_scale(output) if before.monitor_scale != _SCALE else None
+        report["resolution_target"] = resolution
         deadline = time.monotonic() + 2.0
         after = display.read()
         while not after.qualified and time.monotonic() < deadline:
             time.sleep(0.1)
             after = display.read()
         report["after"] = asdict(after)
-        _require_reading(after, initial=False)
+        _require_reading(after, initial=False, resolution=resolution)
     except (OSError, RuntimeError, subprocess.SubprocessError) as error:
         report["error"] = f"{type(error).__name__}: {error}"[:1024]
         report["selection_outcome_uncertain"] = isinstance(

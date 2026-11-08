@@ -5,8 +5,10 @@ from __future__ import annotations
 import ctypes as c
 import ctypes.wintypes as w
 import json
-from dataclasses import asdict
+import math
+from dataclasses import asdict, replace
 from pathlib import Path
+from typing import cast
 from unittest.mock import Mock
 
 import pytest
@@ -15,6 +17,7 @@ from PySide6.QtWidgets import QWidget
 from scripts import scrolling_diagnostics as diagnostics
 
 from verdiclip.capture.scrolling import ScrollPosition, ScrollResult
+from verdiclip.exceptions import CaptureError
 from verdiclip.geometry import Point, Rect
 from verdiclip.platform.windows import WindowInfo
 
@@ -385,7 +388,9 @@ def test_start_variants_leave_ordinary_app_cases_unchanged(
         start.assert_not_called()
 
 
-@pytest.mark.parametrize("kind", list(diagnostics._EXPLORER_STARTS))
+@pytest.mark.parametrize(
+    "kind", [*diagnostics._EXPLORER_STARTS, "explorer-inverse-restore"]
+)
 def test_start_variants_keep_verified_explorer_launch_and_cleanup(
     monkeypatch: pytest.MonkeyPatch, kind: str
 ) -> None:
@@ -395,7 +400,7 @@ def test_start_variants_keep_verified_explorer_launch_and_cleanup(
     monkeypatch.setattr(diagnostics.sys, "argv", ["diagnostics", kind])
 
     def main(*, gui: bool, case: object) -> None:
-        assert gui
+        assert gui == (kind != diagnostics._INVERSE_EXPERIMENT)
         assert case == runner.run
         assert diagnostics.native._launch == runner.launch
         assert diagnostics.native._stop_owned_process == runner.cleanup
@@ -635,12 +640,13 @@ def test_setup_child_has_bounded_wait_kill_reap_and_owned_stdin(
 
 
 @pytest.mark.parametrize("fails", [False, True])
+@pytest.mark.parametrize("kind", ["explorer-middle-click", "explorer-inverse-restore"])
 def test_setup_child_rebuilds_ownership_without_constructing_gui(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, fails: bool
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, kind: str, *, fails: bool
 ) -> None:
     """The process entry installs EOF retirement and retains even partial evidence."""
     request = {
-        "kind": "explorer-middle-click",
+        "kind": kind,
         "point": {"x": 30, "y": 40},
         "window": asdict(WindowInfo(9, "Owned fixture", Rect(1, 2, 100, 100))),
         "pid": 456,
@@ -675,6 +681,11 @@ def test_setup_child_rebuilds_ownership_without_constructing_gui(
             raise RuntimeError("UIA setup failed")
 
     monkeypatch.setattr(diagnostics, "_position_explorer_start", position)
+    monkeypatch.setattr(
+        diagnostics,
+        "_inverse_explorer_restore",
+        lambda point, output, owner, setup: position(kind, point, output, owner, setup),
+    )
     if fails:
         with pytest.raises(RuntimeError, match="UIA setup failed"):
             diagnostics._setup_explorer_child()
@@ -742,43 +753,10 @@ def test_middle_restoration_uses_actual_start_not_top_frame(
             capture._verify_restored(after)
 
 
-@pytest.mark.parametrize("invalid", ["none", "writes", "state", "pixels", "missing"])
-def test_bottom_rejection_records_unchanged_evidence_but_remains_failure(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, invalid: str
-) -> None:
-    """Even proven zero-write/no-pixel-change rejection must leave the job red."""
-    capture = _start_capture(tmp_path, "explorer-bottom-enter")
-    _start_evidence(capture)
-    if invalid == "writes":
-        (tmp_path / "movement.json").write_text(
-            '{"writes": 1, "last_vertical": 0.0}', encoding="utf-8"
-        )
-    elif invalid == "state":
-        capture.start_position = ScrollPosition(-1.0, 50.0, 12.0)
-    elif invalid == "pixels":
-        assert _image(0xFFFFFFFF).save(str(tmp_path / "after.png"))
-    elif invalid == "missing":
-        (tmp_path / "before.png").unlink()
-    base = Mock(side_effect=RuntimeError("Ordinary product failure"))
-    monkeypatch.setattr(diagnostics.app.AppCapture, "_terminal", base)
-    result = ScrollResult(None, "Ordinary product failure", "not needed", 0)
-    expected = "Ordinary product failure" if invalid == "none" else "Rejected Explorer"
-    with pytest.raises(RuntimeError, match=expected):
-        capture._terminal(result)
-    assert "success" not in capture.report
-    evidence = capture.report["rejected_start_evidence"]
-    assert isinstance(evidence, dict)
-    assert evidence == {
-        "zero_production_writes": invalid != "writes",
-        "unchanged_state": invalid != "state",
-        "unchanged_pixels": invalid not in ("pixels", "missing"),
-    }
-    base.assert_called_once_with(result)
-
-
 @pytest.mark.parametrize("kind", list(diagnostics._EXPLORER_STARTS))
+@pytest.mark.parametrize("outcome", ["complete", "failed"])
 def test_start_terminal_keeps_actual_helper_validation_and_full_row_oracle(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, kind: str
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, kind: str, outcome: str
 ) -> None:
     """The subclass cannot substitute restoration checks for complete row proof."""
     capture = _start_capture(tmp_path, kind)
@@ -797,7 +775,7 @@ def test_start_terminal_keeps_actual_helper_validation_and_full_row_oracle(
     monkeypatch.setattr(
         diagnostics.app, "_verify_edge_rows", diagnostics._inspect_result
     )
-    if kind.startswith("explorer-middle-"):
+    if outcome == "complete":
         result = ScrollResult(_image(), "", "restored", 16)
         capture._terminal(result)
         oracle.assert_called_once_with(result.image, tmp_path)
@@ -805,15 +783,15 @@ def test_start_terminal_keeps_actual_helper_validation_and_full_row_oracle(
         assert capture.report["restored_pixels"] == "exact"
         assert QImage(str(tmp_path / "result.png")) == result.image
     else:
-        result = ScrollResult(None, "Ordinary bottom rejection", "not needed", 0)
-        with pytest.raises(RuntimeError, match="Ordinary bottom rejection"):
+        (tmp_path / "movement.json").write_text(
+            '{"writes": 3, "last_vertical": 0.0}', encoding="utf-8"
+        )
+        result = ScrollResult(None, "Ordinary capture failure", "not restored", 1)
+        with pytest.raises(RuntimeError, match="Ordinary capture failure"):
             capture._terminal(result)
-        assert capture.report["message"] == "Ordinary bottom rejection"
-        assert capture.report["rejected_start_evidence"] == {
-            "zero_production_writes": True,
-            "unchanged_state": True,
-            "unchanged_pixels": True,
-        }
+        assert capture.report["message"] == "Ordinary capture failure"
+        assert capture.report["movement"] == {"writes": 3, "last_vertical": 0.0}
+        assert "rejected_start_evidence" not in capture.report
         assert not (tmp_path / "result.png").exists()
         oracle.assert_not_called()
     assert capture.result is result
@@ -839,3 +817,476 @@ def test_representative_result_pixels_survive_strict_restoration_failure(
     assert QImage(str(tmp_path / "result.png")) == capture.result.image
     assert "oracle_frames" not in capture.report
     assert "success" not in capture.report
+
+
+def test_native_inverse_uses_fresh_page_and_native_units_only() -> None:
+    """Measured ranges explain changed percentages without assuming pixel units."""
+    original = {"min": 0, "max": 15999, "page": 1787, "pos": 7106}
+    endpoint = {"min": 0, "max": 15999, "page": 1817, "pos": 14183}
+    assert diagnostics._native_inverse_percent(original, 7106) == 49.996482093857736
+    assert diagnostics._native_inverse_percent(endpoint, 7106) == 50.10223507015441
+    assert diagnostics._native_inverse_percent(endpoint, 14183) == 100.0
+    offset = {"min": 100, "max": 16099, "page": 1817, "pos": 14283}
+    assert diagnostics._native_inverse_percent(offset, 7206) == 50.10223507015441
+
+
+@pytest.mark.parametrize(
+    ("state", "position"),
+    [
+        ({"min": 0, "max": 0, "page": 1}, 0),
+        ({"min": 0, "max": 100, "page": 0}, 10),
+        ({"min": 0, "max": 100, "page": 102}, 10),
+        ({"min": 1, "max": 100, "page": 20}, 0),
+        ({"min": 0, "max": 100, "page": 20}, 82),
+    ],
+)
+def test_native_inverse_rejects_unmappable_original_position(
+    state: dict[str, int], position: int
+) -> None:
+    """An invalid new range stops before the computed restoration write."""
+    with pytest.raises(RuntimeError, match="native scroll range"):
+        diagnostics._native_inverse_percent(state, position)
+
+
+def _inverse_sample(phase: str, *, scale: int = 1) -> diagnostics._InverseSample:
+    page = 1787 if phase == "original" else 1817
+    position = 14183 if phase == "endpoint" else 7106
+    state = {"min": 0, "max": 15999, "page": page, "pos": position}
+    image = QImage(117 * scale, 80 * scale, QImage.Format.Format_RGB32)
+    image.fill(0xFF334455)
+    if phase == "endpoint":
+        image.setPixel(20, 20 * scale, 0xFF556677)
+    return diagnostics._InverseSample(
+        ScrollPosition(
+            -1.0,
+            diagnostics._native_inverse_percent(state, position),
+            100 * page / 15999,
+        ),
+        state,
+        image,
+    )
+
+
+def _inverse_read_bar(monkeypatch: pytest.MonkeyPatch) -> diagnostics._InverseScrollBar:
+    sample = _inverse_sample("original")
+    bar = object.__new__(diagnostics._InverseScrollBar)
+    bar.target = Mock()
+    bar.target.position.return_value = sample.position
+    bar.target.frame.return_value = sample.image
+    bar.handle, bar.horizontal, bar.range = 73, -1.0, (0, 15999)
+    bar.area = Rect(0, 0, 117, 80)
+    monkeypatch.setattr(bar, "check", Mock())
+    return bar
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "none",
+        "vertical",
+        "view_size",
+        "horizontal",
+        "range",
+        "native",
+        "during",
+        "pos_down",
+        "pos_up",
+    ],
+)
+def test_inverse_native_reads_require_exact_mapping_and_atomic_pixels(
+    monkeypatch: pytest.MonkeyPatch, invalid: str
+) -> None:
+    """Arithmetic equivalence cannot hide native, horizontal or read-time changes."""
+    sample = _inverse_sample("original")
+    bar = _inverse_read_bar(monkeypatch)
+    target = cast("Mock", bar.target)
+    position = sample.position
+    if invalid == "vertical":
+        position = replace(position, vertical=position.vertical + 0.000001)
+    elif invalid == "view_size":
+        position = replace(position, view_size=position.view_size + 0.000001)
+    elif invalid == "horizontal":
+        position = replace(position, horizontal=0.0)
+    elif invalid == "range":
+        bar.range = (0, 16000)
+    target.position.return_value = position
+    raw: dict[str, object] = {
+        **sample.native,
+        "success": invalid != "native",
+        "window_valid": True,
+        "root_matches": True,
+    }
+    if invalid in ("pos_down", "pos_up"):
+        raw["pos"] = sample.native["pos"] + (-1 if invalid == "pos_down" else 1)
+    reader = Mock(return_value=raw)
+    if invalid == "during":
+        reader.side_effect = [raw, {**raw, "pos": 7107}]
+    monkeypatch.setattr(diagnostics, "_scroll_info", reader)
+    if invalid == "none":
+        assert bar.read() == sample
+    else:
+        with pytest.raises(RuntimeError):
+            bar.read()
+    target.move.assert_not_called()
+
+
+@pytest.mark.parametrize("field", ["vertical", "view_size"])
+@pytest.mark.parametrize("steps", [-2, -1, 0, 1, 2])
+def test_inverse_mapping_allows_only_each_immediately_adjacent_float(
+    monkeypatch: pytest.MonkeyPatch, field: str, steps: int
+) -> None:
+    """One-ULP ordering applies only to the two computed comparisons."""
+    sample = _inverse_sample("original")
+    observed = math.nextafter(
+        getattr(sample.position, field),
+        math.inf if steps > 0 else -math.inf,
+        steps=abs(steps),
+    )
+    position = replace(sample.position, **{field: observed})
+    bar = _inverse_read_bar(monkeypatch)
+    target = cast("Mock", bar.target)
+    target.position.return_value = position
+    monkeypatch.setattr(
+        diagnostics,
+        "_scroll_info",
+        Mock(
+            return_value={
+                **sample.native,
+                "success": True,
+                "window_valid": True,
+                "root_matches": True,
+            }
+        ),
+    )
+    if abs(steps) <= 1:
+        assert bar.read().position == position
+    else:
+        with pytest.raises(RuntimeError, match="native/UIA mapping"):
+            bar.read()
+    target.move.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("observed", "computed"),
+    [(math.inf, math.inf), (-math.inf, -math.inf), (math.nan, 1.0), (1.0, math.nan)],
+)
+def test_inverse_arithmetic_requires_finite_values(
+    observed: float, computed: float
+) -> None:
+    """Non-finite values cannot become equal through arithmetic equivalence."""
+    assert not diagnostics._same_native_arithmetic(observed, computed)
+
+
+@pytest.mark.parametrize("scale", [1, 2])
+@pytest.mark.parametrize(
+    "changed",
+    [
+        "none",
+        "role",
+        "bounds",
+        "hwnd",
+        "parent",
+        "root",
+        "pid",
+        "uia_parent",
+        "identity",
+    ],
+)
+def test_inverse_retains_actual_scrollbar_identity_and_scaled_rail(
+    monkeypatch: pytest.MonkeyPatch, scale: int, changed: str
+) -> None:
+    """The rail comes from measured roles, including 34px at 200%."""
+    area, header = (
+        Rect(0, 0, 117 * scale, 80 * scale),
+        Rect(0, 0, 100 * scale, 10 * scale),
+    )
+    rail = Rect(header.right, 0, 17 * scale, area.height)
+    element = Mock()
+    element.control_type.return_value = diagnostics._SCROLLBAR_ROLE
+    element.offscreen.return_value = False
+    element.native_handle.return_value = 73
+    element.bounds.return_value = rail
+    target = Mock(area=area, header=header, _window=9)
+    target._walker.relative.side_effect = [element, None]
+    target._walker.parent.return_value = target._element
+    target._automation.pointer_result.return_value = element
+    target._automation.same_element.return_value = True
+    target._user.GetParent.return_value = 70
+    target._user.GetAncestor.return_value = 9
+    target.position.return_value = ScrollPosition(-1.0, 50.0, 12.0)
+    monkeypatch.setattr(
+        diagnostics,
+        "probe_target",
+        Mock(
+            return_value={
+                "uia": {
+                    "nodes": [
+                        {
+                            "parent": 0,
+                            "control_type": diagnostics._SCROLLBAR_ROLE,
+                            "native_handle": 73,
+                            "offscreen": False,
+                        }
+                    ]
+                }
+            }
+        ),
+    )
+    monkeypatch.setattr(diagnostics, "header_layout", Mock(return_value=(area, header)))
+    pid = Mock(return_value=456)
+    monkeypatch.setattr(diagnostics, "_window_pid", pid)
+    bar = diagnostics._InverseScrollBar(target, 456)
+    assert bar.rail == rail
+    assert bar.element is element
+    if changed == "role":
+        element.control_type.return_value = 50033
+    elif changed == "bounds":
+        element.bounds.return_value = Rect(rail.x + 1, rail.y, rail.width, rail.height)
+    elif changed == "hwnd":
+        element.native_handle.return_value = 74
+    elif changed == "parent":
+        target._user.GetParent.return_value = 71
+    elif changed == "root":
+        target._user.GetAncestor.return_value = 10
+    elif changed == "pid":
+        pid.return_value = 457
+    elif changed == "uia_parent":
+        target._walker.parent.return_value = None
+    elif changed == "identity":
+        target._automation.same_element.side_effect = [True, False]
+    if changed == "none":
+        bar.check()
+    else:
+        with pytest.raises(RuntimeError):
+            bar.check()
+    target.move.assert_not_called()
+
+
+@pytest.mark.parametrize("stable", [False, True])
+def test_inverse_stage_needs_two_identical_state_and_pixel_samples(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, stable: bool
+) -> None:
+    """Stable percentages cannot qualify a changing native pixel snapshot."""
+    bar = object.__new__(diagnostics._InverseScrollBar)
+    samples = [_inverse_sample("final") for _ in range(8)]
+    if not stable:
+        for i, sample in enumerate(samples):
+            sample.image.setPixel(1, 1, i)
+    reader = Mock(side_effect=samples)
+    monkeypatch.setattr(bar, "read", reader)
+    monkeypatch.setattr(bar, "check", Mock())
+    sleep = Mock()
+    monkeypatch.setattr(diagnostics.time, "sleep", sleep)
+    evidence: dict[str, object] = {}
+    if stable:
+        assert bar.settle("final", tmp_path, evidence) == samples[0]
+        assert reader.call_count == 2
+    else:
+        with pytest.raises(RuntimeError, match="final did not settle"):
+            bar.settle("final", tmp_path, evidence)
+        assert reader.call_count == 8
+    assert sleep.call_count == reader.call_count
+    assert not QImage(str(tmp_path / "inverse-final.png")).isNull()
+
+
+def _inverse_owner(
+    monkeypatch: pytest.MonkeyPatch, original: diagnostics._InverseSample
+) -> Mock:
+    owner = Mock(spec=diagnostics.ExplorerCase)
+    owner.pid = 456
+    owner._verified_window.return_value = WindowInfo(9, "Owned", Rect(0, 0, 117, 80))
+
+    def prepare(
+        _kind: str,
+        _point: Point,
+        output: Path,
+        _owner: object,
+        setup: dict[str, object],
+    ) -> None:
+        setup.update(settled_position=asdict(original.position), setup_writes=1)
+        assert original.image.save(str(output / "before.png"))
+
+    monkeypatch.setattr(diagnostics, "_position_explorer_start", prepare)
+    return owner
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        "exact",
+        "rail_only",
+        "original_changed",
+        "endpoint_changed",
+        "no_page_change",
+        "wrong_native",
+        "wrong_native_up",
+        "body_changed",
+        "header_changed",
+    ],
+)
+def test_inverse_experiment_makes_one_computed_restore_and_never_corrects(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, outcome: str
+) -> None:
+    """The fresh inverse is the only restore write, even if proof fails."""
+    original, endpoint, final = (
+        _inverse_sample(phase) for phase in ("original", "endpoint", "final")
+    )
+    if outcome in ("wrong_native", "wrong_native_up"):
+        final.native["pos"] = 7105 if outcome == "wrong_native" else 7107
+    elif outcome == "body_changed":
+        final.image.setPixel(20, 20, 0xFF123456)
+    elif outcome == "header_changed":
+        final.image.setPixel(5, 5, 0xFF123456)
+    elif outcome == "rail_only":
+        final.image.setPixel(110, 20, 0xFF123456)
+    elif outcome == "no_page_change":
+        endpoint.native["page"] = original.native["page"]
+    owner = _inverse_owner(monkeypatch, original)
+    target, context = Mock(), Mock()
+    context.__enter__, context.__exit__ = (
+        Mock(return_value=target),
+        Mock(return_value=False),
+    )
+    monkeypatch.setattr(diagnostics, "UiaScrollTarget", Mock(return_value=context))
+    bar = Mock(
+        geometry={}, handle=73, header=Rect(0, 0, 100, 10), rail=Rect(100, 0, 17, 80)
+    )
+    bar.parent = 70
+    bar.settle.side_effect = [original, endpoint, final]
+    bar.read.side_effect = [
+        final if outcome == "original_changed" else original,
+        original if outcome == "endpoint_changed" else endpoint,
+    ]
+    monkeypatch.setattr(diagnostics, "_InverseScrollBar", Mock(return_value=bar))
+    setup: dict[str, object] = {}
+    if outcome in ("exact", "rail_only"):
+        diagnostics._inverse_explorer_restore(Point(50, 50), tmp_path, owner, setup)
+        assert setup["experiment_passed"] is True
+    else:
+        with pytest.raises(RuntimeError):
+            diagnostics._inverse_explorer_restore(Point(50, 50), tmp_path, owner, setup)
+        assert "experiment_passed" not in setup
+    requested = [call.args[0] for call in target.move.call_args_list]
+    expected = [100.0, 50.10223507015441]
+    if outcome == "original_changed":
+        expected = []
+    elif outcome in ("endpoint_changed", "no_page_change"):
+        expected = [100.0]
+    assert requested == expected
+    assert original.position.vertical not in requested
+    assert setup["setup_writes"] == 1
+    evidence = setup["inverse_restore"]
+    assert isinstance(evidence, dict)
+    assert evidence["endpoint_and_restore_write_requests"] == expected
+    assert evidence["product_capture_qualification"] is False
+    context.__exit__.assert_called_once()
+
+
+def test_inverse_fixture_success_is_not_product_capture_qualification(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The separate experiment cannot mark native product capture as passed."""
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("RUNNER_ENVIRONMENT", "github-hosted")
+    owner = diagnostics.ExplorerCase()
+    owner.folder, owner.pid, owner.before = tmp_path / "fixture", 456, {8}
+    window = WindowInfo(9, "Owned", Rect(0, 0, 117, 80))
+    monkeypatch.setattr(owner, "_verified_window", Mock(return_value=window))
+    monkeypatch.setattr(owner, "_prepare", Mock(return_value=window))
+    gui = Mock()
+    monkeypatch.setattr(diagnostics.app, "AppCapture", gui)
+
+    def run(output: Path) -> None:
+        request = json.loads((output / "setup-request.json").read_text())
+        assert request["kind"] == "explorer-inverse-restore"
+        assert request["fixture"]["previous_handles"] == [8]
+        assert request["fixture"]["folder"] == str(owner.folder)
+        assert request["pid"] == 456
+        assert request["window"] == asdict(window)
+        (output / "setup.json").write_text(
+            '{"experiment_passed": true}', encoding="utf-8"
+        )
+
+    monkeypatch.setattr(diagnostics, "_run_explorer_setup", run)
+    report: dict[str, object] = {"success": False}
+    owner._inverse_case(tmp_path, report)
+    assert report["success"] is False
+    assert report["experiment_passed"] is True
+    assert report["product_capture_qualification"] is False
+    gui.assert_not_called()
+
+
+@pytest.mark.parametrize("boundary", ["read", "save"])
+@pytest.mark.parametrize("change", ["input", "foreground"])
+def test_inverse_final_read_or_save_change_cannot_pass_or_trigger_another_write(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, boundary: str, change: str
+) -> None:
+    """Input/focus changes at the second final read/save invalidate exact snapshots."""
+    original, endpoint, final = (
+        _inverse_sample(phase) for phase in ("original", "endpoint", "final")
+    )
+    owner = _inverse_owner(monkeypatch, original)
+    bar = _inverse_read_bar(monkeypatch)
+    target = cast("Mock", bar.target)
+    bar.header, bar.rail = Rect(0, 0, 100, 10), Rect(100, 0, 17, 80)
+    bar.geometry, bar.parent = {}, 70
+    target.position.return_value = final.position
+    target.frame.return_value = final.image
+    context = Mock()
+    context.__enter__, context.__exit__ = (
+        Mock(return_value=target),
+        Mock(return_value=False),
+    )
+    monkeypatch.setattr(diagnostics, "UiaScrollTarget", Mock(return_value=context))
+    actual_read = bar.read
+    state = {"native_reads": 0, "final_saves": 0, "changed": False}
+
+    def check() -> None:
+        if state["changed"]:
+            raise CaptureError(f"Stopped because {change} changed")
+
+    monkeypatch.setattr(bar, "check", Mock(side_effect=check))
+    target.check.side_effect = check
+
+    def read() -> diagnostics._InverseSample:
+        if target.move.call_count < 2:
+            return original if target.move.call_count == 0 else endpoint
+        return actual_read()
+
+    monkeypatch.setattr(bar, "read", read)
+
+    def native_state(*_args: object) -> dict[str, object]:
+        state["native_reads"] += 1
+        if boundary == "read" and state["native_reads"] == 4:
+            state["changed"] = True
+        return {
+            **final.native,
+            "success": True,
+            "window_valid": True,
+            "root_matches": True,
+        }
+
+    monkeypatch.setattr(diagnostics, "_scroll_info", native_state)
+    original_save = QImage.save
+
+    def save(image: QImage, filename: str) -> bool:
+        result = original_save(image, filename)
+        if filename.endswith("inverse-final.png"):
+            state["final_saves"] += 1
+            if boundary == "save" and state["final_saves"] == 2:
+                state["changed"] = True
+        return result
+
+    monkeypatch.setattr(QImage, "save", save)
+    monkeypatch.setattr(diagnostics.time, "sleep", Mock())
+    monkeypatch.setattr(diagnostics, "_InverseScrollBar", Mock(return_value=bar))
+    setup: dict[str, object] = {}
+    with pytest.raises(CaptureError, match=f"{change} changed"):
+        diagnostics._inverse_explorer_restore(Point(50, 50), tmp_path, owner, setup)
+    assert state["changed"] is True
+    assert "experiment_passed" not in setup
+    assert [call.args[0] for call in target.move.call_args_list] == [
+        100.0,
+        50.10223507015441,
+    ]
+    context.__exit__.assert_called_once()

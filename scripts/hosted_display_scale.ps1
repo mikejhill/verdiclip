@@ -30,6 +30,32 @@ public static class HostedScaleWindows {
     public static extern bool IsWindowVisible(IntPtr window);
     [DllImport("user32.dll")]
     public static extern IntPtr GetAncestor(IntPtr window, uint flags);
+    // Display-member layout of documented DEVMODEW, not its printer union.
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct DisplayMode {
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string DeviceName;
+        public ushort SpecVersion, DriverVersion, Size, DriverExtra;
+        public uint Fields;
+        public int PositionX, PositionY;
+        public uint Orientation, FixedOutput;
+        public short Color, Duplex, YResolution, TTOption, Collate;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string FormName;
+        public ushort LogPixels;
+        public uint BitsPerPel, PelsWidth, PelsHeight, DisplayFlags, DisplayFrequency;
+        public uint ICMMethod, ICMIntent, MediaType, DitherType, Reserved1, Reserved2;
+        public uint PanningWidth, PanningHeight;
+    }
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern bool EnumDisplaySettingsW(string device, int mode, ref DisplayMode data);
+    public static int[] PhysicalResolution() {
+        var mode = new DisplayMode();
+        mode.Size = (ushort)Marshal.SizeOf(typeof(DisplayMode));
+        // ENUM_CURRENT_SETTINGS returns physical pixels, never DPI-virtualized.
+        if (!EnumDisplaySettingsW(null, -1, ref mode) ||
+            (mode.Fields & 0x180000) != 0x180000 || mode.PelsWidth == 0 || mode.PelsHeight == 0)
+            throw new InvalidOperationException("Current physical display mode unavailable");
+        return new int[] { (int)mode.PelsWidth, (int)mode.PelsHeight };
+    }
     public static int Owner(IntPtr window) {
         uint process;
         if (GetWindowThreadProcessId(window, out process) == 0)
@@ -67,10 +93,25 @@ $settingsRoot = $null
 $identity = $null
 $process = $null
 $started = $null
-$outcome = @{ status = 'unsupported'; stage = 'preflight'; selection_attempted = $false }
+$outcome = @{
+    status = 'unsupported'; stage = 'preflight'; selection_attempted = $false
+    resolution_selection_attempted = $false; keep_changes_attempted = $false
+    keep_changes_confirmed = $false; resolution_verified = $false
+}
 
 function Assert-Budget {
     if ($clock.Elapsed.TotalSeconds -ge 45) { throw 'Settings discovery budget exhausted' }
+}
+
+function Get-Resolution {
+    $size = [HostedScaleWindows]::PhysicalResolution()
+    return @{ width = $size[0]; height = $size[1] }
+}
+
+function Assert-Resolution($size) {
+    if ($size.width -ne $outcome.resolution_target.width -or $size.height -ne $outcome.resolution_target.height) {
+        throw 'Physical display mode does not match the chosen allowed resolution'
+    }
 }
 
 function Get-NativeWindows([IntPtr]$parent, [string]$phase) {
@@ -304,6 +345,127 @@ try {
             Start-Sleep -Milliseconds 100
         }
     }
+    $outcome.stage = 'find_resolution'
+    $outcome.resolution_before = Get-Resolution
+    $resolutionNodes = @(Get-BoundedTree $settingsRoot)
+    $resolutionCombos = @($resolutionNodes | Where-Object {
+        $_.Current.ControlType -eq [Windows.Automation.ControlType]::ComboBox -and
+        $_.Current.Name -ceq 'Display resolution' -and
+        $_.Current.AutomationId -ceq 'SystemSettings_Display_Resolution_ComboBox'
+    })
+    $outcome.resolution_candidates = $resolutionCombos.Count
+    if ($resolutionCombos.Count -ne 1 -or -not $resolutionCombos[0].Current.IsEnabled) {
+        throw 'No unique enabled Display resolution combo'
+    }
+    $resolutionCombo = $resolutionCombos[0]
+    $resolutionPattern = $null
+    if (-not $resolutionCombo.TryGetCurrentPattern([Windows.Automation.ExpandCollapsePattern]::Pattern, [ref]$resolutionPattern)) {
+        throw 'Resolution control lacks ExpandCollapse support'
+    }
+    Assert-Owned $resolutionCombo
+    $resolutionPattern.Expand()
+    Start-Sleep -Milliseconds 200
+    $resolutionItems = @(Get-BoundedTree $resolutionCombo | Where-Object {
+        $_.Current.ControlType -eq [Windows.Automation.ControlType]::ListItem
+    })
+    $outcome.observed_resolution_items = @($resolutionItems | Select-Object -First 16 | ForEach-Object {
+        $name = $_.Current.Name
+        @{ name = $name.Substring(0, [Math]::Min(128, $name.Length)); enabled = $_.Current.IsEnabled }
+    })
+    # Inspect the finite preference list before making ONE selection. Never try
+    # a second mode after selection, confirmation, or scale discovery fails.
+    $allowedResolutions = @(
+        @{ width = 2560; height = 1440 }
+        @{ width = 1920; height = 1200 }
+        @{ width = 1600; height = 1200 }
+    )
+    $outcome.resolution_target = $null
+    foreach ($mode in $allowedResolutions) {
+        # ASCII x or U+00D7 multiplication sign, with the optional standard suffix.
+        $label = '\A' + $mode.width + '[ ]+[x\u00d7][ ]+' + $mode.height + '([ ]+\(Recommended\))?\z'
+        $resolutionOptions = @($resolutionItems | Where-Object {
+            $_.Current.IsEnabled -and $_.Current.Name -cmatch $label
+        })
+        $outcome.resolution_target_candidates = $resolutionOptions.Count
+        if ($resolutionOptions.Count -gt 1) { throw 'Ambiguous allowed resolution option' }
+        if ($resolutionOptions.Count -eq 1) { $outcome.resolution_target = $mode; break }
+    }
+    if ($null -eq $outcome.resolution_target) { throw 'No enabled allowed resolution option' }
+    if ($outcome.resolution_before.width -ne $outcome.resolution_target.width -or
+        $outcome.resolution_before.height -ne $outcome.resolution_target.height) {
+        $resolutionSelect = $null
+        if (-not $resolutionOptions[0].TryGetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern, [ref]$resolutionSelect)) {
+            throw 'Chosen resolution option lacks SelectionItem support'
+        }
+        $outcome.stage = 'select_resolution'
+        Assert-Owned $resolutionOptions[0]
+        $outcome.resolution_selection_attempted = $true
+        $outcome | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $OutputDirectory 'settings-outcome.json')
+        $resolutionSelect.Select()
+        $outcome.stage = 'confirm_resolution'
+        $confirmationClock = [Diagnostics.Stopwatch]::StartNew()
+        do {
+            Assert-Budget
+            Assert-Owned $null
+            $confirmationNodes = @(Get-BoundedTree $settingsRoot)
+            $outcome.observed_confirmation_controls = @($confirmationNodes | Where-Object {
+                $_.Current.ControlType -in @([Windows.Automation.ControlType]::Button, [Windows.Automation.ControlType]::Text)
+            } | Sort-Object { $_.Current.Name -notmatch '(?i)display|keep|revert' } |
+                Select-Object -First 16 | ForEach-Object {
+                $name = $_.Current.Name; $id = $_.Current.AutomationId
+                @{ name = $name.Substring(0, [Math]::Min(128, $name.Length))
+                   automation_id = $id.Substring(0, [Math]::Min(128, $id.Length))
+                   role = $_.Current.ControlType.Id; enabled = $_.Current.IsEnabled }
+            })
+            $keepButtons = @($confirmationNodes | Where-Object {
+                $_.Current.ControlType -eq [Windows.Automation.ControlType]::Button -and
+                $_.Current.Name -ceq 'Keep changes'
+            })
+            $prompts = @($confirmationNodes | Where-Object {
+                $_.Current.ControlType -eq [Windows.Automation.ControlType]::Text -and
+                $_.Current.Name -ceq 'Keep these display settings?'
+            })
+            $outcome.keep_candidates = $keepButtons.Count
+            $outcome.confirmation_prompt_candidates = $prompts.Count
+            if ($keepButtons.Count -gt 1 -or $prompts.Count -gt 1) { throw 'Ambiguous resolution confirmation' }
+            $outcome.resolution_selected = Get-Resolution
+            if ($keepButtons.Count -eq 1 -and $prompts.Count -eq 1) { break }
+            if ($confirmationClock.Elapsed.TotalSeconds -ge 5) { throw 'Owned resolution confirmation not observed' }
+            Start-Sleep -Milliseconds 100
+        } while ($true)
+        $keep = $keepButtons[0]
+        if (-not $keep.Current.IsEnabled) { throw 'Keep changes button is disabled' }
+        $keepPattern = $null
+        if (-not $keep.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern, [ref]$keepPattern)) {
+            throw 'Keep changes button lacks Invoke support'
+        }
+        Assert-Owned $prompts[0]
+        Assert-Owned $keep
+        Assert-Resolution $outcome.resolution_selected
+        $outcome.keep_runtime_id = $keep.GetRuntimeId() -join ','
+        $outcome.keep_changes_attempted = $true
+        $outcome | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $OutputDirectory 'settings-outcome.json')
+        $keepPattern.Invoke()
+        $confirmationClock.Restart()
+        do {
+            Assert-Budget
+            Assert-Owned $null
+            $remaining = @(Get-BoundedTree $settingsRoot | Where-Object {
+                ($_.GetRuntimeId() -join ',') -eq $outcome.keep_runtime_id -or
+                ($_.Current.ControlType -eq [Windows.Automation.ControlType]::Button -and $_.Current.Name -ceq 'Keep changes') -or
+                ($_.Current.ControlType -eq [Windows.Automation.ControlType]::Text -and $_.Current.Name -ceq 'Keep these display settings?')
+            })
+            if ($remaining.Count -eq 0) { $outcome.keep_changes_confirmed = $true; break }
+            if ($confirmationClock.Elapsed.TotalSeconds -ge 2) { throw 'Resolution confirmation did not disappear' }
+            Start-Sleep -Milliseconds 100
+        } while ($true)
+    } else {
+        Assert-Owned $resolutionCombo
+        $resolutionPattern.Collapse()
+    }
+    $outcome.resolution_after = Get-Resolution
+    Assert-Resolution $outcome.resolution_after
+    $outcome.resolution_verified = $true
     $outcome.stage = 'find_scale'
     # Reuse only the control validated in the adopted observation. No retargeting.
     if (-not $combo.Current.IsEnabled) { throw 'Scale control is disabled' }
@@ -349,6 +511,7 @@ try {
 } catch {
     $outcome.failure_type = $_.Exception.GetType().Name
     $outcome.reason = $_.Exception.Message.Substring(0, [Math]::Min(512, $_.Exception.Message.Length))
+    try { $outcome.resolution_failure_readback = Get-Resolution } catch { }
     Save-FailureImage
 } finally {
     $outcome.close_requested = $false

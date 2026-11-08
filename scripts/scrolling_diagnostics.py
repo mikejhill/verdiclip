@@ -11,31 +11,39 @@ import ctypes as c
 import ctypes.wintypes as w
 import html
 import json
+import math
 import os
 import subprocess
 import sys
 import threading
 import time
-from dataclasses import asdict
+from contextlib import ExitStack
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import override
+from typing import cast, override
 from unittest.mock import patch
 
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QWidget
 from scripts import simple_scroll_app as app
 from scripts import simple_scroll_native as native
+from scripts.scrolling_header_probe import _scroll_info, probe_target
+from scripts.scrolling_item_witness import header_layout
 from scripts.scrolling_oracle import verify_sequence
 from scripts.simple_scroll_handoff import Desktop
 
 from verdiclip.capture.scroll_helper import _watch_parent
 from verdiclip.capture.scrolling import END_PERCENT, ScrollPosition, ScrollResult
 from verdiclip.geometry import Point, Rect
-from verdiclip.platform.scrolling import UiaScrollTarget
+from verdiclip.platform.scrolling import UiaScrollTarget, _Interface
 from verdiclip.platform.windows import WindowInfo, WindowLocator
 
 _WAIT_TIMEOUT = 0x00000102
 _MIDDLE_SETUP_RANGE = 5.0
+_INVERSE_EXPERIMENT = "explorer-inverse-restore"
+_SCROLLBAR_ROLE = 50014
+_MAX_SCROLLBAR_CHILDREN = 64
+_MAX_SCROLLBAR_ANCESTORS = 8
 _EXPLORER_STARTS = {
     "explorer-middle-click": 50.0,
     "explorer-middle-enter": 50.0,
@@ -238,33 +246,7 @@ class ExplorerStartCapture(app.AppCapture):
                 result.image.save(str(self.output / "result.png")),
                 "Could not retain the complete image before restoration checks",
             )
-        try:
-            super()._terminal(result)
-        except RuntimeError:
-            if self.kind.startswith("explorer-bottom-") and result.image is None:
-                self._verify_rejected_start()
-            raise  # A withheld image remains a failed product diagnostic.
-
-    def _verify_rejected_start(self) -> None:
-        target = json.loads((self.output / "target.json").read_text(encoding="utf-8"))
-        movement = json.loads(
-            (self.output / "movement.json").read_text(encoding="utf-8")
-        )
-        before = QImage(str(self.output / "before.png"))
-        after = QImage(str(self.output / "after.png"))
-        evidence = {
-            "zero_production_writes": movement == {"writes": 0, "last_vertical": None},
-            "unchanged_state": target.get("initial_position")
-            == target.get("final_observed_position")
-            == asdict(self.start_position)
-            and target.get("area") == asdict(self.start_area),
-            "unchanged_pixels": not before.isNull() and before == after,
-        }
-        self.report["rejected_start_evidence"] = evidence
-        native._require(
-            all(evidence.values()),
-            "Rejected Explorer start did not preserve zero writes/state/pixels",
-        )
+        super()._terminal(result)
 
 
 def _run_explorer_setup(output: Path) -> None:
@@ -320,9 +302,12 @@ def _setup_explorer_child() -> None:
         owner.window = WindowInfo(
             window["handle"], window["title"], Rect(**window["bounds"])
         )
-        _position_explorer_start(
-            request["kind"], Point(**request["point"]), output, owner, setup
-        )
+        if request["kind"] == _INVERSE_EXPERIMENT:
+            _inverse_explorer_restore(Point(**request["point"]), output, owner, setup)
+        else:
+            _position_explorer_start(
+                request["kind"], Point(**request["point"]), output, owner, setup
+            )
     finally:
         (output / "setup.json").write_text(json.dumps(setup), encoding="utf-8")
 
@@ -393,6 +378,278 @@ def _position_explorer_start(
                 return
             previous, previous_image = current, image
     raise RuntimeError("The Explorer test starting position did not settle")
+
+
+@dataclass(frozen=True)
+class _InverseSample:
+    position: ScrollPosition
+    native: dict[str, int]
+    image: QImage
+
+    def record(self) -> dict[str, object]:
+        return {"position": asdict(self.position), "native": self.native}
+
+
+def _native_inverse_percent(native: dict[str, int], position: int) -> float:
+    """Map native scroll units to percentage, never to image pixel displacement."""
+    minimum, maximum, page = native["min"], native["max"], native["page"]
+    last = maximum - max(page - 1, 0)
+    if not (minimum < last <= maximum and page > 0 and minimum <= position <= last):
+        raise RuntimeError("Inverse experiment has an invalid native scroll range")
+    return END_PERCENT * (position - minimum) / (last - minimum)
+
+
+def _same_native_arithmetic(observed: float, computed: float) -> bool:
+    """Allow only finite equality or one adjacent float for operation ordering."""
+    return (
+        math.isfinite(observed)
+        and math.isfinite(computed)
+        and observed
+        in (
+            computed,
+            math.nextafter(computed, -math.inf),
+            math.nextafter(computed, math.inf),
+        )
+    )
+
+
+class _InverseScrollBar:
+    """Retain one verified direct native ScrollBar for this single experiment."""
+
+    def __init__(self, target: UiaScrollTarget, pid: int) -> None:
+        self.target, self.pid = target, pid
+        self.geometry = probe_target(target)
+        self.area, self.header = header_layout(self.geometry)
+        self.rail = Rect(
+            self.header.right,
+            self.area.top,
+            self.area.right - self.header.right,
+            self.area.height,
+        )
+        native._require(
+            0 < self.rail.width < self.area.width
+            and self.rail.width == round(self.rail.width)
+            and target.header == self.header,
+            "Inverse experiment requires the separately verified ScrollBar rail",
+        )
+        candidates: list[_Interface] = []
+        child = target._walker.relative(target._element, target._owners, 4)
+        for _ in range(_MAX_SCROLLBAR_CHILDREN):
+            if child is None:
+                break
+            if child.control_type() == _SCROLLBAR_ROLE and not child.offscreen():
+                candidates.append(child)
+            child = target._walker.relative(child, target._owners, 6)
+        native._require(
+            child is None and len(candidates) == 1,
+            "Inverse experiment requires one bounded direct ScrollBar",
+        )
+        self.element = candidates[0]
+        handle = self.element.native_handle()
+        if handle is None or handle <= 0:
+            raise RuntimeError("Inverse experiment lacks a native ScrollBar HWND")
+        self.handle = handle
+        tree = cast("dict[str, object]", self.geometry["uia"])
+        nodes = cast("list[dict[str, object]]", tree["nodes"])
+        native._require(
+            [
+                node["native_handle"]
+                for node in nodes
+                if node["parent"] == 0
+                and node["control_type"] == _SCROLLBAR_ROLE
+                and not node["offscreen"]
+            ]
+            == [handle],
+            "Inverse experiment ScrollBar differs from the measured geometry",
+        )
+        getter = target._user.GetParent
+        getter.argtypes, getter.restype = (w.HWND,), w.HWND
+        self.parent = int(getter(handle) or 0)
+        native._require(self.parent > 0, "Inverse experiment lacks a native parent")
+        self.horizontal = target.position().horizontal
+        self.range: tuple[int, int] | None = None
+        self.check()
+
+    def check(self) -> None:
+        target = self.target
+        target.check()
+        native._require(
+            self.element.control_type() == _SCROLLBAR_ROLE
+            and not self.element.offscreen()
+            and self.element.native_handle() == self.handle
+            and self.element.bounds() == self.rail
+            and target.area == self.area
+            and target.header == self.header
+            and target._user.GetParent(self.handle) == self.parent
+            and target._user.GetAncestor(self.handle, 2) == target._window
+            and _window_pid(self.handle) == self.pid,
+            "Inverse experiment ScrollBar geometry/role/HWND/parent/root/PID changed",
+        )
+        with ExitStack() as owners:
+            parent = target._walker.parent(self.element, owners)
+            native._require(
+                parent is not None
+                and target._automation.same_element(parent, target._element),
+                "Inverse experiment ScrollBar changed its direct UIA parent",
+            )
+            point = self.rail.center
+            current = target._automation.pointer_result(
+                7, owners, (w.POINT, w.POINT(round(point.x), round(point.y)))
+            )
+            for _ in range(_MAX_SCROLLBAR_ANCESTORS):
+                if current.control_type() == _SCROLLBAR_ROLE:
+                    native._require(
+                        target._automation.same_element(current, self.element),
+                        "Inverse experiment ScrollBar identity changed",
+                    )
+                    target.check()
+                    return
+                parent = target._walker.parent(current, owners)
+                if parent is None:
+                    break
+                current = parent
+        raise RuntimeError(
+            "Inverse experiment cannot reidentify the retained ScrollBar"
+        )
+
+    def read(self) -> _InverseSample:
+        self.check()
+        position = self.target.position()
+        raw = _scroll_info(self.target, self.handle, 2)
+        native._require(
+            raw["success"] is True
+            and raw["window_valid"] is True
+            and raw["root_matches"] is True
+            and all(type(raw[key]) is int for key in ("min", "max", "page", "pos")),
+            "Inverse experiment cannot read exact native ScrollBar state",
+        )
+        state = {key: cast("int", raw[key]) for key in ("min", "max", "page", "pos")}
+        bounds = (state["min"], state["max"])
+        # Only operation-order rounding may differ, never native state or H.
+        native._require(
+            position.horizontal == self.horizontal
+            and _same_native_arithmetic(
+                position.vertical, _native_inverse_percent(state, state["pos"])
+            )
+            and _same_native_arithmetic(
+                position.view_size,
+                END_PERCENT * state["page"] / (state["max"] - state["min"]),
+            )
+            and (self.range is None or bounds == self.range),
+            "Inverse experiment native/UIA mapping or min/max changed",
+        )
+        self.range = bounds
+        image = self.target.frame()
+        native._require(
+            position == self.target.position()
+            and raw == _scroll_info(self.target, self.handle, 2)
+            and not image.isNull()
+            and (image.width(), image.height()) == (self.area.width, self.area.height),
+            "Inverse experiment moved during native/pixel observation",
+        )
+        self.check()
+        return _InverseSample(position, state, image)
+
+    def settle(
+        self, phase: str, output: Path, evidence: dict[str, object]
+    ) -> _InverseSample:
+        observations: list[dict[str, object]] = []
+        evidence[f"{phase}_observations"] = observations
+        previous = None
+        for _ in range(8):
+            time.sleep(0.08)
+            current = self.read()
+            observations.append(current.record())
+            native._require(
+                current.image.save(str(output / f"inverse-{phase}.png")),
+                "Could not save inverse experiment pixels",
+            )
+            if current == previous:
+                self.check()
+                evidence[phase] = current.record()
+                return current
+            previous = current
+        raise RuntimeError(f"Inverse experiment {phase} did not settle")
+
+
+def _inverse_explorer_restore(
+    point: Point, output: Path, owner: ExplorerCase, setup: dict[str, object]
+) -> None:
+    """Try one fresh inverse mapping, never an old-percent write or correction loop."""
+    _position_explorer_start("explorer-middle-click", point, output, owner, setup)
+    writes: list[float] = []
+    evidence: dict[str, object] = {
+        "product_capture_qualification": False,
+        "native_units_are_pixels": False,
+        "endpoint_and_restore_write_requests": writes,
+    }
+    setup["inverse_restore"] = evidence
+    window = owner._verified_window()
+    if owner.pid is None:
+        raise RuntimeError("Inverse experiment lacks the retained fixture PID")
+    with UiaScrollTarget(point, window=window.handle) as target:
+        bar = _InverseScrollBar(target, owner.pid)
+        (output / "inverse-geometry.json").write_text(
+            json.dumps(bar.geometry, indent=2), encoding="utf-8"
+        )
+        evidence["retained_scrollbar"] = {
+            "hwnd": bar.handle,
+            "native_parent": bar.parent,
+            "role": _SCROLLBAR_ROLE,
+            "root": window.handle,
+            "pid": owner.pid,
+            "rail": asdict(bar.rail),
+            "direct_uia_parent_and_identity_checked": True,
+        }
+        original = bar.settle("original", output, evidence)
+        native._require(
+            asdict(original.position) == setup["settled_position"]
+            and original.image == QImage(str(output / "before.png")),
+            "Inverse experiment original differs from its one-write middle setup",
+        )
+        native._require(
+            owner._verified_window() == window, "Fixture changed before endpoint"
+        )
+        native._require(bar.read() == original, "Original changed before endpoint")
+        writes.append(END_PERCENT)
+        target.move(END_PERCENT)
+        endpoint = bar.settle("endpoint", output, evidence)
+        width, header = round(bar.header.width), round(bar.header.height)
+        native._require(
+            endpoint.position.vertical == END_PERCENT
+            and endpoint.native["page"] > original.native["page"]
+            and endpoint.image.copy(0, 0, width, header)
+            == original.image.copy(0, 0, width, header),
+            "Inverse experiment lacks the stable endpoint page transition/Header",
+        )
+        native._require(
+            owner._verified_window() == window, "Fixture changed before inverse"
+        )
+        native._require(bar.read() == endpoint, "Endpoint changed before inverse")
+        requested = _native_inverse_percent(endpoint.native, original.native["pos"])
+        native._require(0 < requested < END_PERCENT, "Inverse request is not interior")
+        evidence["computed_restore_percent"] = requested
+        writes.append(requested)
+        target.move(requested)
+        final = bar.settle("final", output, evidence)
+        checks = {
+            "original_native_position": final.native["pos"] == original.native["pos"],
+            "endpoint_page_preserved": final.native["page"] == endpoint.native["page"],
+            "header_pixels_exact": final.image.copy(0, 0, width, header)
+            == original.image.copy(0, 0, width, header),
+            "body_pixels_exact": final.image.copy(
+                0, header, width, final.image.height() - header
+            )
+            == original.image.copy(0, header, width, original.image.height() - header),
+        }
+        evidence["final_checks"] = checks
+        native._require(
+            all(checks.values()),
+            "One inverse write did not restore exact native position/content pixels",
+        )
+        bar.check()
+        target.check()
+        setup["experiment_passed"] = True
 
 
 def _explorer(
@@ -571,7 +828,49 @@ class ExplorerCase:
             patch.object(app, "_window", self._verified_window),
             patch.object(app, "_prepare", self._prepare),
         ):
-            _case(kind, output, report)
+            if kind == _INVERSE_EXPERIMENT:
+                self._inverse_case(output, report)
+            else:
+                _case(kind, output, report)
+
+    def _inverse_case(self, output: Path, report: dict[str, object]) -> None:
+        """Run a fresh fixture experiment, never the product capture qualification."""
+        native._require(
+            os.environ.get("GITHUB_ACTIONS") == "true"
+            and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted",
+            "Explorer inverse experiment requires a disposable hosted runner",
+        )
+        window = self._prepare(self._verified_window())
+        report.update(
+            window=asdict(window),
+            oracle="test-only one-write inverse-native-position experiment",
+            product_capture_qualification=False,
+        )
+        request = {
+            "kind": _INVERSE_EXPERIMENT,
+            "point": asdict(window.bounds.center),
+            "window": asdict(window),
+            "pid": self.pid,
+            "fixture": {
+                "folder": str(self.folder),
+                "previous_handles": sorted(self.before),
+            },
+        }
+        (output / "setup-request.json").write_text(
+            json.dumps(request), encoding="utf-8"
+        )
+        evidence = output / "setup.json"
+        evidence.write_text("{}", encoding="utf-8")
+        try:
+            _run_explorer_setup(output)
+        finally:
+            report["inverse_restore_experiment"] = json.loads(
+                evidence.read_text(encoding="utf-8")
+            )
+        setup = json.loads(evidence.read_text(encoding="utf-8"))
+        native._require(setup.get("experiment_passed") is True, "Experiment incomplete")
+        report["experiment_passed"] = True
+        # native.main's product success stays false, even if this experiment passes.
 
     def cleanup(
         self,
@@ -635,17 +934,20 @@ def main() -> None:
     kind = sys.argv[1]
     layout = kind.removesuffix("-click").removesuffix("-enter")
     native._require(
-        layout
-        in (
-            "edge-prose",
-            "edge-panel",
-            "edge-sidebar",
-            "edge-background",
-            "explorer",
-            "explorer-middle",
-            "explorer-bottom",
-        )
-        and kind.endswith(("-click", "-enter")),
+        kind == _INVERSE_EXPERIMENT
+        or (
+            layout
+            in (
+                "edge-prose",
+                "edge-panel",
+                "edge-sidebar",
+                "edge-background",
+                "explorer",
+                "explorer-middle",
+                "explorer-bottom",
+            )
+            and kind.endswith(("-click", "-enter"))
+        ),
         "Unknown representative document layout",
     )
     explorer = ExplorerCase()
@@ -666,7 +968,9 @@ def main() -> None:
             explorer.cleanup if is_explorer else native._stop_owned_process,
         ),
     ):
-        native.main(gui=True, case=explorer.run if is_explorer else _case)
+        native.main(
+            gui=kind != _INVERSE_EXPERIMENT, case=explorer.run if is_explorer else _case
+        )
 
 
 if __name__ == "__main__":

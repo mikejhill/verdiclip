@@ -1346,20 +1346,33 @@ def test_verified_terminal_normalization_restores_exact_initial_state(
     assert target.moves[-2:] == [100.0, start]
 
 
-def test_normalized_bottom_start_is_rejected_before_mutation() -> None:
-    """The draft must not knowingly strand an unsupported normalized start."""
+def test_header_bottom_start_with_unchanged_metrics_captures_and_restores() -> None:
+    """An ordinary bottom start needs no special initialization or extra restore."""
+    target = HeaderTarget()
+    target.offset = 480
+    initial, pixels = target.position(), target.frame()
+    result = transaction(target).run()
+    assert result.image is not None
+    assert result.image.height() == 625
+    assert result.image.copy(0, 25, 80, 600) == target.document
+    assert result.message == ""
+    assert result.restoration == "restored"
+    assert target.position() == initial
+    assert target.frame() == pixels
+    assert target.moves == [0.0, 12.5, 25.0, 37.5, 50.0, 62.5, 75.0, 87.5, 100.0]
+
+
+def test_bottom_to_top_unexpected_metric_change_stays_unresolved() -> None:
+    """Removing the draft preflight block does not accept changed start metrics."""
     target = EndpointTarget()
     target.move(100.0)
     target.moves.clear()
-    initial, pixels = target.position(), target.frame()
     result = transaction(target).run()
     assert result.image is None
-    assert "bottom is not yet supported" in result.message
-    assert result.restoration == "unchanged"
+    assert "moved unexpectedly" in result.message
+    assert result.restoration == "not restored: the provider write is unresolved"
     assert result.frames == 0
-    assert target.moves == []
-    assert target.position() == initial
-    assert target.frame() == pixels
+    assert target.moves == [0.0]
 
 
 @pytest.mark.parametrize(

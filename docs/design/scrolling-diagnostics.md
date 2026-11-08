@@ -55,11 +55,14 @@ setup variants. Middle requests 50% and must settle in the central 45–55% rang
 bottom must settle at exactly 100%. These are test-setup gates, not product
 tolerances. Their public UIA setup is separate from production
 capture, and their exact starting state and pixels are retained for restoration
-checks. A draft bottom-start rejection remains a failed diagnostic, even if it
-makes no capture writes and leaves the initial state unchanged. All starting
-positions require successful full capture and restoration before release.
-The thirteen diagnostic jobs run only
-on the named draft diagnostic branch and save exact native PNGs and numeric logs.
+checks. Bottom starts now attempt the same guarded movement to the top as other
+starting positions; any unexpected provider metric change still rejects without
+a speculative retry. All starting positions require successful full capture and
+restoration before release. The thirteen capture diagnostics and separate
+`explorer-inverse-restore` experiment run only on the named draft diagnostic
+branch and save exact native PNGs and numeric logs. The inverse experiment uses
+one native-range-derived UIA restoration request against an owned fixture; it
+does not exercise or qualify production restoration.
 
 A rejection fails its diagnostic job and is evidence to investigate, not a
 qualified success. Representative sequences retain all frames within the existing
