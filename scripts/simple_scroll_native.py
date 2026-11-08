@@ -23,7 +23,7 @@ from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer
 
 from verdiclip.capture.grabber import MssScreenSource
 from verdiclip.capture.scroll_helper import ScrollHelper
-from verdiclip.capture.scrolling import ScrollResult
+from verdiclip.capture.scrolling import END_PERCENT, ScrollPosition, ScrollResult
 from verdiclip.exceptions import CaptureError
 from verdiclip.geometry import Point
 from verdiclip.platform.scrolling import UiaScrollTarget
@@ -219,6 +219,32 @@ def _open_target(point: Point, report: dict[str, object]) -> UiaScrollTarget:
         raise
 
 
+def _position_start(
+    target: UiaScrollTarget, report: dict[str, object], *, nested: bool
+) -> ScrollPosition:
+    """Wait for the setup write before defining the helper's starting state."""
+    target.check()
+    # One test-only public UIA write avoids racing two asynchronous requests.
+    target._scroll.call(
+        4, (c.c_double, c.c_double), 35.0 if nested else -1.0, _START_PERCENT
+    )
+    report["immediate_setup_position"] = asdict(target.position())
+    previous = None
+    for _ in range(8):
+        time.sleep(0.08)
+        target.check()
+        current = target.position()
+        report["observed_setup_position"] = asdict(current)
+        if (
+            current == previous
+            and 0.0 < current.vertical < END_PERCENT
+            and (not nested or 0.0 < current.horizontal < END_PERCENT)
+        ):
+            return current
+        previous = current
+    raise RuntimeError("The application's test starting position did not settle")
+
+
 def _case(kind: str, output: Path, report: dict[str, object]) -> None:
     window = _prepare(_window())
     report["window"] = asdict(window)
@@ -239,12 +265,7 @@ def _case(kind: str, output: Path, report: dict[str, object]) -> None:
         report["provider_bounds"] = asdict(target._provider_bounds)
         report["viewport"] = asdict(target.area)
         report["initial"] = asdict(target.position())
-        if kind == "edge-nested":
-            # Test setup only: start the actual document horizontally scrolled.
-            # Runtime captures never write the horizontal percentage.
-            target._scroll.call(4, (c.c_double, c.c_double), 35.0, -1.0)
-        target.move(_START_PERCENT)
-        initial = target.position()
+        initial = _position_start(target, report, nested=kind == "edge-nested")
         report["start"] = asdict(initial)
         target.frame().save(str(output / "before.png"))
     outer_before = None

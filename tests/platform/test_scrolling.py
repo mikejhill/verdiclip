@@ -8,6 +8,7 @@ from unittest.mock import Mock
 
 import pytest
 from PySide6.QtGui import QImage
+from scripts.simple_scroll_native import _position_start
 
 from verdiclip.capture.grabber import FrozenScreen
 from verdiclip.capture.scrolling import ScrollPosition
@@ -302,3 +303,43 @@ def test_changed_native_handle_is_not_rebound() -> None:
     with pytest.raises(CaptureError, match="handle changed"):
         UiaScrollTarget._viewport(native)
     mock(native._user.GetClientRect).assert_not_called()
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_native_harness_waits_for_its_setup_write(
+    monkeypatch: pytest.MonkeyPatch, *, nested: bool
+) -> None:
+    """The actual helper starts only after one confirmed setup mutation."""
+    native = target()
+    start = ScrollPosition(0.0, 0.0, 20.0)
+    settled = ScrollPosition(34.9 if nested else 0.0, 36.8, 20.0)
+    native.position = Mock(side_effect=[start, start, settled, settled])
+    pause = Mock()
+    monkeypatch.setattr("scripts.simple_scroll_native.time.sleep", pause)
+    report: dict[str, object] = {}
+    assert _position_start(native, report, nested=nested) == settled
+    assert report["immediate_setup_position"] == {
+        "horizontal": 0.0,
+        "vertical": 0.0,
+        "view_size": 20.0,
+    }
+    mock(native._scroll.call).assert_called_once()
+    assert mock(native._scroll.call).call_args.args[2:] == (
+        35.0 if nested else -1.0,
+        37.0,
+    )
+    assert pause.call_count == 3
+
+
+def test_native_harness_does_not_reissue_unsettled_setup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stable but unchanged or horizontally reset setup is a failure."""
+    native = target()
+    native.position = Mock(return_value=ScrollPosition(0.0, 37.0, 20.0))
+    pause = Mock()
+    monkeypatch.setattr("scripts.simple_scroll_native.time.sleep", pause)
+    with pytest.raises(RuntimeError, match="did not settle"):
+        _position_start(native, {}, nested=True)
+    assert pause.call_count == 8
+    mock(native._scroll.call).assert_called_once()

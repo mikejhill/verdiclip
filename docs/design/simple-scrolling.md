@@ -103,3 +103,15 @@ missing scroll targets, preserving its initial input/window/process eligibility.
 Provider errors are never retried. Native cold launches now run with DEBUG off;
 the extra diagnostic probe still preserves any first failure. This is not a
 browser-flag change or proof of success in arbitrary applications.
+
+
+Run 42439957680 verified cold Edge discovery with INFO logging and captured the
+installed Notepad document in seven frames (967×2167). Visual review found all
+numbered lines 000–119 in order; before/after UIA percentages match. This remains
+one real-app smoke case, not universal text completeness qualification.
+Edge setup read V0 immediately after requesting V37, while later screenshots
+showed line35; the nested setup likewise read stale state. The harness now uses
+one combined setup write and bounded read-only polling before recording its
+starting state. No runtime tolerance, wait, matching, or deadline is changed by
+this diagnostic correction. Browser-drawn scrollbars remain visible in the
+saved Edge viewport and unqualified for full-width registration.
