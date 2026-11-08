@@ -14,7 +14,9 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
+from dataclasses import asdict
 from pathlib import Path
 from typing import override
 from unittest.mock import patch
@@ -26,11 +28,20 @@ from scripts import simple_scroll_native as native
 from scripts.scrolling_oracle import verify_sequence
 from scripts.simple_scroll_handoff import Desktop
 
-from verdiclip.capture.scrolling import ScrollResult
-from verdiclip.geometry import Point
+from verdiclip.capture.scroll_helper import _watch_parent
+from verdiclip.capture.scrolling import END_PERCENT, ScrollPosition, ScrollResult
+from verdiclip.geometry import Point, Rect
+from verdiclip.platform.scrolling import UiaScrollTarget
 from verdiclip.platform.windows import WindowInfo, WindowLocator
 
 _WAIT_TIMEOUT = 0x00000102
+_MIDDLE_SETUP_RANGE = 5.0
+_EXPLORER_STARTS = {
+    "explorer-middle-click": 50.0,
+    "explorer-middle-enter": 50.0,
+    "explorer-bottom-click": END_PERCENT,
+    "explorer-bottom-enter": END_PERCENT,
+}
 
 
 def document(layout: str) -> str:
@@ -96,11 +107,19 @@ def _inspect_result(
 def _case(kind: str, output: Path, report: dict[str, object]) -> None:
     report["oracle"] = "capture/restoration smoke only; inspect exact PNG content"
     report["gesture_hold_ms"] = 120
-    app._case(kind, output, report)
+    if kind in _EXPLORER_STARTS:
+        ExplorerStartCapture(kind, output, report).run()
+    else:
+        app._case(kind, output, report)
 
 
 def _verify_restored(capture: app.AppCapture, after: QImage) -> None:
     """Separate exact scroll-state restoration from the measured panel outline."""
+    if capture.result is not None and capture.result.image is not None:
+        native._require(
+            capture.result.image.save(str(capture.output / "result.png")),
+            "Could not retain the complete image before restoration checks",
+        )
     state = json.loads(
         (capture.output / "restoration.json").read_text(encoding="utf-8")
     )
@@ -147,6 +166,233 @@ class HumanDesktop(Desktop):
     ) -> None:
         """Complete a held gesture on the already-verified owned test widget."""
         super().click(widget, point, enter=enter, hold_ms=hold_ms)
+
+
+class ExplorerStartCapture(app.AppCapture):
+    """Prepare only owned Explorer variants before the actual chooser gesture."""
+
+    @override
+    def _settle_target_foreground(self) -> None:
+        super()._settle_target_foreground()
+        native._require(
+            os.environ.get("GITHUB_ACTIONS") == "true"
+            and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted",
+            "Explorer start setup requires a disposable hosted runner",
+        )
+        # ExplorerCase patches this lookup to recheck the exact folder/HWND/PID.
+        native._require(
+            app._window() == self.window, "The owned Explorer setup window changed"
+        )
+        request = {
+            "kind": self.kind,
+            "point": asdict(self.point),
+            "window": asdict(self.window),
+            "pid": self.report["explorer_window_pid"],
+            "fixture": self.report["explorer_fixture"],
+        }
+        (self.output / "setup-request.json").write_text(
+            json.dumps(request), encoding="utf-8"
+        )
+        evidence = self.output / "setup.json"
+        evidence.write_text("{}", encoding="utf-8")
+        try:
+            _run_explorer_setup(self.output)
+        finally:
+            self.report["explorer_start_setup"] = json.loads(
+                evidence.read_text(encoding="utf-8")
+            )
+        setup = json.loads(evidence.read_text(encoding="utf-8"))
+        native._require(
+            app._window() == self.window, "The owned Explorer setup window changed"
+        )
+        self.start_position = ScrollPosition(**setup["settled_position"])
+        self.start_area = Rect(**setup["area"])
+        native._require(
+            not QImage(str(self.output / "before.png")).isNull(),
+            "The Explorer setup child did not retain its initial PNG",
+        )
+
+    @override
+    def _verify_restored(self, after: QImage) -> None:
+        state = json.loads(
+            (self.output / "restoration.json").read_text(encoding="utf-8")
+        )
+        target = json.loads((self.output / "target.json").read_text(encoding="utf-8"))
+        native._require(
+            state["initial"] == state["final"] == asdict(self.start_position)
+            and target["initial_position"] == state["initial"]
+            and target["area"] == asdict(self.start_area),
+            "Explorer did not restore the actual starting scroll state",
+        )
+        before = QImage(str(self.output / "before.png"))
+        native._require(
+            not before.isNull() and before == after,
+            "Explorer did not restore the actual starting pixels",
+        )
+        self.report.update(restored_scroll_state=state, restored_pixels="exact")
+
+    @override
+    def _terminal(self, result: ScrollResult) -> None:
+        if result.image is not None:
+            native._require(
+                result.image.save(str(self.output / "result.png")),
+                "Could not retain the complete image before restoration checks",
+            )
+        try:
+            super()._terminal(result)
+        except RuntimeError:
+            if self.kind.startswith("explorer-bottom-") and result.image is None:
+                self._verify_rejected_start()
+            raise  # A withheld image remains a failed product diagnostic.
+
+    def _verify_rejected_start(self) -> None:
+        target = json.loads((self.output / "target.json").read_text(encoding="utf-8"))
+        movement = json.loads(
+            (self.output / "movement.json").read_text(encoding="utf-8")
+        )
+        before = QImage(str(self.output / "before.png"))
+        after = QImage(str(self.output / "after.png"))
+        evidence = {
+            "zero_production_writes": movement == {"writes": 0, "last_vertical": None},
+            "unchanged_state": target.get("initial_position")
+            == target.get("final_observed_position")
+            == asdict(self.start_position)
+            and target.get("area") == asdict(self.start_area),
+            "unchanged_pixels": not before.isNull() and before == after,
+        }
+        self.report["rejected_start_evidence"] = evidence
+        native._require(
+            all(evidence.values()),
+            "Rejected Explorer start did not preserve zero writes/state/pixels",
+        )
+
+
+def _run_explorer_setup(output: Path) -> None:
+    """Keep one child owned through a 20-second wait and five-second kill/reap."""
+    script = (
+        "from scripts.scrolling_diagnostics import _setup_explorer_child; "
+        "_setup_explorer_child()"
+    )
+    with (output / "setup.log").open("wb") as log:
+        process = subprocess.Popen(  # noqa: S603 - fixed owned diagnostic child
+            [sys.executable, "-c", script, str(output.resolve())],
+            stdin=subprocess.PIPE,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+        )
+        try:
+            native._require(
+                process.wait(timeout=20) == 0, "Explorer setup child failed"
+            )
+        finally:
+            try:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=5)
+            finally:
+                if process.stdin is not None:
+                    process.stdin.close()
+
+
+def _setup_explorer_child() -> None:
+    """Initialize UIA only in a fresh process without a QApplication/OLE thread."""
+    threading.Thread(
+        target=_watch_parent, args=(threading.Event(),), daemon=True
+    ).start()
+    output = Path(sys.argv[1])
+    setup: dict[str, object] = {}
+    try:
+        user = c.WinDLL("user32", use_last_error=True)
+        user.SetProcessDpiAwarenessContext.argtypes = (c.c_void_p,)
+        user.SetProcessDpiAwarenessContext.restype = w.BOOL
+        native._require(
+            user.SetProcessDpiAwarenessContext(c.c_void_p(-4)),
+            "Could not establish setup physical-pixel coordinates",
+        )
+        request = json.loads(
+            (output / "setup-request.json").read_text(encoding="utf-8")
+        )
+        owner = ExplorerCase()
+        owner.folder = Path(request["fixture"]["folder"])
+        owner.before = set(request["fixture"]["previous_handles"])
+        owner.pid = request["pid"]
+        window = request["window"]
+        owner.window = WindowInfo(
+            window["handle"], window["title"], Rect(**window["bounds"])
+        )
+        _position_explorer_start(
+            request["kind"], Point(**request["point"]), output, owner, setup
+        )
+    finally:
+        (output / "setup.json").write_text(json.dumps(setup), encoding="utf-8")
+
+
+def _position_explorer_start(
+    kind: str, point: Point, output: Path, owner: ExplorerCase, setup: dict[str, object]
+) -> None:
+    """Own all setup UIA interfaces in the child, releasing before it exits."""
+    native._require(
+        os.environ.get("GITHUB_ACTIONS") == "true"
+        and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted",
+        "Explorer start setup requires a disposable hosted runner",
+    )
+    window = owner._verified_window()
+    native._require(window == owner.window, "The owned Explorer setup window changed")
+    requested = _EXPLORER_STARTS[kind]
+    observations: list[dict[str, float]] = []
+    setup.update(requested_vertical=requested, observed_positions=observations)
+    with UiaScrollTarget(point, window=window.handle) as target:
+        target.check()
+        before = target.position()
+        setup["pre_setup_position"] = asdict(before)
+        native._require(
+            owner._verified_window() == window,
+            "The owned Explorer setup window changed",
+        )
+        target.move(requested)  # One guarded public UIA setup write, no wheel.
+        setup["setup_writes"] = 1
+        setup["immediate_position"] = asdict(target.position())
+        previous, previous_image = None, QImage()
+        for _ in range(8):
+            time.sleep(0.08)
+            target.check()
+            current = target.position()
+            image = target.frame()
+            observations.append(asdict(current))
+            # Test-only 45-55% qualification permits row quantization around 50%.
+            # Preserve the exact tuple; this does not relax product validation.
+            positioned = (
+                current.vertical == END_PERCENT
+                if requested == END_PERCENT
+                else abs(current.vertical - requested) <= _MIDDLE_SETUP_RANGE
+            )
+            if (
+                positioned
+                and current.horizontal == before.horizontal
+                and 0.0 < current.view_size < END_PERCENT
+                and current == previous == target.position()
+                and not image.isNull()
+                and image == previous_image
+            ):
+                native._require(
+                    owner._verified_window() == window,
+                    "The owned Explorer setup window changed",
+                )
+                target.check()
+                native._require(
+                    target.position() == current and target.frame() == image,
+                    "The Explorer start changed during ownership verification",
+                )
+                setup["settled_position"] = asdict(current)
+                setup["area"] = asdict(target.area)
+                setup["initial_png"] = "before.png"
+                native._require(
+                    image.save(str(output / "before.png")),
+                    "Could not save the actual Explorer starting view",
+                )
+                return
+            previous, previous_image = current, image
+    raise RuntimeError("The Explorer test starting position did not settle")
 
 
 def _explorer(
@@ -315,6 +561,11 @@ class ExplorerCase:
             None if self.process is None else self.process.pid
         )
         report["explorer_new_exact_folder_window"] = True
+        if kind in _EXPLORER_STARTS:
+            report["explorer_fixture"] = {
+                "folder": str(self.folder),
+                "previous_handles": sorted(self.before),
+            }
         with (
             patch.object(native, "_window", self._verified_window),
             patch.object(app, "_window", self._verified_window),
@@ -385,11 +636,20 @@ def main() -> None:
     layout = kind.removesuffix("-click").removesuffix("-enter")
     native._require(
         layout
-        in ("edge-prose", "edge-panel", "edge-sidebar", "edge-background", "explorer")
+        in (
+            "edge-prose",
+            "edge-panel",
+            "edge-sidebar",
+            "edge-background",
+            "explorer",
+            "explorer-middle",
+            "explorer-bottom",
+        )
         and kind.endswith(("-click", "-enter")),
         "Unknown representative document layout",
     )
     explorer = ExplorerCase()
+    is_explorer = layout.startswith("explorer")
     with (
         patch.object(native, "_document", lambda **_kwargs: document(layout)),
         patch.object(app, "_verify_edge_rows", _inspect_result),
@@ -398,15 +658,15 @@ def main() -> None:
         patch.object(
             native,
             "_launch",
-            explorer.launch if layout == "explorer" else native._launch,
+            explorer.launch if is_explorer else native._launch,
         ),
         patch.object(
             native,
             "_stop_owned_process",
-            explorer.cleanup if layout == "explorer" else native._stop_owned_process,
+            explorer.cleanup if is_explorer else native._stop_owned_process,
         ),
     ):
-        native.main(gui=True, case=explorer.run if layout == "explorer" else _case)
+        native.main(gui=True, case=explorer.run if is_explorer else _case)
 
 
 if __name__ == "__main__":

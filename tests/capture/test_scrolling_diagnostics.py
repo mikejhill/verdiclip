@@ -5,14 +5,18 @@ from __future__ import annotations
 import ctypes as c
 import ctypes.wintypes as w
 import json
+from dataclasses import asdict
 from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QWidget
 from scripts import scrolling_diagnostics as diagnostics
 
-from verdiclip.geometry import Point
+from verdiclip.capture.scrolling import ScrollPosition, ScrollResult
+from verdiclip.geometry import Point, Rect
+from verdiclip.platform.windows import WindowInfo
 
 
 @pytest.mark.parametrize("layout", ["edge-prose", "edge-panel", "edge-sidebar"])
@@ -358,3 +362,480 @@ def test_explorer_cleanup_keeps_short_close_bound_and_shared_deadline(
         )
     user.PostMessageW.assert_called_once_with(9, 0x0010, 0, 0)
     kill.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "kind", ["explorer-click", "edge-panel-enter", *diagnostics._EXPLORER_STARTS]
+)
+def test_start_variants_leave_ordinary_app_cases_unchanged(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, kind: str
+) -> None:
+    """Only explicitly named Explorer starts install the diagnostic subclass."""
+    ordinary, start = Mock(), Mock()
+    monkeypatch.setattr(diagnostics.app, "_case", ordinary)
+    monkeypatch.setattr(diagnostics, "ExplorerStartCapture", start)
+    report: dict[str, object] = {}
+    diagnostics._case(kind, tmp_path, report)
+    if kind in diagnostics._EXPLORER_STARTS:
+        start.assert_called_once_with(kind, tmp_path, report)
+        start.return_value.run.assert_called_once_with()
+        ordinary.assert_not_called()
+    else:
+        ordinary.assert_called_once_with(kind, tmp_path, report)
+        start.assert_not_called()
+
+
+@pytest.mark.parametrize("kind", list(diagnostics._EXPLORER_STARTS))
+def test_start_variants_keep_verified_explorer_launch_and_cleanup(
+    monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    """Middle/bottom must not accidentally launch the native Notepad fallback."""
+    runner = Mock(spec=diagnostics.ExplorerCase)
+    monkeypatch.setattr(diagnostics, "ExplorerCase", Mock(return_value=runner))
+    monkeypatch.setattr(diagnostics.sys, "argv", ["diagnostics", kind])
+
+    def main(*, gui: bool, case: object) -> None:
+        assert gui
+        assert case == runner.run
+        assert diagnostics.native._launch == runner.launch
+        assert diagnostics.native._stop_owned_process == runner.cleanup
+
+    monkeypatch.setattr(diagnostics.native, "main", main)
+    diagnostics.main()
+
+
+def _start_capture(
+    output: Path, kind: str = "explorer-middle-click"
+) -> diagnostics.ExplorerStartCapture:
+    capture = object.__new__(diagnostics.ExplorerStartCapture)
+    capture.kind, capture.output, capture.report = kind, output, {}
+    capture.window = WindowInfo(9, "Owned fixture", Rect(1, 2, 100, 100))
+    capture.point = Point(30, 40)
+    capture.report.update(
+        explorer_window_pid=456,
+        explorer_fixture={"folder": str(output / "fixture"), "previous_handles": [8]},
+    )
+    return capture
+
+
+def _image(color: int = 0xFFAA6677) -> QImage:
+    image = QImage(10, 20, QImage.Format.Format_RGB32)
+    image.fill(color)
+    return image
+
+
+@pytest.mark.parametrize(
+    ("kind", "vertical"),
+    [
+        (kind, vertical)
+        for kind in diagnostics._EXPLORER_STARTS
+        for vertical in ([45.0, 49.8, 55.0] if "middle" in kind else [100.0])
+    ],
+)
+def test_explorer_start_child_settles_with_scoped_uia_lifetime(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, kind: str, vertical: float
+) -> None:
+    """One setup move precedes bounded stable readback and an exact initial PNG."""
+    capture = _start_capture(tmp_path, kind)
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("RUNNER_ENVIRONMENT", "github-hosted")
+    steps: list[str] = []
+    owner = Mock(spec=diagnostics.ExplorerCase)
+    owner.window = capture.window
+    owner._verified_window.return_value = capture.window
+    sleep = Mock()
+    monkeypatch.setattr(diagnostics.time, "sleep", sleep)
+    requested = diagnostics._EXPLORER_STARTS[kind]
+    before = ScrollPosition(-1.0, 0.0, 12.0)
+    # Native row quantization may give an interior percentage near the request.
+    start = ScrollPosition(-1.0, vertical, 12.0)
+    target = Mock(area=Rect(1, 2, 10, 20))
+    target.position.return_value = before
+
+    def move(percent: float) -> None:
+        assert percent == requested
+        steps.append("public UIA setup")
+        target.position.return_value = start
+
+    target.move.side_effect = move
+    target.frame.return_value = _image()
+    context = Mock()
+    context.__enter__ = Mock(return_value=target)
+    context.__exit__ = Mock(side_effect=lambda *_: steps.append("UIA released"))
+    constructor = Mock(return_value=context)
+    monkeypatch.setattr(diagnostics, "UiaScrollTarget", constructor)
+    setup: dict[str, object] = {}
+    diagnostics._position_explorer_start(kind, capture.point, tmp_path, owner, setup)
+    assert steps == ["public UIA setup", "UIA released"]
+    assert owner._verified_window.call_count == 3
+    constructor.assert_called_once_with(capture.point, window=9)
+    target.move.assert_called_once_with(requested)
+    assert sleep.call_count == 2
+    assert QImage(str(tmp_path / "before.png")) == _image()
+    assert setup == {
+        "requested_vertical": requested,
+        "pre_setup_position": asdict(before),
+        "immediate_position": asdict(start),
+        "observed_positions": [asdict(start), asdict(start)],
+        "setup_writes": 1,
+        "settled_position": asdict(start),
+        "area": asdict(target.area),
+        "initial_png": "before.png",
+    }
+
+
+@pytest.mark.parametrize(
+    ("invalid", "observed"),
+    [
+        ("host", 50.0),
+        ("identity", 50.0),
+        ("ignored", 0.0),
+        ("near_top", 1.0),
+        ("below_middle", 44.9),
+        ("above_middle", 55.1),
+        ("near_bottom", 99.0),
+        ("pixels", 50.0),
+    ],
+)
+def test_explorer_start_rejects_unsafe_or_unsettled_setup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, invalid: str, observed: float
+) -> None:
+    """An ignored write, near-end result or moving pixels cannot qualify as middle."""
+    capture = _start_capture(tmp_path)
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv(
+        "RUNNER_ENVIRONMENT", "self-hosted" if invalid == "host" else "github-hosted"
+    )
+    owner = Mock(spec=diagnostics.ExplorerCase)
+    owner.window = capture.window
+    owner._verified_window.return_value = (
+        Mock(handle=10) if invalid == "identity" else capture.window
+    )
+    sleep = Mock()
+    monkeypatch.setattr(diagnostics.time, "sleep", sleep)
+    target = Mock()
+    target.position.return_value = ScrollPosition(-1.0, 0.0, 12.0)
+    target.move.side_effect = lambda _percent: setattr(
+        target.position, "return_value", ScrollPosition(-1.0, observed, 12.0)
+    )
+    if invalid == "pixels":
+        target.frame.side_effect = [_image(i) for i in range(8)]
+    else:
+        target.frame.return_value = _image()
+    context = Mock()
+    context.__enter__ = Mock(return_value=target)
+    context.__exit__ = Mock(return_value=False)
+    constructor = Mock(return_value=context)
+    monkeypatch.setattr(diagnostics, "UiaScrollTarget", constructor)
+    setup: dict[str, object] = {}
+    with pytest.raises(RuntimeError):
+        diagnostics._position_explorer_start(
+            capture.kind, capture.point, tmp_path, owner, setup
+        )
+    assert not (tmp_path / "before.png").exists()
+    if invalid in ("host", "identity"):
+        constructor.assert_not_called()
+        target.move.assert_not_called()
+    else:
+        target.move.assert_called_once_with(50.0)
+        assert sleep.call_count == 8
+        assert setup["pre_setup_position"] == asdict(ScrollPosition(-1.0, 0.0, 12.0))
+        assert (
+            setup["observed_positions"]
+            == [asdict(ScrollPosition(-1.0, observed, 12.0))] * 8
+        )
+        assert "settled_position" not in setup
+        context.__exit__.assert_called_once()
+
+
+@pytest.mark.parametrize("kind", list(diagnostics._EXPLORER_STARTS))
+def test_gui_setup_passes_only_json_to_child_after_final_preparation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, kind: str
+) -> None:
+    """No UIA instance or COM interface may be created in the QApplication hook."""
+    capture = _start_capture(tmp_path, kind)
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("RUNNER_ENVIRONMENT", "github-hosted")
+    steps: list[str] = []
+    monkeypatch.setattr(
+        diagnostics.app.AppCapture,
+        "_settle_target_foreground",
+        lambda _: steps.append("final preparation"),
+    )
+    verify = Mock(return_value=capture.window)
+    monkeypatch.setattr(diagnostics.app, "_window", verify)
+    uia = Mock()
+    monkeypatch.setattr(diagnostics, "UiaScrollTarget", uia)
+    start = ScrollPosition(-1.0, diagnostics._EXPLORER_STARTS[kind], 12.0)
+    area = Rect(1, 2, 10, 20)
+    setup = {"settled_position": asdict(start), "area": asdict(area)}
+
+    def run(output: Path) -> None:
+        assert output == tmp_path
+        steps.append("owned subprocess")
+        assert json.loads((output / "setup-request.json").read_text()) == {
+            "kind": kind,
+            "point": asdict(capture.point),
+            "window": asdict(capture.window),
+            "pid": 456,
+            "fixture": capture.report["explorer_fixture"],
+        }
+        (output / "setup.json").write_text(json.dumps(setup), encoding="utf-8")
+        assert _image().save(str(output / "before.png"))
+
+    monkeypatch.setattr(diagnostics, "_run_explorer_setup", run)
+    capture._settle_target_foreground()
+    assert steps == ["final preparation", "owned subprocess"]
+    assert capture.start_position == start
+    assert capture.start_area == area
+    assert capture.report["explorer_start_setup"] == setup
+    assert verify.call_count == 2
+    uia.assert_not_called()
+
+
+@pytest.mark.parametrize("outcome", ["success", "failed", "timeout", "kill_timeout"])
+def test_setup_child_has_bounded_wait_kill_reap_and_owned_stdin(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, outcome: str
+) -> None:
+    """A blocked native call cannot survive setup timeout or leave stdin owned."""
+    process = Mock()
+    process.wait.return_value = 0 if outcome == "success" else 1
+    process.poll.return_value = process.wait.return_value
+    if outcome in ("timeout", "kill_timeout"):
+        process.poll.return_value = None
+        process.wait.side_effect = [
+            diagnostics.subprocess.TimeoutExpired("setup", 20),
+            diagnostics.subprocess.TimeoutExpired("setup", 5)
+            if outcome == "kill_timeout"
+            else 1,
+        ]
+    popen = Mock(return_value=process)
+    monkeypatch.setattr(diagnostics.subprocess, "Popen", popen)
+    if outcome == "success":
+        diagnostics._run_explorer_setup(tmp_path)
+    elif outcome == "failed":
+        with pytest.raises(RuntimeError, match="setup child failed"):
+            diagnostics._run_explorer_setup(tmp_path)
+    else:
+        with pytest.raises(diagnostics.subprocess.TimeoutExpired):
+            diagnostics._run_explorer_setup(tmp_path)
+    command = popen.call_args.args[0]
+    assert command[:2] == [diagnostics.sys.executable, "-c"]
+    assert "_setup_explorer_child()" in command[2]
+    assert command[3] == str(tmp_path.resolve())
+    assert popen.call_args.kwargs["stdin"] == diagnostics.subprocess.PIPE
+    assert popen.call_args.kwargs["stderr"] == diagnostics.subprocess.STDOUT
+    assert process.wait.call_args_list[0].kwargs == {"timeout": 20}
+    if outcome in ("timeout", "kill_timeout"):
+        process.kill.assert_called_once_with()
+        assert process.wait.call_args_list[1].kwargs == {"timeout": 5}
+    else:
+        process.kill.assert_not_called()
+    process.stdin.close.assert_called_once_with()
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_setup_child_rebuilds_ownership_without_constructing_gui(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, fails: bool
+) -> None:
+    """The process entry installs EOF retirement and retains even partial evidence."""
+    request = {
+        "kind": "explorer-middle-click",
+        "point": {"x": 30, "y": 40},
+        "window": asdict(WindowInfo(9, "Owned fixture", Rect(1, 2, 100, 100))),
+        "pid": 456,
+        "fixture": {"folder": str(tmp_path / "fixture"), "previous_handles": [8]},
+    }
+    (tmp_path / "setup-request.json").write_text(json.dumps(request), encoding="utf-8")
+    monkeypatch.setattr(diagnostics.sys, "argv", ["-c", str(tmp_path)])
+    thread = Mock()
+    monkeypatch.setattr(diagnostics.threading, "Thread", thread)
+    gui = Mock()
+    monkeypatch.setattr(diagnostics.app, "AppCapture", gui)
+    user = Mock()
+    monkeypatch.setattr(diagnostics.c, "WinDLL", Mock(return_value=user), raising=False)
+
+    def position(
+        kind: str,
+        point: Point,
+        output: Path,
+        owner: diagnostics.ExplorerCase,
+        setup: dict[str, object],
+    ) -> None:
+        assert kind == request["kind"]
+        assert point == Point(30, 40)
+        assert output == tmp_path
+        assert owner.folder == tmp_path / "fixture"
+        assert owner.before == {8}
+        assert owner.pid == 456
+        assert owner.window is not None
+        assert asdict(owner.window) == request["window"]
+        setup["pre_setup_position"] = asdict(ScrollPosition(-1.0, 0.0, 12.0))
+        if fails:
+            raise RuntimeError("UIA setup failed")
+
+    monkeypatch.setattr(diagnostics, "_position_explorer_start", position)
+    if fails:
+        with pytest.raises(RuntimeError, match="UIA setup failed"):
+            diagnostics._setup_explorer_child()
+    else:
+        diagnostics._setup_explorer_child()
+    assert "pre_setup_position" in json.loads((tmp_path / "setup.json").read_text())
+    assert thread.call_args.kwargs["target"] is diagnostics._watch_parent
+    assert thread.call_args.kwargs["daemon"] is True
+    thread.return_value.start.assert_called_once_with()
+    assert (
+        user.SetProcessDpiAwarenessContext.call_args.args[0].value
+        == c.c_void_p(-4).value
+    )
+    gui.assert_not_called()
+
+
+def _start_evidence(capture: diagnostics.ExplorerStartCapture) -> None:
+    capture.start_position = ScrollPosition(
+        -1.0, diagnostics._EXPLORER_STARTS[capture.kind], 12.0
+    )
+    capture.start_area = Rect(1, 2, 10, 20)
+    start = asdict(capture.start_position)
+    (capture.output / "target.json").write_text(
+        json.dumps(
+            {
+                "initial_position": start,
+                "final_observed_position": start,
+                "area": asdict(capture.start_area),
+            }
+        ),
+        encoding="utf-8",
+    )
+    (capture.output / "restoration.json").write_text(
+        json.dumps({"initial": start, "final": start}), encoding="utf-8"
+    )
+    (capture.output / "movement.json").write_text(
+        '{"writes": 0, "last_vertical": null}', encoding="utf-8"
+    )
+    assert _image().save(str(capture.output / "before.png"))
+    assert _image().save(str(capture.output / "after.png"))
+    assert _image(0xFFFFFFFF).save(str(capture.output / "frame-0.png"))
+
+
+@pytest.mark.parametrize("invalid", ["none", "pixels", "state", "target", "area"])
+def test_middle_restoration_uses_actual_start_not_top_frame(
+    tmp_path: Path, invalid: str
+) -> None:
+    """Complete image coverage and original-view restoration are separate checks."""
+    capture = _start_capture(tmp_path)
+    _start_evidence(capture)
+    after = _image(0xFFFFFFFF) if invalid == "pixels" else _image()
+    if invalid == "state":
+        capture.start_position = ScrollPosition(-1.0, 0.0, 12.0)
+    elif invalid == "target":
+        target = json.loads((tmp_path / "target.json").read_text(encoding="utf-8"))
+        target["initial_position"]["vertical"] = 0.0
+        (tmp_path / "target.json").write_text(json.dumps(target), encoding="utf-8")
+    elif invalid == "area":
+        capture.start_area = Rect(2, 2, 10, 20)
+    if invalid == "none":
+        capture._verify_restored(after)
+        assert capture.report["restored_pixels"] == "exact"
+    else:
+        with pytest.raises(RuntimeError, match="actual starting"):
+            capture._verify_restored(after)
+
+
+@pytest.mark.parametrize("invalid", ["none", "writes", "state", "pixels", "missing"])
+def test_bottom_rejection_records_unchanged_evidence_but_remains_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, invalid: str
+) -> None:
+    """Even proven zero-write/no-pixel-change rejection must leave the job red."""
+    capture = _start_capture(tmp_path, "explorer-bottom-enter")
+    _start_evidence(capture)
+    if invalid == "writes":
+        (tmp_path / "movement.json").write_text(
+            '{"writes": 1, "last_vertical": 0.0}', encoding="utf-8"
+        )
+    elif invalid == "state":
+        capture.start_position = ScrollPosition(-1.0, 50.0, 12.0)
+    elif invalid == "pixels":
+        assert _image(0xFFFFFFFF).save(str(tmp_path / "after.png"))
+    elif invalid == "missing":
+        (tmp_path / "before.png").unlink()
+    base = Mock(side_effect=RuntimeError("Ordinary product failure"))
+    monkeypatch.setattr(diagnostics.app.AppCapture, "_terminal", base)
+    result = ScrollResult(None, "Ordinary product failure", "not needed", 0)
+    expected = "Ordinary product failure" if invalid == "none" else "Rejected Explorer"
+    with pytest.raises(RuntimeError, match=expected):
+        capture._terminal(result)
+    assert "success" not in capture.report
+    evidence = capture.report["rejected_start_evidence"]
+    assert isinstance(evidence, dict)
+    assert evidence == {
+        "zero_production_writes": invalid != "writes",
+        "unchanged_state": invalid != "state",
+        "unchanged_pixels": invalid not in ("pixels", "missing"),
+    }
+    base.assert_called_once_with(result)
+
+
+@pytest.mark.parametrize("kind", list(diagnostics._EXPLORER_STARTS))
+def test_start_terminal_keeps_actual_helper_validation_and_full_row_oracle(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, kind: str
+) -> None:
+    """The subclass cannot substitute restoration checks for complete row proof."""
+    capture = _start_capture(tmp_path, kind)
+    _start_evidence(capture)
+    capture.helper = Mock(diagnostics="Retained helper diagnostics")
+    capture.desktop = Mock(foreground=lambda: 9)
+    capture.source = Mock()
+    capture.source.freeze.return_value.crop.return_value = _image()
+    capture._background_bounds = None
+    capture.report["release_input_tick"] = 123
+    target = json.loads((tmp_path / "target.json").read_text(encoding="utf-8"))
+    target.update(window=9, input_tick=123)
+    (tmp_path / "target.json").write_text(json.dumps(target), encoding="utf-8")
+    oracle = Mock(return_value={"oracle_frames": 16, "oracle_verified_rows": 240})
+    monkeypatch.setattr(diagnostics, "verify_sequence", oracle)
+    monkeypatch.setattr(
+        diagnostics.app, "_verify_edge_rows", diagnostics._inspect_result
+    )
+    if kind.startswith("explorer-middle-"):
+        result = ScrollResult(_image(), "", "restored", 16)
+        capture._terminal(result)
+        oracle.assert_called_once_with(result.image, tmp_path)
+        assert capture.report["oracle_frames"] == 16
+        assert capture.report["restored_pixels"] == "exact"
+        assert QImage(str(tmp_path / "result.png")) == result.image
+    else:
+        result = ScrollResult(None, "Ordinary bottom rejection", "not needed", 0)
+        with pytest.raises(RuntimeError, match="Ordinary bottom rejection"):
+            capture._terminal(result)
+        assert capture.report["message"] == "Ordinary bottom rejection"
+        assert capture.report["rejected_start_evidence"] == {
+            "zero_production_writes": True,
+            "unchanged_state": True,
+            "unchanged_pixels": True,
+        }
+        assert not (tmp_path / "result.png").exists()
+        oracle.assert_not_called()
+    assert capture.result is result
+    assert "success" not in capture.report
+
+
+@pytest.mark.parametrize("failure", ["state", "perimeter"])
+def test_representative_result_pixels_survive_strict_restoration_failure(
+    tmp_path: Path, failure: str
+) -> None:
+    """A failed panel assertion preserves candidate pixels without qualifying them."""
+    capture = _start_capture(tmp_path)
+    _start_evidence(capture)
+    capture.kind = "edge-panel-click"
+    capture.result = ScrollResult(_image(), "", "restored", 16)
+    if failure == "state":
+        (tmp_path / "restoration.json").write_text(
+            '{"initial": {"vertical": 0}, "final": {"vertical": 1}}',
+            encoding="utf-8",
+        )
+    with pytest.raises(RuntimeError):
+        diagnostics._verify_restored(capture, _image())
+    assert QImage(str(tmp_path / "result.png")) == capture.result.image
+    assert "oracle_frames" not in capture.report
+    assert "success" not in capture.report
