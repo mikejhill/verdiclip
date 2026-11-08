@@ -436,8 +436,9 @@ class _ListSteps:
         initial: ScrollPosition,
         native: ScrollBarState,
         check: Callable[[], None],
+        poll: Callable[[], None],
     ) -> None:
-        self._target, self._check = target, check
+        self._target, self._check, self._poll = target, check, poll
         self._header = target._header
         self._horizontal, self._native = initial.horizontal, native
         header = target.header
@@ -458,16 +459,25 @@ class _ListSteps:
 
     def close(self) -> None:
         """Release an abandoned pair before the target's COM apartment closes."""
-        self._retained.close()
-        self._items.clear()
-        self._before = None
+        try:
+            self._retained.close()
+        finally:
+            self._items.clear()
+            self._before = None
 
     def _guard(self) -> None:
-        self._check()
+        self._poll()
+        self._target._check_window()
+        self._poll()
         if time.monotonic() >= self._deadline:
             raise CaptureError("The list item observation exceeded its time limit")
         if self._target._header is not self._header:
             raise CaptureError("The retained list layout changed")
+
+    def _boundary(self) -> None:
+        """Validate the whole target before/after provisional read-only evidence."""
+        self._check()
+        self._guard()
 
     def _state(
         self, position: ScrollPosition, *, terminal: bool = False
@@ -612,10 +622,12 @@ class _ListSteps:
             raise CaptureError("The previous list step is still outstanding")
         self._deadline = time.monotonic() + _ITEM_SECONDS
         try:
+            self._boundary()
             before = self._state(position)
             self._seed()
             if self._state(position) != before:
                 raise CaptureError("The native list moved while retaining items")
+            self._boundary()
             self._before = position
         finally:
             if self._before is None:
@@ -625,6 +637,7 @@ class _ListSteps:
         """Prove agreeing integral raw displacement, always releasing this pair."""
         self._deadline = time.monotonic() + _ITEM_SECONDS
         try:
+            self._boundary()
             if (
                 self._before is None
                 or len(self._items) != _ITEM_PAIR
@@ -657,20 +670,21 @@ class _ListSteps:
                 self._items[0].element, self._items[1].element
             ):
                 raise CaptureError("The retained list item identities became ambiguous")
-            self._guard()
-            if terminal:
-                self._terminal = position, native
-            return int(delta)
         finally:
             self.close()
+        self._boundary()
+        if terminal:
+            self._terminal = position, native
+        return int(delta)
 
     def confirm_terminal(self, position: ScrollPosition) -> None:
         """Recheck the proven native maximum after all independent pixel proofs."""
         self._deadline = time.monotonic() + _ITEM_SECONDS
+        self._boundary()
         native = self._state(position, terminal=True)
         if self._terminal != (position, native):
             raise CaptureError("The terminal list state is unconfirmed")
-        self._guard()
+        self._boundary()
 
 
 class ScrollSelectionState:
@@ -1282,7 +1296,11 @@ class UiaScrollTarget:
         return state
 
     def list_steps(
-        self, initial: ScrollPosition, check: Callable[[], None]
+        self,
+        initial: ScrollPosition,
+        check: Callable[[], None],
+        *,
+        poll: Callable[[], None],
     ) -> _ListSteps | None:
         """Select optional standard-List evidence once, before any traversal."""
         check()
@@ -1300,7 +1318,7 @@ class UiaScrollTarget:
         if self.position() != initial or not native.matches(initial):
             raise CaptureError("The list changed while selecting item evidence")
         check()
-        return _ListSteps(self, initial, native, check)
+        return _ListSteps(self, initial, native, check, poll)
 
     def position(self) -> ScrollPosition:
         """Read percentages without asking the provider to change anything."""

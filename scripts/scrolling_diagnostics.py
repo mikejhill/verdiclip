@@ -17,12 +17,14 @@ import subprocess
 import sys
 import threading
 import time
-from contextlib import ExitStack
+from collections.abc import Generator
+from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import cast, override
 from unittest.mock import patch
 
+import mss
 from PySide6.QtGui import QImage
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QWidget
@@ -38,6 +40,7 @@ from scripts.scrolling_item_witness import (
 from scripts.scrolling_oracle import verify_sequence
 from scripts.simple_scroll_handoff import Desktop
 
+from verdiclip.capture.grabber import FrozenScreen
 from verdiclip.capture.scroll_helper import _watch_parent
 from verdiclip.capture.scrolling import END_PERCENT, ScrollPosition, ScrollResult
 from verdiclip.geometry import Point, Rect
@@ -51,6 +54,7 @@ _GEOMETRY_EXPERIMENT = "explorer-step-geometry"
 _EXPERIMENTS = (_INVERSE_EXPERIMENT, _GEOMETRY_EXPERIMENT)
 _GEOMETRY_WRITES = 4
 _GEOMETRY_PAIR = 2
+_EXACT_REGION_TRIALS = 3
 _LIST_ITEM_ROLE = 50007
 _SCROLLBAR_ROLE = 50014
 _SB_CTL = 2
@@ -1183,6 +1187,74 @@ def _geometry_step(
     return result
 
 
+@contextmanager
+def _exact_region_source() -> Generator[mss.MSS]:
+    """Own a temporary public mss handle without masking an experiment failure."""
+    source = mss.MSS()
+    try:
+        yield source
+    finally:
+        original = sys.exception()
+        try:
+            source.close()
+        except Exception as error:
+            if original is None:
+                raise
+            original.add_note(f"Exact-region handle cleanup also failed: {error}")
+
+
+def _exact_region_rect(area: Rect) -> tuple[int, int, int, int]:
+    """Reject fractional or missing physical pixels, never round or clip."""
+    values = (area.left, area.top, area.right, area.bottom)
+    native._require(
+        not area.is_empty
+        and all(math.isfinite(value) and value == int(value) for value in values),
+        "Exact-region experiment requires integral, nonempty physical bounds",
+    )
+    return int(area.left), int(area.top), int(area.right), int(area.bottom)
+
+
+def _exact_region_frame(
+    source: mss.MSS, capture: Rect, area: Rect
+) -> tuple[QImage, dict[str, float]]:
+    """Time only public acquisition, RGB32 detachment, and the existing crop."""
+    rectangle = _exact_region_rect(capture)
+    _exact_region_rect(area)
+    native._require(
+        capture.intersected(area) == area,
+        "Exact-region experiment would clip the verified area",
+    )
+    start = time.perf_counter()
+    shot = source.grab(rectangle)
+    acquired = time.perf_counter()
+    native._require(
+        (shot.left, shot.top, shot.width, shot.height)
+        == (capture.x, capture.y, capture.width, capture.height)
+        and len(shot.raw) == shot.width * shot.height * 4,
+        "Exact-region experiment received missing or shifted pixels",
+    )
+    start_detach = time.perf_counter()
+    image = QImage(
+        shot.raw, shot.width, shot.height, shot.width * 4, QImage.Format.Format_RGB32
+    ).copy()
+    detached = time.perf_counter()
+    crop_seconds = 0.0
+    if capture != area:
+        start_crop = time.perf_counter()
+        image = FrozenScreen(image, capture).crop(area)
+        crop_seconds = time.perf_counter() - start_crop
+    native._require(
+        not image.isNull()
+        and (image.width(), image.height()) == (area.width, area.height),
+        "Exact-region experiment lost decoded pixels",
+    )
+    return image, {
+        "acquire_seconds": acquired - start,
+        "detach_seconds": detached - start_detach,
+        "crop_seconds": crop_seconds,
+    }
+
+
 class _StepGeometry:
     """Own four bounded writes and independent observations, never a capture."""
 
@@ -1228,6 +1300,75 @@ class _StepGeometry:
         )
         self.guard(sample)
         return sample
+
+    def exact_region(self, original: _InverseSample) -> None:
+        """Temporary diagnostic: prune after native equivalence/speed evidence.
+
+        One warm triplet and three measured triplets, with no scroll writes.
+        Separate handles retain each allocation size; this is not a production
+        capture API or a timing claim about guards, settling, or total frames.
+        """
+        target, area = self.bar.target, self.bar.area
+        rectangle = _exact_region_rect(area)
+        display = target._observe_display()
+        if display is None:
+            raise RuntimeError("Exact-region display evidence missing")
+        geometry = self.evidence["original_geometry"]
+        trials: list[dict[str, object]] = []
+        result: dict[str, object] = {
+            "passed": False,
+            "physical_rectangle": rectangle,
+            "display": asdict(display),
+            "warm_triplets": 1,
+            "measured_triplets": _EXACT_REGION_TRIALS,
+            "trials": trials,
+        }
+        self.evidence["exact_region"] = result
+
+        def unchanged() -> None:
+            self.guard(original)
+            native._require(
+                probe_target(target) == geometry
+                and target._observe_display() == display,
+                "Exact-region geometry/monitor/DPI/native state changed",
+            )
+            self.bar.check()
+
+        unchanged()
+        with _exact_region_source() as full, _exact_region_source() as exact:
+            monitor = full.monitors[0]
+            desktop = Rect(
+                monitor["left"], monitor["top"], monitor["width"], monitor["height"]
+            )
+            native._require(
+                full.monitors == exact.monitors and desktop.intersected(area) == area,
+                "Exact-region desktop bounds differ or would clip the area",
+            )
+            result["desktop_bounds"] = asdict(desktop)
+            for trial in range(_EXACT_REGION_TRIALS + 1):
+                timings: dict[str, object] = {}
+                for label, source, bounds in (
+                    ("A_full", full, desktop),
+                    ("B_exact", exact, area),
+                    ("C_full", full, desktop),
+                ):
+                    self.bar.check()
+                    image, timings[label] = _exact_region_frame(source, bounds, area)
+                    self.bar.check()
+                    native._require(
+                        image == original.image,
+                        f"Exact-region {label} pixels differ from stable original",
+                    )
+                    if trial == _EXACT_REGION_TRIALS:
+                        native._require(
+                            image.save(str(self.output / f"exact-region-{label}.png")),
+                            "Could not retain the final exact-region triplet",
+                        )
+                unchanged()
+                if trial:
+                    trials.append(timings)
+        unchanged()
+        result["passed"] = True
 
     def move(self, name: str, percent: float, before: _InverseSample) -> _InverseSample:
         self.guard(before)
@@ -1412,6 +1553,7 @@ def _explorer_step_geometry(
             and 0 < original.position.view_size < END_PERCENT,
             "Geometry experiment requires a fresh original top view",
         )
+        experiment.exact_region(original)
         current = experiment.half_steps(original)
         experiment.finish(original, current)
         setup["experiment_passed"] = True

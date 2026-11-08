@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from typing import override
@@ -310,6 +311,71 @@ def test_deadline_does_not_attempt_late_restore() -> None:
     assert result.image is None
     assert target.moves == [0.0]
     assert result.restoration == "not restored: time limit"
+
+
+@pytest.mark.parametrize("full", [False, True])
+@pytest.mark.parametrize("restoring", [False, True])
+@pytest.mark.parametrize("interrupt", ["none", "cancel", "deadline"])
+def test_poll_extraction_preserves_generic_guard_order(
+    monkeypatch: pytest.MonkeyPatch,
+    interrupt: str,
+    *,
+    full: bool,
+    restoring: bool,
+) -> None:
+    """The cheap callback adds no target read; full guards keep their exact order."""
+    events: list[str] = []
+
+    def cancelled() -> bool:
+        events.append("cancel")
+        return interrupt == "cancel"
+
+    def clock() -> float:
+        events.append("clock")
+        return now
+
+    target, now = Target(), 0.0
+    operation = ScrollTransaction(target, cancelled, clock=clock)
+    monkeypatch.setattr(target, "check", lambda: events.append("target"))
+    events.clear()
+    if interrupt == "deadline":
+        now = operation._deadline
+    guard = operation._check if full else operation._poll
+    if interrupt == "cancel" and not restoring:
+        with pytest.raises(CaptureError, match="cancelled"):
+            guard(restoring=restoring)
+        assert events == ["cancel"]
+    elif interrupt == "deadline":
+        with pytest.raises(CaptureError, match="time limit"):
+            guard(restoring=restoring)
+        assert events == ([] if restoring else ["cancel"]) + ["clock"]
+    else:
+        guard(restoring=restoring)
+        assert events == (
+            ([] if restoring else ["cancel"]) + ["clock"] + (["target"] if full else [])
+        )
+    assert not target.moves
+
+
+def test_full_guard_keeps_original_target_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Polling does not swallow, replace or retry failed target validation."""
+    target = Target()
+    calls: list[str] = []
+    failure = CaptureError("Target validation failed")
+
+    def reject() -> None:
+        calls.append("target")
+        raise failure
+
+    monkeypatch.setattr(target, "check", reject)
+    operation = transaction(target)
+    with pytest.raises(CaptureError) as raised:
+        operation._check()
+    assert raised.value is failure
+    assert calls == ["target"]
+    assert not target.moves
 
 
 def test_non_scrolling_target_is_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2468,10 +2534,17 @@ class ListTarget(FooterTarget):
         self.steps = ListEvidence(self)
         self.selected = 0
 
-    def list_steps(self, initial: ScrollPosition, check: object) -> ListEvidence:
+    def list_steps(
+        self,
+        initial: ScrollPosition,
+        check: Callable[[], None],
+        *,
+        poll: Callable[[], None],
+    ) -> ListEvidence:
         """Expose optional geometry once, before any traversal write."""
         assert initial == self.position()
         assert callable(check)
+        assert callable(poll)
         assert not self.moves
         self.selected += 1
         return self.steps
@@ -2683,7 +2756,7 @@ def test_list_missing_before_selection_keeps_strict_generic_endpoint(
 ) -> None:
     """Unsupported is distinct from failed evidence after the route was selected."""
     target = ListTarget()
-    monkeypatch.setattr(target, "list_steps", lambda *_args: None)
+    monkeypatch.setattr(target, "list_steps", lambda *_args, **_kwargs: None)
     result = transaction(target).run()
     assert result.image is None
     assert "moved unexpectedly" in result.message
@@ -2970,3 +3043,76 @@ def test_list_any_changed_fixed_or_overlapping_exterior_pixel_rejects(
     assert not target.steps.finishes
     assert operation._expected is None
     assert operation._terminal is None
+
+
+@pytest.mark.parametrize("stage", ["begin", "finish", "confirm_terminal"])
+@pytest.mark.parametrize("interrupt", ["cancel", "deadline"])
+def test_list_factory_poll_detects_interruption_during_full_validation(
+    monkeypatch: pytest.MonkeyPatch, stage: str, interrupt: str
+) -> None:
+    """A fresh supplied poll after a blocking full boundary cannot grant authority."""
+    target = ListTarget(start=2400)
+    elapsed, cancelled, blocking = [0.0], [False], [False]
+    checked: list[str] = []
+    returned: list[str] = []
+    operation = ScrollTransaction(
+        target,
+        lambda: cancelled[0],
+        clock=lambda: elapsed[0],
+        pause=lambda _: None,
+    )
+    select, validate = target.list_steps, target.check
+
+    def blocking_check() -> None:
+        validate()
+        if blocking[0]:
+            checked.append(stage)
+            if interrupt == "cancel":
+                cancelled[0] = True
+            else:
+                elapsed[0] = operation._deadline
+
+    def select_callbacks(
+        initial: ScrollPosition,
+        check: Callable[[], None],
+        *,
+        poll: Callable[[], None],
+    ) -> ListEvidence:
+        assert check == operation._check
+        assert poll == operation._poll
+        steps = select(initial, check, poll=poll)
+        observe = getattr(steps, stage)
+
+        def boundary(*args: object, **kwargs: object) -> object:
+            result = observe(*args, **kwargs)
+            blocking[0] = True
+            check()
+            poll()
+            returned.append(stage)
+            return result
+
+        monkeypatch.setattr(steps, stage, boundary)
+        return steps
+
+    monkeypatch.setattr(target, "check", blocking_check)
+    monkeypatch.setattr(target, "list_steps", select_callbacks)
+    result = operation.run()
+    assert result.image is None
+    assert result.message == (
+        "Scrolling capture cancelled"
+        if interrupt == "cancel"
+        else "Scrolling capture reached its time limit"
+    )
+    assert result.restoration == (
+        "not restored: the provider write is unresolved"
+        if interrupt == "cancel"
+        else "not restored: time limit"
+    )
+    assert len(target.moves) == {"begin": 1, "finish": 2, "confirm_terminal": 9}[stage]
+    assert target.moves[0] == 0.0
+    assert checked == [stage]
+    assert not returned
+    assert operation._expected is None
+    assert operation._terminal is None
+    assert target.selected == 1
+    assert target.steps.closed

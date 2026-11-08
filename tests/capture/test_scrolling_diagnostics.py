@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import cast
 from unittest.mock import Mock
 
+import mss
 import pytest
 from PySide6.QtGui import QImage, QPainter
 from PySide6.QtWidgets import QWidget
@@ -20,6 +21,7 @@ from verdiclip.capture.grabber import FrozenScreen
 from verdiclip.capture.scrolling import ScrollPosition, ScrollResult
 from verdiclip.exceptions import CaptureError
 from verdiclip.geometry import Point, Rect
+from verdiclip.platform.scrolling import _ScrollDisplay
 from verdiclip.platform.windows import WindowInfo
 
 
@@ -2114,6 +2116,34 @@ def _step_geometry(position: ScrollPosition) -> dict[str, object]:
     }
 
 
+def _region_sources(monkeypatch: pytest.MonkeyPatch, image: QImage) -> list[Mock]:
+    """Fake only public mss acquisition, preserving a negative desktop origin."""
+    desktop = QImage(700, 500, QImage.Format.Format_RGB32)
+    desktop.fill(0xFFAABBCC)
+    painter = QPainter(desktop)
+    painter.drawImage(20, 30, image)
+    painter.end()
+
+    def grab(rectangle: tuple[int, int, int, int]) -> mss.ScreenShot:
+        left, top, right, bottom = rectangle
+        width, height = right - left, bottom - top
+        pixels = desktop.copy(left + 20, top + 30, width, height)
+        return mss.ScreenShot(
+            bytearray(pixels.constBits()),
+            {"left": left, "top": top, "width": width, "height": height},
+        )
+
+    sources = [
+        Mock(
+            monitors=[{"left": -20, "top": -30, "width": 700, "height": 500}],
+            grab=Mock(side_effect=grab),
+        )
+        for _ in range(2)
+    ]
+    monkeypatch.setattr(diagnostics.mss, "MSS", Mock(side_effect=sources))
+    return sources
+
+
 class _GeometryRun:
     """Simulate the OS boundary while executing real bounded experiment control."""
 
@@ -2121,6 +2151,10 @@ class _GeometryRun:
         self.output = output
         self.samples = _step_samples()
         self.target = Mock(registration_dpi=192)
+        self.target._observe_display.return_value = _ScrollDisplay(
+            7, Rect(-20, -30, 700, 500), 192, 2, 2
+        )
+        self.region_sources = _region_sources(monkeypatch, self.samples[0].image)
         self.bar = object.__new__(diagnostics._InverseScrollBar)
         self.bar.target = self.target
         self.bar.area, self.bar.header = Rect(0, 0, 654, 425), Rect(0, 0, 620, 52)
@@ -2193,6 +2227,25 @@ def test_step_geometry_four_writes_leave_prediction_mismatch_as_evidence(
     assert requests == [step, run.samples[1].position.vertical + step, 100.0, 0.0]
     assert run.target.move.call_count == 4
     evidence = run.evidence()
+    region = cast("dict[str, object]", evidence["exact_region"])
+    assert region["passed"] is True
+    assert region["physical_rectangle"] == (0, 0, 654, 425)
+    assert region["warm_triplets"] == 1
+    assert region["measured_triplets"] == 3
+    assert len(cast("list[object]", region["trials"])) == 3
+    for label in ("A_full", "B_exact", "C_full"):
+        saved = QImage(str(tmp_path / f"exact-region-{label}.png"))
+        assert saved == run.samples[0].image
+        assert (saved.width(), saved.height()) == (654, 425)
+    for source, count, rectangle in zip(
+        run.region_sources,
+        (8, 4),
+        ((-20, -30, 680, 470), (0, 0, 654, 425)),
+        strict=True,
+    ):
+        source.close.assert_called_once_with()
+        assert source.grab.call_count == count
+        assert all(call.args == (rectangle,) for call in source.grab.call_args_list)
     for index in (1, 2):
         proof = cast("dict[str, object]", evidence[f"step-{index}_overlap"])
         assert proof["raw_displacements"] == [175, 175]
@@ -2626,3 +2679,303 @@ def test_step_geometry_pair_records_raw_overflow_and_exact_hit_intersection(
     else:
         with pytest.raises(RuntimeError):
             diagnostics._geometry_pair(witness)
+
+
+@pytest.mark.parametrize(
+    "area",
+    [
+        Rect(0.5, 0, 10, 10),
+        Rect(0, -0.5, 10, 10),
+        Rect(0, 0, 10.5, 10),
+        Rect(0, 0, 10, 10.5),
+        Rect(0, 0, 0, 10),
+        Rect(math.nan, 0, 10, 10),
+        Rect(0, 0, math.inf, 10),
+        Rect(-21, -30, 10, 10),
+    ],
+)
+def test_exact_region_never_rounds_or_clips(area: Rect) -> None:
+    """No native capture is attempted with fractional, missing or clipped pixels."""
+    source = Mock()
+    with pytest.raises(RuntimeError):
+        diagnostics._exact_region_frame(source, Rect(-20, -30, 700, 500), area)
+    source.grab.assert_not_called()
+
+
+def test_exact_region_preserves_negative_origin_detaches_and_separates_timings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A negative-origin exact grab skips cropping and owns its decoded bytes."""
+    area = Rect(-12, -9, 3, 2)
+    raw = bytearray(bytes.fromhex("112233ff") * 6)
+    source = Mock(
+        grab=Mock(
+            return_value=mss.ScreenShot(
+                raw, {"left": -12, "top": -9, "width": 3, "height": 2}
+            )
+        )
+    )
+    monkeypatch.setattr(
+        diagnostics.time, "perf_counter", Mock(side_effect=[1, 3, 4, 7])
+    )
+    crop = Mock(side_effect=AssertionError("Exact capture must not crop"))
+    monkeypatch.setattr(diagnostics.FrozenScreen, "crop", crop)
+    image, timings = diagnostics._exact_region_frame(source, area, area)
+    source.grab.assert_called_once_with((-12, -9, -9, -7))
+    raw[:] = bytes(len(raw))
+    assert image.pixel(2, 1) == 0xFF332211
+    assert image.devicePixelRatio() == 1
+    assert (image.width(), image.height(), image.bytesPerLine()) == (3, 2, 12)
+    assert image.format() == QImage.Format.Format_RGB32
+    assert timings == {"acquire_seconds": 2, "detach_seconds": 3, "crop_seconds": 0}
+    crop.assert_not_called()
+
+
+def test_exact_region_full_crop_has_separate_cost(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Validation/comparison gaps are excluded from all three stage durations."""
+    source = _region_sources(monkeypatch, _step_image(0))[0]
+    monkeypatch.setattr(
+        diagnostics.time, "perf_counter", Mock(side_effect=[1, 3, 5, 8, 10, 14])
+    )
+    image, timings = diagnostics._exact_region_frame(
+        source, Rect(-20, -30, 700, 500), Rect(0, 0, 654, 425)
+    )
+    assert image == _step_image(0)
+    assert timings == {"acquire_seconds": 2, "detach_seconds": 3, "crop_seconds": 4}
+
+
+@pytest.mark.parametrize(
+    "component", [(3, 4), (10, 70), (640, 70), (10, 400), (640, 400)]
+)
+@pytest.mark.parametrize("acquisition", [1, 2, 3, 11, 12])
+def test_exact_region_rejects_any_changed_component_or_triplet_member(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    component: tuple[int, int],
+    acquisition: int,
+) -> None:
+    """A, B and C must match the original Header/body/rail/footer/corner exactly."""
+    run = _GeometryRun(monkeypatch, tmp_path)
+    delegate = run.region_sources[0].grab.side_effect
+    calls = 0
+
+    def grab(rectangle: tuple[int, int, int, int]) -> mss.ScreenShot:
+        nonlocal calls
+        calls += 1
+        shot = cast("mss.ScreenShot", delegate(rectangle))
+        if calls == acquisition:
+            x, y = component
+            offset = ((y - shot.top) * shot.width + x - shot.left) * 4
+            shot.raw[offset] ^= 1
+        return shot
+
+    for source in run.region_sources:
+        source.grab.side_effect = grab
+    with pytest.raises(RuntimeError, match="pixels differ from stable original"):
+        run.run()
+    assert calls == acquisition
+    assert run.setup["success"] is run.setup["product_capture_qualification"] is False
+    assert run.setup["experiment_passed"] is False
+    run.target.move.assert_not_called()
+    for source in run.region_sources:
+        source.close.assert_called_once()
+
+
+@pytest.mark.parametrize("change", ["geometry", "display", "native", "input", "focus"])
+def test_exact_region_rechecks_original_state_after_captures(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, change: str
+) -> None:
+    """A stable picture cannot excuse late native/geometry/input/focus changes."""
+    run = _GeometryRun(monkeypatch, tmp_path)
+    delegate = run.region_sources[1].grab.side_effect
+
+    def grab(rectangle: tuple[int, int, int, int]) -> mss.ScreenShot:
+        shot = cast("mss.ScreenShot", delegate(rectangle))
+        if change == "geometry":
+            monkeypatch.setattr(diagnostics, "probe_target", Mock(return_value={}))
+        elif change == "display":
+            run.target._observe_display.return_value = _ScrollDisplay(
+                8, Rect(-20, -30, 700, 500), 192, 2, 2
+            )
+        elif change == "native":
+            run.reader.side_effect = None
+            run.reader.return_value = replace(
+                run.samples[0], native={**run.samples[0].native, "pos": 1}
+            )
+        else:
+            run.target.check.side_effect = CaptureError(f"{change} changed")
+        return shot
+
+    run.region_sources[1].grab.side_effect = grab
+    with pytest.raises((RuntimeError, CaptureError)):
+        run.run()
+    run.target.move.assert_not_called()
+    assert run.setup["experiment_passed"] is False
+    assert cast("dict[str, object]", run.evidence()["exact_region"])["passed"] is False
+    for source in run.region_sources:
+        source.close.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "failure", ["grab", "decode", "crop", "save", "second_handle", "close"]
+)
+def test_exact_region_failures_close_owned_handles_and_keep_primary_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failure: str
+) -> None:
+    """Diagnostic failure never permits traversal or gets hidden by cleanup."""
+    run = _GeometryRun(monkeypatch, tmp_path)
+    primary = RuntimeError(f"original {failure} failure")
+    if failure == "grab":
+        run.region_sources[1].grab.side_effect = primary
+    elif failure == "decode":
+        monkeypatch.setattr(diagnostics, "QImage", Mock(side_effect=primary))
+    elif failure == "crop":
+        monkeypatch.setattr(diagnostics.FrozenScreen, "crop", Mock(side_effect=primary))
+    elif failure == "save":
+        save = QImage.save
+
+        def retain(image: QImage, path: str) -> bool:
+            if Path(path).name.startswith("exact-region-"):
+                raise primary
+            return save(image, path)
+
+        monkeypatch.setattr(QImage, "save", retain)
+    elif failure == "second_handle":
+        monkeypatch.setattr(
+            diagnostics.mss, "MSS", Mock(side_effect=[run.region_sources[0], primary])
+        )
+    else:
+        run.region_sources[1].close.side_effect = primary
+    run.region_sources[0].close.side_effect = RuntimeError("secondary cleanup failure")
+    with pytest.raises(RuntimeError) as caught:
+        run.run()
+    assert caught.value is primary
+    assert "secondary cleanup failure" in " ".join(primary.__notes__)
+    run.region_sources[0].close.assert_called_once()
+    if failure == "second_handle":
+        run.region_sources[1].close.assert_not_called()
+    else:
+        run.region_sources[1].close.assert_called_once()
+    run.target.move.assert_not_called()
+    assert run.setup["experiment_passed"] is False
+
+
+@pytest.mark.parametrize("failure", ["origin", "size", "bytes", "display", "monitors"])
+def test_exact_region_missing_or_misreported_evidence_rejects(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failure: str
+) -> None:
+    """No fabricated pixel buffer or absent monitor evidence can pass the probe."""
+    run = _GeometryRun(monkeypatch, tmp_path)
+    if failure == "display":
+        run.target._observe_display.return_value = None
+    elif failure == "monitors":
+        run.region_sources[1].monitors = []
+    else:
+        shot = mss.ScreenShot(
+            bytearray(654 * 425 * 4),
+            {
+                "left": int(failure == "origin"),
+                "top": 0,
+                "width": 653 if failure == "size" else 654,
+                "height": 425,
+            },
+        )
+        if failure == "bytes":
+            shot.raw.pop()
+        run.region_sources[1].grab.side_effect = None
+        run.region_sources[1].grab.return_value = shot
+    with pytest.raises(RuntimeError):
+        run.run()
+    run.target.move.assert_not_called()
+    for source in run.region_sources:
+        assert source.close.call_count == (0 if failure == "display" else 1)
+
+
+@pytest.mark.parametrize("source_index", [0, 1])
+@pytest.mark.parametrize(
+    "change", ["input", "focus", "display", "geometry", "native", "deadline"]
+)
+def test_exact_region_cleanup_changes_cannot_report_passed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    source_index: int,
+    change: str,
+) -> None:
+    """Either successful close may expose changed state or an upstream timeout."""
+    run = _GeometryRun(monkeypatch, tmp_path)
+
+    def close() -> None:
+        if change == "display":
+            run.target._observe_display.return_value = _ScrollDisplay(
+                8, Rect(-20, -30, 700, 500), 192, 2, 2
+            )
+        elif change == "geometry":
+            monkeypatch.setattr(diagnostics, "probe_target", Mock(return_value={}))
+        elif change == "native":
+            run.reader.side_effect = None
+            run.reader.return_value = replace(
+                run.samples[0], native={**run.samples[0].native, "pos": 1}
+            )
+        elif change == "deadline":
+            # Model an upstream timeout surfacing on the next observation, not
+            # a new timer or a claim to exercise the external 20-second kill.
+            run.owner._verified_window.side_effect = TimeoutError("setup timed out")
+        else:
+            run.target.check.side_effect = CaptureError(f"{change} changed")
+
+    run.region_sources[source_index].close.side_effect = close
+    with pytest.raises((CaptureError, RuntimeError, TimeoutError)):
+        run.run()
+    region = cast("dict[str, object]", run.evidence()["exact_region"])
+    assert region["passed"] is False
+    assert len(cast("list[object]", region["trials"])) == 3
+    assert run.setup["experiment_passed"] is False
+    assert run.setup["success"] is run.setup["product_capture_qualification"] is False
+    run.target.move.assert_not_called()
+    for source, count in zip(run.region_sources, (8, 4), strict=True):
+        assert source.grab.call_count == count
+        source.close.assert_called_once()
+
+
+def test_exact_region_success_rechecks_after_both_handles_close(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Success follows both closes and one fresh complete original-state guard."""
+    run = _GeometryRun(monkeypatch, tmp_path)
+    evidence: dict[str, object] = {"original_geometry": run.bar.geometry}
+    experiment = diagnostics._StepGeometry(run.owner, run.bar, tmp_path, evidence)
+    calls = Mock()
+    probe = Mock(return_value=run.bar.geometry)
+    monkeypatch.setattr(diagnostics, "probe_target", probe)
+    for label, method in (
+        ("exact_close", run.region_sources[1].close),
+        ("full_close", run.region_sources[0].close),
+        ("fixture", run.owner._verified_window),
+        ("sample", run.reader),
+        ("geometry", probe),
+        ("display", run.target._observe_display),
+        ("check", run.target.check),
+    ):
+        calls.attach_mock(method, label)
+
+    def pending() -> None:
+        assert cast("dict[str, object]", evidence["exact_region"])["passed"] is False
+
+    for source in run.region_sources:
+        source.close.side_effect = pending
+    run.target.check.side_effect = pending
+    experiment.exact_region(run.samples[0])
+    names = [call[0] for call in calls.mock_calls]
+    assert names[names.index("exact_close") :] == [
+        "exact_close",
+        "full_close",
+        "fixture",
+        "sample",
+        "geometry",
+        "display",
+        "check",
+    ]
+    assert cast("dict[str, object]", evidence["exact_region"])["passed"] is True
+    run.target.move.assert_not_called()

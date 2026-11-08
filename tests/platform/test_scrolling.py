@@ -8,6 +8,7 @@ import json
 import subprocess
 from contextlib import ExitStack
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 from unittest.mock import MagicMock, Mock
 
@@ -2443,6 +2444,7 @@ class ListStepFixture:
         for item in self.items:
             item.pointer_result.side_effect = self.retain(item)
         self.check = Mock(side_effect=self.layout_check)
+        self.poll = Mock()
 
     def layout_check(self) -> None:
         """Keep the actual retained Header/rail checker active during evidence."""
@@ -2490,7 +2492,7 @@ class ListStepFixture:
 
     def capability(self) -> scrolling._ListSteps:
         """Select the production optional capability without issuing a write."""
-        steps = self.target.list_steps(self.position, self.check)
+        steps = self.target.list_steps(self.position, self.check, poll=self.poll)
         assert steps is not None
         return steps
 
@@ -2550,7 +2552,10 @@ def test_list_steps_unsupported_selection_does_not_scan_items(reason: str) -> No
     else:
         mock(fixture.target.scrollbar_state).side_effect = None
         mock(fixture.target.scrollbar_state).return_value = None
-    assert fixture.target.list_steps(fixture.position, fixture.check) is None
+    assert (
+        fixture.target.list_steps(fixture.position, fixture.check, poll=fixture.poll)
+        is None
+    )
     mock(fixture.target._walker.relative).assert_not_called()
     mock(fixture.target._scroll.call).assert_not_called()
 
@@ -2569,7 +2574,7 @@ def test_list_steps_unsafe_selection_never_returns_unsupported(reason: str) -> N
     else:
         fixture.check.side_effect = CaptureError("input")
     with pytest.raises(CaptureError):
-        fixture.target.list_steps(initial, fixture.check)
+        fixture.target.list_steps(initial, fixture.check, poll=fixture.poll)
     mock(fixture.target._walker.relative).assert_not_called()
 
 
@@ -2957,27 +2962,32 @@ def test_list_steps_releases_partial_retention_on_begin_failure(
     assert not steps._items
 
 
-@pytest.mark.parametrize("change", ["input", "foreground"])
+@pytest.mark.parametrize("change", ["input", "foreground", "process", "window"])
 def test_list_steps_recheck_real_window_guard_after_raw_read(change: str) -> None:
     """Mouse/keyboard or focus changes during metadata reads are not accepted."""
     fixture = ListStepFixture()
     steps = fixture.capability()
     steps.begin(fixture.position)
     fixture.advance()
-    fixture.check.side_effect = lambda: UiaScrollTarget._check_window(fixture.target)
+    fixture.check.reset_mock()
     raw = fixture.items[0].bounds.return_value
     assert isinstance(raw, Rect)
 
     def changed_bounds() -> Rect:
         if change == "input":
             mock(fixture.target._input).return_value = 13
-        else:
+        elif change == "foreground":
             mock(fixture.target._user.GetForegroundWindow).return_value = 9
+        elif change == "process":
+            mock(fixture.target._kernel.WaitForSingleObject).return_value = 0
+        else:
+            mock(fixture.target._window_bounds).return_value = (0, 0, 501, 500)
         return raw
 
     fixture.items[0].bounds.side_effect = changed_bounds
     with pytest.raises(CaptureError):
         steps.finish(fixture.position)
+    assert fixture.check.call_count == 1
     assert all(release.call_count == 1 for release in fixture.releases)
 
 
@@ -3001,7 +3011,7 @@ def test_list_steps_selection_rechecks_guard_after_last_position_read() -> None:
 
     fixture.target.position = Mock(side_effect=changed_position)
     with pytest.raises(CaptureError, match="input changed"):
-        fixture.target.list_steps(position, fixture.check)
+        fixture.target.list_steps(position, fixture.check, poll=fixture.poll)
     assert not fixture.releases
 
 
@@ -3033,3 +3043,268 @@ def test_list_steps_pair_identities_must_remain_distinct_after_movement() -> Non
     with pytest.raises(CaptureError, match="identities became ambiguous"):
         steps.finish(fixture.position)
     assert all(release.call_count == 1 for release in fixture.releases)
+
+
+@pytest.mark.parametrize("phase", ["begin", "finish", "terminal"])
+def test_list_steps_validate_full_boundaries_after_reference_cleanup(
+    phase: str,
+) -> None:
+    """Only read-phase boundaries run full checks; no proof precedes cleanup."""
+    fixture = ListStepFixture()
+    steps = fixture.capability()
+    if phase != "begin":
+        steps.begin(fixture.position)
+        fixture.advance(terminal=phase == "terminal")
+    if phase == "terminal":
+        steps.finish(fixture.position, terminal=True)
+    released = []
+
+    def full_check() -> None:
+        fixture.layout_check()
+        released.append(sum(release.call_count for release in fixture.releases))
+        if len(released) == 2:
+            assert all(release.called for release in fixture.temporary_releases)
+            assert steps._before is None
+            if phase == "finish":
+                assert not steps._items
+                assert steps._terminal is None
+
+    fixture.check.side_effect = full_check
+    fixture.poll.reset_mock()
+    mock(fixture.target.scrollbar_state).reset_mock()
+    action = {
+        "begin": steps.begin,
+        "finish": steps.finish,
+        "terminal": steps.confirm_terminal,
+    }[phase]
+    action(fixture.position)
+    assert released == {"begin": [0, 0], "finish": [0, 2], "terminal": [2, 2]}[phase]
+    assert mock(fixture.target.scrollbar_state).call_count == (
+        1 if phase == "terminal" else 2
+    )
+    assert fixture.poll.call_count > len(released)
+    mock(fixture.target._scroll.call).assert_not_called()
+    mock(fixture.target._screens.freeze).assert_not_called()
+    steps.close()
+
+
+@pytest.mark.parametrize("phase", ["begin", "finish", "terminal"])
+@pytest.mark.parametrize("boundary", [1, 2])
+@pytest.mark.parametrize("failure", ["cancel", "deadline", "local-deadline"])
+def test_list_steps_full_boundary_cannot_outlive_deadline(
+    phase: str, boundary: int, failure: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A full COM check can block: its success never skips the late cheap poll."""
+    fixture = ListStepFixture()
+    steps = fixture.capability()
+    if phase != "begin":
+        steps.begin(fixture.position)
+        fixture.advance(terminal=phase == "terminal")
+    if phase == "terminal":
+        steps.finish(fixture.position, terminal=True)
+    calls = 0
+
+    def blocking_check() -> None:
+        nonlocal calls
+        fixture.layout_check()
+        calls += 1
+        if calls == boundary:
+            if failure == "local-deadline":
+                monkeypatch.setattr(
+                    scrolling.time, "monotonic", lambda: steps._deadline
+                )
+            else:
+                fixture.poll.side_effect = CaptureError(failure)
+
+    fixture.check.side_effect = blocking_check
+    action = {
+        "begin": steps.begin,
+        "finish": steps.finish,
+        "terminal": steps.confirm_terminal,
+    }[phase]
+    with pytest.raises(CaptureError):
+        action(fixture.position)
+    assert calls == boundary
+    assert not steps._items
+    assert steps._before is None
+    assert all(release.call_count == 1 for release in fixture.releases)
+    if phase != "terminal":
+        assert steps._terminal is None
+
+
+@pytest.mark.parametrize("phase", ["begin", "finish"])
+@pytest.mark.parametrize("change", ["layout", "dpi", "occlusion"])
+def test_list_steps_late_full_check_rejects_persistent_changes(
+    phase: str, change: str
+) -> None:
+    """Expensive invariants remain fresh after the entire provisional read phase."""
+    fixture = ListStepFixture()
+    target = fixture.target
+    target._provider_bounds = target.area
+    mock(target._element.bounds).return_value = target.area
+    mock(target._viewport).return_value = target.area
+    fixture.check.side_effect = lambda: UiaScrollTarget.check(target)
+    steps = fixture.capability()
+    if phase == "finish":
+        steps.begin(fixture.position)
+        fixture.advance(terminal=True)
+    raw = fixture.items[0].bounds.return_value
+    assert isinstance(raw, Rect)
+
+    def changed_bounds() -> Rect:
+        if change == "layout":
+            fixture.children[0].bounds.return_value = Rect(344, 282, 1406, 52)
+        elif change == "dpi":
+            target._observe_display = Mock(side_effect=CaptureError("DPI changed"))
+        else:
+            mock(target._user.GetTopWindow).return_value = 0
+        return raw
+
+    fixture.items[0].bounds.side_effect = changed_bounds
+    action = steps.begin if phase == "begin" else partial(steps.finish, terminal=True)
+    with pytest.raises(CaptureError):
+        action(fixture.position)
+    assert not steps._items
+    assert steps._before is None
+    assert steps._terminal is None
+    assert all(release.call_count == 1 for release in fixture.releases)
+    mock(target._scroll.call).assert_not_called()
+
+
+@pytest.mark.parametrize("phase", ["begin", "finish"])
+@pytest.mark.parametrize("change", ["input", "focus", "process", "cancel", "deadline"])
+def test_list_steps_release_changes_cannot_authorize_evidence(
+    phase: str, change: str
+) -> None:
+    """Temporary and retained COM Release calls are followed by fresh checks."""
+    fixture = ListStepFixture()
+    steps = fixture.capability()
+
+    def change_during_release() -> None:
+        if change == "input":
+            mock(fixture.target._input).return_value = 13
+        elif change == "focus":
+            mock(fixture.target._user.GetForegroundWindow).return_value = 9
+        elif change == "process":
+            mock(fixture.target._kernel.WaitForSingleObject).return_value = 0
+        else:
+            fixture.poll.side_effect = CaptureError(change)
+
+    if phase == "begin":
+        original = fixture.relative
+
+        def relative(child: _Interface, owners: ExitStack, slot: int) -> Mock | None:
+            result = original(child, owners, slot)
+            if result is not None:
+                fixture.temporary_releases[-1].side_effect = change_during_release
+            return result
+
+        mock(fixture.target._walker.relative).side_effect = relative
+    else:
+        steps.begin(fixture.position)
+        fixture.advance(terminal=True)
+        fixture.releases[-1].side_effect = change_during_release
+    action = steps.begin if phase == "begin" else partial(steps.finish, terminal=True)
+    with pytest.raises(CaptureError):
+        action(fixture.position)
+    assert not steps._items
+    assert steps._before is None
+    assert steps._terminal is None
+    assert all(release.call_count == 1 for release in fixture.releases)
+    assert all(release.call_count == 1 for release in fixture.temporary_releases)
+
+
+@pytest.mark.parametrize("phase", ["begin", "finish"])
+def test_list_steps_cleanup_failure_never_leaves_usable_pair(phase: str) -> None:
+    """Cleanup still releases the other references and cannot publish a delta."""
+    fixture = ListStepFixture()
+    steps = fixture.capability()
+    steps.begin(fixture.position)
+    if phase == "begin":
+        steps.close()
+        original = fixture.retain(fixture.items[0])
+        assert callable(original)
+
+        def retain(slot: int, owners: ExitStack, *args: object) -> object:
+            result = original(slot, owners, *args)
+            fixture.releases[-1].side_effect = OSError("Release failed")
+            return result
+
+        fixture.items[0].pointer_result.side_effect = retain
+        fixture.items[1].pointer_result.side_effect = OSError("QI failed")
+    else:
+        fixture.advance(terminal=True)
+        fixture.releases[-1].side_effect = OSError("Release failed")
+    action = steps.begin if phase == "begin" else partial(steps.finish, terminal=True)
+    with pytest.raises(OSError, match="Release failed"):
+        action(fixture.position)
+    assert not steps._items
+    assert steps._before is None
+    assert steps._terminal is None
+    assert all(release.call_count == 1 for release in fixture.releases)
+    steps.close()
+    assert all(release.call_count == 1 for release in fixture.releases)
+
+
+def test_list_steps_keep_native_getter_full_guards_and_all_four_reads() -> None:
+    """Each completed phase has two full boundaries plus four native full checks."""
+    fixture = ListStepFixture()
+    target = fixture.target
+    assert target._header is not None
+    rail = target._header.scrollbar
+    assert rail is not None
+    mock(rail.native_handle).return_value = 101
+    target.check = fixture.check
+    target.scrollbar_state = Mock(
+        side_effect=lambda: UiaScrollTarget.scrollbar_state(target)
+    )
+
+    def read(_handle: int, _bar: int, output: c._CArgObject) -> bool:
+        info = c.cast(output, c.POINTER(scrolling._ScrollInfo)).contents
+        native = fixture.native
+        info.minimum, info.maximum = native.minimum, native.maximum
+        info.page, info.position = native.page, native.position
+        return True
+
+    def hit(slot: int, owners: ExitStack, *args: object) -> Mock:
+        argument = args[0]
+        assert isinstance(argument, tuple)
+        point = argument[1]
+        assert isinstance(point, w.POINT)
+        if rail.bounds().contains(Point(point.x, point.y)):
+            return mock(rail)
+        return fixture.hit(slot, owners, *args)
+
+    mock(target._user.GetScrollInfo).side_effect = read
+    mock(target._automation.pointer_result).side_effect = hit
+    steps = fixture.capability()
+    for phase in ("begin", "finish"):
+        fixture.check.reset_mock()
+        mock(target._user.GetScrollInfo).reset_mock()
+        if phase == "begin":
+            steps.begin(fixture.position)
+        else:
+            fixture.advance()
+            assert steps.finish(fixture.position) == 175
+        assert fixture.check.call_count == 6
+        assert mock(target._user.GetScrollInfo).call_count == 2
+    mock(target._scroll.call).assert_not_called()
+
+
+@pytest.mark.parametrize("failure", ["cancel", "deadline"])
+def test_list_steps_poll_after_window_observation(failure: str) -> None:
+    """The cheap eligibility check can also block across transaction expiry."""
+    fixture = ListStepFixture()
+    steps = fixture.capability()
+
+    def delayed_bounds() -> tuple[int, int, int, int]:
+        fixture.poll.side_effect = CaptureError(failure)
+        return fixture.target._window_rect
+
+    mock(fixture.target._window_bounds).side_effect = delayed_bounds
+    mock(fixture.target.scrollbar_state).reset_mock()
+    with pytest.raises(CaptureError, match=failure):
+        steps.begin(fixture.position)
+    mock(fixture.target.scrollbar_state).assert_not_called()
+    assert not steps._items
+    assert steps._before is None

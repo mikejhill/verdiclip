@@ -624,11 +624,15 @@ class ScrollTransaction:
         self._list_steps: ListSteps | None = None
         self._list_body: Rect | None = None
 
-    def _check(self, *, restoring: bool = False) -> None:
+    def _poll(self, *, restoring: bool = False) -> None:
+        """Observe cancellation/deadline without repeating target validation."""
         if not restoring and self._cancelled():
             raise CaptureError("Scrolling capture cancelled")
         if self._clock() >= self._deadline:
             raise CaptureError("Scrolling capture reached its time limit")
+
+    def _check(self, *, restoring: bool = False) -> None:
+        self._poll(restoring=restoring)
         self._target.check()
 
     def _frame(self, position: ScrollPosition) -> QImage:
@@ -660,7 +664,9 @@ class ScrollTransaction:
         """Choose once, before traversal; missing support retains the old path."""
         factory = getattr(self._target, "list_steps", None)
         self._list_steps = (
-            factory(initial, self._check) if factory is not None else None
+            factory(initial, self._check, poll=self._poll)
+            if factory is not None
+            else None
         )
         if self._list_steps is not None:
             self._list_body = self._list_steps.body
