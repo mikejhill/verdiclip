@@ -8,6 +8,7 @@ recapturable desktop rectangle and must not enter ordinary Repeat history.
 from __future__ import annotations
 
 import logging
+import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -35,6 +36,10 @@ BASE_REGISTRATION_DPI = 96
 MAX_REGISTRATION_DPI = 192
 END_PERCENT = 100.0
 logger = logging.getLogger(__name__)
+
+
+def _extent_agrees(measured: float, expected: float) -> bool:
+    return abs(measured - expected) <= max(2.0, expected * _ROUNDING_FRACTION)
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,23 +266,25 @@ class VerticalStitch:
             )
             raise CaptureError("The top of the scroll panel is fixed or changing")
 
-    def append(self, image: QImage, expected_advance: float) -> None:
-        """Join at an interior seam; never discard a column or infer a chrome crop."""
+    def append(self, image: QImage, expected_advance: float | None) -> None:
+        """Join exact bands; a provisional terminal join requires later extent proof."""
         self._validate(image)
         if image.size() != self._previous.size():
             raise CaptureError("The scroll panel changed size")
         old, new = self._rows(self._previous), self._rows(image)
         advance, first, last = self._registration(old, new)
         logger.info(
-            "Scrolling alignment: measured_advance=%s expected_advance=%.3f "
+            "Scrolling alignment: measured_advance=%s expected_advance=%s "
             "matching_band=(%s,%s)",
             advance,
-            expected_advance,
+            f"{expected_advance:.3f}"
+            if expected_advance is not None
+            else "terminal_extent",
             first,
             last,
         )
-        if abs(advance - expected_advance) > max(
-            2.0, expected_advance * _ROUNDING_FRACTION
+        if expected_advance is not None and not _extent_agrees(
+            advance, expected_advance
         ):
             raise CaptureError("The panel's pixels disagree with its scroll position")
         # Reject broad fixed headers. This practical check cannot establish
@@ -370,6 +377,10 @@ class _HeaderFrames:
         painter.end()
         return image
 
+    def extent(self, view_size: float) -> float:
+        """Use the original fixed prefix and full-width body for provider extent."""
+        return self.height + self.body_height * END_PERCENT / view_size
+
 
 class ScrollTransaction:
     """Own one sequence and restore only while the original user state remains.
@@ -392,6 +403,7 @@ class ScrollTransaction:
         self._frames = 0
         self._moved = False
         self._expected: ScrollPosition | None = None
+        self._terminal: ScrollPosition | None = None
 
     def _check(self, *, restoring: bool = False) -> None:
         if not restoring and self._cancelled():
@@ -418,31 +430,66 @@ class ScrollTransaction:
             previous = current
         raise CaptureError("The scroll panel is still changing")
 
+    def _terminal_change(
+        self, before: ScrollPosition, current: ScrollPosition, percent: float
+    ) -> bool:
+        """Admit only a bounded Header endpoint candidate, not confirmed ownership."""
+        header = self._target.header
+        if (
+            header is None
+            or percent != END_PERCENT
+            or current.vertical != END_PERCENT
+            or before.vertical >= END_PERCENT
+            or not math.isfinite(current.view_size)
+            or not 0.0 < current.view_size < END_PERCENT
+        ):
+            return False
+        body = self._target.area.height - header.height
+        original = header.height + body * END_PERCENT / before.view_size
+        terminal = header.height + body * END_PERCENT / current.view_size
+        return _extent_agrees(terminal, original)
+
+    def _settle_state(
+        self,
+        before: ScrollPosition,
+        current: ScrollPosition,
+        percent: float,
+        restoring: ScrollPosition | None,
+    ) -> bool:
+        if restoring is not None and before.view_size != restoring.view_size:
+            return current in (before, restoring)
+        if current.horizontal != before.horizontal:
+            return False
+        if current.view_size == before.view_size:
+            return True
+        return restoring is None and self._terminal_change(before, current, percent)
+
     def _settle(
-        self, before: ScrollPosition, percent: float, *, restoring: bool = False
+        self,
+        before: ScrollPosition,
+        percent: float,
+        *,
+        restoring: ScrollPosition | None = None,
     ) -> ScrollPosition:
         """Observe one write; unchanged reads never acknowledge pending movement."""
         previous = None
         for _ in range(8):
             self._pause(0.08)
-            self._check(restoring=restoring)
+            self._check(restoring=restoring is not None)
             current = self._target.position()
-            self._check(restoring=restoring)
-            if (
-                current.horizontal != before.horizontal
-                or current.view_size != before.view_size
-            ):
+            self._check(restoring=restoring is not None)
+            if not self._settle_state(before, current, percent, restoring):
                 logger.warning(
                     "Scrolling settle rejected: stage=state-change restoring=%s "
                     "requested_percent=%r before=%s observed=%s",
-                    restoring,
+                    restoring is not None,
                     percent,
                     before,
                     current,
                 )
                 raise CaptureError("The scroll panel moved unexpectedly")
             if (
-                not restoring
+                restoring is None
                 and percent not in (0.0, END_PERCENT)
                 and abs(current.vertical - before.vertical)
                 > abs(percent - before.vertical) * 1.5
@@ -450,17 +497,22 @@ class ScrollTransaction:
                 logger.warning(
                     "Scrolling settle rejected: stage=overshoot restoring=%s "
                     "requested_percent=%r before=%s observed=%s",
-                    restoring,
+                    restoring is not None,
                     percent,
                     before,
                     current,
                 )
                 raise CaptureError("The scroll panel moved unexpectedly")
             reached = (
-                current.vertical == percent
-                if restoring or percent in (0.0, END_PERCENT)
-                else (current.vertical - before.vertical) * (percent - before.vertical)
-                > 0.0
+                current == restoring
+                if restoring is not None
+                else (
+                    current.vertical == percent
+                    if percent in (0.0, END_PERCENT)
+                    else (current.vertical - before.vertical)
+                    * (percent - before.vertical)
+                    > 0.0
+                )
             )
             if reached and current == previous:
                 return current
@@ -468,7 +520,7 @@ class ScrollTransaction:
         logger.warning(
             "Scrolling settle rejected: stage=unsettled restoring=%s "
             "requested_percent=%r before=%s observed=%s",
-            restoring,
+            restoring is not None,
             percent,
             before,
             previous,
@@ -487,9 +539,11 @@ class ScrollTransaction:
         self._moved = True
         self._expected = None
         self._target.move(percent)
-        self._expected = self._settle(before, percent)
+        observed = self._settle(before, percent)
+        if observed.view_size == before.view_size:
+            self._expected = observed
         self._check()
-        return self._expected
+        return observed
 
     def _sequence(self, initial: ScrollPosition) -> QImage:
         position = self._move(0.0)
@@ -518,24 +572,40 @@ class ScrollTransaction:
                 following.vertical,
                 expected,
             )
-            stitch.append(frames.body(self._frame(following)), expected)
+            stitch.append(
+                frames.body(self._frame(following)),
+                expected if following.view_size == position.view_size else None,
+            )
             position = following
         self._check()
         image = frames.finish(stitch.finish())
-        expected_height = frames.height + frames.body_height * 100.0 / initial.view_size
-        if abs(image.height() - expected_height) > max(
-            2.0, expected_height * _ROUNDING_FRACTION
-        ):
+        self._validate_extent(image, frames, initial.view_size)
+        if position.view_size != initial.view_size:
+            self._validate_extent(image, frames, position.view_size)
+            self._check()
+            if self._target.position() != position:
+                raise CaptureError(
+                    "The scroll panel changed before terminal confirmation"
+                )
+            self._check()
+            self._expected = self._terminal = position
+        return image
+
+    @staticmethod
+    def _validate_extent(
+        image: QImage, frames: _HeaderFrames, view_size: float
+    ) -> None:
+        expected_height = frames.extent(view_size)
+        if not _extent_agrees(image.height(), expected_height):
             logger.warning(
                 "Scrolling extent mismatch: measured_height=%s expected_height=%.3f "
                 "viewport_height=%s view_size=%.6f",
                 image.height(),
                 expected_height,
                 frames.body_height,
-                initial.view_size,
+                view_size,
             )
             raise CaptureError("The completed pixels disagree with the panel's extent")
-        return image
 
     def _restore(self, initial: ScrollPosition) -> str:
         if not self._moved:
@@ -553,22 +623,30 @@ class ScrollTransaction:
             if (
                 current != self._expected
                 or self._expected.horizontal != initial.horizontal
-                or self._expected.view_size != initial.view_size
+                or (
+                    self._expected.view_size != initial.view_size
+                    and self._expected != self._terminal
+                )
             ):
                 return "not restored: scroll position changed unexpectedly"
             if self._expected != initial:
                 before = self._expected
                 self._expected = None
                 self._target.move(initial.vertical)
-                self._expected = self._settle(before, initial.vertical, restoring=True)
+                self._expected = self._settle(
+                    before, initial.vertical, restoring=initial
+                )
         except (CaptureError, OSError):
             return "not restored: the target or user state changed"
         return "restored"
 
-    @staticmethod
-    def _validate_position(initial: ScrollPosition) -> None:
+    def _validate_position(self, initial: ScrollPosition) -> None:
         if not 0.0 < initial.view_size < END_PERCENT:
             raise CaptureError("The selected panel is not vertically scrollable")
+        if initial.vertical == END_PERCENT and self._target.header is not None:
+            raise CaptureError(
+                "Scrolling capture from this list's bottom is not yet supported"
+            )
 
     def run(self) -> ScrollResult:
         """Return a single terminal outcome, discarding incomplete pixels."""

@@ -424,3 +424,61 @@ def test_trace_retention_is_explicit_and_bounded(
         native._trace_helper()
     expected = 3 if mode == "edge-panel-enter" and budget == 10000 else 2
     assert len(list(tmp_path.glob("*.png"))) == expected
+
+
+@pytest.mark.parametrize(
+    "change", ["none", "pixel", "witness", "interior", "horizontal"]
+)
+def test_header_endpoint_metadata_never_replaces_exact_pixel_and_identity_proof(
+    tmp_path: Path, change: str
+) -> None:
+    """A bounded terminal metric change still needs every original exact row."""
+    image = _header_sequence(tmp_path)
+    path = tmp_path / "frames.json"
+    positions = json.loads(path.read_text())
+    positions[-1]["view_size"] = 50.5
+    if change == "pixel":
+        image.setPixelColor(3, 123, QColor("red"))
+    elif change == "witness":
+        positions[-1]["native_item_witness"]["items"][0]["same_identity"] = False
+    elif change == "interior":
+        positions[1]["view_size"] = 50.5
+    elif change == "horizontal":
+        positions[-1]["horizontal"] = 1.0
+    path.write_text(json.dumps(positions), encoding="utf-8")
+    if change == "none":
+        assert verify_sequence(image, tmp_path)["oracle_verified_rows"] == 125
+    else:
+        with pytest.raises(RuntimeError, match="Whole-image oracle"):
+            verify_sequence(image, tmp_path)
+
+
+@pytest.mark.parametrize(
+    "terminal", [0.0, -1.0, 100.0, float("nan"), float("inf"), 55.0]
+)
+def test_header_oracle_rejects_invalid_or_unbounded_endpoint_metrics(
+    tmp_path: Path, terminal: float
+) -> None:
+    """The metadata exception cannot authorize invalid or widely changed extents."""
+    image = _header_sequence(tmp_path)
+    path = tmp_path / "frames.json"
+    positions = json.loads(path.read_text())
+    positions[-1]["view_size"] = terminal
+    path.write_text(json.dumps(positions), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="terminal"):
+        verify_sequence(image, tmp_path)
+
+
+@pytest.mark.parametrize(("initial", "terminal"), [(51.1, 50.2), (50.2, 51.2)])
+def test_header_oracle_independently_enforces_both_total_extents(
+    tmp_path: Path, initial: float, terminal: float
+) -> None:
+    """Each image fits one total estimate but not both, despite exact raw offsets."""
+    image = _header_sequence(tmp_path)
+    path = tmp_path / "frames.json"
+    positions = json.loads(path.read_text())
+    positions[0]["view_size"] = positions[1]["view_size"] = initial
+    positions[-1]["view_size"] = terminal
+    path.write_text(json.dumps(positions), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="terminal extent"):
+        verify_sequence(image, tmp_path)

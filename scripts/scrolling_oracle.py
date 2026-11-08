@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import cast
 
@@ -31,6 +32,19 @@ class _HeaderOracle:
             self.area.bottom - self.header.bottom,
         )
         self._prefix: list[bytes] | None = None
+
+    def terminal_size(self, original: float, terminal: float, height: int) -> None:
+        """Check both independent total extents without using stitcher decisions."""
+        if not math.isfinite(terminal) or not 0.0 < terminal < _FULL_PERCENT:
+            raise RuntimeError("Whole-image oracle terminal view size is invalid")
+        first = self.height + self._body.height * _FULL_PERCENT / original
+        last = self.height + self._body.height * _FULL_PERCENT / terminal
+        # The prototype's existing extent tolerance, not an exact offset source.
+        if abs(last - first) > max(2.0, first * 0.02) or any(
+            abs(height - expected) > max(2.0, expected * 0.02)
+            for expected in (first, last)
+        ):
+            raise RuntimeError("Whole-image oracle terminal extent changed")
 
     def offset(self, position: dict[str, object], index: int, previous: int) -> int:
         """Derive pixel offsets from two agreeing raw geometry deltas, never seams."""
@@ -100,6 +114,21 @@ def _rows(image: QImage) -> list[bytes]:
     return [data[y * stride : (y + 1) * stride] for y in range(image.height())]
 
 
+def _verify_view_size(
+    original: float,
+    current: float,
+    header: _HeaderOracle | None,
+    *,
+    final: bool,
+    height: int,
+) -> None:
+    if current == original:
+        return
+    if header is None or not final:
+        raise RuntimeError("Whole-image oracle frame geometry is inconsistent")
+    header.terminal_size(original, current, height)
+
+
 def verify_sequence(image: QImage, output: Path) -> dict[str, object]:
     """Check every output row against acquired pixels at UIA-derived positions.
 
@@ -125,12 +154,18 @@ def verify_sequence(image: QImage, output: Path) -> dict[str, object]:
         frame = QImage(str(output / f"frame-{index}.png"))
         viewport = viewport or frame.height()
         total_pixels += frame.width() * frame.height()
+        _verify_view_size(
+            first["view_size"],
+            position["view_size"],
+            header,
+            final=index == len(positions) - 1,
+            height=image.height(),
+        )
         if (
             frame.isNull()
             or frame.width() != image.width()
             or frame.height() != viewport
             or total_pixels > MAX_PIXELS
-            or position["view_size"] != first["view_size"]
             or position["horizontal"] != first["horizontal"]
             or not 0 < first["view_size"] < _FULL_PERCENT
             or (index and position["vertical"] <= positions[index - 1]["vertical"])

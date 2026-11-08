@@ -352,7 +352,11 @@ def test_settle_logs_exact_state_change_without_more_reads(
     monkeypatch.setattr(target, "position", position)
     operation = ScrollTransaction(target, lambda: False, pause=pauses.append)
     with pytest.raises(CaptureError, match="moved unexpectedly"):
-        operation._settle(before, 100.0, restoring=restoring)
+        operation._settle(
+            before,
+            100.0,
+            restoring=replace(before, vertical=100.0) if restoring else None,
+        )
     assert reads == [observed]
     assert pauses == [0.08]
     assert target.moves == []
@@ -1198,7 +1202,10 @@ def test_tiny_unmatchable_frame_is_rejected_without_edge_guessing() -> None:
         VerticalStitch(source.copy(0, 0, 80, 16)).append(source.copy(0, 8, 80, 16), 8.0)
 
 
-def test_repeated_textured_bands_have_no_unique_displacement() -> None:
+@pytest.mark.parametrize("expected_advance", [60.0, None])
+def test_repeated_textured_bands_have_no_unique_displacement(
+    expected_advance: float | None,
+) -> None:
     """Do not use UIA proximity to select one arbitrary repeated-content shift."""
     period = document(40)
     source = QImage(80, 240, QImage.Format.Format_RGB32)
@@ -1208,7 +1215,7 @@ def test_repeated_textured_bands_have_no_unique_displacement() -> None:
     painter.end()
     with pytest.raises(CaptureError, match="ambiguous"):
         VerticalStitch(source.copy(0, 0, 80, 120)).append(
-            source.copy(0, 60, 80, 120), 60.0
+            source.copy(0, 60, 80, 120), expected_advance
         )
 
 
@@ -1287,3 +1294,310 @@ def test_observed_notepad_line_rounding_preserves_all_pixels() -> None:
     assert result.image == target.document
     assert result.restoration == "restored"
     assert target.position() == initial
+
+
+class EndpointTarget(HeaderTarget):
+    """A fixed Header whose provider normalizes its view size only at the bottom."""
+
+    def __init__(self, *, total: int = 600, terminal_size: float = 20.3) -> None:
+        super().__init__()
+        self.document = document(total)
+        self.percent = 0.0
+        self.offset = 0
+        self.terminal_size = terminal_size
+
+    @override
+    def position(self) -> ScrollPosition:
+        view = self.terminal_size if self.percent == 100.0 else 20.0
+        return ScrollPosition(self.horizontal, self.percent, view)
+
+    @override
+    def move(self, vertical: float) -> None:
+        self.moves.append(vertical)
+        self.percent = vertical
+        # Individually admissible 1px rounding accumulates. The final jump is 67px,
+        # not the old percentage prediction 60px; complete source extent is 600px.
+        self.offset = (
+            self.document.height() - 120
+            if vertical == 100.0
+            else round(480 * vertical / 100) - int(vertical / 12.5)
+        )
+
+
+@pytest.mark.parametrize("start", [0.0, 50.0])
+def test_verified_terminal_normalization_restores_exact_initial_state(
+    start: float,
+) -> None:
+    """Top/middle synthetic starts keep all rows, Header once and exact restoration."""
+    target = EndpointTarget()
+    first = target.frame()
+    target.move(start)
+    target.moves.clear()
+    initial, pixels = target.position(), target.frame()
+    result = transaction(target).run()
+    assert result.message == ""
+    assert result.restoration == "restored"
+    assert result.image is not None
+    assert result.image.copy(0, 0, 80, 25) == first.copy(0, 0, 80, 25)
+    assert result.image.copy(0, 25, 80, 600) == target.document
+    assert result.image.height() == 625
+    assert target.position() == initial
+    assert target.frame() == pixels
+    assert target.moves[-2:] == [100.0, start]
+
+
+def test_normalized_bottom_start_is_rejected_before_mutation() -> None:
+    """The draft must not knowingly strand an unsupported normalized start."""
+    target = EndpointTarget()
+    target.move(100.0)
+    target.moves.clear()
+    initial, pixels = target.position(), target.frame()
+    result = transaction(target).run()
+    assert result.image is None
+    assert "bottom is not yet supported" in result.message
+    assert result.restoration == "unchanged"
+    assert result.frames == 0
+    assert target.moves == []
+    assert target.position() == initial
+    assert target.frame() == pixels
+
+
+@pytest.mark.parametrize(
+    "terminal_size", [0.0, -1.0, 100.0, float("nan"), float("inf"), 21.0]
+)
+def test_invalid_or_large_terminal_normalization_stays_unresolved(
+    terminal_size: float,
+) -> None:
+    """Invalid metrics and out-of-budget extents never gain restore permission."""
+    target = EndpointTarget(terminal_size=terminal_size)
+    result = transaction(target).run()
+    assert result.image is None
+    assert "moved unexpectedly" in result.message
+    assert result.restoration == "not restored: the provider write is unresolved"
+    assert target.moves[-1] == 100.0
+
+
+@pytest.mark.parametrize("change", ["no-header", "interior", "horizontal"])
+def test_endpoint_exception_does_not_apply_to_other_state_changes(
+    monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    """Only the verified Header's terminal V/read may change the view metric."""
+    target = EndpointTarget()
+    before = ScrollPosition(27.0, 87.5, 20.0)
+    observed = ScrollPosition(28.0 if change == "horizontal" else 27.0, 100.0, 20.3)
+    percent = 93.0 if change == "interior" else 100.0
+    if change == "no-header":
+        target.header = None
+    monkeypatch.setattr(target, "position", lambda: observed)
+    with pytest.raises(CaptureError, match="moved unexpectedly"):
+        transaction(target)._settle(before, percent)
+    assert target.moves == []
+
+
+def test_unstable_terminal_metric_keeps_same_bounded_poll_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An endpoint candidate must become identical twice, not merely close."""
+    target = EndpointTarget()
+    before = ScrollPosition(27.0, 87.5, 20.0)
+    reads = iter([ScrollPosition(27.0, 100.0, view) for view in (20.2, 20.3) * 4])
+    monkeypatch.setattr(target, "position", lambda: next(reads))
+    pauses: list[float] = []
+    with pytest.raises(CaptureError, match="did not settle"):
+        ScrollTransaction(target, lambda: False, pause=pauses.append)._settle(
+            before, 100.0
+        )
+    assert pauses == [0.08] * 8
+    assert target.moves == []
+
+
+@pytest.mark.parametrize("failure", ["header", "content", "geometry", "input"])
+def test_terminal_candidate_needs_unchanged_pixels_and_target(
+    monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    """A changed metric is not permission to accept changed content or ownership."""
+    target = EndpointTarget()
+    original_frame = target.frame
+    original_check = target.check
+
+    def frame() -> QImage:
+        image = original_frame()
+        if target.percent == 100.0:
+            if failure == "header":
+                image.setPixelColor(5, 5, QColor("red"))
+            elif failure == "content":
+                painter = QPainter(image)
+                painter.fillRect(0, 25, 80, 120, QColor("white"))
+                painter.end()
+        return image
+
+    def check() -> None:
+        if target.percent == 100.0 and failure in ("geometry", "input"):
+            raise CaptureError(f"Changed {failure}")
+        original_check()
+
+    monkeypatch.setattr(target, "frame", frame)
+    monkeypatch.setattr(target, "check", check)
+    operation = transaction(target)
+    result = operation.run()
+    assert result.image is None
+    assert result.restoration == "not restored: the provider write is unresolved"
+    assert target.moves[-1] == 100.0
+    assert operation._terminal is None
+    assert operation._expected is None
+
+
+@pytest.mark.parametrize(("total", "terminal_size"), [(614, 19.7), (610, 20.3)])
+def test_terminal_pixels_must_agree_with_both_independent_extents(
+    total: int, terminal_size: float
+) -> None:
+    """Each case passes one total bound and fails the other despite a unique join."""
+    target = EndpointTarget(total=total, terminal_size=terminal_size)
+    result = transaction(target).run()
+    assert result.frames == 9
+    assert result.image is None
+    assert "disagree with the panel's extent" in result.message
+    assert result.restoration == "not restored: the provider write is unresolved"
+    assert target.moves[-1] == 100.0
+
+
+def test_final_eligibility_is_checked_before_confirming_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Input after extent proof still cannot create restoration ownership."""
+    target = EndpointTarget()
+    operation = transaction(target)
+    validate = operation._validate_extent
+
+    def interrupt(image: QImage, frames: _HeaderFrames, view: float) -> None:
+        validate(image, frames, view)
+        if view != 20.0:
+            target.input_changed = True
+
+    monkeypatch.setattr(operation, "_validate_extent", interrupt)
+    result = operation.run()
+    assert result.image is None
+    assert result.restoration == "not restored: the provider write is unresolved"
+    assert operation._terminal is None
+    assert operation._expected is None
+    assert target.moves[-1] == 100.0
+
+
+@pytest.mark.parametrize("change", ["horizontal", "view_size", "vertical"])
+def test_normalized_restore_requires_exact_original_tuple(
+    monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    """A single restore write never succeeds with a different original metric."""
+    target = EndpointTarget()
+    read = target.position
+    restoring = False
+    move = target.move
+
+    def incorrect_restore(vertical: float) -> None:
+        nonlocal restoring
+        restoring = target.percent == 100.0
+        move(vertical)
+
+    def position() -> ScrollPosition:
+        current = read()
+        return replace(current, **{change: 1.0}) if restoring else current
+
+    monkeypatch.setattr(target, "move", incorrect_restore)
+    monkeypatch.setattr(target, "position", position)
+    result = transaction(target).run()
+    assert result.image is None
+    assert result.restoration == "not restored: the target or user state changed"
+    assert len(target.moves) == 9
+    assert target.moves[-2:] == [100.0, 0.0]
+
+
+def test_normalized_restore_waits_for_pending_terminal_then_exact_original(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stale terminal reads do not cause a second write or count as restored."""
+    target = EndpointTarget()
+    move = target.move
+    pending: float | None = None
+    polls = 0
+
+    def delayed_restore(vertical: float) -> None:
+        nonlocal pending
+        if target.percent == 100.0:
+            target.moves.append(vertical)
+            pending = vertical
+        else:
+            move(vertical)
+
+    def pause(_seconds: float) -> None:
+        nonlocal polls, pending
+        if pending is not None:
+            polls += 1
+            if polls == 3:
+                target.percent = pending
+                target.offset = 0
+                pending = None
+
+    monkeypatch.setattr(target, "move", delayed_restore)
+    result = ScrollTransaction(target, lambda: False, pause=pause).run()
+    assert result.image is not None
+    assert result.restoration == "restored"
+    assert polls == 3
+    assert len(target.moves) == 9
+    assert target.position() == ScrollPosition(27.0, 0.0, 20.0)
+
+
+def test_final_position_is_read_again_before_confirming_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Programmatic movement during composition cannot gain restore ownership."""
+    target = EndpointTarget()
+    operation = transaction(target)
+    validate = operation._validate_extent
+
+    def change_position(image: QImage, frames: _HeaderFrames, view: float) -> None:
+        validate(image, frames, view)
+        if view != 20.0:
+            target.percent = 99.0
+
+    monkeypatch.setattr(operation, "_validate_extent", change_position)
+    result = operation.run()
+    assert result.image is None
+    assert "before terminal confirmation" in result.message
+    assert result.restoration == "not restored: the provider write is unresolved"
+    assert operation._terminal is None
+    assert operation._expected is None
+    assert target.moves[-1] == 100.0
+
+
+def test_unverified_terminal_tuple_cannot_enable_restoration() -> None:
+    """Merely observing changed metrics is insufficient for another provider write."""
+    target = EndpointTarget()
+    initial = target.position()
+    target.move(100.0)
+    operation = transaction(target)
+    operation._moved = True
+    operation._expected = target.position()
+    assert (
+        operation._restore(initial)
+        == "not restored: scroll position changed unexpectedly"
+    )
+    assert target.moves == [100.0]
+
+
+def test_interior_metric_change_still_leaves_provider_write_unresolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The full transaction cannot turn a mid-document reflow into normalization."""
+    target = EndpointTarget()
+    read = target.position
+
+    def position() -> ScrollPosition:
+        current = read()
+        return replace(current, view_size=20.3) if target.percent == 25.0 else current
+
+    monkeypatch.setattr(target, "position", position)
+    result = transaction(target).run()
+    assert result.image is None
+    assert "moved unexpectedly" in result.message
+    assert result.restoration == "not restored: the provider write is unresolved"
+    assert target.moves == [12.5, 25.0]
