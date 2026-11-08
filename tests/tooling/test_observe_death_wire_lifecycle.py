@@ -10,7 +10,9 @@ import argparse
 import ctypes as c
 import hashlib
 import json
+import traceback
 from copy import deepcopy
+from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Event, Thread
 from types import SimpleNamespace
@@ -30,6 +32,50 @@ Json = dict[str, Any]
 SESSION = "a" * 32
 IMAGE = r"C:\Python\python.exe"
 CONSOLE = r"c:\windows\system32\conhost.exe"
+DIAGNOSTIC_CHARS = 16_384
+JOURNAL_TAIL_BYTES = 8192
+
+
+@dataclass
+class WireEvidence:
+    """Retain bounded test diagnostics independently of adversarial wire edits."""
+
+    original_result: str | None = None
+    thread_exception: str | None = None
+    completed_packets: list[str] = field(default_factory=list)
+
+    def retain_result(self, result: Json) -> None:
+        """Freeze the producer result before a mutation can obscure its failure."""
+        self.original_result = json.dumps(result, sort_keys=True)[:DIAGNOSTIC_CHARS]
+
+    def execute(
+        self, survivor: witness.Witness, finished: Event, returns: list[int]
+    ) -> None:
+        """Surface worker exceptions in the awaiting test, including the traceback."""
+        try:
+            returns.append(survivor.run())
+        except BaseException:  # noqa: BLE001 - retain all thread failures for the test
+            self.thread_exception = traceback.format_exc()[-DIAGNOSTIC_CHARS:]
+        finally:
+            if self.original_result is None:
+                self.retain_result(survivor.result)
+            finished.set()
+
+    def describe(self, output: Path) -> str:
+        """Include only bounded result, completed packets and the journal's tail."""
+        try:
+            with (output / "death-calls.jsonl").open("rb") as stream:
+                stream.seek(0, 2)
+                stream.seek(max(0, stream.tell() - JOURNAL_TAIL_BYTES))
+                tail = stream.read(JOURNAL_TAIL_BYTES).decode("utf-8", "replace")
+        except OSError as error:
+            tail = f"Journal unavailable: {error!r}"
+        return (
+            f"\nOriginal witness result: {self.original_result}"
+            f"\nCompleted packets: {self.completed_packets}"
+            f"\nThread exception: {self.thread_exception}"
+            f"\nJournal tail: {tail}"
+        )
 
 
 class WireKernel(Kernel):
@@ -142,14 +188,16 @@ def pixels(fixture: Json) -> bytes:
     return bytes(data)
 
 
-def await_file(path: Path, finished: Event) -> None:
+def await_file(path: Path, finished: Event, evidence: WireEvidence) -> None:
     """Bound synchronization by a real Event timeout, independent of fake clocks."""
     for _ in range(2000):
         if path.exists():
             return
         if finished.wait(0.002):
-            pytest.fail(f"Witness exited before {path.name}")
-    pytest.fail(f"Witness did not publish {path.name}")
+            pytest.fail(
+                f"Witness exited before {path.name}{evidence.describe(path.parent)}"
+            )
+    pytest.fail(f"Witness did not publish {path.name}{evidence.describe(path.parent)}")
 
 
 def mutate_wire(path: Path, packet: Json, mutation: str) -> Json:  # noqa: C901, PLR0912 - explicit wire mutation matrix
@@ -174,6 +222,20 @@ def mutate_wire(path: Path, packet: Json, mutation: str) -> Json:  # noqa: C901,
         if mutation == "retired_creation":
             result["retirement"]["processes"][0]["observed_creation_100ns"] += 1
         elif mutation == "retired_bool":
+            retirement = result.get("retirement")
+            retirement_complete = (
+                result.get("passed") is True
+                and result.get("failure") is None
+                and isinstance(retirement, dict)
+                and retirement.get("retired") is True
+                and isinstance(retirement.get("processes"), list)
+                and retirement["processes"]
+                and isinstance(retirement["processes"][0], dict)
+                and type(retirement["processes"][0].get("observed_process_id")) is int
+            )
+            assert retirement_complete, (
+                "retired_bool requires successful original retirement evidence"
+            )
             result["retirement"]["processes"][0]["observed_process_id"] = True
         elif mutation == "retired_missing":
             result["retirement"]["processes"].pop()
@@ -322,14 +384,25 @@ def test_actual_death_wire_lifecycle(  # noqa: C901, PLR0915 - complete fixed wi
     executor.mkdir()
     finished = Event()
     returns: list[int] = []
+    evidence = WireEvidence()
     witness_owner, gui_owner = Mock(), Mock()
     witness_owner.process.pid = 90
-    witness_owner.snapshot.side_effect = lambda: {
-        "exit_code": (1 if mutation == "owner_nonzero" else returns[0])
-        if finished.is_set()
-        else None,
-        "members": [] if finished.is_set() and mutation != "owner_nonempty" else [90],
-    }
+
+    def witness_snapshot() -> Json:
+        if finished.is_set():
+            assert evidence.thread_exception is None, evidence.describe(
+                coordinator.output
+            )
+        return {
+            "exit_code": (1 if mutation == "owner_nonzero" else returns[0])
+            if finished.is_set()
+            else None,
+            "members": []
+            if finished.is_set() and mutation != "owner_nonempty"
+            else [90],
+        }
+
+    witness_owner.snapshot.side_effect = witness_snapshot
     gui_owner.snapshot.side_effect = lambda: {
         "exit_code": 17 if api.actions else None,
         "members": [] if api.actions else [21, *temp_pids],
@@ -354,6 +427,8 @@ def test_actual_death_wire_lifecycle(  # noqa: C901, PLR0915 - complete fixed wi
     original_write = smoke.write_handshake
 
     def write(path: Path, packet: Json) -> None:
+        if path.name == "death-result.json":
+            evidence.retain_result(packet["result"])
         if path.name == "death-result.json" and mutation == "unsupported_event":
             with (path.parent / "death-calls.jsonl").open("a") as stream:
                 stream.write(
@@ -367,6 +442,8 @@ def test_actual_death_wire_lifecycle(  # noqa: C901, PLR0915 - complete fixed wi
                     + "\n"
                 )
         original_write(path, mutate_wire(path, packet, mutation))
+        if len(evidence.completed_packets) < 32:
+            evidence.completed_packets.append(path.name)
 
     monkeypatch.setattr(smoke, "write_handshake", write)
     args = argparse.Namespace(
@@ -389,16 +466,14 @@ def test_actual_death_wire_lifecycle(  # noqa: C901, PLR0915 - complete fixed wi
 
         api.functions["TerminateProcess"].side_effect = terminate_then_fail_close
 
-    def execute() -> None:
-        try:
-            returns.append(survivor.run())
-        finally:
-            finished.set()
-
-    thread = Thread(target=execute, name="fake-native-real-witness")
+    thread = Thread(
+        target=evidence.execute,
+        args=(survivor, finished, returns),
+        name="fake-native-real-witness",
+    )
     thread.start()
     try:
-        await_file(coordinator.output / "death-ready.json", finished)
+        await_file(coordinator.output / "death-ready.json", finished, evidence)
         assert coordinator.preparation_ready()
         api.now = 100.1
         smoke.write_handshake(
@@ -418,7 +493,7 @@ def test_actual_death_wire_lifecycle(  # noqa: C901, PLR0915 - complete fixed wi
             },
         )
         assert not coordinator.before_observe(baseline, temporary, identity, 115.1)
-        await_file(coordinator.output / "death-pinned.json", finished)
+        await_file(coordinator.output / "death-pinned.json", finished, evidence)
         if mutation.startswith("collect_"):
             with pytest.raises(ValueError, match=r"Death|death|executor retirement"):
                 coordinator.before_observe(baseline, temporary, identity, 115.1)
@@ -513,6 +588,7 @@ def test_actual_death_wire_lifecycle(  # noqa: C901, PLR0915 - complete fixed wi
         gui_owner.emergency.assert_not_called()
         guard.close.assert_called_once()
         assert finished.wait(2)
+        assert evidence.thread_exception is None, evidence.describe(coordinator.output)
         assert returns == ([1] if mutation == "actual_close" else [0])
     finally:
         if not finished.is_set():
@@ -525,3 +601,58 @@ def test_actual_death_wire_lifecycle(  # noqa: C901, PLR0915 - complete fixed wi
             assert survivor.executor.handle is None
         if survivor.pins is not None:
             assert survivor.pins.closed
+
+
+def test_early_witness_failure_is_not_masked_by_retired_bool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An actual early witness failure stays red with its unmutated original cause."""
+    original_cause = "injected original cause before death-pinned"
+    monkeypatch.setattr(
+        witness,
+        "qualify_profiles",
+        Mock(side_effect=RuntimeError(original_cause)),
+    )
+    with pytest.raises(pytest.fail.Exception, match="Witness exited before") as caught:
+        test_actual_death_wire_lifecycle(
+            console=False,
+            mutation="retired_bool",
+            tmp_path=tmp_path,
+            monkeypatch=monkeypatch,
+        )
+    message = str(caught.value)
+    assert "Witness exited before death-pinned.json" in message
+    assert f"RuntimeError('{original_cause}')" in message
+    assert '"passed": false' in message
+    assert "Completed packets:" in message
+    assert "death-ready.json" in message
+    assert "death-begin.json" in message
+    assert "Thread exception: Traceback (most recent call last):" in message
+    assert (
+        "AssertionError: retired_bool requires successful original retirement evidence"
+        in message
+    )
+    assert "KeyError" not in message
+    assert "Journal tail:" in message
+    assert "death.reference.close" in message
+    assert not (tmp_path / "owned" / "death-witness" / "death-result.json").exists()
+
+
+def test_wire_evidence_retains_bounded_unmutated_result(tmp_path: Path) -> None:
+    """Evidence snapshots and journal reads stay bounded and independent of edits."""
+    evidence = WireEvidence()
+    result = {"passed": True, "failure": None, "detail": "x" * DIAGNOSTIC_CHARS}
+    evidence.retain_result(result)
+    retained = evidence.original_result
+    assert retained is not None
+    assert len(retained) == DIAGNOSTIC_CHARS
+    result["detail"] = "mutated"
+    assert evidence.original_result == retained
+    (tmp_path / "death-calls.jsonl").write_bytes(
+        b"omitted prefix\n" + b"j" * JOURNAL_TAIL_BYTES + b"last journal record\n"
+    )
+    message = evidence.describe(tmp_path)
+    tail = message.split("\nJournal tail: ", 1)[1]
+    assert len(tail) == JOURNAL_TAIL_BYTES
+    assert "omitted prefix" not in tail
+    assert tail.endswith("last journal record\n")
