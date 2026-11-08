@@ -131,3 +131,11 @@ reads cannot acknowledge pending motion. Until completion is observed, the
 position is unknown and no restoration write is eligible. Input, cancellation,
 or deadline during unresolved movement returns failure without another write.
 This fixes that safety regression without adding provider-specific tolerances.
+
+Run 42441143626 confirms observed movement/restoration: both Edge cases captured
+two frames, rejected full-width overlap, and restored exact starting H/V values.
+Notepad again produced identical complete smoke pixels. The next harness-only
+step saves the same helper's first two accepted frames and observed UIA positions
+for local registration analysis. This test wrapper adds no production logging,
+result channel, crop, helper process, timeout, or matching exception. Only owned
+test document pixels enter the existing short-lived CI artifacts.

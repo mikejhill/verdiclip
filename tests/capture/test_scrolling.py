@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
+from pathlib import Path
 from typing import override
 
 import pytest
 from PySide6.QtGui import QColor, QImage
+from scripts.simple_scroll_native import _trace_helper
 
 from verdiclip.capture.scrolling import (
     ScrollPosition,
@@ -436,3 +439,27 @@ def test_already_restored_state_still_rechecks_user_input(
     monkeypatch.setattr(target, "position", interrupt)
     assert operation._restore(initial).startswith("not restored")
     assert target.moves == []
+
+
+def test_native_diagnostics_keep_only_two_accepted_frames(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The test wrapper observes the same transaction without changing its result."""
+    target = Target()
+    results = []
+    original = ScrollTransaction._frame
+    monkeypatch.setattr("sys.argv", ["-c", "10", "20", "scratch", str(tmp_path)])
+    monkeypatch.setattr(
+        "scripts.simple_scroll_native.helper_main",
+        lambda: results.append(transaction(target).run()),
+    )
+    _trace_helper()
+    assert len(results) == 1
+    assert results[0].image == target.document
+    assert results[0].restoration == "restored"
+    assert ScrollTransaction._frame is original
+    assert QImage(str(tmp_path / "frame-0.png")) == target.document.copy(0, 0, 80, 120)
+    assert QImage(str(tmp_path / "frame-1.png")) == target.document.copy(0, 60, 80, 120)
+    assert len(list(tmp_path.glob("*.png"))) == 2
+    observations = json.loads((tmp_path / "frames.json").read_text())
+    assert [item["vertical"] for item in observations] == [0.0, 12.5]

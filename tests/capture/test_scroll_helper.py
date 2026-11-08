@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import io
+import json
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
+from unittest.mock import MagicMock, Mock
 
 import pytest
 from PySide6.QtCore import QProcess
+from PySide6.QtGui import QImage
 
-from verdiclip.capture.scroll_helper import ScrollHelper, _watch_parent
+from verdiclip.capture.scroll_helper import ScrollHelper, _watch_parent, main
 from verdiclip.capture.scrolling import ScrollResult
+from verdiclip.exceptions import CaptureError
 from verdiclip.geometry import Point
 
 if TYPE_CHECKING:
@@ -163,3 +167,59 @@ def test_cleanup_failure_still_delivers_terminal_result(
         assert "could not be removed" in signal.args[0].message
     finally:
         cleanup()
+
+
+@pytest.mark.parametrize("failure", ["none", "discovery", "cleanup", "dpi", "save"])
+def test_helper_entry_produces_one_terminal_result(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    failure: str,
+) -> None:
+    """Exercise real serialization/file output with native boundaries mocked."""
+    user = Mock()
+    user.SetProcessDpiAwarenessContext.return_value = failure != "dpi"
+    monkeypatch.setattr("ctypes.WinDLL", Mock(return_value=user), raising=False)
+    monkeypatch.setattr("sys.argv", ["helper", "10", "20", str(tmp_path)])
+    thread = Mock()
+    monkeypatch.setattr("verdiclip.capture.scroll_helper.threading.Thread", thread)
+    target = MagicMock()
+    if failure == "cleanup":
+        target.__exit__.side_effect = CaptureError("Cleanup failed")
+    constructor = Mock(return_value=target)
+    if failure == "discovery":
+        constructor.side_effect = CaptureError("No scroll pattern")
+    monkeypatch.setattr("verdiclip.platform.scrolling.UiaScrollTarget", constructor)
+    image = QImage(10, 20, QImage.Format.Format_RGB32)
+    image.fill(0xFF123456)
+    operation = Mock()
+    operation.run.return_value = ScrollResult(image, "", "restored", 3)
+    monkeypatch.setattr(
+        "verdiclip.capture.scrolling.ScrollTransaction", Mock(return_value=operation)
+    )
+    if failure == "save":
+        monkeypatch.setattr(QImage, "save", Mock(return_value=False))
+    if failure in ("dpi", "save"):
+        with pytest.raises(OSError, match="Could not"):
+            main()
+        assert capsys.readouterr().out == ""
+        if failure == "dpi":
+            constructor.assert_not_called()
+            thread.assert_not_called()
+        return
+    main()
+    value = json.loads(capsys.readouterr().out)
+    assert value["success"] is (failure == "none")
+    assert value["frames"] == (3 if failure == "none" else 0)
+    if failure == "none":
+        assert value["restoration"] == "restored"
+        assert QImage(str(tmp_path / "capture.png")) == image
+    elif failure == "discovery":
+        assert value["message"] == "No scroll pattern"
+        assert value["restoration"] == "unchanged: target discovery failed"
+        operation.run.assert_not_called()
+    else:
+        assert value["message"] == "Cleanup failed"
+        assert value["restoration"] == "unknown: provider cleanup failed"
+        assert not (tmp_path / "capture.png").exists()
+    thread.return_value.start.assert_called_once()

@@ -18,12 +18,20 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer
+from PySide6.QtGui import QImage
 
 from verdiclip.capture.grabber import MssScreenSource
 from verdiclip.capture.scroll_helper import ScrollHelper
-from verdiclip.capture.scrolling import END_PERCENT, ScrollPosition, ScrollResult
+from verdiclip.capture.scroll_helper import main as helper_main
+from verdiclip.capture.scrolling import (
+    END_PERCENT,
+    ScrollPosition,
+    ScrollResult,
+    ScrollTransaction,
+)
 from verdiclip.exceptions import CaptureError
 from verdiclip.geometry import Point
 from verdiclip.platform.scrolling import UiaScrollTarget
@@ -32,6 +40,7 @@ from verdiclip.platform.windows import WindowInfo, WindowLocator
 _ROWS = 120
 _LINE_HEIGHT = 24
 _START_PERCENT = 37.0
+_DIAGNOSTIC_FRAMES = 2
 _WINDOW_WIDTH = 1000
 _WINDOW_HEIGHT = 760
 _GREEN = 80
@@ -155,7 +164,28 @@ def _prepare(window: WindowInfo) -> WindowInfo:
     return _window()
 
 
-def _capture(point: Point) -> ScrollResult:
+def _trace_helper() -> None:
+    """Save two accepted frames in this owned test child, never in production."""
+    output = Path(sys.argv.pop())
+    original = ScrollTransaction._frame
+    observations: list[dict[str, float]] = []
+
+    def record_frame(operation: ScrollTransaction, position: ScrollPosition) -> QImage:
+        frame = original(operation, position)
+        if len(observations) < _DIAGNOSTIC_FRAMES:
+            if not frame.save(str(output / f"frame-{len(observations)}.png")):
+                raise OSError("Could not save the native scrolling diagnostic frame")
+            observations.append(asdict(position))
+            (output / "frames.json").write_text(
+                json.dumps(observations, indent=2), encoding="utf-8"
+            )
+        return frame
+
+    with patch.object(ScrollTransaction, "_frame", record_frame):
+        helper_main()
+
+
+def _capture(point: Point, output: Path) -> ScrollResult:
     loop = QEventLoop()
     helper = ScrollHelper()
     results: list[ScrollResult] = []
@@ -169,7 +199,23 @@ def _capture(point: Point) -> ScrollResult:
     timer.setSingleShot(True)
     timer.timeout.connect(loop.quit)
     timer.start(30_000)
-    helper.start(point)
+    start = helper._process.start
+
+    def trace_start() -> None:
+        arguments = helper._process.arguments()[2:]
+        helper._process.setArguments(
+            [
+                "-c",
+                "from scripts.simple_scroll_native import _trace_helper; "
+                "_trace_helper()",
+                *arguments,
+                str(output.resolve()),
+            ]
+        )
+        start()
+
+    with patch.object(helper._process, "start", trace_start):
+        helper.start(point)
     loop.exec()
     timer.stop()
     if not results:
@@ -277,7 +323,7 @@ def _case(kind: str, output: Path, report: dict[str, object]) -> None:
         )
         with UiaScrollTarget(outer_point) as outer:
             outer_before = outer.position()
-    result = _capture(point)
+    result = _capture(point, output)
     report.update(
         message=result.message, restoration=result.restoration, frames=result.frames
     )
