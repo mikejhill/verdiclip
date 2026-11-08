@@ -268,9 +268,17 @@ correction, not a production occlusion change. The failed run remains evidence;
 actual small-cover qualification is still required on the changed head.
 
 Run 42446224859 again passes the other five cases. SS_NOTIFY fixes the overlay's
-exact hit-HWND check; its next assertion finds the black rectangle not yet
-painted. Setup precedes the Qt event loop, so a sleep cannot dispatch WM_PAINT.
-The harness now calls and checks UpdateWindow synchronously, preserving the
-same composition pause and pixel assertion. It saves the attempted covered
-frame before validating paint, so any further failure retains the actual pixels.
-Production code is unchanged; the small-cover gate remains pending.
+exact hit-HWND check, but its literal-black assertion still fails. To remove
+possible pre-event-loop paint uncertainty, the harness calls and checks
+UpdateWindow synchronously, preserving the same composition pause and saving
+the attempted covered frame before checking its pixels. Production is unchanged.
+
+Run 42446472855 preserves those actual pixels: exactly the intended 20×20 block
+is rendered, with all 400 pixels #696969. SS_BLACKRECT is theme-dependent,
+not necessarily literal black. The earlier missing-paint
+explanation was a hypothesis, not established causality. The harness now compares
+the actual before/covered images: all 400 pixels inside the expected rectangle
+must change to one uniform observed color, while every outside pixel stays
+unchanged. It records that color rather than assuming a platform theme value. Exact hit ownership, unchanged
+foreground and between-sample placement remain required. No production check
+is weakened; actual small-cover qualification still awaits the changed head.

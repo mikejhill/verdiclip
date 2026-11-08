@@ -856,7 +856,9 @@ def test_native_input_is_hosted_only_and_has_no_button_state(
     user.mouse_event.assert_called_once_with(1, 1, 0, 0, 0)
 
 
-@pytest.mark.parametrize("failure", ["none", "hit", "paint", "update"])
+@pytest.mark.parametrize(
+    "failure", ["none", "hit", "paint", "update", "partial", "outside"]
+)
 def test_owned_native_overlay_is_opaque_without_activation(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failure: str
 ) -> None:
@@ -876,22 +878,29 @@ def test_owned_native_overlay_is_opaque_without_activation(
     monkeypatch.setattr("scripts.simple_scroll_native.time.sleep", Mock())
     desktop = QImage(500, 500, QImage.Format.Format_RGB32)
     desktop.fill(QColor("white"))
+    assert desktop.copy(20, 20, 300, 300).save(str(tmp_path / "before.png"))
     if failure != "paint":
         painter = QPainter(desktop)
-        painter.fillRect(95, 95, 20, 20, QColor("black"))
+        painter.fillRect(95, 95, 20, 20, QColor(0x12, 0x34, 0x56))
         painter.end()
+    if failure == "partial":
+        desktop.setPixelColor(95, 95, QColor("white"))
+    elif failure == "outside":
+        desktop.setPixelColor(20, 20, QColor("red"))
+    report: dict[str, object] = {}
     screens = Mock()
     screens.freeze.return_value = FrozenScreen(desktop, Rect(0, 0, 500, 500))
     monkeypatch.setattr("scripts.simple_scroll_native.MssScreenSource", lambda: screens)
     if failure == "none":
-        handle = _cover_panel(Rect(20, 20, 300, 300), 1, tmp_path)
+        handle = _cover_panel(Rect(20, 20, 300, 300), 1, tmp_path, report)
         assert handle == 7
+        assert report["overlay_color"] == "#123456"
         assert (tmp_path / "covered.png").exists()
         user.DestroyWindow.assert_not_called()
         _close_overlay(handle)
     else:
         with pytest.raises(RuntimeError):
-            _cover_panel(Rect(20, 20, 300, 300), 1, tmp_path)
+            _cover_panel(Rect(20, 20, 300, 300), 1, tmp_path, report)
     args = user.CreateWindowExW.call_args.args
     assert args[0] == 0x08000088  # Non-activating, tool, topmost.
     assert args[1:4] == ("STATIC", "", 0x90000104)  # Visible popup, black, SS_NOTIFY.
@@ -903,3 +912,16 @@ def test_owned_native_overlay_is_opaque_without_activation(
     if failure not in ("hit", "update"):
         screens.close.assert_called_once()
         assert (tmp_path / "covered.png").exists()
+
+
+@pytest.mark.parametrize(("left", "top"), [(-1, 10), (10, -1), (31, 10), (10, 31)])
+def test_native_cover_oracle_requires_all_400_pixels_in_bounds(
+    left: int, top: int
+) -> None:
+    """A clipped rectangle must never count as a fully observed tiny cover."""
+    from scripts.simple_scroll_native import _verify_cover_pixels  # noqa: PLC0415
+
+    before = QImage(50, 50, QImage.Format.Format_RGB32)
+    before.fill(QColor("white"))
+    with pytest.raises(RuntimeError, match="clipped"):
+        _verify_cover_pixels(before, before.copy(), left, top)

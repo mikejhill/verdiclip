@@ -290,7 +290,9 @@ def _real_mouse_input() -> None:
     user.mouse_event(1, 1, 0, 0, 0)  # MOUSEEVENTF_MOVE, relative, no button state
 
 
-def _cover_panel(area: Rect, window: int, output: Path) -> int:
+def _cover_panel(
+    area: Rect, window: int, output: Path, report: dict[str, object]
+) -> int:
     """Render an owned, non-activating tiny overlay between the nine samples."""
     user = c.WinDLL("user32", use_last_error=True)
     user.CreateWindowExW.argtypes = (
@@ -352,12 +354,11 @@ def _cover_panel(area: Rect, window: int, output: Path) -> int:
                 covered.save(str(output / "covered.png")),
                 "Could not save overlay evidence",
             )
-            _require(
-                covered.pixelColor(
-                    x + 10 - round(area.left), y + 10 - round(area.top)
-                ).name()
-                == "#000000",
-                "Overlay was not rendered",
+            report["overlay_color"] = _verify_cover_pixels(
+                QImage(str(output / "before.png")),
+                covered,
+                x - round(area.left),
+                y - round(area.top),
             )
         finally:
             screens.close()
@@ -366,6 +367,39 @@ def _cover_panel(area: Rect, window: int, output: Path) -> int:
         raise
     else:
         return handle
+
+
+def _verify_cover_pixels(before: QImage, covered: QImage, left: int, top: int) -> str:
+    """Prove the entire owned cover changed pixels and nothing outside it did."""
+    _require(
+        not before.isNull() and before.size() == covered.size(),
+        "Invalid overlay baseline",
+    )
+    _require(
+        0 <= left <= before.width() - 20 and 0 <= top <= before.height() - 20,
+        "The owned overlay rectangle is clipped",
+    )
+    before = before.convertToFormat(QImage.Format.Format_RGB32)
+    covered = covered.convertToFormat(QImage.Format.Format_RGB32)
+    old, new = (
+        memoryview(before.constBits()).cast("I"),
+        memoryview(covered.constBits()).cast("I"),
+    )
+    width = before.width()
+    color = new[top * width + left]
+    for y in range(before.height()):
+        for x in range(width):
+            index = y * width + x
+            if left <= x < left + 20 and top <= y < top + 20:
+                _require(
+                    new[index] == color and old[index] != new[index],
+                    "Overlay was not fully rendered",
+                )
+            else:
+                _require(
+                    old[index] == new[index], "Pixels outside the owned overlay changed"
+                )
+    return covered.pixelColor(left, top).name()
 
 
 def _close_overlay(handle: int) -> None:
@@ -528,7 +562,9 @@ def _case(kind: str, output: Path, report: dict[str, object]) -> None:
             outer_before = outer.position()
             report["outer_before"] = asdict(outer_before)
     overlay = (
-        _cover_panel(area, window.handle, output) if kind == "edge-covered" else None
+        _cover_panel(area, window.handle, output, report)
+        if kind == "edge-covered"
+        else None
     )
     try:
         result = _capture(point, output, kind)
