@@ -256,6 +256,7 @@ jobs:
           }
           if ($LASTEXITCODE -ne 0) { throw "Representative capture failed: $env:SCROLL_APPLICATION" }
       - name: Verify native target DPI and the same display after capture
+        id: display-check
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         timeout-minutes: 1
         run: |
@@ -264,6 +265,37 @@ jobs:
           if ($target.window_dpi -ne $dpi) { throw 'Representative target DPI does not match the actual requested scale' }
           uv run python -c "import os; from scripts.hosted_display_scale import Display; assert Display().read().qualifies(int(os.environ['DISPLAY_SCALE']))"
           if ($LASTEXITCODE -ne 0) { throw 'Display changed during representative capture' }
+      - name: Compare tiny ordinary helper with a fresh traced reference
+        if: matrix.scale == 200 && matrix.application == 'explorer-click'
+        timeout-minutes: 3
+        run: |
+          uv run python -c "from scripts.hosted_display_scale import Display; assert Display().read().qualifies(200)"
+          if ($LASTEXITCODE -ne 0) { throw 'Display changed before helper comparison' }
+          uv run python -m scripts.scrolling_diagnostics explorer-helper-output
+          if ($LASTEXITCODE -ne 0) { throw 'Fresh-reference ordinary helper comparison failed' }
+          $result = Get-Content -Raw 'artifacts/simple-scroll/explorer-helper-output/result.json' | ConvertFrom-Json
+          if ($result.success -ne $true -or $result.helper_output_passed -ne $true -or
+              $result.product_capture_qualification -ne $false) {
+            throw 'Missing separate helper-output receipt'
+          }
+          uv run python -c "from scripts.hosted_display_scale import Display; assert Display().read().qualifies(200)"
+          if ($LASTEXITCODE -ne 0) { throw 'Display changed during helper comparison' }
+      - name: Capture existing Edge table and nested panel at verified 125%
+        if: >-
+          ${{ !cancelled() && matrix.scale == 125 && matrix.application == 'edge-prose-click' &&
+              steps.setup.outcome == 'success' && steps.display-check.outcome == 'success' }}
+        timeout-minutes: 3
+        run: |
+          $failures = @()
+          foreach ($case in @('edge', 'edge-nested')) {
+            uv run python -c "import os; from scripts.hosted_display_scale import Display; assert Display().read().qualifies(int(os.environ['DISPLAY_SCALE']))"
+            if ($LASTEXITCODE -ne 0) { throw 'Display changed before representative capture' }
+            uv run python -m scripts.simple_scroll_native "$case"
+            if ($LASTEXITCODE -ne 0) { $failures += $case }
+            uv run python -c "import os; from scripts.hosted_display_scale import Display; assert Display().read().qualifies(int(os.environ['DISPLAY_SCALE']))"
+            if ($LASTEXITCODE -ne 0) { throw 'Display changed during representative capture' }
+          }
+          if ($failures.Count -ne 0) { throw "Native 125% capture failed: $($failures -join ', ')" }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:

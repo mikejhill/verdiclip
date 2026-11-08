@@ -214,12 +214,13 @@ class AppCapture:
             _require(
                 result.restoration == "restored", "Complete capture did not restore"
             )
-            self._verify_restored(after)
             if result.image is not None:
                 _require(
                     result.image.save(str(self.output / "result.png")),
                     "Could not save complete image",
                 )
+            self._verify_restored(after)
+            if result.image is not None:
                 _verify_edge_rows(result, self.output, self.report)
         _require(
             self.desktop.foreground() == self.window.handle,

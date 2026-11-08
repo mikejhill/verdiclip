@@ -604,3 +604,117 @@ def test_empty_discovery_target_preserves_original_helper_failure(
     case.source.freeze.assert_not_called()
     assert not (tmp_path / "after.png").exists()
     assert not (tmp_path / "result.png").exists()
+
+
+@pytest.fixture
+def terminal_case(tmp_path: Path) -> AppCapture:
+    """A terminal harness with only the desktop and controller boundaries faked."""
+    case = object.__new__(AppCapture)
+    case.kind = "edge-app-tray"
+    case.output = tmp_path
+    case.report = {"release_input_tick": 456}
+    case.window = WindowInfo(123, "Owned Edge", Rect(0, 0, 20, 10))
+    case.helper = Mock(diagnostics="owned helper")
+    case.desktop = Mock()
+    case.desktop.foreground.return_value = 123
+    case._background_bounds = None
+    case.controller = Mock()
+    case.failures = []
+    case.loop = Mock()
+    (tmp_path / "target.json").write_text(
+        json.dumps(
+            {
+                "window": 123,
+                "input_tick": 456,
+                "area": {"x": 0, "y": 0, "width": 20, "height": 10},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "movement.json").write_text("{}", encoding="utf-8")
+    return case
+
+
+@pytest.mark.parametrize(
+    "outcome", ["complete", "pixels_differ", "product_failed", "not_restored"]
+)
+def test_terminal_keeps_complete_pixels_without_qualifying_failed_restoration(
+    monkeypatch: pytest.MonkeyPatch, terminal_case: AppCapture, outcome: str
+) -> None:
+    """Save the completed product after the viewport, before independent checks."""
+    case = terminal_case
+    after = QImage(20, 10, QImage.Format.Format_RGB32)
+    after.fill(Qt.GlobalColor.white)
+    assert after.save(str(case.output / "frame-0.png"))
+    if outcome == "pixels_differ":
+        after.setPixelColor(0, 0, Qt.GlobalColor.black)
+    complete = QImage(20, 30, QImage.Format.Format_RGB32)
+    complete.fill(Qt.GlobalColor.blue)
+    result = ScrollResult(
+        None if outcome == "product_failed" else complete,
+        "original product failure" if outcome == "product_failed" else "",
+        "unchanged" if outcome == "not_restored" else "restored",
+        3,
+    )
+    order: list[str] = []
+    source = Mock()
+    case.source = source
+    source.freeze.side_effect = lambda: (
+        order.append("viewport"),
+        Mock(crop=Mock(return_value=after)),
+    )[1]
+    save = QImage.save
+
+    def save_image(image: QImage, filename: str) -> bool:
+        order.append(Path(filename).name)
+        return save(image, filename)
+
+    def verify_restored(image: QImage) -> None:
+        order.append("verify_restored")
+        AppCapture._verify_restored(case, image)
+
+    verify_rows = Mock()
+    monkeypatch.setattr(QImage, "save", save_image)
+    monkeypatch.setattr(case, "_verify_restored", verify_restored)
+    monkeypatch.setattr("scripts.simple_scroll_app._verify_edge_rows", verify_rows)
+    case._guarded(lambda: case._terminal(result))
+    source.freeze.assert_called_once()
+    assert QImage(str(case.output / "after.png")) == after
+    assert case.result is result
+    assert (
+        case.report["message"],
+        case.report["restoration"],
+        case.report["frames"],
+    ) == (
+        result.message,
+        result.restoration,
+        result.frames,
+    )
+    assert isinstance(case.loop, Mock)
+    assert isinstance(case.controller, Mock)
+    assert not case.report.get("success")
+    if outcome in ("complete", "pixels_differ"):
+        assert QImage(str(case.output / "result.png")) == complete
+        assert order == ["viewport", "after.png", "result.png", "verify_restored"]
+    else:
+        assert not (case.output / "result.png").exists()
+        assert order == ["viewport", "after.png"]
+    if outcome == "complete":
+        assert not case.failures
+        verify_rows.assert_called_once_with(result, case.output, case.report)
+        case.loop.quit.assert_not_called()
+    else:
+        assert len(case.failures) == 1
+        assert (
+            str(case.failures[0])
+            == {
+                "pixels_differ": "Restored pixels differ",
+                "product_failed": "original product failure",
+                "not_restored": "Complete capture did not restore",
+            }[outcome]
+        )
+        verify_rows.assert_not_called()
+        case.loop.quit.assert_called_once()
+        case._completed()
+        case.controller.tray.action.assert_not_called()
+        assert not case.report.get("success")

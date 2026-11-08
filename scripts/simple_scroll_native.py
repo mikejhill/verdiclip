@@ -855,14 +855,28 @@ def _traced_helper(output: Path, mode: str) -> ScrollHelper:
     return helper
 
 
-def _capture(
-    point: Point, output: Path, mode: str, *, window: int, input_tick: int
+def _capture(  # noqa: PLR0913 - test-only factory and optional lifecycle receipt
+    point: Point,
+    output: Path,
+    mode: str,
+    *,
+    window: int,
+    input_tick: int,
+    helper_factory: Callable[[], ScrollHelper] | None = None,
+    lifecycle: dict[str, object] | None = None,
 ) -> ScrollResult:
     loop = QEventLoop()
-    helper = _traced_helper(output, mode)
+    helper = (
+        _traced_helper(output, mode) if helper_factory is None else helper_factory()
+    )
     results: list[ScrollResult] = []
 
     def completed(result: ScrollResult) -> None:
+        if lifecycle is not None:
+            lifecycle["start_to_finished_seconds"] = time.monotonic() - started
+            lifecycle["clock"] = (
+                "helper.start to actual helper.finished; not transaction"
+            )
         results.append(result)
         loop.quit()
 
@@ -871,6 +885,7 @@ def _capture(
     timer.setSingleShot(True)
     timer.timeout.connect(loop.quit)
     timer.start(round((MAX_SECONDS + 5.0) * 1000))
+    started = time.monotonic()
     helper.start(point, window=window, input_tick=input_tick)
     interrupt = QTimer()
     interrupt.setInterval(20)
@@ -894,7 +909,7 @@ def _capture(
     interrupt.stop()
     timer.stop()
     if not results:
-        helper.cancel()
+        helper.shutdown()
         raise RuntimeError("The helper did not produce its bounded terminal result")
     (output / "helper.log").write_text(
         helper.diagnostics,

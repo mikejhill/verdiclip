@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ctypes as c
 import ctypes.wintypes as w
+import hashlib
 import html
 import json
 import math
@@ -20,6 +21,7 @@ import time
 from collections.abc import Generator
 from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, dataclass
+from itertools import pairwise
 from pathlib import Path
 from typing import cast, override
 from unittest.mock import patch
@@ -52,6 +54,7 @@ _WAIT_TIMEOUT = 0x00000102
 _MIDDLE_SETUP_RANGE = 5.0
 _INVERSE_EXPERIMENT = "explorer-inverse-restore"
 _GEOMETRY_EXPERIMENT = "explorer-step-geometry"
+_HELPER_OUTPUT = "explorer-helper-output"
 _EXPERIMENTS = (_INVERSE_EXPERIMENT, _GEOMETRY_EXPERIMENT)
 _GEOMETRY_WRITES = 4
 _GEOMETRY_PAIR = 2
@@ -1847,7 +1850,9 @@ class ExplorerCase:
             patch.object(app, "_window", self._verified_window),
             patch.object(app, "_prepare", self._prepare),
         ):
-            if kind in _EXPERIMENTS:
+            if kind == _HELPER_OUTPUT:
+                _helper_output_case(self, output, report)
+            elif kind in _EXPERIMENTS:
                 self._inverse_case(output, report, kind=kind)
             else:
                 _case(kind, output, report)
@@ -1963,6 +1968,277 @@ class ExplorerCase:
         raise RuntimeError("Fixture window did not close; Explorer was not killed")
 
 
+def _helper_pixels(before: QImage, after: QImage, width: int, footer: int) -> None:
+    """Require the exact common prefix and entire footer, never align or repair."""
+    height = min(before.height(), after.height()) - footer
+    native._require(
+        not before.isNull()
+        and not after.isNull()
+        and before.width() == after.width()
+        and 0 < width < before.width()
+        and 0 < footer < min(before.height(), after.height())
+        and before.copy(0, 0, width, height) == after.copy(0, 0, width, height)
+        and before.copy(0, before.height() - footer, before.width(), footer)
+        == after.copy(0, after.height() - footer, after.width(), footer),
+        "Helper output has different Header/body/focus/footer/corner pixels",
+    )
+
+
+def _helper_observe(
+    bar: _InverseScrollBar, output: Path, phase: str
+) -> tuple[_InverseSample, dict[str, object]]:
+    """Reuse retained ownership for two fixed reads outside helper timing."""
+    first = bar.read()
+    geometry = probe_target(bar.target)
+    rows = native._restoration_native(bar.target, geometry)
+    second = bar.read()
+    repeated = probe_target(bar.target)
+    evidence = {"geometry": geometry, "native_rows": rows, **first.record()}
+    (output / f"{phase}.json").write_text(
+        json.dumps({**evidence, "repeat": repeated, "repeat_state": second.record()}),
+        encoding="utf-8",
+    )
+    native._require(first.image.save(str(output / f"{phase}.png")), "PNG save failed")
+    native._require(
+        second.image.save(str(output / f"{phase}-repeat.png")), "PNG save failed"
+    )
+    native._require(
+        first == second
+        and geometry == repeated
+        and geometry["position"] == asdict(first.position)
+        and list_layout(geometry) == (bar.area, bar.header, bar.footer, bar.rail)
+        and geometry["window_dpi"] == bar.target.registration_dpi == _SCALED_FIXTURE_DPI
+        and first.position.horizontal == first.position.vertical == 0.0,
+        "Helper baseline/restoration changed during repeated observation",
+    )
+    return first, evidence
+
+
+def _helper_match(
+    before: tuple[_InverseSample, dict[str, object]],
+    after: tuple[_InverseSample, dict[str, object]],
+) -> tuple[int, int]:
+    """Prove same native owners/range, raw item order and common rendering."""
+    first, original = before
+    last, current = after
+    geometry = cast("dict[str, object]", original["geometry"])
+    changed = cast("dict[str, object]", current["geometry"])
+    area, header, footer, rail = list_layout(geometry)
+    small, head, foot, side = list_layout(changed)
+    if footer is None or foot is None or rail is None or side is None:
+        raise RuntimeError("Helper comparison requires the measured two-rail layout")
+    native._require(
+        (area.x, area.y, area.width) == (small.x, small.y, small.width)
+        and area.height >= small.height
+        and header == head
+        and (footer.x, footer.width, footer.height) == (foot.x, foot.width, foot.height)
+        and (rail.x, rail.y, rail.width) == (side.x, side.y, side.width)
+        and geometry["window_dpi"] == changed["window_dpi"] == _SCALED_FIXTURE_DPI
+        and first.position.horizontal == last.position.horizontal == 0.0
+        and first.position.vertical == last.position.vertical == 0.0,
+        "Helper reference layout/DPI/H/start differs",
+    )
+    rows = cast("list[dict[str, object]]", current["native_rows"])
+    previous = cast("list[dict[str, object]]", original["native_rows"])
+    native._failure_native_identity(rows, previous)
+    for row, old in zip(rows, previous, strict=True):
+        if row["bar"] == _SB_CTL:
+            native._require(
+                all(
+                    type(row[key]) is int and row[key] == old[key]
+                    for key in ("min", "max", "pos")
+                )
+                and all(cast("int", row[key]) > 0 for key in ("parent", "root", "pid")),
+                "Helper reference native range/position/identity differs",
+            )
+    body = Rect(small.left, head.bottom, head.width, foot.top - head.bottom)
+
+    def items(value: dict[str, object]) -> list[Rect]:
+        tree = cast("dict[str, object]", value["uia"])
+        nodes = cast("list[dict[str, object]]", tree["nodes"])
+        return [
+            raw_bounds(node["bounds"])
+            for node in nodes
+            if node["parent"] == 0
+            and node["control_type"] == _LIST_ITEM_ROLE
+            and not node["offscreen"]
+            and not raw_bounds(node["bounds"]).intersected(body).is_empty
+        ]
+
+    raw = items(geometry)
+    native._require(
+        len(raw) >= _GEOMETRY_PAIR
+        and raw == items(changed)
+        and all(
+            a.bottom <= b.top and (a.x, a.width, a.height) == (b.x, b.width, b.height)
+            for a, b in pairwise(raw)
+        ),
+        "Helper reference raw visible-item shape/order differs",
+    )
+    width, fixed = round(head.width), round(foot.height)
+    _helper_pixels(first.image, last.image, width, fixed)
+    return width, fixed
+
+
+def _helper_inventory(folder: Path) -> list[tuple[str, int, int, str]]:
+    """Keep file content and displayed modification metadata in the same fixture."""
+    return [
+        (
+            path.name,
+            path.stat().st_size,
+            path.stat().st_mtime_ns,
+            hashlib.sha256(path.read_bytes()).hexdigest(),
+        )
+        for path in sorted(folder.iterdir())
+    ]
+
+
+def _helper_shrink(owner: ExplorerCase, window: WindowInfo) -> WindowInfo:
+    """Change only the current owned window's height, without focus/input writes."""
+    native._require(owner._verified_window() == window, "Reference owner changed")
+    layout = cast("dict[str, object]", owner.report["explorer_layout"])
+    outer = raw_bounds(layout["actual_outer"])
+    user = c.WinDLL("user32", use_last_error=True)
+    user.MoveWindow.argtypes = (w.HWND, c.c_int, c.c_int, c.c_int, c.c_int, w.BOOL)
+    user.MoveWindow.restype = w.BOOL
+    native._require(
+        user.MoveWindow(
+            window.handle,
+            round(outer.x),
+            round(outer.y),
+            round(outer.width),
+            native._WINDOW_HEIGHT,
+            1,
+        ),
+        "Could not shrink the same fixture height",
+    )
+    time.sleep(1)
+    small = owner._verified_window()
+    user.GetWindowRect.argtypes = (w.HWND, c.POINTER(w.RECT))
+    user.GetWindowRect.restype = w.BOOL
+    bounds = w.RECT()
+    native._require(
+        user.GetWindowRect(small.handle, c.byref(bounds))
+        and (bounds.left, bounds.top, bounds.right, bounds.bottom)
+        == (outer.left, outer.top, outer.right, outer.top + native._WINDOW_HEIGHT)
+        and small.handle == window.handle,
+        "Height-only fixture resize differs",
+    )
+    return small
+
+
+def _helper_output_case(
+    owner: ExplorerCase, output: Path, report: dict[str, object]
+) -> None:
+    """One fresh traced reference then one ordinary helper, never a chooser claim."""
+    report.update(
+        success=False,
+        helper_output_passed=False,
+        product_capture_qualification=False,
+        oracle="fresh-reference final-output/helper-lifecycle smoke",
+        vertical_rail_raster_provenance="unverified across heights; full PNG retained",
+    )
+    window = owner._prepare_taller(owner._verified_window())
+    report["window"] = asdict(window)
+    if owner.folder is None or owner.pid is None:
+        raise RuntimeError("Helper output case lacks its owned folder/PID")
+    inventory = _helper_inventory(owner.folder)
+    report["fixture_inventory"] = inventory
+    reference_image = QImage()
+    reference_before = None
+    for phase in ("reference", "tiny"):
+        untraced = phase == "tiny"
+        if untraced:
+            window = _helper_shrink(owner, window)
+        directory = output / phase
+        directory.mkdir()
+        with UiaScrollTarget(window.bounds.center, window=window.handle) as target:
+            bar = _InverseScrollBar(target, owner.pid, two_rails=True)
+            before = _helper_observe(bar, directory, "before")
+            if reference_before is not None:
+                native._require(
+                    before[0].image.height() < reference_before[0].image.height(),
+                    "Tiny helper viewport did not shrink",
+                )
+                _helper_match(reference_before, before)
+            native._require(
+                owner._verified_window() == window
+                and _helper_inventory(owner.folder) == inventory,
+                "Helper fixture changed",
+            )
+            lifecycle: dict[str, object] = {}
+            report[phase] = lifecycle
+            bar.check()
+            result = native._capture(
+                window.bounds.center,
+                directory,
+                _HELPER_OUTPUT,
+                window=window.handle,
+                input_tick=target._input_tick,
+                helper_factory=native.ScrollHelper if untraced else None,
+                lifecycle=lifecycle,
+            )
+            # Observer stays idle until actual finished; the traced child has exited.
+            lifecycle.update(
+                message=result.message,
+                frames=result.frames,
+                restoration=result.restoration,
+            )
+            try:
+                restored = _helper_observe(bar, directory, "restored")
+            finally:
+                if result.image is not None:
+                    native._require(
+                        result.image.save(str(directory / "result.png")),
+                        "Output PNG save failed",
+                    )
+            width, footer = _helper_match(before, restored)
+            native._require(
+                result.image is not None and result.restoration == "restored",
+                result.message,
+            )
+            image = cast("QImage", result.image)
+            if untraced:
+                native._require(
+                    image.size() == reference_image.size(),
+                    "Helper output dimensions differ",
+                )
+                _helper_pixels(reference_image, image, width, footer)
+            else:
+                oracle = verify_sequence(image, directory)
+                lifecycle.update(oracle)
+                native._require(
+                    oracle["oracle_frames"] == result.frames,
+                    "Reference lacks every frame",
+                )
+                _helper_pixels(
+                    before[0].image,
+                    QImage(str(directory / "frame-0.png")),
+                    width,
+                    footer,
+                )
+                reference_image, reference_before = image, before
+            native._require(
+                owner._verified_window() == window
+                and _helper_inventory(owner.folder) == inventory,
+                "Helper fixture changed",
+            )
+            # File/oracle/shell work must not hide a late eligibility change.
+            bar.check()
+            native._require(
+                target.position() == restored[0].position,
+                "Helper position changed before final acceptance",
+            )
+            bar.check()
+    report.update(
+        success=True,
+        helper_output_passed=True,
+        restored_pixels="exact non-rail and full footer; native position/H exact",
+        result_width=image.width(),
+        result_height=image.height(),
+    )
+
+
 def main() -> None:
     """Keep diagnostics separate from the colored-row qualification oracle."""
     kind = sys.argv[1]
@@ -1970,7 +2246,7 @@ def main() -> None:
     if kind in _FOCUSED_PANELS:
         layout = "edge-panel"
     native._require(
-        kind in _EXPERIMENTS
+        kind in (*_EXPERIMENTS, _HELPER_OUTPUT)
         or (
             layout
             in (
@@ -2010,7 +2286,8 @@ def main() -> None:
         ),
     ):
         native.main(
-            gui=kind not in _EXPERIMENTS, case=explorer.run if is_explorer else _case
+            gui=kind not in (*_EXPERIMENTS, _HELPER_OUTPUT),
+            case=explorer.run if is_explorer else _case,
         )
 
 

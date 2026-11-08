@@ -403,11 +403,20 @@ class VerticalStitch:
         *,
         full_width: bool,
     ) -> None:
-        """Keep the 5% guard, allowing only independently measured perimeter rows."""
+        """Keep the 5% guard with bounded, independently proved boundary retries."""
         before, after = old[advance : advance + MIN_OVERLAP], new[:MIN_OVERLAP]
         mismatches, compared = self._difference(before, after)
         if mismatches <= compared * _PREFIX_MISMATCH_FRACTION:
             return
+        # After unique full-width registration, one identical outermost row may
+        # be stationary. Later copies stay above the interior seam (at least 16
+        # rows into the >=32-row match); the initial row remains in the output.
+        # This is one physical row, not a semantic boundary or a freshness proof.
+        if self._nonrail_width is None and full_width and old[0] == new[0]:
+            changed, remaining = self._difference(before[1:], after[1:])
+            if changed <= remaining * _PREFIX_MISMATCH_FRACTION:
+                logger.info("Scrolling stationary outer row: row=0")
+                return
         # A stable outline needs no exclusion for registration. Only a unique
         # exact full-width match can prove its unchanged exterior for this check.
         onsets = (

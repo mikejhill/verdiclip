@@ -759,6 +759,260 @@ def test_broad_fixed_header_is_rejected_despite_interior_match(
     assert "changed_pixels=640 compared_pixels=2560" in caplog.text
 
 
+def stationary_outer_frame(source: QImage, offset: int) -> QImage:
+    """Paint one identical outer row and one different row over moving pixels."""
+    result = source.copy(0, offset, source.width(), 120)
+    for x in range(source.width()):
+        result.setPixelColor(x, 0, QColor(x % 251, 240, 170))
+        color = source.pixelColor(x, offset + 1)
+        result.setPixelColor(
+            x, 1, QColor(255 - color.red(), 255 - color.green(), 255 - color.blue())
+        )
+    return result
+
+
+@pytest.mark.parametrize("dpi", [96, 120, 144, 192])
+def test_stationary_outer_row_is_one_physical_row_at_every_dpi(
+    dpi: int, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Only row zero leaves the denominator; the next two rows still reject."""
+    caplog.set_level("INFO")
+    source = document()
+    first, second = (stationary_outer_frame(source, offset) for offset in (0, 60))
+    old, new = VerticalStitch._rows(first), VerticalStitch._rows(second)
+    assert old[0] == new[0]
+    assert old[1] != new[1]
+    assert VerticalStitch._difference(old[60:92], new[:32]) == (160, 2560)
+    assert VerticalStitch._difference(old[61:92], new[1:32]) == (80, 2480)
+    stitch = VerticalStitch(first, dpi=dpi)
+    stitch.append(second, 60.0)
+    assert "Scrolling stationary outer row: row=0" in caplog.text
+    for x in range(80):
+        second.setPixelColor(x, 2, QColor("red"))
+    caplog.clear()
+    with pytest.raises(CaptureError, match="top of the scroll panel"):
+        VerticalStitch(first, dpi=dpi).append(second, 60.0)
+    assert "Scrolling stationary outer row" not in caplog.text
+
+
+@pytest.mark.parametrize("column", [0, 40, 79])
+@pytest.mark.parametrize("frame_number", [0, 1])
+def test_one_changed_outer_pixel_disables_stationary_retry(
+    column: int, frame_number: int, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Even a real pixel change at either edge or center removes this allowance."""
+    caplog.set_level("INFO")
+    source = document()
+    frames = [stationary_outer_frame(source, offset) for offset in (0, 60)]
+    frames[frame_number].setPixelColor(column, 0, QColor("magenta"))
+    with pytest.raises(CaptureError, match="top of the scroll panel"):
+        VerticalStitch(frames[0]).append(frames[1], 60.0)
+    assert "Scrolling stationary outer row" not in caplog.text
+
+
+@pytest.mark.parametrize(("full_width", "nonrail_width"), [(False, None), (True, 79)])
+def test_stationary_retry_needs_generic_full_width_registration(
+    *, full_width: bool, nonrail_width: int | None
+) -> None:
+    """Neither masked registration nor selected List proof enables the retry."""
+    source = document()
+    first, second = (stationary_outer_frame(source, offset) for offset in (0, 60))
+    stitch = VerticalStitch(first, nonrail_width=nonrail_width)
+    with pytest.raises(CaptureError, match="top of the scroll panel"):
+        stitch._check_top(
+            stitch._rows(first), stitch._rows(second), 60, full_width=full_width
+        )
+
+
+def test_stationary_outer_row_does_not_combine_with_perimeter_allowance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each independent retry fails although their forbidden union would pass."""
+    source = document()
+    first, second = (stationary_outer_frame(source, offset) for offset in (0, 60))
+    for x in range(80):
+        second.setPixelColor(x, 2, QColor("red"))
+    monkeypatch.setattr(VerticalStitch, "_top_perimeter", lambda *_args: {1})
+    with pytest.raises(CaptureError, match="top of the scroll panel"):
+        VerticalStitch(first).append(second, 60.0)
+
+
+@pytest.mark.parametrize("original_path", ["raw", "perimeter"])
+def test_stationary_outer_retry_preserves_existing_return_order(
+    original_path: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Raw success exits first; a failed retry leaves the original perimeter input."""
+    source = document()
+    first, second = (stationary_outer_frame(source, offset) for offset in (0, 60))
+    for x in range(80):
+        if original_path == "raw":
+            second.setPixelColor(x, 1, source.pixelColor(x, 61))
+        else:
+            second.setPixelColor(x, 2, QColor("red"))
+    compared_rows = []
+    difference = VerticalStitch._difference
+
+    def count_rows(old: list[bytes], new: list[bytes]) -> tuple[int, int]:
+        compared_rows.append(len(old))
+        return difference(old, new)
+
+    monkeypatch.setattr(VerticalStitch, "_difference", staticmethod(count_rows))
+    monkeypatch.setattr(VerticalStitch, "_top_perimeter", lambda *_args: {0, 1, 2})
+    VerticalStitch(first).append(second, 60.0)
+    assert compared_rows == ([32] if original_path == "raw" else [32, 31, 29])
+
+
+@pytest.mark.parametrize("fixed_rows", [16, 32, 48])
+def test_stationary_outer_row_does_not_hide_broad_fixed_content(
+    fixed_rows: int,
+) -> None:
+    """An unchanged textured prefix never becomes an arbitrary content crop."""
+    source = document(360)
+    first, second = (stationary_outer_frame(source, offset) for offset in (0, 30))
+    painter = QPainter(second)
+    painter.drawImage(0, 0, first.copy(0, 0, 80, fixed_rows))
+    painter.end()
+    with pytest.raises(CaptureError, match="top of the scroll panel"):
+        VerticalStitch(first).append(second, 30.0)
+
+
+def test_stationary_outer_row_preserves_global_ambiguity_rejection(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Stationarity cannot select a best match from repeated textured content."""
+    caplog.set_level("INFO")
+    period = document(40)
+    source = QImage(80, 240, QImage.Format.Format_RGB32)
+    painter = QPainter(source)
+    for y in range(0, 240, 40):
+        painter.drawImage(0, y, period)
+    painter.end()
+    with pytest.raises(CaptureError, match="ambiguous"):
+        VerticalStitch(stationary_outer_frame(source, 0)).append(
+            stationary_outer_frame(source, 60), 60.0
+        )
+    assert "Scrolling stationary outer row" not in caplog.text
+
+
+def test_stationary_outer_row_keeps_existing_small_mutation_limit() -> None:
+    """The unchanged 5% policy does not prove freshness of every content pixel."""
+    source = document()
+    first, second = (stationary_outer_frame(source, offset) for offset in (0, 60))
+    second.setPixelColor(40, 2, QColor("red"))
+    old, new = VerticalStitch._rows(first), VerticalStitch._rows(second)
+    assert VerticalStitch._difference(old[61:92], new[1:32]) == (81, 2480)
+    VerticalStitch(first).append(second, 60.0)
+
+
+@pytest.mark.parametrize("additional_pixels", [44, 45])
+def test_stationary_outer_row_keeps_exact_five_percent_remaining_budget(
+    additional_pixels: int,
+) -> None:
+    """124/2480 is accepted; one more content pixel exceeds the same 5% guard."""
+    source = document()
+    first, second = (stationary_outer_frame(source, offset) for offset in (0, 60))
+    for x in range(additional_pixels):
+        second.setPixelColor(x, 2, QColor("red"))
+    stitch = VerticalStitch(first)
+    if additional_pixels == 44:
+        stitch.append(second, 60.0)
+    else:
+        with pytest.raises(CaptureError, match="top of the scroll panel"):
+            stitch.append(second, 60.0)
+
+
+def test_two_changed_content_rows_disable_stationary_allowance() -> None:
+    """Changing the entire exempt row and its neighbor cannot authorize a join."""
+    source = document()
+    first, second = (stationary_outer_frame(source, offset) for offset in (0, 60))
+    for x in range(80):
+        second.setPixelColor(x, 0, QColor("red"))
+    with pytest.raises(CaptureError, match="top of the scroll panel"):
+        VerticalStitch(first).append(second, 60.0)
+
+
+def test_changed_outer_row_can_still_pass_original_small_mismatch_policy(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Disabling the retry is distinct from rejecting all tiny content changes."""
+    caplog.set_level("INFO")
+    source = document()
+    first, second = source.copy(0, 0, 80, 120), source.copy(0, 60, 80, 120)
+    second.setPixelColor(40, 0, QColor("red"))
+    VerticalStitch(first).append(second, 60.0)
+    assert "Scrolling stationary outer row" not in caplog.text
+
+
+@pytest.mark.parametrize("advance", [1, 30, 86])
+def test_stationary_outer_row_never_crosses_minimum_interior_seam(
+    advance: int,
+) -> None:
+    """A minimum 32-row exact band puts all later boundary copies above its seam."""
+    source = document(120 + advance)
+    first, second = (stationary_outer_frame(source, offset) for offset in (0, advance))
+    stitch = VerticalStitch(first)
+    match = stitch._registration(stitch._rows(first), stitch._rows(second))
+    measured, start, end, full_width = match
+    assert full_width
+    assert measured == advance
+    assert end - start >= 32
+    assert (start + end) // 2 >= 16
+    stitch.append(second, advance)
+    expected = source.copy()
+    painter = QPainter(expected)
+    painter.drawImage(0, 0, first.copy(0, 0, 80, 2))
+    painter.end()
+    assert stitch.finish() == expected
+
+
+def realistic_scroll_document(style: str) -> QImage:
+    """Paint unrelated portable text, chart and image layouts, not native evidence."""
+    source = QImage(320, 367, QImage.Format.Format_RGB32)
+    source.fill(QColor("white"))
+    painter = QPainter(source)
+    for y in range(0, 367, 18):
+        if style == "article":
+            painter.setPen(QColor(30, 40, 50))
+            painter.drawText(
+                5, y + 13, f"Section {y}: Ideas, examples and observations"
+            )
+        elif style == "dashboard":
+            painter.fillRect(8, y + 2, 110 + y % 83, 12, QColor(20, 80 + y % 130, 160))
+            painter.setPen(QColor(30, 40, 50))
+            painter.drawText(210, y + 13, f"Count: {y * 17}")
+        else:
+            for row in range(y, min(y + 17, 367)):
+                for x in range(320):
+                    painter.setPen(
+                        QColor((x + row) % 251, (x * 3 + row) % 251, row % 251)
+                    )
+                    painter.drawPoint(x, row)
+    painter.end()
+    return source
+
+
+@pytest.mark.usefixtures("qapp")
+@pytest.mark.parametrize("style", ["article", "dashboard", "gallery"])
+def test_stationary_outer_row_complete_pages_keep_every_output_pixel(
+    style: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Several joins and a seven-pixel final step retain the first boundary once."""
+    caplog.set_level("INFO")
+    source = realistic_scroll_document(style)
+    first = stationary_outer_frame(source, 0)
+    stitch = VerticalStitch(first)
+    previous = 0
+    for offset in (60, 120, 180, 240, 247):
+        stitch.append(stationary_outer_frame(source, offset), offset - previous)
+        previous = offset
+    expected = source.copy()
+    painter = QPainter(expected)
+    painter.drawImage(0, 0, first.copy(0, 0, source.width(), 2))
+    painter.end()
+    assert stitch.finish() == expected
+    assert caplog.text.count("Scrolling stationary outer row: row=0") == 5
+
+
 def test_one_meaningful_edge_column_is_not_masked_for_alignment() -> None:
     """A narrow changing or fixed sidebar cannot be discarded to find a shift."""
     source = document()

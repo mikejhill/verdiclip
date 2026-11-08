@@ -3387,3 +3387,530 @@ def test_120_dpi_already_focused_restoration_requires_every_final_pixel(
         assert "restored_pixels" not in capture.report
     if kind in diagnostics._FOCUSED_PANELS:
         assert "focused_start_evidence" in capture.report
+
+
+def _helper_fixture(
+    height: int,
+) -> tuple[diagnostics._InverseSample, dict[str, object]]:
+    geometry = _step_geometry(ScrollPosition(0.0, 0.0, 10.0))
+    geometry["captured_bounds"] = asdict(Rect(0, 0, 654, height))
+    nodes = cast("dict[str, list[dict[str, object]]]", geometry["uia"])["nodes"]
+    nodes[2]["bounds"] = asdict(Rect(620, 0, 34, height - 34))
+    nodes[3]["bounds"] = asdict(Rect(0, height - 34, 620, 34))
+    nodes[4:] = [
+        {
+            "parent": 0,
+            "control_type": 50007,
+            "offscreen": False,
+            "bounds": asdict(Rect(28, 52 + i * 48, 1350, 48)),
+        }
+        for i in range(3)
+    ]
+    image = QImage(654, height, QImage.Format.Format_RGB32)
+    image.fill(0xFFEEEEEE)
+    image.setPixel(30, 60, 0xFF000000)  # A focus/icon pixel must never be masked.
+    painter = QPainter(image)
+    painter.fillRect(620, 0, 34, height - 34, 0xFFCCCCCC)
+    painter.fillRect(0, height - 34, 654, 34, 0xFFAAAAAA)
+    painter.end()
+    rows = [
+        {
+            "native_handle": handle,
+            "bar": 2,
+            "parent": 70,
+            "root": 9,
+            "pid": 456,
+            "success": True,
+            "window_valid": True,
+            "root_matches": True,
+            "min": 0,
+            "max": 1000,
+            "page": 100,
+            "pos": 0,
+        }
+        for handle in (73, 74)
+    ]
+    sample = diagnostics._InverseSample(
+        ScrollPosition(0.0, 0.0, 10.0),
+        {key: rows[0][key] for key in ("min", "max", "page", "pos")},
+        image,
+    )
+    return sample, {"geometry": geometry, "native_rows": rows}
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        None,
+        "focus",
+        "header",
+        "body",
+        "footer",
+        "corner",
+        "position",
+        "range",
+        "pid",
+        "handle",
+        "invalid",
+        "dpi",
+        "order",
+        "shape",
+        "padding",
+    ],
+)
+def test_helper_equivalence_is_exact_and_fail_closed(damage: str | None) -> None:
+    """A changed focus, item order, native owner or footer is never repaired."""
+    before, after = _helper_fixture(425), _helper_fixture(290)
+    image, evidence = after[0].image, after[1]
+    geometry = cast("dict[str, object]", evidence["geometry"])
+    rows = cast("list[dict[str, object]]", evidence["native_rows"])
+    nodes = cast("dict[str, list[dict[str, object]]]", geometry["uia"])["nodes"]
+    pixels = {
+        "focus": (30, 60),
+        "header": (0, 0),
+        "body": (200, 210),
+        "footer": (0, 289),
+        "corner": (653, 289),
+    }
+    if damage in pixels:
+        image.setPixel(*pixels[damage], 0xFF112233)
+    elif damage in ("position", "range", "pid", "handle"):
+        key = {
+            "position": "pos",
+            "range": "max",
+            "pid": "pid",
+            "handle": "native_handle",
+        }[damage]
+        rows[1][key] = 999
+    elif damage == "invalid":
+        rows[1]["success"] = False
+    elif damage == "dpi":
+        geometry["window_dpi"] = 120
+    elif damage == "order":
+        nodes[4], nodes[5] = nodes[5], nodes[4]
+    elif damage in ("shape", "padding"):
+        bounds = cast("dict[str, int]", nodes[4]["bounds"])
+        bounds["width" if damage == "shape" else "y"] += 1
+    if damage is None:
+        image.setPixel(653, 100, 0xFF112233)  # Only measured V rail is unverified.
+        assert diagnostics._helper_match(before, after) == (620, 34)
+        assert image.pixel(653, 100) == 0xFF112233  # Never alter the full output.
+    else:
+        with pytest.raises((RuntimeError, CaptureError)):
+            diagnostics._helper_match(before, after)
+
+
+@pytest.mark.parametrize("changing", [False, True])
+def test_helper_observation_uses_two_fixed_reads_without_retry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, changing: bool
+) -> None:
+    """Native/UIA/PNG evidence is repeated, but mismatch cannot trigger a trial."""
+    first, evidence = _helper_fixture(290)
+    second, _ = _helper_fixture(290)
+    if changing:
+        second.image.setPixel(30, 60, 0xFF112233)
+    geometry = cast("dict[str, object]", evidence["geometry"])
+    area, header, footer, rail = diagnostics.list_layout(geometry)
+    bar = Mock(
+        read=Mock(side_effect=[first, second]),
+        area=area,
+        header=header,
+        footer=footer,
+        rail=rail,
+        target=Mock(registration_dpi=192),
+    )
+    probe = Mock(return_value=geometry)
+    monkeypatch.setattr(diagnostics, "probe_target", probe)
+    monkeypatch.setattr(
+        diagnostics.native,
+        "_restoration_native",
+        Mock(return_value=evidence["native_rows"]),
+    )
+    if changing:
+        with pytest.raises(RuntimeError, match="repeated observation"):
+            diagnostics._helper_observe(bar, tmp_path, "before")
+    else:
+        sample, receipt = diagnostics._helper_observe(bar, tmp_path, "before")
+        assert sample == first
+        assert receipt["native_rows"] == evidence["native_rows"]
+    assert bar.read.call_count == probe.call_count == 2
+    assert (tmp_path / "before.json").is_file()
+    assert not QImage(str(tmp_path / "before-repeat.png")).isNull()
+
+
+def _inject_helper_late_change(
+    monkeypatch: pytest.MonkeyPatch,
+    target: Mock,
+    bar: Mock,
+    seen: list[tuple[str, str]],
+    late: list[str] | None,
+) -> tuple[dict[str, bool], list[str]]:
+    """Change eligibility only at the requested post-observation work boundary."""
+    state = {"changed": False}
+    guarded: list[str] = []
+
+    def change_during(site: str) -> None:
+        if (
+            late is not None
+            and seen
+            and seen[-1] == (late[1], "restored")
+            and site == late[2]
+        ):
+            state["changed"] = True
+
+    def guard() -> None:
+        guarded.append("guard")
+        if state["changed"] and late is not None and late[3] in ("input", "focus"):
+            raise CaptureError(f"Late {late[3]} change")
+
+    def position() -> ScrollPosition:
+        guarded.append("position")
+        change_during("position")
+        return ScrollPosition(
+            0.0,
+            5.0
+            if state["changed"] and late is not None and late[3] == "position"
+            else 0.0,
+            10.0,
+        )
+
+    bar.check.side_effect = guard
+    target.position.side_effect = position
+    original_save = QImage.save
+    original_inventory = diagnostics._helper_inventory
+
+    def save(image: QImage, path: str) -> bool:
+        result = original_save(image, path)
+        if Path(path).name == "result.png":
+            change_during("png")
+        return result
+
+    def inventory(path: Path) -> list[tuple[str, int, int, str]]:
+        result = original_inventory(path)
+        change_during("inventory")
+        return result
+
+    monkeypatch.setattr(QImage, "save", save)
+    monkeypatch.setattr(diagnostics, "_helper_inventory", inventory)
+
+    return state, guarded
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [None, "initial", "reference", "result", "height", "restore", "helper"]
+    + [
+        f"late:{phase}:{site}:{change}"
+        for phase in ("reference", "tiny")
+        for site in ("png", "inventory")
+        for change in ("input", "focus", "position")
+    ]
+    + [
+        f"late:{phase}:position:{change}"
+        for phase in ("reference", "tiny")
+        for change in ("input", "focus")
+    ],
+)
+def test_helper_output_runs_one_reference_then_one_plain_helper(  # noqa: PLR0915 - explicit two-phase rejection matrix
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failure: str | None
+) -> None:
+    """The oracle runs only on real reference receipts; tiny failures stay failed."""
+    from unittest.mock import MagicMock  # noqa: PLC0415
+
+    tall = WindowInfo(9, "owned", Rect(10, 10, 1000, 1000))
+    tiny = replace(tall, bounds=Rect(10, 10, 1000, 760))
+    current = tall
+    folder = tmp_path / "fixture"
+    folder.mkdir()
+    (folder / "Project note 000.txt").write_text("same owned input")
+    owner = Mock(folder=folder, pid=456)
+    owner._prepare_taller.return_value = tall
+    owner._verified_window.side_effect = lambda: current
+
+    def shrink(_owner: diagnostics.ExplorerCase, window: WindowInfo) -> WindowInfo:
+        nonlocal current
+        assert window == tall
+        current = tiny
+        return tiny
+
+    resize = Mock(side_effect=shrink)
+    monkeypatch.setattr(diagnostics, "_helper_shrink", resize)
+    target = MagicMock(_input_tick=67)
+    target.__enter__.return_value = target
+    monkeypatch.setattr(diagnostics, "UiaScrollTarget", Mock(return_value=target))
+    bar = Mock()
+    monkeypatch.setattr(diagnostics, "_InverseScrollBar", Mock(return_value=bar))
+    seen: list[tuple[str, str]] = []
+    late = (
+        failure.split(":")
+        if failure is not None and failure.startswith("late:")
+        else None
+    )
+    state, guarded = _inject_helper_late_change(monkeypatch, target, bar, seen, late)
+
+    def observe(
+        _bar: object, output: Path, phase: str
+    ) -> tuple[diagnostics._InverseSample, dict[str, object]]:
+        seen.append((output.name, phase))
+        value = _helper_fixture(425 if output.name == "reference" else 290)
+        if output.name == "tiny" and failure == (
+            "initial" if phase == "before" else "restore"
+        ):
+            value[0].image.setPixel(30, 60, 0xFF112233)
+        return value
+
+    monkeypatch.setattr(diagnostics, "_helper_observe", observe)
+    outputs: list[str] = []
+
+    def capture(
+        _point: Point, output: Path, _mode: str, **kwargs: object
+    ) -> ScrollResult:
+        outputs.append(output.name)
+        assert kwargs["window"] == 9
+        assert kwargs["input_tick"] == 67
+        assert kwargs["helper_factory"] is (
+            None if output.name == "reference" else diagnostics.native.ScrollHelper
+        )
+        assert seen[-1] == (output.name, "before")
+        cast("dict[str, object]", kwargs["lifecycle"])["start_to_finished_seconds"] = (
+            30.0
+        )
+        _helper_fixture(425)[0].image.save(
+            str(output / "frame-0.png")
+        ) if output.name == "reference" else None
+        image = _helper_fixture(
+            1000 if failure != "height" or output.name == "reference" else 999
+        )[0].image
+        if failure == "result" and output.name == "tiny":
+            image.setPixel(50, 500, 0xFF112233)
+        return ScrollResult(
+            None if failure == "helper" and output.name == "tiny" else image,
+            "bounded failure",
+            "restored",
+            6,
+        )
+
+    monkeypatch.setattr(diagnostics.native, "_capture", capture)
+    oracle = Mock(
+        return_value={"oracle_frames": 6},
+        side_effect=RuntimeError("Reference incomplete")
+        if failure == "reference"
+        else None,
+    )
+    monkeypatch.setattr(diagnostics, "verify_sequence", oracle)
+    report: dict[str, object] = {}
+    if failure is None:
+        diagnostics._helper_output_case(owner, tmp_path, report)
+        assert report["success"] is report["helper_output_passed"] is True
+        assert report["result_height"] == 1000
+        assert guarded[-3:] == ["guard", "position", "guard"]
+    else:
+        with pytest.raises((RuntimeError, CaptureError)):
+            diagnostics._helper_output_case(owner, tmp_path, report)
+        assert report["success"] is report["helper_output_passed"] is False
+    assert report["product_capture_qualification"] is False
+    assert "unverified" in cast("str", report["vertical_rail_raster_provenance"])
+    stopped_at_reference = bool(late and late[1] == "reference")
+    assert outputs == (
+        ["reference"]
+        if failure in ("initial", "reference") or stopped_at_reference
+        else ["reference", "tiny"]
+    )
+    assert oracle.call_count == 1
+    assert oracle.call_args.args[1] == tmp_path / "reference"
+    assert resize.call_count == int(failure != "reference" and not stopped_at_reference)
+    if late is not None:
+        assert state["changed"]
+        assert not QImage(str(tmp_path / late[1] / "result.png")).isNull()
+        if late[2] == "position":
+            assert guarded[-3:] == ["guard", "position", "guard"]
+    if failure in ("result", "height", "restore"):
+        assert not QImage(str(tmp_path / "tiny/result.png")).isNull()
+    target.move.assert_not_called()
+
+
+@pytest.mark.parametrize("plain", [False, True])
+def test_capture_factory_preserves_default_and_finished_clock(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, plain: bool
+) -> None:
+    """No process substitution is added to the ordinary explicit helper route."""
+    helper = Mock(diagnostics="owned helper log")
+    callbacks = []
+    helper.finished.connect.side_effect = callbacks.append
+    result = ScrollResult(None, "bounded failure", "restored", 6)
+    loop = Mock()
+    loop.exec.side_effect = lambda: callbacks[0](result)
+    monkeypatch.setattr(diagnostics.native, "QEventLoop", Mock(return_value=loop))
+    monkeypatch.setattr(diagnostics.native, "QTimer", Mock())
+    monkeypatch.setattr(
+        diagnostics.native.time, "monotonic", Mock(side_effect=[10.0, 12.5])
+    )
+    traced = Mock(return_value=helper)
+    monkeypatch.setattr(diagnostics.native, "_traced_helper", traced)
+    factory = Mock(return_value=helper)
+    receipt: dict[str, object] = {}
+    assert (
+        diagnostics.native._capture(
+            Point(10, 20),
+            tmp_path,
+            "explorer-helper-output",
+            window=9,
+            input_tick=67,
+            helper_factory=factory if plain else None,
+            lifecycle=receipt,
+        )
+        is result
+    )
+    assert receipt["start_to_finished_seconds"] == 2.5
+    assert "not transaction" in cast("str", receipt["clock"])
+    assert factory.call_count == int(plain)
+    assert traced.call_count == int(not plain)
+    helper.start.assert_called_once_with(Point(10, 20), window=9, input_tick=67)
+    helper._process.start.assert_not_called()
+
+
+def test_helper_output_routes_to_core_application_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The owned observer stays on the QCoreApplication MTA thread, not a GUI."""
+    runner = Mock(spec=diagnostics.ExplorerCase)
+    monkeypatch.setattr(diagnostics, "ExplorerCase", Mock(return_value=runner))
+    monkeypatch.setattr(
+        diagnostics.sys, "argv", ["diagnostics", "explorer-helper-output"]
+    )
+    main = Mock()
+    monkeypatch.setattr(diagnostics.native, "main", main)
+    diagnostics.main()
+    main.assert_called_once_with(gui=False, case=runner.run)
+
+
+@pytest.mark.parametrize("failure", [None, "move", "bounds", "identity"])
+def test_helper_resize_changes_only_height(
+    monkeypatch: pytest.MonkeyPatch, failure: str | None
+) -> None:
+    """No refocus, shell retargeting, width change or second resize is allowed."""
+    window = WindowInfo(9, "owned", Rect(10, 10, 1000, 1000))
+    small = replace(window, bounds=Rect(10, 10, 1000, 760))
+    owner = Mock(report={"explorer_layout": {"actual_outer": asdict(window.bounds)}})
+    owner._verified_window.side_effect = [
+        window,
+        replace(small, handle=10) if failure == "identity" else small,
+    ]
+    user = Mock()
+    user.MoveWindow.return_value = failure != "move"
+
+    def rectangle(_handle: int, pointer: c.c_void_p) -> int:
+        value = c.cast(pointer, c.POINTER(w.RECT)).contents
+        value.left, value.top, value.right, value.bottom = 10, 10, 1010, 770
+        if failure == "bounds":
+            value.right += 1
+        return 1
+
+    user.GetWindowRect.side_effect = rectangle
+    monkeypatch.setattr(c, "WinDLL", Mock(return_value=user), raising=False)
+    monkeypatch.setattr(diagnostics.time, "sleep", Mock())
+    if failure is None:
+        assert diagnostics._helper_shrink(owner, window) == small
+    else:
+        with pytest.raises(RuntimeError):
+            diagnostics._helper_shrink(owner, window)
+    user.MoveWindow.assert_called_once_with(9, 10, 10, 1000, 760, 1)
+    user.SetForegroundWindow.assert_not_called()
+
+
+def test_plain_capture_keeps_real_module_command_and_owner(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, qapp: object
+) -> None:
+    """Use the real owner without spawning any child or entering native UIA."""
+    del qapp
+    helper = diagnostics.native.ScrollHelper()
+    start = Mock()
+    monkeypatch.setattr(helper._process, "start", start)
+    result = ScrollResult(None, "bounded failure", "restored", 0)
+    loop = Mock()
+    loop.exec.side_effect = lambda: helper._complete(result)
+    monkeypatch.setattr(diagnostics.native, "QEventLoop", Mock(return_value=loop))
+    traced = Mock(side_effect=AssertionError("Traced substitution entered"))
+    monkeypatch.setattr(diagnostics.native, "_traced_helper", traced)
+    receipt: dict[str, object] = {}
+    assert (
+        diagnostics.native._capture(
+            Point(10, 20),
+            tmp_path,
+            "explorer-helper-output",
+            window=9,
+            input_tick=67,
+            helper_factory=lambda: helper,
+            lifecycle=receipt,
+        )
+        is result
+    )
+    assert helper._process.program() == diagnostics.sys.executable
+    assert helper._process.arguments()[:6] == [
+        "-m",
+        "verdiclip.capture.scroll_helper",
+        "10",
+        "20",
+        "9",
+        "67",
+    ]
+    start.assert_called_once_with()
+    traced.assert_not_called()
+    assert helper._directory is None
+    assert helper._terminal
+    assert helper._deadline is not None
+    assert 0 <= cast("float", receipt["start_to_finished_seconds"]) < 2
+
+
+def test_helper_workflow_is_one_separate_200_percent_case() -> None:
+    """The complete tiny traced stress still fails visibly in its original job."""
+    source = Path(".github/workflows/simple-scroll-native.yml").read_text()
+    original, representative = source.split("  representative-layout:", 1)
+    assert "explorer-helper-output" not in original
+    assert "Native 200% capture failed: $case" in original
+    assert (
+        representative.count(
+            "python -m scripts.scrolling_diagnostics explorer-helper-output"
+        )
+        == 1
+    )
+    assert (
+        "if: matrix.scale == 200 && matrix.application == 'explorer-click'"
+        in representative
+    )
+    assert "product_capture_qualification -ne $false" in representative
+    assert "continue-on-error" not in representative
+
+
+@pytest.mark.parametrize("shutdown_fails", [False, True])
+def test_capture_missing_terminal_retires_owner_without_success(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, shutdown_fails: bool
+) -> None:
+    """A synchronous shutdown completion cannot turn an absent result into success."""
+    helper = Mock()
+    callbacks = []
+    helper.finished.connect.side_effect = callbacks.append
+
+    def shutdown() -> None:
+        if shutdown_fails:
+            raise CaptureError("Owned child did not stop")
+        callbacks[0](ScrollResult(None, "stopped", "unknown", 0))
+
+    helper.shutdown.side_effect = shutdown
+    monkeypatch.setattr(diagnostics.native, "QEventLoop", Mock())
+    monkeypatch.setattr(diagnostics.native, "QTimer", Mock())
+    expected = CaptureError if shutdown_fails else RuntimeError
+    with pytest.raises(
+        expected, match="did not stop" if shutdown_fails else "bounded terminal result"
+    ):
+        diagnostics.native._capture(
+            Point(10, 20),
+            tmp_path,
+            "explorer-helper-output",
+            window=9,
+            input_tick=67,
+            helper_factory=lambda: helper,
+        )
+    helper.shutdown.assert_called_once_with()
+    helper.cancel.assert_not_called()
+    assert not (tmp_path / "helper.log").exists()
