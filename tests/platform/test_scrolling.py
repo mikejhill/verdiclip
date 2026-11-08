@@ -27,6 +27,7 @@ from verdiclip.platform.scrolling import (
     ScrollSelectionState,
     UiaScrollTarget,
     _Interface,
+    _MonitorInfo,
 )
 from verdiclip.platform.windows import WindowInfo
 
@@ -46,6 +47,8 @@ def target() -> UiaScrollTarget:
     result._window_rect = (0, 0, 500, 500)
     result._area = Rect(20, 20, 300, 300)
     result._provider_bounds = result._area
+    result._display_supported = False
+    result._display = None
     result._viewport = Mock(return_value=result._area)
     result._input_tick = 12
     result._element, result._scroll = Mock(), Mock()
@@ -66,6 +69,156 @@ def target() -> UiaScrollTarget:
         QImage(500, 500, QImage.Format.Format_RGB32), Rect(0, 0, 500, 500)
     )
     return result
+
+
+def display_target(dpi: int = 192) -> UiaScrollTarget:
+    """Observe real adapter logic with mocked read-only Windows display calls."""
+    native = target()
+    native._display_supported = True
+    mock(native._user.MonitorFromWindow).return_value = 10
+    mock(native._user.MonitorFromRect).return_value = 10
+    mock(native._user.GetDpiForWindow).return_value = dpi
+    mock(native._user.GetWindowDpiAwarenessContext).return_value = 8
+    mock(native._user.GetThreadDpiAwarenessContext).return_value = 9
+    mock(native._user.GetAwarenessFromDpiAwarenessContext).return_value = 2
+
+    def monitor_info(_handle: int, out: c._CArgObject) -> bool:
+        value = c.cast(out, c.POINTER(_MonitorInfo)).contents
+        assert value.size == c.sizeof(_MonitorInfo)
+        value.monitor = w.RECT(0, 0, 1920, 1080)
+        return True
+
+    mock(native._user.GetMonitorInfoW).side_effect = monitor_info
+    native._display = native._observe_display()
+    return native
+
+
+@pytest.mark.parametrize("dpi", [96, 120, 144, 192])
+def test_per_monitor_aware_same_monitor_dpi_is_retained(dpi: int) -> None:
+    """Only the selected root's DPI is used for the entire contained viewport."""
+    native = display_target(dpi)
+    native.check()
+    assert native.registration_dpi == dpi
+    assert native._display is not None
+    assert native._display.monitor == 10
+    assert native._display.bounds == Rect(0, 0, 1920, 1080)
+    mock(native._user.MonitorFromWindow).assert_called_with(1, 0)
+    mock(native._user.GetDpiForWindow).assert_called_with(1)
+    assert not any("Set" in call[0] for call in mock(native._user).mock_calls)
+
+
+@pytest.mark.parametrize("dpi", [0, 95, 193, 240])
+def test_unknown_or_out_of_range_dpi_never_widens_registration(dpi: int) -> None:
+    """Unknown metadata and unqualified scaling retain the original allowance."""
+    native = display_target(dpi)
+    native.check()
+    assert native.registration_dpi is None
+
+
+@pytest.mark.parametrize("context", [8, 9])
+@pytest.mark.parametrize("awareness", [-1, 0, 1])
+def test_unverified_window_or_capture_awareness_never_widens(
+    context: int, awareness: int
+) -> None:
+    """Window DPI alone cannot establish physical registration scale."""
+    native = display_target()
+    mock(native._user.GetAwarenessFromDpiAwarenessContext).side_effect = lambda value: (
+        awareness if value == context else 2
+    )
+    native._display = native._observe_display()
+    native.check()
+    assert native.registration_dpi is None
+
+
+@pytest.mark.parametrize(
+    "api",
+    [
+        "GetDpiForWindow",
+        "GetWindowDpiAwarenessContext",
+        "GetThreadDpiAwarenessContext",
+        "GetAwarenessFromDpiAwarenessContext",
+        "MonitorFromWindow",
+        "MonitorFromRect",
+        "GetMonitorInfoW",
+    ],
+)
+def test_missing_display_api_keeps_conservative_allowance(api: str) -> None:
+    """An older/missing API is never replaced by a guessed scale."""
+    native = target()
+    delattr(native._user, api)
+    native._bind_display()
+    native._display = native._observe_display()
+    native.check()
+    assert native.registration_dpi is None
+    assert native._display is None
+
+
+@pytest.mark.parametrize("failure", ["missing_monitor", "other_monitor", "bounds"])
+def test_unverified_monitor_geometry_stops_before_a_scroll_write(failure: str) -> None:
+    """Real unavailable or inconsistent geometry must not fall back to a guess."""
+    native = display_target()
+    if failure == "missing_monitor":
+        mock(native._user.MonitorFromWindow).return_value = 0
+    elif failure == "other_monitor":
+        mock(native._user.MonitorFromRect).return_value = 11
+    else:
+        mock(native._user.GetMonitorInfoW).side_effect = None
+        mock(native._user.GetMonitorInfoW).return_value = False
+    with pytest.raises(CaptureError, match="monitor"):
+        native.move(50.0)
+    mock(native._scroll.call).assert_not_called()
+
+
+def test_viewport_crossing_monitor_boundary_is_rejected() -> None:
+    """The largest-intersection monitor is not proof of full containment."""
+    native = display_target()
+    native._area = Rect(1800, 20, 300, 300)
+    native._provider_bounds = native._area
+    mock(native._element.bounds).return_value = native._area
+    mock(native._viewport).return_value = native._area
+    with pytest.raises(CaptureError, match="crosses a monitor boundary"):
+        native.move(50.0)
+    mock(native._scroll.call).assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "change", ["dpi", "monitor", "bounds", "window_awareness", "capture_awareness"]
+)
+def test_changed_display_snapshot_stops_before_a_scroll_write(change: str) -> None:
+    """A capture never silently changes its scale or monitor allowance mid-run."""
+    native = display_target()
+    if change == "dpi":
+        mock(native._user.GetDpiForWindow).return_value = 144
+    elif change == "monitor":
+        mock(native._user.MonitorFromWindow).return_value = 11
+        mock(native._user.MonitorFromRect).return_value = 11
+    elif change == "bounds":
+        assert native._display is not None
+        native._display = scrolling._ScrollDisplay(
+            10, Rect(0, 0, 2000, 1080), 192, 2, 2
+        )
+    else:
+        context = 8 if change == "window_awareness" else 9
+        mock(native._user.GetAwarenessFromDpiAwarenessContext).side_effect = (
+            lambda value: 1 if value == context else 2
+        )
+    with pytest.raises(CaptureError, match="monitor or DPI changed"):
+        native.move(50.0)
+    mock(native._scroll.call).assert_not_called()
+
+
+def test_dpi_change_after_provider_write_is_detected() -> None:
+    """Post-write observations must not report success with an outdated scale."""
+    native = display_target()
+    mock(native._scroll.number).return_value = 0.0
+
+    def change(*_args: object) -> None:
+        mock(native._user.GetDpiForWindow).return_value = 144
+
+    mock(native._scroll.call).side_effect = change
+    with pytest.raises(CaptureError, match="monitor or DPI changed"):
+        native.move(50.0)
+    assert mock(native._scroll.call).call_count == 1
 
 
 def test_null_pattern_is_optional_without_masking_provider_errors(

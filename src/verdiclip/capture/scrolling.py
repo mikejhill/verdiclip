@@ -31,6 +31,8 @@ _EDGE_CORNER_ROWS = 8
 _MAX_PERIMETER_WIDTH = 3
 _MAX_TOP_PERIMETER_ROWS = 4
 _TOP_CORNER_COLUMNS = 8
+BASE_REGISTRATION_DPI = 96
+MAX_REGISTRATION_DPI = 192
 END_PERCENT = 100.0
 logger = logging.getLogger(__name__)
 
@@ -50,6 +52,10 @@ class ScrollTarget(Protocol):
     @property
     def area(self) -> Rect:
         """Return the viewport in physical desktop pixels."""
+
+    @property
+    def registration_dpi(self) -> int | None:
+        """Return verified same-monitor window DPI, or conservative unknown."""
 
     def check(self) -> None:
         """Reject input, focus, geometry, target, or visibility changes."""
@@ -81,12 +87,21 @@ class VerticalStitch:
     Repeating or animated content without a unique match remains unsupported.
     """
 
-    def __init__(self, first: QImage) -> None:
+    def __init__(self, first: QImage, *, dpi: int | None = None) -> None:
         self._validate(first)
+        if dpi is not None and not BASE_REGISTRATION_DPI <= dpi <= MAX_REGISTRATION_DPI:
+            raise CaptureError("The scrolling registration DPI is unsupported")
+        self._dpi = BASE_REGISTRATION_DPI if dpi is None else dpi
         self._frames = [first.copy()]
         self._previous = first.copy()
         self._height = first.height()
         self._tail_start = 0
+
+    def _limit(self, original: int) -> int:
+        """Ceil the original pixel bound proportionately, never the scale itself."""
+        return (
+            original * self._dpi + BASE_REGISTRATION_DPI - 1
+        ) // BASE_REGISTRATION_DPI
 
     @staticmethod
     def _validate(image: QImage) -> None:
@@ -126,19 +141,19 @@ class VerticalStitch:
                 match = (advance, *longest)
         return match
 
-    @staticmethod
-    def _edge_width(old: list[bytes], new: list[bytes], *, right: bool) -> int:
+    def _edge_width(self, old: list[bytes], new: list[bytes], *, right: bool) -> int:
         """Measure a changed uniform outer strip, rejecting widths over the cap.
 
         Ignore only bounded corner rows when testing vertical uniformity. Stop
         at the first unchanged or textured column, never search for a crop that
         makes the alignment pass. Narrow solid content can look like an outline.
         """
-        if len(old) <= 2 * _EDGE_CORNER_ROWS:
+        corners = self._limit(_EDGE_CORNER_ROWS)
+        if len(old) <= 2 * corners:
             return 0
-        before = old[_EDGE_CORNER_ROWS:-_EDGE_CORNER_ROWS]
-        after = new[_EDGE_CORNER_ROWS:-_EDGE_CORNER_ROWS]
-        for width in range(min(_MAX_EDGE_WIDTH + 1, len(old[0]) // 4)):
+        before = old[corners:-corners]
+        after = new[corners:-corners]
+        for width in range(min(self._limit(_MAX_EDGE_WIDTH) + 1, len(old[0]) // 4)):
             column = len(old[0]) - 4 * (width + 1) if right else 4 * width
             first = before[0][column : column + 4]
             second = after[0][column : column + 4]
@@ -150,62 +165,65 @@ class VerticalStitch:
                 return width
         return 0
 
-    @classmethod
-    def _registration(cls, old: list[bytes], new: list[bytes]) -> tuple[int, int, int]:
+    def _registration(self, old: list[bytes], new: list[bytes]) -> tuple[int, int, int]:
         """Try all columns first; only no match permits a measured-edge retry."""
-        match = cls._alignment(old, new)
+        match = self._alignment(old, new)
         if match is not None:
             return match
-        left = cls._edge_width(old, new, right=False)
-        right = cls._edge_width(old, new, right=True)
+        left = self._edge_width(old, new, right=False)
+        right = self._edge_width(old, new, right=True)
         if left or right:
             end = len(old[0]) - right * 4
-            match = cls._alignment(
+            match = self._alignment(
                 [row[left * 4 : end] for row in old],
                 [row[left * 4 : end] for row in new],
             )
             if match is not None:
                 logger.info(
-                    "Scrolling registration edges: left_columns=%s right_columns=%s",
+                    "Scrolling registration edges: left_columns=%s right_columns=%s "
+                    "registration_dpi=%s",
                     left,
                     right,
+                    self._dpi,
                 )
                 return match
         raise CaptureError("The panel's scrolling pixels cannot be joined reliably")
 
-    @staticmethod
-    def _edge_colors(rows: list[bytes], *, right: bool) -> set[bytes]:
+    def _edge_colors(self, rows: list[bytes], *, right: bool) -> set[bytes]:
         """Find uniform side colors, excluding a color continuing past the cap."""
-        body = rows[_EDGE_CORNER_ROWS:-_EDGE_CORNER_ROWS]
+        corners = self._limit(_EDGE_CORNER_ROWS)
+        body = rows[corners:-corners]
+        limit = self._limit(_MAX_PERIMETER_WIDTH)
         colors: set[bytes] = set()
-        for width in range(_MAX_PERIMETER_WIDTH + 1):
+        for width in range(limit + 1):
             column = len(rows[0]) - 4 * (width + 1) if right else 4 * width
             color = body[0][column : column + 4]
             if any(row[column : column + 4] != color for row in body):
                 break
-            if width < _MAX_PERIMETER_WIDTH:
+            if width < limit:
                 colors.add(color)
             else:
                 colors.discard(color)
         return colors
 
-    @classmethod
-    def _top_perimeter(cls, rows: list[bytes]) -> set[int]:
+    def _top_perimeter(self, rows: list[bytes]) -> set[int]:
         """Identify bounded uniform top rows connected to both side perimeters."""
+        corners = self._limit(_TOP_CORNER_COLUMNS)
+        limit = self._limit(_MAX_TOP_PERIMETER_ROWS)
         if (
-            len(rows) <= 2 * _EDGE_CORNER_ROWS
-            or len(rows[0]) <= 2 * _TOP_CORNER_COLUMNS * 4
+            len(rows) <= 2 * self._limit(_EDGE_CORNER_ROWS)
+            or len(rows[0]) <= 8 * corners
         ):
             return set()
-        colors = cls._edge_colors(rows, right=False) & cls._edge_colors(
+        colors = self._edge_colors(rows, right=False) & self._edge_colors(
             rows, right=True
         )
         perimeter = set()
-        for y, row in enumerate(rows[: _MAX_TOP_PERIMETER_ROWS + 1]):
-            interior = row[_TOP_CORNER_COLUMNS * 4 : -_TOP_CORNER_COLUMNS * 4]
+        for y, row in enumerate(rows[: limit + 1]):
+            interior = row[corners * 4 : -corners * 4]
             color = interior[:4]
             if color in colors and interior == color * (len(interior) // 4):
-                if y == _MAX_TOP_PERIMETER_ROWS:
+                if y == limit:
                     return set()
                 perimeter.add(y)
         return perimeter
@@ -216,16 +234,15 @@ class VerticalStitch:
         after = memoryview(b"".join(new)).cast("I")
         return sum(a != b for a, b in zip(before, after, strict=True)), len(before)
 
-    @classmethod
-    def _check_top(cls, old: list[bytes], new: list[bytes], advance: int) -> None:
+    def _check_top(self, old: list[bytes], new: list[bytes], advance: int) -> None:
         """Keep the 5% guard, allowing only independently measured perimeter rows."""
         before, after = old[advance : advance + MIN_OVERLAP], new[:MIN_OVERLAP]
-        mismatches, compared = cls._difference(before, after)
+        mismatches, compared = self._difference(before, after)
         if mismatches <= compared * _PREFIX_MISMATCH_FRACTION:
             return
-        perimeter = cls._top_perimeter(old)
-        if perimeter and perimeter == cls._top_perimeter(new):
-            mismatches, compared = cls._difference(
+        perimeter = self._top_perimeter(old)
+        if perimeter and perimeter == self._top_perimeter(new):
+            mismatches, compared = self._difference(
                 [row for y, row in enumerate(before) if y not in perimeter],
                 [row for y, row in enumerate(after) if y not in perimeter],
             )
@@ -392,7 +409,9 @@ class ScrollTransaction:
 
     def _sequence(self, initial: ScrollPosition) -> QImage:
         position = self._move(0.0)
-        stitch = VerticalStitch(self._frame(position))
+        stitch = VerticalStitch(
+            self._frame(position), dpi=self._target.registration_dpi
+        )
         while position.vertical < END_PERCENT:
             if self._frames >= MAX_FRAMES:
                 raise CaptureError("Scrolling capture reached its page limit")

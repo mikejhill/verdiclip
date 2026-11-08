@@ -17,12 +17,18 @@ import sys
 import time
 import uuid
 from contextlib import ExitStack
+from dataclasses import dataclass
 from typing import Self
 
 from PySide6.QtGui import QImage
 
 from verdiclip.capture.grabber import MssScreenSource
-from verdiclip.capture.scrolling import END_PERCENT, ScrollPosition
+from verdiclip.capture.scrolling import (
+    BASE_REGISTRATION_DPI,
+    END_PERCENT,
+    MAX_REGISTRATION_DPI,
+    ScrollPosition,
+)
 from verdiclip.exceptions import CaptureError
 from verdiclip.geometry import Point, Rect
 from verdiclip.platform.windows import Win32WindowApi, WindowInfo, WindowLocator
@@ -35,6 +41,7 @@ _DISCOVERY_OBSERVATIONS = 3
 _MIN_SIZE = 64
 _WAIT_TIMEOUT = 258
 _MAX_WINDOWS = 512
+_PER_MONITOR_AWARE = 2
 
 
 class _NoScrollTargetError(CaptureError):
@@ -51,6 +58,26 @@ class _Guid(c.Structure):
 
 class _LastInput(c.Structure):
     _fields_ = [("size", w.UINT), ("tick", w.DWORD)]
+
+
+class _MonitorInfo(c.Structure):
+    _fields_ = [
+        ("size", w.DWORD),
+        ("monitor", w.RECT),
+        ("work", w.RECT),
+        ("flags", w.DWORD),
+    ]
+
+
+@dataclass(frozen=True, slots=True)
+class _ScrollDisplay:
+    """Read-only geometry evidence retained for one exact viewport and root."""
+
+    monitor: int
+    bounds: Rect
+    window_dpi: int
+    window_awareness: int
+    capture_awareness: int
 
 
 class _Interface:
@@ -286,6 +313,7 @@ class UiaScrollTarget:
         for name, (arguments, result) in signatures.items():
             function = getattr(self._user, name)
             function.argtypes, function.restype = arguments, result
+        self._bind_display()
         self._kernel.OpenProcess.argtypes = (w.DWORD, w.BOOL, w.DWORD)
         self._kernel.OpenProcess.restype = w.HANDLE
         self._kernel.WaitForSingleObject.argtypes = (w.HANDLE, w.DWORD)
@@ -311,6 +339,64 @@ class UiaScrollTarget:
             w.DWORD,
         )
         self._dwm.DwmGetWindowAttribute.restype = c.HRESULT
+
+    def _bind_display(self) -> None:
+        """Bind read-only DPI/monitor APIs, retaining conservative older-OS support."""
+        signatures = {
+            "GetDpiForWindow": ((w.HWND,), w.UINT),
+            "GetWindowDpiAwarenessContext": ((w.HWND,), c.c_void_p),
+            "GetThreadDpiAwarenessContext": ((), c.c_void_p),
+            "GetAwarenessFromDpiAwarenessContext": ((c.c_void_p,), c.c_int),
+            "MonitorFromWindow": ((w.HWND, w.DWORD), w.HMONITOR),
+            "MonitorFromRect": ((c.POINTER(w.RECT), w.DWORD), w.HMONITOR),
+            "GetMonitorInfoW": ((w.HMONITOR, c.POINTER(_MonitorInfo)), w.BOOL),
+        }
+        self._display_supported = True
+        for name, (arguments, result) in signatures.items():
+            function = getattr(self._user, name, None)
+            if function is None:
+                self._display_supported = False
+            else:
+                function.argtypes, function.restype = arguments, result
+
+    def _observe_display(self) -> _ScrollDisplay | None:
+        """Read the root DPI only when its monitor contains the entire viewport."""
+        if not self._display_supported:
+            return None
+        monitor = self._user.MonitorFromWindow(self._window, 0)
+        rectangle = w.RECT(
+            round(self._area.left),
+            round(self._area.top),
+            round(self._area.right),
+            round(self._area.bottom),
+        )
+        if not monitor or self._user.MonitorFromRect(c.byref(rectangle), 0) != monitor:
+            raise CaptureError(
+                "The scroll panel is not on the selected window's monitor"
+            )
+        info = _MonitorInfo()
+        info.size = c.sizeof(info)
+        if not self._user.GetMonitorInfoW(monitor, c.byref(info)):
+            raise CaptureError("Could not verify the scroll panel's monitor bounds")
+        bounds = Rect.from_points(
+            Point(info.monitor.left, info.monitor.top),
+            Point(info.monitor.right, info.monitor.bottom),
+        )
+        if bounds.intersected(self._area) != self._area:
+            raise CaptureError("The scroll panel crosses a monitor boundary")
+        window_context = self._user.GetWindowDpiAwarenessContext(self._window)
+        capture_context = self._user.GetThreadDpiAwarenessContext()
+        return _ScrollDisplay(
+            monitor=int(monitor),
+            bounds=bounds,
+            window_dpi=int(self._user.GetDpiForWindow(self._window)),
+            window_awareness=int(
+                self._user.GetAwarenessFromDpiAwarenessContext(window_context)
+            ),
+            capture_awareness=int(
+                self._user.GetAwarenessFromDpiAwarenessContext(capture_context)
+            ),
+        )
 
     def _input(self) -> int:
         info = _LastInput(c.sizeof(_LastInput), 0)
@@ -375,6 +461,12 @@ class UiaScrollTarget:
             or not self._area.contains(point)
         ):
             raise CaptureError("UI Automation did not identify a visible scroll panel")
+        self._display = self._observe_display()
+        logger.info(
+            "Scrolling display: observed=%s registration_dpi=%s",
+            self._display,
+            self.registration_dpi,
+        )
         self.check()
 
     def _discover(
@@ -458,6 +550,19 @@ class UiaScrollTarget:
         """Return the viewport, excluding only known native non-client chrome."""
         return self._area
 
+    @property
+    def registration_dpi(self) -> int | None:
+        """Use only per-monitor-aware, same-monitor DPI within the bounded range."""
+        display = self._display
+        if (
+            display is not None
+            and display.window_awareness == _PER_MONITOR_AWARE
+            and display.capture_awareness == _PER_MONITOR_AWARE
+            and BASE_REGISTRATION_DPI <= display.window_dpi <= MAX_REGISTRATION_DPI
+        ):
+            return display.window_dpi
+        return None
+
     def _check_window(self) -> None:
         """Preserve the original eligibility snapshot, including during discovery."""
         if self._input() != self._input_tick:
@@ -479,6 +584,8 @@ class UiaScrollTarget:
             or self._viewport() != self._area
         ):
             raise CaptureError("The scroll panel changed position or size")
+        if self._observe_display() != self._display:
+            raise CaptureError("The scroll panel's monitor or DPI changed")
         offscreen = w.BOOL()
         self._element.call(38, (c.POINTER(w.BOOL),), c.byref(offscreen))
         if offscreen.value:

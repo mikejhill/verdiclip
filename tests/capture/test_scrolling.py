@@ -33,6 +33,7 @@ class Target:
     """Finite document with a viewport and user-observable scroll state."""
 
     area = Rect(10, 20, 80, 120)
+    registration_dpi: int | None = None
 
     def __init__(self, *, total: int = 600, offset: int = 173) -> None:
         self.document = document(total)
@@ -683,12 +684,14 @@ def perimeter_frame(source: QImage, offset: int) -> QImage:
     return result
 
 
-def scaled_perimeter_frame(source: QImage, offset: int, percent: int) -> QImage:
+def scaled_perimeter_frame(
+    source: QImage, offset: int, percent: int, *, inset: int | None = None
+) -> QImage:
     """Model scaled 2px outlines and 3px borders, not a native DPI observation."""
     result = source.copy(0, offset, source.width(), 120)
     border = (3 * percent + 99) // 100
     outline = (2 * percent + 99) // 100
-    top = (percent + 99) // 100
+    top = (percent + 99) // 100 if inset is None else inset
     gray, black = QColor(177, 181, 186), QColor(16, 16, 16)
     painter = QPainter(result)
     for x in (0, source.width() - border):
@@ -738,14 +741,138 @@ def test_synthetic_scaled_outline_bounds_are_explicit(percent: int) -> None:
 @pytest.mark.parametrize("percent", [100, 125, 150, 200])
 def test_synthetic_scaled_outline_does_not_hide_textured_edge(percent: int) -> None:
     """Scale-labelled fixtures still reject meaningful fixed outer-column pixels."""
-    source = document(width=120)
-    first = scaled_perimeter_frame(source, 0, percent)
-    second = scaled_perimeter_frame(source, 60, percent)
+    source = document(width=120 * percent // 100)
+    first = scaled_perimeter_frame(source, 0, percent, inset=percent // 100)
+    second = scaled_perimeter_frame(source, 60, percent, inset=percent // 100)
     for frame in (first, second):
         for y in range(120):
             frame.setPixelColor(0, y, QColor(255, y, 255))
     with pytest.raises(CaptureError, match="cannot be joined"):
-        VerticalStitch(first).append(second, 60.0)
+        VerticalStitch(first, dpi=96 * percent // 100).append(second, 60.0)
+
+
+class ScaledPerimeterTarget(Target):
+    """A verified-DPI provider whose content and chrome have a complete pixel oracle."""
+
+    def __init__(self, percent: int) -> None:
+        super().__init__()
+        self.percent = percent
+        self.registration_dpi = 96 * percent // 100
+        self.area = Rect(10, 20, 120 * percent // 100, 120)
+        self.document = document(width=round(self.area.width))
+
+    @override
+    def frame(self) -> QImage:
+        return scaled_perimeter_frame(
+            self.document, self.offset, self.percent, inset=self.percent // 100
+        )
+
+
+@pytest.mark.parametrize("percent", [100, 125, 150, 200])
+def test_verified_dpi_scales_bounds_without_changing_complete_output(
+    percent: int,
+) -> None:
+    """Every output pixel is checked across the entire DPI-aware transaction."""
+    target = ScaledPerimeterTarget(percent)
+    initial = target.position()
+    result = transaction(target).run()
+    width = target.document.width()
+    border = (3 * percent + 99) // 100
+    top_end = percent // 100 + border
+    first_end = 60 + (top_end + 60) // 2
+    first = scaled_perimeter_frame(target.document, 0, percent, inset=percent // 100)
+    focused = scaled_perimeter_frame(target.document, 60, percent, inset=percent // 100)
+    expected = target.document.copy()
+    painter = QPainter(expected)
+    painter.drawImage(0, 0, first.copy(0, 0, width, first_end))
+    for x in (*range(border), *range(width - border, width)):
+        painter.fillRect(x, first_end, 1, 600 - first_end, focused.pixelColor(x, 60))
+    painter.end()
+    assert result.image == expected
+    assert result.frames == 9
+    assert result.restoration == "restored"
+    assert target.position() == initial
+
+
+@pytest.mark.parametrize("dpi", [0, 95, 193, 240])
+def test_unqualified_dpi_cannot_expand_a_stitch_bound(dpi: int) -> None:
+    """Native unverified values must be normalized to unknown, not passed through."""
+    with pytest.raises(CaptureError, match="DPI is unsupported"):
+        VerticalStitch(document(), dpi=dpi)
+
+
+@pytest.mark.parametrize("percent", [125, 150])
+def test_fractional_top_placement_beyond_proportional_cap_stays_unsupported(
+    percent: int,
+) -> None:
+    """Separate inset/border rounding is not permission to add another pixel."""
+    source = document(width=120 * percent // 100)
+    first = scaled_perimeter_frame(source, 0, percent)
+    second = scaled_perimeter_frame(source, 60, percent)
+    with pytest.raises(CaptureError, match="top of the scroll panel"):
+        VerticalStitch(first, dpi=96 * percent // 100).append(second, 60.0)
+
+
+@pytest.mark.parametrize("percent", [100, 125, 150, 200])
+@pytest.mark.parametrize("side", ["left", "right"])
+def test_scaled_registration_cap_rejects_one_extra_uniform_column(
+    percent: int, side: str
+) -> None:
+    """Ceil(bound * scale), not bound * ceil(scale), limits every fallback."""
+    source = document(width=120 * percent // 100)
+    too_wide = (2 * percent + 99) // 100 + 1
+    left, right = (too_wide, 0) if side == "left" else (0, too_wide)
+    first = outlined_frame(source, 0, left=left, right=right)
+    second = outlined_frame(source, 60, left=left, right=right)
+    with pytest.raises(CaptureError, match="cannot be joined"):
+        VerticalStitch(first, dpi=96 * percent // 100).append(second, 60.0)
+
+
+@pytest.mark.parametrize("percent", [100, 125, 150, 200])
+@pytest.mark.parametrize("frame_number", [0, 1])
+def test_scaled_fractional_edge_or_adjacent_color_is_not_discarded(
+    percent: int, frame_number: int
+) -> None:
+    """The last changed/antialiased edge column must be uniform at every DPI."""
+    source = document(width=120 * percent // 100)
+    frames = [
+        scaled_perimeter_frame(source, offset, percent, inset=percent // 100)
+        for offset in (0, 60)
+    ]
+    column = (2 * percent + 99) // 100 - 1
+    for y in range(120):
+        frames[frame_number].setPixelColor(column, y, QColor(255, y, 255))
+    with pytest.raises(CaptureError, match="cannot be joined"):
+        VerticalStitch(frames[0], dpi=96 * percent // 100).append(frames[1], 60.0)
+
+
+@pytest.mark.parametrize("percent", [100, 125, 150, 200])
+def test_scaled_top_corner_allowance_does_not_hide_meaningful_pixels(
+    percent: int,
+) -> None:
+    """A single textured pixel beyond the scaled corner cap rejects the top mask."""
+    source = document(width=120 * percent // 100)
+    first = scaled_perimeter_frame(source, 0, percent, inset=percent // 100)
+    second = scaled_perimeter_frame(source, 60, percent, inset=percent // 100)
+    second.setPixelColor((8 * percent + 99) // 100, percent // 100, QColor("red"))
+    with pytest.raises(CaptureError, match="top of the scroll panel"):
+        VerticalStitch(first, dpi=96 * percent // 100).append(second, 60.0)
+
+
+@pytest.mark.parametrize("percent", [100, 125, 150, 200])
+def test_scaled_side_perimeter_does_not_recategorize_a_wide_sidebar(
+    percent: int,
+) -> None:
+    """An unchanged solid side beyond the scaled cap is not top-perimeter proof."""
+    source = document(width=120 * percent // 100)
+    first = scaled_perimeter_frame(source, 0, percent, inset=percent // 100)
+    second = scaled_perimeter_frame(source, 60, percent, inset=percent // 100)
+    for frame in (first, second):
+        painter = QPainter(frame)
+        painter.fillRect((3 * percent + 99) // 100, 0, 1, 120, QColor(177, 181, 186))
+        painter.end()
+    with pytest.raises(CaptureError, match="top of the scroll panel"):
+        VerticalStitch(first, dpi=96 * percent // 100).append(second, 60.0)
 
 
 def test_bounded_perimeter_retains_every_output_pixel_over_complete_sequence(

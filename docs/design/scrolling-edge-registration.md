@@ -11,12 +11,12 @@ Registration now tries every column first. Only absence of a match permits a
 single retry. An ambiguous first result still fails immediately. Each side's
 excluded width is measured independently from the contiguous changed outer
 columns that are individually vertically uniform in both frames. The color may
-change between frames. Testing uniformity permits only the first and last eight
-rows as corner exceptions. Measurement stops at the first unchanged or textured
-column. More than two changed uniform columns on either side rejects that
-entire strip, rather than masking its first two columns. These are conservative
-physical-pixel bounds taken from this diagnostic, not a general border detector
-or a DPI-scaled content crop.
+change between frames. At the original 96-DPI allowance, testing uniformity
+permits only the first and last eight rows as corner exceptions. Measurement
+stops at the first unchanged or textured column. More than two changed uniform
+columns on either side rejects that entire strip, rather than masking its first
+two columns. Verified-DPI scaling of these hard bounds is described below; it
+does not infer a content crop or replace the independent pixel measurements.
 
 The retry still requires globally unique displacement and a textured exact band.
 UIA displacement agreement, accumulated extent, consistent seam, and resource
@@ -32,8 +32,9 @@ from the shifted document content.
 
 The full-width top comparison still runs first at 5%. Only a failing comparison
 may retry after identifying uniform top perimeter rows in **both** original
-frames. Their row indices must agree. A qualifying row must lie within the first
-four physical rows, be exactly uniform except for at most eight columns at each
+frames. Their row indices must agree. At the 96-DPI allowance, a qualifying row
+must lie within the first four physical rows, be exactly uniform except for at
+most eight columns at each
 corner, and use a color present in vertically uniform strips at both side edges.
 Side colors are measured only within three columns, including the native gray
 border's unchanged third column. A color continuing uniformly into the fourth
@@ -59,51 +60,61 @@ ambiguous interiors, wrong displacement, taller solid headers, and fixed content
 inside a real border. A boundary test also proves the unchanged 5% denominator
 after omitting measured top rows.
 
-## DPI evidence and current bounds
+## DPI evidence and bounded allowance
 
-The inspected native pair's `target.json` records geometry but **no DPI**. Its
-actual window DPI and monitor scale are unknown. The two changed physical
-columns therefore do not establish 100% scaling, and no specific native scale
-is qualified by this replay. Future diagnostic records use `GetDpiForWindow`;
-that value must be labelled **window DPI**, not independently measured monitor
-scale. Complete native sequence qualification is still pending.
+The original two-frame diagnostic recorded no DPI. A later complete native Edge
+panel-click diagnostic records **window DPI 96**. Its independent composition
+oracle verified every output row against captured native frames at UIA-derived
+positions. Offline replay through the DPI-aware matcher produces exactly that
+entire native result. This proves compatibility with those recorded
+96-window-DPI pixels, not native execution of the new display guards.
 
-Synthetic tests explicitly model a nominal 2px focus outline and 3px border at
-these scales. They are generated pixel fixtures, not Windows/Edge DPI tests:
+Production now retains a small read-only display snapshot after discovering the
+viewport: selected root HWND's window DPI, window and capture-thread awareness,
+monitor handle, and monitor bounds. `MonitorFromWindow` and `MonitorFromRect`
+must identify the same monitor, and its bounds must contain the **entire** UIA
+viewport. A largest-intersection result alone is not enough. The snapshot is
+re-read during every normal target check; changes stop capture before another
+scroll write. No awareness context, display setting, window or UI is changed.
 
-- 100% model: 2 changed outline columns and a 3-column border. Accepted, with
-  whole-image equality against unmodified original-frame slices.
-- 125% model: 3 changed outline columns (including an illustrative half-coverage
-  third column) and a 4-column border. Rejected under the current production cap.
-- 150% model: 3 changed outline columns and a 5-column border. Rejected.
-- 200% model: 4 changed outline columns and a 6-column border. Rejected.
+`GetDpiForWindow` permits a scaled allowance only when both the selected root and
+capture thread report per-monitor awareness and the observed DPI is 96–192.
+This is window-DPI evidence with verified same-monitor geometry, not an
+independent display-scaling measurement. Missing APIs, unknown awareness, zero
+DPI, or DPI outside this bounded range use the original conservative allowance.
+Known monitor inconsistency, failed monitor-bounds reads and cross-monitor
+viewports raise explicit capture errors; they never silently widen a mask.
 
-Each synthetic scale also has a textured-edge negative. These cases deliberately
-document a compatibility gap rather than silently widen production allowances.
-They do not predict exact Edge antialiasing, browser zoom, theme, or fractional
-placement. Current bounds remain two changed registration columns, three side
-perimeter columns, four top rows, and eight-pixel corner allowances, all physical.
+For verified DPI, each physical cap is `ceil(original_bound * dpi / 96)`, never
+`original_bound * ceil(dpi / 96)`. The resulting registration-column / side-column
+/ top-row / corner-pixel caps are:
 
-A future DPI-aware allowance needs a separate, verified capture-geometry contract:
+- 96 DPI: 2 / 3 / 4 / 8.
+- 120 DPI: 3 / 4 / 5 / 10.
+- 144 DPI: 3 / 5 / 6 / 12.
+- 192 DPI: 4 / 6 / 8 / 16.
 
-1. Carry the retained target's physical rectangle, owning window and monitor
-   identity, effective DPI evidence and the DPI-awareness context. Window DPI
-   alone, an assumed 96-DPI baseline, or a user-reported percentage is insufficient
-   to claim independently verified selected-monitor scale.
-2. Qualify complete native sequences at the intended 125%, 150% and 200% settings,
-   recording window DPI, independently checked display scaling, browser zoom and
-   measured outline/border/corner extents. Do not infer logical widths from this
-   existing unknown-DPI pair.
-3. Derive only a small hard cap from that verified scale and measured baseline.
-   The pixels must still independently satisfy uniformity and minimum-width
-   inference. Count partially covered changed columns; do not add color tolerance,
-   resample output, or excuse textured edges and broader headers/sidebars.
-4. Revalidate geometry, monitor and DPI throughout capture. A scale/monitor change
-   or unsupported mixed-monitor target must stop capture, not widen a live mask.
-   Unknown or unverified scale retains the current conservative behavior.
+The pixels must still independently satisfy exact uniformity, minimal-width
+measurement and global alignment. Partially covered changed columns count
+toward the cap. No color tolerance, output scaling, or general mismatch increase
+is introduced. The ordinary 5% top guard still applies to all remaining pixels.
 
-That contract is planning only. This patch neither reads DPI nor changes its
-production pixel caps from synthetic scale evidence.
+Synthetic 100/125/150/200% fixtures now exercise the complete transaction with
+whole-image equality and restoration, including an illustrative antialiased
+third column at 125%. They also test one-too-wide solid strips, nonuniform
+outer/antialiased columns, wider fixed sidebars, and texture immediately beyond
+each scaled corner allowance. Unverified DPI still rejects the wider outlines.
+At 125% and 150%, a different modeled fractional top placement that extends
+beyond the proportional top cap deliberately remains unsupported. Separately
+rounding inset and border sizes does not authorize adding another pixel.
+
+These generated fixtures do not establish native browser rasterization at those
+scales. Complete native qualification remains required at 125%, 150% and,
+particularly, the actual 200% target, with recorded window DPI, independently
+checked display scaling, browser zoom and measured perimeter geometry. Read-only
+display-configuration observations are not a native capture pass. The 200%
+target configuration remains unqualified until complete native evidence is
+recorded for this change.
 
 ## Quality limits
 
