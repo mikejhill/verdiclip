@@ -1,0 +1,48 @@
+name: Simple scrolling native feasibility
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    if: >-
+      github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
+      github.head_ref == 'feature/simple-scrolling' &&
+      github.event.pull_request.draft == true
+    name: Actual application / ${{ matrix.application }}
+    runs-on: windows-2025
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        application: [edge, edge-nested, notepad]
+    env:
+      QT_QPA_PLATFORM: windows
+      PYTHONUTF8: "1"
+      SCROLL_APPLICATION: ${{ matrix.application }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - run: uv sync --locked
+      - name: Prove the desktop can really be captured
+        timeout-minutes: 2
+        run: uv run pytest tests/capture/test_grabber.py::TestMssScreenSource::test_freeze --require-interactive-capture -v
+      - name: Exercise the same helper against an installed application
+        timeout-minutes: 2
+        run: uv run python -m scripts.simple_scroll_native "$env:SCROLL_APPLICATION"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: simple-scroll-${{ matrix.application }}
+          path: artifacts/simple-scroll
+          if-no-files-found: warn
+          retention-days: 14
