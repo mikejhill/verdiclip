@@ -27,6 +27,9 @@ from scripts.simple_scroll_native import (
     _verify_edge_rows,
     _window,
 )
+from scripts.simple_scroll_native import (
+    main as native_main,
+)
 
 from verdiclip.capture.grabber import MssScreenSource
 from verdiclip.capture.models import ScreenGeometry
@@ -55,8 +58,10 @@ class PointOverlay(SelectionOverlay):
     @override
     def keyReleaseEvent(self, event: QKeyEvent) -> None:
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-            if not event.isAutoRepeat() and self.shared.pointer is not None:
-                self._finish(self.shared.pointer)
+            if not event.isAutoRepeat():
+                self.sync_cursor()
+                if self.shared.pointer is not None:
+                    self._finish(self.shared.pointer)
         else:
             super().keyReleaseEvent(event)
 
@@ -259,6 +264,10 @@ class Handoff:
     def _selected(self, at: Point) -> None:
         # Synchronous release-time snapshot. Never rebase after closing widgets.
         tick = self.desktop.input_tick()
+        _require(
+            at == Point(round(self.point.x), round(self.point.y)),
+            "Selection did not use the actual native pointer coordinates",
+        )
         chosen = next((w for w in self.windows if w.bounds.contains(at)), None)
         _require(
             chosen is not None and chosen.handle == self.window.handle,
@@ -361,3 +370,7 @@ class Handoff:
 def _case(kind: str, output: Path, report: dict[str, object]) -> None:
     """Exercise the proof without changing any product controller or capture path."""
     Handoff(kind, output, report).run()
+
+
+if __name__ == "__main__":
+    native_main(gui=True, case=_case)

@@ -36,6 +36,8 @@ def overlay(qtbot: QtBot) -> PointOverlay:
         [],
         show_magnifier=False,
     )
+    # qtbot owns teardown; do not delete the C++ widget before its final close.
+    result.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, on=False)
     qtbot.addWidget(result)
     result.show()
     return result
@@ -54,11 +56,15 @@ def test_point_selection_waits_for_completed_mouse_release(qtbot: QtBot) -> None
     widget.dismiss()
 
 
-def test_point_selection_ignores_enter_press_and_auto_repeat(qtbot: QtBot) -> None:
+def test_point_selection_ignores_enter_press_and_auto_repeat(
+    qtbot: QtBot, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The normal key release belongs to selection, not capture interference."""
     widget = overlay(qtbot)
     point = widget.screen_geometry.to_physical(Point(30, 40))
-    widget.shared.move_to(point)
+    widget.shared.move_to(Point(-1, -1))
+    refresh = Mock(side_effect=lambda: widget.shared.move_to(point))
+    monkeypatch.setattr(widget, "sync_cursor", refresh)
     points: list[Point] = []
     widget.chosen.connect(points.append)
     qtbot.keyPress(widget, Qt.Key.Key_Return)
@@ -74,6 +80,7 @@ def test_point_selection_ignores_enter_press_and_auto_repeat(qtbot: QtBot) -> No
     assert points == []
     qtbot.keyRelease(widget, Qt.Key.Key_Return)
     assert points == [point]
+    refresh.assert_called_once()
     widget.dismiss()
 
 
@@ -94,6 +101,7 @@ def handoff(tmp_path: Path) -> Handoff:
     result.kind, result.output, result.report = "edge-select", tmp_path, {}
     result.window = WindowInfo(123, "Selected document", Rect(0, 0, 500, 500))
     result.windows = [result.window]
+    result.point = Point(30.2, 40.4)
     result.desktop = Mock()
     result.desktop.input_tick.return_value = 456
     result.desktop.foreground.return_value = 123
@@ -199,3 +207,15 @@ def test_native_input_observation_is_bounded_and_never_rebases(
         assert waits.call_count == 21
     inject.assert_called_once()
     assert waits.call_args_list[0].args == (20,)
+
+
+def test_native_point_oracle_rejects_another_point_in_the_same_panel(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A correct image from the same broad panel does not prove exact selection."""
+    proof = handoff(tmp_path)
+    queued = Mock()
+    monkeypatch.setattr("scripts.simple_scroll_handoff.QTimer.singleShot", queued)
+    with pytest.raises(RuntimeError, match="actual native pointer"):
+        proof._selected(Point(31, 40))
+    queued.assert_not_called()

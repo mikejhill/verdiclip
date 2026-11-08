@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -691,7 +692,11 @@ def _verify_interruption(
     return {"writes": writes, "last_vertical": last}
 
 
-def main() -> None:
+def main(
+    *,
+    gui: bool = False,
+    case: Callable[[str, Path, dict[str, object]], None] | None = None,
+) -> None:
     """Run one actual-app case; the workflow owns the outer wall-clock limit."""
     logging.basicConfig(level=logging.INFO)
     kind = sys.argv[1]
@@ -704,7 +709,7 @@ def main() -> None:
         user.SetProcessDpiAwarenessContext(c.c_void_p(-4)),
         "Could not set physical-pixel coordinates",
     )
-    if kind.startswith("edge-select"):
+    if gui:
         from PySide6.QtWidgets import QApplication  # noqa: PLC0415
 
         app = QApplication(sys.argv[:1])
@@ -717,34 +722,50 @@ def main() -> None:
         "success": False,
         "oracle": (
             "interruption, withheld image and exact provider write/state outcome"
-            if kind in ("edge-cancel", "edge-input", "edge-covered")
+            if kind
+            in (
+                "edge-cancel",
+                "edge-input",
+                "edge-covered",
+                "edge-select-input",
+                "edge-select-focus",
+            )
             else "ordered rows, complete interior spans, retained boundary chrome"
             if kind.startswith("edge")
             else "capture and restore smoke; screenshot content review required"
         ),
     }
-    with TemporaryDirectory(prefix="verdiclip-scroll-test-") as scratch:
-        process = None
-        try:
-            process = _launch(kind, Path(scratch), report)
-            if kind.startswith("edge-select"):
-                from scripts.simple_scroll_handoff import (  # noqa: PLC0415
-                    _case as handoff,
-                )
-
-                handoff(kind, output, report)
-            else:
-                _case(kind, output, report)
-        except Exception as error:
-            report["error"] = str(error)
-            raise
-        finally:
+    try:
+        with TemporaryDirectory(prefix="verdiclip-scroll-test-") as scratch:
+            process = None
             try:
-                (output / "result.json").write_text(
-                    json.dumps(report, indent=2), encoding="utf-8"
-                )
+                process = _launch(kind, Path(scratch), report)
+                (case or _case)(kind, output, report)
             finally:
-                _stop_owned_process(process)
+                try:
+                    _stop_owned_process(process)
+                except (OSError, subprocess.SubprocessError) as error:
+                    report["cleanup_error"] = str(error)
+                    if isinstance(error, subprocess.CalledProcessError):
+                        report["cleanup_stdout"] = (
+                            error.stdout.decode("utf-8", errors="replace")
+                            if error.stdout
+                            else ""
+                        )
+                        report["cleanup_stderr"] = (
+                            error.stderr.decode("utf-8", errors="replace")
+                            if error.stderr
+                            else ""
+                        )
+                    raise
+    except Exception as error:
+        report["success"] = False
+        report["error"] = str(error)
+        raise
+    finally:
+        (output / "result.json").write_text(
+            json.dumps(report, indent=2), encoding="utf-8"
+        )
 
 
 def _stop_owned_process(process: subprocess.Popen[bytes] | None) -> None:

@@ -317,3 +317,22 @@ retained child HWND/tick, and restored top pixels. Negative cases require zero
 frames, zero provider writes and no image. This proof does not add any product
 tray action, change ordinary selection behavior, or touch Capture/Repeat/delivery.
 Its first exact-head native result is still pending.
+
+
+The first handoff run, [42448719257](https://github.com/mikejhill/verdiclip/actions/runs/42448719257)
+at `7048cfaadeb584bc90420bf341a1a0f0b021bdb8`, preserved the original six runtime
+successes. Actual tray foreground ownership and natural return to Edge were
+observed. Click captured all 120 complete rows; both positive composites exactly
+matched the previously reviewed output, and both interference assertions stopped
+before discovery with zero writes. Two gaps prevent full handoff qualification:
+
+- Enter used stale shared pointer `(589,370)` rather than the actual rounded
+  native pointer `(510,356)`. Both lie in the same panel, so the content oracle
+  alone could not catch it. The prototype now refreshes the current cursor on
+  completed Enter release and asserts the exact intended point; ordinary overlay
+  behavior is unchanged.
+- The focus scenario passed its assertions but failed owned-application teardown:
+  `taskkill /PID 5616 /T /F` returned 255 and an Edge profile journal stayed locked.
+  The overall native run failed. Cause is not established; cleanup remains strict
+  and unchanged, with stdout/stderr now preserved and report success set false
+  when cleanup fails. No timeout increase, ignored failure, or unchanged rerun.

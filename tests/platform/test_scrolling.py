@@ -5,9 +5,10 @@ from __future__ import annotations
 import ctypes as c
 import ctypes.wintypes as w
 import json
+import subprocess
 from contextlib import ExitStack
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 
 import pytest
 from PySide6.QtGui import QColor, QImage, QPainter
@@ -986,7 +987,7 @@ def test_metadata_timeout_still_attempts_actual_notepad_launch(
     assert run.call_count == 1
 
 
-@pytest.mark.parametrize("failure", ["launch", "case", "report"])
+@pytest.mark.parametrize("failure", ["launch", "case", "report", "cleanup", "scratch"])
 def test_native_entry_preserves_real_failures_and_owned_cleanup(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failure: str
 ) -> None:
@@ -1008,14 +1009,31 @@ def test_native_entry_preserves_real_failures_and_owned_cleanup(
     )
     case = Mock(side_effect=RuntimeError("case failed") if failure == "case" else None)
     stop = Mock()
+    if failure == "cleanup":
+        stop.side_effect = subprocess.CalledProcessError(
+            255, ["taskkill"], output=b"cleanup failed", stderr=b"tree still alive"
+        )
+        case.side_effect = lambda _kind, _output, report: report.update(success=True)
     monkeypatch.setattr("scripts.simple_scroll_native._launch", launch)
     monkeypatch.setattr("scripts.simple_scroll_native._case", case)
     monkeypatch.setattr("scripts.simple_scroll_native.subprocess.run", stop)
+    if failure == "scratch":
+        directory = MagicMock()
+        directory.__enter__.return_value = str(tmp_path / "scratch")
+        directory.__exit__.side_effect = OSError("scratch failed")
+        monkeypatch.setattr(
+            "scripts.simple_scroll_native.TemporaryDirectory",
+            Mock(return_value=directory),
+        )
+        case.side_effect = lambda _kind, _output, report: report.update(success=True)
     if failure == "report":
         monkeypatch.setattr(
             Path, "write_text", Mock(side_effect=OSError("report failed"))
         )
-    with pytest.raises((RuntimeError, OSError), match=f"{failure} failed"):
+    with pytest.raises(
+        (RuntimeError, OSError, subprocess.CalledProcessError),
+        match="exit status 255" if failure == "cleanup" else f"{failure} failed",
+    ):
         main()
     if failure == "launch":
         case.assert_not_called()
@@ -1023,13 +1041,21 @@ def test_native_entry_preserves_real_failures_and_owned_cleanup(
     else:
         assert stop.call_count == 1
         assert stop.call_args.args[0][-4:] == ["/PID", "77", "/T", "/F"]
-        process.wait.assert_called_once_with(timeout=10)
+        if failure == "cleanup":
+            process.wait.assert_not_called()
+        else:
+            process.wait.assert_called_once_with(timeout=10)
     if failure != "report":
         report = json.loads(
             (tmp_path / "artifacts/simple-scroll/notepad/result.json").read_text()
         )
         assert report["success"] is False
-        assert report["error"] == f"{failure} failed"
+        if failure == "cleanup":
+            assert "exit status 255" in report["cleanup_error"]
+            assert report["cleanup_stdout"] == "cleanup failed"
+            assert report["cleanup_stderr"] == "tree still alive"
+        else:
+            assert report["error"] == f"{failure} failed"
 
 
 @pytest.mark.parametrize("changed", ["window", "input"])
@@ -1048,3 +1074,36 @@ def test_expected_selection_is_rejected_before_com_discovery(changed: str) -> No
     mock(native._kernel.OpenProcess).assert_not_called()
     mock(native._discover).assert_not_called()
     mock(native._scroll.call).assert_not_called()
+
+
+def test_native_entry_accepts_gui_case_without_importing_handoff(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The GUI entrypoint supplies its case without a circular harness import."""
+    from scripts.simple_scroll_native import main  # noqa: PLC0415
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("sys.argv", ["native", "edge-select"])
+    user = Mock()
+    user.SetProcessDpiAwarenessContext.return_value = True
+    monkeypatch.setattr(c, "WinDLL", Mock(return_value=user), raising=False)
+    application = Mock()
+    monkeypatch.setattr("PySide6.QtWidgets.QApplication", application)
+    process = Mock()
+    monkeypatch.setattr(
+        "scripts.simple_scroll_native._launch", Mock(return_value=process)
+    )
+    stop = Mock()
+    monkeypatch.setattr("scripts.simple_scroll_native._stop_owned_process", stop)
+    default_case = Mock(side_effect=AssertionError("Wrong case"))
+    monkeypatch.setattr("scripts.simple_scroll_native._case", default_case)
+    case = Mock(side_effect=lambda _kind, _output, report: report.update(success=True))
+    main(gui=True, case=case)
+    assert application.return_value.setQuitOnLastWindowClosed.call_args.args == (False,)
+    case.assert_called_once()
+    default_case.assert_not_called()
+    stop.assert_called_once_with(process)
+    report = json.loads(
+        (tmp_path / "artifacts/simple-scroll/edge-select/result.json").read_text()
+    )
+    assert report["success"] is True
