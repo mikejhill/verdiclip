@@ -1506,18 +1506,20 @@ function OwnedControl($element) {
 }
 function ExactFailureReceipt($name, $candidateCount, $visibleCount, $reason,
                              $controlType=$null) {
-  if ($name -ne 'Show' -or -not $expected.evidence) { return }
+  if ($name -notin @('Show', 'Navigation pane') -or -not $expected.evidence) { return }
   try {
     $roleFilter=$null
     if ($null -ne $controlType) { $roleFilter=$controlType.Id }
-    @{ name_filter='Show'; pid_filter=$pidValue; lookup_scope='Descendants';
+    $receiptFile=if ($name -eq 'Show') { 'show-lookup-failure.json' }
+                 else { 'navigation-pane-lookup-failure.json' }
+    @{ name_filter=$name; pid_filter=$pidValue; lookup_scope='Descendants';
       control_type_filter=$roleFilter;
       candidate_scope='name_pid_and_optional_control_type';
       filtered_out=($candidateCount - $visibleCount);
       candidate_count=$candidateCount; enabled_visible_count=$visibleCount;
       filter='not IsOffscreen and IsEnabled'; failure=$reason } |
       ConvertTo-Json -Compress | Set-Content -Encoding UTF8 -LiteralPath (
-        Join-Path $expected.evidence 'show-lookup-failure.json')
+        Join-Path $expected.evidence $receiptFile)
   } catch {
     # Optional serialization cannot replace the original Exact failure.
   }
@@ -1752,7 +1754,8 @@ try {
   $showPattern.Expand()
   Start-Sleep -Milliseconds 300
   Stage 'pane_lookup'
-  $pane=Exact $desktop 'Navigation pane' $pidValue
+  $pane=Exact $desktop 'Navigation pane' $pidValue (
+    [Windows.Automation.ControlType]::MenuItem)
   $toggle=$pane.GetCurrentPattern([Windows.Automation.TogglePattern]::Pattern)
   $before=$toggle.Current.ToggleState
   if ($before -eq [Windows.Automation.ToggleState]::Indeterminate) {
@@ -1760,7 +1763,7 @@ try {
   }
   if ($before -eq [Windows.Automation.ToggleState]::On) {
     Stage 'pane_toggle'
-    Guard $pane
+    Guard $pane ([Windows.Automation.ControlType]::MenuItem)
     $toggle.Toggle()
   }
 } catch {

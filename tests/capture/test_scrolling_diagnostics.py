@@ -2958,7 +2958,7 @@ def test_no_hbar_navigation_is_owned_hosted_and_single_attempt(
                 "$showPattern.Expand()",
                 "$show ([Windows.Automation.ControlType]::MenuItem)",
             ),
-            ("$toggle.Toggle()", "$pane"),
+            ("$toggle.Toggle()", "$pane ([Windows.Automation.ControlType]::MenuItem)"),
             ("$currentPattern.Collapse()", "$currentView"),
         ):
             assert (
@@ -3789,10 +3789,10 @@ def test_show_failure_receipt_reuses_counts_without_lookup_or_property_reads(
     exact = script.split("function Exact(", 1)[1].split("function ViewReceipt", 1)[0]
     for forbidden in (".Current", "FindAll", "FindFirst", "OwnedControl", "Guard "):
         assert forbidden not in receipt
-    assert "if ($name -ne 'Show' -or -not $expected.evidence) { return }" in receipt
+    assert "if ($name -notin @('Show', 'Navigation pane') -or" in receipt
+    assert "-not $expected.evidence) { return }" in receipt
     assert (
-        "name_filter='Show'; pid_filter=$pidValue; lookup_scope='Descendants'"
-        in receipt
+        "name_filter=$name; pid_filter=$pidValue; lookup_scope='Descendants'" in receipt
     )
     assert (
         "candidate_count=$candidateCount; enabled_visible_count=$visibleCount"
@@ -3859,9 +3859,16 @@ def test_show_lookup_requires_menuitem_without_weakening_uniqueness_or_ownership
         "$show=Exact $desktop 'Show' $pidValue "
         "([Windows.Automation.ControlType]::MenuItem)"
     ) in script
+    assert (
+        "$pane=Exact $desktop 'Navigation pane' $pidValue (\n"
+        "    [Windows.Automation.ControlType]::MenuItem)"
+    ) in script
+    assert (
+        "    Guard $pane ([Windows.Automation.ControlType]::MenuItem)\n"
+        "    $toggle.Toggle()"
+    ) in script
     for original in (
         "$view=Exact $root 'View' $pidValue\n",
-        "$pane=Exact $desktop 'Navigation pane' $pidValue\n",
         "$currentView=Exact $root 'View' $pidValue\n",
     ):
         assert original in script
@@ -3885,6 +3892,11 @@ def test_show_lookup_requires_menuitem_without_weakening_uniqueness_or_ownership
         "function Exact(", 1
     )[0]
     assert "if ($null -ne $controlType) { $roleFilter=$controlType.Id }" in receipt
+    assert (
+        "$receiptFile=if ($name -eq 'Show') { 'show-lookup-failure.json' }" in receipt
+    )
+    assert "else { 'navigation-pane-lookup-failure.json' }" in receipt
+    assert "Join-Path $expected.evidence $receiptFile" in receipt
     assert "control_type_filter=$roleFilter" in receipt
     assert "candidate_scope='name_pid_and_optional_control_type'" in receipt
     assert command.call_count == 1
