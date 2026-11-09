@@ -124,8 +124,10 @@ observed H=-1 and actual List begin/finish calls, not generic-path success.
 The display helper selects only offered Settings choices, then independently
 checks monitor scale and target DPI: 125% is 120 DPI; 200% is 192 DPI. Owned
 setup runs in a bounded child. Failed setup does not qualify product execution.
-The temporary owned View-menu receipt is retained while its setup investigation
-is open; it cannot replace the original failure or authorize another menu action.
+The bounded owned View-menu receipt preserves setup failures; it cannot replace
+the original failure or authorize another menu action. The recorded fixtures
+without a horizontal bar now pass at 125% and 200%, without qualifying positive
+H offsets.
 
 The ordinary tiny helper test compares a real uninstrumented helper completion
 against a fresh same-window traced reference, full visible file inventory and

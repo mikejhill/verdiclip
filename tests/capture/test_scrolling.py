@@ -41,8 +41,8 @@ class Target:
     header: Rect | None = None
     registration_dpi: int | None = None
 
-    def __init__(self, *, total: int = 600, offset: int = 173) -> None:
-        self.document = document(total)
+    def __init__(self, *, total: int = 600, width: int = 80, offset: int = 173) -> None:
+        self.document = document(total, width=width)
         self.offset = offset
         self.horizontal = 27.0
         self.input_changed = False
@@ -101,8 +101,8 @@ class HeaderTarget(Target):
     area = Rect(10, 20, 80, 145)
     header: Rect | None = Rect(10, 20, 63, 25)
 
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self, *, total: int = 600, offset: int = 173) -> None:
+        super().__init__(total=total, offset=offset)
         self.change_header = False
 
     @override
@@ -1257,11 +1257,10 @@ class ScaledPerimeterTarget(Target):
     """A verified-DPI provider whose content and chrome have a complete pixel oracle."""
 
     def __init__(self, percent: int) -> None:
-        super().__init__()
+        super().__init__(width=120 * percent // 100)
         self.percent = percent
         self.registration_dpi = 96 * percent // 100
         self.area = Rect(10, 20, 120 * percent // 100, 120)
-        self.document = document(width=round(self.area.width))
 
     @override
     def frame(self) -> QImage:
@@ -1651,10 +1650,8 @@ class EndpointTarget(HeaderTarget):
     """A fixed Header whose provider normalizes its view size only at the bottom."""
 
     def __init__(self, *, total: int = 600, terminal_size: float = 20.3) -> None:
-        super().__init__()
-        self.document = document(total)
+        super().__init__(total=total, offset=0)
         self.percent = 0.0
-        self.offset = 0
         self.terminal_size = terminal_size
 
     @override
@@ -1985,10 +1982,9 @@ class NativeEndpointTarget(HeaderTarget):
     vertical_scrollbar: Rect | None = Rect(73, 20, 17, 145)
 
     def __init__(self, start: int = 2400) -> None:
-        super().__init__()
+        super().__init__(offset=round(start / 10))
         self.native_position = start
         self.page = 1200
-        self.offset = round(start / 10)
 
     def scrollbar_state(self) -> ScrollBarState:
         """Return exact separate native units, not a position inferred from pixels."""

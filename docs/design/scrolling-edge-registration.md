@@ -108,13 +108,14 @@ At 125% and 150%, a different modeled fractional top placement that extends
 beyond the proportional top cap deliberately remains unsupported. Separately
 rounding inset and border sizes does not authorize adding another pixel.
 
-These generated fixtures do not establish native browser rasterization at those
-scales. Complete native qualification remains required at 125%, 150% and,
-particularly, the actual 200% target, with recorded window DPI, independently
-checked display scaling, browser zoom and measured perimeter geometry. Read-only
-display-configuration observations are not a native capture pass. The 200%
-target configuration remains unqualified until complete native evidence is
-recorded for this change.
+These generated fixtures do not establish native browser rasterization. Later
+[Native55](https://github.com/mikejhill/verdiclip/actions/runs/42546399053)
+qualified the recorded Edge prose and panel fixtures at actual 125% and 200%,
+with independent full-output and restoration audits described in
+[native scrolling qualification](scrolling-diagnostics.md). This is coverage of
+those fixtures, not every browser layout. Actual 150% remains unqualified;
+read-only display observations and synthetic pixels do not establish a native
+capture pass.
 
 ## Quality limits
 

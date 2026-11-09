@@ -19,7 +19,7 @@ helper diagnostics are bounded to 16 KiB.
   replace this positive completion.
 - No-horizontal-bar List coverage at 96/125/200%, with verified H=-1, actual
   List begin/finish counts and complete output/restoration checks. A setup
-  failure is a gap, not a product pass; actual 200% remains prospective.
+  failure is a gap, not a product pass. Recorded 125% and 200% fixtures now pass.
 - Edge prose/panel/background and focused-panel controls, with actual DPI and
   independent full-row checks. Fixture-only authored-content restoration is
   limited to the explicitly source-hashed fixtures. Nested output retains its
@@ -28,9 +28,11 @@ helper diagnostics are bounded to 16 KiB.
 Tiny fully traced Explorer is a stress diagnostic. A failed capture remains a
 failure with its original error and artifacts; elapsed observer time is never
 subtracted. Supported representative captures and ordinary tiny completion are
-separate proofs. The fixed-sidebar fixture remains unsupported; until its exact
-provider-negative criterion is independently reviewed, its capture failure is
-not a green negative test. No other error becomes acceptable by implication.
+separate proofs. The fixed-sidebar fixture remains unsupported. Its separate
+provider-negative gate requires the exact fixed-content rejection, no output,
+and exact original scroll state and viewport pixels. This is a passed rejection
+test, not a successful capture or full application-lifecycle proof. No other
+error becomes acceptable by implication.
 
 Every release gate needs exact-source checkout, display setup/readback, target
 DPI, owned cleanup and always-uploaded artifacts. Final merge/main/release source
@@ -58,7 +60,27 @@ provenance. Positive horizontal offsets, arbitrary providers/layouts and univers
 content-mutation detection are not qualified. Capturing visible width does not
 capture text clipped horizontally or repair repeated scrollbar raster.
 
-## Historical evidence, not cleanup qualification
+## Current cleanup qualification
+
+[Native55](https://github.com/mikejhill/verdiclip/actions/runs/42546399053)
+qualifies source `570494f482dcba5a6fb997609369d3c303f31d4c`: all 57 jobs
+passed after one unchanged Settings-launch-only job retry. The original setup
+failure and its unchanged display readback remain retained; it never reached
+capture. All twelve H0 and twelve no-horizontal-bar Explorer cases at actual
+125%/200% passed independent complete-output and permitted-restoration audits.
+The tiny ordinary helper completed 52 frames in 31.5818731 seconds, measured
+from helper start to finished, with exact reference-visible content and permitted
+restoration. That is one measured lifecycle, not a guaranteed completion time.
+
+Edge125/200 full-row audits passed. Edge125 prose-click retained seven edge
+raster differences: the source-bound authored-content/scroll-position
+criterion passed, while whole-viewport raster equality did not. Panel focus-ring
+changes remain separately measured; the nested fixture stayed raster-exact.
+The sidebar provider-negative, ordinary native regressions, CI and CodeQL jobs
+also passed. Review threads and security findings remain separate pre-merge
+gates; green workflow conclusions do not establish their resolution.
+
+## Historical evidence
 
 [Native52](https://github.com/mikejhill/verdiclip/actions/runs/42527207921)
 ran source `6eedf75a257a7790761e3455ec7dddbbb8eb96ed` before this cleanup.
@@ -74,4 +96,5 @@ native51 remain a historical failure, not a reason to relax today's criterion.
 Original runs and immutable artifacts are retained outside this release tree.
 Closed inverse, geometry, exact-region and phase-profiling commands were removed;
 the raw rail reader, native identity validation and all live output/safety oracles
-remain. No native execution of this cleanup is claimed here.
+remain. Native55 supplies the subsequent cleanup qualification above; final
+merge/main/release source still requires fresh gates.

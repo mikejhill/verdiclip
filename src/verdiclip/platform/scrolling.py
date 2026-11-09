@@ -1037,6 +1037,7 @@ class UiaScrollTarget:
             client, dpi = self._header_context()
             observed = True
         except (CaptureError, OSError):
+            # Optional numeric diagnostics must not replace the discovery error.
             pass
         logger.warning(
             "Scrolling Header discovery context: provider=%s captured=%s "
