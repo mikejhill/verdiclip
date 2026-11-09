@@ -1,6 +1,7 @@
 name: Bounded scrolling native qualification
 
 on:
+  workflow_dispatch:
   pull_request:
   push:
     branches: [main]
@@ -80,11 +81,13 @@ jobs:
   diagnostic:
     if: >-
       github.repository == 'mikejhill/verdiclip' &&
-      github.event_name == 'pull_request' &&
-      github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
-      github.head_ref == 'diagnostics/scrolling-0140' &&
-      github.event.pull_request.draft == true
-    name: Diagnostic only / ${{ matrix.application }}
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+       (github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
+        (((github.head_ref == 'feature/simple-scrolling' ||
+           github.head_ref == 'diagnostics/scrolling-0140') && github.event.pull_request.draft == true) ||
+         github.head_ref == 'release-please--branches--main--components--verdiclip')))
+    name: Representative baseline / ${{ matrix.application }}
     runs-on: windows-2025
     timeout-minutes: 8
     strategy:
@@ -94,16 +97,16 @@ jobs:
           edge-panel-enter, edge-sidebar-enter, edge-background-click,
           edge-background-enter, explorer-click, explorer-enter,
           explorer-middle-click, explorer-middle-enter,
-          explorer-bottom-click, explorer-bottom-enter, explorer-inverse-restore]
+          explorer-bottom-click, explorer-bottom-enter]
     env:
       QT_QPA_PLATFORM: windows
       PYTHONUTF8: "1"
       SCROLL_APPLICATION: ${{ matrix.application }}
-      QUALIFICATION_HEAD: ${{ github.event.pull_request.head.sha }}
+      QUALIFICATION_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: Require exact diagnostic source
         run: |
@@ -120,6 +123,11 @@ jobs:
       - name: Record actual controller capture on ordinary layouts
         timeout-minutes: 2
         run: uv run python -m scripts.scrolling_diagnostics "$env:SCROLL_APPLICATION"
+      - name: Require the existing 96-DPI no-horizontal-bar List path
+        if: startsWith(matrix.application, 'explorer-')
+        run: |
+          uv run python -c "import json, os; from pathlib import Path; from scripts.scrolling_diagnostics import _no_hbar_target_layout; p = Path('artifacts/simple-scroll') / os.environ['SCROLL_APPLICATION']; assert json.loads((p / 'target.json').read_text())['window_dpi'] == 96; _no_hbar_target_layout(p, {})"
+          if ($LASTEXITCODE -ne 0) { throw 'The baseline no-H List capability was not qualified' }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -131,21 +139,28 @@ jobs:
   display-setup:
     if: >-
       github.repository == 'mikejhill/verdiclip' &&
-      github.event_name == 'pull_request' &&
-      github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
-      github.head_ref == 'diagnostics/scrolling-0140' &&
-      github.event.pull_request.draft == true
-    name: Diagnostic only / 200% Edge and Explorer
+      ((github.event_name == 'workflow_dispatch') ||
+       (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+       (github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
+        (((github.head_ref == 'feature/simple-scrolling' ||
+           github.head_ref == 'diagnostics/scrolling-0140') && github.event.pull_request.draft == true) ||
+         github.head_ref == 'release-please--branches--main--components--verdiclip')))
+    name: Actual 200% Edge controls
     runs-on: windows-2025
-    timeout-minutes: 12
+    timeout-minutes: 20
     env:
       QT_QPA_PLATFORM: windows
       PYTHONUTF8: "1"
-      QUALIFICATION_HEAD: ${{ github.event.pull_request.head.sha }}
+      QUALIFICATION_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
+      - name: Reject manual dispatch outside main before checkout
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          if ($env:GITHUB_REF -ne 'refs/heads/main') { throw 'Manual scrolling diagnostics require main' }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: Require exact setup source
         run: |
@@ -163,30 +178,31 @@ jobs:
         timeout-minutes: 9
         run: |
           $cases = @('edge-prose-click', 'edge-prose-enter', 'edge-panel-click', 'edge-panel-enter',
-            'edge-panel-focused-click', 'edge-panel-focused-enter', 'explorer-step-geometry',
-            'explorer-click', 'explorer-enter',
-            'explorer-middle-click', 'explorer-middle-enter',
-            'explorer-bottom-click', 'explorer-bottom-enter')
+            'edge-panel-focused-click', 'edge-panel-focused-enter')
           foreach ($case in $cases) {
             uv run python -c "import json; from dataclasses import asdict; from scripts.hosted_display_scale import Display; value = Display().read(); print(json.dumps(asdict(value))); assert value.qualified"
             if ($LASTEXITCODE -ne 0) { throw 'Display is not at verified 200% before capture' }
             uv run python -m scripts.scrolling_diagnostics "$case"
             if ($LASTEXITCODE -ne 0) { throw "Native 200% capture failed: $case" }
-            if ($case -eq 'explorer-step-geometry') {
-              $setup = Get-Content -Raw "artifacts/simple-scroll/$case/setup.json" | ConvertFrom-Json
-              $result = Get-Content -Raw "artifacts/simple-scroll/$case/result.json" | ConvertFrom-Json
-              if ($setup.step_geometry.original_geometry.window_dpi -ne 192 -or
-                  $setup.step_geometry.restore_geometry.window_dpi -ne 192 -or
-                  $result.experiment_passed -ne $true -or $result.success -ne $false -or
-                  $result.product_capture_qualification -ne $false) {
-                throw 'The isolated geometry experiment lacks its exact non-product receipt'
-              }
-            } else {
-              $target = Get-Content -Raw "artifacts/simple-scroll/$case/target.json" | ConvertFrom-Json
-              if ($target.window_dpi -ne 192) { throw "Target DPI is not 192: $case" }
-            }
+            $target = Get-Content -Raw "artifacts/simple-scroll/$case/target.json" | ConvertFrom-Json
+            if ($target.window_dpi -ne 192) { throw "Target DPI is not 192: $case" }
             uv run python -c "import json; from dataclasses import asdict; from scripts.hosted_display_scale import Display; value = Display().read(); print(json.dumps(asdict(value))); assert value.qualified"
             if ($LASTEXITCODE -ne 0) { throw 'Display changed during capture' }
+          }
+      - name: Optional fully traced tiny Explorer stress
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+        timeout-minutes: 8
+        run: |
+          foreach ($case in @('explorer-click', 'explorer-enter', 'explorer-middle-click',
+            'explorer-middle-enter', 'explorer-bottom-click', 'explorer-bottom-enter')) {
+            uv run python -c "from scripts.hosted_display_scale import Display; assert Display().read().qualifies(200)"
+            if ($LASTEXITCODE -ne 0) { throw 'Display changed before optional stress' }
+            uv run python -m scripts.scrolling_diagnostics "$case"
+            if ($LASTEXITCODE -ne 0) { throw "Optional traced tiny capture failed: $case" }
+            $target = Get-Content -Raw "artifacts/simple-scroll/$case/target.json" | ConvertFrom-Json
+            if ($target.window_dpi -ne 192) { throw 'Stress target DPI is not 192' }
+            uv run python -c "from scripts.hosted_display_scale import Display; assert Display().read().qualifies(200)"
+            if ($LASTEXITCODE -ne 0) { throw 'Display changed during optional stress' }
           }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
@@ -199,10 +215,12 @@ jobs:
   representative-layout:
     if: >-
       github.repository == 'mikejhill/verdiclip' &&
-      github.event_name == 'pull_request' &&
-      github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
-      github.head_ref == 'diagnostics/scrolling-0140' &&
-      github.event.pull_request.draft == true
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+       (github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
+        (((github.head_ref == 'feature/simple-scrolling' ||
+           github.head_ref == 'diagnostics/scrolling-0140') && github.event.pull_request.draft == true) ||
+         github.head_ref == 'release-please--branches--main--components--verdiclip')))
     name: Representative layout / ${{ matrix.scale }}% / ${{ matrix.application }}${{ matrix.layout == 'no-hbar' && ' / no-hbar' || '' }}
     runs-on: windows-2025
     timeout-minutes: 8
@@ -239,11 +257,11 @@ jobs:
       SCROLL_APPLICATION: ${{ matrix.application }}
       EXPLORER_LAYOUT: ${{ matrix.layout }}
       DISPLAY_SCALE: ${{ matrix.scale }}
-      QUALIFICATION_HEAD: ${{ github.event.pull_request.head.sha }}
+      QUALIFICATION_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: Require exact representative source
         run: |

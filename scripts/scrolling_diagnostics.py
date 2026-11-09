@@ -18,15 +18,13 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Generator
-from contextlib import ExitStack, contextmanager, suppress
+from contextlib import ExitStack, suppress
 from dataclasses import asdict, dataclass
 from itertools import pairwise
 from pathlib import Path
 from typing import cast, override
 from unittest.mock import patch
 
-import mss
 from PySide6.QtGui import QImage
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QWidget
@@ -35,7 +33,6 @@ from scripts import simple_scroll_native as native
 from scripts.hosted_display_scale import target_dpi
 from scripts.scrolling_header_probe import _scroll_info, probe_target
 from scripts.scrolling_item_witness import (
-    ListItemWitness,
     header_layout,
     list_layout,
     raw_bounds,
@@ -43,7 +40,6 @@ from scripts.scrolling_item_witness import (
 from scripts.scrolling_oracle import verify_sequence
 from scripts.simple_scroll_handoff import Desktop
 
-from verdiclip.capture.grabber import FrozenScreen
 from verdiclip.capture.scroll_helper import _watch_parent
 from verdiclip.capture.scrolling import END_PERCENT, ScrollPosition, ScrollResult
 from verdiclip.geometry import Point, Rect
@@ -52,13 +48,8 @@ from verdiclip.platform.windows import WindowInfo, WindowLocator
 
 _WAIT_TIMEOUT = 0x00000102
 _MIDDLE_SETUP_RANGE = 5.0
-_INVERSE_EXPERIMENT = "explorer-inverse-restore"
-_GEOMETRY_EXPERIMENT = "explorer-step-geometry"
 _HELPER_OUTPUT = "explorer-helper-output"
-_EXPERIMENTS = (_INVERSE_EXPERIMENT, _GEOMETRY_EXPERIMENT)
-_GEOMETRY_WRITES = 4
 _GEOMETRY_PAIR = 2
-_EXACT_REGION_TRIALS = 3
 _LIST_ITEM_ROLE = 50007
 _SCROLLBAR_ROLE = 50014
 _SB_CTL = 2
@@ -210,17 +201,16 @@ def _no_hbar_target_layout(output: Path, report: dict[str, object]) -> None:
     geometry = json.loads((output / "header-geometry.json").read_text())
     target = json.loads((output / "target.json").read_text())
     layout = _no_hbar_geometry(geometry)
-    timing = json.loads((output / "phase-timing.json").read_text())
+    list_calls = json.loads((output / "list-calls.json").read_text())
     frames = json.loads((output / "frames.json").read_text())
     native._require(
         target["initial_position"]["horizontal"] == -1.0
         and target["area"] == layout["area"]
-        and timing["errors"] == 0
         and len(frames) > 1
         and all(
-            timing["totals"].get(name, {}).get("count", 0) == len(frames) - 1
-            and timing["totals"][name]["exceptions"] == 0
-            for name in ("list_begin", "list_finish")
+            list_calls.get(name, {}).get("count", 0) == len(frames) - 1
+            and list_calls[name]["exceptions"] == 0
+            for name in ("begin", "finish")
         ),
         "No-hbar capture did not use the native List capability",
     )
@@ -868,14 +858,9 @@ def _setup_explorer_child() -> None:
         owner.window = WindowInfo(
             window["handle"], window["title"], Rect(**window["bounds"])
         )
-        if request["kind"] == _INVERSE_EXPERIMENT:
-            _inverse_explorer_restore(Point(**request["point"]), output, owner, setup)
-        elif request["kind"] == _GEOMETRY_EXPERIMENT:
-            _explorer_step_geometry(Point(**request["point"]), output, owner, setup)
-        else:
-            _position_explorer_start(
-                request["kind"], Point(**request["point"]), output, owner, setup
-            )
+        _position_explorer_start(
+            request["kind"], Point(**request["point"]), output, owner, setup
+        )
     except Exception as error:
         setup["error"] = str(error)
         raise
@@ -1153,570 +1138,6 @@ class _InverseScrollBar:
         )
         self.check()
         return _InverseSample(position, state, image)
-
-    def settle(
-        self, phase: str, output: Path, evidence: dict[str, object]
-    ) -> _InverseSample:
-        observations: list[dict[str, object]] = []
-        evidence[f"{phase}_observations"] = observations
-        previous = None
-        for _ in range(8):
-            time.sleep(0.08)
-            current = self.read()
-            observations.append(current.record())
-            native._require(
-                current.image.save(str(output / f"inverse-{phase}.png")),
-                "Could not save inverse experiment pixels",
-            )
-            if current == previous:
-                self.check()
-                evidence[phase] = current.record()
-                return current
-            previous = current
-        raise RuntimeError(f"Inverse experiment {phase} did not settle")
-
-
-def _inverse_explorer_restore(
-    point: Point, output: Path, owner: ExplorerCase, setup: dict[str, object]
-) -> None:
-    """Try one fresh inverse mapping, never an old-percent write or correction loop."""
-    _position_explorer_start("explorer-middle-click", point, output, owner, setup)
-    writes: list[float] = []
-    evidence: dict[str, object] = {
-        "product_capture_qualification": False,
-        "native_units_are_pixels": False,
-        "endpoint_and_restore_write_requests": writes,
-    }
-    setup["inverse_restore"] = evidence
-    window = owner._verified_window()
-    if owner.pid is None:
-        raise RuntimeError("Inverse experiment lacks the retained fixture PID")
-    with UiaScrollTarget(point, window=window.handle) as target:
-        bar = _InverseScrollBar(target, owner.pid)
-        (output / "inverse-geometry.json").write_text(
-            json.dumps(bar.geometry, indent=2), encoding="utf-8"
-        )
-        evidence["retained_scrollbar"] = {
-            "hwnd": bar.handle,
-            "native_parent": bar.parent,
-            "role": _SCROLLBAR_ROLE,
-            "root": window.handle,
-            "pid": owner.pid,
-            "rail": asdict(bar.rail),
-            "direct_uia_parent_and_identity_checked": True,
-        }
-        original = bar.settle("original", output, evidence)
-        native._require(
-            asdict(original.position) == setup["settled_position"]
-            and original.image == QImage(str(output / "before.png")),
-            "Inverse experiment original differs from its one-write middle setup",
-        )
-        native._require(
-            owner._verified_window() == window, "Fixture changed before endpoint"
-        )
-        native._require(bar.read() == original, "Original changed before endpoint")
-        writes.append(END_PERCENT)
-        target.move(END_PERCENT)
-        endpoint = bar.settle("endpoint", output, evidence)
-        width, header = round(bar.header.width), round(bar.header.height)
-        native._require(
-            endpoint.position.vertical == END_PERCENT
-            and endpoint.native["page"] > original.native["page"]
-            and endpoint.image.copy(0, 0, width, header)
-            == original.image.copy(0, 0, width, header),
-            "Inverse experiment lacks the stable endpoint page transition/Header",
-        )
-        native._require(
-            owner._verified_window() == window, "Fixture changed before inverse"
-        )
-        native._require(bar.read() == endpoint, "Endpoint changed before inverse")
-        requested = _native_inverse_percent(endpoint.native, original.native["pos"])
-        native._require(0 < requested < END_PERCENT, "Inverse request is not interior")
-        evidence["computed_restore_percent"] = requested
-        writes.append(requested)
-        target.move(requested)
-        final = bar.settle("final", output, evidence)
-        checks = {
-            "original_native_position": final.native["pos"] == original.native["pos"],
-            "endpoint_page_preserved": final.native["page"] == endpoint.native["page"],
-            "header_pixels_exact": final.image.copy(0, 0, width, header)
-            == original.image.copy(0, 0, width, header),
-            "body_pixels_exact": final.image.copy(
-                0, header, width, final.image.height() - header
-            )
-            == original.image.copy(0, header, width, original.image.height() - header),
-        }
-        evidence["final_checks"] = checks
-        native._require(
-            all(checks.values()),
-            "One inverse write did not restore exact native position/content pixels",
-        )
-        bar.check()
-        target.check()
-        setup["experiment_passed"] = True
-
-
-def _geometry_pair(witness: ListItemWitness) -> list[dict[str, object]]:
-    """Record retained raw rectangles and their independently verified hit areas."""
-    result: list[dict[str, object]] = []
-    for anchor in witness._anchors:
-        bounds = witness._visible(anchor.element)
-        witness._confirm(anchor.element, bounds)
-        visible = witness._visible_bounds(bounds)
-        native._require(
-            bounds == anchor.bounds and visible is not None,
-            "Geometry experiment visible item changed during observation",
-        )
-        result.append({"raw": asdict(bounds), "visible": asdict(cast("Rect", visible))})
-    native._require(
-        len(result) == _GEOMETRY_PAIR, "Geometry experiment lacks two visible items"
-    )
-    return result
-
-
-def _geometry_step(
-    body: Rect,
-    before: _InverseSample,
-    after: _InverseSample,
-    witness: dict[str, object],
-) -> dict[str, object]:
-    """Compare exact PNG overlap at the raw-item delta, without pixel registration."""
-    items = cast("list[dict[str, object]]", witness["items"])
-    native._require(
-        len(items) == _GEOMETRY_PAIR, "Geometry step lacks two raw witnesses"
-    )
-    deltas = []
-    previous_bottom = -math.inf
-    for item in items:
-        first, last = raw_bounds(item["before"]), raw_bounds(item["after"])
-        visible_first = raw_bounds(item["visible_before"])
-        visible_last = raw_bounds(item["visible_after"])
-        native._require(
-            item["same_identity"] is True
-            and item["same_parent"] is True
-            and (first.x, first.width, first.height)
-            == (last.x, last.width, last.height)
-            and first.height > 0
-            and first.width > 0
-            and first.top >= previous_bottom
-            and all(
-                visible == raw.intersected(body)
-                and not visible.is_empty
-                and visible.left == raw.left
-                and visible.top == raw.top
-                and visible.height == raw.height
-                for raw, visible in ((first, visible_first), (last, visible_last))
-            ),
-            "Geometry step has invalid visible/raw item evidence",
-        )
-        previous_bottom = first.bottom
-        deltas.append(first.top - last.top)
-    native._require(
-        deltas[0] == deltas[1] == round(deltas[0]) and 0 < deltas[0] < body.height,
-        "Geometry step has invalid raw displacement",
-    )
-    delta = round(deltas[0])
-    rows, width = round(body.height) - delta, round(body.width)
-    # The caller supplies body-only images, preserving full-width saved originals.
-    native._require(
-        all(
-            not sample.image.isNull()
-            and (sample.image.width(), sample.image.height()) == (width, body.height)
-            for sample in (before, after)
-        ),
-        "Geometry step requires exact body images",
-    )
-    exact = before.image.copy(0, delta, width, rows) == after.image.copy(
-        0, 0, width, rows
-    )
-    expected = (
-        body.height
-        * (END_PERCENT - before.position.view_size)
-        / before.position.view_size
-        * (after.position.vertical - before.position.vertical)
-        / END_PERCENT
-    )
-    result: dict[str, object] = {
-        "raw_displacements": deltas,
-        "png_overlap_rows": rows,
-        "png_overlap_exact": exact,
-        "uia_predicted_pixels": expected,
-        "raw_minus_uia_pixels": delta - expected,
-        "native_units_are_pixels": False,
-    }
-    return result
-
-
-@contextmanager
-def _exact_region_source() -> Generator[mss.MSS]:
-    """Own a temporary public mss handle without masking an experiment failure."""
-    source = mss.MSS()
-    try:
-        yield source
-    finally:
-        original = sys.exception()
-        try:
-            source.close()
-        except Exception as error:
-            if original is None:
-                raise
-            original.add_note(f"Exact-region handle cleanup also failed: {error}")
-
-
-def _exact_region_rect(area: Rect) -> tuple[int, int, int, int]:
-    """Reject fractional or missing physical pixels, never round or clip."""
-    values = (area.left, area.top, area.right, area.bottom)
-    native._require(
-        not area.is_empty
-        and all(math.isfinite(value) and value == int(value) for value in values),
-        "Exact-region experiment requires integral, nonempty physical bounds",
-    )
-    return int(area.left), int(area.top), int(area.right), int(area.bottom)
-
-
-def _exact_region_frame(
-    source: mss.MSS, capture: Rect, area: Rect
-) -> tuple[QImage, dict[str, float]]:
-    """Time only public acquisition, RGB32 detachment, and the existing crop."""
-    rectangle = _exact_region_rect(capture)
-    _exact_region_rect(area)
-    native._require(
-        capture.intersected(area) == area,
-        "Exact-region experiment would clip the verified area",
-    )
-    start = time.perf_counter()
-    shot = source.grab(rectangle)
-    acquired = time.perf_counter()
-    native._require(
-        (shot.left, shot.top, shot.width, shot.height)
-        == (capture.x, capture.y, capture.width, capture.height)
-        and len(shot.raw) == shot.width * shot.height * 4,
-        "Exact-region experiment received missing or shifted pixels",
-    )
-    start_detach = time.perf_counter()
-    image = QImage(
-        shot.raw, shot.width, shot.height, shot.width * 4, QImage.Format.Format_RGB32
-    ).copy()
-    detached = time.perf_counter()
-    crop_seconds = 0.0
-    if capture != area:
-        start_crop = time.perf_counter()
-        image = FrozenScreen(image, capture).crop(area)
-        crop_seconds = time.perf_counter() - start_crop
-    native._require(
-        not image.isNull()
-        and (image.width(), image.height()) == (area.width, area.height),
-        "Exact-region experiment lost decoded pixels",
-    )
-    return image, {
-        "acquire_seconds": acquired - start,
-        "detach_seconds": detached - start_detach,
-        "crop_seconds": crop_seconds,
-    }
-
-
-class _StepGeometry:
-    """Own four bounded writes and independent observations, never a capture."""
-
-    def __init__(
-        self,
-        owner: ExplorerCase,
-        bar: _InverseScrollBar,
-        output: Path,
-        evidence: dict[str, object],
-    ) -> None:
-        self.owner, self.bar, self.output, self.evidence = owner, bar, output, evidence
-        self.window = owner._verified_window()
-        self.writes: list[dict[str, object]] = []
-        evidence["write_requests"] = self.writes
-        self.body = Rect(
-            bar.area.left,
-            bar.header.bottom,
-            bar.header.width,
-            bar.rail.bottom - bar.header.bottom,
-        )
-
-    def guard(self, sample: _InverseSample) -> None:
-        native._require(
-            self.owner._verified_window() == self.window,
-            "Geometry experiment fixture identity changed",
-        )
-        native._require(self.bar.read() == sample, "Geometry experiment sample changed")
-
-    def phase(self, name: str) -> _InverseSample:
-        self.evidence["phase"] = name
-        sample = self.bar.settle(f"geometry-{name}", self.output, self.evidence)
-        geometry = probe_target(self.bar.target)
-        self.evidence[f"{name}_geometry"] = geometry
-        native._require(
-            list_layout(geometry)
-            == (self.bar.area, self.bar.header, self.bar.footer, self.bar.rail)
-            and geometry["window_dpi"] == _SCALED_FIXTURE_DPI
-            and self.bar.target.registration_dpi == _SCALED_FIXTURE_DPI
-            and geometry["position"] == asdict(sample.position)
-            and (name != "original" or geometry["uia"] == self.bar.geometry["uia"])
-            and sample.position.horizontal == 0.0,
-            "Geometry experiment Header/footer/DPI/H changed",
-        )
-        self.guard(sample)
-        return sample
-
-    def exact_region(self, original: _InverseSample) -> None:
-        """Temporary diagnostic: prune after native equivalence/speed evidence.
-
-        One warm triplet and three measured triplets, with no scroll writes.
-        Separate handles retain each allocation size; this is not a production
-        capture API or a timing claim about guards, settling, or total frames.
-        """
-        target, area = self.bar.target, self.bar.area
-        rectangle = _exact_region_rect(area)
-        display = target._observe_display()
-        if display is None:
-            raise RuntimeError("Exact-region display evidence missing")
-        geometry = self.evidence["original_geometry"]
-        trials: list[dict[str, object]] = []
-        result: dict[str, object] = {
-            "passed": False,
-            "physical_rectangle": rectangle,
-            "display": asdict(display),
-            "warm_triplets": 1,
-            "measured_triplets": _EXACT_REGION_TRIALS,
-            "trials": trials,
-        }
-        self.evidence["exact_region"] = result
-
-        def unchanged() -> None:
-            self.guard(original)
-            native._require(
-                probe_target(target) == geometry
-                and target._observe_display() == display,
-                "Exact-region geometry/monitor/DPI/native state changed",
-            )
-            self.bar.check()
-
-        unchanged()
-        with _exact_region_source() as full, _exact_region_source() as exact:
-            monitor = full.monitors[0]
-            desktop = Rect(
-                monitor["left"], monitor["top"], monitor["width"], monitor["height"]
-            )
-            native._require(
-                full.monitors == exact.monitors and desktop.intersected(area) == area,
-                "Exact-region desktop bounds differ or would clip the area",
-            )
-            result["desktop_bounds"] = asdict(desktop)
-            for trial in range(_EXACT_REGION_TRIALS + 1):
-                timings: dict[str, object] = {}
-                for label, source, bounds in (
-                    ("A_full", full, desktop),
-                    ("B_exact", exact, area),
-                    ("C_full", full, desktop),
-                ):
-                    self.bar.check()
-                    image, timings[label] = _exact_region_frame(source, bounds, area)
-                    self.bar.check()
-                    native._require(
-                        image == original.image,
-                        f"Exact-region {label} pixels differ from stable original",
-                    )
-                    if trial == _EXACT_REGION_TRIALS:
-                        native._require(
-                            image.save(str(self.output / f"exact-region-{label}.png")),
-                            "Could not retain the final exact-region triplet",
-                        )
-                unchanged()
-                if trial:
-                    trials.append(timings)
-        unchanged()
-        result["passed"] = True
-
-    def move(self, name: str, percent: float, before: _InverseSample) -> _InverseSample:
-        self.guard(before)
-        native._require(
-            len(self.writes) < _GEOMETRY_WRITES
-            and math.isfinite(percent)
-            and 0 <= percent <= END_PERCENT,
-            "Geometry experiment write is out of bounds",
-        )
-        write: dict[str, object] = {
-            "phase": name,
-            "requested_percent": percent,
-            "outcome": "unresolved",
-        }
-        self.writes.append(write)
-        self.bar.target.move(percent)
-        after = self.phase(name)
-        write.update(outcome="observed", observed=after.record())
-        return after
-
-    def fixed(self, original: _InverseSample, current: _InverseSample) -> None:
-        width, height = round(self.bar.header.width), round(self.bar.header.height)
-        footer_top = round(self.bar.rail.height)
-        checks = {
-            "header_pixels_exact": original.image.copy(0, 0, width, height)
-            == current.image.copy(0, 0, width, height),
-            "footer_and_corner_pixels_exact": original.image.copy(
-                0,
-                footer_top,
-                original.image.width(),
-                original.image.height() - footer_top,
-            )
-            == current.image.copy(
-                0,
-                footer_top,
-                current.image.width(),
-                current.image.height() - footer_top,
-            ),
-        }
-        self.evidence[f"{self.evidence['phase']}_fixed_checks"] = checks
-        native._require(
-            all(checks.values()),
-            "Geometry experiment Header/footer/corner pixels changed",
-        )
-
-    def half_steps(self, original: _InverseSample) -> _InverseSample:
-        witness = ListItemWitness(self.bar.target, self.bar.geometry)
-        try:
-            witness.observe(original.position)
-            self.evidence["original_visible_pair"] = _geometry_pair(witness)
-            self.guard(original)
-            current = original
-            for index in range(2):
-                percent = current.position.vertical + (
-                    50.0
-                    * current.position.view_size
-                    / (100.0 - current.position.view_size)
-                )
-                native._require(
-                    current.position.vertical < percent < END_PERCENT,
-                    "Geometry experiment half-view request is invalid",
-                )
-                following = self.move(f"step-{index + 1}", percent, current)
-                native._require(
-                    following.position.view_size == current.position.view_size
-                    and current.position.vertical
-                    < following.position.vertical
-                    < END_PERCENT,
-                    "Geometry experiment half-view page or movement is uncertain",
-                )
-                self.fixed(original, following)
-                observed = witness.observe(following.position)
-                self.evidence[f"step-{index + 1}_items"] = observed
-                native._require(
-                    observed["from_frame"] == index, "Wrong witness continuity"
-                )
-                offset = round(self.bar.header.height)
-                width, height = round(self.body.width), round(self.body.height)
-                proof = _geometry_step(
-                    self.body,
-                    _InverseSample(
-                        current.position,
-                        current.native,
-                        current.image.copy(0, offset, width, height),
-                    ),
-                    _InverseSample(
-                        following.position,
-                        following.native,
-                        following.image.copy(0, offset, width, height),
-                    ),
-                    observed,
-                )
-                self.evidence[f"step-{index + 1}_overlap"] = proof
-                native._require(
-                    proof["png_overlap_exact"] is True,
-                    "Raw item displacement does not match exact PNG overlap",
-                )
-                self.guard(following)
-                current = following
-            return current
-        finally:
-            witness.close()
-
-    def finish(self, original: _InverseSample, current: _InverseSample) -> None:
-        endpoint = self.move("endpoint", END_PERCENT, current)
-        native._require(
-            endpoint.position.vertical == END_PERCENT,
-            "Geometry experiment endpoint is not terminal",
-        )
-        self.fixed(original, endpoint)
-        # The old pair has been released. This fresh pair makes no continuity claim.
-        geometry = cast("dict[str, object]", self.evidence["endpoint_geometry"])
-        tree = cast("dict[str, object]", geometry["uia"])
-        nodes = cast("list[dict[str, object]]", tree["nodes"])
-        self.evidence["endpoint_raw_list_items"] = [
-            node
-            for node in nodes
-            if node["parent"] == 0 and node["control_type"] == _LIST_ITEM_ROLE
-        ]
-        witness = ListItemWitness(self.bar.target, geometry)
-        try:
-            witness._deadline = time.monotonic() + 1.0
-            witness._seed()
-            self.evidence["endpoint_visible_pair"] = _geometry_pair(witness)
-            self.evidence["endpoint_item_continuity"] = False
-        finally:
-            witness.close()
-        self.guard(endpoint)
-        requested = _native_inverse_percent(endpoint.native, original.native["pos"])
-        self.evidence["computed_restore_percent"] = requested
-        final = self.move("restore", requested, endpoint)
-        self.fixed(original, final)
-        checks = {
-            **cast("dict[str, bool]", self.evidence["restore_fixed_checks"]),
-            "original_native_position": final.native["pos"] == original.native["pos"],
-            "endpoint_page_preserved": final.native["page"] == endpoint.native["page"],
-            "original_horizontal": final.position.horizontal
-            == original.position.horizontal,
-            "all_nonrail_pixels_exact": original.image.copy(
-                0, 0, round(self.bar.header.width), original.image.height()
-            )
-            == final.image.copy(
-                0, 0, round(self.bar.header.width), final.image.height()
-            ),
-        }
-        self.evidence["final_checks"] = checks
-        native._require(
-            all(checks.values()), "Geometry experiment restoration mismatch"
-        )
-        self.guard(final)
-        self.bar.target.check()
-
-
-def _explorer_step_geometry(
-    point: Point, output: Path, owner: ExplorerCase, setup: dict[str, object]
-) -> None:
-    """Observe two half-views, one endpoint, one native-position restore, then stop."""
-    setup.update(
-        success=False, product_capture_qualification=False, experiment_passed=False
-    )
-    evidence: dict[str, object] = {"native_units_are_pixels": False}
-    setup["step_geometry"] = evidence
-    native._require(
-        os.environ.get("GITHUB_ACTIONS") == "true"
-        and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted",
-        "Geometry experiment requires a disposable hosted runner",
-    )
-    window = owner._verified_window()
-    if owner.pid is None:
-        raise RuntimeError("Geometry experiment lacks the retained fixture PID")
-    with UiaScrollTarget(point, window=window.handle) as target:
-        bar = _InverseScrollBar(target, owner.pid, two_rails=True)
-        experiment = _StepGeometry(owner, bar, output, evidence)
-        native._require(
-            experiment.window == window == owner.window,
-            "Geometry experiment window changed before the original sample",
-        )
-        original = experiment.phase("original")
-        native._require(
-            original.native["pos"] == original.native["min"]
-            and original.position.vertical == 0.0
-            and 0 < original.position.view_size < END_PERCENT,
-            "Geometry experiment requires a fresh original top view",
-        )
-        experiment.exact_region(original)
-        current = experiment.half_steps(original)
-        experiment.finish(original, current)
-        setup["experiment_passed"] = True
 
 
 def _explorer(
@@ -2082,6 +1503,19 @@ function OwnedControl($element) {
   }
   return $false
 }
+function ExactFailureReceipt($name, $candidateCount, $visibleCount, $reason) {
+  if ($name -ne 'Show' -or -not $expected.evidence) { return }
+  try {
+    @{ name_filter='Show'; pid_filter=$pidValue; lookup_scope='Descendants';
+      filtered_out=($candidateCount - $visibleCount);
+      candidate_count=$candidateCount; enabled_visible_count=$visibleCount;
+      filter='not IsOffscreen and IsEnabled'; failure=$reason } |
+      ConvertTo-Json -Compress | Set-Content -Encoding UTF8 -LiteralPath (
+        Join-Path $expected.evidence 'show-lookup-failure.json')
+  } catch {
+    # Optional serialization cannot replace the original Exact failure.
+  }
+}
 function Exact($root, $name, $pidValue) {
   $condition = [Windows.Automation.AndCondition]::new(
     [Windows.Automation.PropertyCondition]::new(
@@ -2091,8 +1525,12 @@ function Exact($root, $name, $pidValue) {
   $items=$root.FindAll([Windows.Automation.TreeScope]::Descendants, $condition)
   $visible=@($items | Where-Object {
     -not $_.Current.IsOffscreen -and $_.Current.IsEnabled })
-  if ($visible.Count -ne 1) { throw "Expected one enabled visible $name control" }
+  if ($visible.Count -ne 1) {
+    ExactFailureReceipt $name $items.Count $visible.Count 'count'
+    throw "Expected one enabled visible $name control"
+  }
   if (-not (OwnedControl $visible[0])) {
+    ExactFailureReceipt $name $items.Count $visible.Count 'ownership'
     throw "The $name control does not belong to the retained fixture"
   }
   return $visible[0]
@@ -2120,6 +1558,8 @@ function ViewReceipt {
       $top=$walker.GetNextSibling($top)
     }
     $visited=0
+    $focusedMenu=$false
+    $discardedQueued=0
     $limited=($null -ne $top)
     while ($queue.Count -gt 0 -and $visited -lt 64) {
       $entry=$queue.Dequeue()
@@ -2131,6 +1571,15 @@ function ViewReceipt {
         continue
       }
       $bounds=$info.BoundingRectangle
+      $values=@($bounds.X, $bounds.Y, $bounds.Width, $bounds.Height)
+      $boundsStatus='available'
+      foreach ($value in $values) {
+        if ([double]::IsNaN($value) -or [double]::IsInfinity($value)) {
+          $values=$null
+          $boundsStatus='unavailable_nonfinite'
+          break
+        }
+      }
       $hwnd=[IntPtr]$info.NativeWindowHandle
       $owner=0L
       if ($hwnd -ne [IntPtr]::Zero) {
@@ -2146,23 +1595,37 @@ function ViewReceipt {
       [void]$nodes.Add(@{ depth=$depth; role=$info.ControlType.Id; name=$name;
         pid=$info.ProcessId; hwnd=$hwnd.ToInt64(); root_owner=$owner;
         owned=$true; offscreen=$info.IsOffscreen; enabled=$info.IsEnabled;
-        bounds=@($bounds.X, $bounds.Y, $bounds.Width, $bounds.Height) })
+        bounds=$values; bounds_status=$boundsStatus })
+      # Direct children of the first observed Menu are terminal evidence only.
+      if ($entry.Count -eq 3 -and $entry[2]) { continue }
+      $menuChildren=$false
+      if (-not $focusedMenu -and -not $info.IsOffscreen -and
+          $info.ControlType -eq [Windows.Automation.ControlType]::Menu) {
+        $focusedMenu=$true
+        $menuChildren=$true
+        $discardedQueued=$queue.Count
+        $queue.Clear()
+        $limited=$true
+      }
       # Avoid fixture contents. Only descend root/popup/menu containers.
       if ($info.ControlType -eq [Windows.Automation.ControlType]::List -or
           $info.ControlType -eq [Windows.Automation.ControlType]::Tree -or
           $info.ControlType -eq [Windows.Automation.ControlType]::DataGrid) {
         continue
       }
-      if ($depth -ge 4) { $limited=$true; continue }
+      if ($depth -ge 4 -and -not $menuChildren) { $limited=$true; continue }
       $child=$walker.GetFirstChild($element)
       for (; $null -ne $child -and ($visited + $queue.Count) -lt 64;) {
-        $queue.Enqueue(@($child, ($depth + 1)))
+        $queue.Enqueue(@($child, ($depth + 1), $menuChildren))
         $child=$walker.GetNextSibling($child)
       }
       if ($null -ne $child) { $limited=$true }
     }
     Guard $view
     @{ stage='after_view_expand'; roots_inspected=$roots; visited=$visited;
+      scope='bounded_observation_not_unique'; focused_menu_children=$focusedMenu;
+      focus_policy='first_owned_visible_menu_direct_children_only';
+      discarded_queued=$discardedQueued;
       same_pid_roots=$samePidRoots; unowned_roots=$unownedRoots;
       view_state=[int]$viewPattern.Current.ExpandCollapseState;
       screenshot_scope='owned_window_only'; screenshot_bounds=$expected.outer;
@@ -2376,64 +1839,8 @@ Stage 'result'
         ):
             if kind == _HELPER_OUTPUT:
                 _helper_output_case(self, output, report)
-            elif kind in _EXPERIMENTS:
-                self._inverse_case(output, report, kind=kind)
             else:
                 _case(kind, output, report)
-
-    def _inverse_case(
-        self,
-        output: Path,
-        report: dict[str, object],
-        *,
-        kind: str = _INVERSE_EXPERIMENT,
-    ) -> None:
-        """Run a fresh fixture experiment, never the product capture qualification."""
-        native._require(
-            os.environ.get("GITHUB_ACTIONS") == "true"
-            and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted",
-            "Explorer inverse experiment requires a disposable hosted runner",
-        )
-        window = self._prepare(self._verified_window())
-        report.update(
-            window=asdict(window),
-            oracle=(
-                "test-only four-write step geometry experiment"
-                if kind == _GEOMETRY_EXPERIMENT
-                else "test-only one-write inverse-native-position experiment"
-            ),
-            success=False,
-            experiment_passed=False,
-            product_capture_qualification=False,
-        )
-        request = {
-            "kind": kind,
-            "point": asdict(window.bounds.center),
-            "window": asdict(window),
-            "pid": self.pid,
-            "fixture": {
-                "folder": str(self.folder),
-                "previous_handles": sorted(self.before),
-            },
-        }
-        (output / "setup-request.json").write_text(
-            json.dumps(request), encoding="utf-8"
-        )
-        evidence = output / "setup.json"
-        evidence.write_text("{}", encoding="utf-8")
-        try:
-            _run_explorer_setup(output)
-        finally:
-            key = (
-                "step_geometry_experiment"
-                if kind == _GEOMETRY_EXPERIMENT
-                else "inverse_restore_experiment"
-            )
-            report[key] = json.loads(evidence.read_text(encoding="utf-8"))
-        setup = json.loads(evidence.read_text(encoding="utf-8"))
-        native._require(setup.get("experiment_passed") is True, "Experiment incomplete")
-        report["experiment_passed"] = True
-        # native.main's product success stays false, even if this experiment passes.
 
     def cleanup(
         self,
@@ -2770,7 +2177,7 @@ def main() -> None:
     if kind in _FOCUSED_PANELS:
         layout = "edge-panel"
     native._require(
-        kind in (*_EXPERIMENTS, _HELPER_OUTPUT)
+        kind == _HELPER_OUTPUT
         or (
             layout
             in (
@@ -2791,11 +2198,7 @@ def main() -> None:
     no_hbar = sys.argv[2:] == ["--no-hbar-explorer"]
     native._require(
         not sys.argv[2:]
-        or (
-            (taller or no_hbar)
-            and is_explorer
-            and kind not in (*_EXPERIMENTS, _HELPER_OUTPUT)
-        ),
+        or ((taller or no_hbar) and is_explorer and kind != _HELPER_OUTPUT),
         "Only Explorer capture cases accept --taller-explorer or --no-hbar-explorer",
     )
     explorer = ExplorerCase(no_hbar=True) if no_hbar else ExplorerCase(taller=taller)
@@ -2816,7 +2219,7 @@ def main() -> None:
         ),
     ):
         native.main(
-            gui=kind not in (*_EXPERIMENTS, _HELPER_OUTPUT),
+            gui=kind != _HELPER_OUTPUT,
             case=explorer.run if is_explorer else _case,
         )
 

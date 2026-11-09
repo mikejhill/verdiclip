@@ -196,7 +196,9 @@ class AppCapture:
         _require(
             after.save(str(self.output / "after.png")), "Could not save final view"
         )
-        if self.kind == "edge-app-escape":
+        if self.kind == "edge-sidebar-enter":
+            self._verify_unsupported_fixed_sidebar(result, after)
+        elif self.kind == "edge-app-escape":
             _require(
                 self.interrupted and result.image is None and result.frames == 1,
                 "Escape did not withhold the accepted frame",
@@ -227,6 +229,44 @@ class AppCapture:
             "Editor activated before terminal delivery",
         )
 
+    def _verify_unsupported_fixed_sidebar(
+        self, result: ScrollResult, after: QImage
+    ) -> None:
+        """Qualify only the owned sidebar's exact no-image provider rejection."""
+        _require(
+            self.kind == "edge-sidebar-enter"
+            and result.message == "The top of the scroll panel is fixed or changing"
+            and result.image is None
+            and result.restoration == "restored",
+            result.message or "Unexpected fixed-sidebar result",
+        )
+        target = json.loads((self.output / "target.json").read_text(encoding="utf-8"))
+        frames = json.loads((self.output / "frames.json").read_text(encoding="utf-8"))
+        initial = target["initial_position"]
+        _require(
+            target["mode"] == "edge-sidebar-enter"
+            and set(initial) == {"horizontal", "vertical", "view_size"}
+            and initial["vertical"] == 0
+            and initial == target["final_observed_position"],
+            "Fixed-sidebar provider state was not restored",
+        )
+        _require(
+            result.frames == 2 and len(frames) == 2 and frames[0] == initial,  # noqa: PLR2004
+            "Fixed-sidebar frame evidence differs",
+        )
+        _require(
+            self.report["movement"] == {"writes": 2, "last_vertical": 0.0},
+            "Fixed-sidebar write evidence differs",
+        )
+        original = QImage(str(self.output / "frame-0.png"))
+        _require(
+            not original.isNull()
+            and not after.isNull()
+            and original == after == QImage(str(self.output / "after.png")),
+            "Fixed-sidebar restored pixels differ or are missing",
+        )
+        self.report.update(product_capture_success=False, capture_failed=True)
+
     def _verify_restored(self, after: QImage) -> None:
         _require(
             after == QImage(str(self.output / "frame-0.png")),
@@ -250,6 +290,26 @@ class AppCapture:
         )
         documents = self.controller.workspace.documents
         self.report["native_hotkey_actions"] = self.actions
+        if self.kind == "edge-sidebar-enter":
+            _require(
+                self.report.get("capture_failed") is True
+                and self.report.get("product_capture_success") is False,
+                "Fixed-sidebar provider rejection was not verified",
+            )
+            _require(
+                len(documents) == 1 and documents[0] is self.original,
+                "Fixed-sidebar rejection changed the existing document",
+            )
+            _require(
+                self.controller.editors == (self.editor,),
+                "Fixed-sidebar rejection changed the existing editor",
+            )
+            self.report.update(
+                tabs_after_scroll=len(documents),
+                unsupported_fixed_sidebar_criterion_passed=True,
+            )
+            self.loop.quit()
+            return
         if self.kind == "edge-app-hotkey":
             _require(
                 "scrolling" in self.actions, "Configured shortcut did not dispatch"
@@ -582,7 +642,14 @@ class AppCapture:
             self.loop.exec()
             if self.failures:
                 raise self.failures[0]
-            _require(self.report.get("success"), "Integrated capture timed out")
+            _require(
+                self.report.get("success")
+                or (
+                    self.kind == "edge-sidebar-enter"
+                    and self.report.get("unsupported_fixed_sidebar_criterion_passed")
+                ),
+                "Integrated capture timed out",
+            )
         finally:
             timeout.stop()
             self.timer.stop()
