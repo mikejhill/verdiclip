@@ -132,6 +132,7 @@ class ListItemWitness:
         self._owners, self._retained = ExitStack(), ExitStack()
         self._anchors: list[_Anchor] = []
         self._index = 0
+        self.confirmation_failure: dict[str, object] | None = None
         self._deadline = 0.0
         target._owners.callback(self.close)
         pointer = c.c_void_p()
@@ -191,10 +192,23 @@ class ListItemWitness:
         return bounds
 
     def _confirm(self, element: _Interface, bounds: Rect) -> None:
+        # Store only values already needed by the check. No provider names,
+        # identifiers, pointers or additional COM reads belong in this receipt.
+        roles: list[int] = []
+        receipt: dict[str, object] = {
+            "frame_index": self._index,
+            "selected_bounds": asdict(bounds),
+            "hit_control_types": roles,
+            "stage": "budget",
+        }
+        self.confirmation_failure = receipt
         self._budget()
         visible = self._visible_bounds(bounds)
+        receipt["visible_bounds"] = asdict(visible) if visible is not None else None
         if visible is None:
             raise CaptureError("Native item witness has no supported visible hit area")
+        receipt["point"] = {"x": round(visible.center.x), "y": round(visible.center.y)}
+        receipt["stage"] = "hit_test"
         with ExitStack() as owners:
             current = self._automation.pointer_result(
                 7,
@@ -202,17 +216,30 @@ class ListItemWitness:
                 (w.POINT, w.POINT(round(visible.center.x), round(visible.center.y))),
             )
             for _ in range(_MAX_ANCESTORS):
+                receipt["stage"] = "ancestor_budget"
                 self._budget()
-                if current.control_type() == _ITEM:
+                receipt["stage"] = "control_type"
+                role = current.control_type()
+                roles.append(role)
+                if role == _ITEM:
+                    receipt["stage"] = "visible_item"
                     current_bounds = self._visible(current)
+                    receipt["current_bounds"] = asdict(current_bounds)
+                    receipt["stage"] = "compare_identity"
                     same = self._automation.same_element(element, current)
+                    receipt["same_identity"] = same
                     if current_bounds != bounds or not same:
                         raise CaptureError("Native item witness identity changed")
+                    self.confirmation_failure = None
                     return
+                receipt["stage"] = "parent"
                 parent = self._walker.parent(current, owners)
                 if parent is None:
+                    receipt["stage"] = "root_without_item"
                     break
                 current = parent
+            else:
+                receipt["stage"] = "ancestor_limit"
         raise CaptureError("Native item witness has no current hit-tested ListItem")
 
     def _seed(self) -> None:

@@ -85,7 +85,8 @@ jobs:
        (github.event_name == 'pull_request' &&
         github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
         (((github.head_ref == 'feature/simple-scrolling' ||
-           github.head_ref == 'diagnostics/scrolling-0140') && github.event.pull_request.draft == true) ||
+           github.head_ref == 'diagnostics/scrolling-0140' ||
+           github.head_ref == 'diagnose/main-native-failures') && github.event.pull_request.draft == true) ||
          github.head_ref == 'release-please--branches--main--components--verdiclip')))
     name: Representative baseline / ${{ matrix.application }}
     runs-on: windows-2025

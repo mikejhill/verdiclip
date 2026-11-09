@@ -3923,3 +3923,26 @@ def test_manual_dispatch_rejects_nonmain_before_any_source_checkout() -> None:
     assert "ref: ${{ github.event.pull_request.head.sha || github.sha }}" in remainder
     assert remainder.index("Require exact setup source") < remainder.index("setup-uv@")
     assert "$actual -ne $env:QUALIFICATION_HEAD" in remainder
+
+
+def test_witness_diagnostic_branch_is_only_admitted_to_existing_baseline_job() -> None:
+    """Same-repo draft evidence runs do not widen permissions or manual dispatch."""
+    workflow = Path(".github/workflows/simple-scroll-native.yml").read_text()
+    branch = "github.head_ref == 'diagnose/main-native-failures'"
+    assert workflow.count(branch) == 1
+    baseline = workflow.split("  diagnostic:\n", 1)[1].split("  display-setup:\n", 1)[0]
+    condition = baseline.split("    name:", 1)[0]
+    assert branch in condition
+    assert "github.repository == 'mikejhill/verdiclip'" in condition
+    assert "github.event_name == 'pull_request'" in condition
+    assert (
+        "github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip'"
+        in condition
+    )
+    assert "github.event.pull_request.draft == true" in condition
+    assert "workflow_dispatch" not in condition
+    assert "permissions:\n  contents: read\n" in workflow
+    assert "ref: ${{ github.event.pull_request.head.sha || github.sha }}" in baseline
+    assert "persist-credentials: false" in baseline
+    assert "$actual -ne $env:QUALIFICATION_HEAD" in baseline
+    assert "continue-on-error" not in baseline

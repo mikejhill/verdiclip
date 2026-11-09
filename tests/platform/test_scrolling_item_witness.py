@@ -552,3 +552,63 @@ def test_overflow_observation_emits_raw_and_visible_but_preserves_original_h(
             "width": 592,
             "height": 48,
         }
+
+
+@pytest.mark.parametrize("cycle", [False, True])
+def test_failed_hit_receipt_uses_only_existing_bounded_role_reads(
+    *, cycle: bool
+) -> None:
+    """No names, identities, provider bounds or extra reads enter the receipt."""
+    reader = _reader()
+    bounds = Rect(15, 100, 50, 20)
+    node = _item(bounds)
+    node.control_type.return_value = 50020
+    _mock(reader._automation.pointer_result).return_value = node
+    _mock(reader._walker.parent).return_value = node if cycle else None
+    with pytest.raises(CaptureError, match="no current hit-tested ListItem"):
+        reader._confirm(node, bounds)
+    count = 8 if cycle else 1
+    assert reader.confirmation_failure == {
+        "frame_index": 0,
+        "selected_bounds": {"x": 15, "y": 100, "width": 50, "height": 20},
+        "visible_bounds": {"x": 15, "y": 100, "width": 50, "height": 20},
+        "point": {"x": 40, "y": 110},
+        "hit_control_types": [50020] * count,
+        "stage": "ancestor_limit" if cycle else "root_without_item",
+    }
+    node.control_type.assert_called()
+    assert node.control_type.call_count == count
+    assert _mock(reader._walker.parent).call_count == count
+    _mock(reader._automation.pointer_result).assert_called_once()
+    _mock(reader._automation.same_element).assert_not_called()
+    node.bounds.assert_not_called()
+    node.offscreen.assert_not_called()
+
+
+def test_success_clears_previous_hit_failure_receipt() -> None:
+    """A subsequent successful check cannot publish an obsolete failure."""
+    reader = _reader()
+    bounds = Rect(15, 100, 50, 20)
+    item = _item(bounds)
+    reader.confirmation_failure = {"stage": "old"}
+    _mock(reader._automation.pointer_result).return_value = item
+    reader._confirm(item, bounds)
+    assert reader.confirmation_failure is None
+
+
+def test_hit_provider_exception_keeps_identity_and_partial_receipt() -> None:
+    """Failure recording never substitutes an exception or inspects its text."""
+    reader = _reader()
+    item = _item(Rect(15, 100, 50, 20))
+    error = OSError("private provider detail")
+    _mock(reader._automation.pointer_result).return_value = item
+    item.control_type.side_effect = error
+    with pytest.raises(OSError, match="private provider detail") as caught:
+        reader._confirm(item, Rect(15, 100, 50, 20))
+    assert caught.value is error
+    assert reader.confirmation_failure is not None
+    assert reader.confirmation_failure["stage"] == "control_type"
+    assert reader.confirmation_failure["hit_control_types"] == []
+    assert "private" not in str(reader.confirmation_failure)
+    item.control_type.assert_called_once()
+    _mock(reader._walker.parent).assert_not_called()

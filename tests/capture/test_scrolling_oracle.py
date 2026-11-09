@@ -42,7 +42,7 @@ def test_trace_native_scroll_info_is_explorer_only(
     geometry: dict[str, object] = {"uia": {"nodes": []}}
     metadata = [{"native_handle": 17, "bar": 1, "success": True, "pos": 0}]
     witness_record = {"from_frame": None, "items": []}
-    evidence = Mock(target=target, geometry=geometry)
+    evidence = Mock(target=target, confirmation_failure=None, geometry=geometry)
     evidence.observe.return_value = witness_record
     read = Mock(return_value=metadata)
     monkeypatch.setattr(native.ScrollTransaction, "_frame", lambda *_: frame)
@@ -682,7 +682,11 @@ def test_restoration_record_keeps_independent_native_metadata_explorer_only(
         "initial_position": initial,
         "initial_native": [{"pos": 7106}],
     }
-    evidence = Mock(target=target, geometry={}) if kind == "explorer" else None
+    evidence = (
+        Mock(target=target, confirmation_failure=None, geometry={})
+        if kind == "explorer"
+        else None
+    )
     read = Mock(return_value=[{"pos": 7106, "page": 1817}])
     monkeypatch.setattr(native, "_restoration_native", read)
     result = ScrollResult(QImage(), "", "restored", 17)
@@ -708,7 +712,7 @@ def test_restoration_record_rejects_races_after_native_observation(
     position = ScrollPosition(-1.0, 50.0, 12.0)
     target.position.return_value = position
     selected: dict[str, object] = {"initial_position": {}, "initial_native": []}
-    evidence = Mock(target=target, geometry={})
+    evidence = Mock(target=target, confirmation_failure=None, geometry={})
     if failure == "target":
         evidence.target = Mock()
     elif failure == "position":
@@ -1493,7 +1497,7 @@ def test_changed_or_terminal_frame_records_guarded_repeated_native_evidence(
     target = Mock()
     position = ScrollPosition(0.0, vertical, 51.0)
     target.position.return_value = position
-    evidence = Mock(target=target, geometry={})
+    evidence = Mock(target=target, confirmation_failure=None, geometry={})
     raw = [{"native_handle": 19, "bar": 2, "pos": 500}]
     terminal = [{**raw[0], "parent": 8, "root": 9, "pid": 123}]
     read = Mock(return_value=terminal)
@@ -1535,7 +1539,10 @@ def test_trace_repeats_only_changed_pages_and_endpoint_in_existing_order(
 ) -> None:
     """One extra observation per change preserves frame/write order and outcome."""
     target = Mock(_window=17, _input_tick=12, area=Rect(0, 0, 24, 60))
-    operation, evidence = Mock(_target=target), Mock(target=target, geometry={})
+    operation, evidence = (
+        Mock(_target=target),
+        Mock(target=target, confirmation_failure=None, geometry={}),
+    )
     frame = QImage(24, 60, QImage.Format.Format_RGB32)
     frame.fill(QColor("white"))
     calls: list[str] = []
@@ -2503,3 +2510,52 @@ def test_helper_native_identity_remains_strict(change: str) -> None:
     else:
         with pytest.raises(CaptureError, match="native identity"):
             native._failure_native_identity(rows, original)
+
+
+@pytest.mark.parametrize("storage_failure", [False, True])
+@pytest.mark.parametrize("receipt", [None, {"stage": "root_without_item"}])
+def test_hit_failure_receipt_saved_after_helper_without_changing_exception(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    receipt: dict[str, object] | None,
+    *,
+    storage_failure: bool,
+) -> None:
+    """A bounded in-memory receipt is optional storage, never a new verdict."""
+    target = Mock(_window=17, _input_tick=12, area=Rect(0, 0, 24, 60))
+    evidence = Mock(confirmation_failure=receipt)
+    monkeypatch.setattr(native, "_target_evidence", Mock(return_value=evidence))
+    opening = Mock()
+    monkeypatch.setattr(native.UiaScrollTarget, "_open", opening)
+    original = CaptureError("Original hit-test failure")
+    helper_finished = False
+    write = Path.write_text
+
+    def write_receipt(path: Path, data: str, *args: object, **kwargs: object) -> int:
+        if path.name == "item-witness-failure.json":
+            assert helper_finished
+            if storage_failure:
+                raise OSError("Storage unavailable")
+        return write(path, data, *args, **kwargs)  # ty: ignore[invalid-argument-type]
+
+    def helper() -> None:
+        nonlocal helper_finished
+        native.UiaScrollTarget._open(target, Point(12, 30))
+        assert not (tmp_path / "item-witness-failure.json").exists()
+        helper_finished = True
+        raise original
+
+    monkeypatch.setattr(Path, "write_text", write_receipt)
+    monkeypatch.setattr(native, "helper_main", helper)
+    monkeypatch.setattr("sys.argv", ["-c", str(tmp_path), "explorer-bottom-click"])
+    with pytest.raises(CaptureError) as caught:
+        native._trace_helper()
+    assert caught.value is original
+    opening.assert_called_once()
+    evidence.assert_not_called()
+    assert evidence.method_calls == []
+    path = tmp_path / "item-witness-failure.json"
+    if receipt is not None and not storage_failure:
+        assert json.loads(path.read_text()) == receipt
+    else:
+        assert not path.exists()
