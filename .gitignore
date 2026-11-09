@@ -51,6 +51,7 @@ htmlcov/
 
 # Logs
 *.log
+/mutation-timing.log.[123]
 
 # Environment
 .env
