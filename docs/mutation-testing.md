@@ -87,6 +87,27 @@ notification. A timeout still fails and retains qualified progress; there is no
 automatic retry loop. Weekly/manual campaigns still start cold, so a complete
 single-run result can establish fresh evidence without relying on old verdicts.
 
+[Run 175](https://github.com/mikejhill/verdiclip/actions/runs/42599317000)
+subsequently exhausted the 240-minute work allowance with 16,255 of 17,934
+candidates checked and 1,679 unchecked. It continued making progress and retired
+cleanly, but this establishes that the larger allowance is not reliably sufficient.
+Do not treat its partial score as a pass or increase the limit again without
+measured evidence of the remaining work.
+
+The locked forkserver's opt-in file logging is enabled to retain actual child
+lifetimes, timestamped candidate starts/completions, requested test counts and
+CPU/wall limits. `mutation-timing.log` and its three numbered rotations are
+uploaded with the existing result artifact. The configured path is outside
+`mutants/`, so restored verdict caches cannot supply old timing logs. The pinned
+logger rotates at 10 MiB with three backups; simultaneous forked writers,
+rotation and cancellation can lose records, so these are bounded diagnostic
+logs, not a complete timing ledger. Child lifetime includes more than the pytest
+session, but does not measure all generation, warmup or campaign overhead.
+Missing records are unknown, never zero-duration or successful candidates.
+Logging does not change test selection, scheduling, deadlines, verdicts, freshness
+qualification or the publisher's acceptance rules. Use these measurements to
+choose a targeted improvement before considering a larger campaign design.
+
 The retained-cache investigation for run 41969126494 found 16 zero-candidate
 metadata files and one genuinely changed metadata digest per attempt. The hash
 checks correctly rejected the changed files. The second cached snapshot contained
