@@ -13,7 +13,7 @@ def test_baseline_deadline_reserves_failure_evidence() -> None:
     """A failed baseline stops mutation and leaves independent diagnostics enabled."""
     root = Path(__file__).resolve().parents[2]
     workflow = (root / ".github/workflows/mutation.yml").read_text(encoding="utf-8")
-    assert "timeout-minutes: 150" in workflow
+    assert "timeout-minutes: 260" in workflow
     baseline = _step(workflow, "Verify portable baseline before mutation")
     assert "timeout-minutes: 10" in baseline
     assert "continue-on-error" not in baseline

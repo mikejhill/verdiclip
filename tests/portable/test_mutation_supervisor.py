@@ -135,8 +135,8 @@ def test_workflow_never_seals_before_verified_retirement() -> None:
     workflow = (
         Path(__file__).resolve().parents[2] / ".github/workflows/mutation.yml"
     ).read_text()
-    assert "timeout-minutes: 150" in workflow
-    assert "$(date +%s) + 8400" in workflow
+    assert "timeout-minutes: 260" in workflow
+    assert "$(date +%s) + 15000" in workflow
     identity_step = workflow.split("      - name: Verify candidate identities", 1)[
         1
     ].split("      - name:", 1)[0]
@@ -146,6 +146,87 @@ def test_workflow_never_seals_before_verified_retirement() -> None:
     ].split("      - name:", 1)[0]
     assert "steps.quiescence.outcome == 'success'" in results_step
     assert "mutation-quiescence.json" in workflow
+
+
+@pytest.mark.parametrize(
+    ("now", "seconds", "expected"),
+    [(1000.0, 14400.0, 14400.0), (1900.0, 14400.0, 14100.0), (1000.0, 5.0, 5.0)],
+)
+def test_work_budget_preserves_cleanup_after_slow_setup(
+    monkeypatch: pytest.MonkeyPatch, now: float, seconds: float, expected: float
+) -> None:
+    """Work is capped independently and shortened when setup consumes its slack."""
+    monkeypatch.setattr(
+        subject,
+        "os",
+        SimpleNamespace(name="posix", environ={"MUTATION_JOB_DEADLINE": "16000"}),
+    )
+    monkeypatch.setattr(subject.time, "time", lambda: now)
+    assert subject.execution_budget(seconds) == expected
+
+
+@pytest.mark.parametrize("now", [16000.0, 16001.0])
+def test_exhausted_job_boundary_refuses_new_work(
+    monkeypatch: pytest.MonkeyPatch, now: float
+) -> None:
+    """A longer operational budget cannot consume the protected cleanup reserve."""
+    monkeypatch.setattr(
+        subject,
+        "os",
+        SimpleNamespace(name="posix", environ={"MUTATION_JOB_DEADLINE": "16000"}),
+    )
+    monkeypatch.setattr(subject.time, "time", lambda: now)
+    with pytest.raises(ValueError, match="No mutation time remains"):
+        subject.execution_budget(14400)
+
+
+@pytest.mark.parametrize("seconds", [0.0, -1.0, float("inf"), float("nan")])
+def test_invalid_work_allowance_refuses_before_starting(
+    monkeypatch: pytest.MonkeyPatch, seconds: float
+) -> None:
+    """An invalid limit never turns the mutation command into unbounded work."""
+    monkeypatch.setattr(subject, "os", SimpleNamespace(name="posix", environ={}))
+    with pytest.raises(ValueError, match="positive execution budget"):
+        subject.execution_budget(seconds)
+
+
+@pytest.mark.parametrize(
+    ("deadline", "message"),
+    [
+        ("inf", "Invalid job cleanup deadline"),
+        ("nan", "Invalid job cleanup deadline"),
+        ("not a deadline", "could not convert string to float"),
+    ],
+)
+def test_invalid_cleanup_boundary_refuses_before_starting(
+    monkeypatch: pytest.MonkeyPatch, deadline: str, message: str
+) -> None:
+    """A malformed hosted deadline cannot bypass the independent job boundary."""
+    monkeypatch.setattr(
+        subject,
+        "os",
+        SimpleNamespace(name="posix", environ={"MUTATION_JOB_DEADLINE": deadline}),
+    )
+    with pytest.raises(ValueError, match=message):
+        subject.execution_budget(14400)
+
+
+def test_cli_uses_bounded_cold_campaign_allowance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The actual workflow invocation receives four hours, not the old cutoff."""
+    seen = []
+
+    def supervise(command: list[str], seconds: float) -> int:
+        seen.append((command, seconds))
+        return 0
+
+    monkeypatch.setattr(sys, "argv", ["supervisor", "run", "--", "mutmut"])
+    monkeypatch.setattr(subject, "supervise", supervise)
+    with pytest.raises(SystemExit) as stopped:
+        subject.main()
+    assert stopped.value.code == 0
+    assert seen == [(["mutmut"], 14400)]
 
 
 @pytest.mark.skipif(os.name != "posix", reason="Owned process cancellation on CI only")
