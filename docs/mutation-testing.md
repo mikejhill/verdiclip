@@ -58,20 +58,34 @@ cold. Every run
 qualifies the locked generator and requires a passing baseline before mutation.
 The baseline has a ten-minute step deadline, against observed healthy runs of
 about one minute. Expiry fails validation; it does not count as a mutation score.
-The separate 150-minute job budget leaves time for always-run diagnostics and
+The separate 260-minute job budget leaves time for always-run diagnostics and
 result upload after that failure. Runner termination or an outage can still
 prevent upload; the independent publisher treats missing evidence as incomplete.
 Postflight rejects candidate or source drift before saving or reporting evidence.
 
 The mutation command runs in its own POSIX process group. Its supervisor stops
-work after at most 130 minutes, or at the job's 140-minute boundary if setup used
-more time, within the unchanged 150-minute job limit. It attempts bounded
+work after at most 240 minutes, or at the job's 250-minute boundary if setup used
+more time, within the 260-minute job limit. It attempts bounded
 INT/TERM/KILL cleanup of that owned group. Identity verification, result collection
 and cache sealing require an atomic `mutation-quiescence.json` receipt proving
 the group retired for this exact commit, run and attempt. A child failure or
 cancellation remains a failure even when cleanup succeeds. External runner
 termination can interrupt cleanup; absent proof blocks cache saving. These are
 cleanup reserves, not a promise the entire candidate set fits one job.
+
+The work allowance is based on [run 174](https://github.com/mikejhill/verdiclip/actions/runs/42568107824/attempts/2):
+the cold attempt used the former 130-minute allowance and left 2,360 candidates
+unchecked; a verified same-commit continuation completed the campaign in about
+89 more minutes. The roughly 219-minute aggregate supports a bounded four-hour
+allowance, with ten minutes of setup slack and ten minutes after the cleanup
+boundary. It does not prove that every cold campaign will finish: runner
+variability, candidate order and repeated preparation affect elapsed time.
+This changes the operational allowance only, not the baseline or per-test
+deadlines, full scope, 72% floor, cache protections or asynchronous policy.
+Longer runs occupy the serialized runner queue longer and can delay failure
+notification. A timeout still fails and retains qualified progress; there is no
+automatic retry loop. Weekly/manual campaigns still start cold, so a complete
+single-run result can establish fresh evidence without relying on old verdicts.
 
 The retained-cache investigation for run 41969126494 found 16 zero-candidate
 metadata files and one genuinely changed metadata digest per attempt. The hash

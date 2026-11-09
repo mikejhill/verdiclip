@@ -40,10 +40,10 @@ jobs:
     needs: admit
     name: Mutation score
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    timeout-minutes: 260
     steps:
       - name: Reserve bounded shutdown and artifact time
-        run: echo "MUTATION_JOB_DEADLINE=$(( $(date +%s) + 8400 ))" >> "$GITHUB_ENV"
+        run: echo "MUTATION_JOB_DEADLINE=$(( $(date +%s) + 15000 ))" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false

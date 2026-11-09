@@ -133,7 +133,7 @@ def main() -> None:
     """Run or verify the narrowly owned mutation process lifecycle."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("run", "verify"))
-    parser.add_argument("--seconds", type=float, default=7800)
+    parser.add_argument("--seconds", type=float, default=14400)
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if args.action == "verify":
