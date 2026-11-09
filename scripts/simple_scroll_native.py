@@ -566,6 +566,13 @@ def _trace_helper() -> None:
         ):
             helper_main()
     finally:
+        # Publish the bounded receipt only after the helper has finished; no
+        # filesystem writes or extra provider reads enter the witness budget.
+        if evidence is not None and evidence.confirmation_failure is not None:
+            with suppress(OSError):
+                (output / "item-witness-failure.json").write_text(
+                    json.dumps(evidence.confirmation_failure), encoding="utf-8"
+                )
         # Missing evidence fails qualification, never replaces the capture error.
         with suppress(OSError):
             (output / "list-calls.json").write_text(
