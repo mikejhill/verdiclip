@@ -91,12 +91,12 @@ from verdiclip.update.service import UpdateLauncher, Updater
 pytestmark = pytest.mark.ux
 
 
-def _measured[**P, R](
-    operation: Callable[P, R], samples: list[float]
-) -> Callable[P, R]:
+def _measured(
+    operation: Callable[..., object], samples: list[float]
+) -> Callable[..., object]:
     """Observe one unchanged constructor call without prewarming or subtraction."""
 
-    def invoke(*args: P.args, **kwargs: P.kwargs) -> R:
+    def invoke(*args: object, **kwargs: object) -> object:
         phase_clock = Stopwatch()
         try:
             return operation(*args, **kwargs)
