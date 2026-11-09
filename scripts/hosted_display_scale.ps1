@@ -245,6 +245,7 @@ try {
             $outcome.settings_pid = $process.Id
             $outcome.settings_start_ticks = $started.Ticks
             $roots = @()
+            $discardRoots = $false
             $observed = @()
             foreach ($window in (Get-NativeWindows ([IntPtr]::Zero) 'after_launch')) {
                 Assert-Budget
@@ -277,13 +278,22 @@ try {
                     $content = [IntPtr]$settingsChildren[0].hwnd
                 }
                 if ([HostedScaleWindows]::GetAncestor($content, 2) -ne $window) {
-                    throw 'Settings child no longer belongs to the new frame'
+                    # Discard this entire provisional observation, not just one
+                    # child. No root is adopted and no control has been invoked.
+                    $discardRoots = $true
+                    $outcome.provisional_rejections++
+                    $outcome.last_provisional_reason = 'Settings child no longer belongs to the new frame'
+                    break
                 }
                 $roots += @{ frame = $window; content = $content; owner = $frameProcess }
             }
             $outcome.observed_roots = $observed
             $outcome.verified_root_candidates = $roots.Count
             if ($roots.Count -gt 1) { throw 'Multiple Settings roots appeared' }
+            if ($discardRoots) {
+                $roots = @()
+                $outcome.verified_root_candidates = 0
+            }
             if ($roots.Count -eq 1) {
                 $candidate = $roots[0]
                 $outcome.last_ownership_observation = $null

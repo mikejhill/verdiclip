@@ -622,3 +622,57 @@ def test_resolution_preferences_match_the_owned_settings_order(
         for width, height in re.findall(r"width = (\d+); height = (\d+)", modes)
     )
     assert actual == expected
+
+
+def test_provisional_root_race_discards_the_whole_observation() -> None:
+    """Source contract only: a stale child cannot leave another root eligible."""
+    script = Path(scale.__file__).with_suffix(".ps1").read_text()
+    loop = script.split("while ($null -eq $root) {", 1)[1].split(
+        "$outcome.stage = 'find_resolution'", 1
+    )[0]
+    assert loop.index("Assert-Budget") < loop.index("$discardRoots = $false")
+    race = loop.split(
+        "if ([HostedScaleWindows]::GetAncestor($content, 2) -ne $window) {", 1
+    )[1].split("                }", 1)[0]
+    assert "$discardRoots = $true" in race
+    assert "$outcome.provisional_rejections++" in race
+    assert "Settings child no longer belongs to the new frame" in race
+    assert race.rstrip().endswith("break")
+    assert "continue" not in race
+    assert "$root =" not in race
+    ambiguity = loop.index("if ($roots.Count -gt 1)")
+    discard = loop.index("if ($discardRoots)")
+    adopt = loop.index("if ($roots.Count -eq 1)")
+    assert ambiguity < discard < adopt
+    cleared = loop[discard:adopt]
+    assert "$roots = @()" in cleared
+    assert "$outcome.verified_root_candidates = 0" in cleared
+    assert "$observationKey = $null" in loop[:discard]
+    pending = loop.split("if ($null -eq $root) {", 1)[1]
+    assert "$pendingKey = $observationKey" in pending
+    assert "if ($null -eq $pendingKey) { $outcome.stable_observations = 0 }" in pending
+    assert "Start-Sleep -Milliseconds 100" in pending
+
+
+def test_provisional_root_race_keeps_strict_adoption_and_mutation_guards() -> None:
+    """Source contract only: discarding an unadopted read grants no authority."""
+    script = Path(scale.__file__).with_suffix(".ps1").read_text()
+    for reason in (
+        "Multiple Settings processes appeared",
+        "The newly launched Settings process was replaced",
+        "Unexpected Settings executable",
+        "New frame contains an unrelated process; ownership is ambiguous",
+        "New frame has ambiguous Settings children",
+        "Multiple Settings roots appeared",
+    ):
+        assert f"throw '{reason}'" in script
+    adopted = script.split("if ($observationKey -eq $pendingKey) {", 1)[1]
+    assert adopted.index("Assert-Budget") < adopted.index("$root = $candidateRoot")
+    assert "Assert-Owned $candidateCombos[0] $candidateIdentity" in script
+    assert "$observationKey = ($candidateIdentity | ConvertTo-Json -Compress)" in script
+    assert script.count("Start-Process 'ms-settings:display'") == 1
+    assert script.count("$pattern.Select()") == 1
+    assert (
+        "Assert-Owned $options[0]\n    $outcome.selection_attempted = $true" in script
+    )
+    assert "Assert-Owned $null\n            $pattern = $null" in script
