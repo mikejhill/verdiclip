@@ -59,9 +59,24 @@ is guessed or trimmed. Registration requires one globally unique displacement
 with an exact, textured, full-width band of at least 32 rows. It joins inside
 that band, preserving earlier pixels above and later pixels below the seam.
 This replaces intermediate bottom chrome with later visible content while
-retaining the original top boundary and final bottom boundary. A repeated local band is disambiguated only when exactly one candidate has an
-exact entire overlap. Repeated entire overlaps and unreliable pixels are rejected
-rather than choosing a displacement near the provider percentage.
+retaining the original top boundary and final bottom boundary. A repeated local
+band is disambiguated only when exactly one candidate has an exact entire
+overlap. Repeated entire overlaps and unreliable pixels are rejected rather than
+choosing a displacement near the provider percentage.
+
+A stable fixed top boundary can remain once in the output when original
+same-coordinate prefix pixels and the entire moving overlap independently prove
+one displacement. Ordinary registration is preferred. The fixed-prefix proof
+retains an interval of possible boundaries and intersects it with each later
+pair, rather than guessing whether coincidentally identical rows belong to the
+header or moving content. Changes inconsistent with that retained proof and
+ambiguous complete overlaps stop capture. Pixel-identical alternative
+explanations cannot establish the semantic boundary. The full image width is
+retained. Any small bottom perimeter exemption requires independent bounded
+solid-edge and stationary corner evidence; it is never selected to make a
+preferred displacement match. This captures the visible content sequence,
+including its original top boundary; it cannot reconstruct content permanently
+hidden behind an opaque overlay.
 
 Limits: one immutable 35-second transaction deadline, 80 frames and 40 million
 output pixels. New traversal phases and forward/top-seek setters stop at

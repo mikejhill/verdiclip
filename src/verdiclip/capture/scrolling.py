@@ -208,6 +208,8 @@ class VerticalStitch:
         self._previous = first.copy()
         self._height = first.height()
         self._tail_start = 0
+        self._fixed_prefix: tuple[int, int] | None = None
+        self._initial = first.copy()
 
     def _limit(self, original: int) -> int:
         """Ceil the original pixel bound proportionately, never the scale itself."""
@@ -277,6 +279,124 @@ class VerticalStitch:
                 raise CaptureError("The panel's scrolling pixels are ambiguous")
             return complete[0]
         return matches[0] if matches else None
+
+    def _bottom_outline(
+        self, old: list[bytes], new: list[bytes], prefix: int
+    ) -> tuple[int, int, int]:
+        """Prove a bounded flat bottom and stable corners without shift evidence.
+
+        The bottom color must connect to both outermost body columns. Only
+        adjacent, same-coordinate identical corners may be masked. All other
+        moving pixels are compared, and no output pixels are cropped.
+        """
+        width = len(old[0]) // 4
+        corners = self._limit(3)
+        if width <= 2 * corners:
+            return 0, 0, 0
+        color = old[-1][:4]
+        flat = color * width
+        band = 0
+        for before, after in zip(reversed(old), reversed(new), strict=True):
+            if before != flat or after != flat:
+                break
+            band += 1
+        if not 0 < band <= self._limit(3):
+            return 0, 0, 0
+        if any(
+            row[:4] != color or row[-4:] != color
+            for row in (*old[prefix:], *new[prefix:])
+        ):
+            return 0, 0, 0
+        corner_rows = self._limit(2)
+        end = len(old) - band
+        if end - corner_rows <= prefix:
+            return 0, 0, 0
+        edge = corners * 4
+        if any(
+            before[:edge] != after[:edge] or before[-edge:] != after[-edge:]
+            for before, after in zip(
+                old[end - corner_rows : end], new[end - corner_rows : end], strict=True
+            )
+        ):
+            return 0, 0, 0
+        return band, corner_rows, edge
+
+    def _stationary_prefix(self, old: list[bytes], new: list[bytes]) -> int:
+        """Cap possible original header lengths using independent stationary rows."""
+        original = self._rows(self._initial)
+        upper = len(old) if self._fixed_prefix is None else self._fixed_prefix[1]
+        return next(
+            (y for y in range(upper) if old[y] != new[y] or old[y] != original[y]),
+            upper,
+        )
+
+    def _fixed_alignment(
+        self, old: list[bytes], new: list[bytes]
+    ) -> tuple[int, int, int, tuple[int, int]] | None:
+        """Intersect possible header lengths, proving one complete moving overlap.
+
+        Each interval member explains every observed stationary and shifted row.
+        Boundary coincidences narrow this interval later; they never freeze a
+        guessed boundary. This cannot recover permanently occluded content or
+        distinguish mutations that exactly mimic valid movement inside that
+        still-ambiguous interval. Sidebar columns are never cropped.
+        """
+        if self._nonrail_width is not None:
+            return None
+        upper = self._stationary_prefix(old, new)
+        lower = 0 if self._fixed_prefix is None else self._fixed_prefix[0]
+        if upper < lower:
+            raise CaptureError("The fixed header changed during scrolling capture")
+        minimum_prefix = 0 if self._fixed_prefix is not None else 2
+        if not minimum_prefix <= upper < len(old) - MIN_OVERLAP:
+            if self._fixed_prefix is not None:
+                raise CaptureError("The fixed header has no moving overlap")
+            return None
+        matches = self._fixed_candidates(old, new, upper)
+        if len(matches) > 1:
+            raise CaptureError("The panel's scrolling pixels are ambiguous")
+        if matches:
+            advance, first, last = matches[0]
+            required = self._required_prefix(old, new, advance, upper)
+            return advance, first, last, (max(lower, required), upper)
+        if self._fixed_prefix is not None:
+            raise CaptureError(
+                "The fixed header's complete moving overlap does not match"
+            )
+        return None
+
+    @staticmethod
+    def _required_prefix(
+        old: list[bytes], new: list[bytes], advance: int, upper: int
+    ) -> int:
+        """Find a lower bound only after globally unique displacement proof."""
+        while upper and old[upper - 1 + advance] == new[upper - 1]:
+            upper -= 1
+        return upper
+
+    def _fixed_candidates(
+        self, old: list[bytes], new: list[bytes], prefix: int
+    ) -> list[tuple[int, int, int]]:
+        """Enumerate every complete overlap, never ranking by match length."""
+        band, corner_rows, edge = self._bottom_outline(old, new, prefix)
+        end = len(old) - band
+        matches = []
+        for advance in range(1, end - prefix - MIN_OVERLAP + 1):
+            stop = end - advance
+            exact_stop = stop - corner_rows
+            if exact_stop - prefix < MIN_OVERLAP:
+                continue
+            if old[prefix + advance : exact_stop + advance] != new[prefix:exact_stop]:
+                continue
+            if len(set(new[prefix:exact_stop])) < _MIN_DISTINCT_ROWS:
+                continue
+            if any(
+                old[y + advance][edge:-edge] != new[y][edge:-edge]
+                for y in range(exact_stop, stop)
+            ):
+                continue
+            matches.append((advance, prefix, exact_stop))
+        return matches
 
     def _edge_onset(
         self,
@@ -458,6 +578,27 @@ class VerticalStitch:
             )
             raise CaptureError("The top of the scroll panel is fixed or changing")
 
+    def _join_alignment(
+        self, old: list[bytes], new: list[bytes]
+    ) -> tuple[int, int, int, bool, tuple[int, int] | None]:
+        """Prefer the ordinary proof; incidental top equality is not a header."""
+        if self._fixed_prefix is None:
+            try:
+                advance, first, last, full_width = self._registration(old, new)
+                self._check_top(old, new, advance, full_width=full_width)
+            except CaptureError:
+                fixed = self._fixed_alignment(old, new)
+                if fixed is None:
+                    raise
+            else:
+                return advance, first, last, full_width, None
+        else:
+            fixed = self._fixed_alignment(old, new)
+        if fixed is None:
+            raise CaptureError("The fixed header has no moving overlap")
+        advance, first, last, prefix = fixed
+        return advance, first, last, True, prefix
+
     def append(
         self,
         image: QImage,
@@ -475,7 +616,7 @@ class VerticalStitch:
             for before, after in zip(old, new, strict=True)
         ):
             raise CaptureError("The List's rendered body did not move")
-        advance, first, last, full_width = self._registration(old, new)
+        advance, first, last, _full_width, fixed = self._join_alignment(old, new)
         logger.info(
             "Scrolling alignment: measured_advance=%s expected_advance=%s "
             "matching_band=(%s,%s)",
@@ -492,9 +633,6 @@ class VerticalStitch:
             advance, expected_advance
         ):
             raise CaptureError("The panel's pixels disagree with its scroll position")
-        # Reject broad fixed headers. This practical check cannot establish
-        # pixels hidden by a tiny overlay at every position.
-        self._check_top(old, new, advance, full_width=full_width)
         if image.width() * (self._height + advance) > MAX_PIXELS:
             raise CaptureError("The scrolling image exceeds the size limit")
         # Keep earlier pixels above a verified seam and later pixels below it.
@@ -512,6 +650,8 @@ class VerticalStitch:
         self._height += advance
         self._tail_start = seam
         self._previous = image.copy()
+        if fixed is not None:
+            self._fixed_prefix = fixed
 
     def finish(self) -> QImage:
         """Return one detached image after the caller has reached the bottom."""

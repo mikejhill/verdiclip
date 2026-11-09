@@ -753,19 +753,21 @@ def test_interior_seams_recover_content_under_bottom_chrome() -> None:
     assert result.copy(0, 367, 80, 8) == bar
 
 
-def test_broad_fixed_header_is_rejected_despite_interior_match(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """An exact interior seam cannot recover first rows hidden at every position."""
+def test_stable_header_preserves_visible_content_once() -> None:
+    """Preserve visible pixels, without claiming recovery behind the initial header."""
     source = document()
     first, second = source.copy(0, 0, 80, 120), source.copy(0, 60, 80, 120)
     for frame in (first, second):
         for y in range(8):
             for x in range(80):
                 frame.setPixelColor(x, y, QColor("white"))
-    with pytest.raises(CaptureError, match="top of the scroll panel"):
-        VerticalStitch(first).append(second, 60.0)
-    assert "changed_pixels=640 compared_pixels=2560" in caplog.text
+    stitch = VerticalStitch(first)
+    stitch.append(second, 60.0)
+    expected = source.copy(0, 0, 80, 180)
+    painter = QPainter(expected)
+    painter.drawImage(0, 0, first.copy(0, 0, 80, 8))
+    painter.end()
+    assert stitch.finish() == expected
 
 
 def stationary_outer_frame(source: QImage, offset: int) -> QImage:
@@ -872,17 +874,22 @@ def test_stationary_outer_retry_preserves_existing_return_order(
 
 
 @pytest.mark.parametrize("fixed_rows", [16, 32, 48])
-def test_stationary_outer_row_does_not_hide_broad_fixed_content(
+def test_stationary_textured_prefix_preserves_visible_content(
     fixed_rows: int,
 ) -> None:
-    """An unchanged textured prefix never becomes an arbitrary content crop."""
+    """A complete moving overlap permits retaining the original prefix once."""
     source = document(360)
     first, second = (stationary_outer_frame(source, offset) for offset in (0, 30))
     painter = QPainter(second)
     painter.drawImage(0, 0, first.copy(0, 0, 80, fixed_rows))
     painter.end()
-    with pytest.raises(CaptureError, match="top of the scroll panel"):
-        VerticalStitch(first).append(second, 30.0)
+    stitch = VerticalStitch(first)
+    stitch.append(second, 30.0)
+    expected = source.copy(0, 0, 80, 150)
+    painter = QPainter(expected)
+    painter.drawImage(0, 0, first)
+    painter.end()
+    assert stitch.finish() == expected
 
 
 def test_stationary_outer_row_preserves_global_ambiguity_rejection(
@@ -1177,7 +1184,8 @@ def test_top_border_without_matching_side_evidence_is_rejected(
     with pytest.raises(CaptureError, match="top of the scroll panel"):
         VerticalStitch(first).append(second, 60.0)
     assert "left_columns=2 right_columns=2" in caplog.text
-    assert "measured_advance=60 expected_advance=60.000" in caplog.text
+    # Rejected provisional registration is no longer logged as accepted alignment.
+    assert "Scrolling top mismatch:" in caplog.text
 
 
 def perimeter_frame(source: QImage, offset: int) -> QImage:
@@ -1502,8 +1510,11 @@ def test_narrow_image_cannot_supply_top_perimeter_evidence() -> None:
         painter = QPainter(frame)
         painter.fillRect(0, 0, 16, 3, QColor("gray"))
         painter.end()
+    stitch = VerticalStitch(first)
     with pytest.raises(CaptureError, match="top of the scroll panel"):
-        VerticalStitch(first).append(second, 60.0)
+        stitch._check_top(
+            stitch._rows(first), stitch._rows(second), 60, full_width=True
+        )
 
 
 def test_changed_edges_do_not_override_uia_displacement() -> None:

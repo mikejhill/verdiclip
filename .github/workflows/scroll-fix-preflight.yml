@@ -61,7 +61,7 @@ jobs:
         timeout-minutes: 2
         run: uv run pytest tests/capture/test_grabber.py::TestMssScreenSource::test_freeze --require-interactive-capture -v
       - name: Retain actual failure or complete independent output proof
-        timeout-minutes: 2
+        timeout-minutes: 4
         run: |
           if ($env:SCROLL_APPLICATION.StartsWith('edge-owned-')) {
             uv run python -m scripts.scrolling_owned_layouts "$env:SCROLL_APPLICATION"

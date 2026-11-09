@@ -8,10 +8,10 @@ from unittest.mock import Mock
 
 import pytest
 from PySide6.QtCore import QPoint, Qt
-from PySide6.QtGui import QCursor, QImage
+from PySide6.QtGui import QColor, QCursor, QImage, QPainter
 from PySide6.QtWidgets import QApplication
 from pytestqt.qtbot import QtBot
-from tests.capture.test_scrolling import NormalizingListTarget, transaction
+from tests.capture.test_scrolling import NormalizingListTarget, Target, transaction
 from tests.ux.test_app_journeys import App, AppFactory
 from tests.ux.test_app_journeys import (
     make_app as make_app,  # noqa: PLC0414 - pytest fixture
@@ -134,6 +134,41 @@ def test_scrolling_uses_configured_save_and_clipboard_without_editor(
     assert QImage(str(saved[0])) == image
     assert QApplication.clipboard().image() == image
     assert not app.controller.editors
+    assert app.controller.capture._last_area is None
+
+
+def test_fixed_header_delivers_full_width_content_once(
+    make_app: AppFactory, qtbot: QtBot, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """UX-CAP-19: a stable visible header needs no configuration or manual crop."""
+    target = Target()
+    original_frame = target.frame
+
+    def frame() -> QImage:
+        image = original_frame()
+        painter = QPainter(image)
+        painter.fillRect(0, 0, image.width(), 16, QColor("lightgray"))
+        painter.end()
+        return image
+
+    monkeypatch.setattr(target, "frame", frame)
+    expected = target.document.copy()
+    painter = QPainter(expected)
+    painter.fillRect(0, 0, expected.width(), 16, QColor("lightgray"))
+    painter.end()
+    initial = target.position()
+    result = transaction(target).run()
+    assert result.image == expected
+    assert target.position() == initial
+    app = make_app()
+    helper = prepare(app)
+    app.press_hotkey("scrolling")
+    select(qtbot, app, helper)
+    finish(qtbot, app, helper, result)
+    assert len(app.controller.editors) == 1
+    assert app.controller.editors[0].session.document.image == expected.convertToFormat(
+        QImage.Format.Format_ARGB32_Premultiplied
+    )
     assert app.controller.capture._last_area is None
 
 

@@ -381,7 +381,7 @@ jobs:
         timeout-minutes: 2
         run: uv run pytest tests/capture/test_grabber.py::TestMssScreenSource::test_freeze --require-interactive-capture -v
       - name: Observe the live site in a fresh installed Edge profile
-        timeout-minutes: 2
+        timeout-minutes: 4
         run: uv run python -m scripts.scrolling_live_sites "$env:SCROLL_APPLICATION"
       - name: Keep signed-in To Do explicitly unqualified
         if: matrix.application == 'edge-todo-access'

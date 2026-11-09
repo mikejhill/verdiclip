@@ -31,6 +31,7 @@ _ROWS = 40
 _GROUP = 4
 _CSS_DPI = 96
 _GEOMETRY_TOLERANCE = 0.01
+_INTERIOR_GUARD = 32
 _CASES = ("edge-owned-search", "edge-owned-settings")
 
 
@@ -75,15 +76,21 @@ def document(kind: str) -> str:
 
 
 def tile_plan(height: int, viewport: int, header: int) -> list[tuple[int, int, int]]:
-    """Return (scroll offset, source row, row count) covering each output row once."""
-    if not 0 < header < viewport < height:
+    """Cover every output row once, sampling away from intermediate bottom edges.
+
+    The fixed physical guard belongs only to this independent oracle. It neither
+    detects chrome nor reads product matcher offsets. Only the final viewport
+    contributes its bottom boundary; subsequent samples stay below the header.
+    """
+    if not 0 < header < viewport - _INTERIOR_GUARD < viewport < height:
         raise ValueError("Invalid authored layout geometry")
-    plan = [(0, 0, viewport)]
-    filled = viewport
+    filled = viewport - _INTERIOR_GUARD
+    plan = [(0, 0, filled)]
     while filled < height:
         offset = min(filled - header, height - viewport)
         source = filled - offset
-        count = min(viewport - source, height - filled)
+        limit = viewport if offset == height - viewport else viewport - _INTERIOR_GUARD
+        count = min(limit - source, height - filled)
         if count <= 0:
             raise ValueError("Reference tiles cannot make progress")
         plan.append((offset, source, count))
@@ -153,7 +160,17 @@ def reference(target: UiaScrollTarget, output: Path) -> QImage:
     finally:
         painter.end()
     (output / "reference-tiles.json").write_text(
-        json.dumps({"dpi": dpi, "total": total, "tiles": receipt}, indent=2),
+        json.dumps(
+            {
+                "dpi": dpi,
+                "total": total,
+                "viewport": viewport,
+                "header": header,
+                "interior_guard": _INTERIOR_GUARD,
+                "tiles": receipt,
+            },
+            indent=2,
+        ),
         encoding="utf-8",
     )
     native._require(result.save(str(output / "expected.png")), "Save failed")

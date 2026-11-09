@@ -21,6 +21,7 @@ from typing import cast
 from unittest.mock import patch
 
 from scripts import simple_scroll_native as native
+from scripts.scrolling_live_evidence import collect
 
 from verdiclip.platform.scrolling import UiaScrollTarget
 from verdiclip.platform.windows import WindowInfo, WindowLocator
@@ -293,6 +294,15 @@ class LiveSite:
             native._require(
                 target.frame().save(str(output / "after.png")), "Save failed"
             )
+        # Collect independent evidence even when the production matcher refused
+        # these pixels. Never change that failure into diagnostic success.
+        if after == start:
+            with UiaScrollTarget(point, window=window.handle) as target:
+                report["native_diagnostic"] = collect(
+                    target, window, output / "native-diagnostic", _observation_script
+                )
+            with UiaScrollTarget(point, window=window.handle) as target:
+                native._require(target.position() == start, "Diagnostic changed start")
         if (output / "frame-0.png").is_file():
             native._verify_selected_target(output, area, start)
         native._require(after == start, "Live-site starting position was not restored")
