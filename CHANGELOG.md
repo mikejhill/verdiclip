@@ -1,12 +1,5 @@
 # Changelog
 
-## [0.14.1](https://github.com/mikejhill/verdiclip/compare/v0.14.0...v0.14.1) (2026-11-09)
-
-
-### Bug Fixes
-
-* restore reliable bounded scrolling capture in Explorer and Edge ([357dec2](https://github.com/mikejhill/verdiclip/commit/357dec2c9de4f647c187d06fe725e10b56ca94bd))
-
 ## [0.14.0](https://github.com/mikejhill/verdiclip/compare/v0.13.3...v0.14.0) (2026-11-08)
 
 

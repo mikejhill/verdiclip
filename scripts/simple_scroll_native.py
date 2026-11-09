@@ -12,6 +12,7 @@ import ctypes.wintypes as w
 import hashlib
 import json
 import logging
+import math
 import os
 import subprocess
 import sys
@@ -23,7 +24,7 @@ from dataclasses import asdict
 from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import cast
+from typing import cast, override
 from unittest.mock import patch
 
 from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer
@@ -52,7 +53,7 @@ from verdiclip.capture.scrolling import (
 )
 from verdiclip.exceptions import CaptureError
 from verdiclip.geometry import Point, Rect
-from verdiclip.platform.scrolling import UiaScrollTarget, _ListSteps
+from verdiclip.platform.scrolling import UiaScrollTarget, _Interface, _ListSteps
 from verdiclip.platform.windows import WindowInfo, WindowLocator
 
 _ROWS = 120
@@ -77,6 +78,11 @@ _START_PERCENT = 37.0
 _DIAGNOSTIC_FRAMES = 2
 _WINDOW_WIDTH = 1000
 _WINDOW_HEIGHT = 760
+_FIXTURE_TITLES = (
+    "VerdiClip scrolling check - Profile 1 - Microsoft\u200b Edge",
+    "VerdiClip scrolling check.txt - Notepad",
+    "VerdiClip scrolling check - File Explorer",
+)
 _GREEN = 80
 _BLUE = 160
 # Shared scheduling/acceptance deadline, not a preemptive filesystem timeout.
@@ -186,18 +192,20 @@ def _record_version(executable: Path, report: dict[str, object]) -> None:
         report["version_error"] = f"{type(error).__name__}: {error}"
 
 
-def _window() -> WindowInfo:
+def _window(*, deadline: float | None = None) -> WindowInfo:
     locator = WindowLocator()
-    deadline = time.monotonic() + 20
+    if deadline is None:
+        deadline = time.monotonic() + 20
     while time.monotonic() < deadline:
-        for window in locator.visible_windows():
-            if "VerdiClip scrolling check" in window.title:
-                return window
+        matches = [w for w in locator.visible_windows() if w.title in _FIXTURE_TITLES]
+        _require(len(matches) <= 1, "Multiple exact test document windows appeared")
+        if matches and time.monotonic() < deadline:
+            return matches[0]
         time.sleep(0.1)
     raise RuntimeError("The installed application did not show the test document")
 
 
-def _prepare(window: WindowInfo) -> WindowInfo:
+def _prepare(window: WindowInfo, *, deadline: float | None = None) -> WindowInfo:
     user = c.WinDLL("user32", use_last_error=True)
     user.MoveWindow.argtypes = (w.HWND, c.c_int, c.c_int, c.c_int, c.c_int, w.BOOL)
     user.MoveWindow.restype = w.BOOL
@@ -220,7 +228,9 @@ def _prepare(window: WindowInfo) -> WindowInfo:
     if not user.SetForegroundWindow(window.handle):
         raise RuntimeError("The owned test application could not become foreground")
     time.sleep(1)
-    return _window()
+    prepared = _window() if deadline is None else _window(deadline=deadline)
+    _require(prepared.handle == window.handle, "The prepared fixture window changed")
+    return prepared
 
 
 def _target_evidence(
@@ -1153,10 +1163,41 @@ def _require(condition: object, message: str) -> None:
 
 
 def _position_start(
-    target: UiaScrollTarget, report: dict[str, object], *, nested: bool
+    target: UiaScrollTarget,
+    report: dict[str, object],
+    *,
+    nested: bool,
+    deadline: float | None = None,
 ) -> ScrollPosition:
-    """Wait for the setup write before defining the helper's starting state."""
+    """Admit one setup write, then settle the helper's initial position.
+
+    Edge row fixtures first require scrollability within their original startup
+    budget. This is not proof that the complete document has finished loading.
+    """
+    if deadline is not None:
+        previous = None
+        while True:
+            _require(time.monotonic() < deadline, "Test document startup timed out")
+            target.check()
+            current = target.position()
+            target.check()
+            remaining = deadline - time.monotonic()
+            _require(remaining > 0, "Test document startup timed out")
+            _require(
+                all(math.isfinite(value) for value in asdict(current).values())
+                and (current.horizontal == -1 or 0 <= current.horizontal <= END_PERCENT)
+                and 0 <= current.vertical <= END_PERCENT
+                and 0 < current.view_size <= END_PERCENT,
+                "Test document exposed invalid readiness state",
+            )
+            report["setup_readiness_position"] = asdict(current)
+            if current == previous and current.view_size < END_PERCENT:
+                break
+            previous = current
+            time.sleep(min(0.1, remaining))
     target.check()
+    if deadline is not None:
+        _require(time.monotonic() < deadline, "Test document startup timed out")
     # One test-only public UIA write avoids racing two asynchronous requests.
     target._scroll.call(
         4, (c.c_double, c.c_double), 35.0 if nested else -1.0, _START_PERCENT
@@ -1201,8 +1242,52 @@ def _desktop_evidence(output: Path, report: dict[str, object]) -> None:
         screens.close()
 
 
-def _case(kind: str, output: Path, report: dict[str, object]) -> None:
-    window = _prepare(_window())
+class _SetupTarget(UiaScrollTarget):
+    """Wait for read-only fixture discovery with one retained eligibility snapshot.
+
+    This is setup only. The ordinary capture helper keeps its original discovery
+    observations and deadline. No failed capture or provider write is retried.
+    """
+
+    def __init__(self, point: Point, *, window: int, deadline: float) -> None:
+        self._startup_deadline = deadline
+        super().__init__(point, window=window)
+
+    @override
+    def _discover(
+        self, point: Point, automation: _Interface, walker: _Interface
+    ) -> tuple[_Interface, _Interface]:
+        while True:
+            self._check_window()
+            _require(
+                time.monotonic() < self._startup_deadline,
+                "Test document startup timed out",
+            )
+            try:
+                candidate = super()._discover(point, automation, walker)
+            except CaptureError as error:
+                if (
+                    str(error)
+                    != "No stable supported vertical scroll panel at this point"
+                ):
+                    raise
+                # The original input/process/window snapshot is never rebased.
+                # The inherited observations already contain their bounded waits.
+                continue
+            self._check_window()
+            _require(
+                time.monotonic() < self._startup_deadline,
+                "Test document startup timed out",
+            )
+            return candidate
+
+
+def _case(  # noqa: PLR0915 - keep the existing case flow and one startup budget
+    kind: str, output: Path, report: dict[str, object]
+) -> None:
+    # Reuse the existing window-start budget, never a new post-load allowance.
+    deadline = time.monotonic() + 20
+    window = _prepare(_window(deadline=deadline), deadline=deadline)
     report["window"] = asdict(window)
     _desktop_evidence(output, report)
     point = (
@@ -1211,12 +1296,14 @@ def _case(kind: str, output: Path, report: dict[str, object]) -> None:
         else window.bounds.center
     )
     report["selected_point"] = asdict(point)
-    with UiaScrollTarget(point) as target:
+    with _SetupTarget(point, window=window.handle, deadline=deadline) as target:
         report["provider_bounds"] = asdict(target._provider_bounds)
         report["viewport"] = asdict(target.area)
         area = target.area
         report["initial"] = asdict(target.position())
-        initial = _position_start(target, report, nested=kind == "edge-nested")
+        initial = _position_start(
+            target, report, nested=kind == "edge-nested", deadline=deadline
+        )
         report["start"] = asdict(initial)
         target.frame().save(str(output / "before.png"))
     outer_before = None
@@ -1466,18 +1553,20 @@ def _stop_owned_process(
     window: int | None = None,
     deadline: float | None = None,
 ) -> None:
-    """Close gracefully, then force only the owned PID within one existing budget."""
+    """Wait for a verified close; force only if no owned close was posted."""
     if process is None or process.poll() is not None:
         return
     if deadline is None:
         deadline = time.monotonic() + _CLEANUP_SECONDS
     if window is not None and _request_owned_close(process, window):
-        try:
-            process.wait(timeout=min(3.0, max(0.0, deadline - time.monotonic())))
-        except subprocess.TimeoutExpired:
-            pass  # One close request, then the existing owned-process fallback.
-        else:
-            return
+        # Keep the shared deadline. Do not race normal browser shutdown with a
+        # force-tree request after three seconds. Timeout remains a failure.
+        process.wait(timeout=_cleanup_remaining(deadline))
+        _cleanup_remaining(deadline)
+        logging.getLogger(__name__).info(
+            "Owned fixture process exited after guarded window close"
+        )
+        return  # The caller still must dispose the owned profile within the budget.
     if process.poll() is not None:
         return
     subprocess.run(  # noqa: S603 - only the process owned by this test
