@@ -2231,10 +2231,35 @@ def _content_table(offset: int, *, rail: bool = False) -> QImage:
     for y in range(image.height()):
         row = (offset + y) // 30
         for x in range(image.width()):
-            image.setPixel(x, y, QColor(row + 30, 80, 160).rgb())
+            color = (
+                QColor("black")
+                if 5 <= x < 25 and 10 <= (offset + y) % 30 < 13
+                else QColor(row + 30, 80, 160)
+            )
+            image.setPixel(x, y, color.rgb())
         if rail:
             image.setPixel(0, y, QColor("#eeeeee").rgb())
     return image
+
+
+def _mutate_witnessed_edge(
+    before: QImage, after: QImage, frames: list[QImage], mutation: str
+) -> None:
+    """Probe paint-envelope ambiguity and destructive restored-content changes."""
+    if mutation == "clipped_paint":
+        before.setPixelColor(0, 45, QColor(20, 50, 120))
+        after.setPixelColor(0, 45, QColor(21, 51, 121))
+    elif mutation == "deleted_glyphs":
+        for y in range(after.height()):
+            for x in range(after.width()):
+                if before.pixelColor(x, y) == QColor("black"):
+                    after.setPixelColor(x, y, QColor((90 + y) // 30 + 30, 80, 160))
+    elif mutation == "red_viewport":
+        painter = QPainter(after)
+        painter.fillRect(0, 0, 20, after.height(), QColor("red"))
+        painter.end()
+    elif mutation == "direct_edge_paint":
+        before.setPixel(0, 45, frames[0].pixel(0, 135))
 
 
 @pytest.mark.parametrize(
@@ -2251,6 +2276,10 @@ def _content_table(offset: int, *, rail: bool = False) -> QImage:
         "row_phase",
         "row_id",
         "order",
+        "clipped_paint",
+        "deleted_glyphs",
+        "red_viewport",
+        "direct_edge_paint",
     ],
 )
 def test_table_content_restoration_requires_source_paint_and_two_witnesses(
@@ -2270,6 +2299,7 @@ def test_table_content_restoration_requires_source_paint_and_two_witnesses(
     }
     for image, x, color in paints.get(mutation, []):
         image.setPixelColor(x, 45, QColor(color))
+    _mutate_witnessed_edge(before, after, frames, mutation)
     if mutation == "missing_witness":
         frames = frames[:1]
     elif mutation == "disagreeing_witness":
@@ -2282,7 +2312,7 @@ def test_table_content_restoration_requires_source_paint_and_two_witnesses(
             frames[0].setPixelColor(x, 60, QColor(38, 80, 160))
     elif mutation == "order":
         frames.reverse()
-    if mutation == "none":
+    if mutation in ("none", "clipped_paint"):
         proof = native._verify_table_content(before, after, frames, height=30)
         assert proof["document_offset"] == 90
         assert proof["raw_frame_offsets"] == [0, 30, 60]
@@ -2319,16 +2349,22 @@ def test_table_offset_uses_all_exact_integer_authored_boundaries() -> None:
         "missing_geometry",
     ],
 )
+@pytest.mark.parametrize("mode", ["edge", "edge-nested"])
 def test_fixture_context_requires_exact_owned_source_state_and_geometry(
     tmp_path: Path,
     mutation: str,
+    mode: str,
 ) -> None:
     """The semantic oracle cannot apply to unknown documents or changed native state."""
     image = _content_table(0)
     area = {"x": 10, "y": 20, "width": 50, "height": 210}
-    position = {"horizontal": -1.0, "vertical": 0.0, "view_size": 10.0}
+    position = {
+        "horizontal": 35.0 if mode == "edge-nested" else -1.0,
+        "vertical": 0.0,
+        "view_size": 10.0,
+    }
     target = {
-        "mode": "edge",
+        "mode": mode,
         "window_dpi": 120,
         "final_window_dpi": 120,
         "area": area,
@@ -2337,12 +2373,12 @@ def test_fixture_context_requires_exact_owned_source_state_and_geometry(
     }
     state = {"initial": position, "final": position.copy()}
     report: dict[str, object] = {
-        "owned_fixture_sha256": native._CONTENT_FIXTURE_SOURCES["edge"]
+        "owned_fixture_sha256": native._CONTENT_FIXTURE_SOURCES[mode]
     }
     if mutation == "source":
         report["owned_fixture_sha256"] = "unknown"
     elif mutation == "mode":
-        target["mode"] = "edge-nested"
+        target["mode"] = "unknown"
     elif mutation in ("dpi", "final_dpi"):
         target["window_dpi" if mutation == "dpi" else "final_window_dpi"] = 192
     elif mutation in ("horizontal", "vertical", "view_size"):
@@ -2356,16 +2392,18 @@ def test_fixture_context_requires_exact_owned_source_state_and_geometry(
     (tmp_path / "target.json").write_text(json.dumps(target))
     (tmp_path / "restoration.json").write_text(json.dumps(state))
     if mutation == "none":
-        native._fixture_context(tmp_path, report, image, image, mode="edge")
+        native._fixture_context(tmp_path, report, image, image, mode=mode)
     else:
         with pytest.raises(RuntimeError, match=r"unproved|fixture source"):
-            native._fixture_context(tmp_path, report, image, image, mode="edge")
+            native._fixture_context(tmp_path, report, image, image, mode=mode)
 
 
-def test_table_source_hash_pins_the_plain_owned_fixture() -> None:
+@pytest.mark.parametrize("nested", [False, True])
+def test_table_source_hash_pins_the_plain_owned_fixture(*, nested: bool) -> None:
     """A source/layout change requires independent review, not automatic admission."""
-    source = native._document(nested=False).encode("utf-8")
-    assert hashlib.sha256(source).hexdigest() == native._CONTENT_FIXTURE_SOURCES["edge"]
+    source = native._document(nested=nested).encode("utf-8")
+    mode = "edge-nested" if nested else "edge"
+    assert hashlib.sha256(source).hexdigest() == native._CONTENT_FIXTURE_SOURCES[mode]
 
 
 def test_content_fallback_cannot_bypass_complete_output_oracle(

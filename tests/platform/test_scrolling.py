@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import ctypes as c
 import ctypes.wintypes as w
+import hashlib
 import json
 import subprocess
 from contextlib import ExitStack
-from dataclasses import replace
+from dataclasses import asdict, replace
 from functools import partial
 from pathlib import Path
 from unittest.mock import MagicMock, Mock
@@ -1417,6 +1418,12 @@ def test_scaled_nested_case_keeps_middle_start_and_exact_restoration_guards(
     if change == "pixels":
         after.setPixelColor(3, 3, QColor("red"))
     area = Rect(0, 0, 80, 360)
+    selected = json.loads((tmp_path / "target.json").read_text())
+    selected.update(area=asdict(area), provider_bounds=asdict(area))
+    (tmp_path / "target.json").write_text(json.dumps(selected))
+    (tmp_path / "restoration.json").write_text(
+        json.dumps({"initial": asdict(start), "final": asdict(final)})
+    )
     opened = []
     for position, frame in (
         (start, before),
@@ -1437,7 +1444,12 @@ def test_scaled_nested_case_keeps_middle_start_and_exact_restoration_guards(
     setup = Mock(return_value=start)
     monkeypatch.setattr(native, "_position_start", setup)
     monkeypatch.setattr(native, "_capture", Mock(return_value=result))
-    report: dict[str, object] = {"application": "edge-nested"}
+    report: dict[str, object] = {
+        "application": "edge-nested",
+        "owned_fixture_sha256": hashlib.sha256(
+            native._document(nested=True).encode("utf-8")
+        ).hexdigest(),
+    }
     if change == "none":
         native._case("edge-nested", tmp_path, report)
         assert report["success"] is True
@@ -1450,7 +1462,7 @@ def test_scaled_nested_case_keeps_middle_start_and_exact_restoration_guards(
                 "vertical": "position was not restored",
                 "view-size": "position was not restored",
                 "outer": "moved the outer page",
-                "pixels": "Restored pixels differ",
+                "pixels": "directly witnessed document pixel changed",
             }[change],
         ):
             native._case("edge-nested", tmp_path, report)

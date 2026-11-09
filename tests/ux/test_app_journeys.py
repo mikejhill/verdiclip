@@ -27,6 +27,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
+    QFontComboBox,
     QMenu,
     QMessageBox,
     QSystemTrayIcon,
@@ -54,6 +55,7 @@ from verdiclip.capture.overlay import SelectionOverlay
 from verdiclip.capture.service import WindowSource
 from verdiclip.document.commands import SetCrop
 from verdiclip.document.style import Color
+from verdiclip.editor import style_bar
 from verdiclip.editor.close_prompt import CloseChoice, ClosePrompt
 from verdiclip.editor.session import ToolId
 from verdiclip.editor.style_bar import ColorButton
@@ -298,12 +300,24 @@ class TestAfterCapture:
     """What happens when a capture finishes."""
 
     def test_hotkey_opens_focused_editor_with_select_tool(
-        self, make_app: AppFactory, qtbot: QtBot
+        self, make_app: AppFactory, qtbot: QtBot, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """By default a capture opens an editor quickly, Select tool active.
 
         UX-CAP-11.
         """
+        original_font = style_bar.QFontComboBox
+        font_milliseconds: list[float] = []
+
+        def measured_font() -> QFontComboBox:
+            font_clock = Stopwatch()
+            try:
+                return original_font()
+            finally:
+                font_milliseconds.append(font_clock.elapsed_ms)
+
+        # Observe the existing cold constructor; never prewarm or subtract it.
+        monkeypatch.setattr(style_bar, "QFontComboBox", measured_font)
         app = make_app()
         clock = Stopwatch()
 
@@ -312,7 +326,11 @@ class TestAfterCapture:
         qtbot.waitUntil(lambda: len(app.controller.editors) == 1)
         editor: EditorWindow = app.controller.editors[0]
         qtbot.waitExposed(editor)
-        assert clock.elapsed_ms < 300
+        elapsed = clock.elapsed_ms
+        assert elapsed < 300, (
+            f"Capture-to-editor {elapsed:.3f} ms; "
+            f"QFontComboBox constructor milliseconds: {font_milliseconds!r}"
+        )
         assert editor.action("tool_select").isChecked()
 
     def test_initial_editor_show_failure_retains_capture_and_recovery(

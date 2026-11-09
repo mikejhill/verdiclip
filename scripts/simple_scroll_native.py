@@ -62,9 +62,10 @@ _EDGE_ROW_DPIS = (96, 120)
 _EDGE_ROW_MODES = ("edge", "edge-nested")
 _CONTENT_FIXTURE_DPI = 120
 _OPAQUE_ALPHA = 0xFF
-_CONTENT_FIXTURE_MODES = ("edge", "edge-prose-click", "edge-prose-enter")
+_CONTENT_FIXTURE_MODES = (*_EDGE_ROW_MODES, "edge-prose-click", "edge-prose-enter")
 _CONTENT_FIXTURE_SOURCES = {
     "edge": "3418cba923f78b445a150713236f915e8a0ed196fddfa6c75736428d7b5b24f5",
+    "edge-nested": "c4bd906664c1c46c6796be2f747631dc8b0a7c1d9399581ebf6a2a7a0b660ccf",
     "edge-prose-click": (
         "a2d42ad75d0ed8cd6fd144d15c7cdb6debe8b0510951218d0b984d8691b71fd4"
     ),
@@ -926,7 +927,11 @@ def _fixture_context(
         and target.get("window_dpi") == _CONTENT_FIXTURE_DPI
         and target.get("final_window_dpi", _CONTENT_FIXTURE_DPI) == _CONTENT_FIXTURE_DPI
         and target["initial_position"] == state["initial"] == state["final"]
-        and state["initial"]["horizontal"] == -1.0
+        and (
+            0.0 < state["initial"]["horizontal"] < END_PERCENT
+            if mode == "edge-nested"
+            else state["initial"]["horizontal"] == -1.0
+        )
         and (before.width(), before.height()) == (area.width, area.height)
         and target.get("provider_bounds") == target["area"],
         "Controlled fixture source, DPI, state or unclipped geometry is unproved",
@@ -979,17 +984,11 @@ def _verify_table_content(
     _require(
         _fixture_row_offset(after, height) == offset, "Document row position changed"
     )
-    count = _fixture_footprint(
-        before,
-        after,
-        lambda i, pixel: (
-            not _fixture_row_paint(pixel, (offset + i // before.width()) // height)
-        ),
-    )
     origins = [_fixture_row_offset(frame, height) for frame in frames]
     boundaries = [_boundary_rows(_row_labels(frame)) for frame in frames]
     _require(origins == sorted(set(origins)), "Raw frame document order changed")
     witnesses = []
+    witnessed_nonpaint: set[int] = set()
     for i, (old, new) in enumerate(
         zip(_fixture_pixels(before), _fixture_pixels(after), strict=True)
     ):
@@ -1011,7 +1010,23 @@ def _verify_table_content(
             and len({pixel for _, pixel in samples}) == 1,
             "Missing or disagreeing direct document witnesses",
         )
+        _require(
+            old != samples[0][1] and new != samples[0][1],
+            "A directly witnessed document pixel changed",
+        )
+        witnessed_nonpaint.add(i)
         witnesses.append({"x": x, "document_y": document_y, "frames_and_argb": samples})
+    # Only already-obscured edge paint may vary. A matching glyph/background
+    # becoming different (or the reverse) fails above. This does not establish
+    # why the edge raster changed or guarantee its byte-perfect restoration.
+    count = _fixture_footprint(
+        before,
+        after,
+        lambda i, pixel: (
+            i in witnessed_nonpaint
+            or not _fixture_row_paint(pixel, (offset + i // before.width()) // height)
+        ),
+    )
     return {
         "document_offset": offset,
         "raw_frame_offsets": origins,
@@ -1047,7 +1062,8 @@ def _verify_edge_sequence(
         report["document_content_restored"] = True
         return
     _require(
-        report.get("application") == "edge" and result.restoration == "restored",
+        report.get("application") in _EDGE_ROW_MODES
+        and result.restoration == "restored",
         "Restored pixels differ from the original middle-start view",
     )
     target = _fixture_context(
@@ -1055,8 +1071,15 @@ def _verify_edge_sequence(
         report,
         before,
         after,
-        mode="edge",
+        mode=str(report["application"]),
     )
+    if report["application"] == "edge-nested":
+        _require(
+            report.get("start") == report.get("after") == target["initial_position"]
+            and isinstance(report.get("outer_before"), dict)
+            and report["outer_before"] == report.get("outer_after"),
+            "The original inner or outer scroll state changed",
+        )
     _require(
         target.get("final_window_dpi") == _CONTENT_FIXTURE_DPI,
         "Final fixture DPI is unproved",

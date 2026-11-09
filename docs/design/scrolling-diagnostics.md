@@ -22,8 +22,9 @@ helper diagnostics are bounded to 16 KiB.
   failure is a gap, not a product pass. Recorded 125% and 200% fixtures now pass.
 - Edge prose/panel/background and focused-panel controls, with actual DPI and
   independent full-row checks. Fixture-only authored-content restoration is
-  limited to the explicitly source-hashed fixtures. Nested output retains its
-  existing exact criterion; no new pixel mask or exception is authorized.
+  limited to the explicitly source-hashed fixtures. The controlled table and
+  nested panel use the witnessed-paint criterion below only when full-raster
+  restoration differs; complete captured output remains pixel-exact.
 
 Tiny fully traced Explorer is a stress diagnostic. A failed capture remains a
 failure with its original error and artifacts; elapsed observer time is never
@@ -60,6 +61,32 @@ provenance. Positive horizontal offsets, arbitrary providers/layouts and univers
 content-mutation detection are not qualified. Capturing visible width does not
 capture text clipped horizontally or repair repeated scrollbar raster.
 
+## Controlled row fixtures: witnessed paint and raster variation
+
+At verified 120 DPI, the source-hashed table and nested panel retain every exact
+captured output row/glyph, all 120 authored IDs and CSS-derived spans, both ends,
+original boundaries and the complete raw-frame proof. Original H/V/view and
+unclipped geometry must remain exact; nested capture must preserve outer state.
+
+Whole-viewport equality and every pixel difference remain separately recorded.
+For a nonexact viewport, each changed coordinate needs two agreeing, fully
+visible raw-frame observations of the same authored document pixel, located by
+all exact integer row boundaries. Both the original and restored pixel must
+differ from that directly witnessed paint. A matching glyph/background becoming
+different, or the reverse, fails. These already-obscured paint pixels extend only
+the existing unchanged edge-connected nonpaint footprint; the entire complement
+remains exact. There is no fitted crop, coordinate whitelist, pixel-count
+allowance or modification of captured/restored pixels.
+
+This is a controlled static-fixture criterion, not proof of the cause or exact
+appearance of edge repaint and not a guarantee for arbitrary changing pages.
+[Native56](https://github.com/mikejhill/verdiclip/actions/runs/42549662165) retained
+a failed nested125 raster check at `818b3e372252b28f2bd0c56478a622557c31c70a`:
+five pixels differed while all 3,619 captured rows and original inner/outer
+positions were independently verified. All five have agreeing interior paint
+witnesses, but their cause is unknown. The original failure/artifacts remain;
+this criterion needs independent review and fresh native qualification.
+
 ## Current cleanup qualification
 
 [Native55](https://github.com/mikejhill/verdiclip/actions/runs/42546399053)
@@ -92,7 +119,8 @@ interior; it remains a failure. Five 125% no-H cases passed, one failed Settings
 launch, and all six 200% no-H cases failed fixture Show lookup before capture.
 
 The nested Edge125 raster was exact in native52; its five changed corners in
-native51 remain a historical failure, not a reason to relax today's criterion.
+native51 remain a historical failed raster comparison. The prospective
+witnessed-paint criterion does not rewrite that result.
 Original runs and immutable artifacts are retained outside this release tree.
 Closed inverse, geometry, exact-region and phase-profiling commands were removed;
 the raw rail reader, native identity validation and all live output/safety oracles
