@@ -91,6 +91,21 @@ from verdiclip.update.service import UpdateLauncher, Updater
 pytestmark = pytest.mark.ux
 
 
+def _measured[**P, R](
+    operation: Callable[P, R], samples: list[float]
+) -> Callable[P, R]:
+    """Observe one unchanged constructor call without prewarming or subtraction."""
+
+    def invoke(*args: P.args, **kwargs: P.kwargs) -> R:
+        phase_clock = Stopwatch()
+        try:
+            return operation(*args, **kwargs)
+        finally:
+            samples.append(phase_clock.elapsed_ms)
+
+    return invoke
+
+
 @dataclass(slots=True)
 class FakeHotkeys:
     """RegisterHotKey stand-in; ``taken`` keys belong to another program."""
@@ -309,31 +324,19 @@ class TestAfterCapture:
         editor_milliseconds: list[float] = []
         spin_milliseconds: list[float] = []
 
-        def measured[**P, R](
-            operation: Callable[P, R], samples: list[float]
-        ) -> Callable[P, R]:
-            def invoke(*args: P.args, **kwargs: P.kwargs) -> R:
-                phase_clock = Stopwatch()
-                try:
-                    return operation(*args, **kwargs)
-                finally:
-                    samples.append(phase_clock.elapsed_ms)
-
-            return invoke
-
         # Observe the same constructors once; never prewarm or subtract time.
         monkeypatch.setattr(
             style_bar,
             "QFontComboBox",
-            measured(style_bar.QFontComboBox, font_milliseconds),
+            _measured(style_bar.QFontComboBox, font_milliseconds),
         )
         monkeypatch.setattr(
             EditorWindow,
             "__init__",
-            measured(EditorWindow.__init__, editor_milliseconds),
+            _measured(EditorWindow.__init__, editor_milliseconds),
         )
         monkeypatch.setattr(
-            style_bar, "QSpinBox", measured(style_bar.QSpinBox, spin_milliseconds)
+            style_bar, "QSpinBox", _measured(style_bar.QSpinBox, spin_milliseconds)
         )
         app = make_app()
         clock = Stopwatch()
