@@ -1460,7 +1460,7 @@ function SameRect($actual, $expectedRect) {
     $actual.Right -eq ($expectedRect.x + $expectedRect.width) -and
     $actual.Bottom -eq ($expectedRect.y + $expectedRect.height))
 }
-function Guard($control=$null) {
+function Guard($control=$null, $controlType=$null) {
   CheckDpi
   $matches=@($shell.Windows() | Where-Object {
     [long]$_.HWND -eq $handle.ToInt64() -and
@@ -1488,6 +1488,7 @@ function Guard($control=$null) {
   if ($null -ne $control -and
       ($control.Current.ProcessId -ne $pidValue -or
        $control.Current.IsOffscreen -or -not $control.Current.IsEnabled -or
+       ($null -ne $controlType -and $control.Current.ControlType -ne $controlType) -or
        -not (OwnedControl $control))) {
     throw 'Retained menu control changed ownership or availability'
   }
@@ -1503,10 +1504,15 @@ function OwnedControl($element) {
   }
   return $false
 }
-function ExactFailureReceipt($name, $candidateCount, $visibleCount, $reason) {
+function ExactFailureReceipt($name, $candidateCount, $visibleCount, $reason,
+                             $controlType=$null) {
   if ($name -ne 'Show' -or -not $expected.evidence) { return }
   try {
+    $roleFilter=$null
+    if ($null -ne $controlType) { $roleFilter=$controlType.Id }
     @{ name_filter='Show'; pid_filter=$pidValue; lookup_scope='Descendants';
+      control_type_filter=$roleFilter;
+      candidate_scope='name_pid_and_optional_control_type';
       filtered_out=($candidateCount - $visibleCount);
       candidate_count=$candidateCount; enabled_visible_count=$visibleCount;
       filter='not IsOffscreen and IsEnabled'; failure=$reason } |
@@ -1516,21 +1522,26 @@ function ExactFailureReceipt($name, $candidateCount, $visibleCount, $reason) {
     # Optional serialization cannot replace the original Exact failure.
   }
 }
-function Exact($root, $name, $pidValue) {
+function Exact($root, $name, $pidValue, $controlType=$null) {
   $condition = [Windows.Automation.AndCondition]::new(
     [Windows.Automation.PropertyCondition]::new(
       [Windows.Automation.AutomationElement]::NameProperty, $name),
     [Windows.Automation.PropertyCondition]::new(
       [Windows.Automation.AutomationElement]::ProcessIdProperty, [int]$pidValue))
+  if ($null -ne $controlType) {
+    $condition=[Windows.Automation.AndCondition]::new($condition,
+      [Windows.Automation.PropertyCondition]::new(
+        [Windows.Automation.AutomationElement]::ControlTypeProperty, $controlType))
+  }
   $items=$root.FindAll([Windows.Automation.TreeScope]::Descendants, $condition)
   $visible=@($items | Where-Object {
     -not $_.Current.IsOffscreen -and $_.Current.IsEnabled })
   if ($visible.Count -ne 1) {
-    ExactFailureReceipt $name $items.Count $visible.Count 'count'
+    ExactFailureReceipt $name $items.Count $visible.Count 'count' $controlType
     throw "Expected one enabled visible $name control"
   }
   if (-not (OwnedControl $visible[0])) {
-    ExactFailureReceipt $name $items.Count $visible.Count 'ownership'
+    ExactFailureReceipt $name $items.Count $visible.Count 'ownership' $controlType
     throw "The $name control does not belong to the retained fixture"
   }
   return $visible[0]
@@ -1734,10 +1745,10 @@ try {
   Start-Sleep -Milliseconds 300
   ViewReceipt
   Stage 'show_lookup'
-  $show=Exact $desktop 'Show' $pidValue
+  $show=Exact $desktop 'Show' $pidValue ([Windows.Automation.ControlType]::MenuItem)
   $showPattern=$show.GetCurrentPattern($pattern)
   Stage 'show_expand'
-  Guard $show
+  Guard $show ([Windows.Automation.ControlType]::MenuItem)
   $showPattern.Expand()
   Start-Sleep -Milliseconds 300
   Stage 'pane_lookup'

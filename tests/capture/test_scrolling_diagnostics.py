@@ -2947,12 +2947,17 @@ def test_no_hbar_navigation_is_owned_hosted_and_single_attempt(
         assert "if (-not (OwnedControl $visible[0]))" in script
         assert "AreDpiAwarenessContextsEqual($context, [IntPtr](-4))" in script
         assert script.index("CheckDpi\n") < script.index("$expected=")
-        assert "function Guard($control=$null) {\n  CheckDpi" in script
+        assert (
+            "function Guard($control=$null, $controlType=$null) {\n  CheckDpi" in script
+        )
         assert "$control.Current.ProcessId -ne $pidValue" in script
         assert "-not (OwnedControl $control)" in script
         for mutation, control in (
             ("$viewPattern.Expand()", "$view"),
-            ("$showPattern.Expand()", "$show"),
+            (
+                "$showPattern.Expand()",
+                "$show ([Windows.Automation.ControlType]::MenuItem)",
+            ),
             ("$toggle.Toggle()", "$pane"),
             ("$currentPattern.Collapse()", "$currentView"),
         ):
@@ -3017,7 +3022,7 @@ def test_no_hbar_setup_thread_dpi_guards_remain_fail_closed(
     assert script.index("$setupThread=") < script.index(
         "$previousContext=[FixtureNative]::SetThreadDpiAwarenessContext"
     )
-    assert "function Guard($control=$null) {\n  CheckDpi" in script
+    assert "function Guard($control=$null, $controlType=$null) {\n  CheckDpi" in script
     assert script.count("CheckDpi\n") == 2
 
 
@@ -3806,15 +3811,84 @@ def test_show_failure_receipt_reuses_counts_without_lookup_or_property_reads(
     assert exact.count("OwnedControl") == 1
     assert (
         "if ($visible.Count -ne 1) {\n"
-        "    ExactFailureReceipt $name $items.Count $visible.Count 'count'\n"
+        "    ExactFailureReceipt $name $items.Count $visible.Count 'count' "
+        "$controlType\n"
         '    throw "Expected one enabled visible $name control"\n  }'
     ) in exact
     assert (
         "if (-not (OwnedControl $visible[0])) {\n"
-        "    ExactFailureReceipt $name $items.Count $visible.Count 'ownership'\n"
+        "    ExactFailureReceipt $name $items.Count $visible.Count 'ownership' "
+        "$controlType\n"
         '    throw "The $name control does not belong to the retained fixture"\n  }'
     ) in exact
     assert "return $visible[0]" in exact
+
+
+def test_show_lookup_requires_menuitem_without_weakening_uniqueness_or_ownership(
+    owned_navigation_setup: tuple[diagnostics.ExplorerCase, WindowInfo, Mock, Mock],
+) -> None:
+    """Source contract only: actual PowerShell/UIA filtering remains a native gate."""
+    runner, window, command, _verify = owned_navigation_setup
+    runner._hide_navigation_pane(window)
+    script = command.call_args.args[0][-1]
+    exact = script.split("function Exact(", 1)[1].split("function ViewReceipt", 1)[0]
+    role_filter = (
+        "  if ($null -ne $controlType) {\n"
+        "    $condition=[Windows.Automation.AndCondition]::new($condition,\n"
+        "      [Windows.Automation.PropertyCondition]::new(\n"
+        "        [Windows.Automation.AutomationElement]::ControlTypeProperty, "
+        "$controlType))\n  }"
+    )
+    assert role_filter in exact
+    assert exact.index("::NameProperty, $name") < exact.index(role_filter)
+    assert exact.index("::ProcessIdProperty, [int]$pidValue") < exact.index(role_filter)
+    assert exact.index(role_filter) < exact.index("$items=$root.FindAll")
+    assert exact.count("FindAll") == 1
+    assert "FindFirst" not in exact
+    assert (
+        "$visible=@($items | Where-Object {\n"
+        "    -not $_.Current.IsOffscreen -and $_.Current.IsEnabled })"
+    ) in exact
+    # Zero or two MenuItems still reject, including an unowned duplicate.
+    assert (
+        exact.index("if ($visible.Count -ne 1)")
+        < exact.index("if (-not (OwnedControl $visible[0]))")
+        < exact.index("return $visible[0]")
+    )
+    assert (
+        "$show=Exact $desktop 'Show' $pidValue "
+        "([Windows.Automation.ControlType]::MenuItem)"
+    ) in script
+    for original in (
+        "$view=Exact $root 'View' $pidValue\n",
+        "$pane=Exact $desktop 'Navigation pane' $pidValue\n",
+        "$currentView=Exact $root 'View' $pidValue\n",
+    ):
+        assert original in script
+    assert (
+        "  Guard $show ([Windows.Automation.ControlType]::MenuItem)\n"
+        "  $showPattern.Expand()"
+    ) in script
+    guard = script.split("function Guard(", 1)[1].split("function OwnedControl", 1)[0]
+    assert (
+        "($null -ne $controlType -and "
+        "$control.Current.ControlType -ne $controlType) -or"
+    ) in guard
+    for retained in (
+        "$control.Current.ProcessId -ne $pidValue",
+        "$control.Current.IsOffscreen -or -not $control.Current.IsEnabled",
+        "-not (OwnedControl $control)",
+        "throw 'Retained menu control changed ownership or availability'",
+    ):
+        assert retained in guard
+    receipt = script.split("function ExactFailureReceipt", 1)[1].split(
+        "function Exact(", 1
+    )[0]
+    assert "if ($null -ne $controlType) { $roleFilter=$controlType.Id }" in receipt
+    assert "control_type_filter=$roleFilter" in receipt
+    assert "candidate_scope='name_pid_and_optional_control_type'" in receipt
+    assert command.call_count == 1
+    assert command.call_args.kwargs["timeout"] == 10
 
 
 def test_manual_dispatch_rejects_nonmain_before_any_source_checkout() -> None:
