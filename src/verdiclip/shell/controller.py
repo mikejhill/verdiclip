@@ -119,10 +119,12 @@ class AppController(QObject):
         self._icon_factory = IconFactory(QApplication.palette().windowText().color())
         self._icon = self._icon_factory.brand()
         self._tray = TrayIcon(self._icon, self._tray_commands())
+        self._scrolling.state_changed.connect(self._tray.set_scrolling_state)
         self._last_saved_folder: Path | None = None
         self._message_action: Callable[[], None] = self._open_last_folder
         self._manual_check = False
         self._update_status: QMessageBox | None = None
+        self._scroll_status: QMessageBox | None = None
         self._announced: str | None = None
         self._check_timer = QTimer(self)
         self._idle_timer = QTimer(self)
@@ -189,6 +191,10 @@ class AppController(QObject):
             self._update_status.hide()
             self._update_status.deleteLater()
             self._update_status = None
+        if self._scroll_status is not None:
+            self._scroll_status.hide()
+            self._scroll_status.deleteLater()
+            self._scroll_status = None
         self._closing = True
         self._pending_capture = None
         self._capture_handoff.stop()
@@ -230,6 +236,7 @@ class AppController(QObject):
         handler = handlers.get(action)
         if handler is None:
             return
+        self._dismiss_scroll_status()
         self._capture_handoff.stop()
         if self._scrolling.busy:
             self._pending_capture = action, freeze_first
@@ -241,11 +248,14 @@ class AppController(QObject):
 
     def capture_scrolling(self) -> None:
         """Choose one scrolling area; a second request cancels the active one."""
-        self._pending_capture = None
-        self._capture_handoff.stop()
+        if self._closing:
+            return
+        self._dismiss_scroll_status()
         if self._scrolling.busy:
             self._scrolling.cancel()
             return
+        self._pending_capture = None
+        self._capture_handoff.stop()
         self._capture.cancel()
         self._workspace.cancel_drag()
         self._scrolling.capture()
@@ -276,6 +286,27 @@ class AppController(QObject):
     def _on_scroll_failed(self, message: str) -> None:
         if not self._closing and self._pending_capture is None:
             self._notify("Scrolling capture stopped", message, warning=True)
+            if self._scroll_status is None:
+                self._scroll_status = QMessageBox()
+                self._scroll_status.setObjectName("scrolling-capture-status")
+                self._scroll_status.setWindowIcon(self._icon)
+                self._scroll_status.setTextFormat(Qt.TextFormat.PlainText)
+                self._scroll_status.setWindowModality(Qt.WindowModality.NonModal)
+                # Input/focus changes may be why capture stopped. Report the
+                # failure without taking focus back from the user's new work.
+                self._scroll_status.setAttribute(
+                    Qt.WidgetAttribute.WA_ShowWithoutActivating
+                )
+                self._scroll_status.setIcon(QMessageBox.Icon.Warning)
+                self._scroll_status.setStandardButtons(QMessageBox.StandardButton.Ok)
+                self._scroll_status.setWindowTitle("Scrolling capture stopped")
+            self._scroll_status.setText(f"No screenshot was captured.\n\n{message}")
+            self._scroll_status.show()
+
+    def _dismiss_scroll_status(self) -> None:
+        """Keep an old failure out of the pixels and input path of a new capture."""
+        if self._scroll_status is not None:
+            self._scroll_status.hide()
 
     def _on_scrolled(self, capture: ScrollingCapture) -> None:
         delivered = self._deliver_capture(capture)

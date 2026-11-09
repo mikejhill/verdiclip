@@ -11,6 +11,7 @@ from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QCursor, QImage
 from PySide6.QtWidgets import QApplication
 from pytestqt.qtbot import QtBot
+from tests.capture.test_scrolling import NormalizingListTarget, transaction
 from tests.ux.test_app_journeys import App, AppFactory
 from tests.ux.test_app_journeys import (
     make_app as make_app,  # noqa: PLC0414 - pytest fixture
@@ -35,6 +36,8 @@ def prepare(app: App) -> ScrollHelper:
         WindowInfo(1, "Scrolling document", Rect(0, 0, 1000, 1000))
     ]
     state.tick.return_value = 456
+    state.foreground.return_value = 1
+    state.observe.return_value = 1
     helper = ScrollHelper()
     helper.start = Mock()
     helper.cancel = Mock()
@@ -53,11 +56,17 @@ def select(qtbot: QtBot, app: App, helper: ScrollHelper) -> None:
     helper.start.assert_called_once_with(Point(30, 40), window=1, input_tick=456)
 
 
-def finish(qtbot: QtBot, app: App, helper: ScrollHelper) -> QImage:
+def finish(
+    qtbot: QtBot, app: App, helper: ScrollHelper, result: ScrollResult | None = None
+) -> QImage:
     """Publish one distinct tall image through the normal configured delivery."""
-    image = QImage(80, 1200, QImage.Format.Format_RGB32)
-    image.fill(0xFF345678)
-    helper.finished.emit(ScrollResult(image, "", "restored", 5))
+    if result is None:
+        image = QImage(80, 1200, QImage.Format.Format_RGB32)
+        image.fill(0xFF345678)
+        result = ScrollResult(image, "", "restored", 5)
+    image = result.image
+    assert image is not None
+    helper.finished.emit(result)
     qtbot.waitUntil(lambda: not app.controller._scrolling.busy)
     return image
 
@@ -242,7 +251,9 @@ def test_background_update_is_busy_and_manual_update_waits(
 
 
 @pytest.mark.parametrize("theme", [Theme.LIGHT, Theme.DARK])
-@pytest.mark.parametrize("gesture", ["click", "enter"])
+@pytest.mark.parametrize(
+    "gesture", ["click", "enter", "no-hbar-click", "no-hbar-enter"]
+)
 def test_visible_point_chooser_uses_completed_widget_input(
     make_app: AppFactory,
     qtbot: QtBot,
@@ -250,7 +261,7 @@ def test_visible_point_chooser_uses_completed_widget_input(
     theme: Theme,
     gesture: str,
 ) -> None:
-    """UX-CAP-17: visible one-click/Enter chooser needs no configuration dialog."""
+    """UX-CAP-17/19: no-hbar List pixels keep the same one-click/Enter journey."""
     settings = Settings()
     app = make_app(
         replace(settings, appearance=replace(settings.appearance, theme=theme))
@@ -266,7 +277,7 @@ def test_visible_point_chooser_uses_completed_widget_input(
         assert overlay.grab().save(
             str(snapshot_dir / f"scrolling-chooser-{theme.value}-{gesture}.png")
         )
-    if gesture == "click":
+    if gesture.endswith("click"):
         qtbot.mousePress(overlay, Qt.MouseButton.LeftButton, pos=QPoint(30, 40))
         assert service._helper is None
         qtbot.mouseRelease(overlay, Qt.MouseButton.LeftButton, pos=QPoint(30, 40))
@@ -275,9 +286,17 @@ def test_visible_point_chooser_uses_completed_widget_input(
         assert service._helper is None
         qtbot.keyRelease(overlay, Qt.Key.Key_Return)
     qtbot.waitUntil(lambda: service._helper is helper)
-    finish(qtbot, app, helper)
+    result = (
+        transaction(NormalizingListTarget(start=2400, no_hbar=True)).run()
+        if gesture.startswith("no-hbar-")
+        else None
+    )
+    image = finish(qtbot, app, helper, result)
     assert len(app.controller.workspace.documents) == 1
     assert app.controller.editors[0].isVisible()
+    assert app.controller.editors[0].session.document.image == image.convertToFormat(
+        QImage.Format.Format_ARGB32_Premultiplied
+    )
 
 
 @pytest.mark.parametrize("arrival", ["prepare", "close"])

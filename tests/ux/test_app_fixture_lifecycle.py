@@ -28,8 +28,9 @@ class FixtureBody(Protocol):
         """Return the original generator without invoking pytest's fixture guard."""
 
 
+@pytest.mark.parametrize("surfaces", ["update", "scrolling", "both"])
 def test_app_fixture_completes_owned_status_disposal(
-    qtbot: QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    qtbot: QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, surfaces: str
 ) -> None:
     """Teardown cannot return with its status widget awaiting deferred deletion."""
     fixture = cast(FixtureBody, make_app).__wrapped__
@@ -42,11 +43,23 @@ def test_app_fixture_completes_owned_status_disposal(
             UpdateLauncher(tmp_path / "update", Spawns()),
         )
         app = factory(updater=updater)
-        app.controller.tray.action("update").trigger()
-        status = app.controller._update_status
-        assert status is not None
-        destroyed = QSignalSpy(status.destroyed)
+        if surfaces != "scrolling":
+            app.controller.tray.action("update").trigger()
+        if surfaces != "update":
+            app.controller._scrolling.failed.emit("Unsupported scrolling area")
+        statuses = [
+            status
+            for status in (
+                app.controller._update_status,
+                app.controller._scroll_status,
+            )
+            if status is not None
+        ]
+        assert len(statuses) == (2 if surfaces == "both" else 1)
+        destroyed = [QSignalSpy(status.destroyed) for status in statuses]
     finally:
         with pytest.raises(StopIteration):
             next(lifetime)
-    assert destroyed.count() == 1, "Fixture teardown returned before status destruction"
+    assert all(spy.count() == 1 for spy in destroyed), (
+        "Fixture teardown returned before status destruction"
+    )

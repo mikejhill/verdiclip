@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ctypes as c
 import ctypes.wintypes as w
+import hashlib
 import json
 import logging
 import os
@@ -17,36 +18,79 @@ import sys
 import time
 from collections import Counter
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import asdict
+from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import cast
 from unittest.mock import patch
 
 from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer
 from PySide6.QtGui import QImage
+from scripts.hosted_display_scale import target_dpi
+from scripts.scrolling_header_probe import (
+    probe_target,
+    scroll_info,
+    window_dpi,
+)
+from scripts.scrolling_item_witness import ListItemWitness
+from scripts.scrolling_oracle import verify_sequence
 
 from verdiclip.capture.grabber import MssScreenSource
 from verdiclip.capture.scroll_helper import ScrollHelper
 from verdiclip.capture.scroll_helper import main as helper_main
 from verdiclip.capture.scrolling import (
     END_PERCENT,
+    MAX_FRAMES,
+    MAX_PIXELS,
+    MAX_SECONDS,
     ScrollPosition,
     ScrollResult,
+    ScrollTarget,
     ScrollTransaction,
 )
+from verdiclip.exceptions import CaptureError
 from verdiclip.geometry import Point, Rect
-from verdiclip.platform.scrolling import UiaScrollTarget
+from verdiclip.platform.scrolling import UiaScrollTarget, _ListSteps
 from verdiclip.platform.windows import WindowInfo, WindowLocator
 
 _ROWS = 120
 _LINE_HEIGHT = 24
+_CSS_DPI = 96
+_EDGE_ROW_DPIS = (96, 120)
+_EDGE_ROW_MODES = ("edge", "edge-nested")
+_CONTENT_FIXTURE_DPI = 120
+_OPAQUE_ALPHA = 0xFF
+_CONTENT_FIXTURE_MODES = (*_EDGE_ROW_MODES, "edge-prose-click", "edge-prose-enter")
+_CONTENT_FIXTURE_SOURCES = {
+    "edge": "3418cba923f78b445a150713236f915e8a0ed196fddfa6c75736428d7b5b24f5",
+    "edge-nested": "c4bd906664c1c46c6796be2f747631dc8b0a7c1d9399581ebf6a2a7a0b660ccf",
+    "edge-prose-click": (
+        "a2d42ad75d0ed8cd6fd144d15c7cdb6debe8b0510951218d0b984d8691b71fd4"
+    ),
+    "edge-prose-enter": (
+        "a2d42ad75d0ed8cd6fd144d15c7cdb6debe8b0510951218d0b984d8691b71fd4"
+    ),
+}
 _START_PERCENT = 37.0
 _DIAGNOSTIC_FRAMES = 2
 _WINDOW_WIDTH = 1000
 _WINDOW_HEIGHT = 760
 _GREEN = 80
 _BLUE = 160
-_CLEANUP_SECONDS = 20.0  # Existing taskkill + process-wait budget, shared by all paths.
+# Shared scheduling/acceptance deadline, not a preemptive filesystem timeout.
+# The workflow owns the outer bound if a synchronous cleanup call stalls.
+_CLEANUP_SECONDS = 20.0
+_NATIVE_CONTROL_BAR = 2
+_SHARING_VIOLATION = 32
+_REPRESENTATIVE_PREFIXES = (
+    "edge-prose-",
+    "edge-panel-",
+    "edge-sidebar-",
+    "edge-background-",
+    "explorer-",
+)
 
 
 def _document(*, nested: bool) -> str:
@@ -79,6 +123,9 @@ def _launch(
     if kind.startswith("edge"):
         path = directory / "scrolling.html"
         path.write_text(_document(nested=kind == "edge-nested"), encoding="utf-8")
+        report["owned_fixture_sha256"] = hashlib.sha256(
+            path.read_text(encoding="utf-8").encode("utf-8")
+        ).hexdigest()
         candidates = [
             Path(os.environ.get(key, "")) / "Microsoft/Edge/Application/msedge.exe"
             for key in ("ProgramFiles(x86)", "ProgramFiles")
@@ -176,17 +223,253 @@ def _prepare(window: WindowInfo) -> WindowInfo:
     return _window()
 
 
+def _target_evidence(
+    target: UiaScrollTarget, output: Path, mode: str, selected: dict[str, object]
+) -> ListItemWitness | None:
+    """Record extra geometry only for the explicitly owned representative cases."""
+    if mode not in _EDGE_ROW_MODES and not mode.startswith(_REPRESENTATIVE_PREFIXES):
+        return None
+    selected["initial_position"] = asdict(target.position())
+    selected["window_dpi"] = window_dpi(target)
+    if mode in _CONTENT_FIXTURE_MODES:
+        bounds = target._provider_bounds
+        selected["provider_bounds"] = (
+            asdict(bounds) if isinstance(bounds, Rect) else None
+        )
+    if mode.startswith("explorer-"):
+        geometry = probe_target(target)
+        (output / "header-geometry.json").write_text(
+            json.dumps(geometry, indent=2), encoding="utf-8"
+        )
+        selected["initial_native"] = _restoration_native(target, geometry)
+        if asdict(target.position()) != selected["initial_position"]:
+            raise CaptureError("The initial restoration position changed")
+        target.check()
+        return ListItemWitness(target, geometry)
+    return None
+
+
+def _frame_scroll_info(
+    target: UiaScrollTarget, position: ScrollPosition, geometry: dict[str, object]
+) -> list[dict[str, object]]:
+    """Tie read-only native metadata to the just-acquired stable frame position."""
+    target.check()
+    if target.position() != position:
+        raise CaptureError("The scroll panel moved before native metadata capture")
+    result = scroll_info(target, geometry)
+    if target.position() != position:
+        raise CaptureError("The scroll panel moved during native metadata capture")
+    target.check()
+    return result
+
+
+def _frame_observation(
+    operation: ScrollTransaction,
+    position: ScrollPosition,
+    evidence: ListItemWitness | None,
+    mode: str,
+    *,
+    previous_view: float | None = None,
+) -> dict[str, object]:
+    """Extend only Explorer's existing frame records with native metadata."""
+    observation: dict[str, object] = {
+        "horizontal": position.horizontal,
+        "vertical": position.vertical,
+        "view_size": position.view_size,
+    }
+    if mode.startswith("explorer-"):
+        if evidence is None or evidence.target is not operation._target:
+            raise CaptureError("Native scroll evidence target was not retained")
+        observation["native_scroll_info"] = _frame_scroll_info(
+            evidence.target, position, evidence.geometry
+        )
+        observation["native_item_witness"] = evidence.observe(position)
+        if position.vertical == END_PERCENT or (
+            previous_view is not None and position.view_size != previous_view
+        ):
+            observation["native_scroll_info_after"] = _restoration_native(
+                evidence.target, evidence.geometry
+            )
+            if evidence.target.position() != position:
+                raise CaptureError("The frame moved during repeated native observation")
+            evidence.target.check()
+    return observation
+
+
+def _restoration_native(
+    target: UiaScrollTarget, geometry: dict[str, object]
+) -> list[dict[str, object]]:
+    """Independently read the retained probe HWNDs, without product restore proof."""
+    position = target.position()
+    rows = _frame_scroll_info(target, position, geometry)
+    getter = target._user.GetParent
+    getter.argtypes, getter.restype = (w.HWND,), w.HWND
+    for row in rows:
+        handle = row["native_handle"]
+        pid = w.DWORD()
+        target._user.GetWindowThreadProcessId(handle, c.byref(pid))
+        row.update(
+            parent=int(getter(handle) or 0),
+            root=int(target._user.GetAncestor(handle, 2) or 0),
+            pid=int(pid.value),
+        )
+    if (
+        position != target.position()
+        or rows != _native_repeat(target, geometry, rows)
+        or position != target.position()
+    ):
+        raise CaptureError("The native restoration observation changed")
+    target.check()
+    return rows
+
+
+def _native_repeat(
+    target: UiaScrollTarget,
+    geometry: dict[str, object],
+    rows: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """Recheck scalar identity and native values around the independent read."""
+    repeated = scroll_info(target, geometry)
+    for row, original in zip(repeated, rows, strict=True):
+        handle = row["native_handle"]
+        pid = w.DWORD()
+        target._user.GetWindowThreadProcessId(handle, c.byref(pid))
+        row.update(
+            parent=int(target._user.GetParent(handle) or 0),
+            root=int(target._user.GetAncestor(handle, 2) or 0),
+            pid=int(pid.value),
+        )
+        if row != original:
+            raise CaptureError("The native restoration observation changed")
+    return repeated
+
+
+def _record_failure_position(target: ScrollTarget, selected: dict[str, object]) -> None:
+    """Keep a guarded final sample, never a settling or restoration assertion."""
+    try:
+        target.check()
+        observed = asdict(target.position())
+        target.check()
+    except Exception as error:  # noqa: BLE001 - diagnostics cannot replace failure
+        selected["final_observation_error"] = str(error)
+    else:
+        selected["final_observed_position"] = observed
+
+
+def _failure_native_identity(rows: list[dict[str, object]], original: object) -> None:
+    """Require the original native owners, not merely two equal recycled HWNDs."""
+    keys = ("native_handle", "bar", "parent", "root", "pid")
+    required = [row for row in rows if row.get("bar") == _NATIVE_CONTROL_BAR]
+    if (
+        not isinstance(original, list)
+        or len(rows) != len(original)
+        or not rows
+        or not required
+        or any(row.get("success") is not True for row in required)
+        or any(
+            not isinstance(before, dict)
+            or any(row.get(key) != before.get(key) for key in keys)
+            or row.get("window_valid") is not True
+            or row.get("root_matches") is not True
+            for row, before in zip(rows, original, strict=True)
+        )
+    ):
+        raise CaptureError("Failure native identity is unavailable or changed")
+
+
+def _record_terminal_position(
+    target: ScrollTarget,
+    result: ScrollResult,
+    selected: dict[str, object],
+    output: Path,
+    evidence: ListItemWitness | None = None,
+) -> None:
+    """Observe terminal metadata without changing the transaction's outcome."""
+    if result.image is None:
+        _record_failure_position(target, selected)
+        return
+    if selected.get("mode") in _EDGE_ROW_MODES:
+        selected["final_window_dpi"] = window_dpi(cast("UiaScrollTarget", target))
+    if result.restoration == "restored":
+        target.check()
+        final = asdict(target.position())
+        target.check()
+        state = {"initial": selected["initial_position"], "final": final}
+        if evidence is not None:
+            if evidence.target is not target:
+                raise CaptureError("Native restoration target was not retained")
+            state.update(
+                initial_native=selected["initial_native"],
+                final_native=_restoration_native(evidence.target, evidence.geometry),
+            )
+            if asdict(target.position()) != final:
+                raise CaptureError("The final restoration position changed")
+            target.check()
+        (output / "restoration.json").write_text(
+            json.dumps(state),
+            encoding="utf-8",
+        )
+
+
+def _count_list_call[**P, T](
+    function: Callable[P, T], counts: dict[str, int]
+) -> Callable[P, T]:
+    """Prove List capability selection without timing or extra provider reads."""
+
+    def observed(*args: P.args, **kwargs: P.kwargs) -> T:
+        counts["count"] += 1
+        try:
+            return function(*args, **kwargs)
+        except Exception:
+            counts["exceptions"] += 1
+            raise
+
+    return observed
+
+
+def _save_frame(
+    frame: QImage,
+    observation: dict[str, object],
+    observations: list[dict[str, object]],
+    output: Path,
+) -> None:
+    """Retain accepted frames and metadata in their original order."""
+    if not frame.save(str(output / f"frame-{len(observations)}.png")):
+        raise OSError("Could not save the native scrolling diagnostic frame")
+    observations.append(observation)
+
+    (output / "frames.json").write_text(
+        json.dumps(observations, indent=2), encoding="utf-8"
+    )
+
+
+def _record_setter(
+    writes: list[float], percent: float, before_write: Callable[[], None] | None
+) -> None:
+    """Count admitted/possibly issued setters, not failed preflight calls."""
+    if before_write is not None:
+        before_write()
+    writes.append(percent)
+
+
 def _trace_helper() -> None:
-    """Save two accepted frames in this owned test child, never in production."""
+    """Save bounded native evidence in this owned test child, never production."""
     logging.basicConfig(level=logging.INFO)
     mode = sys.argv.pop()
     output = Path(sys.argv.pop())
-    original = ScrollTransaction._frame
+    original, run = ScrollTransaction._frame, ScrollTransaction.run
     move = UiaScrollTarget.move
     opening = UiaScrollTarget._open
     selected: dict[str, object] = {}
-    observations: list[dict[str, float]] = []
+    observations: list[dict[str, object]] = []
+    evidence: ListItemWitness | None = None
     writes: list[float] = []
+    complete_sequence = mode in _EDGE_ROW_MODES or mode.startswith(
+        _REPRESENTATIVE_PREFIXES
+    )
+    frame_limit = MAX_FRAMES if complete_sequence else _DIAGNOSTIC_FRAMES
+    retained_pixels = 0
+    list_calls = {name: {"count": 0, "exceptions": 0} for name in ("begin", "finish")}
 
     def record_open(
         target: UiaScrollTarget,
@@ -195,26 +478,55 @@ def _trace_helper() -> None:
         window: int | None = None,
         input_tick: int | None = None,
     ) -> None:
+        nonlocal evidence
         opening(target, point, window=window, input_tick=input_tick)
         selected.update(
+            mode=mode,
             window=target._window,
             input_tick=target._input_tick,
             area=asdict(target.area),
         )
+        evidence = _target_evidence(target, output, mode, selected)
 
-    def record_move(target: UiaScrollTarget, percent: float) -> None:
-        writes.append(percent)
-        move(target, percent)
+    def record_move(
+        target: UiaScrollTarget,
+        percent: float,
+        *,
+        before_write: Callable[[], None] | None = None,
+    ) -> None:
+        move(
+            target,
+            percent,
+            before_write=partial(_record_setter, writes, percent, before_write),
+        )
+
+    def record_result(operation: ScrollTransaction) -> ScrollResult:
+        result = run(operation)
+        if complete_sequence:
+            _record_terminal_position(
+                operation._target, result, selected, output, evidence
+            )
+        return result
 
     def record_frame(operation: ScrollTransaction, position: ScrollPosition) -> QImage:
+        nonlocal retained_pixels
         frame = original(operation, position)
-        if len(observations) < _DIAGNOSTIC_FRAMES:
-            if not frame.save(str(output / f"frame-{len(observations)}.png")):
-                raise OSError("Could not save the native scrolling diagnostic frame")
-            observations.append(asdict(position))
-            (output / "frames.json").write_text(
-                json.dumps(observations, indent=2), encoding="utf-8"
+        if len(observations) < frame_limit:
+            retained_pixels += frame.width() * frame.height()
+            if retained_pixels > MAX_PIXELS:
+                raise CaptureError("Diagnostic frame evidence exceeds its pixel limit")
+            observation = _frame_observation(
+                operation,
+                position,
+                evidence,
+                mode,
+                previous_view=(
+                    cast("float", observations[-1]["view_size"])
+                    if observations
+                    else None
+                ),
             )
+            _save_frame(frame, observation, observations, output)
             if len(observations) == 1 and mode in (
                 "edge-cancel",
                 "edge-input",
@@ -227,12 +539,28 @@ def _trace_helper() -> None:
 
     try:
         with (
+            patch.object(
+                _ListSteps,
+                "begin",
+                _count_list_call(_ListSteps.begin, list_calls["begin"]),
+            ),
+            patch.object(
+                _ListSteps,
+                "finish",
+                _count_list_call(_ListSteps.finish, list_calls["finish"]),
+            ),
             patch.object(ScrollTransaction, "_frame", record_frame),
+            patch.object(ScrollTransaction, "run", record_result),
             patch.object(UiaScrollTarget, "move", record_move),
             patch.object(UiaScrollTarget, "_open", record_open),
         ):
             helper_main()
     finally:
+        # Missing evidence fails qualification, never replaces the capture error.
+        with suppress(OSError):
+            (output / "list-calls.json").write_text(
+                json.dumps(list_calls), encoding="utf-8"
+            )
         (output / "target.json").write_text(json.dumps(selected), encoding="utf-8")
         (output / "movement.json").write_text(
             json.dumps(
@@ -263,14 +591,28 @@ def _traced_helper(output: Path, mode: str) -> ScrollHelper:
     return helper
 
 
-def _capture(
-    point: Point, output: Path, mode: str, *, window: int, input_tick: int
+def _capture(  # noqa: PLR0913 - test-only factory and optional lifecycle receipt
+    point: Point,
+    output: Path,
+    mode: str,
+    *,
+    window: int,
+    input_tick: int,
+    helper_factory: Callable[[], ScrollHelper] | None = None,
+    lifecycle: dict[str, object] | None = None,
 ) -> ScrollResult:
     loop = QEventLoop()
-    helper = _traced_helper(output, mode)
+    helper = (
+        _traced_helper(output, mode) if helper_factory is None else helper_factory()
+    )
     results: list[ScrollResult] = []
 
     def completed(result: ScrollResult) -> None:
+        if lifecycle is not None:
+            lifecycle["start_to_finished_seconds"] = time.monotonic() - started
+            lifecycle["clock"] = (
+                "helper.start to actual helper.finished; not transaction"
+            )
         results.append(result)
         loop.quit()
 
@@ -278,7 +620,8 @@ def _capture(
     timer = QTimer()
     timer.setSingleShot(True)
     timer.timeout.connect(loop.quit)
-    timer.start(30_000)
+    timer.start(round((MAX_SECONDS + 5.0) * 1000))
+    started = time.monotonic()
     helper.start(point, window=window, input_tick=input_tick)
     interrupt = QTimer()
     interrupt.setInterval(20)
@@ -302,12 +645,10 @@ def _capture(
     interrupt.stop()
     timer.stop()
     if not results:
-        helper.cancel()
+        helper.shutdown()
         raise RuntimeError("The helper did not produce its bounded terminal result")
     (output / "helper.log").write_text(
-        bytes(helper._process.readAllStandardError().data()).decode(
-            "utf-8", errors="replace"
-        ),
+        helper.diagnostics,
         encoding="utf-8",
     )
     if mode in ("edge-cancel", "edge-input"):
@@ -474,12 +815,299 @@ def _boundary_rows(labels: list[int | None]) -> tuple[int, int]:
     return content[0], len(labels) - content[-1] - 1
 
 
+def _edge_row_height(output: Path, report: dict[str, object]) -> int:
+    """Scale authored CSS, never measured row spans, for the two qualified cases."""
+    if report.get("application") not in _EDGE_ROW_MODES:
+        return _LINE_HEIGHT
+    selected = json.loads((output / "target.json").read_text(encoding="utf-8"))
+    scale = os.environ.get("DISPLAY_SCALE")
+    expected = _CSS_DPI if scale is None else target_dpi(int(scale))
+    dpi = selected.get("window_dpi")
+    report.update(expected_target_dpi=expected, observed_target_dpi=dpi)
+    if (
+        type(dpi) is not int
+        or dpi not in _EDGE_ROW_DPIS
+        or dpi != expected
+        or type(selected.get("final_window_dpi")) is not int
+        or selected["final_window_dpi"] != dpi
+        or selected.get("mode") != report["application"]
+    ):
+        raise RuntimeError("Independent target DPI does not match the qualified scale")
+    height, remainder = divmod(_LINE_HEIGHT * dpi, _CSS_DPI)
+    _require(not remainder, "Authored CSS row height is not an integral physical span")
+    report["physical_row_height"] = height
+    return height
+
+
+def _fixture_pixels(image: QImage) -> list[int]:
+    image = image.convertToFormat(QImage.Format.Format_ARGB32)
+    pixels = list(memoryview(image.constBits()).cast("I"))
+    _require(
+        all(pixel >> 24 == _OPAQUE_ALPHA for pixel in pixels),
+        "Fixture pixels are not opaque",
+    )
+    return pixels
+
+
+def _fixture_difference(before: QImage, after: QImage) -> dict[str, object]:
+    """Keep whole-raster equality distinct from the narrower document check."""
+    _require(
+        not before.isNull() and before.size() == after.size(), "Fixture size changed"
+    )
+    differences = [
+        {"x": i % before.width(), "y": i // before.width(), "before": a, "after": b}
+        for i, (a, b) in enumerate(
+            zip(_fixture_pixels(before), _fixture_pixels(after), strict=True)
+        )
+        if a != b
+    ]
+    return {
+        "whole_viewport_equal": not differences,
+        "viewport_differences_argb": differences,
+    }
+
+
+def _fixture_footprint(
+    before: QImage, after: QImage, member: Callable[[int, int], bool]
+) -> int:
+    """Require stable source-derived membership, exact complement and no islands."""
+    old, new = _fixture_pixels(before), _fixture_pixels(after)
+    footprint = {i for i, pixel in enumerate(old) if member(i, pixel)}
+    _require(
+        footprint == {i for i, pixel in enumerate(new) if member(i, pixel)}
+        and all(
+            a == b or i in footprint
+            for i, (a, b) in enumerate(zip(old, new, strict=True))
+        ),
+        "Fixture paint or nonpaint footprint changed",
+    )
+    width, height = before.width(), before.height()
+    reached = {
+        i
+        for i in footprint
+        if i % width in (0, width - 1) or i // width in (0, height - 1)
+    }
+    pending = list(reached)
+    while pending:
+        i = pending.pop()
+        neighbors = [i - width, i + width]
+        if i % width:
+            neighbors.append(i - 1)
+        if i % width < width - 1:
+            neighbors.append(i + 1)
+        for neighbor in neighbors:
+            if neighbor in footprint and neighbor not in reached:
+                reached.add(neighbor)
+                pending.append(neighbor)
+    _require(reached == footprint, "Fixture nonpaint has an interior island")
+    return len(footprint)
+
+
+def _fixture_context(
+    output: Path,
+    report: dict[str, object],
+    before: QImage,
+    after: QImage,
+    *,
+    mode: str,
+) -> dict[str, object]:
+    """Fail closed without actual owned-source and unclipped native geometry proof."""
+    report.update(_fixture_difference(before, after))
+    _require(
+        mode in _CONTENT_FIXTURE_SOURCES
+        and report.get("owned_fixture_sha256") == _CONTENT_FIXTURE_SOURCES[mode],
+        "Restored content lacks the exact owned fixture source",
+    )
+    target = json.loads((output / "target.json").read_text(encoding="utf-8"))
+    state = json.loads((output / "restoration.json").read_text(encoding="utf-8"))
+    area = Rect(**target["area"])
+    _require(
+        target.get("mode") == mode
+        and type(target.get("window_dpi")) is int
+        and target.get("window_dpi") == _CONTENT_FIXTURE_DPI
+        and target.get("final_window_dpi", _CONTENT_FIXTURE_DPI) == _CONTENT_FIXTURE_DPI
+        and target["initial_position"] == state["initial"] == state["final"]
+        and (
+            0.0 < state["initial"]["horizontal"] < END_PERCENT
+            if mode == "edge-nested"
+            else state["initial"]["horizontal"] == -1.0
+        )
+        and (before.width(), before.height()) == (area.width, area.height)
+        and target.get("provider_bounds") == target["area"],
+        "Controlled fixture source, DPI, state or unclipped geometry is unproved",
+    )
+    return cast("dict[str, object]", target)
+
+
+def _fixture_row_offset(image: QImage, height: int) -> int:
+    """Derive integer source coordinates from every complete authored ID boundary."""
+    labels = _row_labels(image)
+    top, bottom = _boundary_rows(labels)
+    end = len(labels) - bottom
+    boundaries = [
+        (y, row)
+        for y, row in enumerate(labels)
+        if y > top and row is not None and labels[y - 1] != row
+    ]
+    _require(
+        len(boundaries) >= _DIAGNOSTIC_FRAMES,
+        "Insufficient complete authored row boundaries",
+    )
+    offsets = {height * row - y for y, row in boundaries}
+    _require(len(offsets) == 1, "Ambiguous authored row offset or phase")
+    offset = offsets.pop()
+    _require(
+        offset >= 0
+        and all(
+            row == (offset + y) // height
+            for y, row in enumerate(labels)
+            if top <= y < end
+        ),
+        "Authored row IDs, order or phase changed",
+    )
+    return offset
+
+
+def _fixture_row_paint(pixel: int, row: int) -> bool:
+    """Opaque black glyph coverage cannot exceed its authored RGB background."""
+    return (
+        ((pixel >> 16) & 255) <= row + 30
+        and ((pixel >> 8) & 255) <= _GREEN
+        and (pixel & 255) <= _BLUE
+    )
+
+
+def _verify_table_content(
+    before: QImage, after: QImage, frames: list[QImage], *, height: int
+) -> dict[str, object]:
+    offset = _fixture_row_offset(before, height)
+    _require(
+        _fixture_row_offset(after, height) == offset, "Document row position changed"
+    )
+    origins = [_fixture_row_offset(frame, height) for frame in frames]
+    boundaries = [_boundary_rows(_row_labels(frame)) for frame in frames]
+    _require(origins == sorted(set(origins)), "Raw frame document order changed")
+    witnesses = []
+    witnessed_nonpaint: set[int] = set()
+    for i, (old, new) in enumerate(
+        zip(_fixture_pixels(before), _fixture_pixels(after), strict=True)
+    ):
+        if old == new:
+            continue
+        x, document_y = i % before.width(), offset + i // before.width()
+        row = document_y // height
+        samples = []
+        for index, (frame, origin) in enumerate(zip(frames, origins, strict=True)):
+            y = document_y - origin
+            row_top = row * height - origin
+            top, bottom = boundaries[index]
+            if top <= row_top and row_top + height <= frame.height() - bottom:
+                pixel = frame.pixel(x, y)
+                if _fixture_row_paint(pixel, row):
+                    samples.append((index, pixel))
+        _require(
+            len(samples) >= _DIAGNOSTIC_FRAMES
+            and len({pixel for _, pixel in samples}) == 1,
+            "Missing or disagreeing direct document witnesses",
+        )
+        _require(
+            old != samples[0][1] and new != samples[0][1],
+            "A directly witnessed document pixel changed",
+        )
+        witnessed_nonpaint.add(i)
+        witnesses.append({"x": x, "document_y": document_y, "frames_and_argb": samples})
+    # Only already-obscured edge paint may vary. A matching glyph/background
+    # becoming different (or the reverse) fails above. This does not establish
+    # why the edge raster changed or guarantee its byte-perfect restoration.
+    count = _fixture_footprint(
+        before,
+        after,
+        lambda i, pixel: (
+            i in witnessed_nonpaint
+            or not _fixture_row_paint(pixel, (offset + i // before.width()) // height)
+        ),
+    )
+    return {
+        "document_offset": offset,
+        "raw_frame_offsets": origins,
+        "nonpaint_pixels": count,
+        "document_witnesses": witnesses,
+    }
+
+
+def _verify_edge_sequence(
+    result: ScrollResult, output: Path, report: dict[str, object]
+) -> None:
+    """Require complete independent pixels and exact original footer retention."""
+    if result.image is None:
+        raise RuntimeError(result.message)
+    first = QImage(str(output / "frame-0.png"))
+    _, bottom = _boundary_rows(_row_labels(first))
+    _require(
+        bottom == 0
+        or result.image.copy(
+            0, result.image.height() - bottom, result.image.width(), bottom
+        )
+        == first.copy(0, first.height() - bottom, first.width(), bottom),
+        "The original bottom boundary pixels were changed",
+    )
+    before, after = (QImage(str(output / name)) for name in ("before.png", "after.png"))
+    report.update(_fixture_difference(before, after))
+    report.update(verify_sequence(result.image, output))
+    _require(
+        report["oracle_frames"] == result.frames,
+        "Whole-image oracle did not retain every accepted frame",
+    )
+    if before == after:
+        report["document_content_restored"] = True
+        return
+    _require(
+        report.get("application") in _EDGE_ROW_MODES
+        and result.restoration == "restored",
+        "Restored pixels differ from the original middle-start view",
+    )
+    target = _fixture_context(
+        output,
+        report,
+        before,
+        after,
+        mode=str(report["application"]),
+    )
+    if report["application"] == "edge-nested":
+        _require(
+            report.get("start") == report.get("after") == target["initial_position"]
+            and isinstance(report.get("outer_before"), dict)
+            and report["outer_before"] == report.get("outer_after"),
+            "The original inner or outer scroll state changed",
+        )
+    _require(
+        target.get("final_window_dpi") == _CONTENT_FIXTURE_DPI,
+        "Final fixture DPI is unproved",
+    )
+    frames = [QImage(str(output / f"frame-{i}.png")) for i in range(result.frames)]
+    _require(
+        all(frame.size() == before.size() for frame in frames),
+        "Raw fixture frame size changed",
+    )
+    proof = _verify_table_content(
+        before, after, frames, height=_LINE_HEIGHT * _CONTENT_FIXTURE_DPI // _CSS_DPI
+    )
+    origins = cast("list[int]", proof["raw_frame_offsets"])
+    _require(
+        origins[0] == 0 and origins[-1] + after.height() == result.image.height(),
+        "Authored row coordinates do not reach both document endpoints",
+    )
+    report.update(proof)
+    report["document_content_restored"] = True
+
+
 def _verify_edge_rows(
     result: ScrollResult, output: Path, report: dict[str, object]
 ) -> None:
     """Verify all visible numbered rows, retaining original boundary chrome."""
     if result.image is None:
         raise RuntimeError(result.message)
+    height = _edge_row_height(output, report)
     first = QImage(str(output / "frame-0.png"))
     top, bottom = _boundary_rows(_row_labels(first))
     labels = _row_labels(result.image)
@@ -508,13 +1136,15 @@ def _verify_edge_rows(
     # The original top border may cover part of the first authored row. It is
     # retained visibly, not claimed as recovered hidden document pixels.
     _require(
-        all(counts[row] == _LINE_HEIGHT - (top if row == 0 else 0) for row in seen),
+        all(counts[row] == height - (top if row == 0 else 0) for row in seen),
         "Document row spans were lost or duplicated",
     )
     _require(
-        result.image.height() == _ROWS * _LINE_HEIGHT + bottom,
+        result.image.height() == _ROWS * height + bottom,
         "Unexpected document and retained-chrome height",
     )
+    if report.get("application") in _EDGE_ROW_MODES:
+        _verify_edge_sequence(result, output, report)
 
 
 def _require(condition: object, message: str) -> None:
@@ -744,32 +1374,36 @@ def main(
         ),
     }
     try:
-        with TemporaryDirectory(prefix="verdiclip-scroll-test-") as scratch:
-            process = None
+        scratch = TemporaryDirectory(prefix="verdiclip-scroll-test-", delete=False)
+        process = None
+        try:
+            process = _launch(kind, Path(scratch.name), report)
+            (case or _case)(kind, output, report)
+        finally:
+            deadline = time.monotonic() + _CLEANUP_SECONDS
             try:
-                process = _launch(kind, Path(scratch), report)
-                (case or _case)(kind, output, report)
-            finally:
-                try:
-                    window = report.get("window")
-                    handle = window.get("handle") if isinstance(window, dict) else None
-                    _stop_owned_process(
-                        process, window=handle if isinstance(handle, int) else None
+                window = report.get("window")
+                handle = window.get("handle") if isinstance(window, dict) else None
+                _stop_owned_process(
+                    process,
+                    window=handle if isinstance(handle, int) else None,
+                    deadline=deadline,
+                )
+                _cleanup_owned_directory(scratch, deadline=deadline)
+            except (OSError, subprocess.SubprocessError) as error:
+                report["cleanup_error"] = str(error)
+                if isinstance(error, subprocess.CalledProcessError):
+                    report["cleanup_stdout"] = (
+                        error.stdout.decode("utf-8", errors="replace")
+                        if error.stdout
+                        else ""
                     )
-                except (OSError, subprocess.SubprocessError) as error:
-                    report["cleanup_error"] = str(error)
-                    if isinstance(error, subprocess.CalledProcessError):
-                        report["cleanup_stdout"] = (
-                            error.stdout.decode("utf-8", errors="replace")
-                            if error.stdout
-                            else ""
-                        )
-                        report["cleanup_stderr"] = (
-                            error.stderr.decode("utf-8", errors="replace")
-                            if error.stderr
-                            else ""
-                        )
-                    raise
+                    report["cleanup_stderr"] = (
+                        error.stderr.decode("utf-8", errors="replace")
+                        if error.stderr
+                        else ""
+                    )
+                raise
     except Exception as error:
         report["success"] = False
         report["error"] = str(error)
@@ -778,6 +1412,33 @@ def main(
         (output / "result.json").write_text(
             json.dumps(report, indent=2), encoding="utf-8"
         )
+
+
+def _cleanup_remaining(deadline: float) -> float:
+    """Reject cleanup work or success after the shared shutdown deadline."""
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("Owned directory cleanup exceeded the shutdown deadline")
+    return remaining
+
+
+def _cleanup_owned_directory(
+    directory: TemporaryDirectory[str], *, deadline: float
+) -> None:
+    """Retry only owned-file sharing violations within the shutdown deadline."""
+    while True:
+        _cleanup_remaining(deadline)
+        try:
+            directory.cleanup()
+        except OSError as error:
+            if getattr(error, "winerror", None) != _SHARING_VIOLATION:
+                raise
+            remaining = _cleanup_remaining(deadline)
+            time.sleep(min(0.1, remaining))
+            _cleanup_remaining(deadline)
+        else:
+            _cleanup_remaining(deadline)
+            return
 
 
 def _request_owned_close(process: subprocess.Popen[bytes], window: int) -> bool:
@@ -800,12 +1461,16 @@ def _request_owned_close(process: subprocess.Popen[bytes], window: int) -> bool:
 
 
 def _stop_owned_process(
-    process: subprocess.Popen[bytes] | None, *, window: int | None = None
+    process: subprocess.Popen[bytes] | None,
+    *,
+    window: int | None = None,
+    deadline: float | None = None,
 ) -> None:
     """Close gracefully, then force only the owned PID within one existing budget."""
     if process is None or process.poll() is not None:
         return
-    deadline = time.monotonic() + _CLEANUP_SECONDS
+    if deadline is None:
+        deadline = time.monotonic() + _CLEANUP_SECONDS
     if window is not None and _request_owned_close(process, window):
         try:
             process.wait(timeout=min(3.0, max(0.0, deadline - time.monotonic())))

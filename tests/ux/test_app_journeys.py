@@ -54,6 +54,7 @@ from verdiclip.capture.overlay import SelectionOverlay
 from verdiclip.capture.service import WindowSource
 from verdiclip.document.commands import SetCrop
 from verdiclip.document.style import Color
+from verdiclip.editor import style_bar
 from verdiclip.editor.close_prompt import CloseChoice, ClosePrompt
 from verdiclip.editor.session import ToolId
 from verdiclip.editor.style_bar import ColorButton
@@ -88,6 +89,21 @@ from verdiclip.update.install import (
 from verdiclip.update.service import UpdateLauncher, Updater
 
 pytestmark = pytest.mark.ux
+
+
+def _measured(
+    operation: Callable[..., object], samples: list[float]
+) -> Callable[..., object]:
+    """Observe one unchanged constructor call without prewarming or subtraction."""
+
+    def invoke(*args: object, **kwargs: object) -> object:
+        phase_clock = Stopwatch()
+        try:
+            return operation(*args, **kwargs)
+        finally:
+            samples.append(phase_clock.elapsed_ms)
+
+    return invoke
 
 
 @dataclass(slots=True)
@@ -272,15 +288,22 @@ def make_app(
         for editor in app.controller.editors:
             editor.session.history.mark_delivered()
             editor.close()
-        status = app.controller._update_status
-        if status is None:
+        statuses = [
+            status
+            for status in (
+                app.controller._update_status,
+                app.controller._scroll_status,
+            )
+            if status is not None
+        ]
+        if not statuses:
             app.controller.shutdown()
         else:
             # Shutdown schedules deletion. Finish only this fixture-owned widget's
             # deferred disposal before a following journey acquires input.
-            with qtbot.waitSignal(status.destroyed, timeout=1000) as destroyed:
+            with qtbot.waitSignals([status.destroyed for status in statuses]):
                 app.controller.shutdown()
-                if not destroyed.signal_triggered:
+                for status in statuses:
                     QCoreApplication.sendPostedEvents(
                         status, QEvent.Type.DeferredDelete
                     )
@@ -291,21 +314,49 @@ class TestAfterCapture:
     """What happens when a capture finishes."""
 
     def test_hotkey_opens_focused_editor_with_select_tool(
-        self, make_app: AppFactory, qtbot: QtBot
+        self, make_app: AppFactory, qtbot: QtBot, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """By default a capture opens an editor quickly, Select tool active.
 
         UX-CAP-11.
         """
+        font_milliseconds: list[float] = []
+        editor_milliseconds: list[float] = []
+        spin_milliseconds: list[float] = []
+
+        # Observe the same constructors once; never prewarm or subtract time.
+        monkeypatch.setattr(
+            style_bar,
+            "QFontComboBox",
+            _measured(style_bar.QFontComboBox, font_milliseconds),
+        )
+        monkeypatch.setattr(
+            EditorWindow,
+            "__init__",
+            _measured(EditorWindow.__init__, editor_milliseconds),
+        )
+        monkeypatch.setattr(
+            style_bar, "QSpinBox", _measured(style_bar.QSpinBox, spin_milliseconds)
+        )
         app = make_app()
         clock = Stopwatch()
 
         app.press_hotkey("fullscreen")
+        dispatch_ms = clock.elapsed_ms
 
         qtbot.waitUntil(lambda: len(app.controller.editors) == 1)
+        editor_ready_ms = clock.elapsed_ms
         editor: EditorWindow = app.controller.editors[0]
         qtbot.waitExposed(editor)
-        assert clock.elapsed_ms < 300
+        elapsed = clock.elapsed_ms
+        assert elapsed < 300, (
+            f"Capture-to-editor {elapsed:.3f} ms; "
+            f"dispatch returned at {dispatch_ms:.3f} ms; "
+            f"editor list ready at {editor_ready_ms:.3f} ms; "
+            f"EditorWindow constructor milliseconds: {editor_milliseconds!r}; "
+            f"StyleBar QSpinBox constructor milliseconds: {spin_milliseconds!r}; "
+            f"QFontComboBox constructor milliseconds: {font_milliseconds!r}"
+        )
         assert editor.action("tool_select").isChecked()
 
     def test_initial_editor_show_failure_retains_capture_and_recovery(

@@ -87,6 +87,29 @@ def test_bad_or_crashed_helper_never_publishes(
     assert result.restoration.startswith("unknown")
 
 
+def test_child_diagnostics_reach_parent_log_without_polluting_result(
+    qtbot: QtBot,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Useful failure metrics survive child retirement, with a bounded log tail."""
+    caplog.set_level("INFO")
+    program(
+        monkeypatch,
+        "import sys; sys.stderr.write('discarded-prefix' + 'x' * 17000 "
+        "+ '\\nmeasured_advance=88 expected_advance=60.000\\n')\n" + _SUCCESS,
+    )
+    helper = ScrollHelper()
+    with qtbot.waitSignal(helper.finished, timeout=5000) as signal:
+        helper.start(Point(10, 20), window=45, input_tick=67)
+    assert signal.args[0].image is not None
+    assert len(helper.diagnostics) <= 16384
+    assert "discarded-prefix" not in helper.diagnostics
+    assert helper.diagnostics.endswith("measured_advance=88 expected_advance=60.000")
+    assert "Scrolling helper diagnostics:" in caplog.text
+    assert "measured_advance=88 expected_advance=60.000" in caplog.text
+
+
 def test_cancel_discards_success_already_in_flight(
     qtbot: QtBot, monkeypatch: pytest.MonkeyPatch
 ) -> None:

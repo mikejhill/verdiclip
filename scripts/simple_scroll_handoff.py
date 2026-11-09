@@ -70,7 +70,9 @@ class Desktop:
         """Return the actual native foreground HWND."""
         return int(self.user.GetForegroundWindow() or 0)
 
-    def click(self, widget: QWidget, point: Point, *, enter: bool = False) -> None:
+    def click(
+        self, widget: QWidget, point: Point, *, enter: bool = False, hold_ms: int = 0
+    ) -> None:
         """Deliver a completed native gesture only after verifying owned hit/focus."""
         _require(
             os.environ.get("GITHUB_ACTIONS") == "true"
@@ -89,9 +91,13 @@ class Desktop:
         )
         if enter:
             self.user.keybd_event(0x0D, 0, 0, 0)
+            if hold_ms:
+                QTest.qWait(hold_ms)
             self.user.keybd_event(0x0D, 0, 2, 0)
         else:
             self.user.mouse_event(2, 0, 0, 0, 0)
+            if hold_ms:
+                QTest.qWait(hold_ms)
             self.user.mouse_event(4, 0, 0, 0, 0)
 
 

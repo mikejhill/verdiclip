@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -31,6 +33,10 @@ from verdiclip.platform.scrolling import ScrollSelectionState
 from verdiclip.platform.windows import WindowInfo
 
 _CANCEL_ACTION = "scroll_cancel"
+_HANDOFF_POLL_MS = 20
+_DISMISSAL_SETTLE_SECONDS = 0.1
+_HANDOFF_TIMEOUT_SECONDS = 0.6
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,13 +50,24 @@ class ScrollingCapture:
 
 
 class SelectionState(Protocol):
-    """Read-only native state; no UI Automation runs in the GUI process."""
+    """Native selection/activation only; no UI Automation in the GUI process."""
 
     def windows(self) -> Sequence[WindowInfo]:
         """List the current top-level targets."""
 
     def tick(self) -> int:
         """Observe the latest native input tick."""
+
+    def foreground(self) -> int:
+        """Observe the foreground before showing our selectors."""
+
+    def observe(self, point: Point, window: WindowInfo, tick: int) -> int:
+        """Check the original target, input and geometry; return foreground HWND."""
+
+    def activate(
+        self, point: Point, window: WindowInfo, tick: int, foreground: int
+    ) -> None:
+        """Recheck the observed state and request normal activation once."""
 
     def check(self, point: Point, window: int, tick: int) -> None:
         """Reject a changed selected root, foreground, or input tick."""
@@ -101,6 +118,7 @@ class PointOverlay(SelectionOverlay):
 class ScrollSelection(QObject):
     """Keep selection, cancellation and helper retirement under one owner."""
 
+    state_changed = Signal(bool, bool)  # active, cancelling
     captured = Signal(object)
     failed = Signal(str)
     finished = Signal()
@@ -124,6 +142,9 @@ class ScrollSelection(QObject):
         self._result: ScrollResult | None = None
         self._active = self._cancelled = self._closing = False
         self._deactivated = False
+        self._foreground = 0
+        self._activation_requested = False
+        self._null_until = self._handoff_until = 0.0
         self._watching: QApplication | None = None
         self._start = self._timer(self._show)
         self._handoff = self._timer(self._launch)
@@ -153,6 +174,7 @@ class ScrollSelection(QObject):
         if self._active or self._closing:
             return
         self._active, self._cancelled = True, False
+        self.state_changed.emit(self._active, self._cancelled)
         dismissed: list[QWidget] = []
         popup = QApplication.activePopupWidget()
         while popup is not None:
@@ -170,6 +192,7 @@ class ScrollSelection(QObject):
             self._check_released()
             if self._state is None:
                 self._state = ScrollSelectionState()
+            self._foreground = self._state.foreground()
             self._windows = self._state.windows()
             frozen = self._screens.freeze()
             shared = SharedSelection()
@@ -212,7 +235,12 @@ class ScrollSelection(QObject):
             raise CaptureError("Another window is holding input; try capturing again")
 
     def _selected(self, point: Point) -> None:
-        if not self._active or self._cancelled or self._state is None:
+        if (
+            not self._active
+            or self._cancelled
+            or self._state is None
+            or self._choice is not None
+        ):
             return
         try:
             tick = self._state.tick()  # Before closing anything or queueing work.
@@ -222,29 +250,83 @@ class ScrollSelection(QObject):
                     "Select a scrolling area inside an application window"
                 )
             self._choice = point, window, tick
+            self._activation_requested = False
+            self._null_until = time.monotonic() + _DISMISSAL_SETTLE_SECONDS
+            self._handoff_until = time.monotonic() + _HANDOFF_TIMEOUT_SECONDS
             self._close_selectors()
             self._handoff.start(0)
         except (AppError, OSError) as error:
             self._fail(str(error))
 
     def _launch(self) -> None:
-        if not self._active or self._cancelled or self._choice is None:
+        if (
+            not self._active
+            or self._cancelled
+            or self._choice is None
+            or self._helper is not None
+        ):
             return
         try:
             self._check_released()
             point, window, tick = self._choice
             if self._state is None:
                 raise CaptureError("The selected window is no longer available")
-            self._state.check(point, window.handle, tick)
-            if not self._hotkeys.register(_CANCEL_ACTION, Hotkey.parse("escape")):
+            if (
+                _CANCEL_ACTION not in self._hotkeys.registered
+                and not self._hotkeys.register(_CANCEL_ACTION, Hotkey.parse("escape"))
+            ):
                 raise CaptureError(
                     "Escape is unavailable; scrolling capture did not start"
                 )
+            if not self._settled(point, window, tick):
+                return
+            self._state.check(point, window.handle, tick)
             self._helper = self._helper_factory()
             self._helper.finished.connect(self._completed)
             self._helper.start(point, window=window.handle, input_tick=tick)
         except (AppError, OSError) as error:
+            self._log_handoff_failure(error)
             self._fail(str(error))
+
+    def _log_handoff_failure(self, error: Exception) -> None:
+        foreground = None
+        try:
+            if self._state is not None:
+                foreground = self._state.foreground()
+        except (AppError, OSError):
+            pass  # Diagnostics must never replace the original failure.
+        logger.warning(
+            "Scrolling failure stage=launch saved_foreground=%s foreground=%s "
+            "activation_requested=%s: %s",
+            self._foreground,
+            foreground,
+            self._activation_requested,
+            error,
+        )
+
+    def _settled(self, point: Point, window: WindowInfo, tick: int) -> bool:
+        if self._state is None:
+            raise CaptureError("The selected window is no longer available")
+        foreground = self._state.observe(point, window, tick)
+        now = time.monotonic()
+        if now >= self._handoff_until:
+            raise CaptureError(
+                "Windows did not activate the selected window. "
+                "Activate it and try scrolling capture again"
+            )
+        if foreground == window.handle:
+            return True
+        if foreground not in (0, self._foreground):
+            raise CaptureError("The foreground window changed before scrolling capture")
+        # Closing the chooser can briefly leave no foreground HWND. Observe
+        # that transition before deciding whether normal activation is needed.
+        if not self._activation_requested and (foreground or now >= self._null_until):
+            self._activation_requested = True
+            self._state.activate(point, window, tick, foreground)
+        # SetForegroundWindow can complete asynchronously. Never repeat it,
+        # refresh the release tick, or accept a different selected root.
+        self._handoff.start(_HANDOFF_POLL_MS)
+        return False
 
     def _completed(self, result: ScrollResult) -> None:
         if not self._active:
@@ -253,7 +335,10 @@ class ScrollSelection(QObject):
         self._publish.start(0)
 
     def _deliver(self) -> None:
+        helper = self._helper
         result, choice = self._result, self._choice
+        if result is not None and self._helper is not None:
+            result = self._helper.publication_result(result)
         image = None if result is None or self._cancelled else result.image
         message = (
             result.message if result is not None else "Scrolling capture cancelled"
@@ -262,15 +347,22 @@ class ScrollSelection(QObject):
             try:
                 self._state.check(choice[0], choice[1].handle, choice[2])
             except (AppError, OSError) as error:
+                logger.warning("Scrolling failure stage=publication: %s", error)
                 image, message = None, str(error)
+        if result is not None and self._helper is not None and image is not None:
+            result = self._helper.publication_result(result)
+            image, message = result.image, result.message
         title = "Scrolling capture" if choice is None else choice[1].title
         restoration = "" if result is None else result.restoration
         self._end(notify=False)
+        if result is not None and helper is not None and image is not None:
+            result = helper.publication_result(result)
+            image, message = result.image, result.message
         if image is not None and not self._closing and not self._cancelled:
             self.captured.emit(
                 ScrollingCapture(image, title, datetime.now().astimezone(), message)
             )
-        elif not self._closing:
+        elif not self._closing and not self._cancelled:
             self.failed.emit(f"{message or 'Scrolling capture stopped'}. {restoration}")
         self.finished.emit()
 
@@ -279,6 +371,7 @@ class ScrollSelection(QObject):
         self._cancelled = True
         if not self._active:
             return
+        self.state_changed.emit(self._active, self._cancelled)
         self._start.stop()
         self._handoff.stop()
         self._close_selectors()
@@ -290,6 +383,8 @@ class ScrollSelection(QObject):
     def shutdown(self) -> None:
         """Retire the child before app teardown; never publish during shutdown."""
         self._closing = self._cancelled = True
+        if self._active:
+            self.state_changed.emit(self._active, self._cancelled)
         self._start.stop()
         self._handoff.stop()
         self._publish.stop()
@@ -307,6 +402,8 @@ class ScrollSelection(QObject):
     def _fail(self, message: str) -> None:
         self._close_selectors()
         self._cancelled = True
+        if self._active:
+            self.state_changed.emit(self._active, self._cancelled)
         try:
             if self._helper is not None:
                 self._helper.shutdown()
@@ -326,6 +423,7 @@ class ScrollSelection(QObject):
         self._hotkeys.unregister(_CANCEL_ACTION)
         helper, self._helper = self._helper, None
         self._active = False
+        self.state_changed.emit(self._active, self._cancelled)
         self._choice = self._result = None
         if helper is not None:
             helper.deleteLater()
