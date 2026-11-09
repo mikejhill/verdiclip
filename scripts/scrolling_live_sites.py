@@ -52,45 +52,105 @@ def _pid(handle: int) -> int:
     return pid.value
 
 
-def _observe(window: WindowInfo) -> list[str]:
-    """Read bounded native accessible names from this exact owned HWND."""
-    powershell = (
-        Path(os.environ["WINDIR"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
-    )
-    script = r"""
+def _observation_script(window: WindowInfo) -> str:
+    """Start at the capture point to request Chromium's native document provider."""
+    return (
+        r"""
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
+Add-Type -AssemblyName WindowsBase
+$ErrorActionPreference = 'Stop'
 $root = [Windows.Automation.AutomationElement]::FromHandle([IntPtr]HANDLE)
-$walker = [Windows.Automation.TreeWalker]::ControlViewWalker
+$walker = [Windows.Automation.TreeWalker]::RawViewWalker
+$point = [Windows.Point]::new(POINT_X, POINT_Y)
+$document = $null
+$attempts = 0
+$deadline = [DateTime]::UtcNow.AddSeconds(9)
+$discoveryDeadline = [DateTime]::UtcNow.AddSeconds(3)
+# ElementFromPoint causes the browser to expose the web accessibility provider.
+# Reading the chrome's ControlView alone can return no webpage at all.
+while ($null -eq $document -and [DateTime]::UtcNow -lt $discoveryDeadline) {
+  $attempts++
+  $node = [Windows.Automation.AutomationElement]::FromPoint($point)
+  $candidate = $null
+  for ($depth = 0; $null -ne $node -and $depth -lt 64; $depth++) {
+    if ([DateTime]::UtcNow -ge $discoveryDeadline) { break }
+    if ([Windows.Automation.Automation]::Compare($node, $root)) {
+      $document = $candidate
+      break
+    }
+    if ($node.Current.ControlType -eq
+        [Windows.Automation.ControlType]::Document) {
+      $candidate = $node
+    }
+    $node = $walker.GetParent($node)
+  }
+  if ($null -eq $document) { Start-Sleep -Milliseconds 100 }
+}
 $queue = [Collections.Generic.Queue[object]]::new()
-$queue.Enqueue(@($root, 0))
+if ($null -ne $document) { $queue.Enqueue(@($document, 0)) }
 $names = [Collections.Generic.List[string]]::new()
-$deadline = [DateTime]::UtcNow.AddSeconds(5)
 $count = 0
-while ($queue.Count -gt 0 -and $count -lt 500 -and [DateTime]::UtcNow -lt $deadline) {
+while ($queue.Count -gt 0 -and $count -lt 1200 -and
+       [DateTime]::UtcNow -lt $deadline) {
   $entry = $queue.Dequeue(); $node = $entry[0]; $depth = $entry[1]
   $count++
   $name = $node.Current.Name
   if ($name) { $names.Add($name.Substring(0, [Math]::Min(500, $name.Length))) }
-  if ($depth -lt 12) {
+  if ($depth -lt 48) {
     $child = $walker.GetFirstChild($node)
-    while ($null -ne $child -and $queue.Count -lt 500 -and
+    while ($null -ne $child -and $queue.Count -lt 1200 -and
            [DateTime]::UtcNow -lt $deadline) {
       $queue.Enqueue(@($child, ($depth + 1)))
       $child = $walker.GetNextSibling($child)
     }
   }
 }
-ConvertTo-Json -InputObject @($names) -Compress
+@{
+  document_found=($null -ne $document)
+  owned_root_verified=($null -ne $document)
+  point=@(POINT_X, POINT_Y)
+  discovery_attempts=$attempts
+  nodes_read=$count
+  pending_nodes=$queue.Count
+  deadline_reached=([DateTime]::UtcNow -ge $deadline)
+  names=@($names)
+} | ConvertTo-Json -Depth 4 -Compress
 """.replace("HANDLE", str(window.handle))
+        .replace("POINT_X", str(round(window.bounds.center.x)))
+        .replace("POINT_Y", str(round(window.bounds.center.y)))
+    )
+
+
+def _observe(window: WindowInfo, output: Path) -> list[str]:
+    """Read only a verified owned native Document, preserving failed discovery."""
+    powershell = (
+        Path(os.environ["WINDIR"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    )
     result = subprocess.run(  # noqa: S603 - bounded read-only native UIA observation
-        [str(powershell), "-NoProfile", "-NonInteractive", "-Command", script],
+        [
+            str(powershell),
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            _observation_script(window),
+        ],
         check=True,
         capture_output=True,
         text=True,
-        timeout=10,
+        timeout=15,
     )
-    names = json.loads(result.stdout)
+    observation = json.loads(result.stdout)
+    (output / "native-document-discovery.json").write_text(
+        json.dumps(observation, indent=2), encoding="utf-8"
+    )
+    native._require(
+        isinstance(observation, dict)
+        and observation.get("document_found") is True
+        and observation.get("owned_root_verified") is True,
+        "Native UIA did not discover a Document under the owned Edge window",
+    )
+    names = observation.get("names")
     native._require(
         isinstance(names, list) and all(isinstance(name, str) for name in names),
         "UIA observation did not return accessible names",
@@ -184,7 +244,7 @@ class LiveSite:
         window = self.window()
         report["loaded_window"] = asdict(window)
         native._desktop_evidence(output, report)
-        names = _observe(window)
+        names = _observe(window, output)
         (output / "accessible-names.json").write_text(
             json.dumps(names, indent=2), encoding="utf-8"
         )

@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 from scripts import scrolling_live_sites as live
+
+from verdiclip.geometry import Rect
+from verdiclip.platform.windows import WindowInfo
 
 
 @pytest.mark.parametrize(
@@ -84,3 +88,63 @@ def test_preflight_runs_unchanged_quality_gate_before_pull_request() -> None:
         "edge-google-live, edge-todo-access, edge-owned-search, edge-owned-settings"
         in workflow
     )
+
+
+@pytest.mark.parametrize("owned", [True, False])
+def test_native_document_observation_requires_owned_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, owned: bool
+) -> None:
+    """A matching title or foreign document cannot authorize a capture probe."""
+    window = WindowInfo(1234, "ScrollPattern - Google Search", Rect(10, 20, 800, 600))
+    names = ["Search Results", "learn.microsoft.com", "ScrollPattern Class"]
+    observation = {
+        "document_found": True,
+        "owned_root_verified": owned,
+        "names": names,
+    }
+    run = Mock(return_value=Mock(stdout=json.dumps(observation)))
+    monkeypatch.setenv("WINDIR", "C:/Windows")
+    monkeypatch.setattr(live.subprocess, "run", run)
+    if owned:
+        assert live._observe(window, tmp_path) == names
+    else:
+        with pytest.raises(RuntimeError, match="owned Edge window"):
+            live._observe(window, tmp_path)
+    assert (
+        json.loads((tmp_path / "native-document-discovery.json").read_text())
+        == observation
+    )
+    script = run.call_args.args[0][-1]
+    assert "::FromPoint($point)" in script
+    assert "::RawViewWalker" in script
+    assert "[Windows.Point]::new(410, 320)" in script
+    assert "::FromHandle([IntPtr]1234)" in script
+    assert "::Compare($node, $root)" in script
+    assert "[Windows.Automation.ControlType]::Document" in script
+    assert "remote-debugging" not in script
+    assert "javascript" not in script
+    assert run.call_args.kwargs["timeout"] == 15
+
+
+def test_chrome_only_observation_is_retained_but_rejected(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Preserve the initial native failure as evidence instead of approving chrome."""
+    window = WindowInfo(1234, "ScrollPattern - Google Search", Rect(10, 20, 800, 600))
+    observation = {
+        "document_found": False,
+        "owned_root_verified": False,
+        "names": [
+            "ScrollPattern - Google Search",
+            "Search tabs",
+            "Address and search bar",
+        ],
+    }
+    monkeypatch.setenv("WINDIR", "C:/Windows")
+    monkeypatch.setattr(
+        live.subprocess, "run", Mock(return_value=Mock(stdout=json.dumps(observation)))
+    )
+    with pytest.raises(RuntimeError, match="did not discover a Document"):
+        live._observe(window, tmp_path)
+    assert (tmp_path / "native-document-discovery.json").is_file()
+    assert not live.google_results_ready(window.title, observation["names"])
