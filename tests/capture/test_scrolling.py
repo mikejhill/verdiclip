@@ -41,10 +41,17 @@ class Target:
     header: Rect | None = None
     registration_dpi: int | None = None
 
-    def __init__(self, *, total: int = 600, width: int = 80, offset: int = 173) -> None:
+    def __init__(
+        self,
+        *,
+        total: int = 600,
+        width: int = 80,
+        offset: int = 173,
+        horizontal: float = 27.0,
+    ) -> None:
         self.document = document(total, width=width)
         self.offset = offset
-        self.horizontal = 27.0
+        self.horizontal = horizontal
         self.input_changed = False
         self.moves: list[float] = []
         self.fail_move = False
@@ -101,8 +108,10 @@ class HeaderTarget(Target):
     area = Rect(10, 20, 80, 145)
     header: Rect | None = Rect(10, 20, 63, 25)
 
-    def __init__(self, *, total: int = 600, offset: int = 173) -> None:
-        super().__init__(total=total, offset=offset)
+    def __init__(
+        self, *, total: int = 600, offset: int = 173, horizontal: float = 27.0
+    ) -> None:
+        super().__init__(total=total, offset=offset, horizontal=horizontal)
         self.change_header = False
 
     @override
@@ -1981,8 +1990,10 @@ class NativeEndpointTarget(HeaderTarget):
 
     vertical_scrollbar: Rect | None = Rect(73, 20, 17, 145)
 
-    def __init__(self, start: int = 2400) -> None:
-        super().__init__(offset=round(start / 10))
+    def __init__(
+        self, start: int = 2400, *, total: int = 600, horizontal: float = 27.0
+    ) -> None:
+        super().__init__(total=total, offset=round(start / 10), horizontal=horizontal)
         self.native_position = start
         self.page = 1200
 
@@ -2833,11 +2844,9 @@ class ListTarget(FooterTarget):
     def __init__(
         self, *, start: int = 0, total: int = 592, no_hbar: bool = False
     ) -> None:
-        super().__init__(start)
-        self.horizontal = -1.0 if no_hbar else 0.0
+        super().__init__(start, total=total, horizontal=-1.0 if no_hbar else 0.0)
         if no_hbar:
             self.area, self.footer = Rect(10, 20, 80, 145), None
-        self.document = document(total)
         self.steps = ListEvidence(self)
         self.selected = 0
 

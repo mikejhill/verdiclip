@@ -320,7 +320,7 @@ class VerticalStitch:
         """Try all columns first; only no match permits a measured-edge retry."""
         match = self._alignment(old, new, nonrail_width=self._nonrail_width)
         if match is not None:
-            return *match, True
+            return match[0], match[1], match[2], True
         if self._nonrail_width is not None:
             raise CaptureError("The List's complete overlapping pixels do not match")
         left = self._edge_width(old, new, right=False)
@@ -346,7 +346,7 @@ class VerticalStitch:
                     right,
                     self._dpi,
                 )
-                return *match, False
+                return match[0], match[1], match[2], False
         raise CaptureError("The panel's scrolling pixels cannot be joined reliably")
 
     def _edge_colors(self, rows: list[bytes], *, right: bool, onset: int) -> set[bytes]:
