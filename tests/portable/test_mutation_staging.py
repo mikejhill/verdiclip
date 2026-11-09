@@ -42,3 +42,7 @@ def test_configured_staging_preserves_real_workflow_contracts(tmp_path: Path) ->
         cast(Callable[[], None], namespace[contract])()
     workflow = Path(".github/workflows/mutation.yml")
     assert (staged / workflow).read_bytes() == (root / workflow).read_bytes()
+    # Scrolling fixture tests read the authored document relative to the staged
+    # checkout. Preserve the exact input rather than skipping those tests.
+    prose = Path("docs/design/philosophy.md")
+    assert (staged / prose).read_bytes() == (root / prose).read_bytes()
