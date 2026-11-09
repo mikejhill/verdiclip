@@ -907,6 +907,285 @@ def test_native_harness_does_not_reissue_unsettled_setup(
     mock(native._scroll.call).assert_called_once()
 
 
+def test_native_readiness_reuses_budget_and_only_writes_after_scrollable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two equal finite scrollable samples precede the sole setup request."""
+    from scripts import simple_scroll_native as native  # noqa: PLC0415
+
+    clock = [19.5]
+    pauses: list[float] = []
+
+    def pause(seconds: float) -> None:
+        pauses.append(seconds)
+        clock[0] += seconds
+
+    monkeypatch.setattr(native.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(native.time, "sleep", pause)
+    waiting = ScrollPosition(0, 0, 100)
+    ready = ScrollPosition(-1, 0, 20)
+    settled = ScrollPosition(-1, 37, 20)
+    selected = Mock()
+    selected.position.side_effect = [waiting, ready, ready, settled, settled, settled]
+
+    def write(*_: object) -> None:
+        assert clock[0] == pytest.approx(19.7)
+
+    selected._scroll.call.side_effect = write
+    report: dict[str, object] = {}
+    assert (
+        native._position_start(selected, report, nested=False, deadline=20) == settled
+    )
+    assert report["setup_readiness_position"] == {
+        "horizontal": -1,
+        "vertical": 0,
+        "view_size": 20,
+    }
+    selected._scroll.call.assert_called_once()
+    assert pauses[:2] == [0.1, 0.1]
+    assert selected.position.call_count == 6
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "VerdiClip scrolling check - Profile 1 - Microsoft\u200b Edge",
+        "VerdiClip scrolling check.txt - Notepad",
+        "VerdiClip scrolling check - File Explorer",
+    ],
+)
+def test_native_fixture_window_requires_one_exact_hosted_title(
+    monkeypatch: pytest.MonkeyPatch, title: str
+) -> None:
+    """A title substring or other browser tab must not become our setup target."""
+    from scripts import simple_scroll_native as native  # noqa: PLC0415
+
+    expected = WindowInfo(17, title, Rect(0, 0, 1000, 760))
+    wrong = [
+        replace(expected, handle=i + 20, title=value)
+        for i, value in enumerate(
+            [
+                "prefix " + title,
+                title + " suffix",
+                "VerdiClip scrolling check",
+                "VerdiClip scrolling checker - Profile 1 - Microsoft\u200b Edge",
+            ]
+        )
+    ]
+    locator = Mock()
+    locator.visible_windows.return_value = [*wrong, expected]
+    monkeypatch.setattr(native, "WindowLocator", Mock(return_value=locator))
+    monkeypatch.setattr(native.time, "monotonic", lambda: 1)
+    assert native._window(deadline=20) is expected
+    locator.visible_windows.assert_called_once()
+
+
+@pytest.mark.parametrize("outcome", ["ambiguous", "absent", "late"])
+def test_native_fixture_window_does_not_choose_first_or_accept_late(
+    monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    """Ambiguity fails immediately; absence and slow enumeration share old budget."""
+    from scripts import simple_scroll_native as native  # noqa: PLC0415
+
+    clock = [19.9]
+    expected = WindowInfo(17, native._FIXTURE_TITLES[0], Rect(0, 0, 1000, 760))
+    locator = Mock()
+
+    def visible() -> list[WindowInfo]:
+        if outcome == "late":
+            clock[0] = 20
+        if outcome == "ambiguous":
+            return [expected, replace(expected, handle=18)]
+        return [] if outcome == "absent" else [expected]
+
+    locator.visible_windows.side_effect = visible
+    monkeypatch.setattr(native, "WindowLocator", Mock(return_value=locator))
+    monkeypatch.setattr(native.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        native.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    )
+    with pytest.raises(
+        RuntimeError,
+        match="Multiple exact" if outcome == "ambiguous" else "did not show",
+    ):
+        native._window(deadline=20)
+    locator.visible_windows.assert_called_once()
+
+
+@pytest.mark.parametrize("changed", [False, True])
+def test_native_preparation_cannot_replace_the_selected_fixture_window(
+    monkeypatch: pytest.MonkeyPatch, *, changed: bool
+) -> None:
+    """Even another exact-title HWND cannot replace the window just positioned."""
+    from scripts import simple_scroll_native as native  # noqa: PLC0415
+
+    expected = WindowInfo(17, native._FIXTURE_TITLES[0], Rect(0, 0, 1000, 760))
+    user = Mock()
+
+    def work_area(
+        _action: int, _parameter: int, out: c._CArgObject, _flags: int
+    ) -> int:
+        rect = c.cast(out, c.POINTER(w.RECT)).contents
+        rect.left, rect.top, rect.right, rect.bottom = 0, 0, 1024, 768
+        return 1
+
+    user.SystemParametersInfoW.side_effect = work_area
+    user.MoveWindow.return_value = user.SetForegroundWindow.return_value = 1
+    lookup = Mock(return_value=replace(expected, handle=18 if changed else 17))
+    monkeypatch.setattr(native.c, "WinDLL", Mock(return_value=user), raising=False)
+    monkeypatch.setattr(native, "_window", lookup)
+    monkeypatch.setattr(native.time, "sleep", lambda _: None)
+    if changed:
+        with pytest.raises(RuntimeError, match="fixture window changed"):
+            native._prepare(expected, deadline=20)
+    else:
+        assert native._prepare(expected, deadline=20) == expected
+    lookup.assert_called_once_with(deadline=20)
+    user.MoveWindow.assert_called_once()
+    user.SetForegroundWindow.assert_called_once_with(17)
+
+
+@pytest.mark.parametrize(
+    "outcome", ["ready", "late", "unsupported", "input", "provider"]
+)
+def test_fixture_discovery_reuses_snapshot_and_only_waits_for_unsupported(
+    monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    """Read-only fixture readiness never rebases eligibility or retries a write."""
+    from scripts import simple_scroll_native as native  # noqa: PLC0415
+
+    clock = [18.0]
+    monkeypatch.setattr(native.time, "monotonic", lambda: clock[0])
+    selected = object.__new__(native._SetupTarget)
+    selected._startup_deadline = 20.0
+    guard = Mock()
+    monkeypatch.setattr(selected, "_check_window", guard)
+    automation, walker = Mock(), Mock()
+    candidate = (object.__new__(_Interface), object.__new__(_Interface))
+    unsupported = CaptureError(
+        "No stable supported vertical scroll panel at this point"
+    )
+    calls = []
+
+    def discover(
+        current: UiaScrollTarget, point: Point, actual: object, tree: object
+    ) -> tuple[_Interface, _Interface]:
+        assert current is selected
+        assert point == Point(100, 100)
+        assert actual is automation
+        assert tree is walker
+        calls.append(current)
+        clock[0] += 1.0
+        if outcome == "provider":
+            raise CaptureError("provider read failed")
+        if len(calls) == 1 or outcome == "unsupported":
+            raise unsupported
+        if outcome == "ready":
+            clock[0] -= 0.1
+        return candidate
+
+    if outcome == "input":
+        guard.side_effect = [None, CaptureError("input changed")]
+    monkeypatch.setattr(UiaScrollTarget, "_discover", discover)
+    if outcome == "ready":
+        assert selected._discover(Point(100, 100), automation, walker) == candidate
+    else:
+        with pytest.raises(
+            (CaptureError, RuntimeError),
+            match={
+                "late": "startup timed out",
+                "unsupported": "startup timed out",
+                "input": "input changed",
+                "provider": "provider read failed",
+            }[outcome],
+        ):
+            selected._discover(Point(100, 100), automation, walker)
+    assert len(calls) == (1 if outcome in ("input", "provider") else 2)
+    assert not hasattr(selected, "_scroll")  # No setter exists during this phase.
+
+
+@pytest.mark.parametrize("late", ["waiting", "read", "final-check"])
+def test_native_readiness_deadline_cannot_authorize_a_setup_write(
+    monkeypatch: pytest.MonkeyPatch, late: str
+) -> None:
+    """The old deadline is checked after blocking work and just before setter."""
+    from scripts import simple_scroll_native as native  # noqa: PLC0415
+
+    clock = [19.9]
+    monkeypatch.setattr(native.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        native.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    )
+    selected = Mock()
+    selected.position.return_value = ScrollPosition(
+        -1, 0, 100 if late == "waiting" else 20
+    )
+    if late == "read":
+        selected.position.side_effect = lambda: (
+            clock.__setitem__(0, 20),
+            ScrollPosition(-1, 0, 20),
+        )[1]
+    elif late == "final-check":
+        clock[0] = 19
+
+        def check() -> None:
+            if selected.check.call_count == 5:
+                clock[0] = 20
+
+        selected.check.side_effect = check
+    with pytest.raises(RuntimeError, match="startup timed out"):
+        native._position_start(selected, {}, nested=False, deadline=20)
+    selected._scroll.call.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "position",
+    [
+        ScrollPosition(-1, 0, float("nan")),
+        ScrollPosition(-1, 0, float("inf")),
+        ScrollPosition(-1, 0, 0),
+        ScrollPosition(-1, 0, 101),
+        ScrollPosition(-2, 0, 20),
+        ScrollPosition(-1, -1, 20),
+    ],
+)
+def test_native_readiness_invalid_state_is_not_polled_until_pass(
+    monkeypatch: pytest.MonkeyPatch, position: ScrollPosition
+) -> None:
+    """Malformed states fail immediately, without a write or another sample."""
+    from scripts import simple_scroll_native as native  # noqa: PLC0415
+
+    monkeypatch.setattr(native.time, "monotonic", lambda: 1)
+    selected = Mock()
+    selected.position.return_value = position
+    with pytest.raises(RuntimeError, match="invalid readiness state"):
+        native._position_start(selected, {}, nested=False, deadline=20)
+    selected.position.assert_called_once()
+    selected._scroll.call.assert_not_called()
+
+
+@pytest.mark.parametrize("boundary", [1, 2, 4, 5])
+def test_native_readiness_guard_failure_is_not_reopened_or_retried(
+    monkeypatch: pytest.MonkeyPatch, boundary: int
+) -> None:
+    """Every guarded readiness boundary can withhold the setup mutation."""
+    from scripts import simple_scroll_native as native  # noqa: PLC0415
+
+    monkeypatch.setattr(native.time, "monotonic", lambda: 1)
+    monkeypatch.setattr(native.time, "sleep", lambda _: None)
+    selected = Mock()
+    selected.position.return_value = ScrollPosition(-1, 0, 20)
+
+    def check() -> None:
+        if selected.check.call_count == boundary:
+            raise CaptureError("input, ownership or layout changed")
+
+    selected.check.side_effect = check
+    with pytest.raises(CaptureError, match="changed"):
+        native._position_start(selected, {}, nested=False, deadline=20)
+    selected._scroll.call.assert_not_called()
+
+
 @pytest.mark.parametrize("stable", [True, False])
 def test_lazy_outer_target_cannot_win_before_inner_discovery(
     monkeypatch: pytest.MonkeyPatch, *, stable: bool
@@ -1437,10 +1716,14 @@ def test_scaled_nested_case_keeps_middle_start_and_exact_restoration_guards(
         target.__enter__.return_value = target
         opened.append(target)
     window = WindowInfo(17, "VerdiClip scrolling check", Rect(0, 0, 1000, 760))
-    monkeypatch.setattr(native, "_window", lambda: window)
-    monkeypatch.setattr(native, "_prepare", lambda value: value)
+    monkeypatch.setattr(native.time, "monotonic", lambda: 0)
+    find_window = Mock(return_value=window)
+    prepare = Mock(return_value=window)
+    monkeypatch.setattr(native, "_window", find_window)
+    monkeypatch.setattr(native, "_prepare", prepare)
     monkeypatch.setattr(native, "_desktop_evidence", Mock())
-    monkeypatch.setattr(native, "UiaScrollTarget", Mock(side_effect=opened))
+    monkeypatch.setattr(native, "_SetupTarget", Mock(return_value=opened[0]))
+    monkeypatch.setattr(native, "UiaScrollTarget", Mock(side_effect=opened[1:]))
     setup = Mock(return_value=start)
     monkeypatch.setattr(native, "_position_start", setup)
     monkeypatch.setattr(native, "_capture", Mock(return_value=result))
@@ -1467,7 +1750,13 @@ def test_scaled_nested_case_keeps_middle_start_and_exact_restoration_guards(
         ):
             native._case("edge-nested", tmp_path, report)
         assert not report.get("success")
-    setup.assert_called_once_with(opened[0], report, nested=True)
+    find_window.assert_called_once_with(deadline=20)
+    prepare.assert_called_once_with(window, deadline=20)
+    assert mock(native._SetupTarget).call_args.kwargs == {
+        "window": 17,
+        "deadline": 20.0,
+    }
+    setup.assert_called_once_with(opened[0], report, nested=True, deadline=20)
     assert report["start"] == {
         "horizontal": 35.0,
         "vertical": 37.0,
@@ -1971,7 +2260,7 @@ def test_native_entry_accepts_gui_case_without_importing_handoff(
     monkeypatch.setattr(
         "scripts.simple_scroll_native._launch", Mock(return_value=process)
     )
-    stop = Mock()
+    stop = Mock(return_value=None)
     monkeypatch.setattr("scripts.simple_scroll_native._stop_owned_process", stop)
     default_case = Mock(side_effect=AssertionError("Wrong case"))
     monkeypatch.setattr("scripts.simple_scroll_native._case", default_case)
@@ -2026,14 +2315,12 @@ def test_native_cleanup_posts_only_to_live_owned_window(
 def test_native_cleanup_grace_and_force_share_existing_budget(
     monkeypatch: pytest.MonkeyPatch, *, graceful: bool
 ) -> None:
-    """One ordinary close precedes the exact owned-PID force fallback if needed."""
+    """A guarded close waits; force remains only when no close was posted."""
     from scripts.simple_scroll_native import _stop_owned_process  # noqa: PLC0415
 
     process = Mock(pid=42)
     process.poll.return_value = None
-    if not graceful:
-        process.wait.side_effect = [subprocess.TimeoutExpired("app", 3), 0]
-    request = Mock(return_value=True)
+    request = Mock(return_value=graceful)
     force = Mock()
     monkeypatch.setattr("scripts.simple_scroll_native._request_owned_close", request)
     monkeypatch.setattr("scripts.simple_scroll_native.subprocess.run", force)
@@ -2043,15 +2330,46 @@ def test_native_cleanup_grace_and_force_share_existing_budget(
     monkeypatch.setenv("WINDIR", "C:/Windows")
     _stop_owned_process(process, window=123)
     request.assert_called_once_with(process, 123)
-    assert process.wait.call_args_list[0].kwargs == {"timeout": 3.0}
     if graceful:
         force.assert_not_called()
         assert process.wait.call_count == 1
+        assert process.wait.call_args.kwargs == {"timeout": 20.0}
     else:
         force.assert_called_once()
         assert force.call_args.args[0][-4:] == ["/PID", "42", "/T", "/F"]
         assert force.call_args.kwargs["timeout"] == 10.0
-        assert process.wait.call_args_list[1].kwargs == {"timeout": 7.0}
+        assert process.wait.call_args.kwargs == {"timeout": 17.0}
+
+
+@pytest.mark.parametrize("failure", ["timeout", "late-exit", "expired"])
+def test_native_graceful_shutdown_failure_is_not_forced_or_accepted(
+    monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    """The original shared deadline controls both waiting and acceptance."""
+    from scripts import simple_scroll_native as native  # noqa: PLC0415
+
+    clock = [20.0 if failure == "expired" else 19.0]
+    process = Mock(pid=42)
+    process.poll.return_value = None
+
+    def wait(*, timeout: float) -> int:
+        assert timeout == 1.0
+        clock[0] = 20.0
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired("owned process", timeout)
+        return 0
+
+    process.wait.side_effect = wait
+    force = Mock()
+    request = Mock(return_value=True)
+    monkeypatch.setattr(native.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(native, "_request_owned_close", request)
+    monkeypatch.setattr(native.subprocess, "run", force)
+    with pytest.raises((TimeoutError, subprocess.TimeoutExpired)):
+        native._stop_owned_process(process, window=123, deadline=20.0)
+    request.assert_called_once_with(process, 123)
+    force.assert_not_called()
+    assert process.wait.call_count == (0 if failure == "expired" else 1)
 
 
 def test_native_cleanup_does_not_force_an_owned_process_that_just_exited(
