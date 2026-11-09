@@ -15,6 +15,7 @@ import os
 import subprocess
 import sys
 import time
+from contextlib import ExitStack
 from dataclasses import asdict
 from pathlib import Path
 from typing import cast
@@ -23,9 +24,12 @@ from unittest.mock import patch
 from scripts import simple_scroll_native as native
 from scripts.scrolling_live_evidence import collect
 
+from verdiclip.exceptions import CaptureError
+from verdiclip.geometry import Point, Rect
 from verdiclip.platform.scrolling import UiaScrollTarget
 from verdiclip.platform.windows import WindowInfo, WindowLocator
 
+_DOCUMENT_ROLE = 50030
 _URLS = {
     "edge-google-live": "https://www.google.com/search?q=Windows+UI+Automation+ScrollPattern",
     "edge-todo-access": "https://to-do.live.com/tasks/",
@@ -166,7 +170,13 @@ def google_results_ready(title: str, names: list[str]) -> bool:
         "google" in title.casefold()
         and "scrollpattern" in title.casefold()
         and any(name.casefold() in ("search results", "main") for name in names)
-        and "learn.microsoft.com" in joined
+        # Observed Google UIA exposes this standalone site label in addition
+        # to composite link names. Do not accept a host buried in other text.
+        and any(
+            name.strip().casefold()
+            in ("learn.microsoft.com", "https://learn.microsoft.com")
+            for name in names
+        )
         and not any(
             marker in joined
             for marker in (
@@ -264,19 +274,88 @@ class LiveSite:
             "Google search results not verified; inspect live screenshot and UIA "
             "names for consent, challenge, network failure or changed page layout",
         )
-        point = window.bounds.center
-        with UiaScrollTarget(point, window=window.handle) as target:
-            start = native._position_start(
-                target, report, nested=False, deadline=time.monotonic() + 10
-            )
-            area = target.area
-            report["start"] = asdict(start)
-            native._require(
-                target.frame().save(str(output / "before.png")), "Save failed"
-            )
-            tick = target._input_tick
+        _capture_google(kind, window, output, report)
+
+
+def _candidate_points(bounds: Rect) -> list[Point]:
+    """Propose a small bounded set; native identity, not blank pixels, admits it."""
+    return [
+        Point(bounds.left + bounds.width * x, bounds.top + bounds.height * y)
+        for x, y in ((0.03, 0.5), (0.94, 0.5), (0.03, 0.75), (0.94, 0.75))
+    ]
+
+
+def _open_document(
+    window: WindowInfo, owners: ExitStack, report: dict[str, object]
+) -> UiaScrollTarget:
+    """Select an actual Document rather than a center-point nested panel."""
+    attempts: list[dict[str, object]] = []
+    report["document_discovery"] = attempts
+    for point in _candidate_points(window.bounds):
+        entry: dict[str, object] = {"point": asdict(point)}
+        attempts.append(entry)
+        try:
+            target = owners.enter_context(UiaScrollTarget(point, window=window.handle))
+            role = target._element.control_type()
+            entry.update(role=role, area=asdict(target.area))
+            if role == _DOCUMENT_ROLE:
+                target.check()
+                return target
+        except CaptureError as error:
+            entry["error"] = str(error)
+    raise RuntimeError("Fixture setup could not select a native Document")
+
+
+def _document_point(
+    target: UiaScrollTarget, window: WindowInfo, report: dict[str, object], phase: str
+) -> Point:
+    """Re-hit-test bounded candidates and require retained native element identity."""
+    attempts: list[dict[str, object]] = []
+    report[f"document_point_{phase}"] = attempts
+    for point in _candidate_points(target.area):
+        entry: dict[str, object] = {"point": asdict(point)}
+        attempts.append(entry)
+        target.check()
+        try:
+            with UiaScrollTarget(point, window=window.handle) as current:
+                same = target._automation.same_element(
+                    target._element, current._element
+                )
+                entry.update(
+                    same_document=same,
+                    role=current._element.control_type(),
+                    area=asdict(current.area),
+                    position=asdict(current.position()),
+                )
+                if (
+                    same
+                    and current.area == target.area
+                    and current.position() == target.position()
+                ):
+                    target.check()
+                    return point
+        except CaptureError as error:
+            entry["error"] = str(error)
+    raise RuntimeError("Fixture point no longer selects the retained native Document")
+
+
+def _capture_google(
+    kind: str, window: WindowInfo, output: Path, report: dict[str, object]
+) -> None:
+    """Keep the intended Document alive through setup, helper and diagnostics."""
+    with ExitStack() as owners:
+        target = _open_document(window, owners, report)
+        report["document_area"] = asdict(target.area)
+        _document_point(target, window, report, "before_setup")
+        start = native._position_start(
+            target, report, nested=False, deadline=time.monotonic() + 10
+        )
+        point = _document_point(target, window, report, "after_setup")
+        area = target.area
+        report.update(start=asdict(start), selected_point=asdict(point))
+        native._require(target.frame().save(str(output / "before.png")), "Save failed")
         result = native._capture(
-            point, output, kind, window=window.handle, input_tick=tick
+            point, output, kind, window=window.handle, input_tick=target._input_tick
         )
         report.update(
             capture_attempted=True,
@@ -288,21 +367,17 @@ class LiveSite:
             native._require(
                 result.image.save(str(output / "result.png")), "Save failed"
             )
-        with UiaScrollTarget(point, window=window.handle) as target:
-            after = target.position()
-            report["after"] = asdict(after)
-            native._require(
-                target.frame().save(str(output / "after.png")), "Save failed"
-            )
-        # Collect independent evidence even when the production matcher refused
-        # these pixels. Never change that failure into diagnostic success.
+        target.check()
+        after = target.position()
+        report["after"] = asdict(after)
+        native._require(target.frame().save(str(output / "after.png")), "Save failed")
+        # Independent evidence observes the retained Document even if a later
+        # point resolves to a different child. Product acceptance stays separate.
         if after == start:
-            with UiaScrollTarget(point, window=window.handle) as target:
-                report["native_diagnostic"] = collect(
-                    target, window, output / "native-diagnostic", _observation_script
-                )
-            with UiaScrollTarget(point, window=window.handle) as target:
-                native._require(target.position() == start, "Diagnostic changed start")
+            report["native_diagnostic"] = collect(
+                target, window, output / "native-diagnostic", _observation_script
+            )
+            native._require(target.position() == start, "Diagnostic changed start")
         if (output / "frame-0.png").is_file():
             native._verify_selected_target(output, area, start)
         native._require(after == start, "Live-site starting position was not restored")

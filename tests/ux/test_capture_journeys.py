@@ -363,6 +363,9 @@ class TestMagnifier:
             show_magnifier=True,
         )
         overlay.show()
+        # QTest's cached window position can suppress a same-coordinate move
+        # after another journey. Approach the sampled pixel from a distinct point.
+        QTest.mouseMove(overlay, QPoint(90, 90))
         QTest.mouseMove(overlay, QPoint(100, 100))
 
         shown = overlay.grab().toImage()

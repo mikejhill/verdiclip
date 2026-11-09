@@ -25,6 +25,7 @@ _TRAVERSAL_RESERVE_SECONDS = 2.0
 MAX_FRAMES = 80
 MAX_PIXELS = 40_000_000
 MIN_OVERLAP = 32
+_MAX_AMBIGUITY_RETRIES = 4
 _MIN_DISTINCT_ROWS = 8
 _ROUNDING_FRACTION = 0.02
 _PREFIX_MISMATCH_FRACTION = 0.05
@@ -42,6 +43,10 @@ logger = logging.getLogger(__name__)
 
 def _extent_agrees(measured: float, expected: float) -> bool:
     return abs(measured - expected) <= max(2.0, expected * _ROUNDING_FRACTION)
+
+
+class AmbiguousScrollError(CaptureError):
+    """Exact pixels admit multiple displacements; no stitch state was committed."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -276,7 +281,7 @@ class VerticalStitch:
                 if old[match[0] :] == new[: len(old) - match[0]]
             ]
             if len(complete) != 1:
-                raise CaptureError("The panel's scrolling pixels are ambiguous")
+                raise AmbiguousScrollError("The panel's scrolling pixels are ambiguous")
             return complete[0]
         return matches[0] if matches else None
 
@@ -354,7 +359,7 @@ class VerticalStitch:
             return None
         matches = self._fixed_candidates(old, new, upper)
         if len(matches) > 1:
-            raise CaptureError("The panel's scrolling pixels are ambiguous")
+            raise AmbiguousScrollError("The panel's scrolling pixels are ambiguous")
         if matches:
             advance, first, last = matches[0]
             required = self._required_prefix(old, new, advance, upper)
@@ -1188,9 +1193,94 @@ class ScrollTransaction:
             self._expected = observed
         return observed
 
+    def _retry_midpoint(
+        self,
+        accepted: ScrollPosition,
+        rejected: ScrollPosition,
+        anchor: QImage,
+    ) -> ScrollPosition:
+        """Revalidate the exact accepted viewport before bounded reacquisition."""
+        if self._frames + 2 > MAX_FRAMES:
+            raise CaptureError("Scrolling capture reached its page limit")
+        returned = self._move(accepted.vertical)
+        if returned != accepted:
+            raise CaptureError(
+                "The scrolling retry could not restore its anchor position"
+            )
+        if self._frame(returned) != anchor:
+            raise CaptureError("The scrolling retry anchor pixels changed")
+        midpoint = (accepted.vertical + rejected.vertical) / 2
+        if not accepted.vertical < midpoint < rejected.vertical:
+            raise CaptureError("The scrolling retry has no smaller forward step")
+        following = self._move(midpoint)
+        if (
+            following.view_size != accepted.view_size
+            or not accepted.vertical < following.vertical < rejected.vertical
+        ):
+            raise CaptureError("The scrolling retry did not reach its smaller interval")
+        return following
+
+    def _append_step(
+        self,
+        stitch: VerticalStitch,
+        frames: _HeaderFrames,
+        position: ScrollPosition,
+        following: ScrollPosition,
+        anchor: QImage,
+    ) -> tuple[ScrollPosition, QImage]:
+        """Only typed pixel ambiguity permits up to four guarded subdivisions."""
+        for retry in range(_MAX_AMBIGUITY_RETRIES + 1):
+            if self._frames >= MAX_FRAMES:
+                raise CaptureError("Scrolling capture reached its page limit")
+            raw = self._frame(following)
+            expected = (
+                frames.body_height
+                * (100.0 - position.view_size)
+                / position.view_size
+                * (following.vertical - position.vertical)
+                / 100.0
+            )
+            logger.info(
+                "Scrolling step: viewport_height=%s view_size=%.6f "
+                "from_vertical=%.6f to_vertical=%.6f expected_advance=%.3f retry=%s",
+                frames.body_height,
+                position.view_size,
+                position.vertical,
+                following.vertical,
+                expected,
+                retry,
+            )
+            try:
+                stitch.append(
+                    frames.body(raw),
+                    expected
+                    if self._list_steps is None
+                    and following.view_size == position.view_size
+                    else None,
+                    verify=partial(self._verify_list_step, following)
+                    if self._list_steps is not None
+                    else None,
+                )
+            except AmbiguousScrollError:
+                if (
+                    retry == _MAX_AMBIGUITY_RETRIES
+                    or self._list_steps is not None
+                    or self._target.header is not None
+                    or getattr(self._target, "footer", None) is not None
+                    or self._native is not None
+                    or following.view_size != position.view_size
+                    or following.vertical <= position.vertical
+                ):
+                    raise
+                following = self._retry_midpoint(position, following, anchor)
+            else:
+                return following, raw
+        raise CaptureError("Scrolling ambiguity retry limit reached")
+
     def _sequence(self, initial: ScrollPosition) -> QImage:
         position = self._move(0.0)
         first = self._frame(position)
+        anchor = first
         frames = _HeaderFrames(
             first,
             self._target.area,
@@ -1213,31 +1303,8 @@ class ScrollTransaction:
             step = 50.0 * position.view_size / (100.0 - position.view_size)
             self._begin_list_step(position)
             following = self._move(min(100.0, position.vertical + step))
-            expected = (
-                frames.body_height
-                * (100.0 - position.view_size)
-                / position.view_size
-                * (following.vertical - position.vertical)
-                / 100.0
-            )
-            logger.info(
-                "Scrolling step: viewport_height=%s view_size=%.6f "
-                "from_vertical=%.6f to_vertical=%.6f expected_advance=%.3f",
-                frames.body_height,
-                position.view_size,
-                position.vertical,
-                following.vertical,
-                expected,
-            )
-            stitch.append(
-                frames.body(self._frame(following)),
-                expected
-                if self._list_steps is None
-                and following.view_size == position.view_size
-                else None,
-                verify=partial(self._verify_list_step, following)
-                if self._list_steps is not None
-                else None,
+            following, anchor = self._append_step(
+                stitch, frames, position, following, anchor
             )
             self._poll()
             if self._list_steps is not None and following.vertical != END_PERCENT:

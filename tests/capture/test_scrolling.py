@@ -701,16 +701,23 @@ def test_already_restored_state_still_rechecks_user_input(
     assert target.moves == []
 
 
-def test_native_diagnostics_keep_only_two_accepted_frames(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+@pytest.mark.parametrize(
+    ("mode", "count"),
+    [
+        ("edge-app-tray", 2),
+        ("edge-owned-search", 9),
+        ("edge-owned-settings", 9),
+        ("edge-google-live", 9),
+    ],
+)
+def test_native_diagnostics_keep_bounded_frame_evidence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: str, count: int
 ) -> None:
     """The test wrapper observes the same transaction without changing its result."""
     target = Target()
     results = []
     original = ScrollTransaction._frame
-    monkeypatch.setattr(
-        "sys.argv", ["-c", "10", "20", "scratch", str(tmp_path), "edge-app-tray"]
-    )
+    monkeypatch.setattr("sys.argv", ["-c", "10", "20", "scratch", str(tmp_path), mode])
     monkeypatch.setattr(
         "scripts.simple_scroll_native.helper_main",
         lambda: results.append(transaction(target).run()),
@@ -722,9 +729,49 @@ def test_native_diagnostics_keep_only_two_accepted_frames(
     assert ScrollTransaction._frame is original
     assert QImage(str(tmp_path / "frame-0.png")) == target.document.copy(0, 0, 80, 120)
     assert QImage(str(tmp_path / "frame-1.png")) == target.document.copy(0, 60, 80, 120)
-    assert len(list(tmp_path.glob("*.png"))) == 2
+    assert len(list(tmp_path.glob("*.png"))) == count
     observations = json.loads((tmp_path / "frames.json").read_text())
-    assert [item["vertical"] for item in observations] == [0.0, 12.5]
+    assert [item["vertical"] for item in observations] == [
+        12.5 * i for i in range(count)
+    ]
+
+
+def test_owned_diagnostics_keep_the_rejected_third_frame(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A later refusal retains its actual attempted pixels without becoming success."""
+    target = Target()
+    results = []
+    append = VerticalStitch.append
+    calls = 0
+
+    def reject_second(
+        stitch: VerticalStitch,
+        image: QImage,
+        advance: float | None,
+        *,
+        verify: Callable[[int], None] | None = None,
+    ) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise CaptureError("ambiguous third frame")
+        append(stitch, image, advance, verify=verify)
+
+    monkeypatch.setattr(VerticalStitch, "append", reject_second)
+    monkeypatch.setattr("sys.argv", ["-c", str(tmp_path), "edge-owned-settings"])
+    monkeypatch.setattr(
+        "scripts.simple_scroll_native.helper_main",
+        lambda: results.append(transaction(target).run()),
+    )
+    _trace_helper()
+    assert results[0].image is None
+    assert results[0].message == "ambiguous third frame"
+    assert results[0].restoration == "restored"
+    assert QImage(str(tmp_path / "frame-2.png")) == target.document.copy(
+        0, 120, 80, 120
+    )
+    assert len(json.loads((tmp_path / "frames.json").read_text())) == 3
 
 
 def test_interior_seams_recover_content_under_bottom_chrome() -> None:

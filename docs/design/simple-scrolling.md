@@ -78,6 +78,16 @@ preferred displacement match. This captures the visible content sequence,
 including its original top boundary; it cannot reconstruct content permanently
 hidden behind an opaque overlay.
 
+For a generic panel with unchanged extent and no verified native Header/List
+geometry, ambiguous pixels can trigger at most four smaller-step attempts. Each
+attempt returns to the last accepted position and requires its entire raw
+viewport to match exactly before moving to the midpoint of the rejected
+interval. Every new frame counts against the existing budget. Only pixel
+ambiguity permits this recovery; input, geometry, provider and other reported
+failures still stop immediately. Each accepted join must independently satisfy
+the unchanged unique-pixel proof. No provider percentage chooses an ambiguous
+match, and a failed or uncertain return never permits a retry.
+
 Limits: one immutable 35-second transaction deadline, 80 frames and 40 million
 output pixels. New traversal phases and forward/top-seek setters stop at
 33 seconds. An already-issued step may finish its existing proof within the

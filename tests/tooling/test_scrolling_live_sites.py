@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+from contextlib import ExitStack
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 
 import pytest
 from scripts import scrolling_live_sites as live
 
+from verdiclip.capture.scrolling import ScrollPosition, ScrollResult
 from verdiclip.geometry import Rect
 from verdiclip.platform.windows import WindowInfo
 
@@ -148,3 +150,132 @@ def test_chrome_only_observation_is_retained_but_rejected(
         live._observe(window, tmp_path)
     assert (tmp_path / "native-document-discovery.json").is_file()
     assert not live.google_results_ready(window.title, observation["names"])
+
+
+@pytest.mark.parametrize(
+    "label",
+    [
+        "learn.microsoft.com.evil.example",
+        "https://learn.microsoft.com.evil.example",
+        "evil.learn.microsoft.com",
+        "https://evil.learn.microsoft.com",
+        "https://evil.example/learn.microsoft.com",
+        "https://evil.example/?site=https://learn.microsoft.com",
+        "https://learn.microsoft.com@evil.example",
+        "https://learn.microsoft.com/attacker-label",
+        "IUIAutomationScrollPattern Microsoft Learn https://learn.microsoft.com",
+        "Microsoft Learn",
+    ],
+)
+def test_google_readiness_rejects_embedded_or_spoofed_site_labels(label: str) -> None:
+    """Readiness requires an observed exact native label, not host-like prose."""
+    assert not live.google_results_ready(
+        "Windows UI Automation ScrollPattern - Google Search",
+        ["Search Results", label],
+    )
+
+
+def test_google_readiness_accepts_retained_native_site_label() -> None:
+    """Run2's raw UIA evidence includes this standalone label, not only titles."""
+    assert live.google_results_ready(
+        "Windows UI Automation ScrollPattern - Google Search - Microsoft Edge",
+        [
+            "Search Results",
+            "IUIAutomationScrollPattern interface (uiautomationclient.h) "
+            "Microsoft Learn https://learn.microsoft.com "
+            "\u203a ... \u203a Uiautomationclient.h",
+            "Microsoft Learn",
+            "https://learn.microsoft.com",
+        ],
+    )
+
+
+def test_document_point_rejects_nested_panel_with_matching_geometry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only native CompareElements identity can admit the re-hit-tested point."""
+    window = WindowInfo(1234, "Google", Rect(0, 0, 800, 600))
+    target = Mock(area=window.bounds)
+    target.position.return_value = ScrollPosition(-1, 37, 17)
+    candidate = MagicMock(area=window.bounds)
+    candidate.__enter__.return_value = candidate
+    candidate.position.return_value = target.position()
+    candidate._element.control_type.return_value = live._DOCUMENT_ROLE
+    target._automation.same_element.side_effect = [False, True]
+    factory = Mock(return_value=candidate)
+    monkeypatch.setattr(live, "UiaScrollTarget", factory)
+    report: dict[str, object] = {}
+    point = live._document_point(target, window, report, "after_setup")
+    assert point == live._candidate_points(window.bounds)[1]
+    assert factory.call_count == 2
+    assert target._automation.same_element.call_count == 2
+    target.move.assert_not_called()
+    candidate.move.assert_not_called()
+
+
+def test_document_point_search_is_bounded_and_does_not_scroll(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Changing children cannot trigger unbounded probing or arbitrary capture."""
+    window = WindowInfo(1234, "Google", Rect(0, 0, 800, 600))
+    target = Mock(area=window.bounds)
+    candidate = MagicMock(area=window.bounds)
+    candidate.__enter__.return_value = candidate
+    candidate.position.return_value = ScrollPosition(-1, 0, 88)
+    target._automation.same_element.return_value = False
+    factory = Mock(return_value=candidate)
+    monkeypatch.setattr(live, "UiaScrollTarget", factory)
+    with pytest.raises(RuntimeError, match="retained native Document"):
+        live._document_point(target, window, {}, "after_setup")
+    assert factory.call_count == len(live._candidate_points(window.bounds))
+    target.move.assert_not_called()
+    candidate.move.assert_not_called()
+
+
+def test_open_document_rejects_nested_generic_scroll_region(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A successfully discovered scroller is not necessarily the intended page."""
+    window = WindowInfo(1234, "Google", Rect(0, 0, 800, 600))
+    candidate = MagicMock(area=window.bounds)
+    candidate.__enter__.return_value = candidate
+    candidate._element.control_type.side_effect = [50026, live._DOCUMENT_ROLE]
+    factory = Mock(return_value=candidate)
+    monkeypatch.setattr(live, "UiaScrollTarget", factory)
+    with ExitStack() as owners:
+        assert live._open_document(window, owners, {}) is candidate
+    assert factory.call_count == 2
+    candidate.move.assert_not_called()
+
+
+def test_failed_helper_diagnoses_retained_document_without_rediscovery(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The same screen point may now hit AI Overview; retain the original page."""
+    window = WindowInfo(1234, "Google", Rect(0, 0, 800, 600))
+    start = ScrollPosition(-1, 37, 17)
+    target = Mock(area=window.bounds)
+    target.position.return_value = start
+    monkeypatch.setattr(live, "_open_document", Mock(return_value=target))
+    monkeypatch.setattr(
+        live,
+        "_document_point",
+        Mock(return_value=live._candidate_points(window.bounds)[0]),
+    )
+    monkeypatch.setattr(live.native, "_position_start", Mock(return_value=start))
+    monkeypatch.setattr(
+        live.native,
+        "_capture",
+        Mock(return_value=ScrollResult(None, "ambiguous pixels", "restored", 2)),
+    )
+    collect = Mock(return_value={"success": True, "product_qualification": False})
+    monkeypatch.setattr(live, "collect", collect)
+    factory = Mock()
+    monkeypatch.setattr(live, "UiaScrollTarget", factory)
+    report: dict[str, object] = {}
+    with pytest.raises(RuntimeError, match="ambiguous pixels"):
+        live._capture_google("edge-google-live", window, tmp_path, report)
+    assert collect.call_args.args[0] is target
+    factory.assert_not_called()
+    assert report["after"] == {"horizontal": -1, "vertical": 37, "view_size": 17}
+    assert report.get("success") is not True

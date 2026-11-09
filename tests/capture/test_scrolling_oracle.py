@@ -2559,3 +2559,42 @@ def test_hit_failure_receipt_saved_after_helper_without_changing_exception(
         assert json.loads(path.read_text()) == receipt
     else:
         assert not path.exists()
+
+
+@pytest.mark.parametrize("second_x", [18, 20])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_header_oracle_accepts_horizontally_disjoint_item_pair(
+    tmp_path: Path, second_x: int, *, reverse: bool
+) -> None:
+    """Independent rectangles may share a vertical band without overlapping."""
+    image = _header_sequence(tmp_path)
+    path = tmp_path / "frames.json"
+    positions = json.loads(path.read_text())
+    for position in positions[1:]:
+        pair = position["native_item_witness"]["items"]
+        for item, x in zip(pair, (12, second_x), strict=True):
+            item["before"].update(x=x, y=60, width=6)
+            item["after"].update(x=x, y=30, width=6)
+        if reverse:
+            pair.reverse()
+    path.write_text(json.dumps(positions), encoding="utf-8")
+    result = verify_sequence(image, tmp_path)
+    assert result["oracle_verified_rows"] == image.height()
+
+
+@pytest.mark.parametrize("second_x", [12, 13, 17])
+@pytest.mark.parametrize("second_y", [60, 62])
+def test_header_oracle_rejects_actual_rectangle_overlap(
+    tmp_path: Path, second_x: int, second_y: int
+) -> None:
+    """Equal positive deltas do not authorize duplicated or intersecting witnesses."""
+    image = _header_sequence(tmp_path)
+    path = tmp_path / "frames.json"
+    positions = json.loads(path.read_text())
+    pair = positions[1]["native_item_witness"]["items"]
+    for item, x, y in zip(pair, (12, second_x), (60, second_y), strict=True):
+        item["before"].update(x=x, y=y, width=6)
+        item["after"].update(x=x, y=y - 30, width=6)
+    path.write_text(json.dumps(positions), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="witnesses disagree on displacement"):
+        verify_sequence(image, tmp_path)
