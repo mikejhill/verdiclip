@@ -78,6 +78,21 @@ preferred displacement match. This captures the visible content sequence,
 including its original top boundary; it cannot reconstruct content permanently
 hidden behind an opaque overlay.
 
+A generic first join with a unique full-width band but a changing top may
+make one bounded observation pass before restarting. Three settled forward
+frames must share the same leading full-width pixels, independently of their
+registration matches. Capture then returns to the original top and requires its
+exact position and original raw pixels. After that restart, every later frame
+must preserve the observed prefix, and every accepted join must have a globally
+unique exact textured full-width band below it, with the existing 5% top check
+applied to the moving rows below that prefix. No rail or corner crop is inferred.
+Short pages, changed extents and unsuccessful exact returns cannot use this
+path. The pass cannot repeat or reset an established prefix. A banner that
+appears and then stays unchanged is indistinguishable from a collapsing header;
+this mode preserves the originally observed beginning, not necessarily the
+page's latest state. It retains the ordinary band matcher's limitations and does
+not claim a complete moving-overlap or semantic-header proof.
+
 For a generic panel with unchanged extent and no verified native Header/List
 geometry, ambiguous pixels can trigger at most four smaller-step attempts. Each
 attempt returns to the last accepted position and requires its entire raw

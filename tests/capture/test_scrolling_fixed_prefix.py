@@ -352,3 +352,37 @@ def test_outline_short_terminal_after_multiple_interval_refinements() -> None:
     painter.drawImage(0, 1197, outlined(632).copy(0, 565, 80, 3))
     painter.end()
     assert stitch.finish() == expected
+
+
+def test_outline_rejects_width_without_noncorner_interior() -> None:
+    """A real narrow image cannot independently identify a bottom interior."""
+    image = document(120, width=5)
+    stitch = VerticalStitch(image)
+    rows = stitch._rows(image)
+    assert stitch._bottom_outline(rows, rows, 2) == (0, 0, 0)
+
+
+def test_outline_rejects_corners_crossing_prefix() -> None:
+    """A short body cannot donate header pixels as native-corner evidence."""
+    image = QImage(80, 5, QImage.Format.Format_RGB32)
+    image.fill(QColor("white"))
+    painter = QPainter(image)
+    painter.fillRect(0, 0, 1, 5, QColor("black"))
+    painter.fillRect(79, 0, 1, 5, QColor("black"))
+    painter.fillRect(0, 4, 80, 1, QColor("black"))
+    painter.end()
+    stitch = VerticalStitch(image)
+    rows = stitch._rows(image)
+    assert stitch._bottom_outline(rows, rows, 3) == (0, 0, 0)
+
+
+def test_complete_flat_overlap_is_not_textured_evidence() -> None:
+    """An entire exact uniform body still cannot establish a displacement."""
+    image = QImage(80, 120, QImage.Format.Format_RGB32)
+    image.fill(QColor("white"))
+    painter = QPainter(image)
+    painter.fillRect(0, 0, 80, 64, QColor("gray"))
+    painter.end()
+    stitch = VerticalStitch(image)
+    rows = stitch._rows(image)
+    assert stitch._fixed_candidates(rows, rows, 64) == []

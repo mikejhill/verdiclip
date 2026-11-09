@@ -177,13 +177,16 @@ def test_google_readiness_rejects_embedded_or_spoofed_site_labels(label: str) ->
 
 def test_google_readiness_accepts_retained_native_site_label() -> None:
     """Run2's raw UIA evidence includes this standalone label, not only titles."""
+    link_label = (
+        "IUIAutomationScrollPattern interface (uiautomationclient.h) "
+        "Microsoft Learn https://learn.microsoft.com "
+        "\u203a ... \u203a Uiautomationclient.h"
+    )
     assert live.google_results_ready(
         "Windows UI Automation ScrollPattern - Google Search - Microsoft Edge",
         [
             "Search Results",
-            "IUIAutomationScrollPattern interface (uiautomationclient.h) "
-            "Microsoft Learn https://learn.microsoft.com "
-            "\u203a ... \u203a Uiautomationclient.h",
+            link_label,
             "Microsoft Learn",
             "https://learn.microsoft.com",
         ],

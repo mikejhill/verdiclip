@@ -351,13 +351,13 @@ jobs:
         github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
         ((github.head_ref == 'fix/real-app-scrolling' && github.event.pull_request.draft == true) ||
          github.head_ref == 'release-please--branches--main--components--verdiclip')))
-    name: Live Edge / ${{ matrix.application }}
+    name: Browser layout / ${{ matrix.application }}
     runs-on: windows-2025
     timeout-minutes: 8
     strategy:
       fail-fast: false
       matrix:
-        application: [edge-google-live, edge-todo-access]
+        application: [edge-google-live, edge-todo-access, edge-owned-search, edge-owned-settings]
     env:
       QT_QPA_PLATFORM: windows
       PYTHONUTF8: "1"
@@ -380,9 +380,14 @@ jobs:
       - name: Prove real desktop capture
         timeout-minutes: 2
         run: uv run pytest tests/capture/test_grabber.py::TestMssScreenSource::test_freeze --require-interactive-capture -v
-      - name: Observe the live site in a fresh installed Edge profile
+      - name: Verify the browser layout in a fresh installed Edge profile
         timeout-minutes: 4
-        run: uv run python -m scripts.scrolling_live_sites "$env:SCROLL_APPLICATION"
+        run: |
+          if ($env:SCROLL_APPLICATION.StartsWith('edge-owned-')) {
+            uv run python -m scripts.scrolling_owned_layouts "$env:SCROLL_APPLICATION"
+          } else {
+            uv run python -m scripts.scrolling_live_sites "$env:SCROLL_APPLICATION"
+          }
       - name: Keep signed-in To Do explicitly unqualified
         if: matrix.application == 'edge-todo-access'
         run: |

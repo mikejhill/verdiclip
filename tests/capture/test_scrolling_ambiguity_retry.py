@@ -1,5 +1,6 @@
 """Bounded acquisition retries preserve unique pixel proof and native guards."""
 
+import math
 from collections.abc import Callable
 from typing import override
 
@@ -275,8 +276,9 @@ class RepeatedCardsTarget(Target):
 
     def __init__(self) -> None:
         super().__init__(total=1200, offset=100)
-        self.document = patterned()
         painter = QPainter(self.document)
+        painter.fillRect(0, 0, 3, 1200, QColor("white"))
+        painter.fillRect(77, 0, 3, 1200, QColor("white"))
         tile = self.document.copy(0, 64, 80, 60)
         for index, y in enumerate(range(64, 1200, 60)):
             painter.drawImage(0, y, tile)
@@ -364,3 +366,56 @@ def test_real_indefinite_repetition_exhausts_subdivision_without_output() -> Non
     assert target.position() == original
     assert len(target.moves) == 11  # Top seek, failed step, four subdivisions, restore.
     assert result.frames == 10
+
+
+def test_append_budget_is_checked_before_capture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A preexisting exhausted budget cannot acquire one additional stable frame."""
+    target, operation, stitch, frames, accepted, anchor = setup()
+    following = operation._move(12.5)
+    monkeypatch.setattr("verdiclip.capture.scrolling.MAX_FRAMES", 1)
+    before = target.count
+    with pytest.raises(CaptureError, match="page limit"):
+        operation._append_step(stitch, frames, accepted, following, anchor)
+    assert target.count == before
+    assert target.moves == [12.5]
+
+
+def test_adjacent_float_positions_cannot_create_midpoint_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """IEEE rounding at adjacent provider values must not produce a zero step."""
+    _target, operation, _stitch, _frames, _accepted, anchor = setup()
+    accepted = ScrollPosition(27, 1.0, 20)
+    rejected = ScrollPosition(27, math.nextafter(1.0, math.inf), 20)
+    calls: list[float] = []
+
+    def returned(percent: float) -> ScrollPosition:
+        calls.append(percent)
+        return accepted
+
+    monkeypatch.setattr(operation, "_move", returned)
+    monkeypatch.setattr(operation, "_frame", lambda _position: anchor)
+    with pytest.raises(CaptureError, match="no smaller forward step"):
+        operation._retry_midpoint(accepted, rejected, anchor)
+    assert calls == [accepted.vertical]
+
+
+def test_midpoint_result_must_stay_inside_rejected_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reacquisition boundary independently verifies its movement result."""
+    _target, operation, _stitch, _frames, accepted, anchor = setup()
+    rejected = ScrollPosition(accepted.horizontal, 12.5, accepted.view_size)
+    calls: list[float] = []
+
+    def moved(percent: float) -> ScrollPosition:
+        calls.append(percent)
+        return accepted if len(calls) == 1 else rejected
+
+    monkeypatch.setattr(operation, "_move", moved)
+    monkeypatch.setattr(operation, "_frame", lambda _position: anchor)
+    with pytest.raises(CaptureError, match="smaller interval"):
+        operation._retry_midpoint(accepted, rejected, anchor)
+    assert calls == [0, 6.25]

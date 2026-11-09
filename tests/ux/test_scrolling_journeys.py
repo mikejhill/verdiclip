@@ -137,8 +137,13 @@ def test_scrolling_uses_configured_save_and_clipboard_without_editor(
     assert app.controller.capture._last_area is None
 
 
+@pytest.mark.parametrize("collapse", [False, True])
 def test_fixed_header_delivers_full_width_content_once(
-    make_app: AppFactory, qtbot: QtBot, monkeypatch: pytest.MonkeyPatch
+    make_app: AppFactory,
+    qtbot: QtBot,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    collapse: bool,
 ) -> None:
     """UX-CAP-19: a stable visible header needs no configuration or manual crop."""
     target = Target()
@@ -147,14 +152,27 @@ def test_fixed_header_delivers_full_width_content_once(
     def frame() -> QImage:
         image = original_frame()
         painter = QPainter(image)
-        painter.fillRect(0, 0, image.width(), 16, QColor("lightgray"))
+        expanded = collapse and target.offset == 0
+        painter.fillRect(
+            0,
+            0,
+            image.width(),
+            24 if expanded else 16,
+            QColor("blue" if expanded else "lightgray"),
+        )
         painter.end()
         return image
 
     monkeypatch.setattr(target, "frame", frame)
     expected = target.document.copy()
     painter = QPainter(expected)
-    painter.fillRect(0, 0, expected.width(), 16, QColor("lightgray"))
+    painter.fillRect(
+        0,
+        0,
+        expected.width(),
+        24 if collapse else 16,
+        QColor("blue" if collapse else "lightgray"),
+    )
     painter.end()
     initial = target.position()
     result = transaction(target).run()

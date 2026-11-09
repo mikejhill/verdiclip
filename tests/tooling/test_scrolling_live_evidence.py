@@ -14,7 +14,6 @@ from scripts import scrolling_live_sites as live
 
 from verdiclip.capture.scrolling import ScrollPosition
 from verdiclip.geometry import Rect
-from verdiclip.platform.scrolling import UiaScrollTarget
 from verdiclip.platform.windows import WindowInfo
 
 _WINDOW = WindowInfo(1234, "Google Search", Rect(0, 0, 800, 600))
@@ -75,7 +74,10 @@ def test_four_paired_frames_and_restore(observations: Mock, tmp_path: Path) -> N
     """Collect all samples despite a separate product failure and keep verdict false."""
     target = Target()
     result = evidence.collect(
-        cast("UiaScrollTarget", target), _WINDOW, tmp_path, live._observation_script
+        cast("evidence.UiaScrollTarget", target),
+        _WINDOW,
+        tmp_path,
+        live._observation_script,
     )
     assert result["success"] is True
     assert result["product_qualification"] is False
@@ -93,7 +95,10 @@ def test_uncertain_setter_is_not_followed_by_restore(
     target = Target()
     target.fail_move = True
     result = evidence.collect(
-        cast("UiaScrollTarget", target), _WINDOW, tmp_path, live._observation_script
+        cast("evidence.UiaScrollTarget", target),
+        _WINDOW,
+        tmp_path,
+        live._observation_script,
     )
     assert result["success"] is False
     assert result["restoration"] == "unproven"
@@ -115,7 +120,10 @@ def test_changed_document_prevents_restoration(
     observations.side_effect = [_GEOMETRY, changed, changed]
     target = Target()
     result = evidence.collect(
-        cast("UiaScrollTarget", target), _WINDOW, tmp_path, live._observation_script
+        cast("evidence.UiaScrollTarget", target),
+        _WINDOW,
+        tmp_path,
+        live._observation_script,
     )
     assert result["success"] is False
     assert result["restoration"] == "unproven"
