@@ -27,7 +27,6 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
-    QFontComboBox,
     QMenu,
     QMessageBox,
     QSystemTrayIcon,
@@ -306,29 +305,53 @@ class TestAfterCapture:
 
         UX-CAP-11.
         """
-        original_font = style_bar.QFontComboBox
         font_milliseconds: list[float] = []
+        editor_milliseconds: list[float] = []
+        spin_milliseconds: list[float] = []
 
-        def measured_font() -> QFontComboBox:
-            font_clock = Stopwatch()
-            try:
-                return original_font()
-            finally:
-                font_milliseconds.append(font_clock.elapsed_ms)
+        def measured[**P, R](
+            operation: Callable[P, R], samples: list[float]
+        ) -> Callable[P, R]:
+            def invoke(*args: P.args, **kwargs: P.kwargs) -> R:
+                phase_clock = Stopwatch()
+                try:
+                    return operation(*args, **kwargs)
+                finally:
+                    samples.append(phase_clock.elapsed_ms)
 
-        # Observe the existing cold constructor; never prewarm or subtract it.
-        monkeypatch.setattr(style_bar, "QFontComboBox", measured_font)
+            return invoke
+
+        # Observe the same constructors once; never prewarm or subtract time.
+        monkeypatch.setattr(
+            style_bar,
+            "QFontComboBox",
+            measured(style_bar.QFontComboBox, font_milliseconds),
+        )
+        monkeypatch.setattr(
+            EditorWindow,
+            "__init__",
+            measured(EditorWindow.__init__, editor_milliseconds),
+        )
+        monkeypatch.setattr(
+            style_bar, "QSpinBox", measured(style_bar.QSpinBox, spin_milliseconds)
+        )
         app = make_app()
         clock = Stopwatch()
 
         app.press_hotkey("fullscreen")
+        dispatch_ms = clock.elapsed_ms
 
         qtbot.waitUntil(lambda: len(app.controller.editors) == 1)
+        editor_ready_ms = clock.elapsed_ms
         editor: EditorWindow = app.controller.editors[0]
         qtbot.waitExposed(editor)
         elapsed = clock.elapsed_ms
         assert elapsed < 300, (
             f"Capture-to-editor {elapsed:.3f} ms; "
+            f"dispatch returned at {dispatch_ms:.3f} ms; "
+            f"editor list ready at {editor_ready_ms:.3f} ms; "
+            f"EditorWindow constructor milliseconds: {editor_milliseconds!r}; "
+            f"StyleBar QSpinBox constructor milliseconds: {spin_milliseconds!r}; "
             f"QFontComboBox constructor milliseconds: {font_milliseconds!r}"
         )
         assert editor.action("tool_select").isChecked()
