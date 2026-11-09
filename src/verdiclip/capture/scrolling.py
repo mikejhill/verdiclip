@@ -235,7 +235,7 @@ class VerticalStitch:
         ids: dict[bytes, int] = {}
         before = [ids.setdefault(row, len(ids)) for row in old]
         after = [ids.setdefault(row, len(ids)) for row in new]
-        match = None
+        matches = []
         for advance in range(1, len(before) - MIN_OVERLAP + 1):
             if nonrail_width is not None and any(
                 left[: nonrail_width * 4] != right[: nonrail_width * 4]
@@ -255,10 +255,28 @@ class VerticalStitch:
                     longest = (start, row)
                 start = row + 1
             if longest[1] > longest[0]:
-                if match is not None:
-                    raise CaptureError("The panel's scrolling pixels are ambiguous")
-                match = (advance, *longest)
-        return match
+                matches.append((advance, *longest))
+        return VerticalStitch._unique_alignment(old, new, matches)
+
+    @staticmethod
+    def _unique_alignment(
+        old: list[bytes], new: list[bytes], matches: list[tuple[int, int, int]]
+    ) -> tuple[int, int, int] | None:
+        """A repeated local band cannot outweigh a unique entire exact overlap.
+
+        This is pixel evidence, not proximity to the provider's reported shift.
+        If entire overlaps are themselves repeated, ambiguity remains fatal.
+        """
+        if len(matches) > 1:
+            complete = [
+                match
+                for match in matches
+                if old[match[0] :] == new[: len(old) - match[0]]
+            ]
+            if len(complete) != 1:
+                raise CaptureError("The panel's scrolling pixels are ambiguous")
+            return complete[0]
+        return matches[0] if matches else None
 
     def _edge_onset(
         self,

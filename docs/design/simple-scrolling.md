@@ -59,8 +59,9 @@ is guessed or trimmed. Registration requires one globally unique displacement
 with an exact, textured, full-width band of at least 32 rows. It joins inside
 that band, preserving earlier pixels above and later pixels below the seam.
 This replaces intermediate bottom chrome with later visible content while
-retaining the original top boundary and final bottom boundary. Repeated or
-unreliable pixels are rejected rather than assigned an arbitrary displacement.
+retaining the original top boundary and final bottom boundary. A repeated local band is disambiguated only when exactly one candidate has an
+exact entire overlap. Repeated entire overlaps and unreliable pixels are rejected
+rather than choosing a displacement near the provider percentage.
 
 Limits: one immutable 35-second transaction deadline, 80 frames and 40 million
 output pixels. New traversal phases and forward/top-seek setters stop at

@@ -3360,6 +3360,88 @@ def test_list_steps_require_bounded_distinct_disjoint_pair(reason: str) -> None:
     assert all(release.call_count == 1 for release in fixture.temporary_releases)
 
 
+@pytest.mark.parametrize("columns", [2, 3, 5])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_list_steps_accept_disjoint_items_on_the_same_row(
+    columns: int, *, reverse: bool
+) -> None:
+    """Multi-column List providers prove motion with two independent hit areas."""
+    fixture = ListStepFixture(no_hbar=True)
+    fixture.items = [
+        header_element(50007, Rect(350 + column * 115, y, 100, 48))
+        for y in (402, 458, 514, 570)
+        for column in range(columns)
+    ]
+    if reverse:
+        fixture.items.reverse()
+    fixture.children = fixture.children[:2] + fixture.items
+    for item in fixture.items:
+        item.pointer_result.side_effect = fixture.retain(item)
+    steps = fixture.capability()
+    steps.begin(fixture.position)
+    # The lowest row is preferred regardless of provider enumeration order.
+    assert len(steps._items) == 2
+    assert all(item.bounds.top == 570 for item in steps._items)
+    assert steps._items[0].bounds.intersected(steps._items[1].bounds).is_empty
+    fixture.advance(175)
+    assert steps.finish(fixture.position) == 175
+    assert len(fixture.releases) == 2
+    assert all(release.call_count == 1 for release in fixture.releases)
+    mock(fixture.target._scroll.call).assert_not_called()
+
+
+def test_list_steps_skip_overlapping_lowest_candidate_for_independent_pair() -> None:
+    """A provider's overlapping candidate cannot hide a valid lower-row pair."""
+    fixture = ListStepFixture()
+    fixture.items[1].bounds.return_value = Rect(371, 570, 1350, 15)
+    overlap = header_element(50007, Rect(371, 575, 1350, 48))
+    fixture.items.append(overlap)
+    fixture.children.append(overlap)
+    overlap.pointer_result.side_effect = fixture.retain(overlap)
+    steps = fixture.capability()
+    steps.begin(fixture.position)
+    assert [item.element for item in steps._items] == [fixture.items[0], overlap]
+    fixture.advance(175)
+    assert steps.finish(fixture.position) == 175
+    fixture.items[1].pointer_result.assert_not_called()
+
+
+def test_list_steps_same_row_overlap_is_still_ambiguous() -> None:
+    """Horizontal separation must be real, not merely different item identities."""
+    fixture = ListStepFixture(no_hbar=True)
+    fixture.items[0].bounds.return_value = Rect(371, 570, 300, 48)
+    fixture.items[1].bounds.return_value = Rect(650, 570, 300, 48)
+    steps = fixture.capability()
+    with pytest.raises(CaptureError, match="item pair is ambiguous"):
+        steps.begin(fixture.position)
+    assert not fixture.releases
+    mock(fixture.target._scroll.call).assert_not_called()
+
+
+@pytest.mark.parametrize("exposed", [62, 63, 1000])
+def test_large_folder_child_observation_stays_bounded(exposed: int) -> None:
+    """Large collections may expose only visible rows, but never unbound a scan."""
+    fixture = ListStepFixture(no_hbar=True)
+    hidden = [
+        header_element(50007, Rect(371, 800, 592, 48)) for _ in range(exposed - 2)
+    ]
+    for item in hidden:
+        item.offscreen.return_value = True
+    fixture.children = fixture.children[:2] + fixture.items + hidden
+    steps = fixture.capability()
+    if exposed == 62:
+        steps.begin(fixture.position)
+        fixture.advance(175)
+        assert steps.finish(fixture.position) == 175
+    else:
+        with pytest.raises(CaptureError, match="bounded item pair"):
+            steps.begin(fixture.position)
+        assert not fixture.releases
+    assert mock(fixture.target._walker.relative).call_count == 65
+    assert all(release.call_count == 1 for release in fixture.temporary_releases)
+    mock(fixture.target._scroll.call).assert_not_called()
+
+
 @pytest.mark.parametrize("delta", [0, -1, 175.5])
 def test_list_steps_require_positive_integral_delta(delta: float) -> None:
     """Item coordinates cannot authorize approximate pixel movement."""

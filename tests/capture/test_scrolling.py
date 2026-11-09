@@ -2894,8 +2894,9 @@ def test_list_entire_overlap_filters_partial_aliases_before_global_uniqueness() 
     painter.drawImage(0, 100, repeated)
     painter.end()
     first, second = source.copy(0, 0, 80, 160), source.copy(0, 60, 80, 160)
-    with pytest.raises(CaptureError, match="ambiguous"):
-        VerticalStitch(first).append(second, 60)
+    generic = VerticalStitch(first)
+    generic.append(second, 60)
+    assert generic.finish() == source.copy(0, 0, 80, 220)
     verified: list[int] = []
     stitch = VerticalStitch(first, nonrail_width=63)
     stitch.append(second, None, verify=verified.append)
@@ -4251,3 +4252,27 @@ def test_list_horizontal_switch_never_commits_or_issues_recovery_write(
     )
     assert target.moves[-1] != 100 * 2400 / 4764
     assert target.steps.closed
+
+
+@pytest.mark.parametrize("damage", ["none", "changed_overlap", "wrong_provider"])
+def test_repeated_local_rows_need_one_entire_overlap(damage: str) -> None:
+    """Repeated controls can align only with independent complete pixel evidence."""
+    source = document(260)
+    repeated = source.copy(0, 60, 80, 40)
+    painter = QPainter(source)
+    painter.drawImage(0, 100, repeated)
+    painter.end()
+    first, second = source.copy(0, 0, 80, 160), source.copy(0, 60, 80, 160)
+    stitch = VerticalStitch(first)
+    if damage == "changed_overlap":
+        second.setPixelColor(40, 90, QColor("magenta"))
+        with pytest.raises(CaptureError, match="ambiguous"):
+            stitch.append(second, 60)
+        assert stitch.finish() == first
+    elif damage == "wrong_provider":
+        with pytest.raises(CaptureError, match="disagree with its scroll position"):
+            stitch.append(second, 70)
+        assert stitch.finish() == first
+    else:
+        stitch.append(second, 60)
+        assert stitch.finish() == source.copy(0, 0, 80, 220)

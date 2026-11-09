@@ -1,0 +1,73 @@
+name: Scrolling usability preflight
+
+on:
+  push:
+    branches: [fix/real-app-scrolling]
+
+permissions:
+  contents: read
+
+env:
+  QT_QPA_PLATFORM: windows
+  PYTHONUTF8: "1"
+
+jobs:
+  quality:
+    if: github.repository == 'mikejhill/verdiclip'
+    name: Full Windows check before PR
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - run: uv sync --locked
+      - name: Run the unchanged complete quality gate
+        run: uv run poe check
+      - name: Require real desktop capture
+        run: uv run pytest tests/capture/test_grabber.py::TestMssScreenSource::test_freeze --require-interactive-capture -v
+
+  diagnostic:
+    if: github.repository == 'mikejhill/verdiclip'
+    name: Observe reported layout / ${{ matrix.application }}
+    runs-on: windows-2025
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        application: [edge-google-live, edge-todo-access, edge-owned-search, edge-owned-settings]
+    env:
+      SCROLL_APPLICATION: ${{ matrix.application }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - run: uv sync --locked
+      - name: Require real desktop capture
+        timeout-minutes: 2
+        run: uv run pytest tests/capture/test_grabber.py::TestMssScreenSource::test_freeze --require-interactive-capture -v
+      - name: Retain actual failure or complete independent output proof
+        timeout-minutes: 2
+        run: |
+          if ($env:SCROLL_APPLICATION.StartsWith('edge-owned-')) {
+            uv run python -m scripts.scrolling_owned_layouts "$env:SCROLL_APPLICATION"
+          } else {
+            uv run python -m scripts.scrolling_live_sites "$env:SCROLL_APPLICATION"
+          }
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: scrolling-preflight-${{ matrix.application }}
+          path: artifacts/simple-scroll
+          if-no-files-found: warn
+          retention-days: 14

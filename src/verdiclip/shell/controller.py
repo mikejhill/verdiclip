@@ -125,6 +125,7 @@ class AppController(QObject):
         self._manual_check = False
         self._update_status: QMessageBox | None = None
         self._scroll_status: QMessageBox | None = None
+        self._last_scroll_error = ""
         self._announced: str | None = None
         self._check_timer = QTimer(self)
         self._idle_timer = QTimer(self)
@@ -285,6 +286,8 @@ class AppController(QObject):
 
     def _on_scroll_failed(self, message: str) -> None:
         if not self._closing and self._pending_capture is None:
+            self._last_scroll_error = f"No screenshot was captured.\n\n{message}"
+            self._tray.set_scroll_error_available()
             self._notify("Scrolling capture stopped", message, warning=True)
             if self._scroll_status is None:
                 self._scroll_status = QMessageBox()
@@ -300,8 +303,22 @@ class AppController(QObject):
                 self._scroll_status.setIcon(QMessageBox.Icon.Warning)
                 self._scroll_status.setStandardButtons(QMessageBox.StandardButton.Ok)
                 self._scroll_status.setWindowTitle("Scrolling capture stopped")
-            self._scroll_status.setText(f"No screenshot was captured.\n\n{message}")
+                copy = self._scroll_status.addButton(
+                    "&Copy error", QMessageBox.ButtonRole.ActionRole
+                )
+                copy.clicked.connect(self._copy_scroll_error)
+                self._scroll_status.setEscapeButton(QMessageBox.StandardButton.Ok)
+                self._scroll_status.setDefaultButton(QMessageBox.StandardButton.Ok)
+                self._scroll_status.setInformativeText(
+                    "You can also copy this error later from the tray menu."
+                )
+            self._scroll_status.setText(self._last_scroll_error)
             self._scroll_status.show()
+
+    def _copy_scroll_error(self) -> None:
+        """Copy only on request, never overwrite a screenshot on failure."""
+        if self._last_scroll_error:
+            QApplication.clipboard().setText(self._last_scroll_error)
 
     def _dismiss_scroll_status(self) -> None:
         """Keep an old failure out of the pixels and input path of a new capture."""
@@ -492,6 +509,7 @@ class AppController(QObject):
             exit=self.request_exit,
             update=self.check_for_updates if self._updater is not None else None,
             capture_scrolling=self.capture_scrolling,
+            copy_scroll_error=self._copy_scroll_error,
         )
 
     def _ask_open_image(self) -> None:

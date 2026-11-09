@@ -582,6 +582,21 @@ class _ListSteps:
                 current = parent
         raise CaptureError("The retained list item cannot be hit-tested")
 
+    def _pair(self, candidates: list[_ListItem]) -> tuple[_ListItem, _ListItem]:
+        """Choose independent hit areas without assuming a single-column layout."""
+        # Prefer the lowest items so both survive a downward step. List
+        # providers may lay out several items on one row; vertical overlap
+        # alone does not make independently hit-tested identities ambiguous.
+        candidates.sort(key=lambda item: item.bounds.top, reverse=True)
+        last = candidates[0]
+        for candidate in candidates[1:]:
+            self._guard()
+            if candidate.bounds.intersected(last.bounds).is_empty and not (
+                self._target._automation.same_element(candidate.element, last.element)
+            ):
+                return candidate, last
+        raise CaptureError("The list step item pair is ambiguous")
+
     def _seed(self) -> None:
         target = self._target
         with ExitStack() as temporary, ExitStack() as retained:
@@ -599,13 +614,7 @@ class _ListSteps:
             self._guard()
             if child is not None or len(candidates) < _ITEM_PAIR:
                 raise CaptureError("The list step cannot retain a bounded item pair")
-            first, last = sorted(candidates, key=lambda item: item.bounds.top)[
-                -_ITEM_PAIR:
-            ]
-            if first.bounds.bottom > last.bounds.top or target._automation.same_element(
-                first.element, last.element
-            ):
-                raise CaptureError("The list step item pair is ambiguous")
+            first, last = self._pair(candidates)
             items = []
             for item in (first, last):
                 element = item.element.pointer_result(
