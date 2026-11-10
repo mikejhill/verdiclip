@@ -328,10 +328,13 @@ def test_unresolved_matrix_reads_only_same_element_and_releases(
         return fresh
 
     target._element.scroll_pattern.side_effect = acquire
-    result = live._observe_unresolved_pattern(target)
+    monkeypatch.setattr(live, "_observe_resolved_element", Mock())
+    result = live._observe_unresolved_pattern(target, live.Point(1, 1), 1234)
     observations = cast("list[dict[str, object]]", result["observations"])
-    assert len(observations) == 15
+    assert len(observations) == 20
     for entry in observations:
+        if entry["method"] == "resolved_element":
+            continue
         assert entry["horizontal"] == -1
         assert entry["view_size"] == 26
         assert entry["vertical"] == (34 if entry["method"] == "fresh_pattern" else 17)
@@ -345,7 +348,7 @@ def test_unresolved_matrix_stops_on_guard_error() -> None:
     """Changed input or geometry stops every subsequent COM observation."""
     target = Mock(area=Rect(0, 0, 976, 608))
     target.check.side_effect = live.CaptureError("user input changed")
-    result = live._observe_unresolved_pattern(target)
+    result = live._observe_unresolved_pattern(target, live.Point(1, 1), 1234)
     assert result["error"] == "user input changed"
     target._scroll.number.assert_not_called()
     target._element.scroll_pattern.assert_not_called()
@@ -358,7 +361,7 @@ def test_unresolved_matrix_deadline_blocks_observation(
     """No observation is admitted after the bounded deadline."""
     monkeypatch.setattr(live.time, "monotonic", Mock(side_effect=[0, 10, 10]))
     target = Mock(area=Rect(0, 0, 976, 608))
-    result = live._observe_unresolved_pattern(target)
+    result = live._observe_unresolved_pattern(target, live.Point(1, 1), 1234)
     assert result["deadline_reached"] is True
     assert result["observations"] == []
     target.check.assert_not_called()
@@ -377,7 +380,7 @@ def test_unresolved_matrix_records_partial_com_error_and_releases() -> None:
         return fresh
 
     target._element.scroll_pattern.side_effect = acquire
-    result = live._observe_unresolved_pattern(target)
+    result = live._observe_unresolved_pattern(target, live.Point(1, 1), 1234)
     assert result["error"] == "HRESULT failure"
     observations = cast("list[dict[str, object]]", result["observations"])
     assert len(observations) == 2
@@ -419,8 +422,65 @@ def test_unresolved_result_stays_failed_even_if_observation_catches_up(
     report: dict[str, object] = {}
     with pytest.raises(RuntimeError, match="position uncertain"):
         live._capture_google("edge-google-live", window, tmp_path, report)
-    matrix.assert_called_once_with(target)
+    matrix.assert_called_once_with(target, live.Point(1, 1), window.handle)
     collect.assert_not_called()
     target.move.assert_not_called()
     assert report["restoration"] == restoration
     assert report["message"] == "position uncertain"
+
+
+@pytest.mark.parametrize("mismatch", [None, "identity", "area", "role"])
+def test_resolved_observation_requires_same_document(
+    monkeypatch: pytest.MonkeyPatch,
+    mismatch: str | None,
+) -> None:
+    """A different target never contributes borrowed provider state."""
+    target = Mock(area=Rect(22, 90, 976, 608))
+    fresh = Mock(area=target.area)
+    fresh._element.control_type.return_value = 50030 if mismatch != "role" else 50033
+    if mismatch == "area":
+        fresh.area = Rect(22, 90, 650, 297)
+    target._automation.same_element.return_value = mismatch != "identity"
+    fresh._scroll.number.side_effect = lambda slot: {5: -1, 6: 34, 8: 26}[slot]
+
+    context = MagicMock()
+    context.__enter__.return_value = fresh
+    monkeypatch.setattr(live, "UiaScrollTarget", Mock(return_value=context))
+    entry: dict[str, object] = {}
+    live._observe_resolved_element(
+        target, live.Point(51, 394), 1234, entry, target.check
+    )
+    assert entry["comparable"] is (mismatch is None)
+    if mismatch is None:
+        assert (entry["horizontal"], entry["vertical"], entry["view_size"]) == (
+            -1,
+            34,
+            26,
+        )
+    else:
+        fresh._scroll.number.assert_not_called()
+    context.__exit__.assert_called_once()
+    target.move.assert_not_called()
+    fresh.move.assert_not_called()
+
+
+def test_resolved_observation_releases_on_read_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Native errors release the temporary target and cannot trigger a setter."""
+    target = Mock(area=Rect(22, 90, 976, 608))
+    fresh = Mock(area=target.area)
+    fresh._element.control_type.return_value = 50030
+    target._automation.same_element.return_value = True
+    fresh._scroll.number.side_effect = live.CaptureError("native read failed")
+    context = MagicMock()
+    context.__enter__.return_value = fresh
+    context.__exit__.return_value = False
+    monkeypatch.setattr(live, "UiaScrollTarget", Mock(return_value=context))
+    with pytest.raises(live.CaptureError, match="native read failed"):
+        live._observe_resolved_element(
+            target, live.Point(51, 394), 1234, {}, target.check
+        )
+    context.__exit__.assert_called_once()
+    target.move.assert_not_called()
+    fresh.move.assert_not_called()
