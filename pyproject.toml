@@ -158,6 +158,8 @@ mutate_only_covered_lines = true
 # Run each pytest session in a fresh fork of a server that never ran Qt: a
 # QApplication left over from an earlier session crashed CI runners
 process_isolation = "forkserver"
+# Install the single-writer log filter before any candidate children fork.
+forkserver_warmup = "collect"
 # Keep actual forkserver timings separate from verdicts and restored caches.
 log_to_file = true
 log_file_path = "mutation-timing.log"

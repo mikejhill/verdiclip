@@ -21,11 +21,13 @@ import functools
 import importlib
 import inspect
 import json
+import logging
 import os
 import sys
 from collections.abc import Callable
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, override
 
 import pytest
 
@@ -88,6 +90,31 @@ class TrampolineArity:
 
 TrampolineArity.install()
 
+
+class ForkserverLogOwner(logging.Filter):
+    """Only the warmed forkserver may write its inherited rotating handler."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.pid = os.getpid()
+
+    @override
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Keep parent lifetime/exit records, not duplicate worker messages."""
+        return record.process == self.pid
+
+    @classmethod
+    def install(cls) -> None:
+        """Bind during collect warmup; forked sessions must not rebind ownership."""
+        if "mutmut" not in sys.modules:
+            return
+        for handler in logging.getLogger("mutmut").handlers:
+            if isinstance(handler, RotatingFileHandler) and not any(
+                isinstance(existing, cls) for existing in handler.filters
+            ):
+                handler.addFilter(cls())
+
+
 # Written by mutmut's stats run, in the mutants/ folder it runs the tests from
 STATS: Final = Path("mutmut-stats.json")
 
@@ -147,6 +174,7 @@ def pytest_sessionstart() -> None:
     """A resumed same-commit run must not publish an earlier failure as current."""
     global _stats_receipt_ready  # noqa: PLW0603 - per-process pytest session state
     _stats_receipt_ready = False
+    ForkserverLogOwner.install()
     if os.environ.get("MUTANT_UNDER_TEST") == "stats":
         try:
             STATS_FAILURES.write_text("", encoding="utf-8")
