@@ -12,29 +12,15 @@ import ctypes.wintypes
 import json
 import sys
 import time
-import weakref
 from collections.abc import Callable
 from pathlib import Path
 from typing import override
 
 import pytest
-from PySide6.QtCore import QEvent, QObject, QPoint, QSize, Qt, QThread, QTimer
+from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QThread, QTimer
 from PySide6.QtGui import QGuiApplication, QIcon, QImage, QWindow
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import (
-    QAbstractButton,
-    QAbstractSpinBox,
-    QApplication,
-    QComboBox,
-    QDialog,
-    QFontComboBox,
-    QLabel,
-    QLineEdit,
-    QMessageBox,
-    QStackedWidget,
-    QTabWidget,
-    QWidget,
-)
+from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QWidget
 from pytestqt.qtbot import QtBot
 from tests.capture.desktop import DesktopSession
 from tests.capture.test_popup_capture import InputTrace
@@ -47,7 +33,6 @@ from verdiclip.capture.grabber import FrozenScreen, MssScreenSource
 from verdiclip.capture.models import Capture
 from verdiclip.platform.keyboard_hook import KeyCapture
 from verdiclip.settings import Settings
-from verdiclip.shell import settings_dialog as settings_module
 from verdiclip.shell.settings_dialog import SettingsDialog
 
 
@@ -59,18 +44,7 @@ def native_window_exposed(window: QWindow | None) -> bool:
 class SettingsTrace(InputTrace):
     """Bounded timing of one actual owned dialog; no readiness or input changes."""
 
-    LIMIT = 256
-    CHILD_EVENTS = frozenset((QEvent.Type.Polish, QEvent.Type.Show))
-    CHILD_CLASSES = (
-        (QFontComboBox, "QFontComboBox"),
-        (QTabWidget, "QTabWidget"),
-        (QStackedWidget, "QStackedWidget"),
-        (QComboBox, "QComboBox"),
-        (QAbstractSpinBox, "QAbstractSpinBox"),
-        (QAbstractButton, "QAbstractButton"),
-        (QLineEdit, "QLineEdit"),
-        (QLabel, "QLabel"),
-    )
+    LIMIT = 64
     EVENTS = frozenset(
         (
             QEvent.Type.Polish,
@@ -116,18 +90,11 @@ class SettingsTrace(InputTrace):
             }
         )
 
-    def owns_child(self, watched: QObject) -> bool:
-        """Use only ancestry, never widget text or a second top-level dialog."""
-        return (
-            self.dialog is not None
-            and isinstance(watched, QWidget)
-            and watched is not self.dialog
-            and watched.window() is self.dialog
-        )
-
-    def observe[T](self, watched: QObject, name: str, operation: Callable[[], T]) -> T:
+    def observe[T](
+        self, dialog: SettingsDialog, name: str, operation: Callable[[], T]
+    ) -> T:
         """Forward exactly once, retaining normal return versus exception unwind."""
-        if watched is not self.dialog and not self.owns_child(watched):
+        if dialog is not self.dialog:
             return operation()
         self.mark(name + ".entry")
         try:
@@ -139,41 +106,11 @@ class SettingsTrace(InputTrace):
             self.mark(name + ".return")
             return result
 
-    def font_combo_type(self) -> type[QFontComboBox]:
-        """Observe natural virtual sizing calls; never request or change a size."""
-        trace_ref = weakref.ref(self)
-
-        class ObservedFontComboBox(QFontComboBox):
-            @override
-            def sizeHint(self) -> QSize:
-                """Retain one original font-combo size-hint call and its outcome."""
-                trace = trace_ref()
-                if trace is None:
-                    return super().sizeHint()
-                return trace.observe(self, "QFontComboBox.sizeHint", super().sizeHint)
-
-            @override
-            def minimumSizeHint(self) -> QSize:
-                """Retain the separately cached original minimum-size-hint call."""
-                trace = trace_ref()
-                if trace is None:
-                    return super().minimumSizeHint()
-                return trace.observe(
-                    self, "QFontComboBox.minimumSizeHint", super().minimumSizeHint
-                )
-
-        return ObservedFontComboBox
-
     @override
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        """Record fixed class/event labels for selected owned descendant events."""
+        """Timestamp only selected events for the exact observed dialog instance."""
         if watched is self.dialog and event.type() in self.EVENTS:
             self.mark("event." + event.type().name)
-        elif event.type() in self.CHILD_EVENTS and self.owns_child(watched):
-            for kind, label in self.CHILD_CLASSES:
-                if isinstance(watched, kind):
-                    self.mark("event." + label + "." + event.type().name)
-                    break
         return super().eventFilter(watched, event)
 
 
@@ -363,9 +300,6 @@ class NativeRun:
             scoped.setattr(SettingsDialog, "__init__", observed_constructor)
             scoped.setattr(SettingsDialog, "setWindowIcon", observed_icon)
             scoped.setattr(SettingsDialog, "exec", observed_exec)
-            scoped.setattr(
-                settings_module, "QFontComboBox", self.trace.font_combo_type()
-            )
             self.app.controller.tray.action(scenario).trigger()
 
     def save_and_close(

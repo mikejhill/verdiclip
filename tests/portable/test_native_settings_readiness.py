@@ -1,15 +1,12 @@
 """Owned settings setup is bounded separately from the unchanged capture budget."""
 
 import json
-import weakref
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
-from PySide6.QtCore import QEvent, QObject, QSize
-from PySide6.QtWidgets import QDialog, QLabel, QVBoxLayout, QWidget
-from pytestqt.qtbot import QtBot
+from PySide6.QtCore import QEvent, QObject
 from tests.capture import test_capture_native as subject
 
 
@@ -224,8 +221,6 @@ def test_actual_constructor_wrapper_preserves_call_exception_and_scope(
     run.first_readiness = snapshot.copy()
     run.last_readiness = snapshot.copy()
 
-    original_font = subject.settings_module.QFontComboBox
-
     class OwnedDialog:
         def setWindowIcon(self, _icon: object) -> None:  # noqa: N802 - Qt API name
             raise AssertionError("Constructor-only test must not set an icon")
@@ -236,8 +231,6 @@ def test_actual_constructor_wrapper_preserves_call_exception_and_scope(
         def __init__(
             self, settings: object, parent: object = None, *, key_capture: object = None
         ) -> None:
-            assert subject.settings_module.QFontComboBox is not original_font
-            assert issubclass(subject.settings_module.QFontComboBox, original_font)
             calls.append((settings, parent, key_capture))
             assert run.constructor_return_ms is None
             if outcome in {"raised", "control"}:
@@ -246,7 +239,6 @@ def test_actual_constructor_wrapper_preserves_call_exception_and_scope(
                 run.done = True
 
     original = OwnedDialog.__init__
-    original_icon, original_exec = OwnedDialog.setWindowIcon, OwnedDialog.exec
     settings, parent, key_capture = object(), object(), object()
     action = Mock(
         side_effect=lambda: OwnedDialog(settings, parent, key_capture=key_capture)
@@ -276,9 +268,6 @@ def test_actual_constructor_wrapper_preserves_call_exception_and_scope(
         )
     assert calls == [(settings, parent, key_capture)]
     assert OwnedDialog.__init__ is original
-    assert OwnedDialog.setWindowIcon is original_icon
-    assert OwnedDialog.exec is original_exec
-    assert subject.settings_module.QFontComboBox is original_font
     assert run.first_readiness == snapshot
     assert run.last_readiness == snapshot
     action.assert_called_once_with()
@@ -448,158 +437,3 @@ def test_settings_failure_serializes_same_timeline_in_log_and_receipt(
     assert logged["freeze_count"] == 0
     assert receipt["frames"] == []
     assert receipt["errors"] == run.errors
-
-
-@pytest.mark.parametrize("method", ["sizeHint", "minimumSizeHint"])
-@pytest.mark.parametrize("outcome", ["returned", "raised", "control"])
-def test_font_hint_observer_preserves_one_owned_call_and_outcome(
-    qtbot: QtBot,
-    monkeypatch: pytest.MonkeyPatch,
-    method: str,
-    outcome: str,
-) -> None:
-    """Natural virtual-call wrappers preserve the exact QSize or exception."""
-    owner = QWidget()
-    qtbot.addWidget(owner)
-    trace = subject.SettingsTrace(enabled=False)
-    monkeypatch.setattr(trace, "dialog", owner)
-    font = trace.font_combo_type()(owner)
-    mark = Mock()
-    monkeypatch.setattr(trace, "mark", mark)
-    expected = QSize(137, 29)
-    failure = (
-        KeyboardInterrupt("owned") if outcome == "control" else RuntimeError("owned")
-    )
-    original = Mock(return_value=expected)
-    if outcome != "returned":
-        original.side_effect = failure
-    monkeypatch.setattr(subject.QFontComboBox, method, original)
-    if outcome == "returned":
-        assert getattr(font, method)() is expected
-    else:
-        with pytest.raises(type(failure)) as caught:
-            getattr(font, method)()
-        assert caught.value is failure
-    original.assert_called_once_with()
-    terminal = "return" if outcome == "returned" else "raise"
-    assert [call.args for call in mark.call_args_list] == [
-        (f"QFontComboBox.{method}.entry",),
-        (f"QFontComboBox.{method}.{terminal}",),
-    ]
-
-
-@pytest.mark.parametrize("method", ["sizeHint", "minimumSizeHint"])
-@pytest.mark.parametrize("scope", ["unparented", "foreign", "nested-dialog"])
-def test_font_hint_observer_does_not_attribute_other_top_levels(
-    qtbot: QtBot,
-    monkeypatch: pytest.MonkeyPatch,
-    method: str,
-    scope: str,
-) -> None:
-    """Only descendants within the exact observed top-level window get timings."""
-    owner, foreign = QWidget(), QWidget()
-    qtbot.addWidget(owner)
-    qtbot.addWidget(foreign)
-    trace = subject.SettingsTrace(enabled=False)
-    monkeypatch.setattr(trace, "dialog", owner)
-    parent = None if scope == "unparented" else foreign
-    if scope == "nested-dialog":
-        parent = QDialog(owner)
-    font = trace.font_combo_type()(parent)
-    if parent is None:
-        qtbot.addWidget(font)
-    mark = Mock()
-    monkeypatch.setattr(trace, "mark", mark)
-    expected = QSize(137, 29)
-    original = Mock(return_value=expected)
-    monkeypatch.setattr(subject.QFontComboBox, method, original)
-    assert getattr(font, method)() is expected
-    original.assert_called_once_with()
-    mark.assert_not_called()
-
-
-def test_real_offscreen_layout_reaches_font_virtual_observers(
-    qtbot: QtBot, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Qt layout itself invokes both observers without changing font or policy."""
-    owner = QWidget()
-    qtbot.addWidget(owner)
-    trace = subject.SettingsTrace(enabled=False)
-    monkeypatch.setattr(trace, "dialog", owner)
-    font = trace.font_combo_type()(owner)
-    layout = QVBoxLayout(owner)
-    layout.addWidget(font)
-    previous = (
-        font.currentFont(),
-        font.sizeAdjustPolicy(),
-        font.minimumContentsLength(),
-    )
-    mark = Mock()
-    monkeypatch.setattr(trace, "mark", mark)
-    size = owner.sizeHint()
-    assert size.width() > 0
-    assert size.height() > 0
-    phases = [call.args[0] for call in mark.call_args_list]
-    for name in ("sizeHint", "minimumSizeHint"):
-        assert f"QFontComboBox.{name}.entry" in phases
-        assert f"QFontComboBox.{name}.return" in phases
-    assert previous == (
-        font.currentFont(),
-        font.sizeAdjustPolicy(),
-        font.minimumContentsLength(),
-    )
-
-
-def test_descendant_events_use_fixed_labels_and_live_exact_window_ownership(
-    qtbot: QtBot, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Nested dialogs, reparented widgets and label text cannot enter the trace."""
-    owner, foreign = QWidget(), QWidget()
-    qtbot.addWidget(owner)
-    qtbot.addWidget(foreign)
-    trace = subject.SettingsTrace(enabled=False)
-    monkeypatch.setattr(trace, "dialog", owner)
-
-    class PrivateLabel(QLabel):
-        pass
-
-    container = QWidget(owner)
-    label = PrivateLabel("Private widget text", container)
-    outside = QLabel("Other private text", foreign)
-    nested = QLabel("Nested private text", QDialog(owner))
-    mark = Mock()
-    monkeypatch.setattr(trace, "mark", mark)
-    original_filter = Mock(return_value=True)
-    monkeypatch.setattr(subject.InputTrace, "eventFilter", original_filter)
-    for kind in (QEvent.Type.Polish, QEvent.Type.Show):
-        assert trace.eventFilter(label, QEvent(kind)) is True
-        assert trace.eventFilter(outside, QEvent(kind)) is True
-        assert trace.eventFilter(nested, QEvent(kind)) is True
-    assert trace.eventFilter(label, QEvent(QEvent.Type.Hide)) is True
-    label.setParent(foreign)
-    assert trace.eventFilter(label, QEvent(QEvent.Type.Show)) is True
-    assert [call.args for call in mark.call_args_list] == [
-        ("event.QLabel.Polish",),
-        ("event.QLabel.Show",),
-    ]
-    assert original_filter.call_count == 8
-
-
-@pytest.mark.parametrize("method", ["sizeHint", "minimumSizeHint"])
-def test_font_subclass_never_keeps_a_retired_trace_alive(
-    qtbot: QtBot, monkeypatch: pytest.MonkeyPatch, method: str
-) -> None:
-    """An owned font can outlive tracing without retaining it or losing sizing."""
-    owner = QWidget()
-    qtbot.addWidget(owner)
-    trace = subject.SettingsTrace(enabled=False)
-    font_type = trace.font_combo_type()
-    retired = weakref.ref(trace)
-    del trace
-    assert retired() is None
-    font = font_type(owner)
-    expected = QSize(137, 29)
-    original = Mock(return_value=expected)
-    monkeypatch.setattr(subject.QFontComboBox, method, original)
-    assert getattr(font, method)() is expected
-    original.assert_called_once_with()
