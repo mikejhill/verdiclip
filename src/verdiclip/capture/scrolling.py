@@ -27,7 +27,7 @@ MAX_PIXELS = 40_000_000
 MIN_OVERLAP = 32
 _MAX_AMBIGUITY_RETRIES = 4
 _SETTLE_FAST_SAMPLES = 8
-_SETTLE_MAX_SAMPLES = 25
+_SETTLE_MAX_SAMPLES = 16
 _SETTLE_ACK_SECONDS = 2.0
 _MIN_DISTINCT_ROWS = 8
 _ROUNDING_FRACTION = 0.02
@@ -1190,7 +1190,7 @@ class ScrollTransaction:
         percent: float,
         restoring: ScrollPosition | None,
     ) -> None:
-        """Retain every state and overshoot check during late acknowledgment reads."""
+        """Retain every state and overshoot check after read-only re-observation."""
         if not self._settle_state(before, current, percent, restoring):
             logger.warning(
                 "Scrolling settle rejected: stage=state-change restoring=%s "
@@ -1258,9 +1258,24 @@ class ScrollTransaction:
         grace = False
         for sample in range(_SETTLE_MAX_SAMPLES):
             if sample == _SETTLE_FAST_SAMPLES:
-                grace = restoring is None and unchanged and self._generic_layout()
-                if not grace:
+                refresh = getattr(self._target, "refresh_position", None)
+                grace = (
+                    restoring is None
+                    and unchanged
+                    and self._generic_layout()
+                    and callable(refresh)
+                )
+                if not grace or not self._ack_window_open(started, unchanged=True):
                     break
+
+                def refresh_guard() -> None:
+                    self._poll()
+                    if not self._ack_window_open(started, unchanged=True):
+                        raise CaptureError("The scroll refresh reached its time limit")
+
+                refresh(refresh_guard, self._pause)
+                refresh_guard()
+                previous = None
             if grace and not self._ack_window_open(started, unchanged=unchanged):
                 break
             self._pause(0.08)

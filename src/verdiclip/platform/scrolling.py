@@ -977,6 +977,8 @@ class UiaScrollTarget:
         automation = _Interface(pointer, self._owners)
         walker = automation.pointer_result(16, self._owners)
         self._element, self._scroll = self._discover(point, automation, walker)
+        self._point = point
+        self._control_type = self._element.control_type()
         self._provider_bounds = self._element.bounds()
         self._native_handle = self._element.native_handle()
         self._area = self._viewport()
@@ -1117,11 +1119,21 @@ class UiaScrollTarget:
         return self._provider_bounds.intersected(client)
 
     def _find(
-        self, element: _Interface, walker: _Interface
+        self,
+        element: _Interface,
+        walker: _Interface,
+        *,
+        owners: ExitStack | None = None,
+        guard: Callable[[], None] | None = None,
     ) -> tuple[_Interface, _Interface]:
+        owners = self._owners if owners is None else owners
+        check = guard if guard is not None else lambda: None
         for _ in range(_MAX_ANCESTORS):
+            check()
             kind = element.control_type()
-            pattern = element.scroll_pattern(self._owners)
+            check()
+            pattern = element.scroll_pattern(owners)
+            check()
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
                     "UIA ancestor type=%s bounds=%s scroll=%s",
@@ -1129,13 +1141,92 @@ class UiaScrollTarget:
                     element.bounds(),
                     pattern is not None,
                 )
-            if pattern is not None and 0.0 <= pattern.number(6) <= END_PERCENT:
+                check()
+            supported = pattern is not None and 0.0 <= pattern.number(6) <= END_PERCENT
+            check()
+            if pattern is not None and supported:
                 return element, pattern
-            parent = walker.parent(element, self._owners)
+            parent = walker.parent(element, owners)
+            check()
             if parent is None:
                 break
             element = parent
         raise _NoScrollTargetError("No supported vertical scroll panel at this point")
+
+    def _fresh_automation(self, owners: ExitStack) -> _Interface:
+        """Create a temporary client in the already-initialized COM apartment."""
+        pointer = c.c_void_p()
+        self._ole.CoCreateInstance(
+            c.byref(_Guid.parse("ff48dba4-60ef-4201-aa87-54103eef594e")),
+            None,
+            1,
+            c.byref(_Guid.parse("30cbe57d-d9d0-452a-ab13-7ac5ac4825ee")),
+            c.byref(pointer),
+        )
+        return _Interface(pointer, owners)
+
+    def refresh_position(
+        self, check: Callable[[], None], pause: Callable[[float], None]
+    ) -> None:
+        """Re-observe the original target without replacing it or issuing a write.
+
+        Native hit-testing can refresh a provider's published accessibility tree.
+        This is only an observation: the caller must still obtain acknowledgment
+        from the original retained ScrollPattern. A newly nested scroller fails.
+        """
+
+        def guard() -> None:
+            check()
+            self.check()
+            check()
+
+        with ExitStack() as owners:
+            guard()
+            automation = self._fresh_automation(owners)
+            guard()
+            walker = automation.pointer_result(16, owners)
+            guard()
+            for observation in range(2):
+                guard()
+                hit = self._user.WindowFromPoint(
+                    w.POINT(round(self._point.x), round(self._point.y))
+                )
+                if self._user.GetAncestor(hit, 2) != self._window:
+                    raise CaptureError("The scroll refresh selected a different window")
+                guard()
+                element = automation.pointer_result(
+                    7,
+                    owners,
+                    (w.POINT, w.POINT(round(self._point.x), round(self._point.y))),
+                )
+                guard()
+                element, _pattern = self._find(
+                    element, walker, owners=owners, guard=guard
+                )
+                guard()
+                same = self._automation.same_element(self._element, element)
+                guard()
+                if not same:
+                    raise CaptureError("The scroll refresh selected a different panel")
+                role = element.control_type()
+                guard()
+                bounds = element.bounds()
+                guard()
+                handle = element.native_handle()
+                guard()
+                if (
+                    role != self._control_type
+                    or bounds != self._provider_bounds
+                    or handle != self._native_handle
+                ):
+                    raise CaptureError("The scroll refresh target geometry changed")
+                logger.info(
+                    "Scrolling read-only refresh: observation=%s same_target=True",
+                    observation + 1,
+                )
+                if observation == 0:
+                    pause(0.5)
+                    guard()
 
     @property
     def area(self) -> Rect:

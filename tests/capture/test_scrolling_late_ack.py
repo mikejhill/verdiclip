@@ -1,4 +1,4 @@
-"""A bounded read-only grace observes one pending setter without reissuing it."""
+"""A bounded native re-observation never reissues the pending setter."""
 
 from collections.abc import Callable
 from functools import partial
@@ -19,6 +19,7 @@ class TimedDelayedTarget(DelayedTarget):
         self.now = 0.0
         self.delay = delay
         self.pauses = 0
+        self.refreshes = 0
 
     @override
     def pause(self, _seconds: float) -> None:
@@ -30,6 +31,15 @@ class TimedDelayedTarget(DelayedTarget):
             if self.delay is not None and self.polls == self.delay:
                 self.offset = round(480 * self.pending / 100)
                 self.pending = None
+
+    def refresh_position(
+        self, check: Callable[[], None], pause: Callable[[float], None]
+    ) -> None:
+        """Model the bounded read-only observation, not a second setter."""
+        self.refreshes += 1
+        check()
+        pause(0.5)
+        check()
 
 
 def operation_for(target: TimedDelayedTarget) -> ScrollTransaction:
@@ -76,6 +86,7 @@ def test_never_acknowledged_write_stays_unresolved_without_restore() -> None:
     assert target.pending == 0
     assert target.pauses <= 25
     assert target.now <= 2.01
+    assert target.refreshes == 1
 
 
 def test_fixed_sample_cap_terminates_even_if_clock_stalls() -> None:
@@ -85,7 +96,7 @@ def test_fixed_sample_cap_terminates_even_if_clock_stalls() -> None:
     operation._clock = lambda: 0
     with pytest.raises(CaptureError, match="position is uncertain"):
         operation._move(0)
-    assert target.pauses == 25
+    assert target.pauses == 17
     assert target.moves == [0]
 
 
@@ -239,12 +250,20 @@ def test_real_transaction_handles_one_late_ack_and_restores() -> None:
 
 def test_acknowledgment_at_total_two_second_limit_cannot_succeed() -> None:
     """The grace does not reset its duration when motion finally starts."""
-    target = TimedDelayedTarget(delay=24)
+    target = TimedDelayedTarget(delay=16)
     operation = operation_for(target)
+    pause = target.pause
+
+    def slow_confirmation(seconds: float) -> None:
+        pause(seconds)
+        if target.pauses == 17:
+            target.now = 2.0
+
+    operation._pause = slow_confirmation
     with pytest.raises(CaptureError, match="position is uncertain"):
         operation._move(0)
     assert target.offset == 0
-    assert target.pauses == 25
+    assert target.pauses == 17
     assert operation._expected is None
     assert target.moves == [0]
 
@@ -265,4 +284,96 @@ def test_global_deadline_dominates_second_stable_ack_sample() -> None:
         operation._move(0)
     assert target.offset == 0
     assert operation._expected is None
+    assert target.moves == [0]
+
+
+def test_fresh_only_state_never_acknowledges_retained_pending_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Even a fresh provider reporting the exact request cannot grant ownership."""
+    target = TimedDelayedTarget(delay=None)
+    operation = operation_for(target)
+    initial = target.position()
+    calls = []
+
+    def refresh(
+        check: Callable[[], None], _pause: Callable[[float], None]
+    ) -> ScrollPosition:
+        check()
+        calls.append("fresh")
+        return ScrollPosition(initial.horizontal, 0, initial.view_size)
+
+    monkeypatch.setattr(target, "refresh_position", refresh)
+    with pytest.raises(CaptureError, match="position is uncertain"):
+        operation._move(0)
+    assert calls == ["fresh"]
+    assert operation._expected is None
+    assert target.moves == [0]
+    assert "unresolved" in operation._restore(initial)
+
+
+@pytest.mark.parametrize(
+    "failure", ["cancel", "deadline", "reserve", "duration", "input"]
+)
+def test_refresh_boundary_failure_stops_without_new_setter(
+    monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    """Read-only refresh cannot restart its clock or ignore intervening user input."""
+    target = TimedDelayedTarget(delay=None)
+    operation = operation_for(target)
+    calls = []
+
+    def refresh(check: Callable[[], None], _pause: Callable[[float], None]) -> None:
+        calls.append("refresh")
+        if failure == "cancel":
+            operation._cancelled = lambda: True
+        elif failure == "deadline":
+            target.now = operation._deadline
+        elif failure == "reserve":
+            target.now = operation._deadline - 2
+        elif failure == "duration":
+            target.now = 2
+        else:
+            target.input_changed = True
+        check()
+
+    monkeypatch.setattr(target, "refresh_position", refresh)
+    with pytest.raises(CaptureError):
+        operation._move(0)
+    assert calls == ["refresh"]
+    assert operation._expected is None
+    assert target.moves == [0]
+
+
+def test_target_without_refresh_stops_after_original_eight_reads() -> None:
+    """An unsupported provider gets no unexplained passive grace."""
+    target = DelayedTarget()
+    operation = ScrollTransaction(target, lambda: False, pause=lambda _seconds: None)
+    operation._expected = target.position()
+    with pytest.raises(CaptureError, match="position is uncertain"):
+        operation._move(0)
+    assert target.moves == [0]
+    assert operation._expected is None
+
+
+def test_refresh_updated_retained_state_requires_two_new_samples(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A read-only refresh is not itself an acknowledgment observation."""
+    target = TimedDelayedTarget(delay=None)
+    operation = operation_for(target)
+    calls = []
+
+    def refresh(check: Callable[[], None], _pause: Callable[[float], None]) -> None:
+        check()
+        target.offset = 0
+        target.pending = None
+        calls.append(target.pauses)
+
+    monkeypatch.setattr(target, "refresh_position", refresh)
+    result = operation._move(0)
+    assert calls == [8]
+    assert target.pauses == 10
+    assert result.vertical == 0
+    assert operation._expected == result
     assert target.moves == [0]

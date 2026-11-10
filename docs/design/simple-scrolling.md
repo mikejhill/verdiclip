@@ -110,15 +110,20 @@ pass, using that actual position and raw frame. It cannot reset an established
 prefix or start learning after a committed join.
 
 The ordinary eight-sample, 80ms settlement path is unchanged. Only eight reads
-exactly equal to the pre-write state on a generic traversal allow extra read-only
-acknowledgment observations of the same setter. This continuation ends at 25
-total samples or two seconds from settlement entry, whichever comes first, and
-the original transaction deadlines still dominate. No-progress observations
-cannot consume the restoration reserve. Actual movement may finish its existing
-two-equal-observation proof in that reserve, within the same limits. State,
-direction, extent, input and geometry checks remain active. This never issues a
-second setter or permits restoration over an unresolved write. A blocking native
-call is not preemptible by this local observation budget.
+exactly equal to the pre-write state on a generic traversal allow one read-only
+native target re-resolution using a temporary UIA client in the existing COM
+apartment. Two hit-tests at the original point, 0.5 seconds
+apart, must identify the same nearest scrollable element, role, bounds and native
+owner. The original interfaces and input/window/display baselines are retained;
+a newly nested scroller is rejected. The original retained ScrollPattern must
+then acknowledge movement through the normal two-equal-read proof, within at
+most eight further polls. Fresh-interface values alone never acknowledge a write.
+The refresh and confirmation share a two-second admission budget from settlement
+entry and the original transaction deadlines. No-progress observations cannot
+consume the restoration reserve. State, direction, extent, input and geometry
+checks remain active. This never issues a second setter or permits restoration
+over an unresolved write. A blocking native call is not preemptible by this local
+observation budget; the helper's outer deadline remains necessary.
 
 Limits: one immutable 35-second transaction deadline, 80 frames and 40 million
 output pixels. New traversal phases and forward/top-seek setters stop at
