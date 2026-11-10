@@ -339,6 +339,70 @@ def _document_point(
     raise RuntimeError("Fixture point no longer selects the retained native Document")
 
 
+def _observe_unresolved_pattern(target: UiaScrollTarget) -> dict[str, object]:
+    """Compare retained/fresh native interfaces without resolving or writing state.
+
+    The ten-second admission bound cannot interrupt an individual COM call;
+    the hosted process watchdog remains the outer bound. Results never qualify
+    a capture or authorize restoration.
+    """
+    limit_seconds = 10
+    started = time.monotonic()
+    observations: list[dict[str, object]] = []
+    result: dict[str, object] = {
+        "observations": observations,
+        "writes": False,
+        "product_qualification": False,
+        "identity_source": "same retained native element",
+        "area": asdict(target.area),
+    }
+
+    def guard() -> None:
+        if time.monotonic() - started >= limit_seconds:
+            raise TimeoutError("Read-only observation deadline reached")
+        target.check()
+        if time.monotonic() - started >= limit_seconds:
+            raise TimeoutError("Read-only observation deadline reached")
+
+    try:
+        for round_number, scheduled in enumerate((0, 0.25, 1, 3, 6)):
+            remaining = scheduled - (time.monotonic() - started)
+            if remaining > 0:
+                time.sleep(remaining)
+            for method in ("retained_before", "fresh_pattern", "retained_after"):
+                guard()
+                entry: dict[str, object] = {
+                    "round": round_number,
+                    "method": method,
+                    "elapsed_seconds": time.monotonic() - started,
+                }
+                observations.append(entry)
+                with ExitStack() as owners:
+                    guard()
+                    pattern = (
+                        target._element.scroll_pattern(owners)
+                        if method == "fresh_pattern"
+                        else target._scroll
+                    )
+                    guard()
+                    if pattern is None:
+                        raise CaptureError("Retained element has no scroll pattern")  # noqa: TRY301
+                    for name, slot in (
+                        ("horizontal", 5),
+                        ("vertical", 6),
+                        ("view_size", 8),
+                    ):
+                        guard()
+                        entry[name] = pattern.number(slot)
+                        guard()
+                    entry["completed_elapsed_seconds"] = time.monotonic() - started
+    except (CaptureError, OSError, RuntimeError) as error:
+        result["error"] = str(error)
+        result["error_type"] = type(error).__name__
+        result["deadline_reached"] = isinstance(error, TimeoutError)
+    return result
+
+
 def _capture_google(
     kind: str, window: WindowInfo, output: Path, report: dict[str, object]
 ) -> None:
@@ -387,9 +451,16 @@ def _capture_google(
                 "elapsed_seconds": time.monotonic() - helper_completed_at,
             },
         }
+        if result.restoration == "not restored: the provider write is unresolved":
+            report["unresolved_pattern_observations"] = _observe_unresolved_pattern(
+                target
+            )
         # Independent evidence observes the retained Document even if a later
         # point resolves to a different child. Product acceptance stays separate.
-        if after == after_image == start:
+        if (
+            after == after_image == start
+            and result.restoration != "not restored: the provider write is unresolved"
+        ):
             report["native_diagnostic"] = collect(
                 target, window, output / "native-diagnostic", _observation_script
             )

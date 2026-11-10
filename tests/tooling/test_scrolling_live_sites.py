@@ -310,3 +310,117 @@ def test_failed_helper_diagnoses_retained_document_without_rediscovery(
     assert isinstance(after_elapsed, float)
     assert after_elapsed >= before_elapsed >= 0
     assert report.get("success") is not True
+
+
+def test_unresolved_matrix_reads_only_same_element_and_releases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Retained and fresh values remain observations, never writes."""
+    monkeypatch.setattr(live.time, "sleep", Mock())
+    target = Mock(area=Rect(0, 0, 976, 608))
+    target._scroll.number.side_effect = lambda slot: {5: -1, 6: 17, 8: 26}[slot]
+    fresh = Mock()
+    fresh.number.side_effect = lambda slot: {5: -1, 6: 34, 8: 26}[slot]
+    release = Mock()
+
+    def acquire(owners: ExitStack) -> Mock:
+        owners.callback(release)
+        return fresh
+
+    target._element.scroll_pattern.side_effect = acquire
+    result = live._observe_unresolved_pattern(target)
+    observations = cast("list[dict[str, object]]", result["observations"])
+    assert len(observations) == 15
+    for entry in observations:
+        assert entry["horizontal"] == -1
+        assert entry["view_size"] == 26
+        assert entry["vertical"] == (34 if entry["method"] == "fresh_pattern" else 17)
+    assert release.call_count == 5
+    target.move.assert_not_called()
+    assert result["writes"] is False
+    assert result["product_qualification"] is False
+
+
+def test_unresolved_matrix_stops_on_guard_error() -> None:
+    """Changed input or geometry stops every subsequent COM observation."""
+    target = Mock(area=Rect(0, 0, 976, 608))
+    target.check.side_effect = live.CaptureError("user input changed")
+    result = live._observe_unresolved_pattern(target)
+    assert result["error"] == "user input changed"
+    target._scroll.number.assert_not_called()
+    target._element.scroll_pattern.assert_not_called()
+    target.move.assert_not_called()
+
+
+def test_unresolved_matrix_deadline_blocks_observation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No observation is admitted after the bounded deadline."""
+    monkeypatch.setattr(live.time, "monotonic", Mock(side_effect=[0, 10, 10]))
+    target = Mock(area=Rect(0, 0, 976, 608))
+    result = live._observe_unresolved_pattern(target)
+    assert result["deadline_reached"] is True
+    assert result["observations"] == []
+    target.check.assert_not_called()
+
+
+def test_unresolved_matrix_records_partial_com_error_and_releases() -> None:
+    """A partial native failure retains evidence and releases its interface."""
+    target = Mock(area=Rect(0, 0, 976, 608))
+    target._scroll.number.side_effect = [-1, 17, 26]
+    fresh = Mock()
+    fresh.number.side_effect = [-1, live.CaptureError("HRESULT failure")]
+    release = Mock()
+
+    def acquire(owners: ExitStack) -> Mock:
+        owners.callback(release)
+        return fresh
+
+    target._element.scroll_pattern.side_effect = acquire
+    result = live._observe_unresolved_pattern(target)
+    assert result["error"] == "HRESULT failure"
+    observations = cast("list[dict[str, object]]", result["observations"])
+    assert len(observations) == 2
+    assert observations[-1]["horizontal"] == -1
+    assert "vertical" not in observations[-1]
+    release.assert_called_once()
+    target.move.assert_not_called()
+
+
+def test_unresolved_result_stays_failed_even_if_observation_catches_up(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Observational catch-up never permits diagnostic writes or qualification."""
+    window = WindowInfo(1234, "Google", Rect(0, 0, 800, 600))
+    start = ScrollPosition(-1, 37, 17)
+    target = Mock(area=window.bounds)
+    target.position.return_value = start
+    monkeypatch.setattr(live, "_open_document", Mock(return_value=target))
+    monkeypatch.setattr(live, "_document_point", Mock(return_value=live.Point(1, 1)))
+    monkeypatch.setattr(live.native, "_position_start", Mock(return_value=start))
+    restoration = "not restored: the provider write is unresolved"
+    monkeypatch.setattr(
+        live.native,
+        "_capture",
+        Mock(
+            return_value=ScrollResult(
+                None,
+                "position uncertain",
+                restoration,
+                2,
+            )
+        ),
+    )
+    matrix = Mock(return_value={"writes": False})
+    monkeypatch.setattr(live, "_observe_unresolved_pattern", matrix)
+    collect = Mock()
+    monkeypatch.setattr(live, "collect", collect)
+    report: dict[str, object] = {}
+    with pytest.raises(RuntimeError, match="position uncertain"):
+        live._capture_google("edge-google-live", window, tmp_path, report)
+    matrix.assert_called_once_with(target)
+    collect.assert_not_called()
+    target.move.assert_not_called()
+    assert report["restoration"] == restoration
+    assert report["message"] == "position uncertain"
