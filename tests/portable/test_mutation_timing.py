@@ -13,6 +13,7 @@ def test_native_logging_is_enabled_outside_restored_verdicts() -> None:
     assert configuration["log_to_file"] is True
     assert configuration["log_file_path"] == "mutation-timing.log"
     assert configuration["process_isolation"] == "forkserver"
+    assert configuration["forkserver_warmup"] == "collect"
     assert configuration["source_paths"] == ["src/verdiclip/"]
     assert "only_mutate" not in configuration
 
