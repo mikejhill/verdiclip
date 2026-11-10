@@ -69,6 +69,7 @@ jobs:
           tests/capture/test_tabs_baseline_native.py
           tests/ux/test_scrolling_failure_journeys.py::test_interruption_feedback_preserves_native_focus
           --require-interactive-capture --no-cov -p no:randomly -vv -rP
+          -o faulthandler_timeout=2
           --junitxml=artifacts/simple-scroll/ordinary-native.xml
           --basetemp=artifacts/simple-scroll/native-temp
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

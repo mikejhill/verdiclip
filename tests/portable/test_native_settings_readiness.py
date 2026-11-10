@@ -1,9 +1,12 @@
 """Owned settings setup is bounded separately from the unchanged capture budget."""
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from PySide6.QtCore import QEvent, QObject
 from tests.capture import test_capture_native as subject
 
 
@@ -27,6 +30,7 @@ def make_run(monkeypatch: pytest.MonkeyPatch) -> tuple[subject.NativeRun, Mock, 
     run.last_readiness = None
     run.settings_dialog = None
     run.existing_settings = ()
+    run.trace = subject.SettingsTrace(enabled=False)
     run.errors = []
     dialog = Mock()
     dialog.isVisible.return_value = True
@@ -218,6 +222,12 @@ def test_actual_constructor_wrapper_preserves_call_exception_and_scope(
     run.last_readiness = snapshot.copy()
 
     class OwnedDialog:
+        def setWindowIcon(self, _icon: object) -> None:  # noqa: N802 - Qt API name
+            raise AssertionError("Constructor-only test must not set an icon")
+
+        def exec(self) -> int:
+            raise AssertionError("Constructor-only test must not execute a dialog")
+
         def __init__(
             self, settings: object, parent: object = None, *, key_capture: object = None
         ) -> None:
@@ -261,3 +271,169 @@ def test_actual_constructor_wrapper_preserves_call_exception_and_scope(
     assert run.first_readiness == snapshot
     assert run.last_readiness == snapshot
     action.assert_called_once_with()
+
+
+def test_disabled_settings_trace_never_reads_a_clock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-settings scenarios keep the original observer without timing work."""
+    clock = Mock(side_effect=AssertionError("Disabled tracing must not read clocks"))
+    monkeypatch.setattr(
+        subject,
+        "time",
+        SimpleNamespace(perf_counter=clock, process_time=clock, thread_time=clock),
+    )
+    trace = subject.SettingsTrace(enabled=False)
+    trace.mark("disabled")
+    assert trace.timeline == []
+    assert trace.overflow == 0
+    clock.assert_not_called()
+
+
+def test_settings_trace_keeps_distinct_wall_process_and_thread_clocks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Wall stalls remain distinguishable from CPU work on this GUI thread."""
+    wall = Mock(side_effect=[10.0, 16.5])
+    process = Mock(side_effect=[2.0, 2.125, 2.25])
+    thread = Mock(side_effect=[1.0, 1.025, 1.05])
+    monkeypatch.setattr(
+        subject,
+        "time",
+        SimpleNamespace(perf_counter=wall, process_time=process, thread_time=thread),
+    )
+    trace = subject.SettingsTrace(enabled=True)
+    trace.mark("show")
+    trace.mark("readiness", wall=16.75)
+    assert trace.timeline == [
+        {
+            "phase": "show",
+            "wall_ms": 6500.0,
+            "process_cpu_ms": 125.0,
+            "thread_cpu_ms": 25.0,
+        },
+        {
+            "phase": "readiness",
+            "wall_ms": 6750.0,
+            "process_cpu_ms": 250.0,
+            "thread_cpu_ms": 50.0,
+        },
+    ]
+    assert wall.call_count == 2
+
+
+def test_settings_trace_is_bounded_and_reports_dropped_marks() -> None:
+    """A noisy native dialog cannot grow the timing receipt without a bound."""
+    trace = subject.SettingsTrace(enabled=True)
+    for index in range(trace.LIMIT + 3):
+        trace.mark(str(index))
+    assert len(trace.timeline) == trace.LIMIT
+    assert trace.timeline[0]["phase"] == "0"
+    assert trace.timeline[-1]["phase"] == str(trace.LIMIT - 1)
+    assert trace.overflow == 3
+
+
+def test_settings_trace_forwards_one_owned_call_and_ignores_other_dialogs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Class-level instrumentation neither repeats calls nor attributes outsiders."""
+    trace = subject.SettingsTrace(enabled=False)
+    owned, unrelated = Mock(), Mock()
+    trace.dialog = owned
+    mark = Mock()
+    monkeypatch.setattr(trace, "mark", mark)
+    sentinel = object()
+    operation = Mock(return_value=sentinel)
+    assert trace.observe(unrelated, "outsider", operation) is sentinel
+    mark.assert_not_called()
+    assert trace.observe(owned, "exec", operation) is sentinel
+    assert operation.call_count == 2
+    assert [call.args for call in mark.call_args_list] == [
+        ("exec.entry",),
+        ("exec.return",),
+    ]
+
+
+@pytest.mark.parametrize("control", [False, True])
+def test_settings_trace_forwards_original_exception_and_records_unwind(
+    monkeypatch: pytest.MonkeyPatch, *, control: bool
+) -> None:
+    """Ordinary and control exceptions preserve identity without a return marker."""
+    trace = subject.SettingsTrace(enabled=False)
+    owned = Mock()
+    trace.dialog = owned
+    mark = Mock()
+    monkeypatch.setattr(trace, "mark", mark)
+    failure = KeyboardInterrupt("owned") if control else RuntimeError("owned")
+    operation = Mock(side_effect=failure)
+    with pytest.raises(type(failure)) as caught:
+        trace.observe(owned, "constructor", operation)
+    assert caught.value is failure
+    operation.assert_called_once_with()
+    assert [call.args for call in mark.call_args_list] == [
+        ("constructor.entry",),
+        ("constructor.raise",),
+    ]
+
+
+@pytest.mark.parametrize("handled", [False, True])
+def test_settings_trace_preserves_input_filter_and_exact_event_scope(
+    monkeypatch: pytest.MonkeyPatch, *, handled: bool
+) -> None:
+    """Timing only selected owned events never changes the existing filter result."""
+    trace = subject.SettingsTrace(enabled=False)
+    owned, unrelated = QObject(), QObject()
+    monkeypatch.setattr(trace, "dialog", owned)
+    mark = Mock()
+    monkeypatch.setattr(trace, "mark", mark)
+    original_filter = Mock(return_value=handled)
+    monkeypatch.setattr(subject.InputTrace, "eventFilter", original_filter)
+    show = QEvent(QEvent.Type.Show)
+    ignored = QEvent(QEvent.Type.Hide)
+    assert trace.eventFilter(unrelated, show) is handled
+    assert trace.eventFilter(owned, ignored) is handled
+    mark.assert_not_called()
+    assert trace.eventFilter(owned, show) is handled
+    mark.assert_called_once_with("event.Show")
+    assert [call.args for call in original_filter.call_args_list] == [
+        (unrelated, show),
+        (owned, ignored),
+        (owned, show),
+    ]
+
+
+def test_settings_failure_serializes_same_timeline_in_log_and_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A failed setup retains timing evidence in both existing diagnostic outputs."""
+    run, _dialog, _posted = make_run(monkeypatch)
+    run.errors = ["Owned settings setup never became ready before the deadline"]
+    run.outcome = "escape"
+    run.posted = False
+    run.triggered = False
+    run.expired_overlay_count = 0
+    run.expired_selecting = False
+    run.trace.timeline = [
+        {
+            "phase": "exec.entry",
+            "wall_ms": 17.0,
+            "process_cpu_ms": 12.0,
+            "thread_cpu_ms": 10.0,
+        }
+    ]
+    run.trace.overflow = 2
+    run.record(tmp_path, "settings", [])
+    line = capsys.readouterr().out.strip()
+    assert line.startswith("NATIVE_CAPTURE_STAGE=")
+    logged = json.loads(line.removeprefix("NATIVE_CAPTURE_STAGE="))
+    receipt = json.loads((tmp_path / "native-capture-trace.json").read_text())
+    assert logged["settings_timeline"] == receipt["settings_timeline"]
+    assert receipt["settings_timeline"] == run.trace.timeline
+    assert logged["settings_timeline_overflow"] == 2
+    assert receipt["settings_timeline_overflow"] == 2
+    assert logged["hotkey_posted"] is False
+    assert logged["freeze_count"] == 0
+    assert receipt["frames"] == []
+    assert receipt["errors"] == run.errors

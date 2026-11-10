@@ -12,12 +12,13 @@ import ctypes.wintypes
 import json
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import override
 
 import pytest
-from PySide6.QtCore import QPoint, Qt, QThread, QTimer
-from PySide6.QtGui import QGuiApplication, QImage, QWindow
+from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QThread, QTimer
+from PySide6.QtGui import QGuiApplication, QIcon, QImage, QWindow
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QWidget
 from pytestqt.qtbot import QtBot
@@ -38,6 +39,79 @@ from verdiclip.shell.settings_dialog import SettingsDialog
 def native_window_exposed(window: QWindow | None) -> bool:
     """An owned widget without a created native window is not ready yet."""
     return window is not None and window.isExposed()
+
+
+class SettingsTrace(InputTrace):
+    """Bounded timing of one actual owned dialog; no readiness or input changes."""
+
+    LIMIT = 64
+    EVENTS = frozenset(
+        (
+            QEvent.Type.Polish,
+            QEvent.Type.LayoutRequest,
+            QEvent.Type.Show,
+            QEvent.Type.Paint,
+            QEvent.Type.WindowActivate,
+        )
+    )
+
+    def __init__(self, *, enabled: bool) -> None:
+        super().__init__()
+        self.dialog: SettingsDialog | None = None
+        self.timeline: list[dict[str, str | float]] = []
+        self.overflow = 0
+        self._origin = (
+            (time.perf_counter(), time.process_time(), time.thread_time())
+            if enabled
+            else None
+        )
+
+    def mark(self, name: str, *, wall: float | None = None) -> None:
+        """Retain relative wall/process/thread clocks, never infer native causality."""
+        if self._origin is None:
+            return
+        if len(self.timeline) == self.LIMIT:
+            self.overflow += 1
+            return
+        self.timeline.append(
+            {
+                "phase": name,
+                "wall_ms": round(
+                    ((time.perf_counter() if wall is None else wall) - self._origin[0])
+                    * 1000,
+                    3,
+                ),
+                "process_cpu_ms": round(
+                    (time.process_time() - self._origin[1]) * 1000, 3
+                ),
+                "thread_cpu_ms": round(
+                    (time.thread_time() - self._origin[2]) * 1000, 3
+                ),
+            }
+        )
+
+    def observe[T](
+        self, dialog: SettingsDialog, name: str, operation: Callable[[], T]
+    ) -> T:
+        """Forward exactly once, retaining normal return versus exception unwind."""
+        if dialog is not self.dialog:
+            return operation()
+        self.mark(name + ".entry")
+        try:
+            result = operation()
+        except BaseException:
+            self.mark(name + ".raise")
+            raise
+        else:
+            self.mark(name + ".return")
+            return result
+
+    @override
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        """Timestamp only selected events for the exact observed dialog instance."""
+        if watched is self.dialog and event.type() in self.EVENTS:
+            self.mark("event." + event.type().name)
+        return super().eventFilter(watched, event)
 
 
 class RealDesktop(MssScreenSource):
@@ -98,7 +172,7 @@ class NativeRun:
         self.readiness = QTimer()
         self.readiness.setInterval(10)
         self.readiness.timeout.connect(self._settings_ready)
-        self.trace = InputTrace()
+        self.trace = SettingsTrace(enabled=settings_setup)
         self.qt_app.installEventFilter(self.trace)
         self.qt_app.focusWindowChanged.connect(self._focus_changed)
         self.app.controller.capture.captured.connect(self.captures.append)
@@ -160,6 +234,8 @@ class NativeRun:
                         ),
                         "first_readiness": self.first_readiness,
                         "last_readiness": self.last_readiness,
+                        "settings_timeline": self.trace.timeline,
+                        "settings_timeline_overflow": self.trace.overflow,
                     },
                     sort_keys=True,
                 )
@@ -173,6 +249,8 @@ class NativeRun:
                     "errors": self.errors,
                     "frames": frames,
                     "events": self.trace.events,
+                    "settings_timeline": self.trace.timeline,
+                    "settings_timeline_overflow": self.trace.overflow,
                 },
                 indent=2,
             ),
@@ -180,12 +258,14 @@ class NativeRun:
         )
 
     def open_dialog(self, scenario: str) -> None:
-        """Keep actual tray entry; observe only the real settings constructor return."""
+        """Time only the actual owned settings calls within their original scope."""
         if scenario != "settings":
             QTimer.singleShot(0, self.post_hotkey)
             self.app.controller.tray.action(scenario).trigger()
             return
         original = SettingsDialog.__init__
+        original_icon = SettingsDialog.setWindowIcon
+        original_exec = SettingsDialog.exec
 
         def observed_constructor(
             dialog: SettingsDialog,
@@ -194,16 +274,32 @@ class NativeRun:
             *,
             key_capture: KeyCapture | None = None,
         ) -> None:
-            original(dialog, settings, parent, key_capture=key_capture)
-            if self.setup_started is not None:
+            if self.trace.dialog is None:
+                self.trace.dialog = dialog
+            self.trace.observe(
+                dialog,
+                "constructor",
+                lambda: original(dialog, settings, parent, key_capture=key_capture),
+            )
+            if dialog is self.trace.dialog and self.setup_started is not None:
                 self.constructor_return_ms = (
                     time.perf_counter() - self.setup_started
                 ) * 1000
                 self.constructor_returned_after_timeout = self.done
 
+        def observed_icon(dialog: SettingsDialog, icon: QIcon) -> None:
+            return self.trace.observe(
+                dialog, "setWindowIcon", lambda: original_icon(dialog, icon)
+            )
+
+        def observed_exec(dialog: SettingsDialog) -> int:
+            return self.trace.observe(dialog, "exec", lambda: original_exec(dialog))
+
         self.await_settings()
         with pytest.MonkeyPatch.context() as scoped:
             scoped.setattr(SettingsDialog, "__init__", observed_constructor)
+            scoped.setattr(SettingsDialog, "setWindowIcon", observed_icon)
+            scoped.setattr(SettingsDialog, "exec", observed_exec)
             self.app.controller.tray.action(scenario).trigger()
 
     def save_and_close(
@@ -235,9 +331,11 @@ class NativeRun:
         if self.done or self.phase != "settings-setup":
             return
         assert self.setup_started is not None
-        self.setup_elapsed_ms = (time.perf_counter() - self.setup_started) * 1000
+        observed = time.perf_counter()
+        self.setup_elapsed_ms = (observed - self.setup_started) * 1000
         if self.first_setup_callback_ms is None:
             self.first_setup_callback_ms = self.setup_elapsed_ms
+            self.trace.mark("first-readiness", wall=observed)
         if self.setup_elapsed_ms >= 5000:
             self._expired()
             return
