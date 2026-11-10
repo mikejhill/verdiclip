@@ -99,9 +99,14 @@ lifetimes, timestamped candidate starts/completions, requested test counts and
 CPU/wall limits. `mutation-timing.log` and its three numbered rotations are
 uploaded with the existing result artifact. The configured path is outside
 `mutants/`, so restored verdict caches cannot supply old timing logs. The pinned
-logger rotates at 10 MiB with three backups; simultaneous forked writers,
-rotation and cancellation can lose records, so these are bounded diagnostic
-logs, not a complete timing ledger. Child lifetime includes more than the pytest
+logger rotates at 10 MiB with three backups. During explicit collect warmup,
+the pytest support plugin binds the mutmut rotating handler to the forkserver
+process. Forked workers inherit that filter without rebinding it. This retains
+the parent's candidate start/completion, lifetime and signal-exit records while
+suppressing duplicate worker messages that raced during rotation in
+[run 177](https://github.com/mikejhill/verdiclip/actions/runs/42637339465).
+Retention limits, abrupt termination and wall-clock changes can still lose or
+distort timing evidence; these remain diagnostic logs, not a complete ledger. Child lifetime includes more than the pytest
 session, but does not measure all generation, warmup or campaign overhead.
 Missing records are unknown, never zero-duration or successful candidates.
 Logging does not change test selection, scheduling, deadlines, verdicts, freshness
@@ -194,3 +199,12 @@ historical verdicts, incomparable policies and stale ordering. Structured
 evidence and candidate identity tests are portable. The actual mutation executor
 requires Linux. The new trigger and publisher take effect only after this change
 is on the default branch; mock tests are not a live alert-delivery qualification.
+
+Run 177 completed all 17,934 candidates fresh at 75.88%, with no historical
+verdicts, in 233m45s of mutation work. Only 6m15s remained before the work limit.
+The retained 51-minute tail contained 1,589 completions; survivors accounted for
+87.1% of their aggregate child lifetime. This shows costly test work in that
+tail, not a gross scheduler stall, but is not CPU utilization or a complete
+campaign profile. The earlier incomplete run still establishes timeout risk.
+Do not reduce test coverage, thresholds or freshness requirements based on these
+diagnostics.
