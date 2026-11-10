@@ -242,6 +242,38 @@ class ListItemWitness:
                 receipt["stage"] = "ancestor_limit"
         raise CaptureError("Native item witness has no current hit-tested ListItem")
 
+    def _choose(self, candidates: list[_Anchor]) -> tuple[_Anchor, _Anchor]:
+        """Independently prove two nonoverlapping rectangles and distinct identities."""
+        ordered = sorted(candidates, key=lambda anchor: anchor.bounds.top)
+        bottom = ordered[-1]
+        comparisons: list[dict[str, object]] = []
+        self.confirmation_failure = {
+            "frame_index": self._index,
+            "stage": "pair_selection",
+            "candidate_bounds": [asdict(anchor.bounds) for anchor in ordered],
+            "comparisons": comparisons,
+        }
+        for other in reversed(ordered[:-1]):
+            self._budget()
+            a, b = other.bounds, bottom.bounds
+            disjoint = (
+                a.right <= b.left
+                or b.right <= a.left
+                or a.bottom <= b.top
+                or b.bottom <= a.top
+            )
+            same = (
+                self._automation.same_element(other.element, bottom.element)
+                if disjoint
+                else None
+            )
+            comparisons.append(
+                {"bounds": asdict(a), "disjoint": disjoint, "same_identity": same}
+            )
+            if disjoint and same is False:
+                return other, bottom
+        raise CaptureError("Native item witness pair is ambiguous")
+
     def _seed(self) -> None:
         with ExitStack() as temporary:
             candidates: list[_Anchor] = []
@@ -259,12 +291,7 @@ class ListItemWitness:
                 raise CaptureError(
                     "Native item witness cannot establish a bounded pair"
                 )
-            chosen = sorted(candidates, key=lambda item: item.bounds.top)[-_PAIR_SIZE:]
-            first, last = chosen
-            if first.bounds.bottom > last.bounds.top or self._automation.same_element(
-                first.element, last.element
-            ):
-                raise CaptureError("Native item witness pair is ambiguous")
+            chosen = self._choose(candidates)
             with ExitStack() as retained:
                 anchors = []
                 for anchor in chosen:

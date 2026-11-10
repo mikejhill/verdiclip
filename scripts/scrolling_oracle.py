@@ -326,9 +326,17 @@ class _HeaderOracle:
                 )
             before.append(first)
             deltas.append(first.y - last.y)
-        before.sort(key=lambda rect: rect.top)
+        first, second = before
+        # Re-derive geometric separation independently of the production List
+        # helper. Either axis can distinguish two retained rectangular items.
+        separated = (
+            first.right <= second.left
+            or second.right <= first.left
+            or first.bottom <= second.top
+            or second.bottom <= first.top
+        )
         if (
-            before[0].bottom > before[1].top
+            not separated
             or deltas[0] != deltas[1]
             or not 0 < deltas[0] < self._body.height
             or deltas[0] != round(deltas[0])

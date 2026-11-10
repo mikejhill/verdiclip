@@ -455,7 +455,7 @@ def test_settle_logs_exact_state_change_without_more_reads(
 
 
 @pytest.mark.parametrize("overshoot", [False, True])
-def test_settle_logs_overshoot_or_unsettled_with_unchanged_poll_budget(
+def test_settle_logs_overshoot_or_unsettled_with_bounded_ack_budget(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
     *,
@@ -701,16 +701,23 @@ def test_already_restored_state_still_rechecks_user_input(
     assert target.moves == []
 
 
-def test_native_diagnostics_keep_only_two_accepted_frames(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+@pytest.mark.parametrize(
+    ("mode", "count"),
+    [
+        ("edge-app-tray", 2),
+        ("edge-owned-search", 9),
+        ("edge-owned-settings", 9),
+        ("edge-google-live", 9),
+    ],
+)
+def test_native_diagnostics_keep_bounded_frame_evidence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: str, count: int
 ) -> None:
     """The test wrapper observes the same transaction without changing its result."""
     target = Target()
     results = []
     original = ScrollTransaction._frame
-    monkeypatch.setattr(
-        "sys.argv", ["-c", "10", "20", "scratch", str(tmp_path), "edge-app-tray"]
-    )
+    monkeypatch.setattr("sys.argv", ["-c", "10", "20", "scratch", str(tmp_path), mode])
     monkeypatch.setattr(
         "scripts.simple_scroll_native.helper_main",
         lambda: results.append(transaction(target).run()),
@@ -722,9 +729,49 @@ def test_native_diagnostics_keep_only_two_accepted_frames(
     assert ScrollTransaction._frame is original
     assert QImage(str(tmp_path / "frame-0.png")) == target.document.copy(0, 0, 80, 120)
     assert QImage(str(tmp_path / "frame-1.png")) == target.document.copy(0, 60, 80, 120)
-    assert len(list(tmp_path.glob("*.png"))) == 2
+    assert len(list(tmp_path.glob("*.png"))) == count
     observations = json.loads((tmp_path / "frames.json").read_text())
-    assert [item["vertical"] for item in observations] == [0.0, 12.5]
+    assert [item["vertical"] for item in observations] == [
+        12.5 * i for i in range(count)
+    ]
+
+
+def test_owned_diagnostics_keep_the_rejected_third_frame(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A later refusal retains its actual attempted pixels without becoming success."""
+    target = Target()
+    results = []
+    append = VerticalStitch.append
+    calls = 0
+
+    def reject_second(
+        stitch: VerticalStitch,
+        image: QImage,
+        advance: float | None,
+        *,
+        verify: Callable[[int], None] | None = None,
+    ) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise CaptureError("ambiguous third frame")
+        append(stitch, image, advance, verify=verify)
+
+    monkeypatch.setattr(VerticalStitch, "append", reject_second)
+    monkeypatch.setattr("sys.argv", ["-c", str(tmp_path), "edge-owned-settings"])
+    monkeypatch.setattr(
+        "scripts.simple_scroll_native.helper_main",
+        lambda: results.append(transaction(target).run()),
+    )
+    _trace_helper()
+    assert results[0].image is None
+    assert results[0].message == "ambiguous third frame"
+    assert results[0].restoration == "restored"
+    assert QImage(str(tmp_path / "frame-2.png")) == target.document.copy(
+        0, 120, 80, 120
+    )
+    assert len(json.loads((tmp_path / "frames.json").read_text())) == 3
 
 
 def test_interior_seams_recover_content_under_bottom_chrome() -> None:
@@ -753,19 +800,21 @@ def test_interior_seams_recover_content_under_bottom_chrome() -> None:
     assert result.copy(0, 367, 80, 8) == bar
 
 
-def test_broad_fixed_header_is_rejected_despite_interior_match(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """An exact interior seam cannot recover first rows hidden at every position."""
+def test_stable_header_preserves_visible_content_once() -> None:
+    """Preserve visible pixels, without claiming recovery behind the initial header."""
     source = document()
     first, second = source.copy(0, 0, 80, 120), source.copy(0, 60, 80, 120)
     for frame in (first, second):
         for y in range(8):
             for x in range(80):
                 frame.setPixelColor(x, y, QColor("white"))
-    with pytest.raises(CaptureError, match="top of the scroll panel"):
-        VerticalStitch(first).append(second, 60.0)
-    assert "changed_pixels=640 compared_pixels=2560" in caplog.text
+    stitch = VerticalStitch(first)
+    stitch.append(second, 60.0)
+    expected = source.copy(0, 0, 80, 180)
+    painter = QPainter(expected)
+    painter.drawImage(0, 0, first.copy(0, 0, 80, 8))
+    painter.end()
+    assert stitch.finish() == expected
 
 
 def stationary_outer_frame(source: QImage, offset: int) -> QImage:
@@ -872,17 +921,22 @@ def test_stationary_outer_retry_preserves_existing_return_order(
 
 
 @pytest.mark.parametrize("fixed_rows", [16, 32, 48])
-def test_stationary_outer_row_does_not_hide_broad_fixed_content(
+def test_stationary_textured_prefix_preserves_visible_content(
     fixed_rows: int,
 ) -> None:
-    """An unchanged textured prefix never becomes an arbitrary content crop."""
+    """A complete moving overlap permits retaining the original prefix once."""
     source = document(360)
     first, second = (stationary_outer_frame(source, offset) for offset in (0, 30))
     painter = QPainter(second)
     painter.drawImage(0, 0, first.copy(0, 0, 80, fixed_rows))
     painter.end()
-    with pytest.raises(CaptureError, match="top of the scroll panel"):
-        VerticalStitch(first).append(second, 30.0)
+    stitch = VerticalStitch(first)
+    stitch.append(second, 30.0)
+    expected = source.copy(0, 0, 80, 150)
+    painter = QPainter(expected)
+    painter.drawImage(0, 0, first)
+    painter.end()
+    assert stitch.finish() == expected
 
 
 def test_stationary_outer_row_preserves_global_ambiguity_rejection(
@@ -961,7 +1015,7 @@ def test_stationary_outer_row_never_crosses_minimum_interior_seam(
     first, second = (stationary_outer_frame(source, offset) for offset in (0, advance))
     stitch = VerticalStitch(first)
     match = stitch._registration(stitch._rows(first), stitch._rows(second))
-    measured, start, end, full_width = match
+    measured, start, end, full_width, _containment = match
     assert full_width
     assert measured == advance
     assert end - start >= 32
@@ -1177,7 +1231,8 @@ def test_top_border_without_matching_side_evidence_is_rejected(
     with pytest.raises(CaptureError, match="top of the scroll panel"):
         VerticalStitch(first).append(second, 60.0)
     assert "left_columns=2 right_columns=2" in caplog.text
-    assert "measured_advance=60 expected_advance=60.000" in caplog.text
+    # Rejected provisional registration is no longer logged as accepted alignment.
+    assert "Scrolling top mismatch:" in caplog.text
 
 
 def perimeter_frame(source: QImage, offset: int) -> QImage:
@@ -1502,8 +1557,11 @@ def test_narrow_image_cannot_supply_top_perimeter_evidence() -> None:
         painter = QPainter(frame)
         painter.fillRect(0, 0, 16, 3, QColor("gray"))
         painter.end()
+    stitch = VerticalStitch(first)
     with pytest.raises(CaptureError, match="top of the scroll panel"):
-        VerticalStitch(first).append(second, 60.0)
+        stitch._check_top(
+            stitch._rows(first), stitch._rows(second), 60, full_width=True
+        )
 
 
 def test_changed_edges_do_not_override_uia_displacement() -> None:
@@ -2894,8 +2952,9 @@ def test_list_entire_overlap_filters_partial_aliases_before_global_uniqueness() 
     painter.drawImage(0, 100, repeated)
     painter.end()
     first, second = source.copy(0, 0, 80, 160), source.copy(0, 60, 80, 160)
-    with pytest.raises(CaptureError, match="ambiguous"):
-        VerticalStitch(first).append(second, 60)
+    generic = VerticalStitch(first)
+    generic.append(second, 60)
+    assert generic.finish() == source.copy(0, 0, 80, 220)
     verified: list[int] = []
     stitch = VerticalStitch(first, nonrail_width=63)
     stitch.append(second, None, verify=verified.append)
@@ -4251,3 +4310,27 @@ def test_list_horizontal_switch_never_commits_or_issues_recovery_write(
     )
     assert target.moves[-1] != 100 * 2400 / 4764
     assert target.steps.closed
+
+
+@pytest.mark.parametrize("damage", ["none", "changed_overlap", "wrong_provider"])
+def test_repeated_local_rows_need_one_entire_overlap(damage: str) -> None:
+    """Repeated controls can align only with independent complete pixel evidence."""
+    source = document(260)
+    repeated = source.copy(0, 60, 80, 40)
+    painter = QPainter(source)
+    painter.drawImage(0, 100, repeated)
+    painter.end()
+    first, second = source.copy(0, 0, 80, 160), source.copy(0, 60, 80, 160)
+    stitch = VerticalStitch(first)
+    if damage == "changed_overlap":
+        second.setPixelColor(40, 90, QColor("magenta"))
+        with pytest.raises(CaptureError, match="ambiguous"):
+            stitch.append(second, 60)
+        assert stitch.finish() == first
+    elif damage == "wrong_provider":
+        with pytest.raises(CaptureError, match="disagree with its scroll position"):
+            stitch.append(second, 70)
+        assert stitch.finish() == first
+    else:
+        stitch.append(second, 60)
+        assert stitch.finish() == source.copy(0, 0, 80, 220)

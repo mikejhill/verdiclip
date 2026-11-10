@@ -315,3 +315,59 @@ def test_shutdown_disposes_failure_and_ignores_late_signals(
     qtbot.wait(0)
     assert not statuses()
     assert not app.controller._scrolling.overlays
+
+
+@pytest.mark.parametrize("theme", [Theme.LIGHT, Theme.DARK])
+def test_error_can_be_copied_before_and_after_another_capture(
+    make_app: AppFactory, qtbot: QtBot, snapshot_dir: Path | None, theme: Theme
+) -> None:
+    """UX-CAP-19: error reporting does not require photographing a vanishing popup."""
+    settings = Settings()
+    app = make_app(
+        replace(settings, appearance=replace(settings.appearance, theme=theme))
+    )
+    assert not any(
+        "Copy last scrolling error" in action.text()
+        for action in app.controller.tray.menu.actions()
+    )
+    helper = prepare(app)
+    app.press_hotkey("scrolling")
+    select(qtbot, app, helper)
+    box = fail(qtbot, app, helper)
+    expected = box.text()
+    copy = next(button for button in box.buttons() if button.text() == "&Copy error")
+    qtbot.mouseClick(copy, Qt.MouseButton.LeftButton)
+    assert QApplication.clipboard().text() == expected
+    assert "restored" in expected
+    app.press_hotkey("window")
+    qtbot.waitUntil(lambda: len(app.controller.editors) == 1)
+    assert not box.isVisible()
+    QApplication.clipboard().setText("New clipboard content")
+    menu = app.controller.tray.menu
+    menu.popup(app.controller.editors[0].pos())
+    action = next(
+        action
+        for action in menu.actions()
+        if action.text() == "Copy last scrolling error"
+    )
+    if snapshot_dir is not None:
+        assert menu.grab().save(
+            str(snapshot_dir / f"scrolling-copy-error-menu-{theme.value}.png")
+        )
+    qtbot.mouseClick(
+        menu, Qt.MouseButton.LeftButton, pos=menu.actionGeometry(action).center()
+    )
+    assert QApplication.clipboard().text() == expected
+    assert not statuses()
+    # A subsequent rejection replaces the retained report instead of appending history.
+    helper = prepare(app)
+    app.press_hotkey("scrolling")
+    select(qtbot, app, helper)
+    helper.finished.emit(ScrollResult(None, "Another panel is unavailable", "", 0))
+    qtbot.waitUntil(lambda: bool(statuses()))
+    copy = next(
+        button for button in statuses()[0].buttons() if button.text() == "&Copy error"
+    )
+    qtbot.mouseClick(copy, Qt.MouseButton.LeftButton)
+    assert "Another panel is unavailable" in QApplication.clipboard().text()
+    assert "Could not align" not in QApplication.clipboard().text()

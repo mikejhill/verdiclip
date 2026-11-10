@@ -59,8 +59,119 @@ is guessed or trimmed. Registration requires one globally unique displacement
 with an exact, textured, full-width band of at least 32 rows. It joins inside
 that band, preserving earlier pixels above and later pixels below the seam.
 This replaces intermediate bottom chrome with later visible content while
-retaining the original top boundary and final bottom boundary. Repeated or
-unreliable pixels are rejected rather than assigned an arbitrary displacement.
+retaining the original top boundary and final bottom boundary. A repeated local
+band is disambiguated only when exactly one candidate has an exact entire
+overlap. Repeated entire overlaps and unreliable pixels are rejected rather than
+choosing a displacement near the provider percentage.
+
+A stable fixed top boundary can remain once in the output when original
+same-coordinate prefix pixels and the entire moving overlap independently prove
+one displacement. Ordinary registration is preferred. The fixed-prefix proof
+retains an interval of possible boundaries and intersects it with each later
+pair, rather than guessing whether coincidentally identical rows belong to the
+header or moving content. Changes inconsistent with that retained proof and
+ambiguous complete overlaps stop capture. Pixel-identical alternative
+explanations cannot establish the semantic boundary. The full image width is
+retained. Any small bottom perimeter exemption requires independent bounded
+solid-edge and stationary corner evidence; it is never selected to make a
+preferred displacement match. This captures the visible content sequence,
+including its original top boundary; it cannot reconstruct content permanently
+hidden behind an opaque overlay.
+
+A generic first uncommitted join with a unique full-width band but a changing
+top may
+make one bounded observation pass before restarting. Three settled forward
+frames must share the same leading full-width pixels, independently of their
+registration matches. Capture then returns to the original top and requires its
+exact position and original raw pixels. After that restart, every later frame
+must preserve the observed prefix, and every accepted join must have a unique
+full-width displacement proof and an exact textured band below it, with the
+existing 5% top check
+applied to the moving rows below that prefix. No rail or corner crop is inferred.
+Short pages, changed extents and unsuccessful exact returns cannot use this
+path. The pass cannot repeat or reset an established prefix. A banner that
+appears and then stays unchanged is indistinguishable from a collapsing header;
+this mode preserves the originally observed beginning, not necessarily the
+page's latest state. It retains the ordinary band matcher's limitations and does
+not claim a complete moving-overlap or semantic-header proof.
+
+Generic full-width registration first retains its existing unique-band and
+unique complete-overlap rules. A remaining ambiguity can also be resolved when
+one candidate exactly explains the union of every original qualifying maximal
+band from every candidate. Each rival is compared with that candidate in their
+pairwise common observable row domain; a third displacement cannot shorten it.
+The rival must retain a qualifying band there. The candidate must have at least
+32 contiguous supported rows with eight distinct full-width rows that the rival
+does not explain exactly. Even isolated exact rival rows interrupt this exclusive
+band; they are not discarded for being too short to qualify on their own.
+Original evidence outside each pairwise domain is never discarded: a candidate
+unable to observe or explain any such evidence fails. Equal support, independent
+moving regions, missing shared evidence and untextured exclusive rows remain
+ambiguous.
+This is set containment, not a longest-band score or preferred displacement.
+
+Only after independent selection must a containment winner agree with a finite
+integral native displacement within one millionth of a pixel for floating-point
+arithmetic. The ordinary two-percent tolerance and missing-extent path cannot
+admit this proof, including before a top-boundary observation pass. The seam must
+lie in a tail-compatible original qualifying band of that winner. Exclusive
+support selects the displacement; the seam itself needs exact full-width equality
+and the existing tail consistency check, not local exclusivity. Native Header,
+footer, rail and List routes, edge-assisted matching, and
+the stronger fixed-prefix complete-overlap proof do not use this fallback.
+This remains a visible-content band proof, not proof of global rigid geometry:
+changes outside the qualifying evidence retain the ordinary matcher's limits.
+
+A second generic ambiguity proof recognizes one bounded rendered track on the
+right edge before considering any displacement. Measurement starts at the outer
+column and stops at the first uniform inner boundary; it cannot search past a
+gap or exceed eight columns at 96 DPI (scaled upward proportionately). A uniform
+background must contain exactly two stationary end marks and one identically
+shaped thumb translated downward. End marks remain within sixteen rows of their
+respective edges. The thumb requires a solid center of at least 32 rows and
+bounded mirrored caps. Extra marks, changing shapes and wider regions fail.
+
+Only that independently measured strip is exempted from complete-overlap
+equality. Exactly one displacement must match every remaining content pixel
+and retain a textured, exact full-width band for the join. The output keeps the
+entire width, including the track. This path uses the same strict native
+confirmation and tail consistency checks as containment; it cannot bypass a
+changed content pixel, infer a fixed header, or enter the native List routes.
+The geometry recognizes a rendered shape, not an application-specific scrollbar
+identity. An identically drawn edge decoration is indistinguishable, so this
+remains a visible-content capture proof rather than a semantic chrome detector.
+
+For a generic panel with unchanged extent and no verified native Header/List
+geometry, ambiguous pixels or absence of an eligible registration band can trigger
+at most four smaller-step attempts. Each
+attempt returns to the last accepted position and requires its entire raw
+viewport to match exactly before reducing the rejected interval. Ambiguity keeps
+one half of that interval; an absent band keeps three quarters, providing more
+overlap without immediately placing a scrollbar thumb inside a short fixed top.
+Every new frame counts against the existing budget. Only these typed registration
+failures permit this recovery; input, geometry, provider and other reported
+failures still stop immediately. Each accepted join must independently satisfy
+the unchanged unique-pixel proof. No provider percentage chooses an ambiguous
+match, and a failed or uncertain return never permits a retry.
+A top refusal on a smaller first step can seed the same one-time observation
+pass, using that actual position and raw frame. It cannot reset an established
+prefix or start learning after a committed join.
+
+The ordinary eight-sample, 80ms settlement path is unchanged. Only eight reads
+exactly equal to the pre-write state on a generic traversal allow one read-only
+native target re-resolution using a temporary UIA client in the existing COM
+apartment. Two hit-tests at the original point, 0.5 seconds
+apart, must identify the same nearest scrollable element, role, bounds and native
+owner. The original interfaces and input/window/display baselines are retained;
+a newly nested scroller is rejected. The original retained ScrollPattern must
+then acknowledge movement through the normal two-equal-read proof, within at
+most eight further polls. Fresh-interface values alone never acknowledge a write.
+The refresh and confirmation share a two-second admission budget from settlement
+entry and the original transaction deadlines. No-progress observations cannot
+consume the restoration reserve. State, direction, extent, input and geometry
+checks remain active. This never issues a second setter or permits restoration
+over an unresolved write. A blocking native call is not preemptible by this local
+observation budget; the helper's outer deadline remains necessary.
 
 Limits: one immutable 35-second transaction deadline, 80 frames and 40 million
 output pixels. New traversal phases and forward/top-seek setters stop at

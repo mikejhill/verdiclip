@@ -8,10 +8,11 @@ from unittest.mock import Mock
 
 import pytest
 from PySide6.QtCore import QPoint, Qt
-from PySide6.QtGui import QCursor, QImage
+from PySide6.QtGui import QColor, QCursor, QImage, QPainter
 from PySide6.QtWidgets import QApplication
 from pytestqt.qtbot import QtBot
-from tests.capture.test_scrolling import NormalizingListTarget, transaction
+from tests.capture.test_scrolling import NormalizingListTarget, Target, transaction
+from tests.capture.test_scrolling_containment import ContainmentTarget
 from tests.ux.test_app_journeys import App, AppFactory
 from tests.ux.test_app_journeys import (
     make_app as make_app,  # noqa: PLC0414 - pytest fixture
@@ -134,6 +135,59 @@ def test_scrolling_uses_configured_save_and_clipboard_without_editor(
     assert QImage(str(saved[0])) == image
     assert QApplication.clipboard().image() == image
     assert not app.controller.editors
+    assert app.controller.capture._last_area is None
+
+
+@pytest.mark.parametrize("collapse", [False, True])
+def test_fixed_header_delivers_full_width_content_once(
+    make_app: AppFactory,
+    qtbot: QtBot,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    collapse: bool,
+) -> None:
+    """UX-CAP-19: a stable visible header needs no configuration or manual crop."""
+    target = Target()
+    original_frame = target.frame
+
+    def frame() -> QImage:
+        image = original_frame()
+        painter = QPainter(image)
+        expanded = collapse and target.offset == 0
+        painter.fillRect(
+            0,
+            0,
+            image.width(),
+            24 if expanded else 16,
+            QColor("blue" if expanded else "lightgray"),
+        )
+        painter.end()
+        return image
+
+    monkeypatch.setattr(target, "frame", frame)
+    expected = target.document.copy()
+    painter = QPainter(expected)
+    painter.fillRect(
+        0,
+        0,
+        expected.width(),
+        24 if collapse else 16,
+        QColor("blue" if collapse else "lightgray"),
+    )
+    painter.end()
+    initial = target.position()
+    result = transaction(target).run()
+    assert result.image == expected
+    assert target.position() == initial
+    app = make_app()
+    helper = prepare(app)
+    app.press_hotkey("scrolling")
+    select(qtbot, app, helper)
+    finish(qtbot, app, helper, result)
+    assert len(app.controller.editors) == 1
+    assert app.controller.editors[0].session.document.image == expected.convertToFormat(
+        QImage.Format.Format_ARGB32_Premultiplied
+    )
     assert app.controller.capture._last_area is None
 
 
@@ -395,3 +449,39 @@ def test_cleanup_warning_preserves_retained_editor_recovery_action(
     assert app.controller.workspace.documents == records
     assert len(app.controller.editors) == 1
     assert app.controller.editors[0].isVisible()
+
+
+def test_contained_repeat_evidence_delivers_complete_image_without_changing_repeat(
+    make_app: AppFactory, qtbot: QtBot
+) -> None:
+    """UX-CAP-19: supported repeated content uses ordinary delivery and restoration."""
+    target = ContainmentTarget()
+    original_position, original_pixels = target.position(), target.frame()
+    result = transaction(target).run()
+    expected = target.document.copy()
+    expected.setPixelColor(1, 230, QColor("magenta"))
+    assert result.image == expected
+    assert result.restoration == "restored"
+    assert target.position() == original_position
+    assert target.frame() == original_pixels
+
+    app = make_app()
+    app.press_hotkey("window")
+    qtbot.waitUntil(lambda: len(app.controller.workspace.documents) == 1)
+    ordinary = app.controller.workspace.documents[0]
+    repeat_area = app.controller.capture._last_area
+    helper = prepare(app)
+    app.press_hotkey("scrolling")
+    select(qtbot, app, helper)
+    finish(qtbot, app, helper, result)
+    assert len(app.controller.workspace.documents) == 2
+    assert app.controller.editors[0].session.document.image == expected.convertToFormat(
+        QImage.Format.Format_ARGB32_Premultiplied
+    )
+    assert app.controller.capture._last_area == repeat_area
+    app.press_hotkey("repeat")
+    qtbot.waitUntil(lambda: len(app.controller.workspace.documents) == 3)
+    assert app.controller.editors[0].session.document.image.size() == (
+        ordinary.session.document.image.size()
+    )
+    assert app.controller.capture._last_area == repeat_area

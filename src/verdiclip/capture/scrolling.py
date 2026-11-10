@@ -13,7 +13,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
-from typing import Protocol
+from typing import Protocol, cast
 
 from PySide6.QtGui import QColor, QImage, QPainter
 
@@ -25,11 +25,18 @@ _TRAVERSAL_RESERVE_SECONDS = 2.0
 MAX_FRAMES = 80
 MAX_PIXELS = 40_000_000
 MIN_OVERLAP = 32
+_MAX_AMBIGUITY_RETRIES = 4
+_SETTLE_FAST_SAMPLES = 8
+_SETTLE_MAX_SAMPLES = 16
+_SETTLE_ACK_SECONDS = 2.0
 _MIN_DISTINCT_ROWS = 8
+_NATIVE_PIXEL_EPSILON = 1e-6
 _ROUNDING_FRACTION = 0.02
 _PREFIX_MISMATCH_FRACTION = 0.05
 # Measured Edge focus outlines, in physical pixels; not a content crop budget.
 _MAX_EDGE_WIDTH = 2
+_MAX_SCROLL_TRACK_WIDTH = 8
+_SCROLL_TRACK_PARTS = 3
 _EDGE_CORNER_ROWS = 8
 _MAX_PERIMETER_WIDTH = 3
 _MAX_TOP_PERIMETER_ROWS = 4
@@ -42,6 +49,27 @@ logger = logging.getLogger(__name__)
 
 def _extent_agrees(measured: float, expected: float) -> bool:
     return abs(measured - expected) <= max(2.0, expected * _ROUNDING_FRACTION)
+
+
+class AmbiguousScrollError(CaptureError):
+    """Exact pixels admit multiple displacements; no stitch state was committed."""
+
+
+class NoAlignmentScrollError(CaptureError):
+    """No eligible exact textured registration band was found; nothing was committed."""
+
+
+class TopBoundaryScrollError(CaptureError):
+    """A unique ordinary displacement failed the original top-boundary guard."""
+
+    def __init__(
+        self, message: str, *, full_width: bool, advance: int, containment: bool = False
+    ) -> None:
+        super().__init__(message)
+        self.full_width = full_width
+        self.advance = advance
+        self.containment = containment
+        self.observation: tuple[ScrollPosition, QImage] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,6 +222,8 @@ class VerticalStitch:
         *,
         dpi: int | None = None,
         nonrail_width: int | None = None,
+        post_prefix: tuple[bytes, ...] | None = None,
+        allow_containment: bool = True,
     ) -> None:
         self._validate(first)
         if dpi is not None and not BASE_REGISTRATION_DPI <= dpi <= MAX_REGISTRATION_DPI:
@@ -202,12 +232,22 @@ class VerticalStitch:
             type(nonrail_width) is int and 0 < nonrail_width < first.width()
         ):
             raise CaptureError("The List body geometry is unsupported")
+        self._allow_containment = allow_containment
         self._nonrail_width = nonrail_width
         self._dpi = BASE_REGISTRATION_DPI if dpi is None else dpi
         self._frames = [first.copy()]
         self._previous = first.copy()
         self._height = first.height()
         self._tail_start = 0
+        self._fixed_prefix: tuple[int, int] | None = None
+        self._initial = first.copy()
+        if post_prefix is not None and (
+            nonrail_width is not None
+            or not 1 < len(post_prefix) < first.height() - MIN_OVERLAP
+            or any(len(row) != first.width() * 4 for row in post_prefix)
+        ):
+            raise CaptureError("The observed post-transition prefix is unsupported")
+        self._post_prefix = post_prefix
 
     def _limit(self, original: int) -> int:
         """Ceil the original pixel bound proportionately, never the scale itself."""
@@ -235,7 +275,7 @@ class VerticalStitch:
         ids: dict[bytes, int] = {}
         before = [ids.setdefault(row, len(ids)) for row in old]
         after = [ids.setdefault(row, len(ids)) for row in new]
-        match = None
+        matches = []
         for advance in range(1, len(before) - MIN_OVERLAP + 1):
             if nonrail_width is not None and any(
                 left[: nonrail_width * 4] != right[: nonrail_width * 4]
@@ -255,10 +295,386 @@ class VerticalStitch:
                     longest = (start, row)
                 start = row + 1
             if longest[1] > longest[0]:
-                if match is not None:
-                    raise CaptureError("The panel's scrolling pixels are ambiguous")
-                match = (advance, *longest)
-        return match
+                matches.append((advance, *longest))
+        return VerticalStitch._unique_alignment(old, new, matches)
+
+    @staticmethod
+    def _unique_alignment(
+        old: list[bytes], new: list[bytes], matches: list[tuple[int, int, int]]
+    ) -> tuple[int, int, int] | None:
+        """A repeated local band cannot outweigh a unique entire exact overlap.
+
+        This is pixel evidence, not proximity to the provider's reported shift.
+        If entire overlaps are themselves repeated, ambiguity remains fatal.
+        """
+        if len(matches) > 1:
+            complete = [
+                match
+                for match in matches
+                if old[match[0] :] == new[: len(old) - match[0]]
+            ]
+            if len(complete) != 1:
+                raise AmbiguousScrollError("The panel's scrolling pixels are ambiguous")
+            return complete[0]
+        return matches[0] if matches else None
+
+    @staticmethod
+    def _textured_runs(rows: list[bytes], supported: set[int]) -> list[tuple[int, int]]:
+        """Retain every maximal qualifying contiguous exact-row run."""
+        result = []
+        ordered = sorted(supported)
+        start = previous = -2
+        for row in [*ordered, len(rows) + 1]:
+            if row != previous + 1:
+                if (
+                    previous - start + 1 >= MIN_OVERLAP
+                    and len(set(rows[start : previous + 1])) >= _MIN_DISTINCT_ROWS
+                ):
+                    result.append((start, previous + 1))
+                start = row
+            previous = row
+        return result
+
+    @classmethod
+    def _containment_alignment(
+        cls, old: list[bytes], new: list[bytes], *, tail_start: int = 0
+    ) -> tuple[int, int, int]:
+        """Explain every original candidate band, without discarding tail evidence.
+
+        Each rival is compared in its common domain with the candidate. No
+        third displacement may erase their evidence by shortening that domain.
+        Every original qualifying band must still be explained in full.
+        """
+        ids: dict[bytes, int] = {}
+        before = [ids.setdefault(row, len(ids)) for row in old]
+        after = [ids.setdefault(row, len(ids)) for row in new]
+        exact = {}
+        support = {}
+        original_bands = {}
+        for advance in range(1, len(old) - MIN_OVERLAP + 1):
+            rows = {
+                row
+                for row in range(len(old) - advance)
+                if before[row + advance] == after[row]
+            }
+            bands = cls._textured_runs(new, rows)
+            if bands:
+                original_bands[advance] = bands
+                exact[advance] = rows
+                support[advance] = {
+                    row for first, last in bands for row in range(first, last)
+                }
+        if len(support) <= 1:
+            raise AmbiguousScrollError("The panel has no containment ambiguity proof")
+        union = set().union(*support.values())
+        winners = [
+            advance
+            for advance in support
+            if union <= exact[advance]
+            and cls._pairwise_exclusive(new, advance, support, exact)
+        ]
+        if len(winners) != 1:
+            raise AmbiguousScrollError("The panel's scrolling pixels are ambiguous")
+        advance = winners[0]
+        return cls._containment_seam(
+            advance, original_bands[advance], tail_start=tail_start
+        )
+
+    @classmethod
+    def _pairwise_exclusive(
+        cls,
+        new: list[bytes],
+        advance: int,
+        support: dict[int, set[int]],
+        exact: dict[int, set[int]],
+    ) -> bool:
+        """Require textured disproof of every rival on mutually observable rows."""
+        for rival, rows in support.items():
+            if rival == advance:
+                continue
+            common = set(range(len(new) - max(advance, rival)))
+            if not cls._textured_runs(new, rows & common):
+                return False
+            # Even short isolated exact matches veto exclusive support. A
+            # qualifying rival band is not the only evidence for that rival.
+            exclusive = (support[advance] & common) - exact[rival]
+            if not cls._textured_runs(new, exclusive):
+                return False
+        return True
+
+    @staticmethod
+    def _containment_seam(
+        advance: int, bands: list[tuple[int, int]], *, tail_start: int
+    ) -> tuple[int, int, int]:
+        """Choose the first eligible original band only after the winner is unique."""
+        for first, last in bands:
+            if tail_start - advance < last:
+                return advance, first, last
+        raise CaptureError("The panel has no consistent interior join")
+
+    def _track_edge(self, old: list[bytes], new: list[bytes]) -> int:
+        """Measure from the right edge, stopping at the first inner flat column."""
+        limit = self._limit(_MAX_SCROLL_TRACK_WIDTH)
+        if len(old) <= 4 * limit or len(old[0]) // 4 <= limit:
+            return 0
+        background = old[0][-4:]
+        corners = 2 * limit
+        bodies = (*old[corners:-corners], *new[corners:-corners])
+        seen = False
+        for offset in range(limit + 1):
+            column = len(old[0]) - 4 * (offset + 1)
+            uniform = all(row[column : column + 4] == background for row in bodies)
+            if uniform and seen:
+                return offset
+            if not uniform:
+                seen = True
+            elif offset >= self._limit(_MAX_PERIMETER_WIDTH):
+                return 0
+        return 0
+
+    @staticmethod
+    def _solid_thumb(shape: list[bytes], background: bytes, width: int) -> bool:
+        """Require a solid rectangular center with bounded mirrored end caps."""
+        center = shape[len(shape) // 2]
+        leading = next(i for i, row in enumerate(shape) if row == center)
+        if (
+            not 0 < leading <= width
+            or len(shape) - 2 * leading < MIN_OVERLAP
+            or shape[:leading] != list(reversed(shape[-leading:]))
+            or any(row != center for row in shape[leading:-leading])
+        ):
+            return False
+        pixels = [center[x : x + 4] for x in range(0, width * 4, 4)]
+        ink = [pixel for pixel in pixels if pixel != background]
+        return (
+            len(ink) > 1
+            and len(set(ink)) == 1
+            and center == ink[0] * len(ink) + background * (width - len(ink))
+        )
+
+    def _track_components(
+        self, rows: list[bytes], background: bytes, width: int
+    ) -> list[tuple[int, int]] | None:
+        """Recognize two bounded end marks and one solid thumb, without alignment."""
+        blank = background * width
+        runs = []
+        start = None
+        for y, row in enumerate([*rows, blank]):
+            if row != blank and start is None:
+                start = y
+            elif row == blank and start is not None:
+                runs.append((start, y))
+                start = None
+        if len(runs) != _SCROLL_TRACK_PARTS:
+            return None
+        first, thumb, last = runs
+        corners = 2 * self._limit(_MAX_SCROLL_TRACK_WIDTH)
+        if (
+            first[1] > corners
+            or last[0] < len(rows) - corners
+            or not self._solid_thumb(rows[thumb[0] : thumb[1]], background, width)
+        ):
+            return None
+        return runs
+
+    def _scroll_track_width(self, old: list[bytes], new: list[bytes]) -> int:
+        """Prove one bounded track independently of any candidate displacement.
+
+        Two stationary end marks enclose an identical downward-translated
+        solid thumb on a uniform background. No inward search past a flat
+        boundary, arbitrary sidebar, or alignment-selected crop is allowed.
+        """
+        width = self._track_edge(old, new)
+        if not width:
+            return 0
+        tracks = [[row[-width * 4 :] for row in rows] for rows in (old, new)]
+        before, after = [
+            self._track_components(rows, old[0][-4:], width) for rows in tracks
+        ]
+        if before is None or after is None:
+            return 0
+        if (
+            before[0] != after[0]
+            or before[2] != after[2]
+            or before[1][0] >= after[1][0]
+            or tracks[0][: before[0][1]] != tracks[1][: after[0][1]]
+            or tracks[0][before[2][0] :] != tracks[1][after[2][0] :]
+            or tracks[0][before[1][0] : before[1][1]]
+            != tracks[1][after[1][0] : after[1][1]]
+        ):
+            return 0
+        return width
+
+    def _track_alignment(
+        self, old: list[bytes], new: list[bytes]
+    ) -> tuple[int, int, int]:
+        """Require a complete nontrack overlap and an exact full-width seam."""
+        width = self._scroll_track_width(old, new)
+        if not width:
+            raise AmbiguousScrollError("The panel's scrolling pixels are ambiguous")
+        before = [row[: -width * 4] for row in old]
+        after = [row[: -width * 4] for row in new]
+        candidates = []
+        for advance in range(1, len(old) - MIN_OVERLAP + 1):
+            if before[advance:] != after[: len(old) - advance]:
+                continue
+            exact = {y for y in range(len(old) - advance) if old[y + advance] == new[y]}
+            bands = self._textured_runs(new, exact)
+            if bands:
+                candidates.append((advance, bands))
+        if len(candidates) != 1:
+            raise AmbiguousScrollError("The panel's scrolling pixels are ambiguous")
+        advance, bands = candidates[0]
+        return self._containment_seam(advance, bands, tail_start=self._tail_start)
+
+    def _full_width_proof(
+        self, old: list[bytes], new: list[bytes]
+    ) -> tuple[tuple[int, int, int] | None, bool]:
+        """Legacy global uniqueness first; containment has explicit provenance."""
+        try:
+            if self._nonrail_width is not None:
+                return self._alignment(
+                    old, new, nonrail_width=self._nonrail_width
+                ), False
+            return self._alignment(old, new), False
+        except AmbiguousScrollError:
+            if self._nonrail_width is not None or not self._allow_containment:
+                raise
+            try:
+                match = self._containment_alignment(
+                    old, new, tail_start=self._tail_start
+                )
+            except AmbiguousScrollError:
+                match = self._track_alignment(old, new)
+            return match, True
+
+    @staticmethod
+    def _require_containment_advance(advance: int, expected: float | None) -> None:
+        """Native arithmetic confirms an independently selected winner, never ranks."""
+        if (
+            expected is None
+            or not math.isfinite(expected)
+            or abs(expected - advance) > _NATIVE_PIXEL_EPSILON
+        ):
+            raise CaptureError(
+                "The contained pixel proof needs an exact native displacement"
+            )
+
+    def _bottom_outline(
+        self, old: list[bytes], new: list[bytes], prefix: int
+    ) -> tuple[int, int, int]:
+        """Prove a bounded flat bottom and stable corners without shift evidence.
+
+        The bottom color must connect to both outermost body columns. Only
+        adjacent, same-coordinate identical corners may be masked. All other
+        moving pixels are compared, and no output pixels are cropped.
+        """
+        width = len(old[0]) // 4
+        corners = self._limit(3)
+        if width <= 2 * corners:
+            return 0, 0, 0
+        color = old[-1][:4]
+        flat = color * width
+        band = 0
+        for before, after in zip(reversed(old), reversed(new), strict=True):
+            if before != flat or after != flat:
+                break
+            band += 1
+        if not 0 < band <= self._limit(3):
+            return 0, 0, 0
+        if any(
+            row[:4] != color or row[-4:] != color
+            for row in (*old[prefix:], *new[prefix:])
+        ):
+            return 0, 0, 0
+        corner_rows = self._limit(2)
+        end = len(old) - band
+        if end - corner_rows <= prefix:
+            return 0, 0, 0
+        edge = corners * 4
+        if any(
+            before[:edge] != after[:edge] or before[-edge:] != after[-edge:]
+            for before, after in zip(
+                old[end - corner_rows : end], new[end - corner_rows : end], strict=True
+            )
+        ):
+            return 0, 0, 0
+        return band, corner_rows, edge
+
+    def _stationary_prefix(self, old: list[bytes], new: list[bytes]) -> int:
+        """Cap possible original header lengths using independent stationary rows."""
+        original = self._rows(self._initial)
+        upper = len(old) if self._fixed_prefix is None else self._fixed_prefix[1]
+        return next(
+            (y for y in range(upper) if old[y] != new[y] or old[y] != original[y]),
+            upper,
+        )
+
+    def _fixed_alignment(
+        self, old: list[bytes], new: list[bytes]
+    ) -> tuple[int, int, int, tuple[int, int]] | None:
+        """Intersect possible header lengths, proving one complete moving overlap.
+
+        Each interval member explains every observed stationary and shifted row.
+        Boundary coincidences narrow this interval later; they never freeze a
+        guessed boundary. This cannot recover permanently occluded content or
+        distinguish mutations that exactly mimic valid movement inside that
+        still-ambiguous interval. Sidebar columns are never cropped.
+        """
+        if self._nonrail_width is not None:
+            return None
+        upper = self._stationary_prefix(old, new)
+        lower = 0 if self._fixed_prefix is None else self._fixed_prefix[0]
+        if upper < lower:
+            raise CaptureError("The fixed header changed during scrolling capture")
+        minimum_prefix = 0 if self._fixed_prefix is not None else 2
+        if not minimum_prefix <= upper < len(old) - MIN_OVERLAP:
+            return None
+        matches = self._fixed_candidates(old, new, upper)
+        if len(matches) > 1:
+            raise AmbiguousScrollError("The panel's scrolling pixels are ambiguous")
+        if matches:
+            advance, first, last = matches[0]
+            required = self._required_prefix(old, new, advance, upper)
+            return advance, first, last, (max(lower, required), upper)
+        if self._fixed_prefix is not None:
+            raise CaptureError(
+                "The fixed header's complete moving overlap does not match"
+            )
+        return None
+
+    @staticmethod
+    def _required_prefix(
+        old: list[bytes], new: list[bytes], advance: int, upper: int
+    ) -> int:
+        """Find a lower bound only after globally unique displacement proof."""
+        while upper and old[upper - 1 + advance] == new[upper - 1]:
+            upper -= 1
+        return upper
+
+    def _fixed_candidates(
+        self, old: list[bytes], new: list[bytes], prefix: int
+    ) -> list[tuple[int, int, int]]:
+        """Enumerate every complete overlap, never ranking by match length."""
+        band, corner_rows, edge = self._bottom_outline(old, new, prefix)
+        end = len(old) - band
+        matches = []
+        for advance in range(1, end - prefix - MIN_OVERLAP + 1):
+            stop = end - advance
+            exact_stop = stop - corner_rows
+            if exact_stop - prefix < MIN_OVERLAP:
+                continue
+            if old[prefix + advance : exact_stop + advance] != new[prefix:exact_stop]:
+                continue
+            if len(set(new[prefix:exact_stop])) < _MIN_DISTINCT_ROWS:
+                continue
+            if any(
+                old[y + advance][edge:-edge] != new[y][edge:-edge]
+                for y in range(exact_stop, stop)
+            ):
+                continue
+            matches.append((advance, prefix, exact_stop))
+        return matches
 
     def _edge_onset(
         self,
@@ -316,11 +732,11 @@ class VerticalStitch:
 
     def _registration(
         self, old: list[bytes], new: list[bytes]
-    ) -> tuple[int, int, int, bool]:
+    ) -> tuple[int, int, int, bool, bool]:
         """Try all columns first; only no match permits a measured-edge retry."""
-        match = self._alignment(old, new, nonrail_width=self._nonrail_width)
+        match, containment = self._full_width_proof(old, new)
         if match is not None:
-            return match[0], match[1], match[2], True
+            return match[0], match[1], match[2], True, containment
         if self._nonrail_width is not None:
             raise CaptureError("The List's complete overlapping pixels do not match")
         left = self._edge_width(old, new, right=False)
@@ -346,8 +762,10 @@ class VerticalStitch:
                     right,
                     self._dpi,
                 )
-                return match[0], match[1], match[2], False
-        raise CaptureError("The panel's scrolling pixels cannot be joined reliably")
+                return match[0], match[1], match[2], False, False
+        raise NoAlignmentScrollError(
+            "The panel's scrolling pixels cannot be joined reliably"
+        )
 
     def _edge_colors(self, rows: list[bytes], *, right: bool, onset: int) -> set[bytes]:
         """Find uniform side colors, excluding a color continuing past the cap."""
@@ -402,6 +820,7 @@ class VerticalStitch:
         advance: int,
         *,
         full_width: bool,
+        containment: bool = False,
     ) -> None:
         """Keep the 5% guard with bounded, independently proved boundary retries."""
         before, after = old[advance : advance + MIN_OVERLAP], new[:MIN_OVERLAP]
@@ -438,7 +857,94 @@ class VerticalStitch:
                 compared,
                 _PREFIX_MISMATCH_FRACTION,
             )
-            raise CaptureError("The top of the scroll panel is fixed or changing")
+            raise TopBoundaryScrollError(
+                "The top of the scroll panel is fixed or changing",
+                full_width=full_width,
+                advance=advance,
+                containment=containment,
+            )
+
+    def _post_alignment(
+        self, old: list[bytes], new: list[bytes], prefix: tuple[bytes, ...]
+    ) -> tuple[int, int, int, bool, tuple[int, int] | None, bool]:
+        """Use full-width evidence below one observed frozen prefix.
+
+        This is the ordinary visible-content band proof, not the stronger
+        complete-moving-overlap proof and not semantic identification of chrome.
+        Only the exact initial top image may have the original expanded prefix.
+        """
+        length = len(prefix)
+        if tuple(new[:length]) != prefix or (
+            tuple(old[:length]) != prefix
+            and not (
+                self._height == self._initial.height()
+                and self._previous == self._initial
+            )
+        ):
+            raise CaptureError("The observed post-transition prefix changed")
+        match, containment = self._full_width_proof(old, new)
+        if match is None:
+            raise NoAlignmentScrollError(
+                "The panel's scrolling pixels cannot be joined reliably"
+            )
+        advance, first, last = match
+        first = max(first, length)
+        if last - first < MIN_OVERLAP or len(set(new[first:last])) < _MIN_DISTINCT_ROWS:
+            raise CaptureError("The scrolling match does not prove the visible body")
+        changed, compared = self._difference(
+            old[advance + length : advance + length + MIN_OVERLAP],
+            new[length : length + MIN_OVERLAP],
+        )
+        if changed > compared * _PREFIX_MISMATCH_FRACTION:
+            raise CaptureError(
+                "The body below the observed prefix is fixed or changing"
+            )
+        return advance, first, last, True, None, containment
+
+    def _join_alignment(
+        self, old: list[bytes], new: list[bytes]
+    ) -> tuple[int, int, int, bool, tuple[int, int] | None, bool]:
+        """Prefer the ordinary proof; incidental top equality is not a header."""
+        if self._post_prefix is not None:
+            return self._post_alignment(old, new, self._post_prefix)
+        if self._fixed_prefix is None:
+            try:
+                advance, first, last, full_width, containment = self._registration(
+                    old, new
+                )
+                self._check_top(
+                    old, new, advance, full_width=full_width, containment=containment
+                )
+            except CaptureError as error:
+                if isinstance(error, TopBoundaryScrollError) and error.containment:
+                    raise
+                fixed = self._fixed_alignment(old, new)
+                if fixed is None:
+                    raise
+            else:
+                return advance, first, last, full_width, None, containment
+        else:
+            fixed = self._fixed_alignment(old, new)
+        # The unselected None case was re-raised above. A selected interval
+        # can only produce a complete match or raise, never return None.
+        advance, first, last, prefix = cast(
+            "tuple[int, int, int, tuple[int, int]]", fixed
+        )
+        return advance, first, last, True, prefix, False
+
+    def _verified_join(
+        self, old: list[bytes], new: list[bytes], expected: float | None
+    ) -> tuple[int, int, int, bool, tuple[int, int] | None, bool]:
+        """Check native confirmation after selection, outside all fallback catches."""
+        try:
+            proof = self._join_alignment(old, new)
+        except TopBoundaryScrollError as error:
+            if error.containment:
+                self._require_containment_advance(error.advance, expected)
+            raise
+        if proof[5]:
+            self._require_containment_advance(proof[0], expected)
+        return proof
 
     def append(
         self,
@@ -457,7 +963,9 @@ class VerticalStitch:
             for before, after in zip(old, new, strict=True)
         ):
             raise CaptureError("The List's rendered body did not move")
-        advance, first, last, full_width = self._registration(old, new)
+        advance, first, last, _full_width, fixed, _containment = self._verified_join(
+            old, new, expected_advance
+        )
         logger.info(
             "Scrolling alignment: measured_advance=%s expected_advance=%s "
             "matching_band=(%s,%s)",
@@ -474,9 +982,6 @@ class VerticalStitch:
             advance, expected_advance
         ):
             raise CaptureError("The panel's pixels disagree with its scroll position")
-        # Reject broad fixed headers. This practical check cannot establish
-        # pixels hidden by a tiny overlay at every position.
-        self._check_top(old, new, advance, full_width=full_width)
         if image.width() * (self._height + advance) > MAX_PIXELS:
             raise CaptureError("The scrolling image exceeds the size limit")
         # Keep earlier pixels above a verified seam and later pixels below it.
@@ -494,6 +999,8 @@ class VerticalStitch:
         self._height += advance
         self._tail_start = seam
         self._previous = image.copy()
+        if fixed is not None:
+            self._fixed_prefix = fixed
 
     def finish(self) -> QImage:
         """Return one detached image after the caller has reached the bottom."""
@@ -950,6 +1457,67 @@ class ScrollTransaction:
             )
         return self._terminal_change(before, current, percent)
 
+    def _check_settle_position(
+        self,
+        before: ScrollPosition,
+        current: ScrollPosition,
+        percent: float,
+        restoring: ScrollPosition | None,
+    ) -> None:
+        """Retain every state and overshoot check after read-only re-observation."""
+        if not self._settle_state(before, current, percent, restoring):
+            logger.warning(
+                "Scrolling settle rejected: stage=state-change restoring=%s "
+                "requested_percent=%r before=%s observed=%s",
+                restoring is not None,
+                percent,
+                before,
+                current,
+            )
+            raise CaptureError("The scroll panel moved unexpectedly")
+        if (
+            restoring is None
+            and percent not in (0.0, END_PERCENT)
+            and abs(current.vertical - before.vertical)
+            > abs(percent - before.vertical) * 1.5
+        ):
+            logger.warning(
+                "Scrolling settle rejected: stage=overshoot restoring=%s "
+                "requested_percent=%r before=%s observed=%s",
+                restoring is not None,
+                percent,
+                before,
+                current,
+            )
+            raise CaptureError("The scroll panel moved unexpectedly")
+
+    def _ack_window_open(self, started: float, *, unchanged: bool) -> bool:
+        """Spend at most two seconds observing; preserve the traversal reserve.
+
+        Once actual movement is observed, an already-issued write may finish its
+        existing proof in the reserve, still within both immutable hard limits.
+        """
+        limit = self._deadline - (_TRAVERSAL_RESERVE_SECONDS if unchanged else 0)
+        return self._clock() < min(started + _SETTLE_ACK_SECONDS, limit)
+
+    @staticmethod
+    def _settle_reached(
+        before: ScrollPosition,
+        current: ScrollPosition,
+        percent: float,
+        restoring: ScrollPosition | None,
+    ) -> bool:
+        return (
+            current == restoring
+            if restoring is not None
+            else (
+                current.vertical == percent
+                if percent in (0.0, END_PERCENT)
+                else (current.vertical - before.vertical) * (percent - before.vertical)
+                > 0
+            )
+        )
+
     def _settle(
         self,
         before: ScrollPosition,
@@ -957,50 +1525,56 @@ class ScrollTransaction:
         *,
         restoring: ScrollPosition | None = None,
     ) -> ScrollPosition:
-        """Observe one write; unchanged reads never acknowledge pending movement."""
+        """Observe the one issued setter, never treating unchanged reads as success."""
         previous = None
-        for _ in range(8):
+        started = self._clock()
+        unchanged = True
+        grace = False
+        for sample in range(_SETTLE_MAX_SAMPLES):
+            if sample == _SETTLE_FAST_SAMPLES:
+                refresh = getattr(self._target, "refresh_position", None)
+                grace = (
+                    restoring is None
+                    and unchanged
+                    and self._generic_layout()
+                    and callable(refresh)
+                )
+                if not grace or not self._ack_window_open(started, unchanged=True):
+                    break
+
+                def refresh_guard() -> None:
+                    self._poll()
+                    if not self._ack_window_open(started, unchanged=True):
+                        raise CaptureError("The scroll refresh reached its time limit")
+
+                refresh(refresh_guard, self._pause)
+                refresh_guard()
+                previous = None
+            if grace and not self._ack_window_open(started, unchanged=unchanged):
+                break
             self._pause(0.08)
             self._check(restoring=restoring is not None)
             current = self._target.position()
             self._check(restoring=restoring is not None)
-            if not self._settle_state(before, current, percent, restoring):
-                logger.warning(
-                    "Scrolling settle rejected: stage=state-change restoring=%s "
-                    "requested_percent=%r before=%s observed=%s",
-                    restoring is not None,
-                    percent,
-                    before,
-                    current,
-                )
-                raise CaptureError("The scroll panel moved unexpectedly")
-            if (
-                restoring is None
-                and percent not in (0.0, END_PERCENT)
-                and abs(current.vertical - before.vertical)
-                > abs(percent - before.vertical) * 1.5
-            ):
-                logger.warning(
-                    "Scrolling settle rejected: stage=overshoot restoring=%s "
-                    "requested_percent=%r before=%s observed=%s",
-                    restoring is not None,
-                    percent,
-                    before,
-                    current,
-                )
-                raise CaptureError("The scroll panel moved unexpectedly")
-            reached = (
-                current == restoring
-                if restoring is not None
-                else (
-                    current.vertical == percent
-                    if percent in (0.0, END_PERCENT)
-                    else (current.vertical - before.vertical)
-                    * (percent - before.vertical)
-                    > 0.0
-                )
+            logger.info(
+                "Scrolling settle sample: sample=%s elapsed_seconds=%.6f grace=%s "
+                "restoring=%s requested_percent=%r before=%s observed=%s",
+                sample + 1,
+                self._clock() - started,
+                grace,
+                restoring is not None,
+                percent,
+                before,
+                current,
             )
-            if reached and current == previous:
+            self._check_settle_position(before, current, percent, restoring)
+            unchanged = unchanged and current == before
+            if grace and not self._ack_window_open(started, unchanged=unchanged):
+                break
+            if (
+                self._settle_reached(before, current, percent, restoring)
+                and current == previous
+            ):
                 self._poll(restoring=restoring is not None)
                 return current
             previous = current
@@ -1030,9 +1604,189 @@ class ScrollTransaction:
             self._expected = observed
         return observed
 
-    def _sequence(self, initial: ScrollPosition) -> QImage:
-        position = self._move(0.0)
-        first = self._frame(position)
+    def _retry_smaller_step(
+        self,
+        accepted: ScrollPosition,
+        rejected: ScrollPosition,
+        anchor: QImage,
+        *,
+        fraction: float = 0.5,
+    ) -> ScrollPosition:
+        """Revalidate the exact anchor before acquiring a strictly smaller step."""
+        if self._frames + 2 > MAX_FRAMES:
+            raise CaptureError("Scrolling capture reached its page limit")
+        returned = self._move(accepted.vertical)
+        if returned != accepted:
+            raise CaptureError(
+                "The scrolling retry could not restore its anchor position"
+            )
+        if self._frame(returned) != anchor:
+            raise CaptureError("The scrolling retry anchor pixels changed")
+        smaller = accepted.vertical + (rejected.vertical - accepted.vertical) * fraction
+        if not accepted.vertical < smaller < rejected.vertical:
+            raise CaptureError("The scrolling retry has no smaller forward step")
+        following = self._move(smaller)
+        if (
+            following.view_size != accepted.view_size
+            or not accepted.vertical < following.vertical < rejected.vertical
+        ):
+            raise CaptureError("The scrolling retry did not reach its smaller interval")
+        return following
+
+    def _append_step(
+        self,
+        stitch: VerticalStitch,
+        frames: _HeaderFrames,
+        position: ScrollPosition,
+        following: ScrollPosition,
+        anchor: QImage,
+    ) -> tuple[ScrollPosition, QImage]:
+        """Only typed registration ambiguity or absence permits bounded subdivision."""
+        retry = 0
+        while True:
+            if self._frames >= MAX_FRAMES:
+                raise CaptureError("Scrolling capture reached its page limit")
+            raw = self._frame(following)
+            expected = (
+                frames.body_height
+                * (100.0 - position.view_size)
+                / position.view_size
+                * (following.vertical - position.vertical)
+                / 100.0
+            )
+            logger.info(
+                "Scrolling step: viewport_height=%s view_size=%.6f "
+                "from_vertical=%.6f to_vertical=%.6f expected_advance=%.3f retry=%s",
+                frames.body_height,
+                position.view_size,
+                position.vertical,
+                following.vertical,
+                expected,
+                retry,
+            )
+            try:
+                stitch.append(
+                    frames.body(raw),
+                    expected
+                    if self._list_steps is None
+                    and following.view_size == position.view_size
+                    else None,
+                    verify=partial(self._verify_list_step, following)
+                    if self._list_steps is not None
+                    else None,
+                )
+            except TopBoundaryScrollError as error:
+                if error.containment:
+                    VerticalStitch._require_containment_advance(error.advance, expected)
+                if (
+                    self._list_steps is None
+                    and following.view_size == position.view_size
+                    and not _extent_agrees(error.advance, expected)
+                ):
+                    raise CaptureError(
+                        "The panel's pixels disagree with its scroll position"
+                    ) from error
+                if position.vertical == 0.0:
+                    error.observation = following, raw
+                raise
+            except (AmbiguousScrollError, NoAlignmentScrollError) as error:
+                if (
+                    retry == _MAX_AMBIGUITY_RETRIES
+                    or self._list_steps is not None
+                    or self._target.header is not None
+                    or getattr(self._target, "footer", None) is not None
+                    or self._native is not None
+                    or following.view_size != position.view_size
+                    or following.vertical <= position.vertical
+                ):
+                    raise
+                following = self._retry_smaller_step(
+                    position,
+                    following,
+                    anchor,
+                    fraction=0.75 if isinstance(error, NoAlignmentScrollError) else 0.5,
+                )
+                retry += 1
+            else:
+                return following, raw
+
+    def _generic_layout(self) -> bool:
+        """Do not promote any verified Header, footer, rail or List route."""
+        return (
+            self._list_steps is None
+            and self._target.header is None
+            and getattr(self._target, "footer", None) is None
+            and self._native is None
+        )
+
+    def _learn_post_prefix(
+        self,
+        top: ScrollPosition,
+        original: QImage,
+        error: TopBoundaryScrollError,
+    ) -> tuple[tuple[bytes, ...], ScrollPosition, QImage]:
+        """Observe two additional positions, then revalidate the exact original top."""
+        if (
+            not error.full_width
+            or not self._generic_layout()
+            or error.observation is None
+        ):
+            raise error
+        position, first = error.observation
+        if (
+            top.vertical != 0.0
+            or not top.vertical < position.vertical < END_PERCENT
+            or position.view_size != top.view_size
+            or self._frames + 3 > MAX_FRAMES
+        ):
+            raise error
+        samples = [VerticalStitch._rows(first)]
+        for _ in range(2):
+            step = 50.0 * position.view_size / (100.0 - position.view_size)
+            requested = position.vertical + step
+            if requested >= END_PERCENT:
+                raise CaptureError("The panel is too short to observe a settled prefix")
+            following = self._move(requested)
+            if (
+                following.view_size != top.view_size
+                or not position.vertical < following.vertical < END_PERCENT
+            ):
+                raise CaptureError("The prefix observation changed the panel's extent")
+            raw = self._frame(following)
+            if raw.size() != original.size():
+                raise CaptureError("The scroll panel changed size")
+            samples.append(VerticalStitch._rows(raw))
+            position = following
+        upper = next(
+            (
+                y
+                for y in range(original.height())
+                if not samples[0][y] == samples[1][y] == samples[2][y]
+            ),
+            original.height(),
+        )
+        if not 1 < upper < original.height() - MIN_OVERLAP:
+            raise CaptureError("No bounded stable post-transition prefix was observed")
+        returned = self._move(top.vertical)
+        if returned != top or self._frame(returned) != original:
+            raise CaptureError("The original top changed during prefix observation")
+        return tuple(samples[0][:upper]), returned, original
+
+    def _sequence(
+        self,
+        initial: ScrollPosition,
+        learned: tuple[tuple[bytes, ...], ScrollPosition, QImage] | None = None,
+    ) -> QImage:
+        prefix = None
+        if learned is None:
+            position = self._move(0.0)
+            first = self._frame(position)
+        else:
+            prefix, position, first = learned
+            self._check()
+            if self._target.position() != position or self._expected != position:
+                raise CaptureError("The original top moved before capture restart")
+        anchor = first
         frames = _HeaderFrames(
             first,
             self._target.area,
@@ -1043,6 +1797,8 @@ class ScrollTransaction:
             frames.body(first),
             dpi=self._target.registration_dpi,
             nonrail_width=self._list_width(),
+            post_prefix=prefix,
+            allow_containment=self._generic_layout(),
         )
         self._check()
         if self._list_steps is not None:
@@ -1055,36 +1811,29 @@ class ScrollTransaction:
             step = 50.0 * position.view_size / (100.0 - position.view_size)
             self._begin_list_step(position)
             following = self._move(min(100.0, position.vertical + step))
-            expected = (
-                frames.body_height
-                * (100.0 - position.view_size)
-                / position.view_size
-                * (following.vertical - position.vertical)
-                / 100.0
-            )
-            logger.info(
-                "Scrolling step: viewport_height=%s view_size=%.6f "
-                "from_vertical=%.6f to_vertical=%.6f expected_advance=%.3f",
-                frames.body_height,
-                position.view_size,
-                position.vertical,
-                following.vertical,
-                expected,
-            )
-            stitch.append(
-                frames.body(self._frame(following)),
-                expected
-                if self._list_steps is None
-                and following.view_size == position.view_size
-                else None,
-                verify=partial(self._verify_list_step, following)
-                if self._list_steps is not None
-                else None,
-            )
+            try:
+                following, anchor = self._append_step(
+                    stitch, frames, position, following, anchor
+                )
+            except TopBoundaryScrollError as error:
+                if learned is not None or position.vertical != 0.0:
+                    raise
+                observed = self._learn_post_prefix(position, first, error)
+                return self._sequence(initial, observed)
             self._poll()
             if self._list_steps is not None and following.vertical != END_PERCENT:
                 self._expected = following
             position = following
+        return self._finish_sequence(stitch, frames, initial, position)
+
+    def _finish_sequence(
+        self,
+        stitch: VerticalStitch,
+        frames: _HeaderFrames,
+        initial: ScrollPosition,
+        position: ScrollPosition,
+    ) -> QImage:
+        """Validate terminal output without changing the original extent contract."""
         self._check()
         image = frames.finish(stitch.finish())
         self._validate_extent(image, frames, initial.view_size)

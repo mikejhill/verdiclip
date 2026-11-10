@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ctypes.wintypes as w
 import json
+import math
 import os
 from collections.abc import Callable
 from dataclasses import asdict, replace
@@ -33,7 +34,7 @@ from scripts.simple_scroll_native import main as native_main
 from verdiclip.capture.grabber import MssScreenSource
 from verdiclip.capture.models import ScreenGeometry
 from verdiclip.capture.scroll_helper import ScrollHelper
-from verdiclip.capture.scrolling import MAX_SECONDS, ScrollResult
+from verdiclip.capture.scrolling import END_PERCENT, MAX_SECONDS, ScrollResult
 from verdiclip.geometry import Point, Rect
 from verdiclip.platform.associations import FileAssociations
 from verdiclip.platform.hotkeys import HotkeyService
@@ -235,7 +236,8 @@ class AppCapture:
         """Qualify only the owned sidebar's exact no-image provider rejection."""
         _require(
             self.kind == "edge-sidebar-enter"
-            and result.message == "The top of the scroll panel is fixed or changing"
+            and result.message
+            == "No bounded stable post-transition prefix was observed"
             and result.image is None
             and result.restoration == "restored",
             result.message or "Unexpected fixed-sidebar result",
@@ -251,14 +253,43 @@ class AppCapture:
             "Fixed-sidebar provider state was not restored",
         )
         _require(
-            result.frames == 2 and len(frames) == 2 and frames[0] == initial,  # noqa: PLR2004
+            result.frames == 4 and len(frames) == 4 and frames[0] == initial,  # noqa: PLR2004
             "Fixed-sidebar frame evidence differs",
         )
+        step = 50.0 * initial["view_size"] / (END_PERCENT - initial["view_size"])
         _require(
-            self.report["movement"] == {"writes": 2, "last_vertical": 0.0},
+            all(
+                set(frame) == set(initial)
+                and frame["horizontal"] == initial["horizontal"]
+                and frame["view_size"] == initial["view_size"]
+                and math.isclose(
+                    frame["vertical"], index * step, rel_tol=0.0, abs_tol=1e-9
+                )
+                and 0 <= frame["vertical"] < END_PERCENT
+                for index, frame in enumerate(frames)
+            ),
+            "Fixed-sidebar probe trajectory differs",
+        )
+        _require(
+            self.report["movement"] == {"writes": 4, "last_vertical": 0.0},
             "Fixed-sidebar write evidence differs",
         )
         original = QImage(str(self.output / "frame-0.png"))
+        probes = [
+            QImage(str(self.output / f"frame-{index}.png")) for index in (1, 2, 3)
+        ]
+        _require(
+            all(
+                not probe.isNull() and probe.size() == original.size()
+                for probe in probes
+            )
+            and not (
+                probes[0].copy(0, 0, original.width(), 1)
+                == probes[1].copy(0, 0, original.width(), 1)
+                == probes[2].copy(0, 0, original.width(), 1)
+            ),
+            "Fixed-sidebar probe pixels do not prove a zero-length stable prefix",
+        )
         _require(
             not original.isNull()
             and not after.isNull()

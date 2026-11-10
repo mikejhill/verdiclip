@@ -30,6 +30,7 @@ class TrayCommands:
     exit: Callable[[], None]
     update: Callable[[], None] | None = None  # None: no update entry
     capture_scrolling: Callable[[], None] | None = None
+    copy_scroll_error: Callable[[], None] | None = None
 
 
 class TrayIcon(QSystemTrayIcon):
@@ -50,6 +51,7 @@ class TrayIcon(QSystemTrayIcon):
         self._update_label = CHECK_UPDATES_LABEL
         self._update_checking = False
         self._scroll_active = False
+        self._has_scroll_error = False
         self._click = QTimer(self)
         self._click.setSingleShot(True)
         self._click.timeout.connect(self._on_click)
@@ -89,6 +91,11 @@ class TrayIcon(QSystemTrayIcon):
         )
         self.rebuild_menu(self._hotkey_labels)
 
+    def set_scroll_error_available(self) -> None:
+        """Keep the latest failure copyable after the capture popup is hidden."""
+        self._has_scroll_error = True
+        self.rebuild_menu(self._hotkey_labels)
+
     def rebuild_menu(self, hotkey_labels: Mapping[str, str]) -> None:
         """Rebuild the menu, showing each capture's hotkey (UX-TRY-03)."""
         c = self._commands
@@ -119,6 +126,17 @@ class TrayIcon(QSystemTrayIcon):
             ("fullscreen", "Capture full screen", c.capture_fullscreen),
             ("repeat", "Repeat last capture", c.repeat_last),
             *scrolling,
+            *(
+                [
+                    (
+                        "copy_scroll_error",
+                        "Copy last scrolling error",
+                        c.copy_scroll_error,
+                    )
+                ]
+                if c.copy_scroll_error is not None and self._has_scroll_error
+                else []
+            ),
             None,
             ("open", "Open image…", c.open_image),
             ("folder", "Open screenshots folder", c.open_folder),

@@ -17,6 +17,7 @@ jobs:
        (github.event_name == 'pull_request' &&
         github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
         (((github.head_ref == 'feature/simple-scrolling' ||
+           github.head_ref == 'fix/real-app-scrolling' ||
            github.head_ref == 'diagnostics/scrolling-0140') && github.event.pull_request.draft == true) ||
          github.head_ref == 'release-please--branches--main--components--verdiclip')))
     name: Actual application / ${{ matrix.application }}
@@ -85,6 +86,7 @@ jobs:
        (github.event_name == 'pull_request' &&
         github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
         (((github.head_ref == 'feature/simple-scrolling' ||
+           github.head_ref == 'fix/real-app-scrolling' ||
            github.head_ref == 'diagnostics/scrolling-0140' ||
            github.head_ref == 'diagnose/main-native-failures') && github.event.pull_request.draft == true) ||
          github.head_ref == 'release-please--branches--main--components--verdiclip')))
@@ -145,6 +147,7 @@ jobs:
        (github.event_name == 'pull_request' &&
         github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
         (((github.head_ref == 'feature/simple-scrolling' ||
+           github.head_ref == 'fix/real-app-scrolling' ||
            github.head_ref == 'diagnostics/scrolling-0140') && github.event.pull_request.draft == true) ||
          github.head_ref == 'release-please--branches--main--components--verdiclip')))
     name: Actual 200% Edge controls
@@ -220,6 +223,7 @@ jobs:
        (github.event_name == 'pull_request' &&
         github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
         (((github.head_ref == 'feature/simple-scrolling' ||
+           github.head_ref == 'fix/real-app-scrolling' ||
            github.head_ref == 'diagnostics/scrolling-0140') && github.event.pull_request.draft == true) ||
          github.head_ref == 'release-please--branches--main--components--verdiclip')))
     name: Representative layout / ${{ matrix.scale }}% / ${{ matrix.application }}${{ matrix.layout == 'no-hbar' && ' / no-hbar' || '' }}
@@ -335,6 +339,67 @@ jobs:
         if: always()
         with:
           name: scrolling-representative-${{ matrix.scale }}-${{ matrix.application }}${{ matrix.layout == 'no-hbar' && '-no-hbar' || '' }}
+          path: artifacts/simple-scroll
+          if-no-files-found: warn
+          retention-days: 14
+
+  live-sites:
+    if: >-
+      github.repository == 'mikejhill/verdiclip' &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+       (github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == 'mikejhill/verdiclip' &&
+        ((github.head_ref == 'fix/real-app-scrolling' && github.event.pull_request.draft == true) ||
+         github.head_ref == 'release-please--branches--main--components--verdiclip')))
+    name: Browser layout / ${{ matrix.application }}
+    runs-on: windows-2025
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        application: [edge-google-live, edge-todo-access, edge-owned-search, edge-owned-settings]
+    env:
+      QT_QPA_PLATFORM: windows
+      PYTHONUTF8: "1"
+      SCROLL_APPLICATION: ${{ matrix.application }}
+      QUALIFICATION_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Require exact live-site source
+        run: |
+          $actual = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0 -or $actual -ne $env:QUALIFICATION_HEAD) { throw 'Source mismatch' }
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - run: uv sync --locked
+      - name: Prove real desktop capture
+        timeout-minutes: 2
+        run: uv run pytest tests/capture/test_grabber.py::TestMssScreenSource::test_freeze --require-interactive-capture -v
+      - name: Verify the browser layout in a fresh installed Edge profile
+        timeout-minutes: 4
+        run: |
+          if ($env:SCROLL_APPLICATION.StartsWith('edge-owned-')) {
+            uv run python -m scripts.scrolling_owned_layouts "$env:SCROLL_APPLICATION"
+          } else {
+            uv run python -m scripts.scrolling_live_sites "$env:SCROLL_APPLICATION"
+          }
+      - name: Keep signed-in To Do explicitly unqualified
+        if: matrix.application == 'edge-todo-access'
+        run: |
+          $result = Get-Content -Raw 'artifacts/simple-scroll/edge-todo-access/result.json' | ConvertFrom-Json
+          if ($result.access_probe_completed -ne $true -or $result.success -ne $false -or
+              $result.product_capture_qualification -ne $false -or $result.capture_attempted -ne $false) {
+            throw 'Public access probe was mistaken for signed-in To Do qualification'
+          }
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: scrolling-live-${{ matrix.application }}
           path: artifacts/simple-scroll
           if-no-files-found: warn
           retention-days: 14

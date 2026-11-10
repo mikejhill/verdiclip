@@ -612,3 +612,82 @@ def test_hit_provider_exception_keeps_identity_and_partial_receipt() -> None:
     assert "private" not in str(reader.confirmation_failure)
     item.control_type.assert_called_once()
     _mock(reader._walker.parent).assert_not_called()
+
+
+@pytest.mark.parametrize("columns", [2, 3])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_multicolumn_seed_uses_two_freshly_hit_tested_identities(
+    columns: int, *, reverse: bool
+) -> None:
+    """Independent evidence permits side-by-side items without trusting production."""
+    reader = _reader()
+    items = [
+        _item(Rect(12 + column * 20, y, 18, 20))
+        for y in (70, 100, 130)
+        for column in range(columns)
+    ]
+    if reverse:
+        items.reverse()
+    _mock(reader._walker.relative).side_effect = [*items, None]
+    releases = Mock()
+
+    def retain(item: Mock, _slot: int, owners: ExitStack, *_args: object) -> Mock:
+        owners.callback(releases)
+        return item
+
+    def hit(_slot: int, _owners: ExitStack, *args: object) -> Mock:
+        argument = args[0]
+        assert isinstance(argument, tuple)
+        point = argument[1]
+        return next(
+            item
+            for item in items
+            if item.bounds().left < point.x < item.bounds().right
+            and item.bounds().top < point.y < item.bounds().bottom
+        )
+
+    _mock(reader._automation.pointer_result).side_effect = hit
+    for item in items:
+        item.pointer_result.side_effect = lambda slot, owners, *args, item=item: retain(
+            item, slot, owners, *args
+        )
+    reader._seed()
+    assert len(reader._anchors) == 2
+    assert all(anchor.bounds.top == 130 for anchor in reader._anchors)
+    assert reader._anchors[0].element is not reader._anchors[1].element
+    assert reader.confirmation_failure is None
+    assert _mock(reader._automation.pointer_result).call_count == 2
+    releases.assert_not_called()
+    reader.close()
+    assert releases.call_count == 2
+
+
+@pytest.mark.parametrize("reason", ["overlap", "alias"])
+def test_pair_failure_receipt_distinguishes_geometry_from_identity(reason: str) -> None:
+    """Bounded numeric evidence diagnoses aliases without names or extra UIA reads."""
+    reader = _reader()
+    first = _item(Rect(15, 100, 50, 20))
+    last = _item(Rect(15, 110 if reason == "overlap" else 130, 50, 20))
+    _mock(reader._walker.relative).side_effect = [first, last, None]
+    if reason == "alias":
+        _mock(reader._automation.same_element).side_effect = None
+        _mock(reader._automation.same_element).return_value = True
+    with pytest.raises(CaptureError, match="pair is ambiguous"):
+        reader._seed()
+    receipt = reader.confirmation_failure
+    assert receipt is not None
+    assert receipt["stage"] == "pair_selection"
+    assert receipt["candidate_bounds"] == [
+        {"x": 15, "y": 100, "width": 50, "height": 20},
+        {"x": 15, "y": 110 if reason == "overlap" else 130, "width": 50, "height": 20},
+    ]
+    assert receipt["comparisons"] == [
+        {
+            "bounds": {"x": 15, "y": 100, "width": 50, "height": 20},
+            "disjoint": reason == "alias",
+            "same_identity": True if reason == "alias" else None,
+        }
+    ]
+    first.pointer_result.assert_not_called()
+    last.pointer_result.assert_not_called()
+    assert _mock(reader._automation.same_element).call_count == (reason == "alias")

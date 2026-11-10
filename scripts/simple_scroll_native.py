@@ -477,7 +477,14 @@ def _trace_helper() -> None:
     complete_sequence = mode in _EDGE_ROW_MODES or mode.startswith(
         _REPRESENTATIVE_PREFIXES
     )
-    frame_limit = MAX_FRAMES if complete_sequence else _DIAGNOSTIC_FRAMES
+    # These newly qualified layouts need the failing attempted pair, not only
+    # the first successful pair. Keep the same frame and total-pixel budgets.
+    retain_sequence = (
+        complete_sequence
+        or mode.startswith("edge-owned-")
+        or mode == "edge-google-live"
+    )
+    frame_limit = MAX_FRAMES if retain_sequence else _DIAGNOSTIC_FRAMES
     retained_pixels = 0
     list_calls = {name: {"count": 0, "exceptions": 0} for name in ("begin", "finish")}
 
