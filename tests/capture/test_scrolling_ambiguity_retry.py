@@ -54,11 +54,11 @@ def test_unique_smaller_step_after_exact_anchor_reacquisition(
 
     monkeypatch.setattr(stitch, "append", conditional)
     result, raw = operation._append_step(stitch, frames, accepted, following, anchor)
-    assert result.vertical == 6.25
-    assert target.moves == [12.5, 0, 6.25]
+    assert result.vertical == 9.375
+    assert target.moves == [12.5, 0, 9.375]
     assert operation._frames == 4  # Initial, rejected, exact anchor, accepted.
-    assert raw == target.document.copy(0, 30, 80, 120)
-    assert stitch.finish() == target.document.copy(0, 0, 80, 150)
+    assert raw == target.document.copy(0, 45, 80, 120)
+    assert stitch.finish() == target.document.copy(0, 0, 80, 165)
 
 
 def test_four_retries_are_hard_bounded_without_stitch_commit(
@@ -343,7 +343,7 @@ def test_real_repeated_cards_transaction_subdivides_and_restores() -> None:
     assert result.restoration == "restored"
     assert target.position() == original
     offsets = [round(percent * 632 / 100) for percent in target.moves]
-    assert offsets[:5] == [0, 284, 568, 284, 426]
+    assert offsets[:7] == [0, 284, 568, 284, 497, 284, 426]
     assert offsets[-1] == 100
     assert result.frames == operation._frames
     assert result.frames <= 80

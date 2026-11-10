@@ -59,6 +59,15 @@ class NoAlignmentScrollError(CaptureError):
     """No eligible exact textured registration band was found; nothing was committed."""
 
 
+class PostPrefixBodyScrollError(CaptureError):
+    """An exact band failed the frozen-prefix body guard; nothing was committed."""
+
+    def __init__(self, message: str, *, advance: int, containment: bool) -> None:
+        super().__init__(message)
+        self.advance = advance
+        self.containment = containment
+
+
 class TopBoundaryScrollError(CaptureError):
     """A unique ordinary displacement failed the original top-boundary guard."""
 
@@ -896,8 +905,10 @@ class VerticalStitch:
             new[length : length + MIN_OVERLAP],
         )
         if changed > compared * _PREFIX_MISMATCH_FRACTION:
-            raise CaptureError(
-                "The body below the observed prefix is fixed or changing"
+            raise PostPrefixBodyScrollError(
+                "The body below the observed prefix is fixed or changing",
+                advance=advance,
+                containment=containment,
             )
         return advance, first, last, True, None, containment
 
@@ -1633,6 +1644,15 @@ class ScrollTransaction:
             raise CaptureError("The scrolling retry did not reach its smaller interval")
         return following
 
+    @staticmethod
+    def _retry_fraction(error: CaptureError, retry: int, expected: float) -> float:
+        """Confirm constrained provenance before choosing a new acquisition interval."""
+        if isinstance(error, PostPrefixBodyScrollError) and error.containment:
+            VerticalStitch._require_containment_advance(error.advance, expected)
+        if isinstance(error, NoAlignmentScrollError):
+            return 0.75
+        return (0.75, 2 / 3, 0.5, 0.5)[min(retry, _MAX_AMBIGUITY_RETRIES - 1)]
+
     def _append_step(
         self,
         stitch: VerticalStitch,
@@ -1641,7 +1661,7 @@ class ScrollTransaction:
         following: ScrollPosition,
         anchor: QImage,
     ) -> tuple[ScrollPosition, QImage]:
-        """Only typed registration ambiguity or absence permits bounded subdivision."""
+        """Reacquire rejected generic pairs without changing any acceptance proof."""
         retry = 0
         while True:
             if self._frames >= MAX_FRAMES:
@@ -1689,7 +1709,12 @@ class ScrollTransaction:
                 if position.vertical == 0.0:
                     error.observation = following, raw
                 raise
-            except (AmbiguousScrollError, NoAlignmentScrollError) as error:
+            except (
+                AmbiguousScrollError,
+                NoAlignmentScrollError,
+                PostPrefixBodyScrollError,
+            ) as error:
+                fraction = self._retry_fraction(error, retry, expected)
                 if (
                     retry == _MAX_AMBIGUITY_RETRIES
                     or self._list_steps is not None
@@ -1704,7 +1729,7 @@ class ScrollTransaction:
                     position,
                     following,
                     anchor,
-                    fraction=0.75 if isinstance(error, NoAlignmentScrollError) else 0.5,
+                    fraction=fraction,
                 )
                 retry += 1
             else:
