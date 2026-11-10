@@ -16,6 +16,7 @@ from scripts.simple_scroll_native import _traced_helper
 from verdiclip.capture.models import ScreenGeometry
 from verdiclip.capture.scrolling import ScrollResult
 from verdiclip.geometry import Point, Rect
+from verdiclip.platform.hotkeys import Hotkey
 from verdiclip.platform.scrolling import ScrollSelectionState
 from verdiclip.platform.windows import WindowInfo
 
@@ -108,13 +109,44 @@ def test_native_repeat_waits_for_admission_but_rejects_tall_dimensions() -> None
     assert not case.report
 
 
-@pytest.mark.parametrize("boundary", ["valid", "no_selector", "dynamic_repeat"])
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        "valid",
+        "no_selector",
+        "dynamic_repeat",
+        "shortcut_missing",
+        "shortcut_wrong",
+        "not_dispatched",
+        "duplicate",
+        "wrong_action",
+        "stale_action",
+    ],
+)
 def test_native_seed_requires_real_chooser_and_fixed_area(
     monkeypatch: pytest.MonkeyPatch, boundary: str
 ) -> None:
-    """The fixture seeds a selected window, not dynamic active-window Repeat."""
+    """One registered native dispatch must produce a selected fixed-area baseline."""
     case = object.__new__(AppCapture)
     case.controller = Mock()
+    case.actions = ["region"] if boundary == "stale_action" else []
+    case.hotkeys = Mock(
+        registered={}
+        if boundary == "shortcut_missing"
+        else {
+            "region": Hotkey.parse(
+                "ctrl+alt+f9" if boundary == "shortcut_wrong" else "ctrl+alt+f8"
+            )
+        }
+    )
+    dispatched = {
+        "not_dispatched": [],
+        "stale_action": [],
+        "duplicate": ["region", "region"],
+        "wrong_action": ["scrolling"],
+    }.get(boundary, ["region"])
+    keys = Mock(side_effect=lambda _keys: case.actions.extend(dispatched))
+    monkeypatch.setattr(case, "_keys", keys)
     case.desktop = Mock()
     case.window = WindowInfo(123, "Owned Edge", Rect(0, 0, 200, 100))
     case.point = Point(50, 50)
@@ -140,10 +172,20 @@ def test_native_seed_requires_real_chooser_and_fixed_area(
             "height": 100,
         }
     else:
-        with pytest.raises(RuntimeError, match=r"chooser|retain"):
+        with pytest.raises(RuntimeError, match=r"chooser|retain|registered|dispatch"):
             case._seed_editor()
-        assert not case.report
-    case.controller.tray.action.assert_called_once_with("region")
+        assert "initial_repeat_area" not in case.report
+    entry = case.report["seed_entry"]
+    assert isinstance(entry, dict)
+    if boundary in ("shortcut_missing", "shortcut_wrong"):
+        keys.assert_not_called()
+    else:
+        keys.assert_called_once_with((0x11, 0x12, 0x77))
+        assert entry["dispatched_actions"] == dispatched
+    if boundary not in ("valid", "dynamic_repeat"):
+        case.desktop.click.assert_not_called()
+    assert entry["route"] == "native_hotkey"
+    case.controller.tray.action.assert_not_called()
 
 
 @pytest.mark.parametrize("boundary", ["settled", "native_foreign", "qt_active"])
@@ -1090,9 +1132,13 @@ def test_fixed_sidebar_old_two_frame_error_is_not_current_probe_evidence(
 def test_seed_waits_for_observed_focus_before_single_native_gesture(
     monkeypatch: pytest.MonkeyPatch, *, settles: bool
 ) -> None:
-    """Queued activation may settle, but a foreign foreground gets no input."""
+    """After one shortcut, foreign foreground gets no selection or forced focus."""
     case = object.__new__(AppCapture)
     case.controller = Mock()
+    case.actions = []
+    case.hotkeys = Mock(registered={"region": Hotkey.parse("ctrl+alt+f8")})
+    keys = Mock(side_effect=lambda _keys: case.actions.append("region"))
+    monkeypatch.setattr(case, "_keys", keys)
     desktop = Mock()
     case.desktop = desktop
     case.window = WindowInfo(123, "Owned Edge", Rect(0, 0, 200, 100))
@@ -1128,7 +1174,13 @@ def test_seed_waits_for_observed_focus_before_single_native_gesture(
             case._seed_editor()
         assert events.call_count == waits.call_count == 100
         desktop.click.assert_not_called()
-        assert not case.report
+        assert "initial_repeat_area" not in case.report
+    entry = case.report["seed_entry"]
+    assert isinstance(entry, dict)
+    assert entry["foreground_after"] == (456 if settles else 123)
+    keys.assert_called_once_with((0x11, 0x12, 0x77))
+    assert entry["dispatched_actions"] == ["region"]
+    case.controller.tray.action.assert_not_called()
     overlay.activateWindow.assert_not_called()
     overlay.raise_.assert_not_called()
     desktop.user.SetForegroundWindow.assert_not_called()

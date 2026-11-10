@@ -37,7 +37,7 @@ from verdiclip.capture.scroll_helper import ScrollHelper
 from verdiclip.capture.scrolling import END_PERCENT, MAX_SECONDS, ScrollResult
 from verdiclip.geometry import Point, Rect
 from verdiclip.platform.associations import FileAssociations
-from verdiclip.platform.hotkeys import HotkeyService
+from verdiclip.platform.hotkeys import Hotkey, HotkeyService
 from verdiclip.platform.scrolling import ScrollSelectionState
 from verdiclip.platform.shortcuts import ShortcutRegistration
 from verdiclip.platform.startup import StartupRegistration
@@ -61,7 +61,9 @@ class AppCapture:
         store.save(
             replace(
                 base,
-                hotkeys=replace(base.hotkeys, scrolling="ctrl+alt+f9"),
+                hotkeys=replace(
+                    base.hotkeys, region="ctrl+alt+f8", scrolling="ctrl+alt+f9"
+                ),
                 integration=IntegrationSettings(open_with=False, start_menu=False),
                 startup=replace(base.startup, run_at_login=False),
             )
@@ -527,13 +529,31 @@ class AppCapture:
         self.desktop.click(menu, physical, hold_ms=120)
 
     def _seed_editor(self) -> None:
-        """Choose a window through ordinary selection to seed fixed-area Repeat."""
-        self.controller.tray.action("region").trigger()
+        """Use one registered native shortcut to seed ordinary fixed-area Repeat."""
+        entry: dict[str, object] = {
+            "route": "native_hotkey",
+            "shortcut": "Ctrl+Alt+F8",
+            "foreground_before": self.desktop.foreground(),
+        }
+        self.report["seed_entry"] = entry
+        _require(
+            self.hotkeys.registered.get("region") == Hotkey.parse("ctrl+alt+f8"),
+            "Initial ordinary capture shortcut is not registered",
+        )
+        before = len(self.actions)
+        # A direct QAction.trigger() from a background process is not native
+        # user entry and need not grant Windows foreground activation rights.
+        self._keys((0x11, 0x12, 0x77))
         for _ in range(100):
             if self.controller.capture.overlays:
                 break
             QTest.qWait(10)
         overlays = self.controller.capture.overlays
+        entry["dispatched_actions"] = self.actions[before:]
+        _require(
+            self.actions[before:] == ["region"],
+            "Initial ordinary shortcut did not dispatch exactly once",
+        )
         _require(bool(overlays), "Initial ordinary chooser did not appear")
         active = next(
             overlay
@@ -548,8 +568,10 @@ class AppCapture:
             if self.desktop.foreground() == int(active.winId()):
                 break
             QTest.qWait(10)
+        entry["overlay_hwnd"] = int(active.winId())
+        entry["foreground_after"] = self.desktop.foreground()
         _require(
-            self.desktop.foreground() == int(active.winId()),
+            entry["foreground_after"] == entry["overlay_hwnd"],
             "Initial ordinary chooser did not receive foreground",
         )
         self.desktop.click(active, self.point)
