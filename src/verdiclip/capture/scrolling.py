@@ -26,6 +26,9 @@ MAX_FRAMES = 80
 MAX_PIXELS = 40_000_000
 MIN_OVERLAP = 32
 _MAX_AMBIGUITY_RETRIES = 4
+_SETTLE_FAST_SAMPLES = 8
+_SETTLE_MAX_SAMPLES = 25
+_SETTLE_ACK_SECONDS = 2.0
 _MIN_DISTINCT_ROWS = 8
 _ROUNDING_FRACTION = 0.02
 _PREFIX_MISMATCH_FRACTION = 0.05
@@ -47,6 +50,10 @@ def _extent_agrees(measured: float, expected: float) -> bool:
 
 class AmbiguousScrollError(CaptureError):
     """Exact pixels admit multiple displacements; no stitch state was committed."""
+
+
+class NoAlignmentScrollError(CaptureError):
+    """No eligible exact textured registration band was found; nothing was committed."""
 
 
 class TopBoundaryScrollError(CaptureError):
@@ -506,7 +513,9 @@ class VerticalStitch:
                     self._dpi,
                 )
                 return match[0], match[1], match[2], False
-        raise CaptureError("The panel's scrolling pixels cannot be joined reliably")
+        raise NoAlignmentScrollError(
+            "The panel's scrolling pixels cannot be joined reliably"
+        )
 
     def _edge_colors(self, rows: list[bytes], *, right: bool, onset: int) -> set[bytes]:
         """Find uniform side colors, excluding a color continuing past the cap."""
@@ -623,7 +632,9 @@ class VerticalStitch:
             raise CaptureError("The observed post-transition prefix changed")
         match = self._alignment(old, new)
         if match is None:
-            raise CaptureError("The panel's scrolling pixels cannot be joined reliably")
+            raise NoAlignmentScrollError(
+                "The panel's scrolling pixels cannot be joined reliably"
+            )
         advance, first, last = match
         first = max(first, length)
         if last - first < MIN_OVERLAP or len(set(new[first:last])) < _MIN_DISTINCT_ROWS:
@@ -1172,6 +1183,67 @@ class ScrollTransaction:
             )
         return self._terminal_change(before, current, percent)
 
+    def _check_settle_position(
+        self,
+        before: ScrollPosition,
+        current: ScrollPosition,
+        percent: float,
+        restoring: ScrollPosition | None,
+    ) -> None:
+        """Retain every state and overshoot check during late acknowledgment reads."""
+        if not self._settle_state(before, current, percent, restoring):
+            logger.warning(
+                "Scrolling settle rejected: stage=state-change restoring=%s "
+                "requested_percent=%r before=%s observed=%s",
+                restoring is not None,
+                percent,
+                before,
+                current,
+            )
+            raise CaptureError("The scroll panel moved unexpectedly")
+        if (
+            restoring is None
+            and percent not in (0.0, END_PERCENT)
+            and abs(current.vertical - before.vertical)
+            > abs(percent - before.vertical) * 1.5
+        ):
+            logger.warning(
+                "Scrolling settle rejected: stage=overshoot restoring=%s "
+                "requested_percent=%r before=%s observed=%s",
+                restoring is not None,
+                percent,
+                before,
+                current,
+            )
+            raise CaptureError("The scroll panel moved unexpectedly")
+
+    def _ack_window_open(self, started: float, *, unchanged: bool) -> bool:
+        """Spend at most two seconds observing; preserve the traversal reserve.
+
+        Once actual movement is observed, an already-issued write may finish its
+        existing proof in the reserve, still within both immutable hard limits.
+        """
+        limit = self._deadline - (_TRAVERSAL_RESERVE_SECONDS if unchanged else 0)
+        return self._clock() < min(started + _SETTLE_ACK_SECONDS, limit)
+
+    @staticmethod
+    def _settle_reached(
+        before: ScrollPosition,
+        current: ScrollPosition,
+        percent: float,
+        restoring: ScrollPosition | None,
+    ) -> bool:
+        return (
+            current == restoring
+            if restoring is not None
+            else (
+                current.vertical == percent
+                if percent in (0.0, END_PERCENT)
+                else (current.vertical - before.vertical) * (percent - before.vertical)
+                > 0
+            )
+        )
+
     def _settle(
         self,
         before: ScrollPosition,
@@ -1179,50 +1251,41 @@ class ScrollTransaction:
         *,
         restoring: ScrollPosition | None = None,
     ) -> ScrollPosition:
-        """Observe one write; unchanged reads never acknowledge pending movement."""
+        """Observe the one issued setter, never treating unchanged reads as success."""
         previous = None
-        for _ in range(8):
+        started = self._clock()
+        unchanged = True
+        grace = False
+        for sample in range(_SETTLE_MAX_SAMPLES):
+            if sample == _SETTLE_FAST_SAMPLES:
+                grace = restoring is None and unchanged and self._generic_layout()
+                if not grace:
+                    break
+            if grace and not self._ack_window_open(started, unchanged=unchanged):
+                break
             self._pause(0.08)
             self._check(restoring=restoring is not None)
             current = self._target.position()
             self._check(restoring=restoring is not None)
-            if not self._settle_state(before, current, percent, restoring):
-                logger.warning(
-                    "Scrolling settle rejected: stage=state-change restoring=%s "
-                    "requested_percent=%r before=%s observed=%s",
-                    restoring is not None,
-                    percent,
-                    before,
-                    current,
-                )
-                raise CaptureError("The scroll panel moved unexpectedly")
-            if (
-                restoring is None
-                and percent not in (0.0, END_PERCENT)
-                and abs(current.vertical - before.vertical)
-                > abs(percent - before.vertical) * 1.5
-            ):
-                logger.warning(
-                    "Scrolling settle rejected: stage=overshoot restoring=%s "
-                    "requested_percent=%r before=%s observed=%s",
-                    restoring is not None,
-                    percent,
-                    before,
-                    current,
-                )
-                raise CaptureError("The scroll panel moved unexpectedly")
-            reached = (
-                current == restoring
-                if restoring is not None
-                else (
-                    current.vertical == percent
-                    if percent in (0.0, END_PERCENT)
-                    else (current.vertical - before.vertical)
-                    * (percent - before.vertical)
-                    > 0.0
-                )
+            logger.info(
+                "Scrolling settle sample: sample=%s elapsed_seconds=%.6f grace=%s "
+                "restoring=%s requested_percent=%r before=%s observed=%s",
+                sample + 1,
+                self._clock() - started,
+                grace,
+                restoring is not None,
+                percent,
+                before,
+                current,
             )
-            if reached and current == previous:
+            self._check_settle_position(before, current, percent, restoring)
+            unchanged = unchanged and current == before
+            if grace and not self._ack_window_open(started, unchanged=unchanged):
+                break
+            if (
+                self._settle_reached(before, current, percent, restoring)
+                and current == previous
+            ):
                 self._poll(restoring=restoring is not None)
                 return current
             previous = current
@@ -1252,13 +1315,15 @@ class ScrollTransaction:
             self._expected = observed
         return observed
 
-    def _retry_midpoint(
+    def _retry_smaller_step(
         self,
         accepted: ScrollPosition,
         rejected: ScrollPosition,
         anchor: QImage,
+        *,
+        fraction: float = 0.5,
     ) -> ScrollPosition:
-        """Revalidate the exact accepted viewport before bounded reacquisition."""
+        """Revalidate the exact anchor before acquiring a strictly smaller step."""
         if self._frames + 2 > MAX_FRAMES:
             raise CaptureError("Scrolling capture reached its page limit")
         returned = self._move(accepted.vertical)
@@ -1268,10 +1333,10 @@ class ScrollTransaction:
             )
         if self._frame(returned) != anchor:
             raise CaptureError("The scrolling retry anchor pixels changed")
-        midpoint = (accepted.vertical + rejected.vertical) / 2
-        if not accepted.vertical < midpoint < rejected.vertical:
+        smaller = accepted.vertical + (rejected.vertical - accepted.vertical) * fraction
+        if not accepted.vertical < smaller < rejected.vertical:
             raise CaptureError("The scrolling retry has no smaller forward step")
-        following = self._move(midpoint)
+        following = self._move(smaller)
         if (
             following.view_size != accepted.view_size
             or not accepted.vertical < following.vertical < rejected.vertical
@@ -1287,7 +1352,7 @@ class ScrollTransaction:
         following: ScrollPosition,
         anchor: QImage,
     ) -> tuple[ScrollPosition, QImage]:
-        """Only typed pixel ambiguity permits up to four guarded subdivisions."""
+        """Only typed registration ambiguity or absence permits bounded subdivision."""
         retry = 0
         while True:
             if self._frames >= MAX_FRAMES:
@@ -1330,10 +1395,10 @@ class ScrollTransaction:
                     raise CaptureError(
                         "The panel's pixels disagree with its scroll position"
                     ) from error
-                if retry == 0:
+                if position.vertical == 0.0:
                     error.observation = following, raw
                 raise
-            except AmbiguousScrollError:
+            except (AmbiguousScrollError, NoAlignmentScrollError) as error:
                 if (
                     retry == _MAX_AMBIGUITY_RETRIES
                     or self._list_steps is not None
@@ -1344,7 +1409,12 @@ class ScrollTransaction:
                     or following.vertical <= position.vertical
                 ):
                     raise
-                following = self._retry_midpoint(position, following, anchor)
+                following = self._retry_smaller_step(
+                    position,
+                    following,
+                    anchor,
+                    fraction=0.75 if isinstance(error, NoAlignmentScrollError) else 0.5,
+                )
                 retry += 1
             else:
                 return following, raw

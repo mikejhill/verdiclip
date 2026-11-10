@@ -78,7 +78,7 @@ preferred displacement match. This captures the visible content sequence,
 including its original top boundary; it cannot reconstruct content permanently
 hidden behind an opaque overlay.
 
-A generic first join with a unique full-width band but a changing top may
+A generic first uncommitted join with a unique full-width band but a changing top may
 make one bounded observation pass before restarting. Three settled forward
 frames must share the same leading full-width pixels, independently of their
 registration matches. Capture then returns to the original top and requires its
@@ -94,14 +94,31 @@ page's latest state. It retains the ordinary band matcher's limitations and does
 not claim a complete moving-overlap or semantic-header proof.
 
 For a generic panel with unchanged extent and no verified native Header/List
-geometry, ambiguous pixels can trigger at most four smaller-step attempts. Each
+geometry, ambiguous pixels or absence of an eligible registration band can trigger
+at most four smaller-step attempts. Each
 attempt returns to the last accepted position and requires its entire raw
-viewport to match exactly before moving to the midpoint of the rejected
-interval. Every new frame counts against the existing budget. Only pixel
-ambiguity permits this recovery; input, geometry, provider and other reported
+viewport to match exactly before reducing the rejected interval. Ambiguity keeps
+one half of that interval; an absent band keeps three quarters, providing more
+overlap without immediately placing a scrollbar thumb inside a short fixed top.
+Every new frame counts against the existing budget. Only these typed registration
+failures permit this recovery; input, geometry, provider and other reported
 failures still stop immediately. Each accepted join must independently satisfy
 the unchanged unique-pixel proof. No provider percentage chooses an ambiguous
 match, and a failed or uncertain return never permits a retry.
+A top refusal on a smaller first step can seed the same one-time observation
+pass, using that actual position and raw frame. It cannot reset an established
+prefix or start learning after a committed join.
+
+The ordinary eight-sample, 80ms settlement path is unchanged. Only eight reads
+exactly equal to the pre-write state on a generic traversal allow extra read-only
+acknowledgment observations of the same setter. This continuation ends at 25
+total samples or two seconds from settlement entry, whichever comes first, and
+the original transaction deadlines still dominate. No-progress observations
+cannot consume the restoration reserve. Actual movement may finish its existing
+two-equal-observation proof in that reserve, within the same limits. State,
+direction, extent, input and geometry checks remain active. This never issues a
+second setter or permits restoration over an unresolved write. A blocking native
+call is not preemptible by this local observation budget.
 
 Limits: one immutable 35-second transaction deadline, 80 frames and 40 million
 output pixels. New traversal phases and forward/top-seek setters stop at

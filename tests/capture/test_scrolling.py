@@ -455,7 +455,7 @@ def test_settle_logs_exact_state_change_without_more_reads(
 
 
 @pytest.mark.parametrize("overshoot", [False, True])
-def test_settle_logs_overshoot_or_unsettled_with_unchanged_poll_budget(
+def test_settle_logs_overshoot_or_unsettled_with_bounded_ack_budget(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
     *,
@@ -470,7 +470,7 @@ def test_settle_logs_overshoot_or_unsettled_with_unchanged_poll_budget(
     operation = ScrollTransaction(target, lambda: False, pause=pauses.append)
     with pytest.raises(CaptureError):
         operation._settle(before, 30.0)
-    assert pauses == [0.08] * (1 if overshoot else 8)
+    assert pauses == [0.08] * (1 if overshoot else 25)
     assert target.moves == []
     assert f"stage={'overshoot' if overshoot else 'unsettled'}" in caplog.text
     assert "restoring=False requested_percent=30.0" in caplog.text

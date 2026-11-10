@@ -452,10 +452,10 @@ def test_header_appearing_after_committed_join_cannot_trigger_learning(
     assert result.frames == 3
 
 
-def test_top_refusal_after_subdivision_cannot_start_new_learning_budget(
+def test_initial_top_refusal_after_subdivision_retains_actual_observation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A changed failure after a retry is not the original first-pair observation."""
+    """The still-uncommitted first join may learn from its actual smaller frame."""
     target = Target(offset=0)
     operation = ScrollTransaction(target, lambda: False, pause=lambda _seconds: None)
     top = target.position()
@@ -473,8 +473,8 @@ def test_top_refusal_after_subdivision_cannot_start_new_learning_budget(
     monkeypatch.setattr(stitch, "append", rejected)
     with pytest.raises(TopBoundaryScrollError) as failure:
         operation._append_step(stitch, frames, top, following, anchor)
-    assert failure.value.observation is None
-    before = target.moves.copy()
-    with pytest.raises(TopBoundaryScrollError):
-        operation._learn_post_prefix(top, anchor, failure.value)
-    assert target.moves == before
+    assert failure.value.observation is not None
+    observed, raw = failure.value.observation
+    assert observed.vertical == 6.25
+    assert raw == target.document.copy(0, 30, 80, 120)
+    assert stitch.finish() == anchor

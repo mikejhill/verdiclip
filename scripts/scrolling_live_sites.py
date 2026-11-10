@@ -357,6 +357,7 @@ def _capture_google(
         result = native._capture(
             point, output, kind, window=window.handle, input_tick=target._input_tick
         )
+        helper_completed_at = time.monotonic()
         report.update(
             capture_attempted=True,
             message=result.message,
@@ -369,18 +370,36 @@ def _capture_google(
             )
         target.check()
         after = target.position()
-        report["after"] = asdict(after)
+        target.check()
+        before_image_elapsed = time.monotonic() - helper_completed_at
         native._require(target.frame().save(str(output / "after.png")), "Save failed")
+        target.check()
+        after_image = target.position()
+        target.check()
+        report["after"] = asdict(after_image)
+        report["after_observations"] = {
+            "before_image": {
+                "position": asdict(after),
+                "elapsed_seconds": before_image_elapsed,
+            },
+            "after_image": {
+                "position": asdict(after_image),
+                "elapsed_seconds": time.monotonic() - helper_completed_at,
+            },
+        }
         # Independent evidence observes the retained Document even if a later
         # point resolves to a different child. Product acceptance stays separate.
-        if after == start:
+        if after == after_image == start:
             report["native_diagnostic"] = collect(
                 target, window, output / "native-diagnostic", _observation_script
             )
             native._require(target.position() == start, "Diagnostic changed start")
         if (output / "frame-0.png").is_file():
             native._verify_selected_target(output, area, start)
-        native._require(after == start, "Live-site starting position was not restored")
+        native._require(
+            after == after_image == start,
+            "Live-site starting position was not restored",
+        )
         native._require(
             result.image is not None and result.restoration == "restored",
             result.message or result.restoration,

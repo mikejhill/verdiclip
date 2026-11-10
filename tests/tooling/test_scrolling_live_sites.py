@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 from contextlib import ExitStack
+from dataclasses import asdict
 from pathlib import Path
+from typing import cast
 from unittest.mock import MagicMock, Mock
 
 import pytest
@@ -251,14 +253,18 @@ def test_open_document_rejects_nested_generic_scroll_region(
     candidate.move.assert_not_called()
 
 
+@pytest.mark.parametrize("changed_after_image", [False, True])
 def test_failed_helper_diagnoses_retained_document_without_rediscovery(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, changed_after_image: bool
 ) -> None:
     """The same screen point may now hit AI Overview; retain the original page."""
     window = WindowInfo(1234, "Google", Rect(0, 0, 800, 600))
     start = ScrollPosition(-1, 37, 17)
     target = Mock(area=window.bounds)
     target.position.return_value = start
+    changed = ScrollPosition(-1, 41, 17)
+    if changed_after_image:
+        target.position.side_effect = [start, changed]
     monkeypatch.setattr(live, "_open_document", Mock(return_value=target))
     monkeypatch.setattr(
         live,
@@ -276,9 +282,31 @@ def test_failed_helper_diagnoses_retained_document_without_rediscovery(
     factory = Mock()
     monkeypatch.setattr(live, "UiaScrollTarget", factory)
     report: dict[str, object] = {}
-    with pytest.raises(RuntimeError, match="ambiguous pixels"):
+    error = (
+        "starting position was not restored"
+        if changed_after_image
+        else "ambiguous pixels"
+    )
+    with pytest.raises(RuntimeError, match=error):
         live._capture_google("edge-google-live", window, tmp_path, report)
-    assert collect.call_args.args[0] is target
+    if changed_after_image:
+        collect.assert_not_called()
+    else:
+        assert collect.call_args.args[0] is target
     factory.assert_not_called()
-    assert report["after"] == {"horizontal": -1, "vertical": 37, "view_size": 17}
+    assert report["after"] == {
+        "horizontal": -1,
+        "vertical": 41 if changed_after_image else 37,
+        "view_size": 17,
+    }
+    reads = cast("dict[str, dict[str, object]]", report["after_observations"])
+    assert reads["before_image"]["position"] == asdict(start)
+    assert reads["after_image"]["position"] == asdict(
+        changed if changed_after_image else start
+    )
+    before_elapsed = reads["before_image"]["elapsed_seconds"]
+    after_elapsed = reads["after_image"]["elapsed_seconds"]
+    assert isinstance(before_elapsed, float)
+    assert isinstance(after_elapsed, float)
+    assert after_elapsed >= before_elapsed >= 0
     assert report.get("success") is not True

@@ -8,7 +8,7 @@ from unittest.mock import Mock
 
 import pytest
 from PySide6.QtCore import QProcess, Qt
-from PySide6.QtGui import QImage
+from PySide6.QtGui import QColor, QImage
 from pytestqt.qtbot import QtBot
 from scripts.simple_scroll_app import AppCapture
 from scripts.simple_scroll_native import _traced_helper
@@ -733,14 +733,18 @@ def sidebar_case(terminal_case: AppCapture) -> AppCapture:
     )
     target_path.write_text(json.dumps(target))
     (case.output / "frames.json").write_text(
-        json.dumps([initial, {**initial, "vertical": 12.0}])
+        json.dumps([{**initial, "vertical": index * 12.5} for index in range(4)])
     )
     (case.output / "movement.json").write_text(
-        json.dumps({"writes": 2, "last_vertical": 0.0})
+        json.dumps({"writes": 4, "last_vertical": 0.0})
     )
     after = QImage(20, 10, QImage.Format.Format_RGB32)
     after.fill(Qt.GlobalColor.white)
     assert after.save(str(case.output / "frame-0.png"))
+    for index in (1, 2, 3):
+        probe = after.copy()
+        probe.setPixelColor(0, 0, QColor(index, 0, 0))
+        assert probe.save(str(case.output / f"frame-{index}.png"))
     case.source = Mock()
     case.source.freeze.return_value.crop.return_value = after
     case.original = Mock()
@@ -758,7 +762,7 @@ def sidebar_case(terminal_case: AppCapture) -> AppCapture:
 def sidebar_result() -> ScrollResult:
     """Return the original failed product result, never a successful substitute."""
     return ScrollResult(
-        None, "The top of the scroll panel is fixed or changing", "restored", 2
+        None, "No bounded stable post-transition prefix was observed", "restored", 4
     )
 
 
@@ -802,7 +806,7 @@ def test_fixed_sidebar_negative_rejects_other_results(
         QImage(20, 10, QImage.Format.Format_RGB32) if boundary == "image" else None,
         original.message + " unexpected" if boundary == "message" else original.message,
         "unchanged" if boundary == "restoration" else "restored",
-        3 if boundary == "frames" else 2,
+        3 if boundary == "frames" else 4,
     )
     case._guarded(lambda: case._terminal(result))
     assert len(case.failures) == 1
@@ -822,6 +826,8 @@ def test_fixed_sidebar_negative_rejects_other_results(
         ("target", "final_observed_position", {}),
         ("target", "initial_position", {}),
         ("movement", "writes", 1),
+        ("movement", "writes", 2),
+        ("movement", "writes", 5),
         ("movement", "writes", 3),
         ("movement", "last_vertical", 12.0),
     ],
@@ -869,7 +875,16 @@ def test_fixed_sidebar_negative_rejects_one_header_content_or_rail_pixel(
 
 
 @pytest.mark.parametrize(
-    "filename", ["target.json", "movement.json", "frames.json", "frame-0.png"]
+    "filename",
+    [
+        "target.json",
+        "movement.json",
+        "frames.json",
+        "frame-0.png",
+        "frame-1.png",
+        "frame-2.png",
+        "frame-3.png",
+    ],
 )
 def test_fixed_sidebar_negative_rejects_missing_evidence(
     sidebar_case: AppCapture, filename: str
@@ -884,7 +899,7 @@ def test_fixed_sidebar_negative_rejects_missing_evidence(
 
 
 @pytest.mark.parametrize("boundary", ["count", "original", "non_top"])
-def test_fixed_sidebar_negative_requires_two_frames_from_original_top(
+def test_fixed_sidebar_negative_requires_four_frames_from_original_top(
     sidebar_case: AppCapture, boundary: str
 ) -> None:
     """Frame evidence must identify the unchanged original top viewport."""
@@ -1011,3 +1026,59 @@ def test_fixed_sidebar_run_keeps_cleanup_and_original_failure_fatal(
     case.controller.shutdown.assert_called_once()
     case.timer.stop.assert_called_once()
     assert not case.report.get("success")
+
+
+@pytest.mark.parametrize("index", [1, 2, 3])
+@pytest.mark.parametrize("field", ["horizontal", "vertical", "view_size"])
+def test_fixed_sidebar_probe_trajectory_rejects_any_changed_scalar(
+    sidebar_case: AppCapture, index: int, field: str
+) -> None:
+    """The refusal qualifies only three exact half-viewport observations."""
+    path = sidebar_case.output / "frames.json"
+    frames = json.loads(path.read_text())
+    frames[index][field] += 0.01
+    path.write_text(json.dumps(frames))
+    with pytest.raises(RuntimeError, match="probe trajectory"):
+        sidebar_case._terminal(sidebar_result())
+
+
+@pytest.mark.parametrize("index", [1, 2, 3])
+@pytest.mark.parametrize("damage", ["invalid", "size"])
+def test_fixed_sidebar_probe_requires_each_complete_native_png(
+    sidebar_case: AppCapture, index: int, damage: str
+) -> None:
+    """Metadata alone cannot substitute for the actual lookahead pixels."""
+    path = sidebar_case.output / f"frame-{index}.png"
+    if damage == "invalid":
+        path.write_bytes(b"not a PNG")
+    else:
+        image = QImage(19, 10, QImage.Format.Format_RGB32)
+        image.fill(Qt.GlobalColor.white)
+        assert image.save(str(path))
+    with pytest.raises(RuntimeError, match="probe pixels"):
+        sidebar_case._terminal(sidebar_result())
+
+
+def test_fixed_sidebar_probe_rejects_even_one_stationary_prefix_row(
+    sidebar_case: AppCapture,
+) -> None:
+    """This exact owned negative requires the independently observed zero prefix."""
+    for index in (1, 2, 3):
+        path = sidebar_case.output / f"frame-{index}.png"
+        image = QImage(str(path))
+        image.setPixelColor(0, 0, Qt.GlobalColor.white)
+        assert image.save(str(path))
+    with pytest.raises(RuntimeError, match="zero-length stable prefix"):
+        sidebar_case._terminal(sidebar_result())
+
+
+def test_fixed_sidebar_old_two_frame_error_is_not_current_probe_evidence(
+    sidebar_case: AppCapture,
+) -> None:
+    """Historical early rejection is not proof of the new bounded probe path."""
+    with pytest.raises(RuntimeError, match="top of the scroll panel"):
+        sidebar_case._terminal(
+            ScrollResult(
+                None, "The top of the scroll panel is fixed or changing", "restored", 2
+            )
+        )
