@@ -391,7 +391,7 @@ class SettingsDialog(QDialog):
                 valid = False
                 continue
             seen[canonical] = dict(HOTKEY_FIELDS)[name]
-            status.setText("✓" if canonical else "Off")
+            status.setText("Valid" if canonical else "Off")
             status.setStyleSheet("")
         valid = self._validate_pattern() and valid
         valid = self._validate_actions() and valid
