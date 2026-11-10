@@ -211,7 +211,7 @@ def test_return_requires_exact_nonterminal_anchor_position(
 
     monkeypatch.setattr(target, "move", almost)
     with pytest.raises(CaptureError, match="anchor position"):
-        operation._retry_midpoint(accepted, rejected, anchor)
+        operation._retry_smaller_step(accepted, rejected, anchor)
     assert len(target.moves) == 3
 
 
@@ -398,7 +398,7 @@ def test_adjacent_float_positions_cannot_create_midpoint_write(
     monkeypatch.setattr(operation, "_move", returned)
     monkeypatch.setattr(operation, "_frame", lambda _position: anchor)
     with pytest.raises(CaptureError, match="no smaller forward step"):
-        operation._retry_midpoint(accepted, rejected, anchor)
+        operation._retry_smaller_step(accepted, rejected, anchor)
     assert calls == [accepted.vertical]
 
 
@@ -417,5 +417,5 @@ def test_midpoint_result_must_stay_inside_rejected_interval(
     monkeypatch.setattr(operation, "_move", moved)
     monkeypatch.setattr(operation, "_frame", lambda _position: anchor)
     with pytest.raises(CaptureError, match="smaller interval"):
-        operation._retry_midpoint(accepted, rejected, anchor)
+        operation._retry_smaller_step(accepted, rejected, anchor)
     assert calls == [0, 6.25]
