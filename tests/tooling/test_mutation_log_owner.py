@@ -100,15 +100,21 @@ def test_restarted_server_binds_its_new_handler_to_its_own_pid(
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="Real owned POSIX child processes")
 def test_real_forked_workers_cannot_rotate_parent_history(tmp_path: Path) -> None:
     """Exercise rotation without forking the Qt-bearing pytest process."""
+    probe = "; ".join(
+        [
+            "import sys",
+            "from pathlib import Path",
+            "from tests.tooling.test_mutation_log_owner import forked_rotation_probe",
+            "forked_rotation_probe(Path(sys.argv[1]))",
+        ]
+    )
     subprocess.run(  # noqa: S603 - fixed interpreter, owned test helper and scratch path
         [
             sys.executable,
             "-W",
             "error::DeprecationWarning",
             "-c",
-            "import sys; from pathlib import Path; "
-            "from tests.tooling.test_mutation_log_owner import forked_rotation_probe; "
-            "forked_rotation_probe(Path(sys.argv[1]))",
+            probe,
             str(tmp_path),
         ],
         cwd=Path(__file__).resolve().parents[2],
@@ -142,7 +148,7 @@ def forked_rotation_probe(root: Path) -> None:
                             None,
                         )
                     )
-            except BaseException:  # noqa: BLE001 - a child must not reenter pytest
+            except Exception:  # noqa: BLE001 - report owned child failure via exit
                 os._exit(1)
             os._exit(0)
         children.append(pid)
