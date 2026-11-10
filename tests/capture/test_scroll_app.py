@@ -121,6 +121,8 @@ def test_native_seed_requires_real_chooser_and_fixed_area(
     case.report = {}
     overlay = Mock()
     overlay.screen_geometry.physical = case.window.bounds
+    overlay.winId.return_value = 456
+    case.desktop.foreground.return_value = 456
     case.controller.capture.overlays = [] if boundary == "no_selector" else [overlay]
     case.controller.capture._last_area = (
         None if boundary == "dynamic_repeat" else case.window.bounds
@@ -1082,3 +1084,51 @@ def test_fixed_sidebar_old_two_frame_error_is_not_current_probe_evidence(
                 None, "The top of the scroll panel is fixed or changing", "restored", 2
             )
         )
+
+
+@pytest.mark.parametrize("settles", [True, False])
+def test_seed_waits_for_observed_focus_before_single_native_gesture(
+    monkeypatch: pytest.MonkeyPatch, *, settles: bool
+) -> None:
+    """Queued activation may settle, but a foreign foreground gets no input."""
+    case = object.__new__(AppCapture)
+    case.controller = Mock()
+    desktop = Mock()
+    case.desktop = desktop
+    case.window = WindowInfo(123, "Owned Edge", Rect(0, 0, 200, 100))
+    case.point = Point(50, 50)
+    case.report = {}
+    overlay = Mock()
+    overlay.screen_geometry.physical = case.window.bounds
+    overlay.winId.return_value = 456
+    case.controller.capture.overlays = [overlay]
+    case.controller.capture._last_area = case.window.bounds
+    case.controller.workspace.documents = [Mock()]
+    case.controller.editors = [Mock()]
+    desktop.foreground.return_value = 123
+    events = Mock()
+    monkeypatch.setattr("scripts.simple_scroll_app.QApplication.processEvents", events)
+
+    def wait(milliseconds: int) -> None:
+        assert milliseconds == 10
+        desktop.click.assert_not_called()
+        if settles and events.call_count == 2:
+            desktop.foreground.return_value = 456
+
+    waits = Mock(side_effect=wait)
+    monkeypatch.setattr("scripts.simple_scroll_app.QTest.qWait", waits)
+    if settles:
+        case._seed_editor()
+        assert events.call_count == 3
+        assert waits.call_count == 2
+        desktop.click.assert_called_once_with(overlay, case.point)
+        assert "initial_repeat_area" in case.report
+    else:
+        with pytest.raises(RuntimeError, match="did not receive foreground"):
+            case._seed_editor()
+        assert events.call_count == waits.call_count == 100
+        desktop.click.assert_not_called()
+        assert not case.report
+    overlay.activateWindow.assert_not_called()
+    overlay.raise_.assert_not_called()
+    desktop.user.SetForegroundWindow.assert_not_called()

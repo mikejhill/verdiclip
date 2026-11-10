@@ -540,6 +540,18 @@ class AppCapture:
             for overlay in overlays
             if overlay.screen_geometry.physical.contains(self.point)
         )
+        # Overlay creation precedes Windows' asynchronous focus acknowledgement.
+        # Observe that setup readiness before sending the one native gesture;
+        # never force activation or retry an input/capture after failure.
+        for _ in range(100):
+            QApplication.processEvents()
+            if self.desktop.foreground() == int(active.winId()):
+                break
+            QTest.qWait(10)
+        _require(
+            self.desktop.foreground() == int(active.winId()),
+            "Initial ordinary chooser did not receive foreground",
+        )
         self.desktop.click(active, self.point)
         for _ in range(100):
             if self.controller.workspace.documents:
