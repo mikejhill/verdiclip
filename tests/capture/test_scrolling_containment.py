@@ -367,3 +367,63 @@ def test_exclusive_evidence_above_tail_allows_original_band_join() -> None:
     assert old[advance + first : advance + last] == new[first:last]
     with pytest.raises(CaptureError, match="interior join"):
         VerticalStitch._containment_alignment(old, new, tail_start=596)
+
+
+def test_pairwise_domain_preserves_a_rival_hidden_by_a_third_displacement() -> None:
+    """A distant third rival cannot erase mutually observable competing bands."""
+    old, new = evidence_rows(
+        {20: [(0, 230)], 80: [(120, 160)], 160: [(0, 40)]}, height=260
+    )
+    with pytest.raises(AmbiguousScrollError):
+        VerticalStitch._alignment(old, new)
+    # The global domain ends at 100, hiding the rival at 80. Its original
+    # 120:160 band is still explained by 20, and is observable in their pair.
+    assert old[100:120] != new[:20]
+    assert VerticalStitch._containment_alignment(old, new) == (20, 0, 230)
+
+
+def test_isolated_exact_rival_rows_veto_an_exclusive_pairwise_witness() -> None:
+    """Short rival matches cannot disappear merely because they form no band."""
+    old, new = evidence_rows(
+        {
+            20: [(0, 200)],
+            80: [(40, 80), *((row, row + 1) for row in range(0, 160, 10))],
+        }
+    )
+    with pytest.raises(AmbiguousScrollError):
+        VerticalStitch._containment_alignment(old, new)
+
+
+@pytest.mark.parametrize("exclusive_rows", [31, 32])
+def test_pairwise_exclusive_witness_retains_the_full_band_minimum(
+    exclusive_rows: int,
+) -> None:
+    """Thirty-one exact-disproof rows cannot substitute for a thirty-two-row band."""
+    old, new = evidence_rows({20: [(0, 180)], 80: [(exclusive_rows, 160)]})
+    if exclusive_rows == 31:
+        with pytest.raises(AmbiguousScrollError):
+            VerticalStitch._containment_alignment(old, new)
+    else:
+        assert VerticalStitch._containment_alignment(old, new) == (20, 0, 180)
+
+
+@pytest.mark.parametrize("distinct_rows", [7, 8])
+def test_pairwise_exclusive_witness_retains_distinct_row_minimum(
+    distinct_rows: int,
+) -> None:
+    """A full exclusive band still needs eight distinct full-width rows."""
+    old, new = evidence_rows({20: [(0, 180)], 80: [(32, 160)]})
+    palette = {
+        row: (1000 + index % distinct_rows).to_bytes(4, "little")
+        for index, row in enumerate(new[:32])
+    }
+    old = [palette.get(row, row) for row in old]
+    new = [palette.get(row, row) for row in new]
+    assert len(set(new[:32])) == distinct_rows
+    with pytest.raises(AmbiguousScrollError):
+        VerticalStitch._alignment(old, new)
+    if distinct_rows == 7:
+        with pytest.raises(AmbiguousScrollError):
+            VerticalStitch._containment_alignment(old, new)
+    else:
+        assert VerticalStitch._containment_alignment(old, new) == (20, 0, 180)

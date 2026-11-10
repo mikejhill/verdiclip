@@ -35,6 +35,8 @@ _ROUNDING_FRACTION = 0.02
 _PREFIX_MISMATCH_FRACTION = 0.05
 # Measured Edge focus outlines, in physical pixels; not a content crop budget.
 _MAX_EDGE_WIDTH = 2
+_MAX_SCROLL_TRACK_WIDTH = 8
+_SCROLL_TRACK_PARTS = 3
 _EDGE_CORNER_ROWS = 8
 _MAX_PERIMETER_WIDTH = 3
 _MAX_TOP_PERIMETER_ROWS = 4
@@ -339,8 +341,9 @@ class VerticalStitch:
     ) -> tuple[int, int, int]:
         """Explain every original candidate band, without discarding tail evidence.
 
-        The common domain makes exclusive evidence comparable. It never erases
-        the obligation to explain all original bands, including outside it.
+        Each rival is compared in its common domain with the candidate. No
+        third displacement may erase their evidence by shortening that domain.
+        Every original qualifying band must still be explained in full.
         """
         ids: dict[bytes, int] = {}
         before = [ids.setdefault(row, len(ids)) for row in old]
@@ -363,25 +366,41 @@ class VerticalStitch:
                 }
         if len(support) <= 1:
             raise AmbiguousScrollError("The panel has no containment ambiguity proof")
-        common = set(range(len(old) - max(support)))
         union = set().union(*support.values())
-        winners = []
-        if all(cls._textured_runs(new, rows & common) for rows in support.values()):
-            for advance, rows in support.items():
-                if not union <= exact[advance]:
-                    continue
-                rivals = set().union(
-                    *(other for delta, other in support.items() if delta != advance)
-                )
-                exclusive = cls._textured_runs(new, (rows & common) - rivals)
-                if exclusive:
-                    winners.append(advance)
+        winners = [
+            advance
+            for advance in support
+            if union <= exact[advance]
+            and cls._pairwise_exclusive(new, advance, support, exact)
+        ]
         if len(winners) != 1:
             raise AmbiguousScrollError("The panel's scrolling pixels are ambiguous")
         advance = winners[0]
         return cls._containment_seam(
             advance, original_bands[advance], tail_start=tail_start
         )
+
+    @classmethod
+    def _pairwise_exclusive(
+        cls,
+        new: list[bytes],
+        advance: int,
+        support: dict[int, set[int]],
+        exact: dict[int, set[int]],
+    ) -> bool:
+        """Require textured disproof of every rival on mutually observable rows."""
+        for rival, rows in support.items():
+            if rival == advance:
+                continue
+            common = set(range(len(new) - max(advance, rival)))
+            if not cls._textured_runs(new, rows & common):
+                return False
+            # Even short isolated exact matches veto exclusive support. A
+            # qualifying rival band is not the only evidence for that rival.
+            exclusive = (support[advance] & common) - exact[rival]
+            if not cls._textured_runs(new, exclusive):
+                return False
+        return True
 
     @staticmethod
     def _containment_seam(
@@ -392,6 +411,121 @@ class VerticalStitch:
             if tail_start - advance < last:
                 return advance, first, last
         raise CaptureError("The panel has no consistent interior join")
+
+    def _track_edge(self, old: list[bytes], new: list[bytes]) -> int:
+        """Measure from the right edge, stopping at the first inner flat column."""
+        limit = self._limit(_MAX_SCROLL_TRACK_WIDTH)
+        if len(old) <= 4 * limit or len(old[0]) // 4 <= limit:
+            return 0
+        background = old[0][-4:]
+        corners = 2 * limit
+        bodies = (*old[corners:-corners], *new[corners:-corners])
+        seen = False
+        for offset in range(limit + 1):
+            column = len(old[0]) - 4 * (offset + 1)
+            uniform = all(row[column : column + 4] == background for row in bodies)
+            if uniform and seen:
+                return offset
+            if not uniform:
+                seen = True
+            elif offset >= self._limit(_MAX_PERIMETER_WIDTH):
+                return 0
+        return 0
+
+    @staticmethod
+    def _solid_thumb(shape: list[bytes], background: bytes, width: int) -> bool:
+        """Require a solid rectangular center with bounded mirrored end caps."""
+        center = shape[len(shape) // 2]
+        leading = next(i for i, row in enumerate(shape) if row == center)
+        if (
+            not 0 < leading <= width
+            or len(shape) - 2 * leading < MIN_OVERLAP
+            or shape[:leading] != list(reversed(shape[-leading:]))
+            or any(row != center for row in shape[leading:-leading])
+        ):
+            return False
+        pixels = [center[x : x + 4] for x in range(0, width * 4, 4)]
+        ink = [pixel for pixel in pixels if pixel != background]
+        return (
+            len(ink) > 1
+            and len(set(ink)) == 1
+            and center == ink[0] * len(ink) + background * (width - len(ink))
+        )
+
+    def _track_components(
+        self, rows: list[bytes], background: bytes, width: int
+    ) -> list[tuple[int, int]] | None:
+        """Recognize two bounded end marks and one solid thumb, without alignment."""
+        blank = background * width
+        runs = []
+        start = None
+        for y, row in enumerate([*rows, blank]):
+            if row != blank and start is None:
+                start = y
+            elif row == blank and start is not None:
+                runs.append((start, y))
+                start = None
+        if len(runs) != _SCROLL_TRACK_PARTS:
+            return None
+        first, thumb, last = runs
+        corners = 2 * self._limit(_MAX_SCROLL_TRACK_WIDTH)
+        if (
+            first[1] > corners
+            or last[0] < len(rows) - corners
+            or not self._solid_thumb(rows[thumb[0] : thumb[1]], background, width)
+        ):
+            return None
+        return runs
+
+    def _scroll_track_width(self, old: list[bytes], new: list[bytes]) -> int:
+        """Prove one bounded track independently of any candidate displacement.
+
+        Two stationary end marks enclose an identical downward-translated
+        solid thumb on a uniform background. No inward search past a flat
+        boundary, arbitrary sidebar, or alignment-selected crop is allowed.
+        """
+        width = self._track_edge(old, new)
+        if not width:
+            return 0
+        tracks = [[row[-width * 4 :] for row in rows] for rows in (old, new)]
+        before, after = [
+            self._track_components(rows, old[0][-4:], width) for rows in tracks
+        ]
+        if before is None or after is None:
+            return 0
+        if (
+            before[0] != after[0]
+            or before[2] != after[2]
+            or before[1][0] >= after[1][0]
+            or tracks[0][: before[0][1]] != tracks[1][: after[0][1]]
+            or tracks[0][before[2][0] :] != tracks[1][after[2][0] :]
+            or tracks[0][before[1][0] : before[1][1]]
+            != tracks[1][after[1][0] : after[1][1]]
+        ):
+            return 0
+        return width
+
+    def _track_alignment(
+        self, old: list[bytes], new: list[bytes]
+    ) -> tuple[int, int, int]:
+        """Require a complete nontrack overlap and an exact full-width seam."""
+        width = self._scroll_track_width(old, new)
+        if not width:
+            raise AmbiguousScrollError("The panel's scrolling pixels are ambiguous")
+        before = [row[: -width * 4] for row in old]
+        after = [row[: -width * 4] for row in new]
+        candidates = []
+        for advance in range(1, len(old) - MIN_OVERLAP + 1):
+            if before[advance:] != after[: len(old) - advance]:
+                continue
+            exact = {y for y in range(len(old) - advance) if old[y + advance] == new[y]}
+            bands = self._textured_runs(new, exact)
+            if bands:
+                candidates.append((advance, bands))
+        if len(candidates) != 1:
+            raise AmbiguousScrollError("The panel's scrolling pixels are ambiguous")
+        advance, bands = candidates[0]
+        return self._containment_seam(advance, bands, tail_start=self._tail_start)
 
     def _full_width_proof(
         self, old: list[bytes], new: list[bytes]
@@ -406,9 +540,13 @@ class VerticalStitch:
         except AmbiguousScrollError:
             if self._nonrail_width is not None or not self._allow_containment:
                 raise
-            return self._containment_alignment(
-                old, new, tail_start=self._tail_start
-            ), True
+            try:
+                match = self._containment_alignment(
+                    old, new, tail_start=self._tail_start
+                )
+            except AmbiguousScrollError:
+                match = self._track_alignment(old, new)
+            return match, True
 
     @staticmethod
     def _require_containment_advance(advance: int, expected: float | None) -> None:

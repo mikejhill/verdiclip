@@ -78,13 +78,15 @@ preferred displacement match. This captures the visible content sequence,
 including its original top boundary; it cannot reconstruct content permanently
 hidden behind an opaque overlay.
 
-A generic first uncommitted join with a unique full-width band but a changing top may
+A generic first uncommitted join with a unique full-width band but a changing
+top may
 make one bounded observation pass before restarting. Three settled forward
 frames must share the same leading full-width pixels, independently of their
 registration matches. Capture then returns to the original top and requires its
 exact position and original raw pixels. After that restart, every later frame
 must preserve the observed prefix, and every accepted join must have a unique
-full-width displacement proof and an exact textured band below it, with the existing 5% top check
+full-width displacement proof and an exact textured band below it, with the
+existing 5% top check
 applied to the moving rows below that prefix. No rail or corner crop is inferred.
 Short pages, changed extents and unsuccessful exact returns cannot use this
 path. The pass cannot repeat or reset an established prefix. A banner that
@@ -96,12 +98,16 @@ not claim a complete moving-overlap or semantic-header proof.
 Generic full-width registration first retains its existing unique-band and
 unique complete-overlap rules. A remaining ambiguity can also be resolved when
 one candidate exactly explains the union of every original qualifying maximal
-band from every candidate. Each rival must still have a qualifying band in the
-common observable row domain. The winner must have at least 32 contiguous
-exclusive supported rows with eight distinct full-width rows there. Original
-evidence outside that common domain is never discarded: a candidate unable to
-observe or explain any such evidence fails. Equal support, independent moving
-regions, missing shared evidence and untextured exclusive rows remain ambiguous.
+band from every candidate. Each rival is compared with that candidate in their
+pairwise common observable row domain; a third displacement cannot shorten it.
+The rival must retain a qualifying band there. The candidate must have at least
+32 contiguous supported rows with eight distinct full-width rows that the rival
+does not explain exactly. Even isolated exact rival rows interrupt this exclusive
+band; they are not discarded for being too short to qualify on their own.
+Original evidence outside each pairwise domain is never discarded: a candidate
+unable to observe or explain any such evidence fails. Equal support, independent
+moving regions, missing shared evidence and untextured exclusive rows remain
+ambiguous.
 This is set containment, not a longest-band score or preferred displacement.
 
 Only after independent selection must a containment winner agree with a finite
@@ -115,6 +121,25 @@ footer, rail and List routes, edge-assisted matching, and
 the stronger fixed-prefix complete-overlap proof do not use this fallback.
 This remains a visible-content band proof, not proof of global rigid geometry:
 changes outside the qualifying evidence retain the ordinary matcher's limits.
+
+A second generic ambiguity proof recognizes one bounded rendered track on the
+right edge before considering any displacement. Measurement starts at the outer
+column and stops at the first uniform inner boundary; it cannot search past a
+gap or exceed eight columns at 96 DPI (scaled upward proportionately). A uniform
+background must contain exactly two stationary end marks and one identically
+shaped thumb translated downward. End marks remain within sixteen rows of their
+respective edges. The thumb requires a solid center of at least 32 rows and
+bounded mirrored caps. Extra marks, changing shapes and wider regions fail.
+
+Only that independently measured strip is exempted from complete-overlap
+equality. Exactly one displacement must match every remaining content pixel
+and retain a textured, exact full-width band for the join. The output keeps the
+entire width, including the track. This path uses the same strict native
+confirmation and tail consistency checks as containment; it cannot bypass a
+changed content pixel, infer a fixed header, or enter the native List routes.
+The geometry recognizes a rendered shape, not an application-specific scrollbar
+identity. An identically drawn edge decoration is indistinguishable, so this
+remains a visible-content capture proof rather than a semantic chrome detector.
 
 For a generic panel with unchanged extent and no verified native Header/List
 geometry, ambiguous pixels or absence of an eligible registration band can trigger
