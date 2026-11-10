@@ -30,6 +30,7 @@ _SETTLE_FAST_SAMPLES = 8
 _SETTLE_MAX_SAMPLES = 16
 _SETTLE_ACK_SECONDS = 2.0
 _MIN_DISTINCT_ROWS = 8
+_NATIVE_PIXEL_EPSILON = 1e-6
 _ROUNDING_FRACTION = 0.02
 _PREFIX_MISMATCH_FRACTION = 0.05
 # Measured Edge focus outlines, in physical pixels; not a content crop budget.
@@ -59,10 +60,13 @@ class NoAlignmentScrollError(CaptureError):
 class TopBoundaryScrollError(CaptureError):
     """A unique ordinary displacement failed the original top-boundary guard."""
 
-    def __init__(self, message: str, *, full_width: bool, advance: int) -> None:
+    def __init__(
+        self, message: str, *, full_width: bool, advance: int, containment: bool = False
+    ) -> None:
         super().__init__(message)
         self.full_width = full_width
         self.advance = advance
+        self.containment = containment
         self.observation: tuple[ScrollPosition, QImage] | None = None
 
 
@@ -217,6 +221,7 @@ class VerticalStitch:
         dpi: int | None = None,
         nonrail_width: int | None = None,
         post_prefix: tuple[bytes, ...] | None = None,
+        allow_containment: bool = True,
     ) -> None:
         self._validate(first)
         if dpi is not None and not BASE_REGISTRATION_DPI <= dpi <= MAX_REGISTRATION_DPI:
@@ -225,6 +230,7 @@ class VerticalStitch:
             type(nonrail_width) is int and 0 < nonrail_width < first.width()
         ):
             raise CaptureError("The List body geometry is unsupported")
+        self._allow_containment = allow_containment
         self._nonrail_width = nonrail_width
         self._dpi = BASE_REGISTRATION_DPI if dpi is None else dpi
         self._frames = [first.copy()]
@@ -309,6 +315,107 @@ class VerticalStitch:
                 raise AmbiguousScrollError("The panel's scrolling pixels are ambiguous")
             return complete[0]
         return matches[0] if matches else None
+
+    @staticmethod
+    def _textured_runs(rows: list[bytes], supported: set[int]) -> list[tuple[int, int]]:
+        """Retain every maximal qualifying contiguous exact-row run."""
+        result = []
+        ordered = sorted(supported)
+        start = previous = -2
+        for row in [*ordered, len(rows) + 1]:
+            if row != previous + 1:
+                if (
+                    previous - start + 1 >= MIN_OVERLAP
+                    and len(set(rows[start : previous + 1])) >= _MIN_DISTINCT_ROWS
+                ):
+                    result.append((start, previous + 1))
+                start = row
+            previous = row
+        return result
+
+    @classmethod
+    def _containment_alignment(
+        cls, old: list[bytes], new: list[bytes], *, tail_start: int = 0
+    ) -> tuple[int, int, int]:
+        """Explain every original candidate band, without discarding tail evidence.
+
+        The common domain makes exclusive evidence comparable. It never erases
+        the obligation to explain all original bands, including outside it.
+        """
+        ids: dict[bytes, int] = {}
+        before = [ids.setdefault(row, len(ids)) for row in old]
+        after = [ids.setdefault(row, len(ids)) for row in new]
+        exact = {}
+        support = {}
+        for advance in range(1, len(old) - MIN_OVERLAP + 1):
+            rows = {
+                row
+                for row in range(len(old) - advance)
+                if before[row + advance] == after[row]
+            }
+            bands = cls._textured_runs(new, rows)
+            if bands:
+                exact[advance] = rows
+                support[advance] = {
+                    row for first, last in bands for row in range(first, last)
+                }
+        if len(support) <= 1:
+            raise AmbiguousScrollError("The panel has no containment ambiguity proof")
+        common = set(range(len(old) - max(support)))
+        union = set().union(*support.values())
+        winners = []
+        if all(cls._textured_runs(new, rows & common) for rows in support.values()):
+            for advance, rows in support.items():
+                if not union <= exact[advance]:
+                    continue
+                rivals = set().union(
+                    *(other for delta, other in support.items() if delta != advance)
+                )
+                exclusive = cls._textured_runs(new, (rows & common) - rivals)
+                if exclusive:
+                    winners.append((advance, exclusive))
+        if len(winners) != 1:
+            raise AmbiguousScrollError("The panel's scrolling pixels are ambiguous")
+        return cls._containment_seam(*winners[0], tail_start=tail_start)
+
+    @staticmethod
+    def _containment_seam(
+        advance: int, bands: list[tuple[int, int]], *, tail_start: int
+    ) -> tuple[int, int, int]:
+        """Choose the first eligible exclusive seam only after the winner is unique."""
+        for first, last in bands:
+            if tail_start - advance < last:
+                return advance, first, last
+        raise CaptureError("The panel has no consistent interior join")
+
+    def _full_width_proof(
+        self, old: list[bytes], new: list[bytes]
+    ) -> tuple[tuple[int, int, int] | None, bool]:
+        """Legacy global uniqueness first; containment has explicit provenance."""
+        try:
+            if self._nonrail_width is not None:
+                return self._alignment(
+                    old, new, nonrail_width=self._nonrail_width
+                ), False
+            return self._alignment(old, new), False
+        except AmbiguousScrollError:
+            if self._nonrail_width is not None or not self._allow_containment:
+                raise
+            return self._containment_alignment(
+                old, new, tail_start=self._tail_start
+            ), True
+
+    @staticmethod
+    def _require_containment_advance(advance: int, expected: float | None) -> None:
+        """Native arithmetic confirms an independently selected winner, never ranks."""
+        if (
+            expected is None
+            or not math.isfinite(expected)
+            or abs(expected - advance) > _NATIVE_PIXEL_EPSILON
+        ):
+            raise CaptureError(
+                "The contained pixel proof needs an exact native displacement"
+            )
 
     def _bottom_outline(
         self, old: list[bytes], new: list[bytes], prefix: int
@@ -482,11 +589,11 @@ class VerticalStitch:
 
     def _registration(
         self, old: list[bytes], new: list[bytes]
-    ) -> tuple[int, int, int, bool]:
+    ) -> tuple[int, int, int, bool, bool]:
         """Try all columns first; only no match permits a measured-edge retry."""
-        match = self._alignment(old, new, nonrail_width=self._nonrail_width)
+        match, containment = self._full_width_proof(old, new)
         if match is not None:
-            return match[0], match[1], match[2], True
+            return match[0], match[1], match[2], True, containment
         if self._nonrail_width is not None:
             raise CaptureError("The List's complete overlapping pixels do not match")
         left = self._edge_width(old, new, right=False)
@@ -512,7 +619,7 @@ class VerticalStitch:
                     right,
                     self._dpi,
                 )
-                return match[0], match[1], match[2], False
+                return match[0], match[1], match[2], False, False
         raise NoAlignmentScrollError(
             "The panel's scrolling pixels cannot be joined reliably"
         )
@@ -570,6 +677,7 @@ class VerticalStitch:
         advance: int,
         *,
         full_width: bool,
+        containment: bool = False,
     ) -> None:
         """Keep the 5% guard with bounded, independently proved boundary retries."""
         before, after = old[advance : advance + MIN_OVERLAP], new[:MIN_OVERLAP]
@@ -610,12 +718,13 @@ class VerticalStitch:
                 "The top of the scroll panel is fixed or changing",
                 full_width=full_width,
                 advance=advance,
+                containment=containment,
             )
 
     def _post_alignment(
         self, old: list[bytes], new: list[bytes], prefix: tuple[bytes, ...]
-    ) -> tuple[int, int, int, bool, tuple[int, int] | None]:
-        """Use unchanged global band uniqueness below one observed frozen prefix.
+    ) -> tuple[int, int, int, bool, tuple[int, int] | None, bool]:
+        """Use full-width evidence below one observed frozen prefix.
 
         This is the ordinary visible-content band proof, not the stronger
         complete-moving-overlap proof and not semantic identification of chrome.
@@ -630,7 +739,7 @@ class VerticalStitch:
             )
         ):
             raise CaptureError("The observed post-transition prefix changed")
-        match = self._alignment(old, new)
+        match, containment = self._full_width_proof(old, new)
         if match is None:
             raise NoAlignmentScrollError(
                 "The panel's scrolling pixels cannot be joined reliably"
@@ -647,24 +756,30 @@ class VerticalStitch:
             raise CaptureError(
                 "The body below the observed prefix is fixed or changing"
             )
-        return advance, first, last, True, None
+        return advance, first, last, True, None, containment
 
     def _join_alignment(
         self, old: list[bytes], new: list[bytes]
-    ) -> tuple[int, int, int, bool, tuple[int, int] | None]:
+    ) -> tuple[int, int, int, bool, tuple[int, int] | None, bool]:
         """Prefer the ordinary proof; incidental top equality is not a header."""
         if self._post_prefix is not None:
             return self._post_alignment(old, new, self._post_prefix)
         if self._fixed_prefix is None:
             try:
-                advance, first, last, full_width = self._registration(old, new)
-                self._check_top(old, new, advance, full_width=full_width)
-            except CaptureError:
+                advance, first, last, full_width, containment = self._registration(
+                    old, new
+                )
+                self._check_top(
+                    old, new, advance, full_width=full_width, containment=containment
+                )
+            except CaptureError as error:
+                if isinstance(error, TopBoundaryScrollError) and error.containment:
+                    raise
                 fixed = self._fixed_alignment(old, new)
                 if fixed is None:
                     raise
             else:
-                return advance, first, last, full_width, None
+                return advance, first, last, full_width, None, containment
         else:
             fixed = self._fixed_alignment(old, new)
         # The unselected None case was re-raised above. A selected interval
@@ -672,7 +787,21 @@ class VerticalStitch:
         advance, first, last, prefix = cast(
             "tuple[int, int, int, tuple[int, int]]", fixed
         )
-        return advance, first, last, True, prefix
+        return advance, first, last, True, prefix, False
+
+    def _verified_join(
+        self, old: list[bytes], new: list[bytes], expected: float | None
+    ) -> tuple[int, int, int, bool, tuple[int, int] | None, bool]:
+        """Check native confirmation after selection, outside all fallback catches."""
+        try:
+            proof = self._join_alignment(old, new)
+        except TopBoundaryScrollError as error:
+            if error.containment:
+                self._require_containment_advance(error.advance, expected)
+            raise
+        if proof[5]:
+            self._require_containment_advance(proof[0], expected)
+        return proof
 
     def append(
         self,
@@ -691,7 +820,9 @@ class VerticalStitch:
             for before, after in zip(old, new, strict=True)
         ):
             raise CaptureError("The List's rendered body did not move")
-        advance, first, last, _full_width, fixed = self._join_alignment(old, new)
+        advance, first, last, _full_width, fixed, _containment = self._verified_join(
+            old, new, expected_advance
+        )
         logger.info(
             "Scrolling alignment: measured_advance=%s expected_advance=%s "
             "matching_band=(%s,%s)",
@@ -1402,6 +1533,8 @@ class ScrollTransaction:
                     else None,
                 )
             except TopBoundaryScrollError as error:
+                if error.containment:
+                    VerticalStitch._require_containment_advance(error.advance, expected)
                 if (
                     self._list_steps is None
                     and following.view_size == position.view_size
@@ -1522,6 +1655,7 @@ class ScrollTransaction:
             dpi=self._target.registration_dpi,
             nonrail_width=self._list_width(),
             post_prefix=prefix,
+            allow_containment=self._generic_layout(),
         )
         self._check()
         if self._list_steps is not None:

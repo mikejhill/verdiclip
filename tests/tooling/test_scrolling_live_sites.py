@@ -484,3 +484,47 @@ def test_resolved_observation_releases_on_read_error(
     context.__exit__.assert_called_once()
     target.move.assert_not_called()
     fresh.move.assert_not_called()
+
+
+@pytest.mark.parametrize("restored", [False, True])
+def test_link_probe_failure_blocks_all_later_diagnostic_writes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    restored: bool,
+) -> None:
+    """Keep the product result intact and never follow an uncertain probe."""
+    window = WindowInfo(1234, "Google", Rect(0, 0, 800, 600))
+    start = ScrollPosition(-1, 37, 17)
+    target = Mock(area=window.bounds)
+    target.position.return_value = start
+    image = live.QImage(800, 600, live.QImage.Format.Format_RGB32)
+    image.fill(0)
+    target.frame.return_value = image
+    (tmp_path / "frames.json").write_text("[]")
+    monkeypatch.setattr(live, "_open_document", Mock(return_value=target))
+    monkeypatch.setattr(live, "_document_point", Mock(return_value=live.Point(1, 1)))
+    monkeypatch.setattr(live.native, "_position_start", Mock(return_value=start))
+    monkeypatch.setattr(
+        live.native,
+        "_capture",
+        Mock(return_value=ScrollResult(None, "ambiguous", "restored", 2)),
+    )
+    links = Mock(
+        return_value={
+            "restoration": "restored" if restored else "unproven",
+            "unresolved_write": not restored,
+        }
+    )
+    broad = Mock()
+    monkeypatch.setattr(live, "collect_links", links)
+    monkeypatch.setattr(live, "collect", broad)
+    report: dict[str, object] = {}
+    with pytest.raises(
+        RuntimeError, match="ambiguous" if restored else "no further diagnostic writes"
+    ):
+        live._capture_google("edge-google-live", window, tmp_path, report)
+    links.assert_called_once()
+    assert broad.called is restored
+    assert report["message"] == "ambiguous"
+    assert report["restoration"] == "restored"

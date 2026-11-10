@@ -1015,7 +1015,7 @@ def test_stationary_outer_row_never_crosses_minimum_interior_seam(
     first, second = (stationary_outer_frame(source, offset) for offset in (0, advance))
     stitch = VerticalStitch(first)
     match = stitch._registration(stitch._rows(first), stitch._rows(second))
-    measured, start, end, full_width = match
+    measured, start, end, full_width, _containment = match
     assert full_width
     assert measured == advance
     assert end - start >= 32

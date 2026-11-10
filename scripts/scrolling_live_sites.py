@@ -22,9 +22,12 @@ from pathlib import Path
 from typing import cast
 from unittest.mock import patch
 
+from PySide6.QtGui import QImage
 from scripts import simple_scroll_native as native
+from scripts.scrolling_link_probe import collect_links
 from scripts.scrolling_live_evidence import collect
 
+from verdiclip.capture.scrolling import ScrollPosition
 from verdiclip.exceptions import CaptureError
 from verdiclip.geometry import Point, Rect
 from verdiclip.platform.scrolling import UiaScrollTarget
@@ -508,6 +511,10 @@ def _capture_google(
                 "elapsed_seconds": time.monotonic() - helper_completed_at,
             },
         }
+        # Persist completed product evidence independently of any later probe.
+        (output / "product-capture-result.json").write_text(
+            json.dumps(report, indent=2), encoding="utf-8"
+        )
         if result.restoration == "not restored: the provider write is unresolved":
             report["unresolved_pattern_observations"] = _observe_unresolved_pattern(
                 target, point, window.handle
@@ -518,6 +525,29 @@ def _capture_google(
             after == after_image == start
             and result.restoration != "not restored: the provider write is unresolved"
         ):
+            if (
+                result.image is None
+                and result.restoration == "restored"
+                and (output / "frames.json").is_file()
+            ):
+                original_image = QImage(str(output / "before.png"))
+                restored_image = QImage(str(output / "after.png"))
+                native._require(
+                    not original_image.isNull() and original_image == restored_image,
+                    "Product raw pixels were not restored before link probe",
+                )
+                states = [
+                    ScrollPosition(**state)
+                    for state in json.loads((output / "frames.json").read_text())
+                ]
+                report["retained_link_probe"] = link_result = collect_links(
+                    target, output / "retained-link-probe", states, original_image
+                )
+                native._require(
+                    link_result.get("restoration") == "restored"
+                    and not link_result.get("unresolved_write"),
+                    "Link probe did not restore; no further diagnostic writes",
+                )
             report["native_diagnostic"] = collect(
                 target, window, output / "native-diagnostic", _observation_script
             )

@@ -12,6 +12,7 @@ from PySide6.QtGui import QColor, QCursor, QImage, QPainter
 from PySide6.QtWidgets import QApplication
 from pytestqt.qtbot import QtBot
 from tests.capture.test_scrolling import NormalizingListTarget, Target, transaction
+from tests.capture.test_scrolling_containment import ContainmentTarget
 from tests.ux.test_app_journeys import App, AppFactory
 from tests.ux.test_app_journeys import (
     make_app as make_app,  # noqa: PLC0414 - pytest fixture
@@ -448,3 +449,39 @@ def test_cleanup_warning_preserves_retained_editor_recovery_action(
     assert app.controller.workspace.documents == records
     assert len(app.controller.editors) == 1
     assert app.controller.editors[0].isVisible()
+
+
+def test_contained_repeat_evidence_delivers_complete_image_without_changing_repeat(
+    make_app: AppFactory, qtbot: QtBot
+) -> None:
+    """UX-CAP-19: supported repeated content uses ordinary delivery and restoration."""
+    target = ContainmentTarget()
+    original_position, original_pixels = target.position(), target.frame()
+    result = transaction(target).run()
+    expected = target.document.copy()
+    expected.setPixelColor(1, 230, QColor("magenta"))
+    assert result.image == expected
+    assert result.restoration == "restored"
+    assert target.position() == original_position
+    assert target.frame() == original_pixels
+
+    app = make_app()
+    app.press_hotkey("window")
+    qtbot.waitUntil(lambda: len(app.controller.workspace.documents) == 1)
+    ordinary = app.controller.workspace.documents[0]
+    repeat_area = app.controller.capture._last_area
+    helper = prepare(app)
+    app.press_hotkey("scrolling")
+    select(qtbot, app, helper)
+    finish(qtbot, app, helper, result)
+    assert len(app.controller.workspace.documents) == 2
+    assert app.controller.editors[0].session.document.image == expected.convertToFormat(
+        QImage.Format.Format_ARGB32_Premultiplied
+    )
+    assert app.controller.capture._last_area == repeat_area
+    app.press_hotkey("repeat")
+    qtbot.waitUntil(lambda: len(app.controller.workspace.documents) == 3)
+    assert app.controller.editors[0].session.document.image.size() == (
+        ordinary.session.document.image.size()
+    )
+    assert app.controller.capture._last_area == repeat_area

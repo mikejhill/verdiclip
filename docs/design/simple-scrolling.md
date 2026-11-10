@@ -83,8 +83,8 @@ make one bounded observation pass before restarting. Three settled forward
 frames must share the same leading full-width pixels, independently of their
 registration matches. Capture then returns to the original top and requires its
 exact position and original raw pixels. After that restart, every later frame
-must preserve the observed prefix, and every accepted join must have a globally
-unique exact textured full-width band below it, with the existing 5% top check
+must preserve the observed prefix, and every accepted join must have a unique
+full-width displacement proof and an exact textured band below it, with the existing 5% top check
 applied to the moving rows below that prefix. No rail or corner crop is inferred.
 Short pages, changed extents and unsuccessful exact returns cannot use this
 path. The pass cannot repeat or reset an established prefix. A banner that
@@ -92,6 +92,27 @@ appears and then stays unchanged is indistinguishable from a collapsing header;
 this mode preserves the originally observed beginning, not necessarily the
 page's latest state. It retains the ordinary band matcher's limitations and does
 not claim a complete moving-overlap or semantic-header proof.
+
+Generic full-width registration first retains its existing unique-band and
+unique complete-overlap rules. A remaining ambiguity can also be resolved when
+one candidate exactly explains the union of every original qualifying maximal
+band from every candidate. Each rival must still have a qualifying band in the
+common observable row domain. The winner must have at least 32 contiguous
+exclusive supported rows with eight distinct full-width rows there. Original
+evidence outside that common domain is never discarded: a candidate unable to
+observe or explain any such evidence fails. Equal support, independent moving
+regions, missing shared evidence and untextured exclusive rows remain ambiguous.
+This is set containment, not a longest-band score or preferred displacement.
+
+Only after independent selection must a containment winner agree with a finite
+integral native displacement within one millionth of a pixel for floating-point
+arithmetic. The ordinary two-percent tolerance and missing-extent path cannot
+admit this proof, including before a top-boundary observation pass. The seam must
+lie in an eligible exclusive band and preserve the existing tail consistency
+check. Native Header, footer, rail and List routes, edge-assisted matching, and
+the stronger fixed-prefix complete-overlap proof do not use this fallback.
+This remains a visible-content band proof, not proof of global rigid geometry:
+changes outside the qualifying evidence retain the ordinary matcher's limits.
 
 For a generic panel with unchanged extent and no verified native Header/List
 geometry, ambiguous pixels or absence of an eligible registration band can trigger
