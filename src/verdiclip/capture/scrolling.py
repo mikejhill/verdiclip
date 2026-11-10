@@ -347,6 +347,7 @@ class VerticalStitch:
         after = [ids.setdefault(row, len(ids)) for row in new]
         exact = {}
         support = {}
+        original_bands = {}
         for advance in range(1, len(old) - MIN_OVERLAP + 1):
             rows = {
                 row
@@ -355,6 +356,7 @@ class VerticalStitch:
             }
             bands = cls._textured_runs(new, rows)
             if bands:
+                original_bands[advance] = bands
                 exact[advance] = rows
                 support[advance] = {
                     row for first, last in bands for row in range(first, last)
@@ -373,16 +375,19 @@ class VerticalStitch:
                 )
                 exclusive = cls._textured_runs(new, (rows & common) - rivals)
                 if exclusive:
-                    winners.append((advance, exclusive))
+                    winners.append(advance)
         if len(winners) != 1:
             raise AmbiguousScrollError("The panel's scrolling pixels are ambiguous")
-        return cls._containment_seam(*winners[0], tail_start=tail_start)
+        advance = winners[0]
+        return cls._containment_seam(
+            advance, original_bands[advance], tail_start=tail_start
+        )
 
     @staticmethod
     def _containment_seam(
         advance: int, bands: list[tuple[int, int]], *, tail_start: int
     ) -> tuple[int, int, int]:
-        """Choose the first eligible exclusive seam only after the winner is unique."""
+        """Choose the first eligible original band only after the winner is unique."""
         for first, last in bands:
             if tail_start - advance < last:
                 return advance, first, last

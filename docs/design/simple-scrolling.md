@@ -108,8 +108,10 @@ Only after independent selection must a containment winner agree with a finite
 integral native displacement within one millionth of a pixel for floating-point
 arithmetic. The ordinary two-percent tolerance and missing-extent path cannot
 admit this proof, including before a top-boundary observation pass. The seam must
-lie in an eligible exclusive band and preserve the existing tail consistency
-check. Native Header, footer, rail and List routes, edge-assisted matching, and
+lie in a tail-compatible original qualifying band of that winner. Exclusive
+support selects the displacement; the seam itself needs exact full-width equality
+and the existing tail consistency check, not local exclusivity. Native Header,
+footer, rail and List routes, edge-assisted matching, and
 the stronger fixed-prefix complete-overlap proof do not use this fallback.
 This remains a visible-content band proof, not proof of global rigid geometry:
 changes outside the qualifying evidence retain the ordinary matcher's limits.

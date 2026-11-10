@@ -54,7 +54,7 @@ def containment_pair() -> tuple[QImage, QImage]:
     return old, new
 
 
-def test_containment_explains_all_original_support_with_exclusive_seam() -> None:
+def test_containment_explains_all_original_support_before_placing_seam() -> None:
     """The legacy matcher stays ambiguous; independent containment selects twenty."""
     old, new = containment_pair()
     stitch = VerticalStitch(old)
@@ -63,7 +63,7 @@ def test_containment_explains_all_original_support_with_exclusive_seam() -> None
         stitch._alignment(before, after)
     match, contained = stitch._full_width_proof(before, after)
     assert contained
-    assert match == (20, 0, 60)
+    assert match == (20, 0, 210)
     stitch.append(new, 20)
     result = stitch.finish()
     assert result.height() == 260
@@ -273,16 +273,16 @@ def test_containment_provenance_checked_before_top_probe(
     assert stitch.finish() == anchor
 
 
-def test_exclusive_seam_respects_previous_tail_without_changing_winner() -> None:
-    """Later eligible exclusive evidence may supply the seam, never another offset."""
+def test_original_band_seam_respects_tail_without_changing_winner() -> None:
+    """Original winner bands supply the seam after exclusive evidence selects it."""
     old, new = evidence_rows({20: [(0, 200)], 80: [(60, 110)]})
     assert VerticalStitch._containment_alignment(old, new, tail_start=120) == (
         20,
-        110,
-        160,
+        0,
+        200,
     )
     with pytest.raises(CaptureError, match="interior join"):
-        VerticalStitch._containment_alignment(old, new, tail_start=200)
+        VerticalStitch._containment_alignment(old, new, tail_start=220)
 
 
 def test_empty_or_unique_support_is_not_a_containment_proof() -> None:
@@ -351,3 +351,23 @@ def test_late_containment_top_refusal_cannot_seed_learning(
     assert error.observation is None
     assert stitch.finish() == prior
     assert target.moves == [12.5, 25]
+
+
+def test_exclusive_evidence_above_tail_allows_original_band_join() -> None:
+    """Displacement proof may be above the retained tail while a later seam is exact."""
+    old, new = evidence_rows(
+        {76: [(179, 224), (322, 520)], 224: [(322, 355)]}, height=608
+    )
+    with pytest.raises(AmbiguousScrollError):
+        VerticalStitch._alignment(old, new)
+    advance, first, last = VerticalStitch._containment_alignment(
+        old, new, tail_start=412
+    )
+    assert (advance, first, last) == (76, 322, 520)
+    seam = max((first + last) // 2, 412 - advance)
+    assert seam == 421
+    assert old[advance + first : advance + last] == new[first:last]
+    assert 570 + advance + seam == 646 + seam == 1067
+    assert advance + seam - 412 == 85
+    with pytest.raises(CaptureError, match="interior join"):
+        VerticalStitch._containment_alignment(old, new, tail_start=596)
