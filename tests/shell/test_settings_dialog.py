@@ -95,7 +95,7 @@ class TestSettingsDialog:
 
         assert (started.args, stopped.args) == ([True], [False])
         assert status_while_recording == ""
-        assert dialog.hotkey_status("region") == "✓"
+        assert dialog.hotkey_status("region") == "Valid"
         assert dialog.result_settings().hotkeys.region == "alt+f8"
 
     def test_ok_is_off_while_recording(self, dialog: SettingsDialog) -> None:

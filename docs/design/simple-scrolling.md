@@ -142,15 +142,21 @@ identity. An identically drawn edge decoration is indistinguishable, so this
 remains a visible-content capture proof rather than a semantic chrome detector.
 
 For a generic panel with unchanged extent and no verified native Header/List
-geometry, ambiguous pixels or absence of an eligible registration band can trigger
-at most four smaller-step attempts. Each
-attempt returns to the last accepted position and requires its entire raw
-viewport to match exactly before reducing the rejected interval. Ambiguity keeps
-one half of that interval; an absent band keeps three quarters, providing more
-overlap without immediately placing a scrollbar thumb inside a short fixed top.
-Every new frame counts against the existing budget. Only these typed registration
-failures permit this recovery; input, geometry, provider and other reported
-failures still stop immediately. Each accepted join must independently satisfy
+geometry, ambiguous pixels, absence of an eligible registration band or a
+rejected body boundary below an unchanged observed prefix can trigger at most
+four smaller-step attempts. Each attempt returns to the last accepted position
+and requires its entire raw viewport to match exactly before reducing the
+rejected interval. Ambiguity and body-boundary attempts keep three quarters,
+then two thirds, then one half of the preceding rejected interval. Thus an
+uninterrupted sequence visits 75%, 50%, 25% and 12.5% of the original interval.
+An absent band always keeps three quarters, providing more overlap without
+immediately placing a
+scrollbar thumb inside a short fixed top. No rejected pair contributes output.
+Every new frame counts against the existing frame and time budgets. Only these
+typed failures permit recovery; changed prefixes, input, geometry, provider and
+other reported failures still stop immediately. Containment-based body refusals
+must pass exact native displacement confirmation before any retry. Each accepted
+join must independently satisfy
 the unchanged unique-pixel proof. No provider percentage chooses an ambiguous
 match, and a failed or uncertain return never permits a retry.
 A top refusal on a smaller first step can seed the same one-time observation

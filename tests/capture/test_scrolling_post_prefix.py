@@ -9,6 +9,7 @@ from tests.capture.test_scrolling import Target, document
 
 from verdiclip.capture.scrolling import (
     AmbiguousScrollError,
+    PostPrefixBodyScrollError,
     ScrollPosition,
     ScrollTransaction,
     TopBoundaryScrollError,
@@ -227,7 +228,9 @@ def test_body_guard_rejects_mutation_without_relearning() -> None:
     painter.end()
     prefix = tuple(VerticalStitch._rows(following)[:12])
     stitch = VerticalStitch(first, post_prefix=prefix)
-    with pytest.raises(CaptureError, match="body below the observed prefix"):
+    with pytest.raises(
+        PostPrefixBodyScrollError, match="body below the observed prefix"
+    ):
         stitch.append(following, 60)
     assert stitch.finish() == first
 
@@ -468,13 +471,13 @@ def test_initial_top_refusal_after_subdivision_retains_actual_observation(
     def rejected(_image: QImage, expected: float | None, **_kwargs: object) -> None:
         if expected == 60:
             raise AmbiguousScrollError("repeated initial pixels")
-        raise TopBoundaryScrollError("later top refusal", full_width=True, advance=30)
+        raise TopBoundaryScrollError("later top refusal", full_width=True, advance=45)
 
     monkeypatch.setattr(stitch, "append", rejected)
     with pytest.raises(TopBoundaryScrollError) as failure:
         operation._append_step(stitch, frames, top, following, anchor)
     assert failure.value.observation is not None
     observed, raw = failure.value.observation
-    assert observed.vertical == 6.25
-    assert raw == target.document.copy(0, 30, 80, 120)
+    assert observed.vertical == 9.375
+    assert raw == target.document.copy(0, 45, 80, 120)
     assert stitch.finish() == anchor
