@@ -3946,3 +3946,80 @@ def test_witness_diagnostic_branch_is_only_admitted_to_existing_baseline_job() -
     assert "persist-credentials: false" in baseline
     assert "$actual -ne $env:QUALIFICATION_HEAD" in baseline
     assert "continue-on-error" not in baseline
+
+
+def test_shell_identity_retries_only_one_timed_out_read(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A cold query may recover, but only newly validated identities are returned."""
+    monkeypatch.setenv("WINDIR", str(tmp_path))
+    run = Mock(
+        side_effect=[
+            subprocess.TimeoutExpired("fixture read", 10),
+            Mock(stdout='[{"hwnd":9,"target":true}]'),
+        ]
+    )
+    monkeypatch.setattr(diagnostics.subprocess, "run", run)
+    assert diagnostics._shell_windows(tmp_path) == {9: True}
+    assert run.call_count == 2
+    assert run.call_args_list[0] == run.call_args_list[1]
+    assert run.call_args.kwargs == {
+        "check": True,
+        "capture_output": True,
+        "text": True,
+        "timeout": 10,
+    }
+    assert "retrying the read once" in caplog.text
+
+
+def test_shell_identity_second_timeout_remains_fatal(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Repeated failure cannot turn into empty identities or an unbounded loop."""
+    monkeypatch.setenv("WINDIR", str(tmp_path))
+    first = subprocess.TimeoutExpired("first fixture read", 10)
+    second = subprocess.TimeoutExpired("second fixture read", 10)
+    run = Mock(side_effect=[first, second])
+    monkeypatch.setattr(diagnostics.subprocess, "run", run)
+    with pytest.raises(subprocess.TimeoutExpired) as error:
+        diagnostics._shell_windows(tmp_path)
+    assert error.value is second
+    assert run.call_count == 2
+
+
+def test_shell_identity_other_process_errors_do_not_retry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A completed failing query keeps its original failure and is not retried."""
+    monkeypatch.setenv("WINDIR", str(tmp_path))
+    failure = subprocess.CalledProcessError(1, "fixture read")
+    run = Mock(side_effect=failure)
+    monkeypatch.setattr(diagnostics.subprocess, "run", run)
+    with pytest.raises(subprocess.CalledProcessError) as error:
+        diagnostics._shell_windows(tmp_path)
+    assert error.value is failure
+    run.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        '[{"hwnd":9,"target":"true"}]',
+        '[{"hwnd":9,"target":false},{"hwnd":9,"target":true}]',
+    ],
+)
+def test_shell_identity_retry_still_requires_strict_unambiguous_data(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, response: str
+) -> None:
+    """Recovery cannot authorize malformed or duplicate window identities."""
+    monkeypatch.setenv("WINDIR", str(tmp_path))
+    run = Mock(
+        side_effect=[
+            subprocess.TimeoutExpired("fixture read", 10),
+            Mock(stdout=response),
+        ]
+    )
+    monkeypatch.setattr(diagnostics.subprocess, "run", run)
+    with pytest.raises((TypeError, RuntimeError)):
+        diagnostics._shell_windows(tmp_path)
+    assert run.call_count == 2

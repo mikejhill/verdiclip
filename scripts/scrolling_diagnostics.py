@@ -12,6 +12,7 @@ import ctypes.wintypes as w
 import hashlib
 import html
 import json
+import logging
 import math
 import os
 import subprocess
@@ -1160,6 +1161,13 @@ def _explorer(
     return subprocess.Popen([str(executable), "/separate,", str(folder)])  # noqa: S603
 
 
+def _read_shell_identity(command: list[str]) -> subprocess.CompletedProcess[str]:
+    """One bounded read; subprocess.run reaps its owned child after a timeout."""
+    return subprocess.run(  # noqa: S603 - fixed read-only owned-fixture query
+        command, check=True, capture_output=True, text=True, timeout=10
+    )
+
+
 def _shell_windows(folder: Path) -> dict[int, bool]:
     """Read HWNDs and exact fixture identity, without retaining other paths."""
     powershell = (
@@ -1176,13 +1184,17 @@ def _shell_windows(folder: Path) -> dict[int, bool]:
         "[pscustomobject]@{ hwnd=$handle; target=$exact }"
         "} }); ConvertTo-Json -InputObject $items -Compress"
     )
-    result = subprocess.run(  # noqa: S603 - read public shell metadata for owned fixture
-        [str(powershell), "-NoProfile", "-NonInteractive", "-Command", script],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
+    command = [str(powershell), "-NoProfile", "-NonInteractive", "-Command", script]
+    try:
+        result = _read_shell_identity(command)
+    except subprocess.TimeoutExpired:
+        # Cold Shell.Application enumeration can time out before any capture.
+        # No identities or writes were produced. Retry this read exactly once;
+        # never retry capture, relax identity validation, or reuse stale data.
+        logging.getLogger(__name__).warning(
+            "Explorer fixture identity read timed out; retrying the read once"
+        )
+        result = _read_shell_identity(command)
     items = json.loads(result.stdout)
     if not isinstance(items, list) or any(
         not isinstance(item, dict)
