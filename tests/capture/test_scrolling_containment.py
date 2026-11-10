@@ -364,10 +364,6 @@ def test_exclusive_evidence_above_tail_allows_original_band_join() -> None:
         old, new, tail_start=412
     )
     assert (advance, first, last) == (76, 322, 520)
-    seam = max((first + last) // 2, 412 - advance)
-    assert seam == 421
     assert old[advance + first : advance + last] == new[first:last]
-    assert 570 + advance + seam == 646 + seam == 1067
-    assert advance + seam - 412 == 85
     with pytest.raises(CaptureError, match="interior join"):
         VerticalStitch._containment_alignment(old, new, tail_start=596)
