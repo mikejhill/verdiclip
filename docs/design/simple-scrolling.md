@@ -80,9 +80,13 @@ hidden behind an opaque overlay.
 
 A generic first uncommitted join with a unique full-width band but a changing
 top may
-make one bounded observation pass before restarting. Three settled forward
-frames must share the same leading full-width pixels, independently of their
-registration matches. Capture then returns to the original top and requires its
+make one bounded observation pass before restarting. From the rejected view,
+the two additional probes advance a quarter viewport and then three quarters,
+keeping the same intended final span and three views while varying their spacing.
+Three settled forward frames must share the same leading full-width pixels,
+independently of their registration matches. Coinciding moving rows can still
+make the observed prefix too long; a later prefix change remains a fatal refusal.
+Capture then returns to the original top and requires its
 exact position and original raw pixels. After that restart, every later frame
 must preserve the observed prefix, and every accepted join must have a unique
 full-width displacement proof and an exact textured band below it, with the

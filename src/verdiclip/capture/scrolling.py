@@ -1766,10 +1766,12 @@ class ScrollTransaction:
         ):
             raise error
         samples = [VerticalStitch._rows(first)]
-        for _ in range(2):
-            step = 50.0 * position.view_size / (100.0 - position.view_size)
-            requested = position.vertical + step
-            if requested >= END_PERCENT:
+        for fraction in (25.0, 75.0):
+            scale = position.view_size / (100.0 - position.view_size)
+            requested = position.vertical + fraction * scale
+            # Keep the first half-viewport admission requirement, then check
+            # the actual final probe against its observed starting position.
+            if position.vertical + max(50.0, fraction) * scale >= END_PERCENT:
                 raise CaptureError("The panel is too short to observe a settled prefix")
             following = self._move(requested)
             if (
