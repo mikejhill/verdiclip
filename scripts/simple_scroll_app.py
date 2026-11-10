@@ -259,16 +259,15 @@ class AppCapture:
             "Fixed-sidebar frame evidence differs",
         )
         step = 50.0 * initial["view_size"] / (END_PERCENT - initial["view_size"])
+        positions = (0.0, step, 1.5 * step, 3.0 * step)
         _require(
             all(
                 set(frame) == set(initial)
                 and frame["horizontal"] == initial["horizontal"]
                 and frame["view_size"] == initial["view_size"]
-                and math.isclose(
-                    frame["vertical"], index * step, rel_tol=0.0, abs_tol=1e-9
-                )
+                and math.isclose(frame["vertical"], expected, rel_tol=0.0, abs_tol=1e-9)
                 and 0 <= frame["vertical"] < END_PERCENT
-                for index, frame in enumerate(frames)
+                for frame, expected in zip(frames, positions, strict=True)
             ),
             "Fixed-sidebar probe trajectory differs",
         )
