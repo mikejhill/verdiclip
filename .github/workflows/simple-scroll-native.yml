@@ -404,3 +404,54 @@ jobs:
           path: artifacts/simple-scroll
           if-no-files-found: warn
           retention-days: 14
+
+  settings-diagnostic:
+    # Manual investigation only. The exact-main release matrix above is unchanged.
+    if: >-
+      github.repository == 'mikejhill/verdiclip' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/fix/real-app-scrolling'
+    name: Settings diagnostic (not release qualification)
+    runs-on: windows-2025
+    timeout-minutes: 8
+    env:
+      QT_QPA_PLATFORM: windows
+      PYTHONUTF8: "1"
+      QUALIFICATION_HEAD: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Require exact diagnostic source
+        run: |
+          $actual = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0 -or $actual -ne $env:QUALIFICATION_HEAD) { throw 'Source mismatch' }
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - run: uv sync --locked
+      - name: Prove the desktop can really be captured
+        timeout-minutes: 2
+        run: uv run pytest tests/capture/test_grabber.py::TestMssScreenSource::test_freeze --require-interactive-capture -v
+      - name: Preserve the original preceding application case
+        timeout-minutes: 2
+        run: uv run python -m scripts.simple_scroll_app edge-app-tray
+      - name: Observe the original native regression sequence
+        timeout-minutes: 3
+        run: >-
+          uv run pytest tests/capture/test_capture_native.py
+          tests/capture/test_tabs_baseline_native.py
+          tests/ux/test_scrolling_failure_journeys.py::test_interruption_feedback_preserves_native_focus
+          --require-interactive-capture --no-cov -p no:randomly -vv -rP
+          -o faulthandler_timeout=2
+          --junitxml=artifacts/simple-scroll/ordinary-native.xml
+          --basetemp=artifacts/simple-scroll/native-temp
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: settings-first-display-diagnostic
+          path: artifacts/simple-scroll
+          if-no-files-found: warn
+          retention-days: 14
