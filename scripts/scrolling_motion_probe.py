@@ -52,7 +52,7 @@ class MotionFixture:
         return (
             '<!doctype html><meta charset="utf-8">'
             "<title>VerdiClip scrolling check</title><style>"
-            "body{margin:0}section{position:absolute;left:20px;top:20px;"
+            "body{margin:0}section{position:absolute;left:20px;top:0;"
             "width:calc(100vw - 40px);height:608px;overflow-y:scroll;"
             "scrollbar-width:none;background:white}"
             ".pattern{position:absolute;top:0;left:0;width:100%;height:3856px;"
