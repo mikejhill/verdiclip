@@ -20,6 +20,9 @@ from verdiclip.platform.hotkeys import Hotkey
 from verdiclip.platform.scrolling import ScrollSelectionState
 from verdiclip.platform.windows import WindowInfo
 
+# The harness re-enables the hidden entry points; restore the switch afterwards.
+pytestmark = pytest.mark.usefixtures("scrolling_enabled")
+
 
 def test_same_traced_child_forwards_original_arguments_and_one_result(
     qtbot: QtBot, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
