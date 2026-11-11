@@ -32,19 +32,15 @@ class Stream(Protocol):
 
     def read(self, size: int = -1, /) -> object:
         """Read up to ``size`` bytes; empty bytes at end of stream."""
-        ...
 
     def write(self, data: bytes, /) -> object:
         """Write ``data``."""
-        ...
 
     def flush(self) -> None:
         """Push buffered bytes to the server."""
-        ...
 
     def close(self) -> None:
         """Hang up."""
-        ...
 
 
 type Connector = Callable[[str, float], Stream]
@@ -123,7 +119,7 @@ class ControlClient:
             AutomationError: If the app is unreachable or the request failed.
         """
         request = Request(method, params or {}, ident=1)
-        outcome: list[Response | BaseException] = []
+        outcome: list[Response | Exception] = []
         worker = threading.Thread(
             target=self._exchange, args=(request, outcome), daemon=True
         )
@@ -133,15 +129,13 @@ class ControlClient:
             msg = f"VerdiClip did not answer within {self._timeout:g} s"
             raise AutomationError(ErrorCode.BUSY, msg)
         result = outcome[0]
-        if isinstance(result, BaseException):
+        if isinstance(result, Exception):
             raise result
         if result.error is not None:
             raise result.error
         return result.result or {}
 
-    def _exchange(
-        self, request: Request, outcome: list[Response | BaseException]
-    ) -> None:
+    def _exchange(self, request: Request, outcome: list[Response | Exception]) -> None:
         """Write ``request`` and read one response line (on a worker thread)."""
         try:
             stream = self._connect(self._name, self._timeout)
@@ -149,7 +143,7 @@ class ControlClient:
                 stream.write(request.encode())
                 stream.flush()
                 outcome.append(Response.decode(self._read_line(stream)))
-        except BaseException as err:  # noqa: BLE001 - re-raised on the caller
+        except Exception as err:  # noqa: BLE001 - re-raised on the caller
             outcome.append(err)
 
     @staticmethod

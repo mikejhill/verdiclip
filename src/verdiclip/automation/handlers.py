@@ -41,12 +41,10 @@ class HostWindow(Protocol):
     @property
     def pages(self) -> Sequence[HostedPage]:
         """Return pages in visible tab order."""
-        ...
 
     @property
     def current_page(self) -> HostedPage | None:
         """Return the page this window shows."""
-        ...
 
 
 class DocumentHost(Protocol):
@@ -55,12 +53,10 @@ class DocumentHost(Protocol):
     @property
     def windows(self) -> Sequence[HostWindow]:
         """Return windows, most recently activated first."""
-        ...
 
     @property
     def documents(self) -> Sequence[DocumentRecord]:
         """Return every open document."""
-        ...
 
 
 class AutomationHandlers:
