@@ -3,7 +3,6 @@
 from pathlib import Path
 
 import pytest
-
 from scripts.test_tabs_ci import COVERAGE, COVERAGE_FLOOR, TESTS
 
 ROOT = Path(__file__).resolve().parents[2]
