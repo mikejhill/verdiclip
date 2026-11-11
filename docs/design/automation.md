@@ -35,7 +35,7 @@ configures no logging.
 | Command | Result |
 | --- | --- |
 | `ctl status` | App version, protocol version, document count |
-| `ctl list` | Every document: id, title, path, unsaved, image size, crop, annotation count, state, window, tab, current, active |
+| `ctl list` | Every document: id, title, path, unsaved, image size, crop, annotation count, state, window, tab, current, editing, active |
 | `ctl get [--doc ID]` | The summary plus annotations (the clipboard codec's JSON) and selected ids |
 | `ctl render [--doc ID] [-o FILE] [--region X,Y,W,H] [--max-side PX] [--grid PX] [--base]` | Writes a PNG; returns path, size, origin, scale, grid, state |
 
@@ -45,6 +45,9 @@ configures no logging.
 - Coordinates are original-image pixels. Image coordinate = `origin` + preview
   pixel / `scale`. Grid labels are image coordinates; a grid too dense for the
   scale doubles its step until lines are at least 40 px apart.
+- While the user types in an inline editor, `get` and `render` for that
+  document answer `busy`: the typed text isn't in the document until it is
+  committed. `list` marks such documents `"editing": true`.
 - Without `-o`, previews go to `%LOCALAPPDATA%\VerdiClip\automation` and are
   deleted after 24 hours.
 - Exit codes: 0 ok, 1 failed, 2 bad usage, 3 not running or turned off,

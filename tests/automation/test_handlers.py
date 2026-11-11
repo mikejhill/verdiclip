@@ -40,6 +40,7 @@ class Page:
     """A tab holding one document."""
 
     record: DocumentRecord
+    editing: bool = False
 
 
 @dataclass
@@ -148,6 +149,7 @@ def test_list_places_every_document(
         "window": 1,
         "tab": 1,
         "current": False,
+        "editing": False,
         "active": False,
     }
     assert (second["window"], second["tab"], second["current"]) == (1, 2, True)
@@ -321,3 +323,29 @@ def test_render_rejects_bad_params(
         call(handlers, "render", **params)
 
     assert caught.value.code is ErrorCode.BAD_REQUEST
+
+
+def test_typing_user_makes_reads_busy(
+    handlers: AutomationHandlers, host: Host, records: list[DocumentRecord]
+) -> None:
+    """While inline text is uncommitted, get and render refuse stale content."""
+    page = host.windows[0].pages[1]
+    assert isinstance(page, Page)
+    page.editing = True
+
+    listed = [obj(d) for d in listed_of(call(handlers, "list"))]
+    with pytest.raises(AutomationError, match="typing") as got:
+        call(handlers, "get")
+    with pytest.raises(AutomationError, match="typing") as rendered:
+        call(handlers, "render")
+
+    assert [d["editing"] for d in listed] == [False, True, False]
+    assert got.value.code is rendered.value.code is ErrorCode.BUSY
+    assert (
+        call(handlers, "get", doc=records[0].identifier)["id"] == records[0].identifier
+    )
+
+
+def listed_of(result: JsonObject) -> list[JsonValue]:
+    """Return the documents array of a list result."""
+    return listed(result["documents"])

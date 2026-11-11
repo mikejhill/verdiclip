@@ -74,6 +74,11 @@ class DocumentPage(QWidget):
         """Notify the current host without capturing any particular window."""
         self.changed.emit()
 
+    @property
+    def editing(self) -> bool:
+        """True while text typed in an inline editor is not yet in the document."""
+        return self.canvas.editors.is_open
+
     def present(self) -> None:
         """Fit a new page only once, preserving zoom on subsequent moves."""
         if not self.initialized:

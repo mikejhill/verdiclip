@@ -30,9 +30,13 @@ ACTIVE = "active"
 
 
 class HostedPage(Protocol):
-    """A tab's page; only its record matters here."""
+    """A tab's page: its document and whether the user is typing into it."""
 
     record: DocumentRecord
+
+    @property
+    def editing(self) -> bool:
+        """Return whether an inline editor holds uncommitted text."""
 
 
 class HostWindow(Protocol):
@@ -117,12 +121,14 @@ class AutomationHandlers:
                     "window": number,
                     "tab": position,
                     "current": current is not None and current.record is page.record,
+                    "editing": page.editing,
                 }
         documents: list[JsonValue] = []
         for record in self._host.documents:
             entry = self._summary(record)
             entry |= placed.get(
-                record.identifier, {"window": None, "tab": None, "current": False}
+                record.identifier,
+                {"window": None, "tab": None, "current": False, "editing": False},
             )
             entry["active"] = active is not None and record is active
             documents.append(entry)
@@ -133,7 +139,7 @@ class AutomationHandlers:
 
     def get(self, params: JsonObject) -> JsonObject:
         """Return the full model of one document."""
-        record = self._resolve(params)
+        record = self._settled(self._resolve(params))
         session = record.session
         result = self._summary(record)
         result["annotations"] = [
@@ -144,7 +150,7 @@ class AutomationHandlers:
 
     def render(self, params: JsonObject) -> JsonObject:
         """Write a PNG of one document's current state and say where."""
-        record = self._resolve(params)
+        record = self._settled(self._resolve(params))
         options = PreviewOptions(
             region=_optional_rect(params, "region"),
             max_side=_integer(params, "max_side", DEFAULT_MAX_SIDE),
@@ -194,6 +200,22 @@ class AutomationHandlers:
             "annotations": len(document.annotations),
             "state": record.session.history.state_id,
         }
+
+    def _settled(self, record: DocumentRecord) -> DocumentRecord:
+        """Refuse to report a document whose newest text is still being typed.
+
+        Raises:
+            AutomationError: If the user is typing into ``record``.
+        """
+        for window in self._host.windows:
+            for page in window.pages:
+                if page.record is record and page.editing:
+                    msg = (
+                        "The user is typing into this image; its text isn't in "
+                        "the document yet. Try again shortly."
+                    )
+                    raise AutomationError(ErrorCode.BUSY, msg)
+        return record
 
     def _active(self) -> DocumentRecord | None:
         """Return the current tab of the most recently used window."""

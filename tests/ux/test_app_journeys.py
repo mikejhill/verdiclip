@@ -2084,11 +2084,12 @@ class TestAutomation:
         assert len(documents) == 1
         entry = documents[0]
         assert isinstance(entry, dict)
-        assert (entry["title"], entry["unsaved"], entry["active"]) == (
-            "picture.png",
-            True,
-            True,
-        )
+        assert (
+            entry["title"],
+            entry["unsaved"],
+            entry["active"],
+            entry["editing"],
+        ) == ("picture.png", True, True, False)
         assert rendered.result is not None
         image = QImage(str(rendered.result["path"]))
         assert (image.width(), image.height()) == (20, 10)

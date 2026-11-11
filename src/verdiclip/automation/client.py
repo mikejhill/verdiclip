@@ -119,7 +119,7 @@ class ControlClient:
             AutomationError: If the app is unreachable or the request failed.
         """
         request = Request(method, params or {}, ident=1)
-        outcome: list[Response | Exception] = []
+        outcome: list[Response | AutomationError] = []
         worker = threading.Thread(
             target=self._exchange, args=(request, outcome), daemon=True
         )
@@ -129,13 +129,15 @@ class ControlClient:
             msg = f"VerdiClip did not answer within {self._timeout:g} s"
             raise AutomationError(ErrorCode.BUSY, msg)
         result = outcome[0]
-        if isinstance(result, Exception):
+        if isinstance(result, AutomationError):
             raise result
         if result.error is not None:
             raise result.error
         return result.result or {}
 
-    def _exchange(self, request: Request, outcome: list[Response | Exception]) -> None:
+    def _exchange(
+        self, request: Request, outcome: list[Response | AutomationError]
+    ) -> None:
         """Write ``request`` and read one response line (on a worker thread)."""
         try:
             stream = self._connect(self._name, self._timeout)
@@ -143,8 +145,12 @@ class ControlClient:
                 stream.write(request.encode())
                 stream.flush()
                 outcome.append(Response.decode(self._read_line(stream)))
-        except Exception as err:  # noqa: BLE001 - re-raised on the caller
+        except AutomationError as err:
             outcome.append(err)
+        except Exception as err:  # noqa: BLE001 - reported as a structured error
+            # The app exited or restarted mid-request (broken pipe, reset)
+            msg = f"Lost the connection to VerdiClip: {err}"
+            outcome.append(AutomationError(ErrorCode.FAILED, msg))
 
     @staticmethod
     def _read_line(stream: Stream) -> bytes:

@@ -87,6 +87,22 @@ def test_hang_up_without_answer_fails() -> None:
     assert caught.value.code is ErrorCode.FAILED
 
 
+def test_lost_connection_is_a_structured_error() -> None:
+    """A pipe broken mid-request is reported as failed, not a traceback."""
+
+    class Broken(FakeStream):
+        @override
+        def write(self, data: bytes, /) -> object:
+            raise BrokenPipeError(32, "Broken pipe")
+
+    client = ControlClient("pipe", connector=connector_for(Broken(b"")))
+
+    with pytest.raises(AutomationError, match="Lost the connection") as caught:
+        client.call("list")
+
+    assert caught.value.code is ErrorCode.FAILED
+
+
 def test_connect_failure_propagates() -> None:
     """A missing app reports not_running."""
 
