@@ -358,7 +358,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        application: [edge-google-live, edge-todo-access, edge-owned-search, edge-owned-settings]
+        application: [edge-google-live, edge-todo-access, edge-owned-search, edge-owned-settings, edge-owned-motion]
     env:
       QT_QPA_PLATFORM: windows
       PYTHONUTF8: "1"
@@ -384,7 +384,9 @@ jobs:
       - name: Verify the browser layout in a fresh installed Edge profile
         timeout-minutes: 4
         run: |
-          if ($env:SCROLL_APPLICATION.StartsWith('edge-owned-')) {
+          if ($env:SCROLL_APPLICATION -eq 'edge-owned-motion') {
+            uv run python -m scripts.scrolling_motion_probe "$env:SCROLL_APPLICATION"
+          } elseif ($env:SCROLL_APPLICATION.StartsWith('edge-owned-')) {
             uv run python -m scripts.scrolling_owned_layouts "$env:SCROLL_APPLICATION"
           } else {
             uv run python -m scripts.scrolling_live_sites "$env:SCROLL_APPLICATION"

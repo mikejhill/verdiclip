@@ -56,7 +56,7 @@ def test_real_collapsing_prefix_lookahead_restarts_once_and_restores() -> None:
     assert result.restoration == "restored"
     assert target.position() == original
     offsets = [round(percent * 480 / 100) for percent in target.moves]
-    assert offsets[:6] == [0, 60, 120, 180, 0, 60]
+    assert offsets[:6] == [0, 60, 90, 180, 0, 60]
     assert offsets.count(0) == 2
     assert result.frames == 13
 
@@ -97,7 +97,7 @@ def test_lookahead_rejects_changing_prefix_or_original_anchor(
                 and target.offset == 0
                 and len(target.moves) >= 4
             )
-            or (mutation == "probe_header" and target.offset == 120)
+            or (mutation == "probe_header" and target.offset == 90)
         ):
             image.setPixelColor(0, 0, QColor("red"))
         return image
@@ -414,7 +414,7 @@ def test_probe_frame_dimensions_cannot_change(monkeypatch: pytest.MonkeyPatch) -
 
     def resized() -> QImage:
         image = capture()
-        return image.copy(0, 0, 79, 120) if target.offset == 120 else image
+        return image.copy(0, 0, 79, 120) if target.offset == 90 else image
 
     monkeypatch.setattr(target, "frame", resized)
     with pytest.raises(CaptureError, match="changed size"):
@@ -481,3 +481,115 @@ def test_initial_top_refusal_after_subdivision_retains_actual_observation(
     assert observed.vertical == 9.375
     assert raw == target.document.copy(0, 45, 80, 120)
     assert stitch.finish() == anchor
+
+
+class CoincidentRowsTarget(Target):
+    """Four white body rows coincide below a73row header at half-viewport samples."""
+
+    area = Rect(10, 20, 80, 608)
+
+    def __init__(self) -> None:
+        super().__init__(total=2282)
+        painter = QPainter(self.document)
+        for row in (377, 681, 985):
+            painter.fillRect(0, row, 80, 4, QColor("white"))
+        painter.end()
+
+    @override
+    def position(self) -> ScrollPosition:
+        """Describe the authored finite geometry independently of pixel matching."""
+        return ScrollPosition(
+            self.horizontal, self.offset / 1674 * 100, 608 / 2282 * 100
+        )
+
+    @override
+    def move(
+        self, vertical: float, *, before_write: Callable[[], None] | None = None
+    ) -> None:
+        """Preserve admission and ordinary integer-pixel provider quantization."""
+        if before_write is not None:
+            before_write()
+        self.moves.append(vertical)
+        self.offset = round(vertical * 1674 / 100)
+
+    def render(self, offset: int) -> QImage:
+        """Only the header is stationary; every visible body pixel is authored."""
+        image = self.document.copy(0, offset, 80, 608)
+        painter = QPainter(image)
+        painter.fillRect(
+            0,
+            0,
+            80,
+            139 if offset == 0 else 73,
+            QColor("blue" if offset == 0 else "green"),
+        )
+        painter.end()
+        return image
+
+    @override
+    def frame(self) -> QImage:
+        """Acquire the current authored viewport without access to matcher state."""
+        return self.render(self.offset)
+
+    def expected(self) -> QImage:
+        """Keep the entire document with its originally visible expanded header."""
+        image = self.document.copy()
+        painter = QPainter(image)
+        painter.fillRect(0, 0, 80, 139, QColor("blue"))
+        painter.end()
+        return image
+
+
+def test_varied_prefix_probes_expose_coincident_body_rows_and_complete() -> None:
+    """Unequal spacing changes observation, not exact guards or complete output."""
+    target = CoincidentRowsTarget()
+    observed = {}
+    for offsets in ((304, 608, 912), (304, 456, 912)):
+        samples = [VerticalStitch._rows(target.render(offset)) for offset in offsets]
+        upper = next(
+            row
+            for row in range(608)
+            if not samples[0][row] == samples[1][row] == samples[2][row]
+        )
+        observed[offsets] = tuple(samples[0][:upper])
+    assert len(observed[304, 608, 912]) == 77
+    assert len(observed[304, 456, 912]) == 73
+    old = VerticalStitch(target.render(0), post_prefix=observed[304, 608, 912])
+    for offset in (304, 608, 912):
+        old.append(target.render(offset), 304)
+    before = old.finish()
+    with pytest.raises(CaptureError, match="post-transition prefix changed"):
+        old.append(target.render(1216), 304)
+    assert old.finish() == before
+    original = target.position()
+    operation = ScrollTransaction(target, lambda: False, pause=lambda _seconds: None)
+    result = operation.run()
+    assert result.image == target.expected()
+    assert result.restoration == "restored"
+    assert target.position() == original
+    offsets = [round(percent * 1674 / 100) for percent in target.moves]
+    assert offsets[:6] == [0, 304, 456, 912, 0, 304]
+    assert offsets.count(0) == 2
+
+
+def test_varied_probes_do_not_relearn_a_later_changed_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A real changed header still withholds all output and restores the original."""
+    target = CoincidentRowsTarget()
+    original = target.position()
+    capture = target.frame
+
+    def changed() -> QImage:
+        image = capture()
+        if target.offset >= 1216:
+            image.setPixelColor(0, 0, QColor("red"))
+        return image
+
+    monkeypatch.setattr(target, "frame", changed)
+    result = ScrollTransaction(target, lambda: False, pause=lambda _seconds: None).run()
+    assert result.image is None
+    assert result.message == "The observed post-transition prefix changed"
+    assert result.restoration == "restored"
+    assert target.position() == original
+    assert target.moves.count(0) == 2

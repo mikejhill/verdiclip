@@ -777,7 +777,9 @@ def sidebar_case(terminal_case: AppCapture) -> AppCapture:
     )
     target_path.write_text(json.dumps(target))
     (case.output / "frames.json").write_text(
-        json.dumps([{**initial, "vertical": index * 12.5} for index in range(4)])
+        json.dumps(
+            [{**initial, "vertical": value} for value in (0.0, 12.5, 18.75, 37.5)]
+        )
     )
     (case.output / "movement.json").write_text(
         json.dumps({"writes": 4, "last_vertical": 0.0})
@@ -1077,13 +1079,28 @@ def test_fixed_sidebar_run_keeps_cleanup_and_original_failure_fatal(
 def test_fixed_sidebar_probe_trajectory_rejects_any_changed_scalar(
     sidebar_case: AppCapture, index: int, field: str
 ) -> None:
-    """The refusal qualifies only three exact half-viewport observations."""
+    """The refusal qualifies only the exact half/quarter/three-quarter trajectory."""
     path = sidebar_case.output / "frames.json"
     frames = json.loads(path.read_text())
     frames[index][field] += 0.01
     path.write_text(json.dumps(frames))
     with pytest.raises(RuntimeError, match="probe trajectory"):
         sidebar_case._terminal(sidebar_result())
+
+
+def test_fixed_sidebar_previous_equal_spacing_is_not_current_evidence(
+    sidebar_case: AppCapture,
+) -> None:
+    """An intact historical four-frame receipt cannot pass the current trajectory."""
+    path = sidebar_case.output / "frames.json"
+    frames = json.loads(path.read_text())
+    for frame, vertical in zip(frames, (0.0, 12.5, 25.0, 37.5), strict=True):
+        frame["vertical"] = vertical
+    path.write_text(json.dumps(frames))
+    with pytest.raises(RuntimeError, match="probe trajectory"):
+        sidebar_case._terminal(sidebar_result())
+    assert not sidebar_case.report.get("unsupported_fixed_sidebar_criterion_passed")
+    assert not sidebar_case.report.get("product_capture_success")
 
 
 @pytest.mark.parametrize("index", [1, 2, 3])
