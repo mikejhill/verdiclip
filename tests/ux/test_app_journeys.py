@@ -48,6 +48,10 @@ from tests.ux.test_capture_journeys import (
 )
 
 from verdiclip import APP_NAME, DOCS_URL, VERSION
+from verdiclip.automation.handlers import AutomationHandlers
+from verdiclip.automation.preview import PreviewFolder
+from verdiclip.automation.protocol import ErrorCode, Request, Response
+from verdiclip.automation.server import ControlServer
 from verdiclip.capture.grabber import ScreenSource
 from verdiclip.capture.models import Capture
 from verdiclip.capture.overlay import SelectionOverlay
@@ -2037,3 +2041,58 @@ class TestUpdates:
         )
         assert balloons.titles()[1:] == ["Update available"]
         assert updates.quits == []
+
+
+class TestAutomation:
+    """UX-TRY-13: AI tools and scripts read open images through `verdiclip ctl`."""
+
+    @staticmethod
+    def ask(server: ControlServer, method: str, **params: object) -> Response:
+        """Send one request line as `verdiclip ctl` would and decode the answer."""
+        line = Request(method, dict(params), ident=1).encode()  # ty: ignore[invalid-argument-type]
+        return Response.decode(server.respond(line))
+
+    def test_open_tabs_are_listed_and_rendered_with_unsaved_edits(
+        self, make_app: AppFactory, tmp_path: Path
+    ) -> None:
+        """UX-TRY-13: a tool sees every open image, edits included, until it's off."""
+        app = make_app()
+        picture = tmp_path / "picture.png"
+        QImage(40, 30, QImage.Format.Format_RGB32).save(str(picture))
+        editor = app.controller.open_image(picture)
+        assert editor is not None
+        editor.session.history.execute(SetCrop(Rect(0, 0, 40, 30), Rect(5, 5, 20, 10)))
+        server = ControlServer(
+            AutomationHandlers(
+                app.controller.workspace, previews=PreviewFolder(tmp_path / "pv")
+            ),
+            name="unused",
+            enabled=lambda: app.controller.automation_enabled,
+        )
+
+        listed = self.ask(server, "list")
+        rendered = self.ask(server, "render", grid=10)
+        current = app.controller.settings
+        app.controller.apply_settings(
+            replace(current, integration=replace(current.integration, automation=False))
+        )
+        refused = self.ask(server, "list")
+
+        assert listed.result is not None
+        documents = listed.result["documents"]
+        assert isinstance(documents, list)
+        assert len(documents) == 1
+        entry = documents[0]
+        assert isinstance(entry, dict)
+        assert (entry["title"], entry["unsaved"], entry["active"]) == (
+            "picture.png",
+            True,
+            True,
+        )
+        assert rendered.result is not None
+        image = QImage(str(rendered.result["path"]))
+        assert (image.width(), image.height()) == (20, 10)
+        assert rendered.result["origin"] == [5, 5]
+        assert refused.error is not None
+        assert refused.error.code is ErrorCode.DISABLED
+        assert "Settings" in refused.error.message

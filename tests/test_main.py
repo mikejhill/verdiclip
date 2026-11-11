@@ -7,7 +7,7 @@ import signal
 import subprocess
 import sys
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from functools import partial
@@ -23,6 +23,9 @@ from tests.ux.test_app_journeys import FakeHotkeys
 
 from verdiclip import __main__ as entry
 from verdiclip.__main__ import Application
+from verdiclip.automation.client import ControlClient
+from verdiclip.automation.handlers import AutomationHandlers
+from verdiclip.automation.server import ControlServer
 from verdiclip.capture.grabber import FrozenScreen
 from verdiclip.exceptions import AppError
 from verdiclip.geometry import Rect
@@ -214,6 +217,30 @@ class TestApplication:
 
         assert excinfo.value.code == 0
 
+    def test_ctl_reports_unavailable_app_without_logging_setup(
+        self,
+        isolated: list[tuple[str, Path]],
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """``ctl`` answers quickly: no logging setup, JSON out, exit code 3."""
+        monkeypatch.setattr(
+            entry,
+            "run_ctl",
+            partial(
+                entry.run_ctl,
+                client=ControlClient(f"verdiclip-absent-{uuid.uuid4().hex}", timeout=1),
+            ),
+        )
+
+        code = Application().run(["ctl", "status"])
+
+        captured = capsys.readouterr()
+        assert code == 3
+        assert '"not_running"' in captured.out
+        assert "not running" in captured.err
+        assert isolated == []
+
 
 def owned_instance(
     name: str, owners: list[SingleInstance], safety: ExitStack
@@ -321,10 +348,24 @@ def qt_entry_owners(
         def handle_forwarded(self, _arguments: list[str]) -> None:
             raise AssertionError("Retired forwarding callback must not run")
 
+        workspace = SimpleNamespace(windows=(), documents=())
+        automation_enabled = True
+
+    controls: list[ControlServer] = []
+
+    def control(
+        handler: AutomationHandlers, *, enabled: Callable[[], bool]
+    ) -> ControlServer:
+        owned = ControlServer(handler, name=f"{name}-control", enabled=enabled)
+        controls.append(owned)
+        safety.callback(owned.close)
+        return owned
+
     monkeypatch.setattr(entry, "SingleInstance", instance)
     monkeypatch.setattr(entry, "HotkeyService", service)
     monkeypatch.setattr(entry, "QTimer", timer)
     monkeypatch.setattr(entry, "AppController", Controller)
+    monkeypatch.setattr(entry, "ControlServer", control)
 
     monkeypatch.setattr(Application, "_install_sigint", sigint.install)
     monkeypatch.setattr(
@@ -365,6 +406,7 @@ def qt_entry_owners(
             name=name,
             previous=sigint.previous,
             filters=filters,
+            controls=controls,
         )
 
 
@@ -382,6 +424,7 @@ def test_gui_readiness_failure_retires_real_qt_owners_without_exec(
         assert signal.getsignal(signal.SIGINT) is qt_entry_owners.previous
         assert qt_entry_owners.application._signal_timer is None
         assert qt_entry_owners.instances[-1]._server is None
+        assert not qt_entry_owners.controls[-1].listening
         assert (
             qt_entry_owners.instances[-1]
             .metaObject()
