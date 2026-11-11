@@ -72,8 +72,8 @@ def test_default_client_reports_missing_app() -> None:
 def test_output_survives_a_narrow_redirect_encoding() -> None:
     """Non-ASCII titles and messages never break a cp1252 pipe."""
     out_raw, err_raw = io.BytesIO(), io.BytesIO()
-    out = io.TextIOWrapper(out_raw, encoding="cp1252")
-    err = io.TextIOWrapper(err_raw, encoding="cp1252")
+    out = io.TextIOWrapper(out_raw, encoding="cp1252", newline="\n")
+    err = io.TextIOWrapper(err_raw, encoding="cp1252", newline="\n")
 
     ok = run_ctl("list", {}, out, err, client=FakeClient({"title": "スクショ"}))
     failed = run_ctl(
