@@ -43,7 +43,7 @@ jobs:
         run: |
           $actual = git rev-parse HEAD
           if ($LASTEXITCODE -ne 0 -or $actual -ne $env:QUALIFICATION_HEAD) { throw 'Source mismatch' }
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: "3.13"
           enable-cache: true
@@ -116,7 +116,7 @@ jobs:
         run: |
           $actual = git rev-parse HEAD
           if ($LASTEXITCODE -ne 0 -or $actual -ne $env:QUALIFICATION_HEAD) { throw 'Source mismatch' }
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: "3.13"
           enable-cache: true
@@ -171,7 +171,7 @@ jobs:
         run: |
           $actual = git rev-parse HEAD
           if ($LASTEXITCODE -ne 0 -or $actual -ne $env:QUALIFICATION_HEAD) { throw 'Source mismatch' }
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: "3.13"
           enable-cache: true
@@ -273,7 +273,7 @@ jobs:
         run: |
           $actual = git rev-parse HEAD
           if ($LASTEXITCODE -ne 0 -or $actual -ne $env:QUALIFICATION_HEAD) { throw 'Source mismatch' }
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: "3.13"
           enable-cache: true
@@ -373,7 +373,7 @@ jobs:
         run: |
           $actual = git rev-parse HEAD
           if ($LASTEXITCODE -ne 0 -or $actual -ne $env:QUALIFICATION_HEAD) { throw 'Source mismatch' }
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: "3.13"
           enable-cache: true
