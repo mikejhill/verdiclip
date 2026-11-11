@@ -40,7 +40,7 @@ def test_motion_reference_matches_independently_authored_pixels(
     monkeypatch.setattr(probe, "window_dpi", lambda _: 96)
     monkeypatch.setattr(owned, "_settle", lambda target, percent: target.move(percent))
     # This fake implements the capture boundary used by the native oracle.
-    actual = probe.MotionFixture.reference(cast("UiaScrollTarget", target), tmp_path)
+    actual = probe.MotionFixture.reference(cast(UiaScrollTarget, target), tmp_path)
     assert actual == target.document, "The independent oracle must retain exact pixels"
     assert (tmp_path / "ambiguous-trial.png").exists(), (
         "Mixed-motion evidence must remain"

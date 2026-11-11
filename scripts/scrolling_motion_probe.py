@@ -38,13 +38,9 @@ class MotionFixture:
             if inverse:
                 red, green, blue = 255 - red, 255 - green, 255 - blue
             rows.append(
-                f'<path d="M0 {row}.5H1000" stroke="rgb({red},{green},{blue})"/>'
+                f'<div style="height:1px;background:rgb({red},{green},{blue})"></div>'
             )
-        return (
-            f'<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="{height}" '
-            f'viewBox="0 0 1000 {height}" preserveAspectRatio="none">'
-            f"{''.join(rows)}</svg>"
-        )
+        return f'<div aria-hidden="true">{"".join(rows)}</div>'
 
     @classmethod
     def document(cls, **_kwargs: object) -> str:
