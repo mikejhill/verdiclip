@@ -54,6 +54,11 @@ def _extent_agrees(measured: float, expected: float) -> bool:
 class AmbiguousScrollError(CaptureError):
     """Exact pixels admit multiple displacements; no stitch state was committed."""
 
+    def __init__(self, message: str, *, candidates: tuple[int, ...] = ()) -> None:
+        super().__init__(message)
+        self.candidates = candidates
+        self.probe_advance: int | None = None
+
 
 class NoAlignmentScrollError(CaptureError):
     """No eligible exact textured registration band was found; nothing was committed."""
@@ -323,7 +328,10 @@ class VerticalStitch:
                 if old[match[0] :] == new[: len(old) - match[0]]
             ]
             if len(complete) != 1:
-                raise AmbiguousScrollError("The panel's scrolling pixels are ambiguous")
+                raise AmbiguousScrollError(
+                    "The panel's scrolling pixels are ambiguous",
+                    candidates=tuple(match[0] for match in matches),
+                )
             return complete[0]
         return matches[0] if matches else None
 
@@ -546,7 +554,7 @@ class VerticalStitch:
                     old, new, nonrail_width=self._nonrail_width
                 ), False
             return self._alignment(old, new), False
-        except AmbiguousScrollError:
+        except AmbiguousScrollError as original:
             if self._nonrail_width is not None or not self._allow_containment:
                 raise
             try:
@@ -554,7 +562,24 @@ class VerticalStitch:
                     old, new, tail_start=self._tail_start
                 )
             except AmbiguousScrollError:
-                match = self._track_alignment(old, new)
+                try:
+                    match = self._track_alignment(old, new)
+                except AmbiguousScrollError as error:
+                    # Rival spacing proposes acquisition, never an accepted join.
+                    if (
+                        len(original.candidates) > 1
+                        and self._post_prefix is None
+                        and self._fixed_prefix is None
+                    ):
+                        error.probe_advance = min(
+                            right - left
+                            for left, right in zip(
+                                original.candidates,
+                                original.candidates[1:],
+                                strict=False,
+                            )
+                        )
+                    raise
             return match, True
 
     @staticmethod
@@ -1649,6 +1674,13 @@ class ScrollTransaction:
         """Confirm constrained provenance before choosing a new acquisition interval."""
         if isinstance(error, PostPrefixBodyScrollError) and error.containment:
             VerticalStitch._require_containment_advance(error.advance, expected)
+        if (
+            isinstance(error, AmbiguousScrollError)
+            and error.probe_advance is not None
+            and math.isfinite(expected)
+            and 0 < error.probe_advance < expected
+        ):
+            return min(error.probe_advance / expected, 0.75)
         if isinstance(error, NoAlignmentScrollError):
             return 0.75
         return (0.75, 2 / 3, 0.5, 0.5)[min(retry, _MAX_AMBIGUITY_RETRIES - 1)]

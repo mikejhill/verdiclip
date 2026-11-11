@@ -156,6 +156,16 @@ uninterrupted sequence visits 75%, 50%, 25% and 12.5% of the original interval.
 An absent band always keeps three quarters, providing more overlap without
 immediately placing a
 scrollbar thumb inside a short fixed top. No rejected pair contributes output.
+For a generic unprefixed full-width ambiguity that neither containment nor
+track evidence resolves, the smallest spacing between original rival pixel
+displacements can propose the next acquisition distance. It is capped at the
+ordinary three-quarter retry interval and must be positive and smaller than the
+rejected interval. This can observe the boundary where a pinned component starts
+moving with the document. The rival spacing never selects an alignment or changes
+a seam. The rejected frame remains rejected; the exact anchor return and the
+fresh frame must satisfy all existing checks. Fixed and learned prefixes do not
+use this hint. A wrong hypothesis consumes the same bounded retry allowance.
+
 Every new frame counts against the existing frame and time budgets. Only these
 typed failures permit recovery; changed prefixes, input, geometry, provider and
 other reported failures still stop immediately. Containment-based body refusals
