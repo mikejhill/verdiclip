@@ -157,6 +157,9 @@ def test_oversized_complete_line_is_refused(
 ) -> None:
     """The size limit holds even when the long line arrives with its newline."""
     socket = connect(server, qtbot)
+    accepted = next(iter(server._buffers))
+    deleted: list[bool] = []
+    accepted.destroyed.connect(lambda: deleted.append(True))
     calls: list[bytes] = []
     original = server.respond
     server.respond = lambda line: calls.append(line) or original(line)  # ty: ignore[invalid-assignment]
@@ -170,6 +173,7 @@ def test_oversized_complete_line_is_refused(
     assert error.code is ErrorCode.BAD_REQUEST
     assert calls == []
     qtbot.waitUntil(lambda: not server._buffers)
+    qtbot.waitUntil(lambda: bool(deleted))
 
 
 def test_close_drops_open_clients(server: ControlServer, qtbot: QtBot) -> None:

@@ -149,7 +149,6 @@ def test_preview_folder_names_and_prunes(tmp_path: Path) -> None:
     """Default previews get unique names and expire after a day."""
     folder = PreviewFolder(tmp_path)
     first = folder.new_path("abcdef0123456789", 4)
-    time.sleep(0.002)
     second = folder.new_path("abcdef0123456789", 4)
     old = tmp_path / "old.png"
     fresh = tmp_path / "fresh.png"

@@ -7,6 +7,7 @@ import math
 import os
 import tempfile
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -193,8 +194,8 @@ class PreviewFolder:
 
     def new_path(self, document_id: str, state: int) -> Path:
         """Return a fresh file name for one render of ``document_id``."""
-        stamp = time.time_ns() // 1_000_000
-        return self._root / f"{document_id[:8]}-s{state}-{stamp}.png"
+        # A random suffix: two renders in the same instant must not share a file
+        return self._root / f"{document_id[:8]}-s{state}-{uuid.uuid4().hex[:12]}.png"
 
     def prune(self, now: float | None = None) -> None:
         """Delete previews older than a day; never fail the request over it."""

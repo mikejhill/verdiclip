@@ -140,10 +140,9 @@ class ControlServer(QObject):
         socket.flush()
 
     def _disconnected(self, socket: QLocalSocket) -> None:
-        """Release a client once it hangs up."""
-        if socket in self._buffers:
-            self._forget(socket)
-            socket.deleteLater()
+        """Release a client once it hangs up, including ones already refused."""
+        self._forget(socket)
+        socket.deleteLater()
 
     def _forget(self, socket: QLocalSocket) -> None:
         """Stop tracking ``socket``."""
