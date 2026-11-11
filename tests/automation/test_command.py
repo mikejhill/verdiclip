@@ -42,7 +42,6 @@ def test_success_prints_result() -> None:
 
     assert code == ExitCode.OK
     assert json.loads(out.getvalue()) == {"documents": [], "title": "Café"}
-    assert "Café" in out.getvalue()
     assert err.getvalue() == ""
     assert client.calls == [("list", {"doc": "a"})]
 
@@ -68,3 +67,29 @@ def test_default_client_reports_missing_app() -> None:
     absent = ControlClient("verdiclip-absent-for-command-test", timeout=1)
 
     assert run_ctl("status", {}, out, err, client=absent) == ExitCode.UNAVAILABLE
+
+
+def test_output_survives_a_narrow_redirect_encoding() -> None:
+    """Non-ASCII titles and messages never break a cp1252 pipe."""
+    out_raw, err_raw = io.BytesIO(), io.BytesIO()
+    out = io.TextIOWrapper(out_raw, encoding="cp1252")
+    err = io.TextIOWrapper(err_raw, encoding="cp1252")
+
+    ok = run_ctl("list", {}, out, err, client=FakeClient({"title": "スクショ"}))
+    failed = run_ctl(
+        "get",
+        {},
+        out,
+        err,
+        client=FakeClient(AutomationError(ErrorCode.NOT_FOUND, "no 画像")),
+    )
+    out.flush()
+    err.flush()
+
+    first, second = out_raw.getvalue().decode("cp1252").split("\n}\n", 1)
+    assert (ok, failed) == (ExitCode.OK, ExitCode.NOT_FOUND)
+    assert json.loads(first + "}") == {"title": "スクショ"}
+    assert json.loads(second)["error"]["message"] == "no 画像"
+    assert err_raw.getvalue().decode("cp1252") == (
+        "verdiclip ctl get: no \\u753b\\u50cf\n"
+    )

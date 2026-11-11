@@ -152,6 +152,26 @@ def test_oversized_request_is_refused_and_disconnected(
     qtbot.waitUntil(lambda: not server._buffers)
 
 
+def test_oversized_complete_line_is_refused(
+    server: ControlServer, qtbot: QtBot
+) -> None:
+    """The size limit holds even when the long line arrives with its newline."""
+    socket = connect(server, qtbot)
+    calls: list[bytes] = []
+    original = server.respond
+    server.respond = lambda line: calls.append(line) or original(line)  # ty: ignore[invalid-assignment]
+
+    socket.write(b"x" * (MAX_LINE_BYTES + 10) + b"\n")
+    socket.flush()
+
+    line = read_lines(socket, qtbot, 1)[0]
+    error = Response.decode(line).error
+    assert error is not None
+    assert error.code is ErrorCode.BAD_REQUEST
+    assert calls == []
+    qtbot.waitUntil(lambda: not server._buffers)
+
+
 def test_close_drops_open_clients(server: ControlServer, qtbot: QtBot) -> None:
     """Shutdown releases connected clients."""
     connect(server, qtbot)

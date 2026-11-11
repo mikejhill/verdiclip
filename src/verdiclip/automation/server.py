@@ -126,7 +126,7 @@ class ControlServer(QObject):
             return
         data = self._buffers[socket] + bytes(socket.readAll().data())
         *lines, rest = data.split(b"\n")
-        if len(rest) > MAX_LINE_BYTES:
+        if any(len(line) > MAX_LINE_BYTES for line in (*lines, rest)):
             failure = AutomationError(ErrorCode.BAD_REQUEST, "Request is too large")
             socket.write(Response(None, error=failure).encode())
             socket.flush()
