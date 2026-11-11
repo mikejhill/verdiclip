@@ -130,6 +130,8 @@ jobs:
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        continue-on-error: true
+        timeout-minutes: 3
         with:
           name: test-reports-py${{ matrix.python }}
           path: |
@@ -139,6 +141,8 @@ jobs:
       - name: Upload UX journey snapshots
         if: always() && matrix.python == '3.13'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        continue-on-error: true
+        timeout-minutes: 3
         with:
           name: ux-journey-snapshots
           path: docs/ux/snapshots
@@ -183,6 +187,8 @@ jobs:
       - name: Upload reproducible contract results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        continue-on-error: true
+        timeout-minutes: 3
         with:
           name: capture-contracts-qt${{ matrix.qt }}
           path: capture-contracts.xml
@@ -220,6 +226,8 @@ jobs:
       - name: Upload simulated-contract evidence (never native qualification)
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        continue-on-error: true
+        timeout-minutes: 3
         with:
           name: simulated-tabs-qt${{ matrix.qt }}
           path: |
@@ -252,6 +260,8 @@ jobs:
         run: uv run poe ux-gallery
       - name: Upload gallery for design review
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        continue-on-error: true
+        timeout-minutes: 3
         with:
           name: ux-gallery
           path: docs/ux/gallery
@@ -279,6 +289,8 @@ jobs:
           & .smoke/Scripts/verdiclip.exe --version
           & .smoke/Scripts/python.exe -c "import verdiclip; assert verdiclip.VERSION != '0.0.0+unknown'"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        continue-on-error: true
+        timeout-minutes: 3
         with:
           name: dist
           path: dist/
