@@ -123,3 +123,79 @@ class TestCommandLine:
         assert request.output is None
         assert request.delay == 0
         assert not request.to_clipboard
+
+    def test_ctl_queries(self) -> None:
+        """Ctl status, list and get become control requests."""
+        parser = CommandLine()
+
+        status = parser.parse(["ctl", "status"])
+        listed = parser.parse(["ctl", "list", "--log-level", "DEBUG"])
+        got = parser.parse(["ctl", "get", "--doc", "abc"])
+        active = parser.parse(["ctl", "get"])
+
+        assert status.command is Command.CTL
+        assert (status.method, status.params) == ("status", {})
+        assert (listed.method, listed.log_level) == ("list", "DEBUG")
+        assert (got.method, got.params) == ("get", {"doc": "abc"})
+        assert active.params == {}
+
+    def test_ctl_render_defaults(self) -> None:
+        """Render downscales to 1568 px, without grid or base, by default."""
+        request = CommandLine().parse(["ctl", "render"])
+
+        assert request.method == "render"
+        assert request.params == {"max_side": 1568, "grid": 0, "base": False}
+
+    def test_ctl_render_options(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Render options are passed through; the output path is made absolute."""
+        monkeypatch.chdir(tmp_path)
+
+        request = CommandLine().parse(
+            [
+                "ctl",
+                "render",
+                "--doc",
+                "d1",
+                "-o",
+                "view.png",
+                "--region",
+                "10,20,30,40",
+                "--max-side",
+                "0",
+                "--grid",
+                "50",
+                "--base",
+            ]
+        )
+
+        assert request.params == {
+            "doc": "d1",
+            "output": str((tmp_path / "view.png").resolve()),
+            "region": [10, 20, 30, 40],
+            "max_side": 0,
+            "grid": 50,
+            "base": True,
+        }
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["ctl"],
+            ["ctl", "paint"],
+            ["ctl", "render", "--max-side", "-1"],
+            ["ctl", "render", "--grid", "-5"],
+            ["ctl", "render", "--region", "1,2,3"],
+            ["ctl", "status", "--doc", "x"],
+        ],
+        ids=["no-method", "unknown", "max-side", "grid", "region", "status-doc"],
+    )
+    def test_ctl_invalid(
+        self, args: list[str], capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Bad ctl usage exits with code two."""
+        with pytest.raises(SystemExit, match="2"):
+            CommandLine().parse(args)
+
+        assert "error:" in capsys.readouterr().err

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
 from verdiclip import VERSION
+from verdiclip.automation.protocol import DEFAULT_MAX_SIDE
+from verdiclip.document.annotations import JsonObject
 from verdiclip.geometry import Rect
 
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
@@ -20,6 +22,7 @@ class Command(StrEnum):
     TRAY = "tray"
     CAPTURE = "capture"
     OPEN = "open"
+    CTL = "ctl"
 
 
 class HeadlessMode(StrEnum):
@@ -42,6 +45,8 @@ class CliRequest:
     delay: float = 0.0
     to_clipboard: bool = False
     files: tuple[Path, ...] = ()
+    method: str = ""
+    params: JsonObject = field(default_factory=dict)
 
 
 class CommandLine:
@@ -56,6 +61,8 @@ class CommandLine:
         level = str(args.log_level)
         if args.command is None:
             return CliRequest(command=Command.TRAY, log_level=level)
+        if args.command == Command.CTL:
+            return self._ctl_request(args, level)
         if args.command == Command.OPEN:
             return CliRequest(
                 command=Command.OPEN,
@@ -76,6 +83,29 @@ class CommandLine:
             region=region,
             delay=float(args.delay),
             to_clipboard=bool(args.clipboard),
+        )
+
+    def _ctl_request(self, args: argparse.Namespace, level: str) -> CliRequest:
+        """Build the control request for ``verdiclip ctl <method>``."""
+        method = str(args.method)
+        params: JsonObject = {}
+        if getattr(args, "doc", None):
+            params["doc"] = str(args.doc)
+        if method == "render":
+            if args.output:
+                params["output"] = str(Path(args.output).resolve())
+            if args.region:
+                region = self._parse_region(args.region)
+                params["region"] = [region.x, region.y, region.width, region.height]
+            if args.max_side < 0:
+                self._parser.error(f"--max-side must be >= 0, got {args.max_side}")
+            if args.grid < 0:
+                self._parser.error(f"--grid must be >= 0, got {args.grid}")
+            params["max_side"] = int(args.max_side)
+            params["grid"] = int(args.grid)
+            params["base"] = bool(args.base)
+        return CliRequest(
+            command=Command.CTL, log_level=level, method=method, params=params
         )
 
     def _parse_region(self, text: str) -> Rect:
@@ -151,4 +181,68 @@ class CommandLine:
             "open", parents=[shared], help="Open images in the editor."
         )
         open_cmd.add_argument("files", nargs="+", help="Image files to open.")
+        CommandLine._add_ctl(commands, shared)
         return parser
+
+    @staticmethod
+    def _add_ctl(
+        commands: argparse._SubParsersAction[argparse.ArgumentParser],
+        shared: argparse.ArgumentParser,
+    ) -> None:
+        """Define ``ctl``: query the running app for AI tools and scripts."""
+        ctl = commands.add_parser(
+            "ctl",
+            parents=[shared],
+            help="Query documents open in the running app (prints JSON).",
+            description=(
+                "Read documents open in the running VerdiClip, including unsaved "
+                "edits. Prints JSON. Exit codes: 0 ok, 1 failed, 2 bad usage, "
+                "3 not running or turned off, 4 conflict, 5 not found, 6 busy."
+            ),
+        )
+        methods = ctl.add_subparsers(dest="method", required=True)
+        methods.add_parser(
+            "status", parents=[shared], help="Check the app is running and reachable."
+        )
+        methods.add_parser(
+            "list", parents=[shared], help="List open documents in every window."
+        )
+        doc = argparse.ArgumentParser(add_help=False)
+        doc.add_argument(
+            "--doc",
+            default=None,
+            help="Document id from `ctl list` (default: the active tab).",
+        )
+        methods.add_parser(
+            "get",
+            parents=[shared, doc],
+            help="Print one document's annotations, crop, selection and state.",
+        )
+        render = methods.add_parser(
+            "render",
+            parents=[shared, doc],
+            help="Write a PNG of one document as it is now, unsaved edits included.",
+        )
+        render.add_argument(
+            "-o", "--output", help="PNG file to write (default: a preview folder)."
+        )
+        render.add_argument(
+            "--region", help="X,Y,WIDTH,HEIGHT in image pixels to render alone."
+        )
+        render.add_argument(
+            "--max-side",
+            type=int,
+            default=DEFAULT_MAX_SIDE,
+            help="Downscale so the longest side fits (default: %(default)s; 0: off).",
+        )
+        render.add_argument(
+            "--grid",
+            type=int,
+            default=0,
+            help="Draw lines every N image pixels, labelled in image coordinates.",
+        )
+        render.add_argument(
+            "--base",
+            action="store_true",
+            help="Render the image without annotations.",
+        )

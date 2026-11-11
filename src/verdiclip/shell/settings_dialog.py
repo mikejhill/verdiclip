@@ -122,6 +122,9 @@ class SettingsDialog(QDialog):
         self._start_menu = QCheckBox("Show VerdiClip in the Start menu")
         self._open_with = QCheckBox("Show VerdiClip in “Open with” for image files")
         self._make_default = QPushButton("Make VerdiClip the default image app…")
+        self._automation = QCheckBox(
+            "Let AI tools and scripts on this PC read open images (verdiclip ctl)"
+        )
         self._check_updates = QCheckBox("Check for updates automatically")
         self._install_updates = QCheckBox(
             "Install updates automatically when no image is open"
@@ -171,6 +174,7 @@ class SettingsDialog(QDialog):
             integration=IntegrationSettings(
                 open_with=self._open_with.isChecked(),
                 start_menu=self._start_menu.isChecked(),
+                automation=self._automation.isChecked(),
             ),
             updates=UpdateSettings(
                 check=self._check_updates.isChecked(),
@@ -253,6 +257,11 @@ class SettingsDialog(QDialog):
         files.addWidget(self._open_with)
         files.addWidget(self._make_default)
         form.addRow(files)
+        self._automation.setToolTip(
+            "Only programs running as your Windows user can connect. "
+            "They see open images, including unsaved changes."
+        )
+        form.addRow(self._automation)
         self._install_updates.setToolTip(
             "VerdiClip restarts to install the update, then says how it went."
         )
@@ -354,6 +363,7 @@ class SettingsDialog(QDialog):
         self._run_at_login.setChecked(settings.startup.run_at_login)
         self._open_with.setChecked(settings.integration.open_with)
         self._start_menu.setChecked(settings.integration.start_menu)
+        self._automation.setChecked(settings.integration.automation)
         self._check_updates.setChecked(settings.updates.check)
         self._install_updates.setChecked(settings.updates.install)
         self._install_updates.setEnabled(settings.updates.check)

@@ -114,7 +114,7 @@ Open from the tray menu or with `Ctrl+,` in any editor.
 - **Hotkeys** — validated as you type; conflicts are reported.
 - **Output** — folder, file-name pattern (`{date}`, `{time}`, `{title}`, `{counter}`; default `{date}_{time}_{title}`, where `{title}` is the captured window's title (spaces become `_` when the pattern has none), or *Screenshot* / *Screen* for region and full-screen captures) with a live preview, format, JPEG quality.
 - **Editor** — default color, width, and font.
-- **General** — light, dark, or match-Windows theme; start at sign-in; check for and install updates automatically; show VerdiClip in Explorer's **Open with** menu for images. **Make VerdiClip the default image app…** opens Windows Settings at VerdiClip's Default apps page, where you choose it as the default (Windows requires you to confirm this yourself).
+- **General** — light, dark, or match-Windows theme; start at sign-in; check for and install updates automatically; show VerdiClip in Explorer's **Open with** menu for images; let AI tools and scripts read open images (`verdiclip ctl`). **Make VerdiClip the default image app…** opens Windows Settings at VerdiClip's Default apps page, where you choose it as the default (Windows requires you to confirm this yourself).
 
 ![Settings → General: theme, start at sign-in, and the Open with integration](https://raw.githubusercontent.com/mikejhill/verdiclip/main/docs/images/settings-general.png)
 
@@ -126,6 +126,18 @@ verdiclip capture region --region 0,0,1280,720 --clipboard
 verdiclip capture window --delay 3
 verdiclip open picture.png          # Opens in the running instance if there is one
 ```
+
+### For AI tools and scripts
+
+`verdiclip ctl` reads images open in the running app, unsaved edits included, and prints JSON:
+
+```bash
+verdiclip ctl list                          # Every open image, in every window and tab
+verdiclip ctl get --doc <id>                # Annotations, crop, selection, state
+verdiclip ctl render --grid 100 -o view.png # PNG of the current state, gridded in image pixels
+```
+
+Only programs running as your Windows user can connect. Turn it off in Settings → General. See [docs/design/automation.md](https://github.com/mikejhill/verdiclip/blob/main/docs/design/automation.md).
 
 ## How it is built
 

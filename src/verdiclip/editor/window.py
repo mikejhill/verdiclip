@@ -225,6 +225,11 @@ class EditorWindow(QMainWindow):
         return tuple(self._page_at(i) for i in range(self._tabs.count()))
 
     @property
+    def current_page(self) -> DocumentPage | None:
+        """Return the document page shown in this window, if any."""
+        return self._page_ref
+
+    @property
     def tab_bar(self) -> DocumentTabBar:
         """Return the accessible tab strip."""
         return self._tab_bar

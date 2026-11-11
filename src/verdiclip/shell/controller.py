@@ -156,6 +156,11 @@ class AppController(QObject):
         return self._capture
 
     @property
+    def automation_enabled(self) -> bool:
+        """Return whether local tools may query open documents."""
+        return self._settings.integration.automation
+
+    @property
     def tray(self) -> TrayIcon:
         """Return the tray icon."""
         return self._tray
