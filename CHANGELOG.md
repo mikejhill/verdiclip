@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.14.2](https://github.com/mikejhill/verdiclip/compare/v0.14.1...v0.14.2) (2026-11-11)
+
+
+### Bug Fixes
+
+* acquire unambiguous scrolling frames ([c2ffae1](https://github.com/mikejhill/verdiclip/commit/c2ffae173786a07e2d8d74b94b85db78100a606d))
+* qualify scrolling capture through registered native entry ([3670593](https://github.com/mikejhill/verdiclip/commit/367059390b337002a6e0aad95f5210db2b8263c3))
+* repair scrolling in real applications ([11298c6](https://github.com/mikejhill/verdiclip/commit/11298c665a97774841b7dde57df727129f1fda6d))
+* stabilize Settings startup and bounded scrolling recovery ([4712ae6](https://github.com/mikejhill/verdiclip/commit/4712ae663078f773c1b45bf33c5b83e3d71df26b))
+
 ## [0.14.1](https://github.com/mikejhill/verdiclip/compare/v0.14.0...v0.14.1) (2026-11-09)
 
 
