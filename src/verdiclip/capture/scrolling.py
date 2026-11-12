@@ -105,7 +105,7 @@ class ScrollCapture:
         except CancelledError:
             self._restore(start)
             return ScrollResult(None, "Scrolling capture cancelled", len(frames))
-        except CaptureError as error:
+        except (CaptureError, OSError) as error:  # OSError: a failed COM call
             self._restore(start)
             return ScrollResult(None, str(error), len(frames))
         if not self._restore(start):
@@ -149,8 +149,13 @@ class ScrollCapture:
             target.scroll_to(requested)
             following = self._settle(image)
             if following == image:
-                return  # The panel did not move: it is at the end.
-            moved = self._position_after(reading)
+                # Same pixels: the end, unless the position moved through a
+                # blank or repeating stretch.
+                moved = target.position()
+                if moved.percent <= reading:
+                    return
+            else:
+                moved = self._position_after(reading)
             assumed, reading = moved.percent == reading, moved.percent
             if assumed:
                 # Pixels moved but the reported position did not (yet). Trust

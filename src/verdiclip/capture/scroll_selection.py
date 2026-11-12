@@ -172,8 +172,14 @@ class ScrollSelection(QObject):
         self._title = window.title if window is not None else "Scrolling capture"
         self._point = point
         self._close_overlays()
-        if _CANCEL_ACTION not in self._hotkeys.registered:
+        if _CANCEL_ACTION not in self._hotkeys.registered and not (
             self._hotkeys.register(_CANCEL_ACTION, Hotkey.parse("escape"))
+        ):
+            self._fail(
+                "Esc is in use by another program, so a scrolling capture could "
+                "not be cancelled. Close that program and try again."
+            )
+            return
         self._launch.start(_HANDOFF_MS)
 
     def _start_helper(self) -> None:

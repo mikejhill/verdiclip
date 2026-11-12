@@ -278,3 +278,46 @@ def test_estimated_seams_are_reported(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     result = run(Panel(700))
     assert result.warning == "2 seam(s) were estimated; check the image."
+
+
+class Blank(Panel):
+    """A document with a blank stretch taller than the viewport."""
+
+    @override
+    def __post_init__(self) -> None:
+        """Paint rows 300 to 700 white."""
+        super().__post_init__()
+        for y in range(300, 700):
+            for x in range(WIDTH):
+                self.document.setPixel(x, y, 0xFFFFFF)
+
+
+class Failing(Panel):
+    """A native provider call fails after the panel has moved."""
+
+    @override
+    def scroll_to(self, percent: float) -> None:
+        """Fail on the second scroll request only."""
+        super().scroll_to(percent)
+        if len(self.writes) == 2:  # The step after the top
+            raise OSError("provider failed")
+
+
+def test_blank_stretch_is_not_taken_as_the_end() -> None:
+    """Identical frames with an advancing position keep the capture going."""
+    panel = Blank(1200, start=0.0)
+    result = run(panel)
+    assert result.image is not None
+    assert result.image.height() == panel.content
+    assert result.image.copy(0, 900, WIDTH, 300) == panel.document.copy(
+        0, 900, WIDTH, 300
+    )
+
+
+def test_native_failure_restores_the_start() -> None:
+    """A failed COM call is reported and the start position is restored."""
+    panel = Failing(1200)
+    result = run(panel)
+    assert result.image is None
+    assert result.message == "provider failed"
+    assert panel.writes[-1] == pytest.approx(40.0)

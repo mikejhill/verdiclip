@@ -220,3 +220,21 @@ def test_window_list_failure_is_reported(
     qtbot.waitUntil(lambda: not service.busy)
     assert failures == ["no windows"]
     assert not service.overlays
+
+
+def test_escape_owned_elsewhere_stops_before_capturing(
+    make_app: AppFactory, qtbot: QtBot
+) -> None:
+    """Without a working Esc the capture does not start, and the reason is shown."""
+    app = make_app(taken={"escape"})
+    helper = prepare(app)
+    service = app.controller._scrolling
+    app.controller.capture_scrolling()
+    qtbot.waitUntil(lambda: bool(service.overlays))
+    service.overlays[0].chosen.emit(Point(30, 40))
+    qtbot.waitUntil(lambda: not service.busy)
+    assert isinstance(helper.start, Mock)
+    helper.start.assert_not_called()
+    status = app.controller._scroll_status
+    assert status is not None
+    assert "Esc is in use" in status.text()
