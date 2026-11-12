@@ -6,7 +6,9 @@ from dataclasses import replace
 from unittest.mock import Mock
 
 import pytest
+from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QImage
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 from pytestqt.qtbot import QtBot
 from tests.ux.test_app_journeys import App, AppFactory
@@ -301,3 +303,40 @@ def test_ctrl_click_in_region_capture_starts_scrolling(
     assert service.busy
     service.start_at(Point(2, 2), "")  # Busy: ignored
     service.cancel()
+
+
+def test_clicking_the_chooser_selects_the_point(
+    make_app: AppFactory, qtbot: QtBot
+) -> None:
+    """A real click on the chooser starts the helper at that point."""
+    app = make_app()
+    helper = prepare(app)
+    app.controller.capture_scrolling()
+    service = app.controller._scrolling
+    qtbot.waitUntil(lambda: bool(service.overlays))
+    overlay = service.overlays[0]
+    QTest.mouseMove(overlay, QPoint(30, 40))
+    QTest.mouseClick(
+        overlay,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+        QPoint(30, 40),
+    )
+    qtbot.waitUntil(lambda: helper is service._helper)
+    assert isinstance(helper.start, Mock)
+    helper.start.assert_called_once()
+    service.cancel()
+
+
+def test_ctrl_click_while_scrolling_is_ignored(
+    make_app: AppFactory, qtbot: QtBot
+) -> None:
+    """A second scrolling request from the region overlay does not interrupt."""
+    app = make_app()
+    helper = prepare(app)
+    app.controller.capture_scrolling()
+    select(qtbot, app, helper)
+    app.controller._scroll_at(Point(5, 5), "Other")
+    assert isinstance(helper.start, Mock)
+    helper.start.assert_called_once_with(Point(30, 40))
+    app.controller._scrolling.cancel()
