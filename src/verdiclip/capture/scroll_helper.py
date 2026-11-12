@@ -14,6 +14,7 @@ import os
 import sys
 import threading
 import time
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -179,15 +180,25 @@ class ScrollHelper(QObject):
         self.finished.emit(result)
 
 
-def _watch_parent(cancelled: threading.Event) -> None:
-    """Flag ``cancel``; exit at once when the parent closes stdin."""
-    for line in sys.stdin:
+def _watch_parent(
+    cancelled: threading.Event, commands: Iterable[str], on_eof: Callable[[], None]
+) -> None:
+    """Flag ``cancel``; call ``on_eof`` when the parent closes stdin."""
+    for line in commands:
         if line.strip() == "cancel":
             cancelled.set()
+    on_eof()
+
+
+def _exit_now() -> None:
     os._exit(1)
 
 
-def main() -> None:
+def main(
+    argv: Sequence[str] | None = None,
+    commands: Iterable[str] | None = None,
+    on_eof: Callable[[], None] = _exit_now,
+) -> None:
     """Capture in a fresh process: no app controller, no single-instance setup."""
     logging.basicConfig(level=logging.INFO, format="%(name)s: %(message)s")
     import ctypes  # noqa: PLC0415 - Windows-only, helper process only
@@ -195,14 +206,18 @@ def main() -> None:
     from verdiclip.capture.scrolling import ScrollCapture  # noqa: PLC0415
     from verdiclip.platform.scrolling import UiaScrollTarget  # noqa: PLC0415
 
-    x, y, directory = sys.argv[1:]
+    x, y, directory = sys.argv[1:] if argv is None else argv
     user = ctypes.WinDLL("user32", use_last_error=True)
     user.SetProcessDpiAwarenessContext.argtypes = (ctypes.c_void_p,)
     user.SetProcessDpiAwarenessContext.restype = ctypes.c_int
     # Per-monitor v2: UIA bounds and screen pixels share physical coordinates.
     user.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
     cancelled = threading.Event()
-    threading.Thread(target=_watch_parent, args=(cancelled,), daemon=True).start()
+    threading.Thread(
+        target=_watch_parent,
+        args=(cancelled, sys.stdin if commands is None else commands, on_eof),
+        daemon=True,
+    ).start()
     started = time.monotonic()
     try:
         with UiaScrollTarget(Point(int(x), int(y))) as target:

@@ -15,6 +15,7 @@ import ctypes.wintypes as w
 import logging
 import math
 import sys
+import time
 import uuid
 from contextlib import ExitStack
 from typing import Self
@@ -37,6 +38,8 @@ _NO_SCROLL = -1.0
 _MAX_ANCESTORS = 32
 _MIN_SIZE = 32
 _GA_ROOT = 2
+_LOOKUPS = 2
+_RETRY_SECONDS = 0.5
 
 
 class _Guid(c.Structure):
@@ -162,12 +165,23 @@ class UiaScrollTarget:
         )
         automation = _Interface(pointer, self._owners)
         walker = automation.nullable(16, self._owners)  # RawViewWalker
-        element = automation.nullable(
-            7, self._owners, (w.POINT, w.POINT(round(point.x), round(point.y)))
-        )
-        if walker is None or element is None:
+        if walker is None:
             raise CaptureError("UI Automation is unavailable")
-        self._element, self._scroll = self._find(element, walker)
+        for attempt in range(_LOOKUPS):
+            # Chromium builds its accessibility tree only after the first
+            # request, so a miss is retried once after a pause.
+            element = automation.nullable(
+                7, self._owners, (w.POINT, w.POINT(round(point.x), round(point.y)))
+            )
+            if element is None:
+                raise CaptureError("UI Automation is unavailable")
+            try:
+                self._element, self._scroll = self._find(element, walker)
+                break
+            except CaptureError:
+                if attempt == _LOOKUPS - 1:
+                    raise
+                time.sleep(_RETRY_SECONDS)
         self._area = self._viewport()
         if self._area.width < _MIN_SIZE or self._area.height < _MIN_SIZE:
             raise CaptureError("The scrolling area is too small")

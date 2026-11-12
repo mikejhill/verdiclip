@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import override
 
 import pytest
 from PySide6.QtGui import QImage
@@ -10,6 +11,7 @@ from tests.capture.test_stitch import VIEW, WIDTH, page
 
 from verdiclip.capture import scrolling
 from verdiclip.capture.scrolling import ScrollCapture, ScrollPosition
+from verdiclip.capture.stitch import StitchResult
 from verdiclip.exceptions import CaptureError
 
 
@@ -166,3 +168,113 @@ def test_unknown_view_size_still_advances() -> None:
     """Unknown view size still advances."""
     assert ScrollPosition(10.0, 0.0).pixels_per_percent(VIEW) is None
     assert ScrollPosition(10.0, 50.0).pixels_per_percent(VIEW) == pytest.approx(2.0)
+
+
+class Flicker(Panel):
+    """Shows one in-between image after each scroll before the real one."""
+
+    @override
+    def scroll_to(self, percent: float) -> None:
+        """Scroll and arm one in-between grab."""
+        super().scroll_to(percent)
+        self.flicker = True
+
+    @override
+    def grab(self) -> QImage:
+        """Return an inverted frame once after a scroll."""
+        image = super().grab()
+        if getattr(self, "flicker", False):
+            self.flicker = False
+            image.invertPixels()
+        return image
+
+
+class Stuck(Panel):
+    """Pixels move but the reported position never does."""
+
+    @override
+    def position(self) -> ScrollPosition:
+        """Always the top."""
+        return ScrollPosition(0.0, super().position().view_size)
+
+
+class Lagging(Panel):
+    """Reports the previous position for a few reads after each scroll."""
+
+    @override
+    def scroll_to(self, percent: float) -> None:
+        """Scroll and hold the old position for three reads."""
+        self.reported = super().position()
+        self.stale = 3
+        super().scroll_to(percent)
+
+    @override
+    def position(self) -> ScrollPosition:
+        """The old position while stale, then the real one."""
+        if getattr(self, "stale", 0):
+            self.stale -= 1
+            return self.reported
+        return super().position()
+
+
+class Backwards(Panel):
+    """Reports a lower position after the second scroll."""
+
+    @override
+    def position(self) -> ScrollPosition:
+        """Real position, except it drops once the panel is past a third."""
+        real = super().position()
+        if real.percent > 30.0:
+            return ScrollPosition(1.0, real.view_size)
+        return real
+
+
+def test_in_between_frames_are_not_kept() -> None:
+    """A frame that changes during settling is replaced by the settled one."""
+    panel = Flicker(700)
+    result = run(panel)
+    assert result.image == panel.document
+
+
+def test_position_that_never_moves_still_reaches_the_end() -> None:
+    """Moving pixels are trusted over a stuck position, with a warning."""
+    panel = Stuck(900, start=0.0)
+    result = run(panel)
+    assert result.image == panel.document
+    assert "reached the end" in result.warning
+
+
+def test_position_that_lags_the_pixels_is_waited_for() -> None:
+    """A provider that reports the new position late is not taken as the end."""
+    panel = Lagging(1400, start=0.0)
+    result = run(panel)
+    assert result.image == panel.document
+    assert result.warning == ""
+
+
+def test_position_that_moves_backwards_stops_with_a_warning() -> None:
+    """A position that goes backwards ends the capture with a warning."""
+    panel = Backwards(1400, start=0.0)
+    result = run(panel)
+    assert result.image is not None
+    assert "reached the end" in result.warning
+
+
+def test_pixel_limit_stops_early_with_a_note(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pixel limit stops early with a note."""
+    monkeypatch.setattr(scrolling, "MAX_PIXELS", WIDTH * VIEW)
+    result = run(Panel(3000))
+    assert result.frames == 2
+    assert "image size limit" in result.warning
+
+
+def test_estimated_seams_are_reported(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Estimated seams become a warning."""
+    real = scrolling.stitch
+    monkeypatch.setattr(
+        scrolling,
+        "stitch",
+        lambda frames: StitchResult(real(frames).image, 2),
+    )
+    result = run(Panel(700))
+    assert result.warning == "2 seam(s) were estimated; check the image."

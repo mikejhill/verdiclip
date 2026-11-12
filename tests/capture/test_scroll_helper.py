@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import logging
+import sys
+import threading
+from pathlib import Path
+
 import pytest
 from pytestqt.qtbot import QtBot
 
@@ -92,3 +97,43 @@ def test_shutdown_kills_and_reports_once(monkeypatch: pytest.MonkeyPatch) -> Non
     assert [r.message for r in results] == ["Scrolling capture cancelled"]
     with pytest.raises(RuntimeError):
         helper.start(Point(1, 1))
+
+
+def test_invalid_result_is_a_failure(
+    qtbot: QtBot, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A result missing fields is refused; the child's stderr is logged."""
+    with caplog.at_level(logging.INFO, logger=scroll_helper.__name__):
+        result = run(qtbot, monkeypatch, "invalid")
+    assert result.message == "Invalid scrolling result"
+    assert "diagnostic line" in caplog.text
+
+
+def test_oversized_image_is_refused(
+    qtbot: QtBot, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An image above the pixel limit is not loaded."""
+    monkeypatch.setattr(scroll_helper, "MAX_PIXELS", 100)
+    result = run(qtbot, monkeypatch, "success")
+    assert result.image is None
+    assert result.message == "Invalid scrolling image size"
+
+
+def test_missing_interpreter_reports_failure_to_start(
+    qtbot: QtBot, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A child that cannot start is reported, once."""
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "missing"))
+    result = run(qtbot, monkeypatch, "success")
+    assert result.message == "Could not start scrolling capture"
+
+
+def test_parent_watch_flags_cancel_and_reports_eof() -> None:
+    """``cancel`` sets the flag and the end of input calls ``on_eof``."""
+    cancelled = threading.Event()
+    ends: list[bool] = []
+    scroll_helper._watch_parent(
+        cancelled, iter(["noise\n", "cancel\n"]), lambda: ends.append(True)
+    )
+    assert cancelled.is_set()
+    assert ends == [True]

@@ -27,6 +27,7 @@ _POLL_SECONDS = 0.05
 _CHANGE_SECONDS = 0.6
 # Give up waiting for animation to stop after this long.
 _SETTLE_SECONDS = 1.5
+_UNSURE_END = "The panel may not have reached the end; check the bottom of the image."
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,6 +136,8 @@ class ScrollCapture:
         frames.append(Frame(image))
         position = target.position()
         pixels = 0
+        reading = position.percent  # The provider's last answer
+        assumed = False  # ``position`` is where we asked to go, not a reading
         while position.percent < END_PERCENT:
             self._check()
             if len(frames) >= MAX_FRAMES or self._clock() >= self._deadline:
@@ -142,22 +145,45 @@ class ScrollCapture:
                 return
             scale = position.pixels_per_percent(target.height)
             step = 10.0 if scale is None else STEP * target.height / scale
-            target.scroll_to(min(100.0, position.percent + max(step, 0.01)))
+            requested = min(100.0, position.percent + max(step, 0.01))
+            target.scroll_to(requested)
             following = self._settle(image)
             if following == image:
                 return  # The panel did not move: it is at the end.
-            moved = target.position()
-            distance = (
-                None if scale is None else (moved.percent - position.percent) * scale
-            )
+            moved = self._position_after(reading)
+            assumed, reading = moved.percent == reading, moved.percent
+            if assumed:
+                # Pixels moved but the reported position did not (yet). Trust
+                # the pixels; the stitcher aligns them without a distance.
+                moved, distance = ScrollPosition(requested, moved.view_size), None
+            else:
+                distance = (
+                    None
+                    if scale is None
+                    else (moved.percent - position.percent) * scale
+                )
             frames.append(Frame(following, distance))
             pixels += following.width() * following.height()
             if pixels >= MAX_PIXELS:
                 notes.append("Stopped early at the image size limit.")
                 return
-            if moved.percent <= position.percent:
+            if moved.percent < position.percent:
+                notes.append(_UNSURE_END)
                 return
             image, position = following, moved
+        if assumed and self._position_after(-1.0).percent < END_PERCENT:
+            notes.append(_UNSURE_END)
+
+    def _position_after(self, previous: float) -> ScrollPosition:
+        """Read the position, giving a lagging provider time to report a change."""
+        started = self._clock()
+        position = self._target.position()
+        while (
+            position.percent == previous and self._clock() - started < _CHANGE_SECONDS
+        ):
+            self._sleep(_POLL_SECONDS)
+            position = self._target.position()
+        return position
 
     def _settle(self, previous: QImage | None) -> QImage:
         """Wait for a visible change (if any), then for two identical grabs."""

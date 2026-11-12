@@ -22,6 +22,10 @@ def main() -> None:
     if mode == "garbage":
         sys.stdout.write("not json\n")
         return
+    if mode == "invalid":
+        sys.stderr.write("diagnostic line\n")
+        sys.stdout.write(json.dumps({"success": True}) + "\n")
+        return
     if mode == "wait-cancel":
         sys.stdin.readline()
     image = QImage(10, 30, QImage.Format.Format_RGB32)

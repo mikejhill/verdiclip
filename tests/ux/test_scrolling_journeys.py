@@ -168,3 +168,55 @@ def test_shutdown_kills_a_running_helper(make_app: AppFactory, qtbot: QtBot) -> 
     app.controller._scrolling.shutdown()
     assert isinstance(helper.shutdown, Mock)
     helper.shutdown.assert_called_once()
+
+
+def test_repeat_request_while_choosing_changes_nothing(
+    make_app: AppFactory, qtbot: QtBot
+) -> None:
+    """A second chooser request while one is open is ignored."""
+    app = make_app()
+    prepare(app)
+    service = app.controller._scrolling
+    service.capture()
+    qtbot.waitUntil(lambda: bool(service.overlays))
+    shown = service.overlays
+    service.capture()
+    assert service.overlays == shown
+    service.cancel()
+    assert not service.busy
+    service.cancel()  # Nothing left to cancel
+
+
+def test_shutdown_while_choosing_closes_the_chooser(
+    make_app: AppFactory, qtbot: QtBot
+) -> None:
+    """Shutdown before a point is chosen closes the chooser."""
+    app = make_app()
+    prepare(app)
+    service = app.controller._scrolling
+    service.capture()
+    qtbot.waitUntil(lambda: bool(service.overlays))
+    service.shutdown()
+    assert not service.busy
+    assert not service.overlays
+
+
+def test_window_list_failure_is_reported(
+    make_app: AppFactory, qtbot: QtBot, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failure while opening the chooser is reported, not raised."""
+    app = make_app()
+    prepare(app)
+    service = app.controller._scrolling
+    failures: list[str] = []
+    service.failed.connect(failures.append)
+
+    class Broken:
+        def visible_windows(self) -> list[object]:
+            raise OSError("no windows")
+
+    monkeypatch.setattr(service, "_windows", Broken())
+    service.capture()
+    qtbot.waitUntil(lambda: not service.busy)
+    assert failures == ["no windows"]
+    assert not service.overlays
