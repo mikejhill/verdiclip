@@ -13,6 +13,7 @@ from typing import cast
 
 from verdiclip import VERSION
 from verdiclip.automation.protocol import DEFAULT_MAX_SIDE
+from verdiclip.automation.skills import AGENTS, SkillScope, parse_agents
 from verdiclip.document.annotations import JsonObject, JsonValue
 from verdiclip.geometry import Rect
 
@@ -102,6 +103,7 @@ class CommandLine:
             "undo": self._travel_params,
             "redo": self._travel_params,
             "select": self._select_params,
+            "install-skill": self._skill_params,
         }
         if method in builders:
             params |= builders[method](args)
@@ -144,6 +146,19 @@ class CommandLine:
             params["steps"] = int(args.steps)
         if args.to is not None:
             params["to"] = int(args.to)
+        return params
+
+    def _skill_params(self, args: argparse.Namespace) -> JsonObject:
+        """Return the parameters of ``ctl install-skill``."""
+        try:
+            agents = parse_agents(str(args.agent))
+        except ValueError as err:
+            self._parser.error(f"--agent: {err}")
+        if args.dir is not None and len(agents) != 1:
+            self._parser.error("--dir installs for one agent at a time")
+        params: JsonObject = {"agents": list(agents), "scope": str(args.scope)}
+        if args.dir is not None:
+            params["dir"] = str(Path(args.dir).resolve())
         return params
 
     @staticmethod
@@ -366,3 +381,22 @@ class CommandLine:
             help="Select annotations by id (no ids clears the selection).",
         )
         select.add_argument("ids", nargs="*", help="Annotation ids.")
+        skill = methods.add_parser(
+            "install-skill",
+            parents=[shared],
+            help="Install the VerdiClip skill for AI coding agents (no app needed).",
+        )
+        skill.add_argument(
+            "--agent",
+            required=True,
+            help=f"Comma-separated agents: {', '.join(AGENTS)}.",
+        )
+        skill.add_argument(
+            "--scope",
+            choices=[s.value for s in SkillScope],
+            default=SkillScope.USER.value,
+            help="user: every project (default); project: the current folder.",
+        )
+        skill.add_argument(
+            "--dir", help="Skills folder to use instead of the agent's own."
+        )
