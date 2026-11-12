@@ -11,6 +11,7 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
+from PySide6.QtWidgets import QApplication
 from tests.capture.desktop import DesktopSession
 
 from verdiclip.capture import scroll_helper
@@ -21,6 +22,16 @@ from verdiclip.geometry import Point, Rect
 pytestmark = pytest.mark.skipif(
     sys.platform != "win32", reason="UI Automation requires Windows"
 )
+
+
+@pytest.fixture(autouse=True)
+def qt_on_main_thread(qapp: QApplication) -> QApplication:
+    """Create the application first: Qt set up from a worker thread breaks focus.
+
+    Without it, a PNG saved by ``in_thread`` work initializes Qt off the main
+    thread and later Qt tests in the same process lose window activation.
+    """
+    return qapp
 
 
 class Fixture:
