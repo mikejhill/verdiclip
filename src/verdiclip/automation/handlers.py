@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Protocol
 
 from verdiclip import VERSION
+from verdiclip.automation.editing import EditPlanner
 from verdiclip.automation.preview import (
     PreviewFolder,
     PreviewOptions,
@@ -23,7 +24,9 @@ from verdiclip.automation.protocol import (
     Request,
 )
 from verdiclip.document.codec import AnnotationCodec
+from verdiclip.document.history import History, HistoryStep
 from verdiclip.editor.page import DocumentRecord
+from verdiclip.editor.session import ToolId
 from verdiclip.geometry import Rect
 
 ACTIVE = "active"
@@ -64,7 +67,7 @@ class DocumentHost(Protocol):
 
 
 class AutomationHandlers:
-    """Dispatch requests by method name to read-only document queries."""
+    """Dispatch requests by method name to document queries and edits."""
 
     def __init__(
         self,
@@ -82,6 +85,11 @@ class AutomationHandlers:
             "list": self.list_documents,
             "get": self.get,
             "render": self.render,
+            "apply": self.apply,
+            "history": self.history,
+            "undo": self.undo,
+            "redo": self.redo,
+            "select": self.select,
         }
 
     def __call__(self, request: Request) -> JsonObject:
@@ -184,7 +192,107 @@ class AutomationHandlers:
             "state": state,
         }
 
+    def apply(self, params: JsonObject) -> JsonObject:
+        """Run a batch of edit operations as one undo step labelled "AI: …"."""
+        record = self._settled(self._resolve(params))
+        session = record.session
+        self._expect_state(session.history, params)
+        planner = EditPlanner(lambda kind: session.styles.get(ToolId(kind.value)))
+        plan = planner.plan(session.document, params.get("ops"), params.get("label"))
+        session.history.execute(plan.batch)
+        if _boolean(params, "select"):
+            session.selection.set(plan.added)
+        return {
+            "id": record.identifier,
+            "state": session.history.state_id,
+            "label": plan.batch.description,
+            "added": list(plan.added),
+            "annotations": len(session.document.annotations),
+        }
+
+    def history(self, params: JsonObject) -> JsonObject:
+        """List the steps undo and redo would take, with their states."""
+        record = self._resolve(params)
+        history = record.session.history
+        return {
+            "id": record.identifier,
+            "state": history.state_id,
+            "initial_state": history.initial_state,
+            "undo": [_step(s) for s in history.undo_steps],
+            "redo": [_step(s) for s in history.redo_steps],
+        }
+
+    def undo(self, params: JsonObject) -> JsonObject:
+        """Undo steps by count or back to a state; ``only_ai`` protects user work."""
+        return self._travel(params, backward=True)
+
+    def redo(self, params: JsonObject) -> JsonObject:
+        """Redo steps by count or forward to a state."""
+        return self._travel(params, backward=False)
+
+    def select(self, params: JsonObject) -> JsonObject:
+        """Select annotations by id (an empty list clears the selection)."""
+        record = self._settled(self._resolve(params))
+        session = record.session
+        ids = params.get("ids")
+        if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+            msg = "ids must be an array of annotation ids"
+            raise AutomationError(ErrorCode.BAD_REQUEST, msg)
+        wanted = [str(i) for i in dict.fromkeys(ids)]
+        missing = [i for i in wanted if session.document.find(i) is None]
+        if missing:
+            msg = f"No annotation has id {missing[0]!r}"
+            raise AutomationError(ErrorCode.NOT_FOUND, msg)
+        session.selection.set(wanted)
+        return {"id": record.identifier, "selected": list(session.selection.ids)}
+
     # Helpers
+
+    def _travel(self, params: JsonObject, *, backward: bool) -> JsonObject:
+        """Move through history; validate the whole move before taking a step."""
+        record = self._settled(self._resolve(params))
+        history = record.session.history
+        self._expect_state(history, params)
+        available = history.undo_steps[::-1] if backward else history.redo_steps
+        verb = "undo" if backward else "redo"
+        count = _steps_to(params, available, history, verb, backward=backward)
+        steps = available[:count]
+        if _boolean(params, "only_ai"):
+            for step in steps:
+                if not step.automated:
+                    msg = (
+                        f"Refusing to {verb} {step.label!r}: the user made it, "
+                        "and only_ai is set"
+                    )
+                    raise AutomationError(ErrorCode.CONFLICT, msg)
+        move = history.undo if backward else history.redo
+        for _ in steps:
+            move()
+        return {
+            "id": record.identifier,
+            "state": history.state_id,
+            "undone" if backward else "redone": [s.label for s in steps],
+        }
+
+    @staticmethod
+    def _expect_state(history: History, params: JsonObject) -> None:
+        """Refuse to act when the document changed since the caller looked.
+
+        Raises:
+            AutomationError: If ``expect_state`` is given and differs.
+        """
+        expected = params.get("expect_state")
+        if expected is None:
+            return
+        if isinstance(expected, bool) or not isinstance(expected, int):
+            msg = f"expect_state must be an integer, got {expected!r}"
+            raise AutomationError(ErrorCode.BAD_REQUEST, msg)
+        if expected != history.state_id:
+            msg = (
+                f"The image changed (state {history.state_id}, expected "
+                f"{expected}); read it again before editing"
+            )
+            raise AutomationError(ErrorCode.CONFLICT, msg)
 
     def _summary(self, record: DocumentRecord) -> JsonObject:
         """Describe ``record`` briefly."""
@@ -202,17 +310,17 @@ class AutomationHandlers:
         }
 
     def _settled(self, record: DocumentRecord) -> DocumentRecord:
-        """Refuse to report a document whose newest text is still being typed.
+        """Refuse to read or edit a document the user is in the middle of editing.
 
         Raises:
-            AutomationError: If the user is typing into ``record``.
+            AutomationError: If the user is typing or dragging in ``record``.
         """
         for window in self._host.windows:
             for page in window.pages:
                 if page.record is record and page.editing:
                     msg = (
-                        "The user is typing into this image; its text isn't in "
-                        "the document yet. Try again shortly."
+                        "The user is typing or dragging in this image; their "
+                        "change isn't in the document yet. Try again shortly."
                     )
                     raise AutomationError(ErrorCode.BUSY, msg)
         return record
@@ -249,6 +357,48 @@ class AutomationHandlers:
                 return record
         msg = f"No open document has id {wanted!r}; run `verdiclip ctl list`"
         raise AutomationError(ErrorCode.NOT_FOUND, msg)
+
+
+def _step(step: HistoryStep) -> JsonObject:
+    """Describe one history step."""
+    return {"label": step.label, "state": step.state, "ai": step.automated}
+
+
+def _steps_to(
+    params: JsonObject,
+    available: Sequence[HistoryStep],
+    history: History,
+    verb: str,
+    *,
+    backward: bool,
+) -> int:
+    """Return how many of ``available`` steps reach ``steps`` or state ``to``."""
+    target = params.get("to")
+    if target is not None and params.get("steps") is not None:
+        msg = "Give steps or to, not both"
+        raise AutomationError(ErrorCode.BAD_REQUEST, msg)
+    if target is None:
+        count = _integer(params, "steps", 1)
+        if count < 1:
+            msg = f"steps must be at least 1, got {count}"
+            raise AutomationError(ErrorCode.BAD_REQUEST, msg)
+        if count > len(available):
+            msg = f"Only {len(available)} step(s) to {verb}"
+            raise AutomationError(ErrorCode.CONFLICT, msg)
+        return count
+    if isinstance(target, bool) or not isinstance(target, int):
+        msg = f"to must be a state number, got {target!r}"
+        raise AutomationError(ErrorCode.BAD_REQUEST, msg)
+    if target == history.state_id:
+        return 0
+    # Undoing step i lands on the state before it; redoing lands on its own
+    landing = [s.state for s in available]
+    if backward:
+        landing = [*landing[1:], history.initial_state]
+    if target not in landing:
+        msg = f"State {target} can't be reached by {verb}; see `verdiclip ctl history`"
+        raise AutomationError(ErrorCode.NOT_FOUND, msg)
+    return landing.index(target) + 1
 
 
 def _integer(params: JsonObject, key: str, default: int) -> int:

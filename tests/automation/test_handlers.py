@@ -121,7 +121,10 @@ def test_status(handlers: AutomationHandlers) -> None:
 
 def test_unknown_method(handlers: AutomationHandlers) -> None:
     """Unknown methods list the supported ones."""
-    with pytest.raises(AutomationError, match="get, list, render, status") as caught:
+    with pytest.raises(
+        AutomationError,
+        match="apply, get, history, list, redo, render, select, status, undo",
+    ) as caught:
         call(handlers, "paint")
 
     assert caught.value.code is ErrorCode.BAD_REQUEST
@@ -349,3 +352,417 @@ def test_typing_user_makes_reads_busy(
 def listed_of(result: JsonObject) -> list[JsonValue]:
     """Return the documents array of a list result."""
     return listed(result["documents"])
+
+
+BOX: JsonObject = {"kind": "rectangle", "rect": [10, 20, 30, 40]}
+
+
+def annotations_of(record: DocumentRecord) -> list[str]:
+    """Return the kinds of ``record``'s annotations, bottom to top."""
+    return [a.kind.value for a in record.session.document.annotations]
+
+
+def test_apply_is_one_ai_undo_step(
+    handlers: AutomationHandlers, records: list[DocumentRecord]
+) -> None:
+    """Every operation lands in one undo step labelled for the AI."""
+    history = records[1].session.history
+
+    result = call(
+        handlers,
+        "apply",
+        ops=[
+            {"op": "add", "annotation": BOX},
+            {"op": "add", "annotation": {"kind": "counter", "center": [5, 5]}},
+            {"op": "add", "annotation": {"kind": "counter", "center": [9, 9]}},
+        ],
+        select=True,
+    )
+
+    added = listed(result["added"])
+    labels = [
+        a.label  # ty: ignore[unresolved-attribute]
+        for a in records[1].session.document.annotations[1:]
+    ]
+    assert result["state"] == history.state_id == 1
+    assert result["label"] == history.undo_text == "AI: add rectangle, add counter x2"
+    assert result["annotations"] == 3
+    assert list(records[1].session.selection.ids) == added
+    assert labels == ["1", "2"]
+    history.undo()
+    assert annotations_of(records[1]) == []
+
+
+def test_apply_ops_see_earlier_ops(
+    handlers: AutomationHandlers, records: list[DocumentRecord]
+) -> None:
+    """Later operations address ids and coordinates produced by earlier ones."""
+    red = {"stroke": "#ff0000"}
+    result = call(
+        handlers,
+        "apply",
+        doc=records[0].identifier,
+        label="  Mark   the\\nbug ",
+        ops=[
+            {"op": "add", "annotation": BOX | {"id": "box", "style": red}},
+            {
+                "op": "add",
+                "annotation": {"kind": "arrow", "start": [0, 0], "end": [9, 9]},
+            },
+            {
+                "op": "update",
+                "id": "box",
+                "set": {"text": "here", "style": {"width": 5}},
+            },
+            {"op": "restack", "ids": ["box"], "to": "top"},
+            {"op": "crop", "rect": [0, 0, 200, 100]},
+            {"op": "rotate", "direction": "right"},
+            {"op": "flip", "axis": "vertical"},
+            {"op": "resize", "width": 50, "height": 100},
+        ],
+    )
+
+    document = records[0].session.document
+    box = document.find("box")
+    assert result["label"] == "AI: Mark the\\nbug"
+    assert annotations_of(records[0]) == ["arrow", "rectangle"]
+    assert box is not None
+    assert box.style.stroke.hex == "#ff0000"
+    assert box.style.width > 0
+    assert box.text == "here"  # ty: ignore[unresolved-attribute]
+    assert (document.image_rect.width, document.image_rect.height) == (50, 100)
+    call(
+        handlers,
+        "apply",
+        doc=records[0].identifier,
+        ops=[
+            {"op": "restack", "ids": ["box"], "to": "bottom"},
+            {"op": "delete", "ids": ["box", "box"]},
+        ],
+    )
+    assert annotations_of(records[0]) == ["arrow"]
+
+
+def test_rotate_left_and_flip_horizontal(
+    handlers: AutomationHandlers, records: list[DocumentRecord]
+) -> None:
+    """The other rotate and flip directions are accepted."""
+    call(
+        handlers,
+        "apply",
+        ops=[
+            {"op": "rotate", "direction": "left"},
+            {"op": "flip", "axis": "horizontal"},
+        ],
+    )
+
+    rect = records[1].session.document.image_rect
+    assert (rect.width, rect.height) == (300, 400)
+
+
+def test_failed_apply_changes_nothing(
+    handlers: AutomationHandlers, records: list[DocumentRecord]
+) -> None:
+    """A bad operation anywhere rejects the whole batch."""
+    with pytest.raises(AutomationError, match="Operation 2") as caught:
+        call(
+            handlers,
+            "apply",
+            ops=[{"op": "add", "annotation": BOX}, {"op": "delete", "ids": ["nope"]}],
+        )
+
+    assert caught.value.code is ErrorCode.NOT_FOUND
+    assert annotations_of(records[1]) == []
+    assert records[1].session.history.state_id == 0
+
+
+def test_long_labels_are_shortened(handlers: AutomationHandlers) -> None:
+    """Undo labels stay short enough for the Edit menu."""
+    result = call(
+        handlers, "apply", ops=[{"op": "add", "annotation": BOX}], label="x" * 80
+    )
+
+    label = str(result["label"])
+    assert len(label) == 60
+    assert label.endswith("…")
+
+
+@pytest.mark.parametrize(
+    ("ops", "code", "match"),
+    [
+        ([], ErrorCode.BAD_REQUEST, "non-empty array"),
+        ("add", ErrorCode.BAD_REQUEST, "non-empty array"),
+        (["add"], ErrorCode.BAD_REQUEST, "must be an object"),
+        ([{"op": "paint"}], ErrorCode.BAD_REQUEST, "op must be one of"),
+        ([{"op": 3}], ErrorCode.BAD_REQUEST, "op must be one of"),
+        ([{"op": "add"}], ErrorCode.BAD_REQUEST, "annotation must be an object"),
+        (
+            [{"op": "add", "annotation": {"kind": "blob"}}],
+            ErrorCode.BAD_REQUEST,
+            "kind",
+        ),
+        ([{"op": "add", "annotation": BOX | {"id": ""}}], ErrorCode.BAD_REQUEST, "id"),
+        (
+            [{"op": "add", "annotation": {"kind": "rectangle"}}],
+            ErrorCode.BAD_REQUEST,
+            "rect",
+        ),
+        (
+            [{"op": "add", "annotation": BOX | {"id": "a"}}] * 2,
+            ErrorCode.CONFLICT,
+            "already in use",
+        ),
+        (
+            [{"op": "update", "id": "x", "set": {}}],
+            ErrorCode.NOT_FOUND,
+            "no annotation",
+        ),
+        ([{"op": "update", "id": 4, "set": {}}], ErrorCode.BAD_REQUEST, "id must"),
+        ([{"op": "delete", "ids": []}], ErrorCode.BAD_REQUEST, "ids must"),
+        ([{"op": "restack", "ids": "a"}], ErrorCode.BAD_REQUEST, "ids must"),
+        ([{"op": "delete", "ids": [["a"]]}], ErrorCode.BAD_REQUEST, "ids must"),
+        ([{"op": "crop", "rect": [0, 0, 0, 5]}], ErrorCode.BAD_REQUEST, "positive"),
+        ([{"op": "crop", "rect": [0, 0, True, 5]}], ErrorCode.BAD_REQUEST, "rect must"),
+        ([{"op": "crop", "rect": [900, 900, 5, 5]}], ErrorCode.BAD_REQUEST, "overlap"),
+        ([{"op": "rotate", "direction": "up"}], ErrorCode.BAD_REQUEST, "direction"),
+        ([{"op": "flip", "axis": "diagonal"}], ErrorCode.BAD_REQUEST, "axis"),
+        ([{"op": "resize", "width": 5.5, "height": 5}], ErrorCode.BAD_REQUEST, "width"),
+        ([{"op": "resize", "width": 5, "height": 0}], ErrorCode.BAD_REQUEST, "Size"),
+    ],
+)
+def test_apply_rejects_bad_operations(
+    handlers: AutomationHandlers, ops: JsonValue, code: ErrorCode, match: str
+) -> None:
+    """Malformed or inapplicable operations are reported with their number."""
+    with pytest.raises(AutomationError, match=match) as caught:
+        call(handlers, "apply", ops=ops)
+
+    assert caught.value.code is code
+
+
+@pytest.mark.parametrize(
+    ("change", "match"),
+    [
+        ({"id": "other"}, "may not change id"),
+        ({"kind": "ellipse"}, "may not change kind"),
+        ({"rect": "wide"}, "rect"),
+    ],
+)
+def test_update_rejects_identity_changes_and_bad_fields(
+    handlers: AutomationHandlers, change: JsonObject, match: str
+) -> None:
+    """Updates keep an annotation's id and kind and must still decode."""
+    call(handlers, "apply", ops=[{"op": "add", "annotation": BOX | {"id": "b"}}])
+
+    with pytest.raises(AutomationError, match=match):
+        call(handlers, "apply", ops=[{"op": "update", "id": "b", "set": change}])
+
+
+def test_update_needs_a_set_object(handlers: AutomationHandlers) -> None:
+    """An update without ``set`` is a usage error."""
+    call(handlers, "apply", ops=[{"op": "add", "annotation": BOX | {"id": "b"}}])
+
+    with pytest.raises(AutomationError, match="set must be an object"):
+        call(handlers, "apply", ops=[{"op": "update", "id": "b"}])
+
+
+@pytest.mark.parametrize(
+    ("to", "match"), [("middle", "'top' or 'bottom'"), (None, "'top' or 'bottom'")]
+)
+def test_restack_needs_a_direction(
+    handlers: AutomationHandlers, to: object, match: str
+) -> None:
+    """Restack moves to the top or the bottom only."""
+    call(handlers, "apply", ops=[{"op": "add", "annotation": BOX | {"id": "b"}}])
+
+    with pytest.raises(AutomationError, match=match):
+        call(handlers, "apply", ops=[{"op": "restack", "ids": ["b"], "to": to}])
+
+
+@pytest.mark.parametrize("label", ["", "   ", 5])
+def test_apply_rejects_bad_labels(handlers: AutomationHandlers, label: object) -> None:
+    """A label, when given, must have text."""
+    with pytest.raises(AutomationError, match="label"):
+        call(handlers, "apply", ops=[{"op": "add", "annotation": BOX}], label=label)
+
+
+@pytest.mark.parametrize(
+    ("expected", "code"),
+    [
+        (5, ErrorCode.CONFLICT),
+        ("0", ErrorCode.BAD_REQUEST),
+        (True, ErrorCode.BAD_REQUEST),
+    ],
+)
+def test_expect_state_guards_edits(
+    handlers: AutomationHandlers, expected: object, code: ErrorCode
+) -> None:
+    """Edits made against a stale read are refused."""
+    with pytest.raises(AutomationError) as caught:
+        call(
+            handlers,
+            "apply",
+            ops=[{"op": "add", "annotation": BOX}],
+            expect_state=expected,
+        )
+
+    assert caught.value.code is code
+
+
+def test_expect_state_matching_proceeds(handlers: AutomationHandlers) -> None:
+    """The current state passes the guard."""
+    assert call(
+        handlers, "apply", ops=[{"op": "add", "annotation": BOX}], expect_state=0
+    )
+
+
+def user_step(record: DocumentRecord) -> None:
+    """Make an edit the way the user would."""
+    box = RectangleShape(rect=Rect(1, 1, 5, 5), style=RED)
+    record.session.history.execute(AddAnnotations([box], "Rectangle"))
+
+
+def ai_step(handlers: AutomationHandlers, label: str) -> None:
+    """Make an edit through automation."""
+    call(handlers, "apply", ops=[{"op": "add", "annotation": BOX}], label=label)
+
+
+@pytest.fixture
+def mixed(
+    handlers: AutomationHandlers, records: list[DocumentRecord]
+) -> DocumentRecord:
+    """The active document after a user step and two AI steps (states 1-3)."""
+    user_step(records[1])
+    ai_step(handlers, "one")
+    ai_step(handlers, "two")
+    return records[1]
+
+
+def test_history_lists_steps_with_their_origin(
+    handlers: AutomationHandlers, mixed: DocumentRecord
+) -> None:
+    """History shows undo steps oldest first and redo steps next first."""
+    mixed.session.history.undo()
+
+    result = call(handlers, "history")
+
+    assert result == {
+        "id": mixed.identifier,
+        "state": 2,
+        "initial_state": 0,
+        "undo": [
+            {"label": "Rectangle", "state": 1, "ai": False},
+            {"label": "AI: one", "state": 2, "ai": True},
+        ],
+        "redo": [{"label": "AI: two", "state": 3, "ai": True}],
+    }
+
+
+@pytest.mark.usefixtures("mixed")
+def test_undo_and_redo_by_steps(handlers: AutomationHandlers) -> None:
+    """Steps count from the current position."""
+    undone = call(handlers, "undo", steps=2, only_ai=True)
+    redone = call(handlers, "redo")
+
+    assert (undone["state"], undone["undone"]) == (1, ["AI: two", "AI: one"])
+    assert (redone["state"], redone["redone"]) == (2, ["AI: one"])
+
+
+def test_undo_and_redo_to_a_state(
+    handlers: AutomationHandlers, mixed: DocumentRecord
+) -> None:
+    """``to`` names the state to land on, including the initial one."""
+    assert call(handlers, "undo", to=0)["undone"] == ["AI: two", "AI: one", "Rectangle"]
+    assert call(handlers, "redo", to=2)["state"] == 2
+    assert call(handlers, "redo", to=2)["redone"] == []
+    assert mixed.session.history.state_id == 2
+
+
+def test_only_ai_protects_the_users_steps(
+    handlers: AutomationHandlers, mixed: DocumentRecord
+) -> None:
+    """Nothing is undone when the range would include a user step."""
+    with pytest.raises(AutomationError, match="Rectangle") as caught:
+        call(handlers, "undo", steps=3, only_ai=True)
+
+    assert caught.value.code is ErrorCode.CONFLICT
+    assert mixed.session.history.state_id == 3
+
+
+@pytest.mark.parametrize(
+    ("method", "params", "code"),
+    [
+        ("undo", {"steps": 4}, ErrorCode.CONFLICT),
+        ("redo", {}, ErrorCode.CONFLICT),
+        ("undo", {"steps": 0}, ErrorCode.BAD_REQUEST),
+        ("undo", {"steps": 1, "to": 1}, ErrorCode.BAD_REQUEST),
+        ("undo", {"to": "1"}, ErrorCode.BAD_REQUEST),
+        ("undo", {"to": 99}, ErrorCode.NOT_FOUND),
+        ("redo", {"to": 1}, ErrorCode.NOT_FOUND),
+        ("undo", {"expect_state": 1}, ErrorCode.CONFLICT),
+    ],
+)
+def test_bad_history_moves(
+    handlers: AutomationHandlers,
+    mixed: DocumentRecord,
+    method: str,
+    params: JsonObject,
+    code: ErrorCode,
+) -> None:
+    """Impossible moves are refused before any step is taken."""
+    with pytest.raises(AutomationError) as caught:
+        call(handlers, method, **params)
+
+    assert caught.value.code is code
+    assert mixed.session.history.state_id == 3
+
+
+def test_select_sets_and_clears(
+    handlers: AutomationHandlers, mixed: DocumentRecord
+) -> None:
+    """Select replaces the selection; an empty list clears it."""
+    first, *_ = (a.id for a in mixed.session.document.annotations)
+
+    assert call(handlers, "select", ids=[first, first])["selected"] == [first]
+    assert call(handlers, "select", ids=[])["selected"] == []
+
+
+@pytest.mark.parametrize(
+    ("ids", "code"),
+    [
+        (["nope"], ErrorCode.NOT_FOUND),
+        ("a", ErrorCode.BAD_REQUEST),
+        ([3], ErrorCode.BAD_REQUEST),
+    ],
+)
+def test_select_rejects_bad_ids(
+    handlers: AutomationHandlers, ids: object, code: ErrorCode
+) -> None:
+    """Selection ids must name annotations in the document."""
+    with pytest.raises(AutomationError) as caught:
+        call(handlers, "select", ids=ids)
+
+    assert caught.value.code is code
+
+
+@pytest.mark.parametrize(
+    ("method", "params"),
+    [
+        ("apply", {"ops": [{"op": "add", "annotation": BOX}]}),
+        ("undo", {}),
+        ("redo", {}),
+        ("select", {"ids": []}),
+    ],
+)
+def test_edits_wait_for_the_user(
+    handlers: AutomationHandlers, host: Host, method: str, params: JsonObject
+) -> None:
+    """Nothing changes a document while the user is mid-edit in it."""
+    page = host.windows[0].pages[1]
+    assert isinstance(page, Page)
+    page.editing = True
+
+    with pytest.raises(AutomationError) as caught:
+        call(handlers, method, **params)
+
+    assert caught.value.code is ErrorCode.BUSY

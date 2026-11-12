@@ -9,6 +9,7 @@ from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
     QBrush,
     QColor,
+    QGuiApplication,
     QImage,
     QKeyEvent,
     QMouseEvent,
@@ -77,6 +78,7 @@ class CanvasView(QAbstractScrollArea):
         self._pixmap = QPixmap.fromImage(session.document.image)
         self._pixmap_key = session.document.image.cacheKey()
         self._pan_anchor: QPointF | None = None
+        self._gesture = False
         self._space_held = False
         self._editors = InlineEditors(self, session)
         self._backdrop = ChromeStyle(self.palette()).backdrop
@@ -120,6 +122,17 @@ class CanvasView(QAbstractScrollArea):
     def tool(self) -> Tool | None:
         """Return the active tool."""
         return self._tool
+
+    @property
+    def gesture_active(self) -> bool:
+        """True while a tool drag is under way (left button held).
+
+        The live button state guards against a release that never arrived
+        (e.g. a grab lost to another window), which would otherwise leave the
+        page busy for automation forever.
+        """
+        held = QGuiApplication.mouseButtons() & Qt.MouseButton.LeftButton
+        return self._gesture and bool(held)
 
     @property
     def editors(self) -> InlineEditors:
@@ -420,6 +433,7 @@ class CanvasView(QAbstractScrollArea):
         if button != Qt.MouseButton.LeftButton or self._tool is None:
             return
         self._editors.commit()
+        self._gesture = True
         self._tool.press(self._pointer(event))
         self.refresh()
 
@@ -455,6 +469,8 @@ class CanvasView(QAbstractScrollArea):
             self._pan_anchor = None
             self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
             return
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._gesture = False
         if event.button() == Qt.MouseButton.LeftButton and self._tool is not None:
             self._tool.release(self._pointer(event))
             self.refresh()

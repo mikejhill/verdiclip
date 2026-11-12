@@ -132,3 +132,18 @@ class TestRestore:
         """A null image would break painting."""
         with pytest.raises(ValueError, match="null"):
             document.restore(DocumentState(QImage(), Rect(0, 0, 1, 1), ()))
+
+
+def test_copy_is_independent(document: Document) -> None:
+    """A copy holds the same content and counter numbering, and changes alone."""
+    marker = CounterMarker(center=Point(5, 5), radius=8, label="4")
+    document.insert([(0, marker)])
+    document.set_crop(Rect(0, 0, 50, 50))
+
+    twin = document.copy()
+    twin.remove([marker.id])
+
+    assert document.annotations == (marker,)
+    assert twin.annotations == ()
+    assert twin.crop == document.crop
+    assert twin.next_counter_label == document.next_counter_label

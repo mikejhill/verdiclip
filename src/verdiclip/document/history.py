@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from verdiclip.document.commands import Command
 from verdiclip.document.document import Document
@@ -11,6 +12,15 @@ from verdiclip.document.document import Document
 logger = logging.getLogger(__name__)
 
 type HistoryListener = Callable[[], None]
+
+
+@dataclass(frozen=True, slots=True)
+class HistoryStep:
+    """One undoable change: its label, the state it leads to, and its origin."""
+
+    label: str
+    state: int
+    automated: bool
 
 
 class History:
@@ -56,6 +66,29 @@ class History:
     def redo_text(self) -> str:
         """Return the description of the command ``redo`` would apply."""
         return self._undone[-1].description if self._undone else ""
+
+    @property
+    def initial_state(self) -> int:
+        """Return the state before every step that can still be undone."""
+        return self._states[0]
+
+    @property
+    def undo_steps(self) -> tuple[HistoryStep, ...]:
+        """Return the steps ``undo`` can revert, oldest first."""
+        return tuple(
+            HistoryStep(c.description, s, automated=c.automated)
+            for c, s in zip(self._done, self._states[1:], strict=True)
+        )
+
+    @property
+    def redo_steps(self) -> tuple[HistoryStep, ...]:
+        """Return the steps ``redo`` can re-apply, next first."""
+        return tuple(
+            HistoryStep(c.description, s, automated=c.automated)
+            for c, s in zip(
+                reversed(self._undone), reversed(self._redo_states), strict=True
+            )
+        )
 
     @property
     def is_delivered(self) -> bool:

@@ -2097,3 +2097,64 @@ class TestAutomation:
         assert refused.error is not None
         assert refused.error.code is ErrorCode.DISABLED
         assert "Settings" in refused.error.message
+
+    def test_ai_edits_wait_for_the_user_and_undo_as_one_step(
+        self, make_app: AppFactory, tmp_path: Path
+    ) -> None:
+        """UX-TRY-14: an AI batch is one "AI: …" undo step, never mid-drag."""
+        app = make_app()
+        picture = tmp_path / "picture.png"
+        QImage(200, 150, QImage.Format.Format_RGB32).save(str(picture))
+        editor = app.controller.open_image(picture)
+        assert editor is not None
+        server = ControlServer(
+            AutomationHandlers(app.controller.workspace), name="unused"
+        )
+        box = {
+            "op": "add",
+            "annotation": {"kind": "rectangle", "rect": [10, 10, 50, 40]},
+        }
+        viewport = editor.canvas.viewport()
+        middle = QPoint(viewport.width() // 2, viewport.height() // 2)
+
+        QTest.mousePress(viewport, Qt.MouseButton.LeftButton, pos=middle)
+        during = self.ask(server, "apply", ops=[box], label="Box it")
+        QTest.mouseRelease(viewport, Qt.MouseButton.LeftButton, pos=middle)
+        applied = self.ask(server, "apply", ops=[box, box], label="Box it")
+        menu = editor.action("undo").text().replace("&", "")
+        undone = self.ask(server, "undo", only_ai=True)
+
+        assert during.error is not None
+        assert during.error.code is ErrorCode.BUSY
+        assert applied.result is not None
+        assert len(applied.result["added"]) == 2  # ty: ignore[invalid-argument-type]
+        assert menu == "Undo AI: Box it"
+        assert undone.result is not None
+        assert editor.session.document.annotations == ()
+
+    def test_a_lost_mouse_release_does_not_block_ai_edits(
+        self, make_app: AppFactory, tmp_path: Path
+    ) -> None:
+        """UX-TRY-14: a release the canvas missed does not leave the image busy."""
+        app = make_app()
+        picture = tmp_path / "picture.png"
+        QImage(200, 150, QImage.Format.Format_RGB32).save(str(picture))
+        editor = app.controller.open_image(picture)
+        assert editor is not None
+        server = ControlServer(
+            AutomationHandlers(app.controller.workspace), name="unused"
+        )
+        viewport = editor.canvas.viewport()
+        middle = QPoint(viewport.width() // 2, viewport.height() // 2)
+        elsewhere = QWidget()
+
+        QTest.mousePress(viewport, Qt.MouseButton.LeftButton, pos=middle)
+        QTest.mouseRelease(elsewhere, Qt.MouseButton.LeftButton, pos=QPoint(1, 1))
+        listed = self.ask(server, "list")
+
+        assert listed.result is not None
+        documents = listed.result["documents"]
+        assert isinstance(documents, list)
+        entry = documents[0]
+        assert isinstance(entry, dict)
+        assert entry["editing"] is False

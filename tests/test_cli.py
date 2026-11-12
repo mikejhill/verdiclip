@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import io
+import json
 from pathlib import Path
 
 import pytest
@@ -179,6 +181,66 @@ class TestCommandLine:
             "base": True,
         }
 
+    def test_ctl_apply_reads_ops_from_a_file_or_stdin(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Apply takes an ops array, or an object holding one, plus its options."""
+        ops = [{"op": "delete", "ids": ["a"]}]
+        path = tmp_path / "ops.json"
+        path.write_text(json.dumps({"ops": ops}), encoding="utf-8")
+        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(ops)))
+
+        from_file = CommandLine().parse(
+            ["ctl", "apply", "--ops", str(path), "--expect-state", "3"]
+        )
+        from_stdin = CommandLine().parse(
+            ["ctl", "apply", "--ops", "-", "--label", "Box it", "--select"]
+        )
+
+        assert from_file.params == {"ops": ops, "select": False, "expect_state": 3}
+        assert from_stdin.params == {"ops": ops, "select": True, "label": "Box it"}
+
+    def test_ctl_history_travel_and_select(self) -> None:
+        """History, undo, redo and select become control requests."""
+        parser = CommandLine()
+
+        history = parser.parse(["ctl", "history", "--doc", "d"])
+        undo = parser.parse(["ctl", "undo", "--steps", "2", "--only-ai"])
+        redo = parser.parse(["ctl", "redo", "--to", "7", "--expect-state", "4"])
+        select = parser.parse(["ctl", "select", "a", "b"])
+        clear = parser.parse(["ctl", "select"])
+
+        assert (history.method, history.params) == ("history", {"doc": "d"})
+        assert undo.params == {"only_ai": True, "steps": 2}
+        assert redo.params == {"only_ai": False, "to": 7, "expect_state": 4}
+        assert (select.params, clear.params) == ({"ids": ["a", "b"]}, {"ids": []})
+
+    @pytest.mark.parametrize(
+        ("content", "message"),
+        [
+            (None, "can't read JSON"),
+            ("{not json", "can't read JSON"),
+            ('{"op": "delete"}', "JSON array"),
+        ],
+        ids=["missing", "malformed", "not-array"],
+    )
+    def test_ctl_apply_rejects_bad_ops(
+        self,
+        tmp_path: Path,
+        content: str | None,
+        message: str,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Unreadable or non-array ops are usage errors."""
+        path = tmp_path / "ops.json"
+        if content is not None:
+            path.write_text(content, encoding="utf-8")
+
+        with pytest.raises(SystemExit, match="2"):
+            CommandLine().parse(["ctl", "apply", "--ops", str(path)])
+
+        assert message in capsys.readouterr().err
+
     @pytest.mark.parametrize(
         "args",
         [
@@ -188,8 +250,19 @@ class TestCommandLine:
             ["ctl", "render", "--grid", "-5"],
             ["ctl", "render", "--region", "1,2,3"],
             ["ctl", "status", "--doc", "x"],
+            ["ctl", "apply"],
+            ["ctl", "undo", "--steps", "1", "--to", "2"],
         ],
-        ids=["no-method", "unknown", "max-side", "grid", "region", "status-doc"],
+        ids=[
+            "no-method",
+            "unknown",
+            "max-side",
+            "grid",
+            "region",
+            "status-doc",
+            "apply-no-ops",
+            "steps-and-to",
+        ],
     )
     def test_ctl_invalid(
         self, args: list[str], capsys: pytest.CaptureFixture[str]
