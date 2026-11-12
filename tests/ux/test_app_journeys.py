@@ -67,7 +67,12 @@ from verdiclip.editor.window import EditorWindow
 from verdiclip.editor.workspace import Workspace
 from verdiclip.exceptions import UpdateError
 from verdiclip.geometry import Rect
-from verdiclip.platform.associations import DEFAULT_APPS_URI, FileAssociations
+from verdiclip.platform.associations import (
+    DEFAULT_APPS_URI,
+    EXTENSIONS,
+    PROG_ID,
+    FileAssociations,
+)
 from verdiclip.platform.hotkeys import Hotkey, HotkeyService
 from verdiclip.platform.launcher import LaunchCommand
 from verdiclip.platform.shortcuts import Shortcut, ShortcutRegistration
@@ -83,6 +88,11 @@ from verdiclip.settings import (
 )
 from verdiclip.shell import controller as controller_module
 from verdiclip.shell.controller import AppController, ShellIntegration
+from verdiclip.shell.default_app_dialog import (
+    ALL_DONE_TEXT,
+    DONE_TEXT,
+    PENDING_TEXT,
+)
 from verdiclip.shell.instance import SingleInstance
 from verdiclip.shell.settings_dialog import SettingsDialog
 from verdiclip.shell.tray import TrayIcon
@@ -768,22 +778,51 @@ class TestHotkeysAndSettings:
         assert app.associations.keys[command_key][""].endswith('open "%1"')
 
     def test_make_default_registers_and_opens_windows_settings(
-        self, make_app: AppFactory, monkeypatch: pytest.MonkeyPatch
+        self, make_app: AppFactory, monkeypatch: pytest.MonkeyPatch, qtbot: QtBot
     ) -> None:
-        """UX-TRY-07: "Make default" registers, saves, and opens Default apps."""
+        """UX-TRY-07: "Make default" registers, opens Settings, and guides."""
         opened: list[str] = []
         monkeypatch.setattr(
             QDesktopServices, "openUrl", lambda url: opened.append(url.toString())
         )
-        app = make_app()
+        app = make_app(Settings(integration=IntegrationSettings(start_menu=False)))
 
         app.controller.make_default_image_app()
+        guide = app.controller.default_app_dialog
         app.controller.make_default_image_app()
 
+        assert guide is not None
+        assert app.controller.default_app_dialog is guide
         assert opened == [DEFAULT_APPS_URI, DEFAULT_APPS_URI]
         assert QUrl(DEFAULT_APPS_URI).scheme() == "ms-settings"
-        assert app.store.load().integration.open_with is True
+        assert app.store.load().integration == IntegrationSettings(
+            open_with=True, start_menu=False
+        )
         assert app.associations.notified == 2
+        assert guide.state_text(".png") == PENDING_TEXT
+
+        guide.open_settings_button().click()
+        assert len(opened) == 3
+
+        guide.close()
+        qtbot.waitUntil(lambda: app.controller.default_app_dialog is None)
+
+    def test_default_app_guide_ticks_off_types_chosen_in_settings(
+        self, make_app: AppFactory, monkeypatch: pytest.MonkeyPatch, qtbot: QtBot
+    ) -> None:
+        """UX-TRY-07: the guide follows the choices the user makes in Settings."""
+        monkeypatch.setattr(QDesktopServices, "openUrl", lambda _url: True)
+        app = make_app()
+        app.controller.make_default_image_app()
+        guide = app.controller.default_app_dialog
+        assert guide is not None
+
+        app.associations.defaults = dict.fromkeys(EXTENSIONS, PROG_ID)
+
+        qtbot.waitUntil(lambda: guide.summary_text() == ALL_DONE_TEXT, timeout=3000)
+        assert guide.state_text(".jpg") == DONE_TEXT
+        guide.close()
+        qtbot.waitUntil(lambda: app.controller.default_app_dialog is None)
 
     def test_open_with_failure_is_reported(
         self, make_app: AppFactory, caplog: pytest.LogCaptureFixture
@@ -1651,6 +1690,56 @@ class TestUpdates:
         assert plan["target"] == "0.11.0"
         assert plan["steps"] == [["C:/uv/uv.exe", "tool", "upgrade", "verdiclip"]]
         assert plan["relaunch"] == LaunchCommand(PYTHONW, "-m verdiclip").command_line
+
+    @pytest.mark.parametrize("choice", ["Install now", "Later"])
+    def test_check_window_installs_or_defers(
+        self, make_app: AppFactory, updates: Updates, choice: str
+    ) -> None:
+        """The result window installs a found release, or leaves it (#124).
+
+        UX-TRY-11, UX-TRY-12.
+        """
+        app = make_app(updater=updates.updater)
+        app.controller.tray.action("update").trigger()
+        box = self.status()
+        assert box.windowTitle() == "Update available"
+        labels = [button.text() for button in box.buttons()]
+        assert sorted(labels) == ["Install now", "Later"]
+        assert box.defaultButton().text() == "Install now"
+        assert updates.spawns.calls == [], "Showing the offer must not install"
+
+        next(b for b in box.buttons() if b.text() == choice).click()
+
+        if choice == "Install now":
+            assert len(updates.spawns.calls) == 1
+            assert updates.quits == [True]
+        else:
+            assert updates.spawns.calls == []
+            assert updates.quits == []
+            assert not box.isVisible()
+            assert (
+                app.controller.tray.action("update").text()
+                == "Install VerdiClip 0.11.0…"
+            ), "Later keeps the release offered in the tray"
+
+    def test_check_window_reverts_to_ok_after_an_offer(
+        self, make_app: AppFactory, updates: Updates
+    ) -> None:
+        """A later status reuses the window without a stale Install button."""
+        app = make_app(updater=updates.updater)
+        app.controller.tray.action("update").trigger()
+        box = self.status()
+        next(b for b in box.buttons() if b.text() == "Later").click()
+        app.controller._show_update_status("Could not check for updates", "Offline")
+        box = self.status()
+        assert [b.text() for b in box.buttons()] == ["OK"]
+        assert not [
+            widget
+            for widget in QApplication.topLevelWidgets()
+            if widget.isVisible() and widget is not box
+        ], "Replaced buttons must not linger as stray windows"
+        box.buttons()[0].click()
+        assert updates.spawns.calls == []
 
     def test_install_entry_installs_a_found_release(
         self, make_app: AppFactory, updates: Updates, balloons: Balloons
