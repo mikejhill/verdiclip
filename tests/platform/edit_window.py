@@ -43,7 +43,7 @@ def main() -> None:
     )
     user.SendMessageW.argtypes = (w.HWND, w.UINT, w.WPARAM, w.LPARAM)
     frame = user.CreateWindowExW(
-        0,
+        0x00000008,  # WS_EX_TOPMOST: other windows must not cover the points
         "STATIC",
         "VerdiClip scroll fixture",
         _WS_OVERLAPPEDWINDOW | _WS_VISIBLE,

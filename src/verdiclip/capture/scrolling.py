@@ -19,7 +19,9 @@ from verdiclip.exceptions import CaptureError
 MAX_SECONDS = 45.0
 MAX_FRAMES = 100
 MAX_PIXELS = 60_000_000
-END_PERCENT = 99.9
+END_PERCENT = 100.0
+# Below this, a panel that stops moving may not be at its end.
+_STALL_PERCENT = 99.0
 # Advance this share of the viewport per step, keeping an overlap to match.
 STEP = 0.75
 _POLL_SECONDS = 0.05
@@ -145,6 +147,7 @@ class ScrollCapture:
         image, position, reading = self._top(start)
         frames.append(Frame(image))
         walk = _Walk(image, position, reading, target.height, assumed=reading > 0.0)
+        walk.pixels = image.width() * image.height()
         while walk.position.percent < END_PERCENT:
             self._check()
             if len(frames) >= MAX_FRAMES or self._clock() >= self._deadline:
@@ -162,10 +165,15 @@ class ScrollCapture:
         step = 10.0 if scale is None else STEP * walk.visible / scale
         requested = min(100.0, position.percent + max(step, 0.01))
         target.scroll_to(requested)
-        following = self._settle(walk.image)
+        # Position first: a provider that reports after repainting has then
+        # finished drawing, and settling still waits for slow pixels.
         moved = self._position_after(walk.reading)
+        following = self._settle(walk.image)
         if following == walk.image and moved.percent <= walk.reading:
-            return False  # Neither pixels nor position moved: the end.
+            # Neither pixels nor position moved: the end, if it says so.
+            if moved.percent < _STALL_PERCENT:
+                notes.append(_UNSURE_END)
+            return False
         walk.assumed, walk.reading = moved.percent == walk.reading, moved.percent
         distance = None
         if walk.assumed:
@@ -176,11 +184,12 @@ class ScrollCapture:
             distance = (moved.percent - position.percent) * scale
             if self._overshot(walk, following, distance):
                 return True
-        frames.append(Frame(following, distance))
-        walk.pixels += following.width() * following.height()
-        if walk.pixels >= MAX_PIXELS:
+        size = following.width() * following.height()
+        if walk.pixels + size > MAX_PIXELS:
             notes.append("Stopped early at the image size limit.")
             return False
+        frames.append(Frame(following, distance))
+        walk.pixels += size
         if moved.percent < position.percent:
             notes.append(_UNSURE_END)
             return False
@@ -194,8 +203,8 @@ class ScrollCapture:
             return False
         walk.visible = visible
         self._target.scroll_to(walk.position.percent)
-        walk.image = self._settle(following)
         walk.reading = self._position_after(walk.reading).percent
+        walk.image = self._settle(following)
         return True
 
     def _top(self, start: ScrollPosition) -> tuple[QImage, ScrollPosition, float]:
@@ -203,11 +212,12 @@ class ScrollCapture:
         target = self._target
         before = target.grab() if start.percent > 0.0 else None
         target.scroll_to(0.0)
-        image = self._settle(before)
         if start.percent <= 0.0:
+            image = self._settle(None)
             position = target.position()
             return image, position, position.percent
         position = self._position_after(start.percent)
+        image = self._settle(before)
         # A provider that has not caught up yet is still at the top.
         return image, ScrollPosition(0.0, position.view_size), position.percent
 

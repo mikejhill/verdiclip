@@ -262,9 +262,11 @@ def test_position_that_moves_backwards_stops_with_a_warning() -> None:
 
 def test_pixel_limit_stops_early_with_a_note(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pixel limit stops early with a note."""
-    monkeypatch.setattr(scrolling, "MAX_PIXELS", WIDTH * VIEW)
+    monkeypatch.setattr(scrolling, "MAX_PIXELS", WIDTH * VIEW * 5 // 2)
     result = run(Panel(3000))
     assert result.frames == 2
+    assert result.image is not None
+    assert result.image.width() * result.image.height() <= WIDTH * VIEW * 5 // 2
     assert "image size limit" in result.warning
 
 
@@ -409,4 +411,57 @@ def test_cancel_while_settling_is_seen_promptly() -> None:
 def test_render_slower_than_the_change_wait_is_still_awaited() -> None:
     """A panel that takes a second to repaint is not captured stale."""
     panel = Panel(900, lag=20)
+    assert run(panel).image == panel.document
+
+
+class Ignoring(Panel):
+    """Accepts the move to the top, then ignores every scroll request."""
+
+    @override
+    def scroll_to(self, percent: float) -> None:
+        """Only the first request and the restore take effect."""
+        if not self.writes or percent == self.start:
+            super().scroll_to(percent)
+        else:
+            self.writes.append(percent)
+
+
+def test_last_fraction_of_a_percent_is_captured() -> None:
+    """A position just short of 100% still requests the very bottom."""
+    panel = Panel(14760, start=0.0)
+    assert run(panel).image == panel.document
+
+
+def test_stalled_panel_is_flagged() -> None:
+    """A panel that stops moving well before its end gets a warning."""
+    result = run(Ignoring(900, start=0.0))
+    assert result.frames == 1
+    assert "reached the end" in result.warning
+
+
+class Repaints(Panel):
+    """Like Edge: a small overlay change first, the position only after the paint."""
+
+    @override
+    def position(self) -> ScrollPosition:
+        """Time passes while polling; report what is on screen."""
+        if self.pending:
+            self.pending -= 1
+        else:
+            self.shown = self.top
+        percent = 100.0 if self.range == 0 else self.shown * 100 / self.range
+        return ScrollPosition(percent, min(100.0, VIEW * 100 / self.content))
+
+    @override
+    def grab(self) -> QImage:
+        """While the paint is pending, the old page with one changed pixel."""
+        image = super().grab()
+        if self.pending:
+            image.setPixel(0, 0, 0x123456)
+        return image
+
+
+def test_small_change_before_the_paint_is_not_taken_as_the_top() -> None:
+    """The top frame waits for the provider, not for any changed pixel."""
+    panel = Repaints(1400, start=60.0, lag=6)
     assert run(panel).image == panel.document
