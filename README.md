@@ -136,11 +136,11 @@ verdiclip ctl list                          # Every open image, in every window 
 verdiclip ctl get --doc <id>                # Annotations, crop, selection, state
 verdiclip ctl render --grid 100 -o view.png # PNG of the current state, gridded in image pixels
 verdiclip ctl apply --ops edits.json        # Add, change, delete, crop, rotate: one undo step
-verdiclip ctl history                       # Undo and redo steps, AI ones marked
-verdiclip ctl undo --only-ai                # Undo the last AI step, never the user's
+verdiclip ctl history                       # Undo and redo steps, automated ones marked
+verdiclip ctl undo --only-automated                # Undo the last automated step, never the user's
 ```
 
-Each `apply` is one undo step named "AI: …" in the editor's Edit menu.
+Each `apply` is one undo step named "Automation: …" in the editor's Edit menu.
 
 Teach your AI coding agent to use it by installing the VerdiClip skill (no running app needed):
 

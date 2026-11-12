@@ -85,14 +85,14 @@ class TestHistory:
 
 
 def test_steps_report_labels_states_and_origin(document: Document) -> None:
-    """Undo steps run oldest first, redo steps next first, AI batches marked."""
+    """Undo steps run oldest first, redo steps next first, automated batches marked."""
     history = History(document)
     first = RectangleShape(rect=Rect(0, 0, 10, 10))
     second = RectangleShape(rect=Rect(5, 5, 10, 10))
     history.execute(AddAnnotations([first], "Draw"))
-    history.execute(Batch([AddAnnotations([second], "Add")], "AI: box"))
+    history.execute(Batch([AddAnnotations([second], "Add")], "Automation: box"))
     history.undo()
 
     assert history.initial_state == 0
     assert history.undo_steps == (HistoryStep("Draw", 1, automated=False),)
-    assert history.redo_steps == (HistoryStep("AI: box", 2, automated=True),)
+    assert history.redo_steps == (HistoryStep("Automation: box", 2, automated=True),)

@@ -366,7 +366,7 @@ def annotations_of(record: DocumentRecord) -> list[str]:
 def test_apply_is_one_ai_undo_step(
     handlers: AutomationHandlers, records: list[DocumentRecord]
 ) -> None:
-    """Every operation lands in one undo step labelled for the AI."""
+    """Every operation lands in one undo step labelled as automation."""
     history = records[1].session.history
 
     result = call(
@@ -386,7 +386,11 @@ def test_apply_is_one_ai_undo_step(
         for a in records[1].session.document.annotations[1:]
     ]
     assert result["state"] == history.state_id == 1
-    assert result["label"] == history.undo_text == "AI: add rectangle, add counter x2"
+    assert (
+        result["label"]
+        == history.undo_text
+        == "Automation: add rectangle, add counter x2"
+    )
     assert result["annotations"] == 3
     assert list(records[1].session.selection.ids) == added
     assert labels == ["1", "2"]
@@ -425,7 +429,7 @@ def test_apply_ops_see_earlier_ops(
 
     document = records[0].session.document
     box = document.find("box")
-    assert result["label"] == "AI: Mark the\\nbug"
+    assert result["label"] == "Automation: Mark the\\nbug"
     assert annotations_of(records[0]) == ["arrow", "rectangle"]
     assert box is not None
     assert box.style.stroke.hex == "#ff0000"
@@ -675,7 +679,7 @@ def user_step(record: DocumentRecord) -> None:
     record.session.history.execute(AddAnnotations([box], "Rectangle"))
 
 
-def ai_step(handlers: AutomationHandlers, label: str) -> None:
+def automated_step(handlers: AutomationHandlers, label: str) -> None:
     """Make an edit through automation."""
     call(handlers, "apply", ops=[{"op": "add", "annotation": BOX}], label=label)
 
@@ -684,10 +688,10 @@ def ai_step(handlers: AutomationHandlers, label: str) -> None:
 def mixed(
     handlers: AutomationHandlers, records: list[DocumentRecord]
 ) -> DocumentRecord:
-    """The active document after a user step and two AI steps (states 1-3)."""
+    """The active document after a user step and two automated steps (states 1-3)."""
     user_step(records[1])
-    ai_step(handlers, "one")
-    ai_step(handlers, "two")
+    automated_step(handlers, "one")
+    automated_step(handlers, "two")
     return records[1]
 
 
@@ -704,39 +708,46 @@ def test_history_lists_steps_with_their_origin(
         "state": 2,
         "initial_state": 0,
         "undo": [
-            {"label": "Rectangle", "state": 1, "ai": False},
-            {"label": "AI: one", "state": 2, "ai": True},
+            {"label": "Rectangle", "state": 1, "automated": False},
+            {"label": "Automation: one", "state": 2, "automated": True},
         ],
-        "redo": [{"label": "AI: two", "state": 3, "ai": True}],
+        "redo": [{"label": "Automation: two", "state": 3, "automated": True}],
     }
 
 
 @pytest.mark.usefixtures("mixed")
 def test_undo_and_redo_by_steps(handlers: AutomationHandlers) -> None:
     """Steps count from the current position."""
-    undone = call(handlers, "undo", steps=2, only_ai=True)
+    undone = call(handlers, "undo", steps=2, only_automated=True)
     redone = call(handlers, "redo")
 
-    assert (undone["state"], undone["undone"]) == (1, ["AI: two", "AI: one"])
-    assert (redone["state"], redone["redone"]) == (2, ["AI: one"])
+    assert (undone["state"], undone["undone"]) == (
+        1,
+        ["Automation: two", "Automation: one"],
+    )
+    assert (redone["state"], redone["redone"]) == (2, ["Automation: one"])
 
 
 def test_undo_and_redo_to_a_state(
     handlers: AutomationHandlers, mixed: DocumentRecord
 ) -> None:
     """``to`` names the state to land on, including the initial one."""
-    assert call(handlers, "undo", to=0)["undone"] == ["AI: two", "AI: one", "Rectangle"]
+    assert call(handlers, "undo", to=0)["undone"] == [
+        "Automation: two",
+        "Automation: one",
+        "Rectangle",
+    ]
     assert call(handlers, "redo", to=2)["state"] == 2
     assert call(handlers, "redo", to=2)["redone"] == []
     assert mixed.session.history.state_id == 2
 
 
-def test_only_ai_protects_the_users_steps(
+def test_only_automated_protects_the_users_steps(
     handlers: AutomationHandlers, mixed: DocumentRecord
 ) -> None:
     """Nothing is undone when the range would include a user step."""
     with pytest.raises(AutomationError, match="Rectangle") as caught:
-        call(handlers, "undo", steps=3, only_ai=True)
+        call(handlers, "undo", steps=3, only_automated=True)
 
     assert caught.value.code is ErrorCode.CONFLICT
     assert mixed.session.history.state_id == 3

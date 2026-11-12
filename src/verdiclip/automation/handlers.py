@@ -194,7 +194,7 @@ class AutomationHandlers:
         }
 
     def apply(self, params: JsonObject) -> JsonObject:
-        """Run a batch of edit operations as one undo step labelled "AI: …"."""
+        """Run a batch of edit operations as one undo step labelled "Automation: …"."""
         record = self._settled(self._resolve(params))
         session = record.session
         self._expect_state(session.history, params)
@@ -227,7 +227,7 @@ class AutomationHandlers:
         }
 
     def undo(self, params: JsonObject) -> JsonObject:
-        """Undo steps by count or back to a state; ``only_ai`` protects user work."""
+        """Undo by count or back to a state; ``only_automated`` protects user work."""
         return self._travel(params, backward=True)
 
     def redo(self, params: JsonObject) -> JsonObject:
@@ -261,12 +261,12 @@ class AutomationHandlers:
         verb = "undo" if backward else "redo"
         count = _steps_to(params, available, history, verb, backward=backward)
         steps = available[:count]
-        if _boolean(params, "only_ai"):
+        if _boolean(params, "only_automated"):
             for step in steps:
                 if not step.automated:
                     msg = (
                         f"Refusing to {verb} {step.label!r}: the user made it, "
-                        "and only_ai is set"
+                        "and only_automated is set"
                     )
                     raise AutomationError(ErrorCode.CONFLICT, msg)
         move = history.undo if backward else history.redo
@@ -365,7 +365,7 @@ class AutomationHandlers:
 
 def _step(step: HistoryStep) -> JsonObject:
     """Describe one history step."""
-    return {"label": step.label, "state": step.state, "ai": step.automated}
+    return {"label": step.label, "state": step.state, "automated": step.automated}
 
 
 def _steps_to(

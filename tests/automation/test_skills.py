@@ -24,7 +24,13 @@ def test_skill_describes_the_commands_it_needs() -> None:
     text = skill_text()
 
     assert text.startswith("---\nname: verdiclip\ndescription: ")
-    for command in ("ctl list", "ctl render", "ctl get", "ctl apply", "undo --only-ai"):
+    for command in (
+        "ctl list",
+        "ctl render",
+        "ctl get",
+        "ctl apply",
+        "undo --only-automated",
+    ):
         assert command in text
 
 

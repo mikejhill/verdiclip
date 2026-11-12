@@ -2102,7 +2102,7 @@ class TestAutomation:
     def test_ai_edits_wait_for_the_user_and_undo_as_one_step(
         self, make_app: AppFactory, tmp_path: Path
     ) -> None:
-        """UX-TRY-14: an AI batch is one "AI: …" undo step, never mid-drag."""
+        """UX-TRY-14: a batch is one "Automation: …" undo step, never mid-drag."""
         app = make_app()
         picture = tmp_path / "picture.png"
         QImage(200, 150, QImage.Format.Format_RGB32).save(str(picture))
@@ -2123,13 +2123,13 @@ class TestAutomation:
         QTest.mouseRelease(viewport, Qt.MouseButton.LeftButton, pos=middle)
         applied = self.ask(server, "apply", ops=[box, box], label="Box it")
         menu = editor.action("undo").text().replace("&", "")
-        undone = self.ask(server, "undo", only_ai=True)
+        undone = self.ask(server, "undo", only_automated=True)
 
         assert during.error is not None
         assert during.error.code is ErrorCode.BUSY
         assert applied.result is not None
         assert len(applied.result["added"]) == 2  # ty: ignore[invalid-argument-type]
-        assert menu == "Undo AI: Box it"
+        assert menu == "Undo Automation: Box it"
         assert undone.result is not None
         assert editor.session.document.annotations == ()
 
