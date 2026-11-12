@@ -13,7 +13,7 @@ from typing import Protocol
 
 from PySide6.QtGui import QImage
 
-from verdiclip.capture.stitch import Frame, stitch
+from verdiclip.capture.stitch import Frame, fixed_rows, stitch
 from verdiclip.exceptions import CaptureError
 
 MAX_SECONDS = 45.0
@@ -75,6 +75,18 @@ class ScrollResult:
     warning: str = ""
 
 
+@dataclass(slots=True)
+class _Walk:
+    """Progress of one top-to-bottom pass."""
+
+    image: QImage
+    position: ScrollPosition
+    reading: float  # The provider's last answer
+    visible: int  # Rows a step may advance from: the viewport minus fixed bands
+    assumed: bool = False  # ``position`` is where we asked to go, not a reading
+    pixels: int = 0
+
+
 class CancelledError(CaptureError):
     """The user pressed Esc."""
 
@@ -132,48 +144,59 @@ class ScrollCapture:
             return
         image, position, reading = self._top(start)
         frames.append(Frame(image))
-        assumed = reading > 0.0  # ``position`` is where we asked to go
-        pixels = 0
-        while position.percent < END_PERCENT:
+        walk = _Walk(image, position, reading, target.height, assumed=reading > 0.0)
+        while walk.position.percent < END_PERCENT:
             self._check()
             if len(frames) >= MAX_FRAMES or self._clock() >= self._deadline:
                 notes.append("Stopped early at the capture limit.")
                 return
-            scale = position.pixels_per_percent(target.height)
-            step = 10.0 if scale is None else STEP * target.height / scale
-            requested = min(100.0, position.percent + max(step, 0.01))
-            target.scroll_to(requested)
-            following = self._settle(image)
-            if following == image:
-                # Same pixels: the end, unless the position moved through a
-                # blank or repeating stretch.
-                moved = target.position()
-                if moved.percent <= reading:
-                    return
-            else:
-                moved = self._position_after(reading)
-            assumed, reading = moved.percent == reading, moved.percent
-            if assumed:
-                # Pixels moved but the reported position did not (yet). Trust
-                # the pixels; the stitcher aligns them without a distance.
-                moved, distance = ScrollPosition(requested, moved.view_size), None
-            else:
-                distance = (
-                    None
-                    if scale is None
-                    else (moved.percent - position.percent) * scale
-                )
-            frames.append(Frame(following, distance))
-            pixels += following.width() * following.height()
-            if pixels >= MAX_PIXELS:
-                notes.append("Stopped early at the image size limit.")
+            if not self._advance(walk, frames, notes):
                 return
-            if moved.percent < position.percent:
-                notes.append(_UNSURE_END)
-                return
-            image, position = following, moved
-        if assumed and self._position_after(-1.0).percent < END_PERCENT:
+        if walk.assumed and self._position_after(-1.0).percent < END_PERCENT:
             notes.append(_UNSURE_END)
+
+    def _advance(self, walk: _Walk, frames: list[Frame], notes: list[str]) -> bool:
+        """Take one step and keep its frame; False when the capture is over."""
+        target, position = self._target, walk.position
+        scale = position.pixels_per_percent(target.height)
+        step = 10.0 if scale is None else STEP * walk.visible / scale
+        requested = min(100.0, position.percent + max(step, 0.01))
+        target.scroll_to(requested)
+        following = self._settle(walk.image)
+        moved = self._position_after(walk.reading)
+        if following == walk.image and moved.percent <= walk.reading:
+            return False  # Neither pixels nor position moved: the end.
+        walk.assumed, walk.reading = moved.percent == walk.reading, moved.percent
+        distance = None
+        if walk.assumed:
+            # Pixels moved but the reported position did not (yet). Trust the
+            # pixels; the stitcher aligns them without a distance.
+            moved = ScrollPosition(requested, moved.view_size)
+        elif scale is not None:
+            distance = (moved.percent - position.percent) * scale
+            if self._overshot(walk, following, distance):
+                return True
+        frames.append(Frame(following, distance))
+        walk.pixels += following.width() * following.height()
+        if walk.pixels >= MAX_PIXELS:
+            notes.append("Stopped early at the image size limit.")
+            return False
+        if moved.percent < position.percent:
+            notes.append(_UNSURE_END)
+            return False
+        walk.image, walk.position = following, moved
+        return True
+
+    def _overshot(self, walk: _Walk, following: QImage, distance: float) -> bool:
+        """Step back when fixed bands hid more than the overlap a step leaves."""
+        visible = self._target.height - fixed_rows(walk.image, following)
+        if visible >= walk.visible or distance <= STEP * visible + 1:
+            return False
+        walk.visible = visible
+        self._target.scroll_to(walk.position.percent)
+        walk.image = self._settle(following)
+        walk.reading = self._position_after(walk.reading).percent
+        return True
 
     def _top(self, start: ScrollPosition) -> tuple[QImage, ScrollPosition, float]:
         """Scroll to the top; return its image, position and the provider's answer."""

@@ -7,11 +7,11 @@ from typing import override
 
 import pytest
 from PySide6.QtGui import QImage
-from tests.capture.test_stitch import VIEW, WIDTH, page
+from tests.capture.test_stitch import VIEW, WIDTH, expected, page, view
 
 from verdiclip.capture import scrolling
 from verdiclip.capture.scrolling import ScrollCapture, ScrollPosition
-from verdiclip.capture.stitch import StitchResult
+from verdiclip.capture.stitch import StitchResult, find_offset
 from verdiclip.exceptions import CaptureError
 
 
@@ -329,3 +329,55 @@ def test_lagging_position_after_the_move_to_the_top_is_waited_for() -> None:
         panel = Lagging(1400, start=start)
         result = run(panel)
         assert result.image == panel.document
+
+
+class Banded(Panel):
+    """Fixed header and footer bands that cover more than a quarter of the view."""
+
+    header = 40
+    footer = 30
+
+    @property
+    @override
+    def range(self) -> int:
+        """Scroll range in rows: the content minus the visible body."""
+        return max(0, self.content - (VIEW - self.header - self.footer))
+
+    @override
+    def position(self) -> ScrollPosition:
+        """View size over the whole page, bands included."""
+        total = self.content + self.header + self.footer
+        percent = 100.0 if self.range == 0 else self.top * 100 / self.range
+        return ScrollPosition(percent, VIEW * 100 / total)
+
+    @override
+    def grab(self) -> QImage:
+        """The body between the two bands."""
+        super().grab()
+        return view(self.document, self.shown, header=self.header, footer=self.footer)
+
+
+class LaggingBlank(Lagging, Blank):
+    """A blank stretch read through a provider that answers late."""
+
+
+def test_tall_fixed_bands_do_not_hide_content() -> None:
+    """Steps shrink when fixed bands leave too little overlap."""
+    panel = Banded(700, start=0.0)
+    result = run(panel)
+    assert result.image == expected(panel.document, header=40, footer=30)
+
+
+def test_blank_stretch_with_a_lagging_position_reaches_the_end() -> None:
+    """A late position answer during a blank stretch is waited for."""
+    panel = LaggingBlank(1200, start=0.0)
+    result = run(panel)
+    assert result.image is not None
+    assert result.image.height() == panel.content
+
+
+def test_overlay_in_some_frames_does_not_reject_a_good_join() -> None:
+    """A band that appears in only some frames still allows pixel alignment."""
+    previous = list(range(200))
+    following = [*range(5000, 5060), *range(150, 290)]  # 60 overlay rows
+    assert find_offset(previous, following, 90.0) == 90

@@ -17,6 +17,10 @@ from PySide6.QtGui import QImage, QPainter
 
 # Fraction of comparable rows an offset must explain to be trusted.
 MIN_SCORE = 0.6
+# Fraction of all informative overlap rows it must explain. Lower than
+# MIN_SCORE, so an overlay that appears in only some frames (a sticky header)
+# does not reject a good join, while a few coincidences still do.
+MIN_COVERAGE = 0.3
 # A row seen more often than this in one frame (blank space, repeated lines)
 # says little about alignment and is left out of the vote.
 _MAX_REPEATS = 8
@@ -80,18 +84,24 @@ def _band(frames: list[list[bytes]], *, top: bool) -> int:
     return size
 
 
+def fixed_rows(first: QImage, second: QImage) -> int:
+    """Rows of header and footer that stayed put between two same-size frames."""
+    rows = [_rows(first), _rows(second)]
+    return _band(rows, top=True) + _band(rows, top=False)
+
+
 def _keys(rows: list[bytes], left: int, right: int) -> list[int]:
     return [hash(row[left * 4 : right * 4]) for row in rows]
 
 
 def _votes(
     previous: Sequence[int], following: Sequence[int]
-) -> tuple[Counter[int], list[int]]:
-    """Count offsets supported by matching rows, and informative-row prefix sums.
+) -> tuple[Counter[int], list[int], list[int]]:
+    """Count offsets supported by matching rows, with two prefix sums.
 
-    A row of ``following`` is informative unless it repeats too often in its
-    own frame, whether or not it matches anything: rows that disagree must
-    count against an offset, or a few coincidences would look certain.
+    ``known`` counts rows of ``following`` that also appear in ``previous``;
+    ``informative`` counts every row that does not repeat too often in its own
+    frame, so rows that match nothing still weigh against a few coincidences.
     """
     counts = Counter(previous)
     positions: dict[int, list[int]] = defaultdict(list)
@@ -99,9 +109,12 @@ def _votes(
         if counts[key] <= _MAX_REPEATS:
             positions[key].append(index)
     own = Counter(following)
-    prefix: list[int] = [0]
+    known: list[int] = [0]
+    informative: list[int] = [0]
     for key in following:
-        prefix.append(prefix[-1] + int(own[key] <= _MAX_REPEATS))
+        useful = own[key] <= _MAX_REPEATS
+        known.append(known[-1] + int(useful and key in positions))
+        informative.append(informative[-1] + int(useful))
     votes: Counter[int] = Counter()
     for index, key in enumerate(following):
         if own[key] > _MAX_REPEATS:
@@ -109,7 +122,7 @@ def _votes(
         for match in positions.get(key, ()):
             if match > index:
                 votes[match - index] += 1
-    return votes, prefix
+    return votes, known, informative
 
 
 def find_offset(
@@ -121,11 +134,15 @@ def find_offset(
     ``j`` of ``following`` shows row ``j + d`` of ``previous``.
     """
     height = len(previous)
-    votes, prefix = _votes(previous, following)
+    votes, known, informative = _votes(previous, following)
     best: tuple[float, float, int] | None = None
     for offset, count in votes.items():
-        comparable = prefix[height - offset]
-        if count < _MIN_VOTES or comparable == 0:
+        comparable = known[height - offset]
+        if (
+            count < _MIN_VOTES
+            or comparable == 0
+            or count < MIN_COVERAGE * informative[height - offset]
+        ):
             continue
         distance = abs(offset - expected) if expected is not None else 0.0
         candidate = (count / comparable, -distance, offset)
