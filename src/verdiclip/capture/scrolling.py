@@ -218,6 +218,7 @@ class ScrollCapture:
         while (
             position.percent == previous and self._clock() - started < _CHANGE_SECONDS
         ):
+            self._check()  # Esc must reach the restore before the kill
             self._sleep(_POLL_SECONDS)
             position = self._target.position()
         return position
@@ -231,9 +232,11 @@ class ScrollCapture:
             and current == previous
             and self._clock() - started < _CHANGE_SECONDS
         ):
+            self._check()  # Esc must reach the restore before the kill
             self._sleep(_POLL_SECONDS)
             current = self._target.grab()
         while self._clock() - started < _SETTLE_SECONDS:
+            self._check()  # Esc must reach the restore before the kill
             self._sleep(_POLL_SECONDS)
             following = self._target.grab()
             if following == current:

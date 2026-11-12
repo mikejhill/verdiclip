@@ -166,3 +166,11 @@ def test_sparse_coincidences_do_not_override_the_provider() -> None:
     previous = list(range(200))
     following = [150, 151, 152, 153, *range(1000, 1196)]
     assert find_offset(previous, following, 50.0) is None
+
+
+def test_a_few_coincidences_do_not_beat_a_supported_offset() -> None:
+    """Four rows matching far away lose to 146 rows matching the provider."""
+    previous = list(range(200))
+    following = list(range(50, 250))
+    following[:4] = range(196, 200)
+    assert find_offset(previous, following, 50.0) == 50

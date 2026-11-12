@@ -381,3 +381,26 @@ def test_overlay_in_some_frames_does_not_reject_a_good_join() -> None:
     previous = list(range(200))
     following = [*range(5000, 5060), *range(150, 290)]  # 60 overlay rows
     assert find_offset(previous, following, 90.0) == 90
+
+
+class Animated(Panel):
+    """Never settles: every grab differs."""
+
+    @override
+    def grab(self) -> QImage:
+        """A fresh image each time."""
+        image = super().grab()
+        image.setPixel(0, 0, self.grabs)
+        return image
+
+
+def test_cancel_while_settling_is_seen_promptly() -> None:
+    """Esc during a long settle reaches the restore well inside the grace period."""
+    panel = Animated(900)
+    clock = Clock()
+    result = ScrollCapture(
+        panel, lambda: panel.grabs >= 3, clock=clock, sleep=clock.sleep
+    ).run()
+    assert result.message == "Scrolling capture cancelled"
+    assert clock.now < 0.5
+    assert panel.writes[-1] == pytest.approx(40.0)

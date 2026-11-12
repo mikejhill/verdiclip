@@ -135,22 +135,30 @@ def find_offset(
     """
     height = len(previous)
     votes, known, informative = _votes(previous, following)
-    best: tuple[float, float, int] | None = None
+    trusted: list[tuple[int, float, int]] = []  # (votes, score, offset)
     for offset, count in votes.items():
         comparable = known[height - offset]
         if (
             count < _MIN_VOTES
             or comparable == 0
             or count < MIN_COVERAGE * informative[height - offset]
+            or count / comparable < MIN_SCORE
         ):
             continue
-        distance = abs(offset - expected) if expected is not None else 0.0
-        candidate = (count / comparable, -distance, offset)
-        if best is None or candidate > best:
-            best = candidate
-    if best is None or best[0] < MIN_SCORE:
+        trusted.append((count, count / comparable, offset))
+    if not trusted:
         return None
-    return best[2]
+    # A handful of coincidences must not beat a well-supported offset, but
+    # comparably supported ones (repeating content) go to the provider's.
+    strongest = max(count for count, _, _ in trusted)
+    finalists = [t for t in trusted if 2 * t[0] >= strongest]
+
+    def rank(candidate: tuple[int, float, int]) -> tuple[float, float, int]:
+        count, score, offset = candidate
+        distance = abs(offset - expected) if expected is not None else 0.0
+        return (-distance, score, count)
+
+    return max(finalists, key=rank)[2]
 
 
 def stitch(frames: Sequence[Frame]) -> StitchResult:
