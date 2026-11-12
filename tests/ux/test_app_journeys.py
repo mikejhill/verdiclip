@@ -2131,3 +2131,30 @@ class TestAutomation:
         assert menu == "Undo AI: Box it"
         assert undone.result is not None
         assert editor.session.document.annotations == ()
+
+    def test_a_lost_mouse_release_does_not_block_ai_edits(
+        self, make_app: AppFactory, tmp_path: Path
+    ) -> None:
+        """UX-TRY-14: a release the canvas missed does not leave the image busy."""
+        app = make_app()
+        picture = tmp_path / "picture.png"
+        QImage(200, 150, QImage.Format.Format_RGB32).save(str(picture))
+        editor = app.controller.open_image(picture)
+        assert editor is not None
+        server = ControlServer(
+            AutomationHandlers(app.controller.workspace), name="unused"
+        )
+        viewport = editor.canvas.viewport()
+        middle = QPoint(viewport.width() // 2, viewport.height() // 2)
+        elsewhere = QWidget()
+
+        QTest.mousePress(viewport, Qt.MouseButton.LeftButton, pos=middle)
+        QTest.mouseRelease(elsewhere, Qt.MouseButton.LeftButton, pos=QPoint(1, 1))
+        listed = self.ask(server, "list")
+
+        assert listed.result is not None
+        documents = listed.result["documents"]
+        assert isinstance(documents, list)
+        entry = documents[0]
+        assert isinstance(entry, dict)
+        assert entry["editing"] is False

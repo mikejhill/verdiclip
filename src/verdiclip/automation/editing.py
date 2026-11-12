@@ -279,10 +279,14 @@ def _existing(trial: Document, ident: JsonValue) -> Annotation:
 def _ids(trial: Document, operation: JsonObject) -> list[str]:
     """Return the existing annotation ids listed in ``operation["ids"]``."""
     value = operation.get("ids")
-    if not isinstance(value, list) or not value:
+    if (
+        not isinstance(value, list)
+        or not value
+        or not all(isinstance(i, str) for i in value)
+    ):
         msg = "ids must be a non-empty array of annotation ids"
         raise AutomationError(ErrorCode.BAD_REQUEST, msg)
-    return [_existing(trial, i).id for i in dict.fromkeys(value)]
+    return [_existing(trial, str(i)).id for i in dict.fromkeys(value)]
 
 
 def _rect(value: JsonValue) -> Rect:

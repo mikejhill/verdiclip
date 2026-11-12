@@ -9,6 +9,7 @@ from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
     QBrush,
     QColor,
+    QGuiApplication,
     QImage,
     QKeyEvent,
     QMouseEvent,
@@ -124,8 +125,14 @@ class CanvasView(QAbstractScrollArea):
 
     @property
     def gesture_active(self) -> bool:
-        """True while a tool drag is under way (left button held)."""
-        return self._gesture
+        """True while a tool drag is under way (left button held).
+
+        The live button state guards against a release that never arrived
+        (e.g. a grab lost to another window), which would otherwise leave the
+        page busy for automation forever.
+        """
+        held = QGuiApplication.mouseButtons() & Qt.MouseButton.LeftButton
+        return self._gesture and bool(held)
 
     @property
     def editors(self) -> InlineEditors:

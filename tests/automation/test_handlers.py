@@ -520,6 +520,7 @@ def test_long_labels_are_shortened(handlers: AutomationHandlers) -> None:
         ([{"op": "update", "id": 4, "set": {}}], ErrorCode.BAD_REQUEST, "id must"),
         ([{"op": "delete", "ids": []}], ErrorCode.BAD_REQUEST, "ids must"),
         ([{"op": "restack", "ids": "a"}], ErrorCode.BAD_REQUEST, "ids must"),
+        ([{"op": "delete", "ids": [["a"]]}], ErrorCode.BAD_REQUEST, "ids must"),
         ([{"op": "crop", "rect": [0, 0, 0, 5]}], ErrorCode.BAD_REQUEST, "positive"),
         ([{"op": "crop", "rect": [0, 0, True, 5]}], ErrorCode.BAD_REQUEST, "rect must"),
         ([{"op": "crop", "rect": [900, 900, 5, 5]}], ErrorCode.BAD_REQUEST, "overlap"),
