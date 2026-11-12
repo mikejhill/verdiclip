@@ -123,7 +123,8 @@ class SettingsDialog(QDialog):
         self._open_with = QCheckBox("Show VerdiClip in “Open with” for image files")
         self._make_default = QPushButton("Make VerdiClip the default image app…")
         self._automation = QCheckBox(
-            "Let AI tools and scripts on this PC read open images (verdiclip ctl)"
+            "Let AI tools and scripts on this PC read and edit open images "
+            "(verdiclip ctl)"
         )
         self._check_updates = QCheckBox("Check for updates automatically")
         self._install_updates = QCheckBox(

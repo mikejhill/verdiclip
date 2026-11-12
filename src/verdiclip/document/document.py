@@ -84,6 +84,13 @@ class Document:
         """Return the image, crop, and annotations together."""
         return DocumentState(self._image, self._crop, tuple(self._annotations))
 
+    def copy(self) -> Document:
+        """Return an independent document with the same content (for trial edits)."""
+        twin = Document(self._image)
+        twin.restore(self.state)
+        twin._last_counter_label = self._last_counter_label
+        return twin
+
     def find(self, annotation_id: str) -> Annotation | None:
         """Return the annotation with ``annotation_id`` if present."""
         return next((a for a in self._annotations if a.id == annotation_id), None)

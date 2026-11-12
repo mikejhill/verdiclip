@@ -53,12 +53,39 @@ configures no logging.
 - Exit codes: 0 ok, 1 failed, 2 bad usage, 3 not running or turned off,
   4 conflict, 5 not found, 6 busy.
 
+## Commands (phase 2a: editing)
+
+| Command | Result |
+| --- | --- |
+| `ctl apply [--doc ID] --ops FILE\|- [--label TEXT] [--select] [--expect-state N]` | Runs the operations as one undo step "AI: …"; returns state, label, added ids |
+| `ctl history [--doc ID]` | `undo` steps oldest first, `redo` steps next first: label, state, `ai` |
+| `ctl undo\|redo [--doc ID] [--steps N \| --to STATE] [--only-ai] [--expect-state N]` | Moves through history; validates the whole move first |
+| `ctl select [--doc ID] [IDS...]` | Sets the selection; no ids clears it |
+
+Operations (`--ops` holds the array, or `{"ops": [...]}`), applied in order to a
+copy of the document; the real one changes only when all succeed:
+
+| Operation | Fields |
+| --- | --- |
+| `add` | `annotation`: `kind` plus geometry as `get` prints it; `id`, `style` fields and a counter's `label`/`radius` are optional |
+| `update` | `id`, `set`: fields to change; `style` fields merge one by one; `id` and `kind` can't change |
+| `delete` | `ids` |
+| `restack` | `ids`, `to`: `top` or `bottom` (relative order kept) |
+| `crop` | `rect`: `[x, y, w, h]` in image pixels |
+| `rotate` | `direction`: `right` or `left` |
+| `flip` | `axis`: `horizontal` or `vertical` |
+| `resize` | `width`, `height`: the visible area's new size |
+
+- Later operations see earlier ones: ids added earlier can be updated, and
+  coordinates after a `rotate` or `resize` are in the new image.
+- Edits answer `busy` while the user types or drags in the image, and
+  `conflict` when `--expect-state` no longer matches.
+- `history` marks each step `ai: true` when automation made it; `--only-ai`
+  refuses to undo or redo past a step the user made.
+
 ## Later phases
 
-1. **Edit** — `apply` batches (add, update, delete, restack, crop, rotate, flip,
-   resize) as one undo step labelled "AI: …", `--expect-state` conflict checks,
-   `history`, `undo`/`redo` with `--steps`, `--to` and `--only-ai`, `select`, and the
-   skill with `ctl install-skill --agent claude,codex,agents,copilot [--scope user|project] [--dir PATH]`
+1. **Skill** — `ctl install-skill --agent claude,codex,agents,copilot [--scope user|project] [--dir PATH]`
    (an agent is required; scope defaults to user).
 2. **Extras** — `open`, `save`, `copy`, `set_image`.
 

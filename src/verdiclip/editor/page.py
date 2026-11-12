@@ -76,8 +76,12 @@ class DocumentPage(QWidget):
 
     @property
     def editing(self) -> bool:
-        """True while text typed in an inline editor is not yet in the document."""
-        return self.canvas.editors.is_open
+        """True while the user is mid-edit: typing inline text or dragging.
+
+        Typed text isn't in the document until committed, and a drag commits
+        its change on release, so automation must wait for either to finish.
+        """
+        return self.canvas.editors.is_open or self.canvas.gesture_active
 
     def present(self) -> None:
         """Fit a new page only once, preserving zoom on subsequent moves."""
