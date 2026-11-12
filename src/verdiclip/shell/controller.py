@@ -47,7 +47,6 @@ from verdiclip.platform.shortcuts import Shortcut, ShortcutRegistration
 from verdiclip.platform.startup import StartupRegistration
 from verdiclip.settings import (
     CaptureDestination,
-    IntegrationSettings,
     Settings,
     SettingsStore,
 )
