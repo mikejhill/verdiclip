@@ -142,6 +142,16 @@ verdiclip ctl undo --only-ai                # Undo the last AI step, never the u
 
 Each `apply` is one undo step named "AI: …" in the editor's Edit menu.
 
+Teach your AI coding agent to use it by installing the VerdiClip skill (no running app needed):
+
+```bash
+verdiclip ctl install-skill --agent claude            # ~/.claude/skills/verdiclip/SKILL.md
+verdiclip ctl install-skill --agent codex,copilot     # several agents at once
+verdiclip ctl install-skill --agent agents --scope project   # .agents/skills in this folder
+```
+
+Agents: `claude`, `codex`, `agents` (the shared `.agents` folder), `copilot` (`~/.copilot/skills`, or `.github/skills` for a project). `--dir PATH` installs into any skills folder.
+
 Only programs running as your Windows user can connect. Turn it off in Settings → General. See [docs/design/automation.md](https://github.com/mikejhill/verdiclip/blob/main/docs/design/automation.md).
 
 ## How it is built

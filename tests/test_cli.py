@@ -215,6 +215,34 @@ class TestCommandLine:
         assert redo.params == {"only_ai": False, "to": 7, "expect_state": 4}
         assert (select.params, clear.params) == ({"ids": ["a", "b"]}, {"ids": []})
 
+    def test_ctl_install_skill(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Install-skill needs agents; scope defaults to user; --dir is absolute."""
+        monkeypatch.chdir(tmp_path)
+        parser = CommandLine()
+
+        user = parser.parse(["ctl", "install-skill", "--agent", "claude,codex"])
+        custom = parser.parse(
+            [
+                "ctl",
+                "install-skill",
+                "--agent",
+                "codex",
+                "--scope",
+                "project",
+                "--dir",
+                "s",
+            ]
+        )
+
+        assert user.params == {"agents": ["claude", "codex"], "scope": "user"}
+        assert custom.params == {
+            "agents": ["codex"],
+            "scope": "project",
+            "dir": str((tmp_path / "s").resolve()),
+        }
+
     @pytest.mark.parametrize(
         ("content", "message"),
         [
@@ -252,6 +280,9 @@ class TestCommandLine:
             ["ctl", "status", "--doc", "x"],
             ["ctl", "apply"],
             ["ctl", "undo", "--steps", "1", "--to", "2"],
+            ["ctl", "install-skill"],
+            ["ctl", "install-skill", "--agent", "gpt"],
+            ["ctl", "install-skill", "--agent", "claude,codex", "--dir", "x"],
         ],
         ids=[
             "no-method",
@@ -262,6 +293,9 @@ class TestCommandLine:
             "status-doc",
             "apply-no-ops",
             "steps-and-to",
+            "skill-no-agent",
+            "skill-unknown-agent",
+            "skill-dir-two-agents",
         ],
     )
     def test_ctl_invalid(

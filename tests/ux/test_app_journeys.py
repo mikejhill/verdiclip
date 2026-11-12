@@ -48,6 +48,7 @@ from tests.ux.test_capture_journeys import (
 )
 
 from verdiclip import APP_NAME, DOCS_URL, VERSION
+from verdiclip.__main__ import Application
 from verdiclip.automation.handlers import AutomationHandlers
 from verdiclip.automation.preview import PreviewFolder
 from verdiclip.automation.protocol import ErrorCode, Request, Response
@@ -2131,6 +2132,22 @@ class TestAutomation:
         assert menu == "Undo AI: Box it"
         assert undone.result is not None
         assert editor.session.document.annotations == ()
+
+    def test_skill_installs_for_the_chosen_agent_without_the_app(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """UX-TRY-15: install-skill writes the shipped skill and says where."""
+        code = Application().run(
+            ["ctl", "install-skill", "--agent", "codex", "--dir", str(tmp_path)]
+        )
+
+        printed = json.loads(capsys.readouterr().out)
+        target = tmp_path / "verdiclip" / "SKILL.md"
+        assert code == 0
+        assert printed["installed"] == [
+            {"agent": "codex", "path": str(target.resolve()), "replaced": False}
+        ]
+        assert "verdiclip ctl apply" in target.read_text(encoding="utf-8")
 
     def test_a_lost_mouse_release_does_not_block_ai_edits(
         self, make_app: AppFactory, tmp_path: Path

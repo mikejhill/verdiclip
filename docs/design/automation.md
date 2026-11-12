@@ -83,10 +83,28 @@ copy of the document; the real one changes only when all succeed:
 - `history` marks each step `ai: true` when automation made it; `--only-ai`
   refuses to undo or redo past a step the user made.
 
+## Skill (phase 2b)
+
+`src/verdiclip/automation/skill/SKILL.md` ships in the package and teaches an
+agent the workflow: list, render and look, get the state, apply with
+`--expect-state`, render again; plus history and the rules (never save or close,
+never undo the user's steps unasked).
+
+`ctl install-skill --agent LIST [--scope user|project] [--dir PATH]` copies it
+to `<skills folder>/verdiclip/SKILL.md`, replacing an older copy, without
+contacting the app. An agent is always required; scope defaults to user.
+
+| Agent | User scope | Project scope |
+| --- | --- | --- |
+| `claude` | `~/.claude/skills` | `.claude/skills` |
+| `codex` | `~/.codex/skills` | `.codex/skills` |
+| `agents` | `~/.agents/skills` | `.agents/skills` |
+| `copilot` | `~/.copilot/skills` | `.github/skills` |
+
+`--dir` replaces the agent's folder and takes one agent.
+
 ## Later phases
 
-1. **Skill** — `ctl install-skill --agent claude,codex,agents,copilot [--scope user|project] [--dir PATH]`
-   (an agent is required; scope defaults to user).
-2. **Extras** — `open`, `save`, `copy`, `set_image`.
+1. **Extras** — `open`, `save`, `copy`, `set_image`.
 
 An MCP server, if a client ever needs one, is a thin wrapper over the same pipe.
