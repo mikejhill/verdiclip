@@ -333,6 +333,48 @@ def test_lagging_position_after_the_move_to_the_top_is_waited_for() -> None:
         assert result.image == panel.document
 
 
+class Late(Panel):
+    """Ignores the first request to go to the top, like a busy app."""
+
+    @override
+    def scroll_to(self, percent: float) -> None:
+        """Drop the first request."""
+        if self.writes:
+            super().scroll_to(percent)
+        else:
+            self.writes.append(percent)
+
+
+def test_ignored_move_to_the_top_is_asked_again() -> None:
+    """The start view is not kept as the top frame."""
+    panel = Late(1400, start=100.0)
+    result = run(panel)
+    assert result.image == panel.document
+    assert panel.writes[:2] == [0.0, 0.0]
+
+
+class Spinning(Panel):
+    """A spinner in a few rows changes on every grab."""
+
+    @override
+    def grab(self) -> QImage:
+        """The view with a few rows that never settle."""
+        image = super().grab()
+        for y in range(4):
+            image.setPixel(0, y, self.grabs)
+        return image
+
+
+def test_spinner_does_not_hold_up_or_fake_a_move() -> None:
+    """Small animations neither count as the view moving nor stop it settling."""
+    panel = Spinning(900)
+    clock = Clock()
+    result = ScrollCapture(panel, lambda: False, clock=clock, sleep=clock.sleep).run()
+    assert result.image is not None
+    assert result.image.height() == panel.content
+    assert clock.now < 2.0
+
+
 class Banded(Panel):
     """Fixed header and footer bands that cover more than a quarter of the view."""
 

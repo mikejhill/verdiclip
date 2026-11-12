@@ -28,6 +28,10 @@ _MAX_REPEATS = 8
 _MIN_VOTES = 4
 # Header/footer bands never take more than this share of the viewport.
 _MAX_BAND = 1 / 3
+# A scrollbar strip is looked for within this many columns of the right edge.
+_MAX_STRIP = 40
+# Two frames sharing this share of their rows in place show the same view.
+_SAME_VIEW = 0.9
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +86,11 @@ def _band(frames: list[list[bytes]], *, top: bool) -> int:
             break
         size -= 1
     return size
+
+
+def changed_rows(first: QImage, second: QImage) -> int:
+    """Rows that differ between two same-size images."""
+    return sum(a != b for a, b in zip(_rows(first), _rows(second), strict=True))
 
 
 def fixed_rows(first: QImage, second: QImage) -> int:
@@ -161,6 +170,48 @@ def find_offset(
     return max(finalists, key=rank)[2]
 
 
+def _same_view(first: Sequence[int], second: Sequence[int]) -> bool:
+    """Whether two frames show the same view, apart from small animations.
+
+    Only informative rows count, so two mostly blank views are not the same.
+    """
+    counts = Counter(first)
+    pairs = [(a, b) for a, b in zip(first, second, strict=True) if counts[a] == 1]
+    same = sum(a == b for a, b in pairs)
+    return len(pairs) >= _MIN_VOTES and same >= _SAME_VIEW * len(pairs)
+
+
+def _strip(
+    rows: list[list[bytes]], seams: list[tuple[int, int]], top: int, body: int
+) -> int:
+    """Columns at the right edge that did not scroll with the content.
+
+    A scrollbar stays put while the page moves, so once two frames are aligned
+    its thumb disagrees with itself in rows whose content agrees. ``seams`` are
+    the aligned (frame index, offset) pairs; the answer is the strip's width.
+    """
+    width = len(rows[0][0]) // 4
+    window = min(_MAX_STRIP, width // 10)
+    if not window or not seams:
+        return 0
+    edge = (width - window) * 4
+    misses = [0] * window
+    for index, offset in seams:
+        previous, following = rows[index - 1], rows[index]
+        for y in range(top, top + body - offset):
+            old, new = previous[y + offset], following[y]
+            if old == new or old[:edge] != new[:edge]:
+                continue  # Agrees, or the content itself changed here
+            for x in range(window):
+                at = edge + x * 4
+                misses[x] += old[at : at + 4] != new[at : at + 4]
+    strongest = max(misses)
+    if strongest < _MIN_VOTES:
+        return 0
+    first = next(x for x, count in enumerate(misses) if 4 * count >= strongest)
+    return window - first
+
+
 def stitch(frames: Sequence[Frame]) -> StitchResult:
     """Join ``frames`` (all the same size) into one image."""
     if not frames:
@@ -175,19 +226,32 @@ def stitch(frames: Sequence[Frame]) -> StitchResult:
     body = height - header - footer
     margin = min(width // 10, 32)
     keys = [_keys(r[header : height - footer], margin, width - margin) for r in rows]
+    # A first frame taken before the panel reached the top shows a later view
+    # again; it joins nothing and would repeat that content above the page.
+    lead = int(
+        len(frames) > 1
+        and find_offset(keys[0], keys[1], None) is None
+        and any(_same_view(keys[0], later) for later in keys[1:])
+    )
 
     # (frame index, first body row to keep) for each frame after the first.
-    pieces: list[tuple[int, int]] = [(0, 0)]
+    pieces: list[tuple[int, int]] = [(lead, 0)]
+    seams: list[tuple[int, int]] = []  # (frame index, offset) aligned by pixels
     estimated = 0
-    for index in range(1, len(frames)):
+    for index in range(lead + 1, len(frames)):
         moved = frames[index].moved
         offset = find_offset(keys[index - 1], keys[index], moved)
         if offset is None:
             estimated += 1
             offset = body if moved is None else round(moved)
+        else:
+            seams.append((index, offset))
         offset = max(0, min(body, offset))
         if offset:
             pieces.append((index, body - offset))
+    # Leave out the scrollbar: each frame would show its thumb somewhere else.
+    width -= _strip(rows, seams, header, body)
+    first = frames[lead].image
 
     total = header + sum(body - start for _, start in pieces) + footer
     result = QImage(width, total, QImage.Format.Format_RGB32)

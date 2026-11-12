@@ -174,3 +174,52 @@ def test_a_few_coincidences_do_not_beat_a_supported_offset() -> None:
     following = list(range(50, 250))
     following[:4] = range(196, 200)
     assert find_offset(previous, following, 50.0) == 50
+
+
+def test_scrollbar_strip_is_left_out() -> None:
+    """A thumb that moves between frames does not appear in several places."""
+    document = page(600)
+    result = stitch(frames(document, 120, thumb=True))
+    whole = expected(document)
+    assert result.image == whole.copy(0, 0, WIDTH - 6, whole.height())
+
+
+def test_changed_content_does_not_widen_the_strip() -> None:
+    """Rows whose content changed between frames say nothing about the strip."""
+    document = page(600)
+    shots = frames(document, 120, thumb=True)
+    image = shots[1].image
+    for y in range(40, 60):
+        for x in range(WIDTH):
+            image.setPixel(x, y, 0x101010 + x)
+    result = stitch(shots)
+    assert result.image.width() == WIDTH - 6
+
+
+def test_stale_first_frame_is_dropped() -> None:
+    """A first frame still showing the end of the page is not put above the top."""
+    document = page(700)
+    shots = frames(document, 150)
+    stale = shots[-1].image.copy()
+    for y in range(VIEW - 12, VIEW - 4):  # A spinner moved meanwhile
+        for x in range(WIDTH):
+            stale.setPixel(x, y, 0x0F0F0F)
+    result = stitch([Frame(stale), Frame(shots[0].image), *shots[1:]])
+    assert result.estimated_seams == 0
+    assert result.image == expected(document)
+
+
+def test_blank_frames_are_not_taken_for_the_same_view() -> None:
+    """Mostly blank views that join nothing are all kept."""
+    blank = QImage(WIDTH, VIEW, QImage.Format.Format_RGB32)
+    blank.fill(QColor("white"))
+    result = stitch([Frame(blank), Frame(page(VIEW)), Frame(blank.copy())])
+    assert result.image.height() == 3 * VIEW
+
+
+def test_narrow_frames_have_no_strip() -> None:
+    """Frames too narrow for a scrollbar keep their width."""
+    document = page(400).scaled(8, 400)
+    shots = [Frame(document.copy(0, top, 8, VIEW)) for top in (0, 100, 200)]
+    shots = [shots[0], *(Frame(f.image, 100.0) for f in shots[1:])]
+    assert stitch(shots).image.width() == 8
