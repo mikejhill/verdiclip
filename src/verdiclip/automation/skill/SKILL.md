@@ -8,7 +8,7 @@ description: Read, view and annotate screenshots open in the user's VerdiClip ed
 VerdiClip is a screenshot editor running on the user's PC. `verdiclip ctl` talks
 to the running app: it reads the images open in its editor windows, unsaved
 edits included, and changes them. Each change appears on the user's screen at
-once and is one step in the editor's undo history, named "Automation: …".
+once and is one step in the editor's undo history, named "CLI: …".
 
 Every command prints JSON. Exit codes: 0 ok, 1 failed, 2 bad usage, 3 VerdiClip
 not running or automation turned off (Settings → General), 4 conflict, 5 not
@@ -82,8 +82,8 @@ rects, `[x, y]` for points):
 ## History
 
 - `verdiclip ctl history` lists `undo` steps (oldest first) and `redo` steps
-  (next first), each with `label`, `state` and `automated` (true for steps made through `verdiclip ctl`).
-- `verdiclip ctl undo --only-automated` undoes your last step and refuses (exit 4)
+  (next first), each with `label`, `state` and `cli` (true for steps made through `verdiclip ctl`).
+- `verdiclip ctl undo --only-cli` undoes your last step and refuses (exit 4)
   rather than undo something the user did. `--steps N` or `--to STATE` move
   further; `redo` takes the same options.
 - Never undo the user's own steps unless they ask.

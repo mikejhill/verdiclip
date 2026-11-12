@@ -24,8 +24,8 @@ class Command(ABC):
         return self._description
 
     @property
-    def automated(self) -> bool:
-        """True if a tool or script made this change, not the user."""
+    def cli(self) -> bool:
+        """True if the change came through ``verdiclip ctl``, not the editor."""
         return False
 
     @abstractmethod
@@ -208,8 +208,8 @@ class Batch(Command):
 
     @property
     @override
-    def automated(self) -> bool:
-        """Return True: batches come from automation."""
+    def cli(self) -> bool:
+        """Return True: batches come from ``verdiclip ctl``."""
         return True
 
     @override

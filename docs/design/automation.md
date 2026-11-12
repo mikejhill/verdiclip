@@ -1,4 +1,4 @@
-# Automation: AI tools and scripts
+# Automation: the `verdiclip ctl` command
 
 Local tools (Claude Code, Codex, scripts) read and, in later phases, edit the
 images open in VerdiClip's editor. The running app owns the documents, their
@@ -57,9 +57,9 @@ configures no logging.
 
 | Command | Result |
 | --- | --- |
-| `ctl apply [--doc ID] --ops FILE\|- [--label TEXT] [--select] [--expect-state N]` | Runs the operations as one undo step "Automation: …"; returns state, label, added ids |
-| `ctl history [--doc ID]` | `undo` steps oldest first, `redo` steps next first: label, state, `automated` |
-| `ctl undo\|redo [--doc ID] [--steps N \| --to STATE] [--only-automated] [--expect-state N]` | Moves through history; validates the whole move first |
+| `ctl apply [--doc ID] --ops FILE\|- [--label TEXT] [--select] [--expect-state N]` | Runs the operations as one undo step "CLI: …"; returns state, label, added ids |
+| `ctl history [--doc ID]` | `undo` steps oldest first, `redo` steps next first: label, state, `cli` |
+| `ctl undo\|redo [--doc ID] [--steps N \| --to STATE] [--only-cli] [--expect-state N]` | Moves through history; validates the whole move first |
 | `ctl select [--doc ID] [IDS...]` | Sets the selection; no ids clears it |
 
 Operations (`--ops` holds the array, or `{"ops": [...]}`), applied in order to a
@@ -80,8 +80,8 @@ copy of the document; the real one changes only when all succeed:
   coordinates after a `rotate` or `resize` are in the new image.
 - Edits answer `busy` while the user types or drags in the image, and
   `conflict` when `--expect-state` no longer matches.
-- `history` marks each step `automated: true` when automation made it; `--only-automated`
-  refuses to undo or redo past a step the user made.
+- `history` marks each step `cli: true` when `verdiclip ctl` made it; `--only-cli`
+  refuses to undo or redo past a step made in the editor.
 
 ## Skill (phase 2b)
 

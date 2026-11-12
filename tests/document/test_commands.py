@@ -140,7 +140,7 @@ class TestBatch:
     """Several commands that apply in order and revert in reverse."""
 
     def test_round_trip(self, document: Document) -> None:
-        """A batch applies, reverts, and reports itself as automated."""
+        """A batch applies, reverts, and reports itself as a CLI step."""
         shape = RectangleShape(rect=Rect(0, 0, 10, 10))
         moved = shape.translated(Point(5, 5))
         batch = Batch(
@@ -148,7 +148,7 @@ class TestBatch:
                 AddAnnotations([shape], "Add"),
                 ReplaceAnnotations([shape], [moved], "Move"),
             ],
-            "Automation: box",
+            "CLI: box",
         )
 
         batch.apply(document)
@@ -157,11 +157,11 @@ class TestBatch:
 
         assert applied == (moved,)
         assert document.annotations == ()
-        assert batch.automated
-        assert not AddAnnotations([shape], "Add").automated
-        assert batch.description == "Automation: box"
+        assert batch.cli
+        assert not AddAnnotations([shape], "Add").cli
+        assert batch.description == "CLI: box"
 
     def test_empty(self) -> None:
         """A batch needs at least one command."""
         with pytest.raises(ValueError, match="at least one"):
-            Batch([], "Automation: nothing")
+            Batch([], "CLI: nothing")

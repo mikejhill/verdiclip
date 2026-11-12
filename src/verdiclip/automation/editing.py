@@ -31,7 +31,7 @@ from verdiclip.exceptions import CodecError
 from verdiclip.geometry import Rect
 
 MAX_LABEL = 60
-PREFIX = "Automation: "
+PREFIX = "CLI: "
 
 type StyleLookup = Callable[[AnnotationKind], Style]
 type Fitter = Callable[[Annotation], Annotation]
@@ -232,7 +232,7 @@ class EditPlanner:
 
 
 def _description(label: JsonValue, names: Sequence[str]) -> str:
-    """Return "Automation: <label>", defaulting to the operations performed."""
+    """Return "CLI: <label>", defaulting to the operations performed."""
     if label is None:
         counts: dict[str, int] = {}
         for name in names:
