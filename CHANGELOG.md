@@ -1,5 +1,58 @@
 # Changelog
 
+## [0.17.0](https://github.com/mikejhill/verdiclip/compare/v0.16.1...v0.17.0) (2026-11-12)
+
+
+### Features
+
+* **ctl:** open, save, copy and the set_image operation ([#159](https://github.com/mikejhill/verdiclip/issues/159)) ([9d90996](https://github.com/mikejhill/verdiclip/commit/9d909969e6b72f22084776423f9e5927046e2355))
+* rebuild scrolling capture as a simple, tolerant top-to-bottom capture ([#158](https://github.com/mikejhill/verdiclip/issues/158)) ([70a8ec0](https://github.com/mikejhill/verdiclip/commit/70a8ec012d6cd781044a85f3e70c442efb77f9bd))
+
+
+### Bug Fixes
+
+* clear two CodeQL findings from the scrolling rebuild ([#164](https://github.com/mikejhill/verdiclip/issues/164)) ([d763136](https://github.com/mikejhill/verdiclip/commit/d7631362b92becbe2320e2def75690ec6736cc81))
+* **ctl:** open returns the image it opened while a menu is open ([#160](https://github.com/mikejhill/verdiclip/issues/160)) ([b1dbab7](https://github.com/mikejhill/verdiclip/commit/b1dbab7a0febed74629acdbe7daf2d57ebeb0132))
+* name ctl changes after the command line, not an assumed actor ([#156](https://github.com/mikejhill/verdiclip/issues/156)) ([66ec4bc](https://github.com/mikejhill/verdiclip/commit/66ec4bc49cd1c97fd24c20935bed4e0c90841d0c))
+
+## [0.16.1](https://github.com/mikejhill/verdiclip/compare/v0.16.0...v0.16.1) (2026-11-12)
+
+
+### Bug Fixes
+
+* name automation steps without assuming an AI made them ([#154](https://github.com/mikejhill/verdiclip/issues/154)) ([019cf56](https://github.com/mikejhill/verdiclip/commit/019cf5675582852c1197056697e78427e1d987d4))
+* reject bad apply options before editing and auto-fit AI text ([#153](https://github.com/mikejhill/verdiclip/issues/153)) ([a347923](https://github.com/mikejhill/verdiclip/commit/a3479231ab204665d70bb8333241131466407ea2))
+
+## [0.16.0](https://github.com/mikejhill/verdiclip/compare/v0.15.0...v0.16.0) (2026-11-12)
+
+
+### Features
+
+* let AI tools edit open images through verdiclip ctl ([#150](https://github.com/mikejhill/verdiclip/issues/150)) ([b1bb04e](https://github.com/mikejhill/verdiclip/commit/b1bb04e289ddff833762dfea11bf476f96f0f4c9))
+* ship a VerdiClip skill for AI coding agents ([#151](https://github.com/mikejhill/verdiclip/issues/151)) ([cdab24c](https://github.com/mikejhill/verdiclip/commit/cdab24c981388b6807542bb7b428451f77e2f8c7))
+
+## [0.15.0](https://github.com/mikejhill/verdiclip/compare/v0.14.2...v0.15.0) (2026-11-11)
+
+
+### Features
+
+* let AI tools read open images through verdiclip ctl ([#146](https://github.com/mikejhill/verdiclip/issues/146)) ([f031949](https://github.com/mikejhill/verdiclip/commit/f031949b9b3f4db3860a388eb832a02b12a39e73))
+
+
+### Bug Fixes
+
+* hide scrolling capture until its rewrite lands ([#147](https://github.com/mikejhill/verdiclip/issues/147)) ([16e15b2](https://github.com/mikejhill/verdiclip/commit/16e15b286144d7e50eaac8133893b53a5bb6ec06))
+
+## [0.14.2](https://github.com/mikejhill/verdiclip/compare/v0.14.1...v0.14.2) (2026-11-11)
+
+
+### Bug Fixes
+
+* acquire unambiguous scrolling frames ([c2ffae1](https://github.com/mikejhill/verdiclip/commit/c2ffae173786a07e2d8d74b94b85db78100a606d))
+* qualify scrolling capture through registered native entry ([3670593](https://github.com/mikejhill/verdiclip/commit/367059390b337002a6e0aad95f5210db2b8263c3))
+* repair scrolling in real applications ([11298c6](https://github.com/mikejhill/verdiclip/commit/11298c665a97774841b7dde57df727129f1fda6d))
+* stabilize Settings startup and bounded scrolling recovery ([4712ae6](https://github.com/mikejhill/verdiclip/commit/4712ae663078f773c1b45bf33c5b83e3d71df26b))
+
 ## [0.14.1](https://github.com/mikejhill/verdiclip/compare/v0.14.0...v0.14.1) (2026-11-09)
 
 

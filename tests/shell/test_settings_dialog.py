@@ -323,6 +323,19 @@ class TestSettingsDialog:
         assert default_on
         assert dialog.result_settings().integration.start_menu is False
 
+    def test_automation_checkbox_round_trips(self, dialog: SettingsDialog) -> None:
+        """UX-TRY-13: AI tool access is on by default and can be turned off."""
+        box = next(
+            b for b in dialog.findChildren(QCheckBox) if "verdiclip ctl" in b.text()
+        )
+        default_on = box.isChecked()
+
+        box.setChecked(False)
+
+        assert default_on
+        assert "Windows user" in box.toolTip()
+        assert dialog.result_settings().integration.automation is False
+
 
 class TestUpdateSettings:
     """Settings → General: checking for and installing updates."""

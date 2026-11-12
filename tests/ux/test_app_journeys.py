@@ -48,6 +48,11 @@ from tests.ux.test_capture_journeys import (
 )
 
 from verdiclip import APP_NAME, DOCS_URL, VERSION
+from verdiclip.__main__ import Application
+from verdiclip.automation.handlers import AutomationHandlers
+from verdiclip.automation.preview import PreviewFolder
+from verdiclip.automation.protocol import ErrorCode, Request, Response
+from verdiclip.automation.server import ControlServer
 from verdiclip.capture.grabber import ScreenSource
 from verdiclip.capture.models import Capture
 from verdiclip.capture.overlay import SelectionOverlay
@@ -59,9 +64,15 @@ from verdiclip.editor.close_prompt import CloseChoice, ClosePrompt
 from verdiclip.editor.session import ToolId
 from verdiclip.editor.style_bar import ColorButton
 from verdiclip.editor.window import EditorWindow
+from verdiclip.editor.workspace import Workspace
 from verdiclip.exceptions import UpdateError
 from verdiclip.geometry import Rect
-from verdiclip.platform.associations import DEFAULT_APPS_URI, FileAssociations
+from verdiclip.platform.associations import (
+    DEFAULT_APPS_URI,
+    EXTENSIONS,
+    PROG_ID,
+    FileAssociations,
+)
 from verdiclip.platform.hotkeys import Hotkey, HotkeyService
 from verdiclip.platform.launcher import LaunchCommand
 from verdiclip.platform.shortcuts import Shortcut, ShortcutRegistration
@@ -77,6 +88,11 @@ from verdiclip.settings import (
 )
 from verdiclip.shell import controller as controller_module
 from verdiclip.shell.controller import AppController, ShellIntegration
+from verdiclip.shell.default_app_dialog import (
+    ALL_DONE_TEXT,
+    DONE_TEXT,
+    PENDING_TEXT,
+)
 from verdiclip.shell.instance import SingleInstance
 from verdiclip.shell.settings_dialog import SettingsDialog
 from verdiclip.shell.tray import TrayIcon
@@ -762,22 +778,51 @@ class TestHotkeysAndSettings:
         assert app.associations.keys[command_key][""].endswith('open "%1"')
 
     def test_make_default_registers_and_opens_windows_settings(
-        self, make_app: AppFactory, monkeypatch: pytest.MonkeyPatch
+        self, make_app: AppFactory, monkeypatch: pytest.MonkeyPatch, qtbot: QtBot
     ) -> None:
-        """UX-TRY-07: "Make default" registers, saves, and opens Default apps."""
+        """UX-TRY-07: "Make default" registers, opens Settings, and guides."""
         opened: list[str] = []
         monkeypatch.setattr(
             QDesktopServices, "openUrl", lambda url: opened.append(url.toString())
         )
-        app = make_app()
+        app = make_app(Settings(integration=IntegrationSettings(start_menu=False)))
 
         app.controller.make_default_image_app()
+        guide = app.controller.default_app_dialog
         app.controller.make_default_image_app()
 
+        assert guide is not None
+        assert app.controller.default_app_dialog is guide
         assert opened == [DEFAULT_APPS_URI, DEFAULT_APPS_URI]
         assert QUrl(DEFAULT_APPS_URI).scheme() == "ms-settings"
-        assert app.store.load().integration.open_with is True
+        assert app.store.load().integration == IntegrationSettings(
+            open_with=True, start_menu=False
+        )
         assert app.associations.notified == 2
+        assert guide.state_text(".png") == PENDING_TEXT
+
+        guide.open_settings_button().click()
+        assert len(opened) == 3
+
+        guide.close()
+        qtbot.waitUntil(lambda: app.controller.default_app_dialog is None)
+
+    def test_default_app_guide_ticks_off_types_chosen_in_settings(
+        self, make_app: AppFactory, monkeypatch: pytest.MonkeyPatch, qtbot: QtBot
+    ) -> None:
+        """UX-TRY-07: the guide follows the choices the user makes in Settings."""
+        monkeypatch.setattr(QDesktopServices, "openUrl", lambda _url: True)
+        app = make_app()
+        app.controller.make_default_image_app()
+        guide = app.controller.default_app_dialog
+        assert guide is not None
+
+        app.associations.defaults = dict.fromkeys(EXTENSIONS, PROG_ID)
+
+        qtbot.waitUntil(lambda: guide.summary_text() == ALL_DONE_TEXT, timeout=3000)
+        assert guide.state_text(".jpg") == DONE_TEXT
+        guide.close()
+        qtbot.waitUntil(lambda: app.controller.default_app_dialog is None)
 
     def test_open_with_failure_is_reported(
         self, make_app: AppFactory, caplog: pytest.LogCaptureFixture
@@ -1646,6 +1691,56 @@ class TestUpdates:
         assert plan["steps"] == [["C:/uv/uv.exe", "tool", "upgrade", "verdiclip"]]
         assert plan["relaunch"] == LaunchCommand(PYTHONW, "-m verdiclip").command_line
 
+    @pytest.mark.parametrize("choice", ["Install now", "Later"])
+    def test_check_window_installs_or_defers(
+        self, make_app: AppFactory, updates: Updates, choice: str
+    ) -> None:
+        """The result window installs a found release, or leaves it (#124).
+
+        UX-TRY-11, UX-TRY-12.
+        """
+        app = make_app(updater=updates.updater)
+        app.controller.tray.action("update").trigger()
+        box = self.status()
+        assert box.windowTitle() == "Update available"
+        labels = [button.text() for button in box.buttons()]
+        assert sorted(labels) == ["Install now", "Later"]
+        assert box.defaultButton().text() == "Install now"
+        assert updates.spawns.calls == [], "Showing the offer must not install"
+
+        next(b for b in box.buttons() if b.text() == choice).click()
+
+        if choice == "Install now":
+            assert len(updates.spawns.calls) == 1
+            assert updates.quits == [True]
+        else:
+            assert updates.spawns.calls == []
+            assert updates.quits == []
+            assert not box.isVisible()
+            assert (
+                app.controller.tray.action("update").text()
+                == "Install VerdiClip 0.11.0…"
+            ), "Later keeps the release offered in the tray"
+
+    def test_check_window_reverts_to_ok_after_an_offer(
+        self, make_app: AppFactory, updates: Updates
+    ) -> None:
+        """A later status reuses the window without a stale Install button."""
+        app = make_app(updater=updates.updater)
+        app.controller.tray.action("update").trigger()
+        box = self.status()
+        next(b for b in box.buttons() if b.text() == "Later").click()
+        app.controller._show_update_status("Could not check for updates", "Offline")
+        box = self.status()
+        assert [b.text() for b in box.buttons()] == ["OK"]
+        assert not [
+            widget
+            for widget in QApplication.topLevelWidgets()
+            if widget.isVisible() and widget is not box
+        ], "Replaced buttons must not linger as stray windows"
+        box.buttons()[0].click()
+        assert updates.spawns.calls == []
+
     def test_install_entry_installs_a_found_release(
         self, make_app: AppFactory, updates: Updates, balloons: Balloons
     ) -> None:
@@ -2037,3 +2132,205 @@ class TestUpdates:
         )
         assert balloons.titles()[1:] == ["Update available"]
         assert updates.quits == []
+
+
+class TestAutomation:
+    """UX-TRY-13: the CLI reads open images through `verdiclip ctl`."""
+
+    @staticmethod
+    def ask(server: ControlServer, method: str, **params: object) -> Response:
+        """Send one request line as `verdiclip ctl` would and decode the answer."""
+        line = Request(method, dict(params), ident=1).encode()  # ty: ignore[invalid-argument-type]
+        return Response.decode(server.respond(line))
+
+    def test_open_tabs_are_listed_and_rendered_with_unsaved_edits(
+        self, make_app: AppFactory, tmp_path: Path
+    ) -> None:
+        """UX-TRY-13: a tool sees every open image, edits included, until it's off."""
+        app = make_app()
+        picture = tmp_path / "picture.png"
+        QImage(40, 30, QImage.Format.Format_RGB32).save(str(picture))
+        editor = app.controller.open_image(picture)
+        assert editor is not None
+        editor.session.history.execute(SetCrop(Rect(0, 0, 40, 30), Rect(5, 5, 20, 10)))
+        server = ControlServer(
+            AutomationHandlers(
+                app.controller.workspace, previews=PreviewFolder(tmp_path / "pv")
+            ),
+            name="unused",
+            enabled=lambda: app.controller.automation_enabled,
+        )
+
+        listed = self.ask(server, "list")
+        rendered = self.ask(server, "render", grid=10)
+        current = app.controller.settings
+        app.controller.apply_settings(
+            replace(current, integration=replace(current.integration, automation=False))
+        )
+        refused = self.ask(server, "list")
+
+        assert listed.result is not None
+        documents = listed.result["documents"]
+        assert isinstance(documents, list)
+        assert len(documents) == 1
+        entry = documents[0]
+        assert isinstance(entry, dict)
+        assert (
+            entry["title"],
+            entry["unsaved"],
+            entry["active"],
+            entry["editing"],
+        ) == ("picture.png", True, True, False)
+        assert rendered.result is not None
+        image = QImage(str(rendered.result["path"]))
+        assert (image.width(), image.height()) == (20, 10)
+        assert rendered.result["origin"] == [5, 5]
+        assert refused.error is not None
+        assert refused.error.code is ErrorCode.DISABLED
+        assert "Settings" in refused.error.message
+
+    def test_ai_edits_wait_for_the_user_and_undo_as_one_step(
+        self, make_app: AppFactory, tmp_path: Path
+    ) -> None:
+        """UX-TRY-14: a batch is one "CLI: …" undo step, never mid-drag."""
+        app = make_app()
+        picture = tmp_path / "picture.png"
+        QImage(200, 150, QImage.Format.Format_RGB32).save(str(picture))
+        editor = app.controller.open_image(picture)
+        assert editor is not None
+        server = ControlServer(
+            AutomationHandlers(app.controller.workspace), name="unused"
+        )
+        box = {
+            "op": "add",
+            "annotation": {"kind": "rectangle", "rect": [10, 10, 50, 40]},
+        }
+        viewport = editor.canvas.viewport()
+        middle = QPoint(viewport.width() // 2, viewport.height() // 2)
+
+        QTest.mousePress(viewport, Qt.MouseButton.LeftButton, pos=middle)
+        during = self.ask(server, "apply", ops=[box], label="Box it")
+        QTest.mouseRelease(viewport, Qt.MouseButton.LeftButton, pos=middle)
+        applied = self.ask(server, "apply", ops=[box, box], label="Box it")
+        menu = editor.action("undo").text().replace("&", "")
+        undone = self.ask(server, "undo", only_cli=True)
+
+        assert during.error is not None
+        assert during.error.code is ErrorCode.BUSY
+        assert applied.result is not None
+        assert len(applied.result["added"]) == 2  # ty: ignore[invalid-argument-type]
+        assert menu == "Undo CLI: Box it"
+        assert undone.result is not None
+        assert editor.session.document.annotations == ()
+
+    def test_skill_installs_for_the_chosen_agent_without_the_app(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """UX-TRY-15: install-skill writes the shipped skill and says where."""
+        code = Application().run(
+            ["ctl", "install-skill", "--agent", "codex", "--dir", str(tmp_path)]
+        )
+
+        printed = json.loads(capsys.readouterr().out)
+        target = tmp_path / "verdiclip" / "SKILL.md"
+        assert code == 0
+        assert printed["installed"] == [
+            {"agent": "codex", "path": str(target.resolve()), "replaced": False}
+        ]
+        assert "verdiclip ctl apply" in target.read_text(encoding="utf-8")
+
+    def test_cli_opens_replaces_saves_and_copies_images(
+        self, make_app: AppFactory, tmp_path: Path
+    ) -> None:
+        """UX-TRY-16: open, set_image, save and copy act like the editor's own."""
+        app = make_app()
+        picture = tmp_path / "picture.png"
+        QImage(40, 30, QImage.Format.Format_RGB32).save(str(picture))
+        replacement = QImage(80, 60, QImage.Format.Format_RGB32)
+        replacement.fill(0x00FF00)
+        new_pixels = tmp_path / "new.png"
+        replacement.save(str(new_pixels))
+        server = ControlServer(
+            AutomationHandlers(
+                app.controller.workspace, opener=app.controller.open_file
+            ),
+            name="unused",
+        )
+        target = tmp_path / "result.png"
+        clipboard = QGuiApplication.clipboard()
+        assert clipboard is not None
+        clipboard.clear()
+
+        opened = self.ask(server, "open", path=str(picture))
+        missing = self.ask(server, "open", path=str(tmp_path / "gone.png"))
+        replaced = self.ask(
+            server, "apply", ops=[{"op": "set_image", "path": str(new_pixels)}]
+        )
+        dirty = self.ask(server, "get")
+        saved = self.ask(server, "save", path=str(target))
+        copied = self.ask(server, "copy")
+        clean = self.ask(server, "get")
+
+        assert opened.result is not None
+        assert (opened.result["title"], opened.result["unsaved"]) == (
+            "picture.png",
+            False,
+        )
+        assert missing.error is not None
+        assert missing.error.code is ErrorCode.NOT_FOUND
+        assert replaced.result is not None
+        assert dirty.result is not None
+        assert dirty.result["unsaved"] is True
+        assert saved.result is not None
+        written = QImage(str(target))
+        assert (written.width(), written.height()) == (80, 60)
+        assert written.pixelColor(1, 1).green() == 255
+        assert copied.result is not None
+        assert clipboard.image().width() == 80
+        assert clean.result is not None
+        assert clean.result["unsaved"] is False
+
+    def test_cli_open_reports_the_new_image_while_a_menu_is_open(
+        self, make_app: AppFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """UX-TRY-16: a tab opened behind a menu is still the one `open` returns."""
+        app = make_app()
+        first = tmp_path / "first.png"
+        second = tmp_path / "second.png"
+        QImage(40, 30, QImage.Format.Format_RGB32).save(str(first))
+        QImage(50, 20, QImage.Format.Format_RGB32).save(str(second))
+        app.controller.open_image(first)
+        monkeypatch.setattr(Workspace, "_protected_ui", staticmethod(lambda: True))
+
+        record = app.controller.open_file(second)
+
+        assert record.saved_path == second
+        assert record.session.document.image.width() == 50
+        assert len(app.controller.workspace.documents) == 2
+
+    def test_a_lost_mouse_release_does_not_block_ai_edits(
+        self, make_app: AppFactory, tmp_path: Path
+    ) -> None:
+        """UX-TRY-14: a release the canvas missed does not leave the image busy."""
+        app = make_app()
+        picture = tmp_path / "picture.png"
+        QImage(200, 150, QImage.Format.Format_RGB32).save(str(picture))
+        editor = app.controller.open_image(picture)
+        assert editor is not None
+        server = ControlServer(
+            AutomationHandlers(app.controller.workspace), name="unused"
+        )
+        viewport = editor.canvas.viewport()
+        middle = QPoint(viewport.width() // 2, viewport.height() // 2)
+        elsewhere = QWidget()
+
+        QTest.mousePress(viewport, Qt.MouseButton.LeftButton, pos=middle)
+        QTest.mouseRelease(elsewhere, Qt.MouseButton.LeftButton, pos=QPoint(1, 1))
+        listed = self.ask(server, "list")
+
+        assert listed.result is not None
+        documents = listed.result["documents"]
+        assert isinstance(documents, list)
+        entry = documents[0]
+        assert isinstance(entry, dict)
+        assert entry["editing"] is False

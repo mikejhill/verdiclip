@@ -16,6 +16,9 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
 from verdiclip import APP_NAME, VERSION
+from verdiclip.automation.command import run_ctl
+from verdiclip.automation.handlers import AutomationHandlers
+from verdiclip.automation.server import ControlServer
 from verdiclip.capture.grabber import MssScreenSource
 from verdiclip.cli import CliRequest, Command, CommandLine, HeadlessMode
 from verdiclip.exceptions import AppError, CaptureError
@@ -62,6 +65,9 @@ class Application:
     def run(self, argv: Sequence[str] | None = None) -> int:
         """Run once and return a process exit code."""
         request = CommandLine().parse(argv)
+        if request.command is Command.CTL:
+            # Answer quickly for scripts: no logging setup, no Qt application
+            return run_ctl(request.method, request.params, sys.stdout, sys.stderr)
         store = SettingsStore(SettingsStore.default_path())
         self._configure_logging(request.log_level, store.path.parent / "logs")
         try:
@@ -125,6 +131,12 @@ class Application:
             # stop its timer and independently restore the process handler.
             lifetime.callback(self._restore_sigint)
             lifetime.callback(self._stop_signal_timer)
+            control = ControlServer(
+                AutomationHandlers(controller.workspace, opener=controller.open_file),
+                enabled=lambda: controller.automation_enabled,
+            )
+            lifetime.callback(control.close)
+            control.listen()
             instance.message_received.connect(controller.handle_forwarded)
             lifetime.callback(
                 instance.message_received.disconnect, controller.handle_forwarded

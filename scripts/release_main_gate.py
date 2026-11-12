@@ -15,7 +15,6 @@ REPOSITORY = "mikejhill/verdiclip"
 REQUIRED = {
     ".github/workflows/ci.yml",
     ".github/workflows/codeql.yml",
-    ".github/workflows/simple-scroll-native.yml",
 }
 EXCLUDED = {
     ".github/workflows/release.yml",

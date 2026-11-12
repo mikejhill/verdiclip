@@ -23,6 +23,11 @@ class Command(ABC):
         """Return the user-facing name shown as "Undo <description>"."""
         return self._description
 
+    @property
+    def cli(self) -> bool:
+        """True if the change came through ``verdiclip ctl``, not the editor."""
+        return False
+
     @abstractmethod
     def apply(self, document: Document) -> None:
         """Make the change."""
@@ -189,3 +194,32 @@ class TransformImage(Command):
         """Restore the exact state from before."""
         if self._before is not None:
             document.restore(self._before)
+
+
+class Batch(Command):
+    """Several changes from an automation request, undone as one step."""
+
+    def __init__(self, commands: Sequence[Command], description: str) -> None:
+        super().__init__(description)
+        if not commands:
+            msg = "Batch needs at least one command"
+            raise ValueError(msg)
+        self._commands = tuple(commands)
+
+    @property
+    @override
+    def cli(self) -> bool:
+        """Return True: batches come from ``verdiclip ctl``."""
+        return True
+
+    @override
+    def apply(self, document: Document) -> None:
+        """Apply every change in order."""
+        for command in self._commands:
+            command.apply(document)
+
+    @override
+    def revert(self, document: Document) -> None:
+        """Revert every change in reverse order."""
+        for command in reversed(self._commands):
+            command.revert(document)

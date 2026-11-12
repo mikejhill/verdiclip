@@ -37,7 +37,6 @@ from verdiclip.settings import (
     AppearanceSettings,
     CaptureDestination,
     CaptureSettings,
-    HotkeySettings,
     ImageFormat,
     IntegrationSettings,
     OutputSettings,
@@ -110,6 +109,9 @@ class SettingsDialog(QDialog):
         self._start_menu = QCheckBox("Show VerdiClip in the Start menu")
         self._open_with = QCheckBox("Show VerdiClip in “Open with” for image files")
         self._make_default = QPushButton("Make VerdiClip the default image app…")
+        self._automation = QCheckBox(
+            "Let the verdiclip ctl command read and edit open images"
+        )
         self._check_updates = QCheckBox("Check for updates automatically")
         self._install_updates = QCheckBox(
             "Install updates automatically when no image is open"
@@ -131,11 +133,12 @@ class SettingsDialog(QDialog):
                 show_magnifier=self._magnifier.isChecked(),
                 destination=CaptureDestination(self._destination.currentData()),
             ),
-            hotkeys=HotkeySettings(
+            hotkeys=replace(
+                self._initial.hotkeys,
                 **{
                     name: self._canonical_hotkey(edit.text())
                     for name, edit in self._hotkeys.items()
-                }
+                },
             ),
             output=OutputSettings(
                 directory=Path(
@@ -158,6 +161,7 @@ class SettingsDialog(QDialog):
             integration=IntegrationSettings(
                 open_with=self._open_with.isChecked(),
                 start_menu=self._start_menu.isChecked(),
+                automation=self._automation.isChecked(),
             ),
             updates=UpdateSettings(
                 check=self._check_updates.isChecked(),
@@ -232,14 +236,19 @@ class SettingsDialog(QDialog):
         form.addRow(self._run_at_login)
         form.addRow(self._start_menu)
         self._make_default.setToolTip(
-            "Adds VerdiClip to Open with, then opens Windows Settings, "
-            "where you confirm it as the default."
+            "Adds VerdiClip to Open with, opens Windows Settings, and shows "
+            "which image types still need you to pick VerdiClip there."
         )
         self._make_default.clicked.connect(self._request_default)
         files = QVBoxLayout()
         files.addWidget(self._open_with)
         files.addWidget(self._make_default)
         form.addRow(files)
+        self._automation.setToolTip(
+            "Only programs running as your Windows user can connect. "
+            "They see open images, including unsaved changes."
+        )
+        form.addRow(self._automation)
         self._install_updates.setToolTip(
             "VerdiClip restarts to install the update, then says how it went."
         )
@@ -341,6 +350,7 @@ class SettingsDialog(QDialog):
         self._run_at_login.setChecked(settings.startup.run_at_login)
         self._open_with.setChecked(settings.integration.open_with)
         self._start_menu.setChecked(settings.integration.start_menu)
+        self._automation.setChecked(settings.integration.automation)
         self._check_updates.setChecked(settings.updates.check)
         self._install_updates.setChecked(settings.updates.install)
         self._install_updates.setEnabled(settings.updates.check)

@@ -7,6 +7,7 @@ import pytest
 from verdiclip.document.annotations import RectangleShape
 from verdiclip.document.commands import (
     AddAnnotations,
+    Batch,
     Command,
     RemoveAnnotations,
     ReorderAnnotations,
@@ -133,3 +134,34 @@ class TestSetCrop:
         command.revert(document)
 
         assert document.crop == original
+
+
+class TestBatch:
+    """Several commands that apply in order and revert in reverse."""
+
+    def test_round_trip(self, document: Document) -> None:
+        """A batch applies, reverts, and reports itself as a CLI step."""
+        shape = RectangleShape(rect=Rect(0, 0, 10, 10))
+        moved = shape.translated(Point(5, 5))
+        batch = Batch(
+            [
+                AddAnnotations([shape], "Add"),
+                ReplaceAnnotations([shape], [moved], "Move"),
+            ],
+            "CLI: box",
+        )
+
+        batch.apply(document)
+        applied = document.annotations
+        batch.revert(document)
+
+        assert applied == (moved,)
+        assert document.annotations == ()
+        assert batch.cli
+        assert not AddAnnotations([shape], "Add").cli
+        assert batch.description == "CLI: box"
+
+    def test_empty(self) -> None:
+        """A batch needs at least one command."""
+        with pytest.raises(ValueError, match="at least one"):
+            Batch([], "CLI: nothing")

@@ -137,10 +137,11 @@ class StartupSettings:
 
 @dataclass(frozen=True, slots=True)
 class IntegrationSettings:
-    """How VerdiClip hooks into Windows Explorer and the Start menu."""
+    """How VerdiClip hooks into Windows and into local tools that drive it."""
 
     open_with: bool = False
     start_menu: bool = True
+    automation: bool = True
 
 
 @dataclass(frozen=True, slots=True)

@@ -44,7 +44,7 @@ Tray → **Check for updates** opens a status window immediately. It stays visib
 
 ## Capture and tabs
 
-Completed captures open a new tab in the existing editor by default; Settings can choose separate windows. The editor is brought forward when capture completes, unless protected editor UI is open. Ordinary region, window, full-screen and Repeat capture keep their existing behavior. Scrolling capture is a separate command with the limits below.
+Completed captures open a new tab in the existing editor by default; Settings can choose separate windows. The editor is brought forward when capture completes, unless protected editor UI is open. Ordinary region, window, full-screen and Repeat capture keep their existing behavior. Scrolling capture is a separate command (see below).
 
 ## Capture
 
@@ -64,13 +64,9 @@ If Windows or another screenshot tool already owns `PrtSc`, VerdiClip tells you 
 
 ### Scrolling capture
 
-Choose **Capture scrolling area** from the tray, or press `Ctrl+Alt+PrtSc`, then click inside the scrolling panel. You can also select the current pointer position with `Enter`. There is no configuration dialog. Keep the target window still and avoid mouse or keyboard activity until capture finishes. The complete image uses your usual editor, clipboard and file settings, without changing ordinary Repeat history.
+Choose **Capture scrolling area** from the tray, or press `Ctrl+Alt+PrtSc`, then click inside the panel you want (a web page, a document, a list). VerdiClip scrolls it to the top, captures it page by page to the bottom, joins the pages, and puts the panel back where it was. The image uses your usual editor, clipboard and file settings. Press `Esc` to stop.
 
-This supports finite, static, vertically scrollable panels that expose Windows UI Automation. It captures the panel's whole currently visible width and preserves its horizontal position; it does not uncover content hidden horizontally. The desktop must be unlocked and the target foreground and unobscured. There is no input or application-code injection.
-
-Press `Esc` to cancel. Other mouse/keyboard input, focus changes or a moved/resized target also stop capture. Cancellation delivers no image. After real input, VerdiClip leaves you in control rather than attempting to restore the old scroll position. It restores only while the target and input state remain eligible; a blocked application or forced stop may leave the panel scrolled.
-
-Scrollbar thumbs and original focus borders can remain in the image, including repeated scrollbar chrome between sections. Pixels hidden behind those boundaries are not reconstructed. Sticky headers, animated or infinite content, fractional layouts and tiny in-app overlays are not qualified; some changes between observations cannot be detected. Ambiguous joins and unsupported providers stop with an explanation instead of delivering a partial capture. Limits are a 35-second processing budget, 80 frames and 40 million pixels. The processing budget is not a guaranteed wall-clock completion time. See the [scrolling design and qualification](docs/design/simple-scrolling.md) for exact evidence and remaining limits.
+It works with panels that support Windows UI Automation scrolling, which covers browsers, Office, Explorer and most modern apps. Sticky headers and footers appear once. If some pages could not be matched exactly, the image is still delivered and VerdiClip tells you to check it. Keep other windows off the panel while it runs.
 
 ## Annotate
 
@@ -121,7 +117,7 @@ Open from the tray menu or with `Ctrl+,` in any editor.
 - **Hotkeys** — validated as you type; conflicts are reported.
 - **Output** — folder, file-name pattern (`{date}`, `{time}`, `{title}`, `{counter}`; default `{date}_{time}_{title}`, where `{title}` is the captured window's title (spaces become `_` when the pattern has none), or *Screenshot* / *Screen* for region and full-screen captures) with a live preview, format, JPEG quality.
 - **Editor** — default color, width, and font.
-- **General** — light, dark, or match-Windows theme; start at sign-in; check for and install updates automatically; show VerdiClip in Explorer's **Open with** menu for images. **Make VerdiClip the default image app…** opens Windows Settings at VerdiClip's Default apps page, where you choose it as the default (Windows requires you to confirm this yourself).
+- **General** — light, dark, or match-Windows theme; start at sign-in; check for and install updates automatically; show VerdiClip in Explorer's **Open with** menu for images; let the `verdiclip ctl` command read and edit open images. **Make VerdiClip the default image app…** opens Windows Settings at VerdiClip's Default apps page, where you choose it as the default (Windows requires you to confirm this yourself).
 
 ![Settings → General: theme, start at sign-in, and the Open with integration](https://raw.githubusercontent.com/mikejhill/verdiclip/main/docs/images/settings-general.png)
 
@@ -133,6 +129,36 @@ verdiclip capture region --region 0,0,1280,720 --clipboard
 verdiclip capture window --delay 3
 verdiclip open picture.png          # Opens in the running instance if there is one
 ```
+
+### Command line (`verdiclip ctl`)
+
+`verdiclip ctl` reads and edits images open in the running app, unsaved edits included, and prints JSON:
+
+```bash
+verdiclip ctl list                          # Every open image, in every window and tab
+verdiclip ctl get --doc <id>                # Annotations, crop, selection, state
+verdiclip ctl render --grid 100 -o view.png # PNG of the current state, gridded in image pixels
+verdiclip ctl apply --ops edits.json        # Add, change, delete, crop, rotate: one undo step
+verdiclip ctl history                       # Undo and redo steps, CLI ones marked
+verdiclip ctl undo --only-cli               # Undo the last CLI step, never an editor step
+verdiclip ctl open shot.png                 # Open a file in a new tab
+verdiclip ctl save --path done.png          # Save, as the editor's Save would
+verdiclip ctl copy                          # Copy the image to the clipboard
+```
+
+Each `apply` is one undo step named "CLI: …" in the editor's Edit menu.
+
+Teach your AI coding agent to use it by installing the VerdiClip skill (no running app needed):
+
+```bash
+verdiclip ctl install-skill --agent claude            # ~/.claude/skills/verdiclip/SKILL.md
+verdiclip ctl install-skill --agent codex,copilot     # several agents at once
+verdiclip ctl install-skill --agent agents --scope project   # .agents/skills in this folder
+```
+
+Agents: `claude`, `codex`, `agents` (the shared `.agents` folder), `copilot` (`~/.copilot/skills`, or `.github/skills` for a project). `--dir PATH` installs into any skills folder.
+
+Only programs running as your Windows user can connect. Turn it off in Settings → General. See [docs/design/automation.md](https://github.com/mikejhill/verdiclip/blob/main/docs/design/automation.md).
 
 ## How it is built
 

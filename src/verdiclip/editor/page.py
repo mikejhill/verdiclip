@@ -74,6 +74,15 @@ class DocumentPage(QWidget):
         """Notify the current host without capturing any particular window."""
         self.changed.emit()
 
+    @property
+    def editing(self) -> bool:
+        """True while the user is mid-edit: typing inline text or dragging.
+
+        Typed text isn't in the document until committed, and a drag commits
+        its change on release, so automation must wait for either to finish.
+        """
+        return self.canvas.editors.is_open or self.canvas.gesture_active
+
     def present(self) -> None:
         """Fit a new page only once, preserving zoom on subsequent moves."""
         if not self.initialized:

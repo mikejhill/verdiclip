@@ -53,8 +53,13 @@ jobs:
           PR_JSON: ${{ steps.release.outputs.pr }}
         run: |
           branch=$(jq -r '.headBranchName' <<< "$PR_JSON")
+          number=$(jq -r '.number' <<< "$PR_JSON")
+          # Only runs for the current head count; older heads' runs are stale.
+          sha=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$number" --jq '.head.sha')
           for attempt in $(seq 1 18); do
-            ids=$(gh run list --repo "$GITHUB_REPOSITORY" --branch "$branch"               --event pull_request --status action_required               --json databaseId --jq '.[].databaseId')
+            ids=$(gh run list --repo "$GITHUB_REPOSITORY" --branch "$branch" \
+              --commit "$sha" --event pull_request --status action_required \
+              --json databaseId --jq '.[].databaseId')
             if [ -n "$ids" ]; then
               approved=true
               for id in $ids; do
@@ -72,6 +77,8 @@ jobs:
           done
           echo "Could not approve pull request runs; dispatching CI on $branch"
           gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$branch"
+          # Merging also requires CodeQL results for the head commit.
+          gh workflow run codeql.yml --repo "$GITHUB_REPOSITORY" --ref "$branch"
 
   ci:
     name: CI
@@ -113,7 +120,7 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ needs.release-please.outputs.tag_name || github.sha }}
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
       - name: Build sdist and wheel
         run: uv build
       - name: Check package metadata
