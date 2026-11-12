@@ -7,8 +7,10 @@ import uuid
 from collections.abc import Iterator
 
 import pytest
+from PySide6.QtCore import QCoreApplication
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from pytestqt.qtbot import QtBot
+from shiboken6 import isValid
 
 from verdiclip.automation.client import ControlClient
 from verdiclip.automation.protocol import (
@@ -95,9 +97,29 @@ def test_disabled_server_refuses() -> None:
     assert allowed.ok
 
 
+_CLIENTS: list[QLocalSocket] = []
+
+
+@pytest.fixture(autouse=True)
+def _retire_clients() -> Iterator[None]:
+    """Hand raw clients to deferred deletion instead of Python's collector.
+
+    Windows pipe callbacks can still be queued after a test ends; a client
+    destroyed immediately at that point aborts the process during a later
+    test's event loop (see ``SingleInstance._read``).
+    """
+    yield
+    while _CLIENTS:
+        socket = _CLIENTS.pop()
+        if isValid(socket):  # The server may have deleted it already
+            socket.abort()
+            socket.deleteLater()
+
+
 def connect(server: ControlServer, qtbot: QtBot) -> QLocalSocket:
-    """Return a raw client connected to ``server``."""
-    socket = QLocalSocket()
+    """Return a raw client connected to ``server``, owned by the application."""
+    socket = QLocalSocket(QCoreApplication.instance())
+    _CLIENTS.append(socket)
     socket.connectToServer(server.name)
     assert socket.waitForConnected(2000)
     qtbot.waitUntil(lambda: len(server._buffers) == 1)
@@ -221,7 +243,8 @@ def test_stale_notifications_are_ignored(qtbot: QtBot) -> None:
     """Signals queued for a closed server or a forgotten client do nothing."""
     del qtbot
     server = ControlServer(echo, name="unused")
-    stray = QLocalSocket()
+    stray = QLocalSocket(QCoreApplication.instance())
+    _CLIENTS.append(stray)
 
     server._on_connection()
     server._read(stray)
