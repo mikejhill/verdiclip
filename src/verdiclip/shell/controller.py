@@ -54,6 +54,7 @@ from verdiclip.shell.default_app_dialog import DefaultAppDialog
 from verdiclip.shell.settings_dialog import HOTKEY_FIELDS, SettingsDialog
 from verdiclip.shell.theme import ThemeManager
 from verdiclip.shell.tray import CHECK_UPDATES_LABEL, TrayCommands, TrayIcon
+from verdiclip.shell.warmup import WARM_UP_DELAY_MS, warm_up
 from verdiclip.update.service import Updater
 
 logger = logging.getLogger(__name__)
@@ -136,6 +137,7 @@ class AppController(QObject):
         self._last_scroll_error = ""
         self._announced: str | None = None
         self._check_timer = QTimer(self)
+        self._warm_up_timer = self._single_shot(self._warm_up)
         self._idle_timer = QTimer(self)
         self._idle_timer.setSingleShot(True)
         self._idle_timer.timeout.connect(self._install_when_idle)
@@ -200,10 +202,24 @@ class AppController(QObject):
             self._apply_start_menu(keep_others=True)
         self._report_update()
         self._schedule_update_checks()
+        self._warm_up_timer.start(WARM_UP_DELAY_MS)
         logger.info("%s %s ready", APP_NAME, VERSION)
+
+    def _single_shot(self, slot: Callable[[], None]) -> QTimer:
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(slot)
+        return timer
+
+    def _warm_up(self) -> None:
+        """Preload the overlay and editor unless a capture already did (UX-CAP-11)."""
+        if self._closing or self._editors or self._capture.is_selecting:
+            return
+        warm_up(self._settings.editor, self._settings.output)
 
     def shutdown(self) -> None:
         """Release global resources."""
+        self._warm_up_timer.stop()
         self._check_timer.stop()
         self._idle_timer.stop()
         if self._update_status is not None:

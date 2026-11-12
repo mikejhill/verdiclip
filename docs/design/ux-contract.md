@@ -94,6 +94,7 @@ Consequences:
 | UX-NAV-04 | Middle-drag, or hold `Space` and left-drag | Pans the view. |
 | UX-NAV-05 | Status bar | Shows image size `W × H`, zoom %, cursor position in image pixels, and the current tool's one-line hint. |
 | UX-NAV-06 | Image has transparency | A checkerboard shows through transparent pixels on screen; exports keep the transparency. |
+| UX-NAV-07 | Any zoom level | Text in the image looks even. Whole-number screen scales (100%, 200%, …) and scales of 300% and up show hard pixel edges; other scales are smoothed, and zoomed-out views average pixels instead of dropping them. Screen scaling counts: 100% zoom on a 150% display is smoothed. |
 
 ## Editor: tools
 

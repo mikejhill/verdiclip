@@ -39,6 +39,24 @@ from verdiclip.render.renderer import Renderer
 MIN_ZOOM: Final = 0.1
 MAX_ZOOM: Final = 16.0
 ZOOM_STEP: Final = 1.25
+# Above this many screen pixels per image pixel, show hard pixel edges for
+# inspection even when the scale isn't a whole number
+PIXEL_GRID_SCALE: Final = 3.0
+
+
+def smooth_pixmap_scale(device_scale: float) -> bool:
+    """Return whether to interpolate an image drawn at ``device_scale``.
+
+    Whole-number scales map each image pixel onto a block of screen pixels, so
+    nearest-neighbor stays sharp. Fractional scales below the pixel-grid level
+    would make some image pixels one screen pixel wider than others, which
+    turns text uneven and jagged, so those interpolate instead.
+    """
+    if device_scale >= PIXEL_GRID_SCALE:
+        return False
+    return not math.isclose(device_scale, round(device_scale), abs_tol=1e-3)
+
+
 HIT_TOLERANCE_PX: Final = 5.0
 HANDLE_SIZE_PX: Final = 8.0
 FIT_MARGIN_PX: Final = 24
@@ -77,6 +95,7 @@ class CanvasView(QAbstractScrollArea):
         self._zoom = 1.0
         self._pixmap = QPixmap.fromImage(session.document.image)
         self._pixmap_key = session.document.image.cacheKey()
+        self._reduced: tuple[float, QPixmap] | None = None
         self._pan_anchor: QPointF | None = None
         self._gesture = False
         self._space_held = False
@@ -290,14 +309,41 @@ class CanvasView(QAbstractScrollArea):
         painter.scale(self._zoom, self._zoom)
         painter.translate(-crop.x, -crop.y)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        smooth = self._zoom < 1.0
-        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, smooth)
-        painter.drawPixmap(QPointF(0, 0), self._pixmap)
+        self._paint_pixmap(painter)
         shown = self._displayed(doc.visible_annotations)
         self._renderer.paint_all(painter, doc.image, shown)
         if self._tool is not None:
             self._renderer.paint_all(painter, doc.image, self._tool.preview)
         painter.restore()
+
+    def _paint_pixmap(self, painter: QPainter) -> None:
+        """Draw the base image: sharp at whole scales, else smooth (UX-NAV-07)."""
+        device_scale = self._zoom * self.viewport().devicePixelRatioF()
+        smooth = smooth_pixmap_scale(device_scale)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, smooth)
+        if device_scale >= 1.0:
+            painter.drawPixmap(QPointF(0, 0), self._pixmap)
+            return
+        # Bilinear sampling skips source pixels when shrinking, so text breaks
+        # up; draw an area-averaged copy at the screen size instead
+        source = self._pixmap
+        target = QRectF(0, 0, source.width(), source.height())
+        reduced = self._reduced_pixmap(device_scale)
+        painter.drawPixmap(target, reduced, QRectF(reduced.rect()))
+
+    def _reduced_pixmap(self, device_scale: float) -> QPixmap:
+        """Return the base image area-averaged to ``device_scale``, cached."""
+        if self._reduced is not None and math.isclose(self._reduced[0], device_scale):
+            return self._reduced[1]
+        source = self._pixmap
+        reduced = source.scaled(
+            max(1, round(source.width() * device_scale)),
+            max(1, round(source.height() * device_scale)),
+            Qt.AspectRatioMode.IgnoreAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self._reduced = (device_scale, reduced)
+        return reduced
 
     def _displayed(self, annotations: tuple[Annotation, ...]) -> list[Annotation]:
         """Return what to draw: the edited item is hidden, or just its label."""
@@ -609,6 +655,7 @@ class CanvasView(QAbstractScrollArea):
             # Rotate, flip, and resize replace the base pixels
             self._pixmap = QPixmap.fromImage(image)
             self._pixmap_key = image.cacheKey()
+            self._reduced = None
         self._update_scrollbars()
         self._editors.reposition()
         self.refresh()
