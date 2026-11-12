@@ -148,7 +148,7 @@ class TestBatch:
                 AddAnnotations([shape], "Add"),
                 ReplaceAnnotations([shape], [moved], "Move"),
             ],
-            "AI: box",
+            "Automation: box",
         )
 
         batch.apply(document)
@@ -159,9 +159,9 @@ class TestBatch:
         assert document.annotations == ()
         assert batch.automated
         assert not AddAnnotations([shape], "Add").automated
-        assert batch.description == "AI: box"
+        assert batch.description == "Automation: box"
 
     def test_empty(self) -> None:
         """A batch needs at least one command."""
         with pytest.raises(ValueError, match="at least one"):
-            Batch([], "AI: nothing")
+            Batch([], "Automation: nothing")

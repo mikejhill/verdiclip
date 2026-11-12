@@ -1,1 +1,1 @@
-"""Local automation: let AI tools read and edit documents open in the editor."""
+"""Local automation: let tools and scripts read and edit open documents."""

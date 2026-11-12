@@ -141,7 +141,7 @@ class CommandLine:
     @staticmethod
     def _travel_params(args: argparse.Namespace) -> JsonObject:
         """Return the parameters of ``ctl undo`` and ``ctl redo``."""
-        params: JsonObject = {"only_ai": bool(args.only_ai)}
+        params: JsonObject = {"only_automated": bool(args.only_automated)}
         if args.steps is not None:
             params["steps"] = int(args.steps)
         if args.to is not None:
@@ -267,7 +267,7 @@ class CommandLine:
         commands: argparse._SubParsersAction[argparse.ArgumentParser],
         shared: argparse.ArgumentParser,
     ) -> None:
-        """Define ``ctl``: read and edit the running app's documents for AI tools."""
+        """Define ``ctl``: let tools and scripts read and edit open documents."""
         ctl = commands.add_parser(
             "ctl",
             parents=[shared],
@@ -343,14 +343,16 @@ class CommandLine:
         apply = methods.add_parser(
             "apply",
             parents=[shared, doc, guard],
-            help="Apply edit operations as one undo step labelled 'AI: ...'.",
+            help="Apply edit operations as one undo step labelled 'Automation: ...'.",
         )
         apply.add_argument(
             "--ops",
             required=True,
             help="JSON file holding the operations array ('-' reads stdin).",
         )
-        apply.add_argument("--label", help="Name of the undo step after 'AI: '.")
+        apply.add_argument(
+            "--label", help="Name of the undo step after 'Automation: '."
+        )
         apply.add_argument(
             "--select", action="store_true", help="Select the annotations added."
         )
@@ -371,7 +373,7 @@ class CommandLine:
                 "--to", type=int, help="State to reach (from `ctl history`)."
             )
             travel.add_argument(
-                "--only-ai",
+                "--only-automated",
                 action="store_true",
                 help="Fail with exit code 4 instead of touching a step the user made.",
             )

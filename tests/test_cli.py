@@ -205,14 +205,14 @@ class TestCommandLine:
         parser = CommandLine()
 
         history = parser.parse(["ctl", "history", "--doc", "d"])
-        undo = parser.parse(["ctl", "undo", "--steps", "2", "--only-ai"])
+        undo = parser.parse(["ctl", "undo", "--steps", "2", "--only-automated"])
         redo = parser.parse(["ctl", "redo", "--to", "7", "--expect-state", "4"])
         select = parser.parse(["ctl", "select", "a", "b"])
         clear = parser.parse(["ctl", "select"])
 
         assert (history.method, history.params) == ("history", {"doc": "d"})
-        assert undo.params == {"only_ai": True, "steps": 2}
-        assert redo.params == {"only_ai": False, "to": 7, "expect_state": 4}
+        assert undo.params == {"only_automated": True, "steps": 2}
+        assert redo.params == {"only_automated": False, "to": 7, "expect_state": 4}
         assert (select.params, clear.params) == ({"ids": ["a", "b"]}, {"ids": []})
 
     def test_ctl_install_skill(

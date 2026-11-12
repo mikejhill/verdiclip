@@ -1,4 +1,4 @@
-"""Render a document's current state to a PNG an AI tool can look at."""
+"""Render a document's current state to a PNG a tool can look at."""
 
 from __future__ import annotations
 
