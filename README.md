@@ -137,7 +137,7 @@ verdiclip ctl get --doc <id>                # Annotations, crop, selection, stat
 verdiclip ctl render --grid 100 -o view.png # PNG of the current state, gridded in image pixels
 verdiclip ctl apply --ops edits.json        # Add, change, delete, crop, rotate: one undo step
 verdiclip ctl history                       # Undo and redo steps, CLI ones marked
-verdiclip ctl undo --only-cli                # Undo the last CLI step, never the user's
+verdiclip ctl undo --only-cli                # Undo the last CLI step, never an editor step
 ```
 
 Each `apply` is one undo step named "CLI: …" in the editor's Edit menu.

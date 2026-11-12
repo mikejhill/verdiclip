@@ -81,7 +81,7 @@ copy of the document; the real one changes only when all succeed:
 - Edits answer `busy` while the user types or drags in the image, and
   `conflict` when `--expect-state` no longer matches.
 - `history` marks each step `cli: true` when `verdiclip ctl` made it; `--only-cli`
-  refuses to undo or redo past a step the user made.
+  refuses to undo or redo past a step made in the editor.
 
 ## Skill (phase 2b)
 

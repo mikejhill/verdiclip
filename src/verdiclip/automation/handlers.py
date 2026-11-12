@@ -265,8 +265,8 @@ class AutomationHandlers:
             for step in steps:
                 if not step.cli:
                     msg = (
-                        f"Refusing to {verb} {step.label!r}: the user made it, "
-                        "and only_cli is set"
+                        f"Refusing to {verb} {step.label!r}: it was made in the "
+                        "editor, and only_cli is set"
                     )
                     raise AutomationError(ErrorCode.CONFLICT, msg)
         move = history.undo if backward else history.redo

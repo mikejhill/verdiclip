@@ -373,7 +373,7 @@ class CommandLine:
             travel.add_argument(
                 "--only-cli",
                 action="store_true",
-                help="Fail with exit code 4 instead of touching a step the user made.",
+                help="Exit 4 rather than touch a step made in the editor.",
             )
         select = methods.add_parser(
             "select",
