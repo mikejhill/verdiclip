@@ -104,9 +104,7 @@ class AppController(QObject):
         )
         self._scrolling = ScrollSelection(screens, windows, hotkeys)
         self._pending_capture: tuple[str, bool] | None = None
-        self._capture_handoff = QTimer(self)
-        self._capture_handoff.setSingleShot(True)
-        self._capture_handoff.timeout.connect(self._resume_capture)
+        self._capture_handoff = self._single_shot(self._resume_capture)
         self._closing = self._hotkeys_paused = self._hotkey_refresh_pending = False
         self._scrolling.captured.connect(self._on_scrolled)
         self._scrolling.failed.connect(self._on_scroll_failed)
@@ -138,9 +136,7 @@ class AppController(QObject):
         self._announced: str | None = None
         self._check_timer = QTimer(self)
         self._warm_up_timer = self._single_shot(self._warm_up)
-        self._idle_timer = QTimer(self)
-        self._idle_timer.setSingleShot(True)
-        self._idle_timer.timeout.connect(self._install_when_idle)
+        self._idle_timer = self._single_shot(self._install_when_idle)
         self._check_timer.timeout.connect(self._scheduled_check)
         if updater is not None:
             updater.checked.connect(self._on_update_checked)

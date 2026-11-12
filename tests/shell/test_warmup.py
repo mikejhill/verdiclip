@@ -6,7 +6,7 @@ import logging
 
 import pytest
 from PySide6.QtCore import QCoreApplication, QEvent
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QWidget
 
 from verdiclip.settings import EditorSettings, OutputSettings
 from verdiclip.shell import warmup
@@ -15,6 +15,11 @@ from verdiclip.shell import warmup
 def _settle() -> None:
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     QCoreApplication.processEvents()
+
+
+def _owner(widget: QWidget) -> QWidget:
+    parent = widget.parentWidget()
+    return widget if parent is None else parent.window()
 
 
 def test_warm_up_leaves_no_window_behind(
@@ -27,7 +32,9 @@ def test_warm_up_leaves_no_window_behind(
         warmup.warm_up(EditorSettings(), OutputSettings())
     _settle()
     assert not [w for w in qapp.topLevelWidgets() if w.isVisible()]
-    assert set(map(id, qapp.topLevelWidgets())) <= before
+    # Popups that older windows create lazily belong to those windows
+    extra = [w for w in qapp.topLevelWidgets() if id(_owner(w)) not in before]
+    assert not extra, [type(w).__name__ for w in extra]
     assert "Warmed up" in caplog.text
 
 
