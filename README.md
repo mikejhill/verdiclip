@@ -114,7 +114,7 @@ Open from the tray menu or with `Ctrl+,` in any editor.
 - **Hotkeys** — validated as you type; conflicts are reported.
 - **Output** — folder, file-name pattern (`{date}`, `{time}`, `{title}`, `{counter}`; default `{date}_{time}_{title}`, where `{title}` is the captured window's title (spaces become `_` when the pattern has none), or *Screenshot* / *Screen* for region and full-screen captures) with a live preview, format, JPEG quality.
 - **Editor** — default color, width, and font.
-- **General** — light, dark, or match-Windows theme; start at sign-in; check for and install updates automatically; show VerdiClip in Explorer's **Open with** menu for images; let AI tools and scripts read and edit open images (`verdiclip ctl`). **Make VerdiClip the default image app…** opens Windows Settings at VerdiClip's Default apps page, where you choose it as the default (Windows requires you to confirm this yourself).
+- **General** — light, dark, or match-Windows theme; start at sign-in; check for and install updates automatically; show VerdiClip in Explorer's **Open with** menu for images; let the `verdiclip ctl` command read and edit open images. **Make VerdiClip the default image app…** opens Windows Settings at VerdiClip's Default apps page, where you choose it as the default (Windows requires you to confirm this yourself).
 
 ![Settings → General: theme, start at sign-in, and the Open with integration](https://raw.githubusercontent.com/mikejhill/verdiclip/main/docs/images/settings-general.png)
 
@@ -127,7 +127,7 @@ verdiclip capture window --delay 3
 verdiclip open picture.png          # Opens in the running instance if there is one
 ```
 
-### For AI tools and scripts
+### Command line (`verdiclip ctl`)
 
 `verdiclip ctl` reads and edits images open in the running app, unsaved edits included, and prints JSON:
 
@@ -136,11 +136,11 @@ verdiclip ctl list                          # Every open image, in every window 
 verdiclip ctl get --doc <id>                # Annotations, crop, selection, state
 verdiclip ctl render --grid 100 -o view.png # PNG of the current state, gridded in image pixels
 verdiclip ctl apply --ops edits.json        # Add, change, delete, crop, rotate: one undo step
-verdiclip ctl history                       # Undo and redo steps, automated ones marked
-verdiclip ctl undo --only-automated                # Undo the last automated step, never the user's
+verdiclip ctl history                       # Undo and redo steps, CLI ones marked
+verdiclip ctl undo --only-cli                # Undo the last CLI step, never the user's
 ```
 
-Each `apply` is one undo step named "Automation: …" in the editor's Edit menu.
+Each `apply` is one undo step named "CLI: …" in the editor's Edit menu.
 
 Teach your AI coding agent to use it by installing the VerdiClip skill (no running app needed):
 
