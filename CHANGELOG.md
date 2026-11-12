@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.16.1](https://github.com/mikejhill/verdiclip/compare/v0.16.0...v0.16.1) (2026-11-12)
+
+
+### Bug Fixes
+
+* name automation steps without assuming an AI made them ([#154](https://github.com/mikejhill/verdiclip/issues/154)) ([019cf56](https://github.com/mikejhill/verdiclip/commit/019cf5675582852c1197056697e78427e1d987d4))
+* reject bad apply options before editing and auto-fit AI text ([#153](https://github.com/mikejhill/verdiclip/issues/153)) ([a347923](https://github.com/mikejhill/verdiclip/commit/a3479231ab204665d70bb8333241131466407ea2))
+
 ## [0.16.0](https://github.com/mikejhill/verdiclip/compare/v0.15.0...v0.16.0) (2026-11-12)
 
 
