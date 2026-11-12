@@ -108,7 +108,7 @@ contacting the app. An agent is always required; scope defaults to user.
 
 | Command | Result |
 | --- | --- |
-| `ctl open PATH` | Opens the image in a new editor tab, as Open Image… does; returns its summary (it becomes the active document) |
+| `ctl open PATH` | Opens the image in a new editor tab, as Open Image… does; returns the new document's summary (it becomes active unless a menu or dialog is open, so use the returned id) |
 | `ctl save [--doc ID] [--path FILE] [--expect-state N]` | Writes what the editor's Save writes; without `--path`, the document's own file if it has a supported extension, else the next automatic name in the save folder. The tab shows saved. Returns id, path, state |
 | `ctl copy [--doc ID] [--expect-state N]` | Puts the flattened image on the clipboard; counts as delivered, like the editor's Copy. Returns id, state |
 

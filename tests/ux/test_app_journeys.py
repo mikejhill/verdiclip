@@ -64,6 +64,7 @@ from verdiclip.editor.close_prompt import CloseChoice, ClosePrompt
 from verdiclip.editor.session import ToolId
 from verdiclip.editor.style_bar import ColorButton
 from verdiclip.editor.window import EditorWindow
+from verdiclip.editor.workspace import Workspace
 from verdiclip.exceptions import UpdateError
 from verdiclip.geometry import Rect
 from verdiclip.platform.associations import DEFAULT_APPS_URI, FileAssociations
@@ -2199,6 +2200,24 @@ class TestAutomation:
         assert clipboard.image().width() == 80
         assert clean.result is not None
         assert clean.result["unsaved"] is False
+
+    def test_cli_open_reports_the_new_image_while_a_menu_is_open(
+        self, make_app: AppFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """UX-TRY-16: a tab opened behind a menu is still the one `open` returns."""
+        app = make_app()
+        first = tmp_path / "first.png"
+        second = tmp_path / "second.png"
+        QImage(40, 30, QImage.Format.Format_RGB32).save(str(first))
+        QImage(50, 20, QImage.Format.Format_RGB32).save(str(second))
+        app.controller.open_image(first)
+        monkeypatch.setattr(Workspace, "_protected_ui", staticmethod(lambda: True))
+
+        record = app.controller.open_file(second)
+
+        assert record.saved_path == second
+        assert record.session.document.image.width() == 50
+        assert len(app.controller.workspace.documents) == 2
 
     def test_a_lost_mouse_release_does_not_block_ai_edits(
         self, make_app: AppFactory, tmp_path: Path
