@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.16.0](https://github.com/mikejhill/verdiclip/compare/v0.15.0...v0.16.0) (2026-11-12)
+
+
+### Features
+
+* let AI tools edit open images through verdiclip ctl ([#150](https://github.com/mikejhill/verdiclip/issues/150)) ([b1bb04e](https://github.com/mikejhill/verdiclip/commit/b1bb04e289ddff833762dfea11bf476f96f0f4c9))
+* ship a VerdiClip skill for AI coding agents ([#151](https://github.com/mikejhill/verdiclip/issues/151)) ([cdab24c](https://github.com/mikejhill/verdiclip/commit/cdab24c981388b6807542bb7b428451f77e2f8c7))
+
 ## [0.15.0](https://github.com/mikejhill/verdiclip/compare/v0.14.2...v0.15.0) (2026-11-11)
 
 
