@@ -166,3 +166,34 @@ def test_helper_entry_point_reports_failure(
     result = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert not result["success"]
     assert "scrolls vertically" in result["message"]
+
+
+def test_moved_window_stops_the_check(window: Fixture) -> None:
+    """Moving the window under the capture is reported by ``check``."""
+    import ctypes  # noqa: PLC0415 - Windows-only
+    import ctypes.wintypes as w  # noqa: PLC0415
+
+    from verdiclip.platform.scrolling import UiaScrollTarget  # noqa: PLC0415
+
+    user = ctypes.WinDLL("user32", use_last_error=True)
+    user.SetWindowPos.argtypes = (
+        w.HWND,
+        w.HWND,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        w.UINT,
+    )
+    user.SetWindowPos.restype = w.BOOL
+
+    def work() -> None:
+        with UiaScrollTarget(window.center) as target:
+            target.check()
+            swp_nosize_nozorder = 0x0001 | 0x0004
+            user.SetWindowPos(target._window, None, 160, 140, 0, 0, swp_nosize_nozorder)
+            time.sleep(0.3)
+            with pytest.raises(CaptureError, match="moved"):
+                target.check()
+
+    in_thread(work)

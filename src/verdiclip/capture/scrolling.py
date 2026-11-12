@@ -230,11 +230,12 @@ class ScrollCapture:
         while (
             previous is not None
             and current == previous
-            and self._clock() - started < _CHANGE_SECONDS
+            and self._clock() - started < _SETTLE_SECONDS
         ):
             self._check()  # Esc must reach the restore before the kill
             self._sleep(_POLL_SECONDS)
             current = self._target.grab()
+        started = self._clock()  # Now wait for the change to finish
         while self._clock() - started < _SETTLE_SECONDS:
             self._check()  # Esc must reach the restore before the kill
             self._sleep(_POLL_SECONDS)

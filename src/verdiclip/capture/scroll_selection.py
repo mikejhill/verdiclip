@@ -227,7 +227,12 @@ class ScrollSelection(QObject):
         self._launch.stop()
         self._close_overlays()
         if self._helper is not None:
-            self._helper.shutdown()  # Emits finished -> _completed -> _end
+            try:
+                self._helper.shutdown()  # Emits finished -> _completed -> _end
+            except AppError:
+                # The app stays open; later captures must not be refused.
+                self._closing = False
+                raise
         elif self._active:
             self._end()
 

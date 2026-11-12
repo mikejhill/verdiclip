@@ -404,3 +404,9 @@ def test_cancel_while_settling_is_seen_promptly() -> None:
     assert result.message == "Scrolling capture cancelled"
     assert clock.now < 0.5
     assert panel.writes[-1] == pytest.approx(40.0)
+
+
+def test_render_slower_than_the_change_wait_is_still_awaited() -> None:
+    """A panel that takes a second to repaint is not captured stale."""
+    panel = Panel(900, lag=20)
+    assert run(panel).image == panel.document

@@ -272,9 +272,12 @@ class UiaScrollTarget:
         ).copy()
 
     def check(self) -> None:
-        """Stop if the target window closed or was minimized."""
+        """Stop if the window closed or was minimized, or the panel moved."""
         if not self._user.IsWindow(self._window) or self._user.IsIconic(self._window):
             raise CaptureError("The window being captured was closed or minimized")
+        if self._viewport() != self._area:
+            # Grabs read the original rectangle; anything else is the wrong pixels.
+            raise CaptureError("The window being captured moved or changed size")
 
     def __enter__(self) -> Self:
         """Own COM and capture resources for one capture."""

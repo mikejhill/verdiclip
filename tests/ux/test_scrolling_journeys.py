@@ -16,6 +16,7 @@ from tests.ux.test_app_journeys import (
 
 from verdiclip.capture.scroll_helper import ScrollHelper
 from verdiclip.capture.scrolling import ScrollResult
+from verdiclip.exceptions import CaptureError
 from verdiclip.geometry import Point
 from verdiclip.settings import Settings
 
@@ -256,3 +257,22 @@ def test_helper_that_cannot_start_releases_the_capture(
     assert status is not None
     assert "disk full" in status.text()
     assert "scroll_cancel" not in app.hotkeys.registered
+
+
+def test_failed_shutdown_does_not_block_later_captures(
+    make_app: AppFactory, qtbot: QtBot
+) -> None:
+    """If the helper will not stop, the app stays usable once it does."""
+    app = make_app()
+    helper = prepare(app)
+    helper.shutdown = Mock(side_effect=CaptureError("not stopped"))
+    service = app.controller._scrolling
+    app.controller.capture_scrolling()
+    select(qtbot, app, helper)
+    with pytest.raises(CaptureError):
+        service.shutdown()
+    helper.finished.emit(ScrollResult(None, "Scrolling capture cancelled", 0))
+    qtbot.waitUntil(lambda: not service.busy)
+    service.capture()
+    assert service.busy
+    service.cancel()
