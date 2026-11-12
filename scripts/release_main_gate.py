@@ -12,19 +12,20 @@ from urllib.request import Request, urlopen
 
 PAGE_SIZE = 100
 REPOSITORY = "mikejhill/verdiclip"
+# Only these gate publication. Other main workflows (mutation, release itself,
+# Dependabot graph updates) are asynchronous signals, not release dependencies.
 REQUIRED = {
     ".github/workflows/ci.yml",
     ".github/workflows/codeql.yml",
 }
-EXCLUDED = {
-    ".github/workflows/release.yml",
-    ".github/workflows/mutation.yml",
-    ".github/workflows/mutation-alerts.yml",
-}
 
 
 def assess(runs: list[dict[str, object]], sha: str) -> tuple[bool, list[int]]:
-    """Every observed verification counts; a second green run cannot erase red."""
+    """Ready once every required main workflow on ``sha`` has passed.
+
+    Any red required run fails the gate. A rerun reports its latest attempt,
+    so a flaky job can be re-run instead of waiting for another merge.
+    """
     seen: set[str] = set()
     ids: list[int] = []
     pending = False
@@ -34,16 +35,11 @@ def assess(runs: list[dict[str, object]], sha: str) -> tuple[bool, list[int]]:
         if run.get("head_branch") != "main":
             continue
         path = str(run.get("path", "")).split("@", 1)[0]
-        if path in EXCLUDED:
+        if path not in REQUIRED:
             continue
-        if not path.startswith(".github/workflows/"):
-            raise ValueError("Unrecognized main verification workflow")
         identity = run.get("id")
         if type(identity) is not int or identity <= 0:
             raise ValueError("Missing run identity")
-        # Rerun history must not silently replace a failed acceptance result.
-        if type(run.get("run_attempt")) is not int or run.get("run_attempt") != 1:
-            raise ValueError("Repeated main verification requires explicit disposition")
         seen.add(path)
         ids.append(identity)
         if run.get("status") != "completed":

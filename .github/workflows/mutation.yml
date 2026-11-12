@@ -1,10 +1,9 @@
 name: Mutation testing
 
 # Asynchronous default-branch signal, independent of PR/release readiness.
-# Pushes resume verified candidates; weekly/manual runs are cold.
+# Weekly and manual runs only: a 15-35 minute run on every push to main was
+# almost always superseded by the next push before it finished.
 on:
-  push:
-    branches: [main]
   schedule:
     - cron: "23 5 * * 1"
   workflow_dispatch:

@@ -1,7 +1,7 @@
 # Asynchronous mutation testing
 
 [Mutation runs](https://github.com/mikejhill/verdiclip/actions/workflows/mutation.yml)
-run after pushes to `main`, Mondays at 05:23 UTC, and manual dispatch on the
+run Mondays at 05:23 UTC and on manual dispatch on the
 default branch. Other manual refs are rejected. Mutation is independent of PR,
 merge and release checks. Existing coverage, CI and CodeQL gates remain intact;
 no repository protection or security settings are changed.
@@ -43,12 +43,10 @@ closed for manual reconciliation rather than being overwritten.
 
 ## Cache and evidence limits
 
-Push reruns can resume verdicts only for the **same complete commit, OS and
-architecture**, with the same configuration/test fingerprint. Candidate identity
-alone is insufficient: an unchanged function can call a changed helper, changing
-a mutant's result. Cross-commit restoration is prohibited even when candidate
-bodies match. The restored cache must also contain the exact qualified context;
-missing, legacy or mismatched caches are quarantined before reconciliation.
+Mutation runs weekly and on manual dispatch only, and every run starts cold.
+It no longer runs on each push to main: those runs took 15-35 minutes and the
+next push usually superseded them before they finished. The cache helpers
+still refuse cross-commit restoration if a resumed run is ever reintroduced.
 
 Generated candidate bodies and original sources must still match verified
 provenance from the locked mutmut 3.8.0 generator. Context is sealed only after
@@ -135,12 +133,8 @@ for an older policy remain open for explicit reconciliation rather than being
 silently cleared by an incomparable new policy.
 
 Resumed same-context verdicts remain explicitly historical. A cached pass cannot
-automatically resolve findings; use a fresh weekly or manual full run. Partial
-caches can be retained only after context and identity verification
-so a later push can resume useful work. Healthy runs are not cancelled by newer
-pushes. GitHub's concurrency queue can replace pending jobs; default-branch runs
-qualify their actual recorded revision rather than promising every pushed commit
-will execute.
+automatically resolve findings; use a fresh weekly or manual full run. Partial caches
+are never restored by weekly or manual runs.
 
 ## Permissions and validation
 
