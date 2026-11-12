@@ -48,10 +48,11 @@ class Frame:
 
 @dataclass(frozen=True, slots=True)
 class StitchResult:
-    """The joined image and how many seams fell back to the provider estimate."""
+    """The joined image, seams that fell back to the estimate, frames dropped."""
 
     image: QImage
     estimated_seams: int
+    stale_frames: int = 0
 
 
 def _rows(image: QImage) -> list[bytes]:
@@ -88,9 +89,18 @@ def _band(frames: list[list[bytes]], *, top: bool) -> int:
     return size
 
 
-def changed_rows(first: QImage, second: QImage) -> int:
-    """Rows that differ between two same-size images."""
-    return sum(a != b for a, b in zip(_rows(first), _rows(second), strict=True))
+def view_moved(first: QImage, second: QImage, animation: int) -> bool:
+    """Whether ``second`` shows more change than an animation of a few rows.
+
+    A move changes most rows that hold anything; a spinner, caret or ticking
+    timer changes up to ``animation`` rows, wherever it is.
+    """
+    if first.size() != second.size():
+        return True
+    old, new = _rows(first), _rows(second)
+    changed = sum(a != b for a, b in zip(old, new, strict=True))
+    detailed = sum(not _uniform(row) for row in old)
+    return changed > animation or 2 * changed > detailed > 0
 
 
 def fixed_rows(first: QImage, second: QImage) -> int:
@@ -195,9 +205,12 @@ def _strip(
     if not window or not seams:
         return 0
     edge = (width - window) * 4
-    misses = [0] * window
+    # Seams at which each column disagreed: a thumb moves at nearly every
+    # seam, while content that changed (a timestamp) does so only now and then.
+    seen = [0] * window
     for index, offset in seams:
         previous, following = rows[index - 1], rows[index]
+        misses = [0] * window
         for y in range(top, top + body - offset):
             old, new = previous[y + offset], following[y]
             if old == new or old[:edge] != new[:edge]:
@@ -205,10 +218,10 @@ def _strip(
             for x in range(window):
                 at = edge + x * 4
                 misses[x] += old[at : at + 4] != new[at : at + 4]
-    strongest = max(misses)
-    if strongest < _MIN_VOTES:
-        return 0
-    first = next(x for x, count in enumerate(misses) if 4 * count >= strongest)
+        for x, count in enumerate(misses):
+            seen[x] += count >= _MIN_VOTES
+    needed = (len(seams) + 1) // 2
+    first = next((x for x, count in enumerate(seen) if count >= needed > 0), window)
     return window - first
 
 
@@ -226,13 +239,15 @@ def stitch(frames: Sequence[Frame]) -> StitchResult:
     body = height - header - footer
     margin = min(width // 10, 32)
     keys = [_keys(r[header : height - footer], margin, width - margin) for r in rows]
-    # A first frame taken before the panel reached the top shows a later view
-    # again; it joins nothing and would repeat that content above the page.
-    lead = int(
-        len(frames) > 1
-        and find_offset(keys[0], keys[1], None) is None
-        and any(_same_view(keys[0], later) for later in keys[1:])
-    )
+    # Frames taken before the panel reached the top show a later view again;
+    # they join nothing and would repeat that content above the page.
+    lead = 0
+    while (
+        lead + 1 < len(frames)
+        and find_offset(keys[lead], keys[lead + 1], None) is None
+        and any(_same_view(keys[lead], later) for later in keys[lead + 1 :])
+    ):
+        lead += 1
 
     # (frame index, first body row to keep) for each frame after the first.
     pieces: list[tuple[int, int]] = [(lead, 0)]
@@ -271,4 +286,4 @@ def stitch(frames: Sequence[Frame]) -> StitchResult:
             )
     finally:
         painter.end()
-    return StitchResult(result, estimated)
+    return StitchResult(result, estimated, lead)

@@ -353,6 +353,21 @@ def test_ignored_move_to_the_top_is_asked_again() -> None:
     assert panel.writes[:2] == [0.0, 0.0]
 
 
+def test_start_near_the_top_is_not_asked_again() -> None:
+    """A start a few rows down may look like the top: one request is enough."""
+    panel = Late(1400, start=2.0)
+    run(panel)
+    assert panel.writes[1] != 0.0
+
+
+def test_stale_top_frame_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When the stitcher leaves out stale frames, the user is told."""
+    monkeypatch.setattr(
+        scrolling, "stitch", lambda frames: StitchResult(frames[0].image, 0, 1)
+    )
+    assert "top of the image" in run(Panel(900)).warning
+
+
 class Spinning(Panel):
     """A spinner in a few rows changes on every grab."""
 

@@ -13,7 +13,7 @@ from typing import Protocol
 
 from PySide6.QtGui import QImage
 
-from verdiclip.capture.stitch import Frame, changed_rows, fixed_rows, stitch
+from verdiclip.capture.stitch import Frame, fixed_rows, stitch, view_moved
 from verdiclip.exceptions import CaptureError
 
 MAX_SECONDS = 45.0
@@ -127,6 +127,10 @@ class ScrollCapture:
         if not self._restore(start):
             notes.append("The panel could not be scrolled back to where it was.")
         result = stitch(frames)
+        if result.stale_frames:
+            notes.append(
+                "The panel was slow to reach its top; check the top of the image."
+            )
         if result.estimated_seams:
             notes.append(
                 f"{result.estimated_seams} seam(s) were estimated; check the image."
@@ -220,15 +224,19 @@ class ScrollCapture:
             position = target.position()
             return image, position, position.percent
         before = target.grab()
-        target.scroll_to(0.0)
-        for _ in range(_TOP_TRIES):
+        # Near the top, the top may look like the start: do not insist.
+        scale = start.pixels_per_percent(target.height)
+        near = scale is not None and start.percent * scale < target.height / 4
+        tries = 1 if near else _TOP_TRIES
+        while True:
+            target.scroll_to(0.0)
             self._position_after(start.percent)  # Wait for the provider to answer
             image = self._settle(before)
-            if self._moved(before, image):
+            tries -= 1
+            if not tries or self._moved(before, image):
                 break
             # Still the starting view: the request was late or undone. A frame
             # of it would repeat the end of the page above its top.
-            target.scroll_to(0.0)
         position = target.position()  # As above: the answer for these pixels
         # A provider that has not caught up yet is still at the top.
         return image, ScrollPosition(0.0, position.view_size), position.percent
@@ -248,7 +256,7 @@ class ScrollCapture:
     def _moved(self, previous: QImage, current: QImage) -> bool:
         """Whether more changed than a spinner, caret or ticking timer would."""
         limit = max(4, min(48, self._target.height // 20))
-        return changed_rows(previous, current) > limit
+        return view_moved(previous, current, limit)
 
     def _settle(self, previous: QImage | None) -> QImage:
         """Wait for the view to move (if expected), then for it to stop.

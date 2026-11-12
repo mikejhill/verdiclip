@@ -8,7 +8,7 @@ import random
 import pytest
 from PySide6.QtGui import QColor, QImage
 
-from verdiclip.capture.stitch import Frame, find_offset, stitch
+from verdiclip.capture.stitch import Frame, find_offset, stitch, view_moved
 
 WIDTH = 120
 VIEW = 200
@@ -189,7 +189,10 @@ def test_changed_content_does_not_widen_the_strip() -> None:
     document = page(600)
     shots = frames(document, 120, thumb=True)
     image = shots[1].image
-    for y in range(40, 60):
+    for y in range(140, 160):  # Away from its thumb
+        for x in range(WIDTH - 10, WIDTH - 6):
+            image.setPixel(x, y, 0x101010 + x)
+    for y in range(160, 180):
         for x in range(WIDTH):
             image.setPixel(x, y, 0x101010 + x)
     result = stitch(shots)
@@ -204,8 +207,9 @@ def test_stale_first_frame_is_dropped() -> None:
     for y in range(VIEW - 12, VIEW - 4):  # A spinner moved meanwhile
         for x in range(WIDTH):
             stale.setPixel(x, y, 0x0F0F0F)
-    result = stitch([Frame(stale), Frame(shots[0].image), *shots[1:]])
+    result = stitch([Frame(stale), Frame(stale), Frame(shots[0].image), *shots[1:]])
     assert result.estimated_seams == 0
+    assert result.stale_frames == 2
     assert result.image == expected(document)
 
 
@@ -223,3 +227,21 @@ def test_narrow_frames_have_no_strip() -> None:
     shots = [Frame(document.copy(0, top, 8, VIEW)) for top in (0, 100, 200)]
     shots = [shots[0], *(Frame(f.image, 100.0) for f in shots[1:])]
     assert stitch(shots).image.width() == 8
+
+
+def test_views_of_another_size_count_as_moved() -> None:
+    """A resized view is never mistaken for a still one."""
+    assert view_moved(page(VIEW), page(VIEW + 1), 10)
+
+
+def test_sparse_view_that_shifts_counts_as_moved() -> None:
+    """Two lines of text on a blank view move when they shift, few rows or not."""
+    blank = QImage(WIDTH, VIEW, QImage.Format.Format_RGB32)
+    blank.fill(QColor("white"))
+    before, after = blank.copy(), blank.copy()
+    for y in range(3):
+        for x in range(WIDTH):
+            before.setPixel(x, 50 + y, x)
+            after.setPixel(x, 40 + y, x)
+    assert view_moved(before, after, 10)
+    assert not view_moved(before, before.copy(), 10)
