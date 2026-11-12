@@ -31,9 +31,8 @@ Tab ownership/transfer/topology, fake hotkey routing and accessibility contracts
 have a reproducible primary CI target: `uv run poe test-tabs-ci`. The two explicit
 Qt runtime jobs require separate scoped line and branch coverage of at least 90%
 and upload source/runtime/seed provenance with JUnit, logs and XML coverage. Native
-laptop checks are supplemental, not required infrastructure. See the
-[tab CI contract](docs/design/editor-tabs-ci-contract.md) for simulation boundaries
-and replay instructions. The whole-app and mutation gates below still apply.
+laptop checks are supplemental, not required infrastructure. The whole-app and
+mutation gates below still apply.
 
 The real desktop smoke test runs automatically on Windows with an unlocked
 session. A positively identified locked or disconnected session skips only
@@ -88,12 +87,9 @@ uv run --group mutation mutmut show <mutant-name>      # what a survivor changed
 mutmut keeps its verdicts in `mutants/`, so a local rerun can retain earlier
 results. A pattern retests every mutant it matches. Delete `mutants/` for a
 fresh local score after any dependency/source/test change; an unchanged
-candidate body alone does not prove unchanged behavior. CI runs independently
-after default-branch pushes and weekly, or manually on the default branch. PR
-and release checks do not wait for mutation. Push reruns may resume qualified
-identity-verified verdicts only for the same complete commit, OS and
-architecture. Weekly and manual runs start fresh. See [mutation testing and
-triage](docs/mutation-testing.md).
+candidate body alone does not prove unchanged behavior. CI runs it weekly, or
+manually on the default branch; each run starts fresh. PR and release checks do
+not wait for mutation. See [mutation testing and triage](docs/mutation-testing.md).
 
 A surviving mutant is a change no test noticed: add an assertion that fails for it, or mark the line `# pragma: no mutate` if the change is truly equivalent.
 

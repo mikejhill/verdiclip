@@ -80,16 +80,6 @@ jobs:
           # Merging also requires CodeQL results for the head commit.
           gh workflow run codeql.yml --repo "$GITHUB_REPOSITORY" --ref "$branch"
 
-  ci:
-    name: CI
-    needs: release-please
-    if: always() && (needs.release-please.outputs.release_created == 'true' || inputs.testpypi)
-    uses: ./.github/workflows/ci.yml # zizmor: ignore[self-repository] -- portable local reuse
-    permissions:
-      contents: read
-      security-events: write
-      pull-requests: write
-
   main-verification:
     name: Verify exact main checks before publication
     if: github.event_name == 'push' || inputs.testpypi
@@ -110,9 +100,9 @@ jobs:
 
   build:
     name: Build distributions
-    needs: [release-please, ci, main-verification]
+    needs: [release-please, main-verification]
     if: >-
-      always() && needs.ci.result == 'success' && needs.main-verification.result == 'success' &&
+      always() && needs.main-verification.result == 'success' &&
       (needs.release-please.outputs.release_created == 'true' || inputs.testpypi)
     runs-on: windows-latest
     steps:

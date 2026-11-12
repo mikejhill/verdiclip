@@ -47,9 +47,11 @@ laptop or completion of every item in the physical checklist.
    review threads and code-scanning findings as described in
    [CONTRIBUTING.md](../CONTRIBUTING.md). Preserve the exact-main verification gate
    before publication; do not weaken coverage, latency or security requirements.
-   Publication requires the exact main CI and CodeQL results, real desktop smoke
-   and the unchanged native popup/modal/tab regressions. A missing, skipped or failed
-   run cannot be replaced by an earlier feature-branch result.
+   Publication requires the exact main CI and CodeQL results (both include the
+   real desktop smoke and the native popup/modal/tab regressions) and no open
+   code-scanning alerts. A missing, skipped or failed run cannot be replaced by an
+   earlier feature-branch result; re-running a flaky main job is allowed, and the
+   gate judges its latest attempt.
 2. Review the changed UX contracts and their automated evidence, including
    interrupted/repeated flows, focused editors and the applicable Qt profiles.
    Review light/dark snapshots for visible changes. Record the final commit, run

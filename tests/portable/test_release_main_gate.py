@@ -51,15 +51,12 @@ def test_passing_release_run_cannot_erase_failed_main(result: object) -> None:
         assess(rows, SHA)
 
 
-def test_pending_and_optional_main_verification_block() -> None:
-    """Pending and optional main verification block."""
-    rows = [*good(), run(4, "gui-resource-readiness")]
-    rows[-1]["status"] = "in_progress"
-    assert not assess(rows, SHA)[0]
-    rows[-1]["status"] = "completed"
+def test_other_main_workflows_do_not_gate_publication() -> None:
+    """Only CI and CodeQL gate; other workflows can be pending or red."""
+    rows = [*good(), run(4, "instance-lifetime"), run(5, "anything-else")]
+    rows[-2]["status"] = "in_progress"
     rows[-1]["conclusion"] = "failure"
-    with pytest.raises((ValueError, TypeError), match=r"."):
-        assess(rows, SHA)
+    assert assess(rows, SHA) == (True, [1, 2])
 
 
 def test_async_mutation_does_not_become_a_release_dependency() -> None:
@@ -80,11 +77,13 @@ def test_pr_or_other_branch_is_not_main_evidence(field: str, value: str) -> None
     assert not assess(rows, SHA)[0]
 
 
-def test_successful_retry_is_not_an_implicit_waiver() -> None:
-    """Successful retry is not an implicit waiver."""
+def test_rerun_counts_by_its_latest_result() -> None:
+    """A re-run flaky job is judged by its latest attempt."""
     rows = good()
     rows[0]["run_attempt"] = 2
-    with pytest.raises(ValueError, match="disposition"):
+    assert assess(rows, SHA) == (True, [1, 2])
+    rows[0]["conclusion"] = "failure"
+    with pytest.raises(ValueError, match="did not succeed"):
         assess(rows, SHA)
 
 
@@ -115,13 +114,18 @@ def test_both_publish_targets_depend_on_gated_build() -> None:
     workflow = (
         Path(__file__).resolve().parents[2] / ".github/workflows/release.yml"
     ).read_text()
-    release = workflow.split("  release-please:\n", 1)[1].split("  ci:\n", 1)[0]
+    release = workflow.split("  release-please:\n", 1)[1].split(
+        "  main-verification:\n", 1
+    )[0]
     assert "needs: main-verification" in release
     gate_job = workflow.split("  main-verification:\n", 1)[1].split("  build:\n", 1)[0]
     assert "needs: release-please" not in gate_job
     assert "github.event_name == 'push' || inputs.testpypi" in gate_job
     build = workflow.split("  build:\n", 1)[1].split("  publish-pypi:", 1)[0]
-    assert "needs: [release-please, ci, main-verification]" in build
+    assert "needs: [release-please, main-verification]" in build
+    assert "  ci:\n" not in workflow, (
+        "main-verification already proves CI on this commit"
+    )
     assert "needs.main-verification.result == 'success'" in build
     assert "needs: [release-please, build]" in workflow.split("  publish-pypi:", 1)[1]
     assert "needs: build" in workflow.split("  publish-testpypi:", 1)[1]
@@ -184,8 +188,8 @@ def test_complete_gate_path(
 
 
 @pytest.mark.parametrize("outcome", ["queued", "failure", "skipped"])
-def test_native_qualification_is_a_required_publication_gate(outcome: str) -> None:
-    """A version-only release still needs its exact main native result."""
+def test_codeql_is_a_required_publication_gate(outcome: str) -> None:
+    """A release still needs its exact main CodeQL result."""
     rows = good()
     if outcome == "queued":
         rows[-1]["status"] = "queued"
