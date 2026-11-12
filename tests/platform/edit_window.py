@@ -43,7 +43,9 @@ def main() -> None:
     )
     user.SendMessageW.argtypes = (w.HWND, w.UINT, w.WPARAM, w.LPARAM)
     frame = user.CreateWindowExW(
-        0x00000008,  # WS_EX_TOPMOST: other windows must not cover the points
+        # WS_EX_TOPMOST | WS_EX_NOACTIVATE: stay visible above other windows
+        # without taking the foreground from the test process.
+        0x00000008 | 0x08000000,
         "#32770",  # Dialog class: unlike STATIC it is not hit-test transparent
         "VerdiClip scroll fixture",
         _WS_OVERLAPPEDWINDOW | _WS_VISIBLE,
@@ -76,7 +78,6 @@ def main() -> None:
     )
     font = gdi.GetStockObject(16)  # SYSTEM_FIXED_FONT
     user.SendMessageW(edit, _WM_SETFONT, font, 1)
-    user.SetForegroundWindow(frame)
     rect = w.RECT()
     user.GetWindowRect(edit, c.byref(rect))
     client = w.RECT()
