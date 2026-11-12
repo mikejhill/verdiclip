@@ -488,11 +488,19 @@ class AppController(QObject):
         Raises:
             ValueError: If the file can't be read as an image.
         """
-        page = self._open_file(path, None).current_page
-        if page is None:
+        before = {record.identifier for record in self._workspace.documents}
+        self._open_file(path, None)
+        # The new tab isn't selected while a menu or dialog is open, so find
+        # the admitted document rather than reading the current tab.
+        added = [
+            record
+            for record in self._workspace.documents
+            if record.identifier not in before
+        ]
+        if len(added) != 1:
             msg = f"{path.name} did not open in a tab"
             raise ValueError(msg)
-        return page.record
+        return added[0]
 
     def _open_file(self, path: Path, target: EditorWindow | None) -> EditorWindow:
         """Read ``path`` and open it; raise ValueError if it isn't an image."""

@@ -95,8 +95,9 @@ rects, `[x, y]` for points):
 
 ## Files
 
-- `verdiclip ctl open PATH` opens an image in a new tab and makes it active;
-  the reply is its summary, including `id`.
+- `verdiclip ctl open PATH` opens an image in a new tab; the reply is its
+  summary. Use its `id` with `--doc` afterwards: the tab isn't brought to the
+  front while the user has a menu or dialog open.
 - `verdiclip ctl save [--path FILE] --expect-state STATE` writes what the
   editor's Save would (format from the extension: png, jpg, bmp, gif, tiff or webp).
   Without `--path` it reuses the image's file or picks the next automatic name
