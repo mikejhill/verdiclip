@@ -141,7 +141,7 @@ class CommandLine:
     @staticmethod
     def _travel_params(args: argparse.Namespace) -> JsonObject:
         """Return the parameters of ``ctl undo`` and ``ctl redo``."""
-        params: JsonObject = {"only_automated": bool(args.only_automated)}
+        params: JsonObject = {"only_ctl": bool(args.only_ctl)}
         if args.steps is not None:
             params["steps"] = int(args.steps)
         if args.to is not None:
@@ -343,7 +343,7 @@ class CommandLine:
         apply = methods.add_parser(
             "apply",
             parents=[shared, doc, guard],
-            help="Apply edit operations as one undo step labelled 'Automation: ...'.",
+            help="Apply edit operations as one undo step.",
         )
         apply.add_argument(
             "--ops",
@@ -351,7 +351,8 @@ class CommandLine:
             help="JSON file holding the operations array ('-' reads stdin).",
         )
         apply.add_argument(
-            "--label", help="Name of the undo step after 'Automation: '."
+            "--label",
+            help="Name of the undo step (default: a summary of the operations).",
         )
         apply.add_argument(
             "--select", action="store_true", help="Select the annotations added."
@@ -373,9 +374,9 @@ class CommandLine:
                 "--to", type=int, help="State to reach (from `ctl history`)."
             )
             travel.add_argument(
-                "--only-automated",
+                "--only-ctl",
                 action="store_true",
-                help="Fail with exit code 4 instead of touching a step the user made.",
+                help="Exit 4 rather than touch a step made in the editor.",
             )
         select = methods.add_parser(
             "select",

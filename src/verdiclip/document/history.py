@@ -20,7 +20,7 @@ class HistoryStep:
 
     label: str
     state: int
-    automated: bool
+    from_ctl: bool
 
 
 class History:
@@ -76,7 +76,7 @@ class History:
     def undo_steps(self) -> tuple[HistoryStep, ...]:
         """Return the steps ``undo`` can revert, oldest first."""
         return tuple(
-            HistoryStep(c.description, s, automated=c.automated)
+            HistoryStep(c.description, s, from_ctl=c.from_ctl)
             for c, s in zip(self._done, self._states[1:], strict=True)
         )
 
@@ -84,7 +84,7 @@ class History:
     def redo_steps(self) -> tuple[HistoryStep, ...]:
         """Return the steps ``redo`` can re-apply, next first."""
         return tuple(
-            HistoryStep(c.description, s, automated=c.automated)
+            HistoryStep(c.description, s, from_ctl=c.from_ctl)
             for c, s in zip(
                 reversed(self._undone), reversed(self._redo_states), strict=True
             )

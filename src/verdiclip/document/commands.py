@@ -24,8 +24,8 @@ class Command(ABC):
         return self._description
 
     @property
-    def automated(self) -> bool:
-        """True if a tool or script made this change, not the user."""
+    def from_ctl(self) -> bool:
+        """True if this change came through `verdiclip ctl`, not the editor."""
         return False
 
     @abstractmethod
@@ -197,7 +197,7 @@ class TransformImage(Command):
 
 
 class Batch(Command):
-    """Several changes from an automation request, undone as one step."""
+    """Several changes from one `verdiclip ctl apply`, undone as one step."""
 
     def __init__(self, commands: Sequence[Command], description: str) -> None:
         super().__init__(description)
@@ -208,8 +208,8 @@ class Batch(Command):
 
     @property
     @override
-    def automated(self) -> bool:
-        """Return True: batches come from automation."""
+    def from_ctl(self) -> bool:
+        """Return True: batches come from `verdiclip ctl apply`."""
         return True
 
     @override

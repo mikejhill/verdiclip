@@ -29,7 +29,7 @@ def test_skill_describes_the_commands_it_needs() -> None:
         "ctl render",
         "ctl get",
         "ctl apply",
-        "undo --only-automated",
+        "undo --only-ctl",
     ):
         assert command in text
 
