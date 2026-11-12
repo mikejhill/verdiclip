@@ -28,15 +28,15 @@ def run(identity: int, path: str) -> dict[str, object]:
 
 def good() -> list[dict[str, object]]:
     """Good."""
-    return [run(1, "ci"), run(2, "codeql"), run(3, "simple-scroll-native")]
+    return [run(1, "ci"), run(2, "codeql")]
 
 
 def test_exact_main_checks_required() -> None:
     """Exact main checks required."""
-    assert assess(good(), SHA) == (True, [1, 2, 3])
+    assert assess(good(), SHA) == (True, [1, 2])
     assert assess([], SHA) == (False, [])
     assert assess(good()[:1], SHA)[0] is False
-    assert assess(good()[:2], SHA)[0] is False
+    assert assess(good()[1:], SHA)[0] is False
     assert assess(good(), "b" * 40)[0] is False
 
 
@@ -65,9 +65,9 @@ def test_pending_and_optional_main_verification_block() -> None:
 def test_async_mutation_does_not_become_a_release_dependency() -> None:
     """Async mutation does not become a release dependency."""
     rows = [*good(), run(4, "mutation"), run(5, "mutation-alerts")]
-    for item in rows[3:]:
+    for item in rows[2:]:
         item["status"] = "queued"
-    assert assess(rows, SHA) == (True, [1, 2, 3])
+    assert assess(rows, SHA) == (True, [1, 2])
 
 
 @pytest.mark.parametrize(
@@ -179,7 +179,7 @@ def test_complete_gate_path(
     else:
         gate.main()
         receipt = json.loads(capsys.readouterr().out)
-        assert receipt == {"main_sha": SHA, "verified_runs": [1, 2, 3]}
+        assert receipt == {"main_sha": SHA, "verified_runs": [1, 2]}
         assert len(endpoints) == 3
 
 

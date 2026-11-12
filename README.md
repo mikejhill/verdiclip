@@ -44,7 +44,7 @@ Tray → **Check for updates** opens a status window immediately. It stays visib
 
 ## Capture and tabs
 
-Completed captures open a new tab in the existing editor by default; Settings can choose separate windows. The editor is brought forward when capture completes, unless protected editor UI is open. Ordinary region, window, full-screen and Repeat capture keep their existing behavior. Scrolling capture is temporarily unavailable (see below).
+Completed captures open a new tab in the existing editor by default; Settings can choose separate windows. The editor is brought forward when capture completes, unless protected editor UI is open. Ordinary region, window, full-screen and Repeat capture keep their existing behavior. Scrolling capture is a separate command (see below).
 
 ## Capture
 
@@ -54,6 +54,7 @@ Completed captures open a new tab in the existing editor by default; Settings ca
 | Capture the active window | `Alt+PrtSc` |
 | Capture every monitor | `Ctrl+PrtSc` |
 | Repeat the last capture | `Shift+PrtSc` |
+| Capture a scrolling area | `Ctrl+Alt+PrtSc` |
 
 ![The capture overlay: the frozen screen is dimmed, the window under the cursor is outlined with its title, and a magnifier shows the exact pixels](https://raw.githubusercontent.com/mikejhill/verdiclip/main/docs/images/capture.png)
 
@@ -63,7 +64,9 @@ If Windows or another screenshot tool already owns `PrtSc`, VerdiClip tells you 
 
 ### Scrolling capture
 
-Scrolling capture is temporarily unavailable. The earlier implementation (0.14.0 to 0.14.2) refused most real-world panels, so its tray entry and `Ctrl+Alt+PrtSc` shortcut are hidden while it is redesigned. A saved custom shortcut is kept for its return.
+Choose **Capture scrolling area** from the tray, or press `Ctrl+Alt+PrtSc`, then click inside the panel you want (a web page, a document, a list). VerdiClip scrolls it to the top, captures it page by page to the bottom, joins the pages, and puts the panel back where it was. The image uses your usual editor, clipboard and file settings. Press `Esc` to stop.
+
+It works with panels that support Windows UI Automation scrolling, which covers browsers, Office, Explorer and most modern apps. Sticky headers and footers appear once. If some pages could not be matched exactly, the image is still delivered and VerdiClip tells you to check it. Keep other windows off the panel while it runs.
 
 ## Annotate
 

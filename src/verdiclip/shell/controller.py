@@ -46,8 +46,7 @@ from verdiclip.settings import (
     Settings,
     SettingsStore,
 )
-from verdiclip.shell import settings_dialog
-from verdiclip.shell.settings_dialog import SettingsDialog
+from verdiclip.shell.settings_dialog import HOTKEY_FIELDS, SettingsDialog
 from verdiclip.shell.theme import ThemeManager
 from verdiclip.shell.tray import CHECK_UPDATES_LABEL, TrayCommands, TrayIcon
 from verdiclip.update.service import Updater
@@ -97,7 +96,7 @@ class AppController(QObject):
         self._capture = CaptureService(
             screens, windows, show_magnifier=self._settings.capture.show_magnifier
         )
-        self._scrolling = ScrollSelection(screens, hotkeys)
+        self._scrolling = ScrollSelection(screens, windows, hotkeys)
         self._pending_capture: tuple[str, bool] | None = None
         self._capture_handoff = QTimer(self)
         self._capture_handoff.setSingleShot(True)
@@ -528,7 +527,6 @@ class AppController(QObject):
 
     def _tray_commands(self) -> TrayCommands:
         """Return the callbacks for the tray menu."""
-        scrolling = settings_dialog.SCROLLING_CAPTURE_ENABLED
         return TrayCommands(
             capture_region=lambda: self._request_capture("region"),
             capture_window=lambda: self._request_capture("window"),
@@ -540,8 +538,8 @@ class AppController(QObject):
             about=self._show_about,
             exit=self.request_exit,
             update=self.check_for_updates if self._updater is not None else None,
-            capture_scrolling=self.capture_scrolling if scrolling else None,
-            copy_scroll_error=self._copy_scroll_error if scrolling else None,
+            capture_scrolling=self.capture_scrolling,
+            copy_scroll_error=self._copy_scroll_error,
         )
 
     def _ask_open_image(self) -> None:
@@ -873,7 +871,7 @@ class AppController(QObject):
         self._hotkeys.unregister_all()
         labels: dict[str, str] = {}
         problems: list[str] = []
-        for name, label in settings_dialog.hotkey_fields():
+        for name, label in HOTKEY_FIELDS:
             text = getattr(self._settings.hotkeys, name)
             if not text:
                 continue
