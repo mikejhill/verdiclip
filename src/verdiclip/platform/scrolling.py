@@ -275,7 +275,13 @@ class UiaScrollTarget:
         """Stop if the window closed or was minimized, or the panel moved."""
         if not self._user.IsWindow(self._window) or self._user.IsIconic(self._window):
             raise CaptureError("The window being captured was closed or minimized")
-        if self._viewport() != self._area:
+        try:
+            viewport = self._viewport()
+        except OSError as error:  # The provider went away with its window
+            raise CaptureError(
+                "The window being captured was closed or minimized"
+            ) from error
+        if viewport != self._area:
             # Grabs read the original rectangle; anything else is the wrong pixels.
             raise CaptureError("The window being captured moved or changed size")
 
