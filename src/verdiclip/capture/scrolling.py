@@ -13,7 +13,7 @@ from typing import Protocol
 
 from PySide6.QtGui import QImage
 
-from verdiclip.capture.stitch import Frame, fixed_rows, stitch
+from verdiclip.capture.stitch import Frame, fixed_rows, stitch, view_moved
 from verdiclip.exceptions import CaptureError
 
 MAX_SECONDS = 45.0
@@ -29,6 +29,8 @@ _POLL_SECONDS = 0.05
 _CHANGE_SECONDS = 0.6
 # Give up waiting for animation to stop after this long.
 _SETTLE_SECONDS = 1.5
+# Ask for the top this many times before trusting a view that did not move.
+_TOP_TRIES = 3
 _UNSURE_END = "The panel may not have reached the end; check the bottom of the image."
 
 
@@ -125,6 +127,10 @@ class ScrollCapture:
         if not self._restore(start):
             notes.append("The panel could not be scrolled back to where it was.")
         result = stitch(frames)
+        if result.stale_frames:
+            notes.append(
+                "The panel was slow to reach its top; check the top of the image."
+            )
         if result.estimated_seams:
             notes.append(
                 f"{result.estimated_seams} seam(s) were estimated; check the image."
@@ -171,7 +177,7 @@ class ScrollCapture:
         following = self._settle(walk.image)
         # Smooth scrolling reports midway positions: re-read for these pixels.
         moved = target.position()
-        if following == walk.image and moved.percent <= walk.reading:
+        if not self._moved(walk.image, following) and moved.percent <= walk.reading:
             # Neither pixels nor position moved: the end, if it says so.
             if moved.percent < _STALL_PERCENT:
                 notes.append(_UNSURE_END)
@@ -212,14 +218,25 @@ class ScrollCapture:
     def _top(self, start: ScrollPosition) -> tuple[QImage, ScrollPosition, float]:
         """Scroll to the top; return its image, position and the provider's answer."""
         target = self._target
-        before = target.grab() if start.percent > 0.0 else None
-        target.scroll_to(0.0)
         if start.percent <= 0.0:
+            target.scroll_to(0.0)
             image = self._settle(None)
             position = target.position()
             return image, position, position.percent
-        self._position_after(start.percent)  # Wait for the provider to answer
-        image = self._settle(before)
+        before = target.grab()
+        # Near the top, the top may look like the start: do not insist.
+        scale = start.pixels_per_percent(target.height)
+        near = scale is not None and start.percent * scale < target.height / 4
+        tries = 1 if near else _TOP_TRIES
+        while True:
+            target.scroll_to(0.0)
+            self._position_after(start.percent)  # Wait for the provider to answer
+            image = self._settle(before)
+            tries -= 1
+            if not tries or self._moved(before, image):
+                break
+            # Still the starting view: the request was late or undone. A frame
+            # of it would repeat the end of the page above its top.
         position = target.position()  # As above: the answer for these pixels
         # A provider that has not caught up yet is still at the top.
         return image, ScrollPosition(0.0, position.view_size), position.percent
@@ -236,13 +253,21 @@ class ScrollCapture:
             position = self._target.position()
         return position
 
+    def _moved(self, previous: QImage, current: QImage) -> bool:
+        """Whether more changed than a spinner, caret or ticking timer would."""
+        limit = max(4, min(48, self._target.height // 20))
+        return view_moved(previous, current, limit)
+
     def _settle(self, previous: QImage | None) -> QImage:
-        """Wait for a visible change (if any), then for two identical grabs."""
+        """Wait for the view to move (if expected), then for it to stop.
+
+        Small animations count as neither: a spinner never stops changing.
+        """
         started = self._clock()
         current = self._target.grab()
         while (
             previous is not None
-            and current == previous
+            and not self._moved(previous, current)
             and self._clock() - started < _SETTLE_SECONDS
         ):
             self._check()  # Esc must reach the restore before the kill
@@ -253,9 +278,10 @@ class ScrollCapture:
             self._check()  # Esc must reach the restore before the kill
             self._sleep(_POLL_SECONDS)
             following = self._target.grab()
-            if following == current:
-                break
+            moving = self._moved(current, following)
             current = following
+            if not moving:
+                break
         return current
 
     def _restore(self, start: ScrollPosition) -> bool:
