@@ -103,6 +103,8 @@ class CommandLine:
             "undo": self._travel_params,
             "redo": self._travel_params,
             "select": self._select_params,
+            "open": self._path_params,
+            "save": self._path_params,
             "install-skill": self._skill_params,
         }
         if method in builders:
@@ -162,6 +164,12 @@ class CommandLine:
         return params
 
     @staticmethod
+    def _path_params(args: argparse.Namespace) -> JsonObject:
+        """Return ``path`` made absolute, since the app runs in another folder."""
+        path = getattr(args, "path", None)
+        return {} if path is None else {"path": str(Path(path).resolve())}
+
+    @staticmethod
     def _select_params(args: argparse.Namespace) -> JsonObject:
         """Return the parameters of ``ctl select``."""
         return {"ids": [str(i) for i in args.ids]}
@@ -184,6 +192,10 @@ class CommandLine:
             data = data["ops"]
         if not isinstance(data, list):
             self._parser.error("--ops must hold a JSON array of operations")
+        for operation in data:
+            # The app runs in another folder, so image paths become absolute here
+            if isinstance(operation, dict) and isinstance(operation.get("path"), str):
+                operation["path"] = str(Path(str(operation["path"])).resolve())
         return data
 
     def _parse_region(self, text: str) -> Rect:
@@ -327,6 +339,32 @@ class CommandLine:
         CommandLine._add_ctl_edits(methods, shared, doc)
 
     @staticmethod
+    def _add_ctl_files(
+        methods: argparse._SubParsersAction[argparse.ArgumentParser],
+        shared: argparse.ArgumentParser,
+        doc: argparse.ArgumentParser,
+        guard: argparse.ArgumentParser,
+    ) -> None:
+        """Define the ``ctl`` methods that open, save and copy documents."""
+        opened = methods.add_parser(
+            "open", parents=[shared], help="Open an image file in an editor tab."
+        )
+        opened.add_argument("path", help="Image file to open.")
+        save = methods.add_parser(
+            "save",
+            parents=[shared, doc, guard],
+            help="Save as the editor's Save would (its file, or a new automatic name).",
+        )
+        save.add_argument(
+            "--path", help="File to write instead; its extension sets the format."
+        )
+        methods.add_parser(
+            "copy",
+            parents=[shared, doc, guard],
+            help="Copy the image to the clipboard as the editor's Copy would.",
+        )
+
+    @staticmethod
     def _add_ctl_edits(
         methods: argparse._SubParsersAction[argparse.ArgumentParser],
         shared: argparse.ArgumentParser,
@@ -381,6 +419,7 @@ class CommandLine:
             help="Select annotations by id (no ids clears the selection).",
         )
         select.add_argument("ids", nargs="*", help="Annotation ids.")
+        CommandLine._add_ctl_files(methods, shared, doc, guard)
         skill = methods.add_parser(
             "install-skill",
             parents=[shared],

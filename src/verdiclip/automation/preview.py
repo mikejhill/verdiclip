@@ -85,12 +85,16 @@ class PreviewRenderer:
             msg = f"grid must be 0 (off) or positive, got {options.grid}"
             raise AutomationError(ErrorCode.BAD_REQUEST, msg)
         crop = document.crop.rounded()
-        area = crop
+        # The base image is everything beneath the crop, so pixel edits can
+        # round-trip through set_image without losing what the crop hides.
+        bounds = document.image_rect if options.base else crop
+        area = bounds
         if options.region is not None:
-            area = options.region.rounded().intersected(crop)
+            area = options.region.rounded().intersected(bounds)
             if area.is_empty:
-                msg = f"Region {_rect_text(options.region)} is outside the visible "
-                msg += f"image {_rect_text(crop)}"
+                where = "image" if options.base else "visible image"
+                msg = f"Region {_rect_text(options.region)} is outside the {where} "
+                msg += _rect_text(bounds)
                 raise AutomationError(ErrorCode.BAD_REQUEST, msg)
         if options.base:
             image = document.image.copy(*_ints(area))

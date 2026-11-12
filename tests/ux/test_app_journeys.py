@@ -2149,6 +2149,57 @@ class TestAutomation:
         ]
         assert "verdiclip ctl apply" in target.read_text(encoding="utf-8")
 
+    def test_cli_opens_replaces_saves_and_copies_images(
+        self, make_app: AppFactory, tmp_path: Path
+    ) -> None:
+        """UX-TRY-16: open, set_image, save and copy act like the editor's own."""
+        app = make_app()
+        picture = tmp_path / "picture.png"
+        QImage(40, 30, QImage.Format.Format_RGB32).save(str(picture))
+        replacement = QImage(80, 60, QImage.Format.Format_RGB32)
+        replacement.fill(0x00FF00)
+        new_pixels = tmp_path / "new.png"
+        replacement.save(str(new_pixels))
+        server = ControlServer(
+            AutomationHandlers(
+                app.controller.workspace, opener=app.controller.open_file
+            ),
+            name="unused",
+        )
+        target = tmp_path / "result.png"
+        clipboard = QGuiApplication.clipboard()
+        assert clipboard is not None
+        clipboard.clear()
+
+        opened = self.ask(server, "open", path=str(picture))
+        missing = self.ask(server, "open", path=str(tmp_path / "gone.png"))
+        replaced = self.ask(
+            server, "apply", ops=[{"op": "set_image", "path": str(new_pixels)}]
+        )
+        dirty = self.ask(server, "get")
+        saved = self.ask(server, "save", path=str(target))
+        copied = self.ask(server, "copy")
+        clean = self.ask(server, "get")
+
+        assert opened.result is not None
+        assert (opened.result["title"], opened.result["unsaved"]) == (
+            "picture.png",
+            False,
+        )
+        assert missing.error is not None
+        assert missing.error.code is ErrorCode.NOT_FOUND
+        assert replaced.result is not None
+        assert dirty.result is not None
+        assert dirty.result["unsaved"] is True
+        assert saved.result is not None
+        written = QImage(str(target))
+        assert (written.width(), written.height()) == (80, 60)
+        assert written.pixelColor(1, 1).green() == 255
+        assert copied.result is not None
+        assert clipboard.image().width() == 80
+        assert clean.result is not None
+        assert clean.result["unsaved"] is False
+
     def test_a_lost_mouse_release_does_not_block_ai_edits(
         self, make_app: AppFactory, tmp_path: Path
     ) -> None:

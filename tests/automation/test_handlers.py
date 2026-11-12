@@ -124,7 +124,10 @@ def test_unknown_method(handlers: AutomationHandlers) -> None:
     """Unknown methods list the supported ones."""
     with pytest.raises(
         AutomationError,
-        match="apply, get, history, list, redo, render, select, status, undo",
+        match=(
+            "apply, copy, get, history, list, open, redo, render, save, select, "
+            "status, undo"
+        ),
     ) as caught:
         call(handlers, "paint")
 

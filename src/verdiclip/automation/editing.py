@@ -5,6 +5,9 @@ from __future__ import annotations
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
+
+from PySide6.QtGui import QImageReader
 
 from verdiclip.automation.protocol import AutomationError, ErrorCode
 from verdiclip.document.annotations import (
@@ -26,7 +29,13 @@ from verdiclip.document.commands import (
 )
 from verdiclip.document.document import Document
 from verdiclip.document.style import Style
-from verdiclip.document.transform import Flip, FlipAxis, Resize, Rotate
+from verdiclip.document.transform import (
+    Flip,
+    FlipAxis,
+    ReplaceImage,
+    Resize,
+    Rotate,
+)
 from verdiclip.exceptions import CodecError
 from verdiclip.geometry import Rect
 
@@ -45,6 +54,7 @@ OPERATIONS = (
     "rotate",
     "flip",
     "resize",
+    "set_image",
 )
 
 
@@ -115,6 +125,7 @@ class EditPlanner:
             "rotate": self._rotate,
             "flip": self._flip,
             "resize": self._resize,
+            "set_image": self._set_image,
         }
         if op == "add":
             annotation = self._new_annotation(trial, operation)
@@ -229,6 +240,25 @@ class EditPlanner:
                 raise AutomationError(ErrorCode.BAD_REQUEST, msg)
             size.append(value)
         return TransformImage(Resize(*size))
+
+    @staticmethod
+    def _set_image(trial: Document, operation: JsonObject) -> Command:
+        """Replace the base pixels with an image file; annotations stay."""
+        del trial
+        path = operation.get("path")
+        if not isinstance(path, str) or not Path(path).is_absolute():
+            msg = f"path must be an absolute path to an image, got {path!r}"
+            raise AutomationError(ErrorCode.BAD_REQUEST, msg)
+        if not Path(path).is_file():
+            msg = f"No image file at {path}"
+            raise AutomationError(ErrorCode.NOT_FOUND, msg)
+        reader = QImageReader(path)
+        reader.setAutoTransform(True)
+        image = reader.read()
+        if image.isNull():
+            msg = f"Could not read {path}: {reader.errorString()}"
+            raise AutomationError(ErrorCode.BAD_REQUEST, msg)
+        return TransformImage(ReplaceImage(image))
 
 
 def _description(label: JsonValue, names: Sequence[str]) -> str:

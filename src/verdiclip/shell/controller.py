@@ -27,6 +27,7 @@ from verdiclip.capture.service import CaptureService, WindowSource
 from verdiclip.document.admission import CaptureProvenance
 from verdiclip.document.document import Document
 from verdiclip.editor.icons import IconFactory
+from verdiclip.editor.page import DocumentRecord
 from verdiclip.editor.session import EditorSession
 from verdiclip.editor.style_memory import StyleMemory
 from verdiclip.editor.window import IMAGE_FILTER, EditorOptions, EditorWindow
@@ -475,16 +476,32 @@ class AppController(QObject):
         self, path: Path, *, target: EditorWindow | None = None
     ) -> EditorWindow | None:
         """Open an image file in a new editor (UX-OUT-06)."""
+        try:
+            return self._open_file(path, target)
+        except ValueError as err:
+            self._notify("Could not open image", str(err), warning=True)
+            return None
+
+    def open_file(self, path: Path) -> DocumentRecord:
+        """Open an image file in a tab and return its document (``ctl open``).
+
+        Raises:
+            ValueError: If the file can't be read as an image.
+        """
+        page = self._open_file(path, None).current_page
+        if page is None:
+            msg = f"{path.name} did not open in a tab"
+            raise ValueError(msg)
+        return page.record
+
+    def _open_file(self, path: Path, target: EditorWindow | None) -> EditorWindow:
+        """Read ``path`` and open it; raise ValueError if it isn't an image."""
         reader = QImageReader(str(path))
         reader.setAutoTransform(True)
         image = reader.read()
         if image.isNull():
-            self._notify(
-                "Could not open image",
-                f"{path.name}: {reader.errorString()}",
-                warning=True,
-            )
-            return None
+            msg = f"{path.name}: {reader.errorString()}"
+            raise ValueError(msg)
         options = EditorOptions(
             title=path.stem,
             source_path=path,

@@ -1,6 +1,6 @@
 ---
 name: verdiclip
-description: Read, view and annotate screenshots open in the user's VerdiClip editor (boxes, arrows, text, numbered markers, highlights, blur, crop, rotate), including unsaved edits, through the `verdiclip ctl` command. Use when the user asks about or wants changes to an image open in VerdiClip.
+description: Read, view, annotate, open, save and copy screenshots in the user's VerdiClip editor (boxes, arrows, text, numbered markers, highlights, blur, crop, rotate, replace pixels), including unsaved edits, through the `verdiclip ctl` command. Use when the user asks about or wants changes to an image open in VerdiClip.
 ---
 
 # VerdiClip
@@ -52,7 +52,8 @@ operation number. Later operations see earlier ones.
   {"op": "crop", "rect": [0, 0, 800, 600]},
   {"op": "rotate", "direction": "right"},
   {"op": "flip", "axis": "horizontal"},
-  {"op": "resize", "width": 1200, "height": 900}
+  {"op": "resize", "width": 1200, "height": 900},
+  {"op": "set_image", "path": "C:/work/edited.png"}
 ]
 ```
 
@@ -78,6 +79,10 @@ rects, `[x, y]` for points):
   merge one by one. `id` and `kind` can't change.
 - After `rotate` or `resize`, later coordinates are in the new image.
 - `--select` selects what was added, so the user sees it highlighted.
+- `set_image` replaces the pixels beneath the annotations with an image file.
+  To edit pixels: `verdiclip ctl render --base --max-side 0 -o base.png`
+  (the whole image without annotations or crop, full size), change that file, then `set_image` it. Same size keeps
+  the crop; another size resets the crop to the whole image.
 
 ## History
 
@@ -88,9 +93,20 @@ rects, `[x, y]` for points):
   further; `redo` takes the same options.
 - Never undo the user's own steps unless they ask.
 
+## Files
+
+- `verdiclip ctl open PATH` opens an image in a new tab and makes it active;
+  the reply is its summary, including `id`.
+- `verdiclip ctl save [--path FILE] --expect-state STATE` writes what the
+  editor's Save would (format from the extension: png, jpg, bmp, gif, tiff or webp).
+  Without `--path` it reuses the image's file or picks the next automatic name
+  in the user's save folder; the reply gives `path`.
+- `verdiclip ctl copy --expect-state STATE` puts the image on the clipboard.
+
 ## Rules
 
-- Don't save, copy or close images: the user decides what happens to them.
+- Save or copy only when the user asks; never close images. Don't overwrite a
+  file the user didn't name.
 - Keep coordinates inside the image (`list` gives `image` size and `crop`).
 - Prefer one `apply` per user request so one Undo reverts it.
 - If a command answers busy (6), wait a second and retry; don't loop forever.
