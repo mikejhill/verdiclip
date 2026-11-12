@@ -167,7 +167,7 @@ class ScrollCapture:
         target.scroll_to(requested)
         # Position first: a provider that reports after repainting has then
         # finished drawing, and settling still waits for slow pixels.
-        moved = self._position_after(walk.reading)
+        self._position_after(walk.reading)  # Wait for the provider to answer
         following = self._settle(walk.image)
         # Smooth scrolling reports midway positions: re-read for these pixels.
         moved = target.position()
@@ -218,7 +218,7 @@ class ScrollCapture:
             image = self._settle(None)
             position = target.position()
             return image, position, position.percent
-        position = self._position_after(start.percent)
+        self._position_after(start.percent)  # Wait for the provider to answer
         image = self._settle(before)
         position = target.position()  # As above: the answer for these pixels
         # A provider that has not caught up yet is still at the top.
