@@ -348,6 +348,9 @@ def qt_entry_owners(
         def handle_forwarded(self, _arguments: list[str]) -> None:
             raise AssertionError("Retired forwarding callback must not run")
 
+        def open_file(self, _path: object) -> object:
+            raise AssertionError("Retired open callback must not run")
+
         workspace = SimpleNamespace(windows=(), documents=())
         automation_enabled = True
 

@@ -27,10 +27,13 @@ from verdiclip.document.codec import AnnotationCodec
 from verdiclip.document.history import History, HistoryStep
 from verdiclip.editor.page import DocumentRecord
 from verdiclip.editor.session import ToolId
+from verdiclip.exceptions import AppError
 from verdiclip.geometry import Rect
 from verdiclip.render.renderer import Renderer
 
 ACTIVE = "active"
+
+type Opener = Callable[[Path], DocumentRecord]
 
 
 class HostedPage(Protocol):
@@ -76,8 +79,11 @@ class AutomationHandlers:
         *,
         previews: PreviewFolder | None = None,
         renderer: PreviewRenderer | None = None,
+        opener: Opener | None = None,
     ) -> None:
+        """``opener`` opens an image file in an editor tab (``ctl open``)."""
         self._host = host
+        self._opener = opener
         self._previews = previews or PreviewFolder()
         self._renderer = renderer or PreviewRenderer()
         self._codec = AnnotationCodec()
@@ -91,6 +97,9 @@ class AutomationHandlers:
             "undo": self.undo,
             "redo": self.redo,
             "select": self.select,
+            "open": self.open,
+            "save": self.save,
+            "copy": self.copy,
         }
 
     def __call__(self, request: Request) -> JsonObject:
@@ -252,6 +261,56 @@ class AutomationHandlers:
 
     # Helpers
 
+    def open(self, params: JsonObject) -> JsonObject:
+        """Open an image file in an editor tab and describe the new document."""
+        path = _absolute_path(params, "path")
+        if self._opener is None:
+            msg = "This VerdiClip can't open files on request"
+            raise AutomationError(ErrorCode.FAILED, msg)
+        if not path.is_file():
+            msg = f"No image file at {path}"
+            raise AutomationError(ErrorCode.NOT_FOUND, msg)
+        try:
+            record = self._opener(path)
+        except (AppError, ValueError) as err:
+            raise AutomationError(ErrorCode.FAILED, str(err)) from err
+        return self._summary(record)
+
+    def save(self, params: JsonObject) -> JsonObject:
+        """Write the document as Save would, to ``path`` or its usual file."""
+        record = self._settled(self._resolve(params))
+        history = record.session.history
+        self._expect_state(history, params)
+        path = (
+            _absolute_path(params, "path")
+            if params.get("path") is not None
+            else _default_save_path(record)
+        )
+        state = history.state_id
+        image = Renderer().flatten(record.session.document)
+        try:
+            written = record.delivery.save(image, path)
+        except AppError as err:
+            raise AutomationError(ErrorCode.FAILED, str(err)) from err
+        record.saved_path = written
+        history.mark_delivered(expected_state_id=state)
+        return {"id": record.identifier, "path": str(written), "state": state}
+
+    def copy(self, params: JsonObject) -> JsonObject:
+        """Put the document on the clipboard as Copy would."""
+        record = self._settled(self._resolve(params))
+        history = record.session.history
+        self._expect_state(history, params)
+        state = history.state_id
+        image = Renderer().flatten(record.session.document)
+        try:
+            record.delivery.copy(image)
+        except AppError as err:
+            raise AutomationError(ErrorCode.FAILED, str(err)) from err
+        record.copied = True
+        history.mark_delivered(expected_state_id=state)
+        return {"id": record.identifier, "state": state}
+
     def _travel(self, params: JsonObject, *, backward: bool) -> JsonObject:
         """Move through history; validate the whole move before taking a step."""
         record = self._settled(self._resolve(params))
@@ -403,6 +462,26 @@ def _steps_to(
         msg = f"State {target} can't be reached by {verb}; see `verdiclip ctl history`"
         raise AutomationError(ErrorCode.NOT_FOUND, msg)
     return landing.index(target) + 1
+
+
+def _absolute_path(params: JsonObject, key: str) -> Path:
+    """Read a required absolute path parameter."""
+    value = params.get(key)
+    if not isinstance(value, str) or not value or not Path(value).is_absolute():
+        msg = f"{key} must be an absolute path, got {value!r}"
+        raise AutomationError(ErrorCode.BAD_REQUEST, msg)
+    return Path(value)
+
+
+def _default_save_path(record: DocumentRecord) -> Path:
+    """Return where Save writes: the document's file, or a new automatic name."""
+    path = record.saved_path
+    if path is not None:
+        try:
+            record.delivery.format_for(path)
+        except AppError:
+            path = None
+    return path or record.delivery.auto_path(title=record.title)
 
 
 def _integer(params: JsonObject, key: str, default: int) -> int:

@@ -142,3 +142,39 @@ class Resize(ImageTransform):
         return self._map_state(
             state, image, transform, Rect(0, 0, self.width, self.height)
         )
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class ReplaceImage(ImageTransform):
+    """Swap the base pixels; annotations stay where they are.
+
+    A same-size image keeps the crop. Any other size shows the whole new image,
+    since the old crop may not fit it.
+    """
+
+    image: QImage
+
+    def __post_init__(self) -> None:
+        """Reject empty images and sizes outside 1..MAX_DIMENSION."""
+        if self.image.isNull():
+            msg = "The new image is empty"
+            raise ValueError(msg)
+        for value in (self.image.width(), self.image.height()):
+            if not 1 <= value <= MAX_DIMENSION:
+                msg = f"Size must be 1-{MAX_DIMENSION} pixels, got {value}"
+                raise ValueError(msg)
+
+    @property
+    @override
+    def description(self) -> str:
+        """Return "Replace image"."""
+        return "Replace image"
+
+    @override
+    def apply(self, state: DocumentState) -> DocumentState:
+        """Install the new pixels with the same annotations."""
+        same = self.image.size() == state.image.size()
+        whole = Rect(0, 0, self.image.width(), self.image.height())
+        return DocumentState(
+            self.image, state.crop if same else whole, state.annotations
+        )

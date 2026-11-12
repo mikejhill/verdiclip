@@ -215,6 +215,47 @@ class TestCommandLine:
         assert redo.params == {"only_cli": False, "to": 7, "expect_state": 4}
         assert (select.params, clear.params) == ({"ids": ["a", "b"]}, {"ids": []})
 
+    def test_ctl_open_save_copy_resolve_paths(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """File commands send absolute paths; save without one sends none."""
+        monkeypatch.chdir(tmp_path)
+        parser = CommandLine()
+
+        opened = parser.parse(["ctl", "open", "pic.png"])
+        saved = parser.parse(
+            ["ctl", "save", "--doc", "d", "--expect-state", "2", "--path", "o.png"]
+        )
+        plain = parser.parse(["ctl", "save"])
+        copied = parser.parse(["ctl", "copy", "--expect-state", "1"])
+
+        assert (opened.method, opened.params) == (
+            "open",
+            {"path": str(tmp_path / "pic.png")},
+        )
+        assert saved.params == {
+            "doc": "d",
+            "expect_state": 2,
+            "path": str(tmp_path / "o.png"),
+        }
+        assert (plain.method, plain.params) == ("save", {})
+        assert (copied.method, copied.params) == ("copy", {"expect_state": 1})
+
+    def test_ctl_apply_resolves_op_paths(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A relative set_image path is made absolute before it is sent."""
+        monkeypatch.chdir(tmp_path)
+        ops = [{"op": "set_image", "path": "new.png"}, {"op": "undo_marker"}]
+        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(ops)))
+
+        request = CommandLine().parse(["ctl", "apply", "--ops", "-"])
+
+        assert request.params["ops"] == [
+            {"op": "set_image", "path": str(tmp_path / "new.png")},
+            {"op": "undo_marker"},
+        ]
+
     def test_ctl_install_skill(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

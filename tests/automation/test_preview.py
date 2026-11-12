@@ -86,6 +86,21 @@ def test_region_respects_crop(annotated: Document) -> None:
     assert (region.image.width(), region.image.height()) == (50, 50)
 
 
+def test_base_preview_ignores_the_crop(annotated: Document) -> None:
+    """--base covers the whole underlying image, so pixel edits lose nothing."""
+    History(annotated).execute(SetCrop(annotated.crop, Rect(80, 80, 200, 150)))
+
+    whole = render(annotated, base=True, max_side=0)
+    region = render(annotated, base=True, region=Rect(0, 0, 30, 30))
+
+    assert whole.origin == (0, 0)
+    assert (whole.image.width(), whole.image.height()) == (400, 300)
+    assert region.origin == (0, 0)
+    assert (region.image.width(), region.image.height()) == (30, 30)
+    with pytest.raises(AutomationError, match="outside the image"):
+        render(annotated, base=True, region=Rect(500, 500, 10, 10))
+
+
 def test_region_outside_visible_image_is_rejected(annotated: Document) -> None:
     """A region that misses the image is a usage error."""
     with pytest.raises(AutomationError, match="outside") as caught:

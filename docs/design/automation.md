@@ -1,6 +1,6 @@
 # Automation: the `verdiclip ctl` command
 
-Local tools (Claude Code, Codex, scripts) read and, in later phases, edit the
+Local tools (Claude Code, Codex, scripts) read, edit, open, save and copy the
 images open in VerdiClip's editor. The running app owns the documents, their
 undo history and the renderer, so tools ask the app instead of touching files.
 
@@ -37,7 +37,7 @@ configures no logging.
 | `ctl status` | App version, protocol version, document count |
 | `ctl list` | Every document: id, title, path, unsaved, image size, crop, annotation count, state, window, tab, current, editing, active |
 | `ctl get [--doc ID]` | The summary plus annotations (the clipboard codec's JSON) and selected ids |
-| `ctl render [--doc ID] [-o FILE] [--region X,Y,W,H] [--max-side PX] [--grid PX] [--base]` | Writes a PNG; returns path, size, origin, scale, grid, state |
+| `ctl render [--doc ID] [-o FILE] [--region X,Y,W,H] [--max-side PX] [--grid PX] [--base]` | Writes a PNG; returns path, size, origin, scale, grid, state. `--base` renders the image beneath the annotations, uncropped |
 
 - `--doc` defaults to the active document: the shown tab of the most recently
   activated editor window. Ids are `DocumentRecord.identifier`, stable when a tab
@@ -75,6 +75,7 @@ copy of the document; the real one changes only when all succeed:
 | `rotate` | `direction`: `right` or `left` |
 | `flip` | `axis`: `horizontal` or `vertical` |
 | `resize` | `width`, `height`: the visible area's new size |
+| `set_image` | `path`: absolute path of an image whose pixels replace the base image; annotations stay; the crop stays if the size matches, else it becomes the whole new image |
 
 - Later operations see earlier ones: ids added earlier can be updated, and
   coordinates after a `rotate` or `resize` are in the new image.
@@ -87,8 +88,8 @@ copy of the document; the real one changes only when all succeed:
 
 `src/verdiclip/automation/skill/SKILL.md` ships in the package and teaches an
 agent the workflow: list, render and look, get the state, apply with
-`--expect-state`, render again; plus history and the rules (never save or close,
-never undo the user's steps unasked).
+`--expect-state`, render again; plus history and the rules (save or copy only
+when asked, never close, never undo the user's steps unasked).
 
 `ctl install-skill --agent LIST [--scope user|project] [--dir PATH]` copies it
 to `<skills folder>/verdiclip/SKILL.md`, replacing an older copy, without
@@ -103,8 +104,23 @@ contacting the app. An agent is always required; scope defaults to user.
 
 `--dir` replaces the agent's folder and takes one agent.
 
-## Later phases
+## Commands (phase 3: files)
 
-1. **Extras** — `open`, `save`, `copy`, `set_image`.
+| Command | Result |
+| --- | --- |
+| `ctl open PATH` | Opens the image in a new editor tab, as Open Image… does; returns its summary (it becomes the active document) |
+| `ctl save [--doc ID] [--path FILE] [--expect-state N]` | Writes what the editor's Save writes; without `--path`, the document's own file if it has a supported extension, else the next automatic name in the save folder. The tab shows saved. Returns id, path, state |
+| `ctl copy [--doc ID] [--expect-state N]` | Puts the flattened image on the clipboard; counts as delivered, like the editor's Copy. Returns id, state |
+
+- The CLI resolves relative paths (for `open`, `save --path` and any operation's
+  `path`) against its own working folder before sending them.
+- `save` and `copy` answer `busy` while the user types or drags, and `conflict`
+  when `--expect-state` no longer matches; a failed write leaves the document
+  unsaved.
+- `set_image` lets a tool edit pixels: `render --base --max-side 0` writes the
+  base image, the tool changes it, and `set_image` puts it back as one undo
+  step.
+
+## Later
 
 An MCP server, if a client ever needs one, is a thin wrapper over the same pipe.
