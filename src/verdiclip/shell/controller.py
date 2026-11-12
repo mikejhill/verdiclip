@@ -33,6 +33,7 @@ from verdiclip.editor.style_memory import StyleMemory
 from verdiclip.editor.window import IMAGE_FILTER, EditorOptions, EditorWindow
 from verdiclip.editor.workspace import Workspace
 from verdiclip.exceptions import AppError, HotkeyError
+from verdiclip.geometry import Point
 from verdiclip.output.delivery import ImageDelivery
 from verdiclip.platform.associations import DEFAULT_APPS_URI, FileAssociations
 from verdiclip.platform.hotkeys import Hotkey, HotkeyService
@@ -137,6 +138,7 @@ class AppController(QObject):
             updater.checked.connect(self._on_update_checked)
             updater.check_failed.connect(self._on_update_check_failed)
         self._capture.captured.connect(self._on_captured)
+        self._capture.scroll_requested.connect(self._scroll_at)
         self._capture.failed.connect(
             lambda message: self._notify("Capture failed", message, warning=True)
         )
@@ -266,6 +268,14 @@ class AppController(QObject):
         self._capture.cancel()
         self._workspace.cancel_drag()
         self._scrolling.capture()
+
+    def _scroll_at(self, point: Point, title: str) -> None:
+        """Start a scrolling capture of the panel Ctrl+clicked in region selection."""
+        if self._closing or self._scrolling.busy:
+            return
+        self._dismiss_scroll_status()
+        self._workspace.cancel_drag()
+        self._scrolling.start_at(point, title)
 
     def _after_scrolling(self) -> None:
         if self._closing:

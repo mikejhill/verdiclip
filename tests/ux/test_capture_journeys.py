@@ -165,13 +165,14 @@ class Overlay:
         QTest.mouseMove(self._overlay, QPoint(*at))
 
     def click(
-        self, at: tuple[int, int], button: Qt.MouseButton = Qt.MouseButton.LeftButton
+        self,
+        at: tuple[int, int],
+        button: Qt.MouseButton = Qt.MouseButton.LeftButton,
+        modifier: Qt.KeyboardModifier = Qt.KeyboardModifier.NoModifier,
     ) -> None:
         """Click at ``at``."""
         QTest.mouseMove(self._overlay, QPoint(*at))
-        QTest.mouseClick(
-            self._overlay, button, Qt.KeyboardModifier.NoModifier, QPoint(*at)
-        )
+        QTest.mouseClick(self._overlay, button, modifier, QPoint(*at))
 
 
 class TestRegionCapture:
@@ -434,6 +435,24 @@ class TestWindowPicking:
             screen.width(),
             screen.height(),
         )
+
+    def test_ctrl_click_asks_for_a_scrolling_capture(
+        self, service: CaptureService, qtbot: QtBot
+    ) -> None:
+        """Ctrl+click hands the point and window title over and captures nothing."""
+        service.capture_region()
+        overlay = Overlay(service)
+        captured: list[object] = []
+        service.captured.connect(captured.append)
+
+        with qtbot.waitSignal(service.scroll_requested) as signal:
+            overlay.click((200, 200), modifier=Qt.KeyboardModifier.ControlModifier)
+
+        point, title = signal.args or [None, None]
+        assert isinstance(point, Point)
+        assert title == "Dialog"
+        assert not service.overlays
+        assert not captured
 
 
 class TestImmediateCaptures:

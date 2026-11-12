@@ -51,7 +51,8 @@ class PointOverlay(SelectionOverlay):
     chosen = Signal(object)
 
     @override
-    def _finish(self, at: Point) -> None:
+    def _finish(self, at: Point, *, scroll: bool = False) -> None:
+        del scroll  # Every click here is a scrolling capture
         self.shared.release(at)
         self.chosen.emit(at)
 
@@ -169,7 +170,18 @@ class ScrollSelection(QObject):
         window = next(
             (o.hovered_window() for o in self._overlays if o.hovered_window()), None
         )
-        self._title = window.title if window is not None else "Scrolling capture"
+        self._begin(point, window.title if window is not None else "")
+
+    def start_at(self, point: Point, title: str) -> None:
+        """Capture the panel at ``point`` without a chooser (Ctrl+click in PrtSc)."""
+        if self._active or self._closing:
+            return
+        self._active, self._cancelled = True, False
+        self.state_changed.emit(True, False)  # noqa: FBT003 - Qt signal
+        self._begin(point, title)
+
+    def _begin(self, point: Point, title: str) -> None:
+        self._title = title or "Scrolling capture"
         self._point = point
         self._close_overlays()
         if _CANCEL_ACTION not in self._hotkeys.registered and not (

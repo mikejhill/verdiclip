@@ -64,7 +64,7 @@ If Windows or another screenshot tool already owns `PrtSc`, VerdiClip tells you 
 
 ### Scrolling capture
 
-Choose **Capture scrolling area** from the tray, or press `Ctrl+Alt+PrtSc`, then click inside the panel you want (a web page, a document, a list). VerdiClip scrolls it to the top, captures it page by page to the bottom, joins the pages, and puts the panel back where it was. The image uses your usual editor, clipboard and file settings. Press `Esc` to stop.
+Choose **Capture scrolling area** from the tray, or press `Ctrl+Alt+PrtSc`, then click inside the panel you want (a web page, a document, a list). You can also start it from an ordinary region capture (`PrtSc`): hold `Ctrl` and click the panel. VerdiClip scrolls it to the top, captures it page by page to the bottom, joins the pages, and puts the panel back where it was. The image uses your usual editor, clipboard and file settings. Press `Esc` to stop.
 
 It works with panels that support Windows UI Automation scrolling, which covers browsers, Office, Explorer and most modern apps. Sticky headers and footers appear once. If some pages could not be matched exactly, the image is still delivered and VerdiClip tells you to check it. Keep other windows off the panel while it runs.
 
