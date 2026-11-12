@@ -1652,6 +1652,56 @@ class TestUpdates:
         assert plan["steps"] == [["C:/uv/uv.exe", "tool", "upgrade", "verdiclip"]]
         assert plan["relaunch"] == LaunchCommand(PYTHONW, "-m verdiclip").command_line
 
+    @pytest.mark.parametrize("choice", ["Install now", "Later"])
+    def test_check_window_installs_or_defers(
+        self, make_app: AppFactory, updates: Updates, choice: str
+    ) -> None:
+        """The result window installs a found release, or leaves it (#124).
+
+        UX-TRY-11, UX-TRY-12.
+        """
+        app = make_app(updater=updates.updater)
+        app.controller.tray.action("update").trigger()
+        box = self.status()
+        assert box.windowTitle() == "Update available"
+        labels = [button.text() for button in box.buttons()]
+        assert sorted(labels) == ["Install now", "Later"]
+        assert box.defaultButton().text() == "Install now"
+        assert updates.spawns.calls == [], "Showing the offer must not install"
+
+        next(b for b in box.buttons() if b.text() == choice).click()
+
+        if choice == "Install now":
+            assert len(updates.spawns.calls) == 1
+            assert updates.quits == [True]
+        else:
+            assert updates.spawns.calls == []
+            assert updates.quits == []
+            assert not box.isVisible()
+            assert (
+                app.controller.tray.action("update").text()
+                == "Install VerdiClip 0.11.0…"
+            ), "Later keeps the release offered in the tray"
+
+    def test_check_window_reverts_to_ok_after_an_offer(
+        self, make_app: AppFactory, updates: Updates
+    ) -> None:
+        """A later status reuses the window without a stale Install button."""
+        app = make_app(updater=updates.updater)
+        app.controller.tray.action("update").trigger()
+        box = self.status()
+        next(b for b in box.buttons() if b.text() == "Later").click()
+        app.controller._show_update_status("Could not check for updates", "Offline")
+        box = self.status()
+        assert [b.text() for b in box.buttons()] == ["OK"]
+        assert not [
+            widget
+            for widget in QApplication.topLevelWidgets()
+            if widget.isVisible() and widget is not box
+        ], "Replaced buttons must not linger as stray windows"
+        box.buttons()[0].click()
+        assert updates.spawns.calls == []
+
     def test_install_entry_installs_a_found_release(
         self, make_app: AppFactory, updates: Updates, balloons: Balloons
     ) -> None:

@@ -12,6 +12,7 @@ from typing import Final
 from PySide6.QtCore import QObject, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QImage, QImageReader
 from PySide6.QtWidgets import (
+    QAbstractButton,
     QApplication,
     QFileDialog,
     QMessageBox,
@@ -124,6 +125,7 @@ class AppController(QObject):
         self._last_saved_folder: Path | None = None
         self._message_action: Callable[[], None] = self._open_last_folder
         self._manual_check = False
+        self._install_button: QAbstractButton | None = None
         self._update_status: QMessageBox | None = None
         self._scroll_status: QMessageBox | None = None
         self._last_scroll_error = ""
@@ -677,27 +679,51 @@ class AppController(QObject):
         *,
         checking: bool = False,
         warning: bool = False,
+        offer_install: bool = False,
     ) -> None:
-        """Keep manual-check progress and its result visible until dismissed."""
+        """Keep manual-check progress and its result visible until dismissed.
+
+        A found release is offered right here: Install now or Later (#124).
+        """
         if self._update_status is None:
             self._update_status = QMessageBox()
             self._update_status.setObjectName("manual-update-status")
             self._update_status.setWindowIcon(self._icon)
             self._update_status.setTextFormat(Qt.TextFormat.PlainText)
+            self._update_status.buttonClicked.connect(self._on_update_status_button)
         box = self._update_status
+        for button in box.buttons():
+            # removeButton() unparents it: hide first or it shows as a window.
+            button.hide()
+            box.removeButton(button)
+            button.deleteLater()
+        self._install_button = None
         box.setWindowTitle(title)
         box.setText(message)
         box.setIcon(
             QMessageBox.Icon.Warning if warning else QMessageBox.Icon.Information
         )
-        box.setStandardButtons(
-            QMessageBox.StandardButton.Close
-            if checking
-            else QMessageBox.StandardButton.Ok
-        )
+        if offer_install:
+            self._install_button = box.addButton(
+                "Install now", QMessageBox.ButtonRole.AcceptRole
+            )
+            box.setDefaultButton(self._install_button)
+            box.addButton("Later", QMessageBox.ButtonRole.RejectRole)
+        else:
+            box.setStandardButtons(
+                QMessageBox.StandardButton.Close
+                if checking
+                else QMessageBox.StandardButton.Ok
+            )
         box.show()
         box.raise_()
         box.activateWindow()
+
+    def _on_update_status_button(self, button: QAbstractButton) -> None:
+        """Install from the result window; Later only dismisses it."""
+        if button is self._install_button:
+            self._install_button = None
+            self.install_update(manual=True)
 
     def install_update(self, *, manual: bool) -> None:
         """Hand the available release to the updater and quit (UX-TRY-12).
@@ -785,7 +811,8 @@ class AppController(QObject):
             self._show_update_status(
                 "Update available",
                 f"{APP_NAME} {available} is available. "
-                "Use the tray's Install entry to install it.",
+                f"Install it now? {APP_NAME} restarts when it is done.",
+                offer_install=True,
             )
         automatic = self._settings.updates.install and not updater.failed_before(
             available
