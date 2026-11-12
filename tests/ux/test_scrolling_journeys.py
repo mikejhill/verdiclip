@@ -26,7 +26,7 @@ from verdiclip.geometry import Point, Rect
 from verdiclip.platform.windows import WindowInfo
 from verdiclip.settings import Settings, Theme
 
-pytestmark = pytest.mark.ux
+pytestmark = [pytest.mark.ux, pytest.mark.usefixtures("scrolling_enabled")]
 
 
 def prepare(app: App) -> ScrollHelper:

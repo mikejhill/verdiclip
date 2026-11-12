@@ -37,7 +37,6 @@ from verdiclip.settings import (
     AppearanceSettings,
     CaptureDestination,
     CaptureSettings,
-    HotkeySettings,
     ImageFormat,
     IntegrationSettings,
     OutputSettings,
@@ -55,6 +54,19 @@ HOTKEY_FIELDS: Final = (
     ("repeat", "Repeat last capture"),
     ("scrolling", "Scrolling area"),
 )
+# Scrolling capture is hidden until its rewrite lands; its saved shortcut is kept.
+SCROLLING_CAPTURE_ENABLED: bool = False
+
+
+def hotkey_fields() -> tuple[tuple[str, str], ...]:
+    """Return the shortcuts offered now: scrolling only while it is enabled."""
+    return tuple(
+        (name, label)
+        for name, label in HOTKEY_FIELDS
+        if name != "scrolling" or SCROLLING_CAPTURE_ENABLED
+    )
+
+
 THEME_LABELS: Final = {
     Theme.SYSTEM: "Match Windows",
     Theme.LIGHT: "Light",
@@ -134,11 +146,12 @@ class SettingsDialog(QDialog):
                 show_magnifier=self._magnifier.isChecked(),
                 destination=CaptureDestination(self._destination.currentData()),
             ),
-            hotkeys=HotkeySettings(
+            hotkeys=replace(
+                self._initial.hotkeys,
                 **{
                     name: self._canonical_hotkey(edit.text())
                     for name, edit in self._hotkeys.items()
-                }
+                },
             ),
             output=OutputSettings(
                 directory=Path(
@@ -269,7 +282,7 @@ class SettingsDialog(QDialog):
                 "and press it. Leave empty to disable."
             )
         )
-        for name, label in HOTKEY_FIELDS:
+        for name, label in hotkey_fields():
             field = HotkeyField(capture=self._key_capture)
             status = QLabel()
             field.edit.textChanged.connect(self._validate)

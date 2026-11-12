@@ -8,6 +8,8 @@ from tests.ux.test_app_journeys import AppFactory
 from tests.ux.test_app_journeys import make_app as make_app  # noqa: PLC0414
 from tests.ux.test_scrolling_journeys import finish, prepare, select
 
+pytestmark = pytest.mark.usefixtures("scrolling_enabled")
+
 
 @pytest.mark.parametrize("cancel", ["scroll_cancel", "scrolling", "region"])
 def test_busy_cancel_retire_and_rebuild(

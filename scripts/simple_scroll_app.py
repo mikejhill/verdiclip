@@ -43,6 +43,7 @@ from verdiclip.platform.shortcuts import ShortcutRegistration
 from verdiclip.platform.startup import StartupRegistration
 from verdiclip.platform.windows import Win32WindowApi, WindowLocator
 from verdiclip.settings import IntegrationSettings, Settings, SettingsStore
+from verdiclip.shell import settings_dialog
 from verdiclip.shell.controller import AppController, ShellIntegration
 
 
@@ -51,6 +52,8 @@ class AppCapture:
 
     def __init__(self, kind: str, output: Path, report: dict[str, object]) -> None:
         self.kind, self.output, self.report = kind, output, report
+        # Qualify the hidden scrolling entry points until the rewrite replaces them.
+        settings_dialog.SCROLLING_CAPTURE_ENABLED = True
         self.desktop = Desktop()
         self.source = MssScreenSource()
         self.hotkeys = HotkeyService()

@@ -27,7 +27,7 @@ from verdiclip.settings import Settings, Theme
 from verdiclip.update.install import Installation, InstallKind
 from verdiclip.update.service import UpdateLauncher, Updater
 
-pytestmark = pytest.mark.ux
+pytestmark = [pytest.mark.ux, pytest.mark.usefixtures("scrolling_enabled")]
 
 
 def statuses() -> list[QMessageBox]:
