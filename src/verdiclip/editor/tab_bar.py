@@ -16,8 +16,15 @@ from PySide6.QtGui import (
     QPaintEvent,
     QPalette,
     QPen,
+    QRegion,
 )
-from PySide6.QtWidgets import QApplication, QStyle, QStyleOptionTab, QTabBar
+from PySide6.QtWidgets import (
+    QApplication,
+    QStyle,
+    QStyleOptionTab,
+    QTabBar,
+    QToolButton,
+)
 from shiboken6 import isValid
 
 from verdiclip.editor.tab_preview import TabDragPreview
@@ -38,6 +45,11 @@ class DocumentTabBar(QTabBar):
         self.setAccessibleName("Capture tabs")
         self.setExpanding(False)
         self.setUsesScrollButtons(True)
+        for button in self.findChildren(QToolButton):
+            # Overflow arrows sit on top of the strip; an opaque face keeps
+            # labels scrolled beneath them from showing through (#120).
+            button.setAutoFillBackground(True)
+            button.setBackgroundRole(QPalette.ColorRole.Window)
         self.setElideMode(Qt.TextElideMode.ElideMiddle)
         self.setTabsClosable(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -121,6 +133,14 @@ class DocumentTabBar(QTabBar):
         except (MemoryError, RuntimeError):
             return False
         return True
+
+    def label_region(self) -> QRegion:
+        """Return the strip area tabs may paint: everything but overflow arrows."""
+        region = QRegion(self.rect())
+        for button in self.findChildren(QToolButton):
+            if button.isVisible():
+                region -= QRegion(button.geometry())
+        return region
 
     def _gesture_live(self) -> bool:
         return self._dragging and self._pressed >= 0
@@ -222,6 +242,7 @@ class DocumentTabBar(QTabBar):
         del event
         painter = QPainter(self)
         try:
+            painter.setClipRegion(self.label_region())
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
             for index in range(self.count()):
                 option = QStyleOptionTab()

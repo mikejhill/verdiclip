@@ -8,7 +8,7 @@ import pytest
 from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, Qt
 from PySide6.QtGui import QContextMenuEvent, QKeyEvent, QMouseEvent, QPixmap
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QToolButton
 from pytestqt.qtbot import QtBot
 from shiboken6 import delete
 from tests.platform.test_tab_drag import Api
@@ -364,3 +364,27 @@ def test_reentrant_preview_follow_cancel_does_not_emit_late_movement(
     bar.moved(QPoint(-100, 200))
     assert moved == []
     assert bar._preview is None
+
+
+def test_overflow_arrows_never_paint_over_tab_labels(qtbot: QtBot) -> None:
+    """Scrolled tabs stop at the overflow arrows instead of showing through (#120)."""
+    bar = DocumentTabBar()
+    qtbot.addWidget(bar)
+    for index in range(12):
+        bar.addTab(f"Screenshot 2026-11-12 {index:02d}")
+    bar.resize(500, bar.sizeHint().height())
+    bar.show()
+    bar.setCurrentIndex(6)
+    QApplication.processEvents()
+    arrows = [b for b in bar.findChildren(QToolButton) if b.isVisible()]
+    assert arrows, "a narrow strip with 12 tabs must overflow"
+    region = bar.label_region()
+    for arrow in arrows:
+        assert arrow.autoFillBackground()
+        assert not region.intersects(arrow.geometry())
+    assert any(
+        bar.tabRect(index).intersects(arrow.geometry())
+        for index in range(bar.count())
+        for arrow in arrows
+    ), "a tab must run under the arrows for this check to bite"
+    assert not bar.grab().isNull()
