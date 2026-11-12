@@ -165,6 +165,7 @@ class SelectionOverlay(QWidget):
 
     region_chosen = Signal(object)  # Rect (physical)
     window_chosen = Signal(object, str)  # Rect (physical), title
+    scroll_chosen = Signal(object, str)  # Point (physical), window title
     cancelled = Signal()
 
     def __init__(  # noqa: PLR0913
@@ -420,12 +421,16 @@ class SelectionOverlay(QWidget):
 
     @override
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
-        """Report a dragged region, a clicked window, or the monitor clicked."""
+        """Report a dragged region, a clicked window, or the monitor clicked.
+
+        Ctrl+click asks for a scrolling capture of the panel under the pointer.
+        """
         if event.button() != Qt.MouseButton.LeftButton or not self._shared.pressed:
             return
-        self._finish(self._physical(event))
+        scroll = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+        self._finish(self._physical(event), scroll=scroll)
 
-    def _finish(self, at: Point) -> None:
+    def _finish(self, at: Point, *, scroll: bool = False) -> None:
         """End the press at ``at``: report a region, a window, or that monitor."""
         area = self._shared.release(at)
         if area is not None:
@@ -433,6 +438,10 @@ class SelectionOverlay(QWidget):
                 self.region_chosen.emit(area)
             return
         window = self._window_at(at)
+        if scroll:
+            title = window.title if window is not None else ""
+            self.scroll_chosen.emit(at, title or "Scrolling capture")
+            return
         if window is not None:
             self.window_chosen.emit(
                 window.bounds.intersected(self._frozen.bounds), window.title

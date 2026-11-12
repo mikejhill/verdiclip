@@ -34,6 +34,7 @@ from verdiclip.editor.style_memory import StyleMemory
 from verdiclip.editor.window import IMAGE_FILTER, EditorOptions, EditorWindow
 from verdiclip.editor.workspace import Workspace
 from verdiclip.exceptions import AppError, HotkeyError
+from verdiclip.geometry import Point
 from verdiclip.output.delivery import ImageDelivery
 from verdiclip.platform.associations import (
     DEFAULT_APPS_URI,
@@ -107,9 +108,6 @@ class AppController(QObject):
         self._capture_handoff.setSingleShot(True)
         self._capture_handoff.timeout.connect(self._resume_capture)
         self._closing = self._hotkeys_paused = self._hotkey_refresh_pending = False
-        self._scrolling.captured.connect(self._on_scrolled)
-        self._scrolling.failed.connect(self._on_scroll_failed)
-        self._scrolling.finished.connect(self._after_scrolling)
         self._editors: list[EditorWindow] = []
         self._workspace = Workspace()
         self._workspace.window_added.connect(self._wire_editor)
@@ -125,7 +123,7 @@ class AppController(QObject):
         self._icon_factory = IconFactory(QApplication.palette().windowText().color())
         self._icon = self._icon_factory.brand()
         self._tray = TrayIcon(self._icon, self._tray_commands())
-        self._scrolling.state_changed.connect(self._tray.set_scrolling_state)
+        self._wire_scrolling()
         self._last_saved_folder: Path | None = None
         self._message_action: Callable[[], None] = self._open_last_folder
         self._default_app_dialog: DefaultAppDialog | None = None
@@ -149,6 +147,14 @@ class AppController(QObject):
         )
         self._hotkeys.triggered.connect(self._on_hotkey)
         self._tray.messageClicked.connect(self._on_message_clicked)
+
+    def _wire_scrolling(self) -> None:
+        scrolling = self._scrolling
+        scrolling.captured.connect(self._on_scrolled)
+        scrolling.failed.connect(self._on_scroll_failed)
+        scrolling.finished.connect(self._after_scrolling)
+        scrolling.state_changed.connect(self._tray.set_scrolling_state)
+        self._capture.scroll_requested.connect(self._scroll_at)
 
     # Accessors
 
@@ -278,6 +284,14 @@ class AppController(QObject):
         self._capture.cancel()
         self._workspace.cancel_drag()
         self._scrolling.capture()
+
+    def _scroll_at(self, point: Point, title: str) -> None:
+        """Start a scrolling capture of the panel Ctrl+clicked in region selection."""
+        if self._closing or self._scrolling.busy:
+            return
+        self._dismiss_scroll_status()
+        self._workspace.cancel_drag()
+        self._scrolling.start_at(point, title)
 
     def _after_scrolling(self) -> None:
         if self._closing:

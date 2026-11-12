@@ -21,7 +21,7 @@ from verdiclip.capture.overlay import (
     WindowTarget,
 )
 from verdiclip.exceptions import AppError, CaptureError
-from verdiclip.geometry import Rect
+from verdiclip.geometry import Point, Rect
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +64,7 @@ class CaptureService(QObject):
     captured = Signal(object)  # Capture
     cancelled = Signal()
     failed = Signal(str)
+    scroll_requested = Signal(object, str)  # Point (physical), window title
 
     def __init__(
         self,
@@ -147,6 +148,7 @@ class CaptureService(QObject):
             )
             overlay.region_chosen.connect(self._on_region)
             overlay.window_chosen.connect(self._on_window)
+            overlay.scroll_chosen.connect(self._on_scroll)
             overlay.cancelled.connect(self._on_cancel)
             self._overlays.append(overlay)
             overlay.show()
@@ -229,6 +231,11 @@ class CaptureService(QObject):
     def _on_window(self, area: Rect, title: str) -> None:
         """Capture the clicked window from the frozen screen."""
         self._finish_selection(area, CaptureMode.WINDOW, title)
+
+    def _on_scroll(self, point: Point, title: str) -> None:
+        """Hand a Ctrl+clicked panel to scrolling capture."""
+        self._close_overlays()
+        self.scroll_requested.emit(point, title)
 
     def _on_cancel(self) -> None:
         """Close overlays and report cancellation."""
