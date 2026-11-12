@@ -28,6 +28,7 @@ from verdiclip.document.history import History, HistoryStep
 from verdiclip.editor.page import DocumentRecord
 from verdiclip.editor.session import ToolId
 from verdiclip.geometry import Rect
+from verdiclip.render.renderer import Renderer
 
 ACTIVE = "active"
 
@@ -197,10 +198,13 @@ class AutomationHandlers:
         record = self._settled(self._resolve(params))
         session = record.session
         self._expect_state(session.history, params)
-        planner = EditPlanner(lambda kind: session.styles.get(ToolId(kind.value)))
+        select = _boolean(params, "select")
+        planner = EditPlanner(
+            lambda kind: session.styles.get(ToolId(kind.value)), fit=Renderer.fit
+        )
         plan = planner.plan(session.document, params.get("ops"), params.get("label"))
         session.history.execute(plan.batch)
-        if _boolean(params, "select"):
+        if select:
             session.selection.set(plan.added)
         return {
             "id": record.identifier,
