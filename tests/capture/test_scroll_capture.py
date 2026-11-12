@@ -321,3 +321,11 @@ def test_native_failure_restores_the_start() -> None:
     assert result.image is None
     assert result.message == "provider failed"
     assert panel.writes[-1] == pytest.approx(40.0)
+
+
+def test_lagging_position_after_the_move_to_the_top_is_waited_for() -> None:
+    """A late answer to the move to the top does not skip content."""
+    for start in (40.0, 100.0):
+        panel = Lagging(1400, start=start)
+        result = run(panel)
+        assert result.image == panel.document

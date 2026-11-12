@@ -238,3 +238,21 @@ def test_escape_owned_elsewhere_stops_before_capturing(
     status = app.controller._scroll_status
     assert status is not None
     assert "Esc is in use" in status.text()
+
+
+def test_helper_that_cannot_start_releases_the_capture(
+    make_app: AppFactory, qtbot: QtBot
+) -> None:
+    """A startup error is reported and leaves the app free for other captures."""
+    app = make_app()
+    helper = prepare(app)
+    helper.start = Mock(side_effect=OSError("disk full"))
+    app.controller.capture_scrolling()
+    service = app.controller._scrolling
+    qtbot.waitUntil(lambda: bool(service.overlays))
+    service.overlays[0].chosen.emit(Point(30, 40))
+    qtbot.waitUntil(lambda: not service.busy)
+    status = app.controller._scroll_status
+    assert status is not None
+    assert "disk full" in status.text()
+    assert "scroll_cancel" not in app.hotkeys.registered

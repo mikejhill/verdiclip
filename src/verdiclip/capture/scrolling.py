@@ -130,14 +130,10 @@ class ScrollCapture:
         if start.view_size >= 100.0:  # noqa: PLR2004 - everything is visible
             frames.append(Frame(self._settle(None)))
             return
-        before = target.grab() if start.percent > 0.0 else None
-        target.scroll_to(0.0)
-        image = self._settle(before)
+        image, position, reading = self._top(start)
         frames.append(Frame(image))
-        position = target.position()
+        assumed = reading > 0.0  # ``position`` is where we asked to go
         pixels = 0
-        reading = position.percent  # The provider's last answer
-        assumed = False  # ``position`` is where we asked to go, not a reading
         while position.percent < END_PERCENT:
             self._check()
             if len(frames) >= MAX_FRAMES or self._clock() >= self._deadline:
@@ -178,6 +174,19 @@ class ScrollCapture:
             image, position = following, moved
         if assumed and self._position_after(-1.0).percent < END_PERCENT:
             notes.append(_UNSURE_END)
+
+    def _top(self, start: ScrollPosition) -> tuple[QImage, ScrollPosition, float]:
+        """Scroll to the top; return its image, position and the provider's answer."""
+        target = self._target
+        before = target.grab() if start.percent > 0.0 else None
+        target.scroll_to(0.0)
+        image = self._settle(before)
+        if start.percent <= 0.0:
+            position = target.position()
+            return image, position, position.percent
+        position = self._position_after(start.percent)
+        # A provider that has not caught up yet is still at the top.
+        return image, ScrollPosition(0.0, position.view_size), position.percent
 
     def _position_after(self, previous: float) -> ScrollPosition:
         """Read the position, giving a lagging provider time to report a change."""

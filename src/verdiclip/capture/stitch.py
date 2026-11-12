@@ -87,17 +87,25 @@ def _keys(rows: list[bytes], left: int, right: int) -> list[int]:
 def _votes(
     previous: Sequence[int], following: Sequence[int]
 ) -> tuple[Counter[int], list[int]]:
-    """Count offsets supported by matching rows, and informative-row prefix sums."""
+    """Count offsets supported by matching rows, and informative-row prefix sums.
+
+    A row of ``following`` is informative unless it repeats too often in its
+    own frame, whether or not it matches anything: rows that disagree must
+    count against an offset, or a few coincidences would look certain.
+    """
     counts = Counter(previous)
     positions: dict[int, list[int]] = defaultdict(list)
     for index, key in enumerate(previous):
         if counts[key] <= _MAX_REPEATS:
             positions[key].append(index)
+    own = Counter(following)
     prefix: list[int] = [0]
     for key in following:
-        prefix.append(prefix[-1] + int(key in positions))
+        prefix.append(prefix[-1] + int(own[key] <= _MAX_REPEATS))
     votes: Counter[int] = Counter()
     for index, key in enumerate(following):
+        if own[key] > _MAX_REPEATS:
+            continue
         for match in positions.get(key, ()):
             if match > index:
                 votes[match - index] += 1

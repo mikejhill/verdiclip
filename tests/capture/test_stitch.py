@@ -159,3 +159,10 @@ def test_ties_prefer_the_provider_distance() -> None:
 def test_blank_rows_do_not_vote() -> None:
     """Blank rows do not vote."""
     assert find_offset([7] * 40, [7] * 40, 5.0) is None
+
+
+def test_sparse_coincidences_do_not_override_the_provider() -> None:
+    """Four matching rows among many disagreeing ones are not trusted."""
+    previous = list(range(200))
+    following = [150, 151, 152, 153, *range(1000, 1196)]
+    assert find_offset(previous, following, 50.0) is None

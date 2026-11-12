@@ -187,7 +187,10 @@ class ScrollSelection(QObject):
             return
         self._helper = self._helper_factory()
         self._helper.finished.connect(self._completed)
-        self._helper.start(self._point)
+        try:
+            self._helper.start(self._point)
+        except (AppError, OSError) as error:
+            self._fail(f"Could not start scrolling capture: {error}")
 
     def _completed(self, result: ScrollResult) -> None:
         cancelled, closing, title = self._cancelled, self._closing, self._title
