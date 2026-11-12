@@ -66,14 +66,6 @@ def clear_offscreen_clipboard() -> None:
 
 
 @pytest.fixture
-def scrolling_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Re-enable the hidden scrolling capture entry points for its own tests."""
-    monkeypatch.setattr(
-        "verdiclip.shell.settings_dialog.SCROLLING_CAPTURE_ENABLED", True
-    )
-
-
-@pytest.fixture
 def sample_image() -> QImage:
     """A 400x300 white image with a dark bar and a black square, for pixel checks."""
     image = QImage(400, 300, QImage.Format.Format_ARGB32_Premultiplied)

@@ -1,9 +1,8 @@
-"""One disposable process per scrolling transaction, one terminal result.
+"""One disposable process per scrolling capture, so a hung provider can be killed.
 
-stdin stays open while the parent owns the transaction. EOF kills the helper
-without further target calls, including when UIA is blocked. ``cancel`` requests
-cooperative cancellation/restoration; a short parent deadline bounds that path.
-There is no per-frame protocol, server, shared screenshot journal, or retry.
+The parent passes the chosen point and a scratch directory. The child prints
+one JSON result and writes ``capture.png`` on success. ``cancel`` on stdin asks
+it to stop and restore; stdin closing (parent gone) exits at once.
 """
 
 from __future__ import annotations
@@ -30,11 +29,14 @@ logger = logging.getLogger(__name__)
 
 _MAX_RESULT_BYTES = 8192
 _MAX_DIAGNOSTIC_BYTES = 16_384
-_CANCEL_GRACE_MS = 1500
+_CANCEL_GRACE_MS = 2000
+_DEADLINE_MARGIN = 10.0
+# The child entry point; tests substitute a scripted stand-in.
+CHILD_MODULE = "verdiclip.capture.scroll_helper"
 
 
 class ScrollHelper(QObject):
-    """Own process, scratch directory and deadline until a single final signal."""
+    """Own the child process, its scratch directory and its deadline."""
 
     finished = Signal(object)  # ScrollResult
 
@@ -48,71 +50,39 @@ class ScrollHelper(QObject):
         self._timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._timer.timeout.connect(self._timeout)
         self._directory: TemporaryDirectory[str] | None = None
-        self._cancelled = False
-        self._terminal = False
-        self._timeout_message = ""
-        self._diagnostics = ""
-        self._deadline: float | None = None
-        self._cancel_deadline: float | None = None
+        self._cancelled = self._terminal = self._timed_out = False
 
-    @property
-    def diagnostics(self) -> str:
-        """Return bounded child diagnostics, with no captured content or titles."""
-        return self._diagnostics
-
-    def start(self, point: Point, *, window: int, input_tick: int) -> None:
-        """Start with the selected root and completed-input tick, without rebasing.
-
-        The caller closes selectors first and keeps this owner until ``finished``.
-        """
+    def start(self, point: Point) -> None:
+        """Start capturing the panel at ``point`` (physical pixels)."""
         if self._directory is not None or self._terminal:
             raise RuntimeError("A scrolling helper can only be started once")
-        self._deadline = time.monotonic() + MAX_SECONDS + 2.0
         self._directory = TemporaryDirectory(prefix="verdiclip-scroll-")
         self._process.setProgram(sys.executable)
         self._process.setArguments(
             [
                 "-m",
-                "verdiclip.capture.scroll_helper",
+                CHILD_MODULE,
                 str(round(point.x)),
                 str(round(point.y)),
-                str(window),
-                str(input_tick),
                 self._directory.name,
             ]
         )
-        self._arm_deadline()
+        self._timer.start(math.ceil((MAX_SECONDS + _DEADLINE_MARGIN) * 1000))
         self._process.start()
 
     def cancel(self) -> None:
-        """Request cooperative cancellation, then kill if UIA does not return."""
+        """Ask the child to stop and restore; kill it if it does not answer."""
         if self._terminal or self._directory is None or self._cancelled:
             return
         self._cancelled = True
         self._process.write(b"cancel\n")
-        self._cancel_deadline = min(
-            self._deadline if self._deadline is not None else float("inf"),
-            time.monotonic() + _CANCEL_GRACE_MS / 1000,
+        remaining = self._timer.remainingTime()
+        self._timer.start(
+            _CANCEL_GRACE_MS if remaining < 0 else min(remaining, _CANCEL_GRACE_MS)
         )
-        self._arm_deadline()
-
-    def _arm_deadline(self) -> None:
-        deadline = self._cancel_deadline or self._deadline
-        if deadline is not None:
-            self._timer.start(max(0, math.ceil((deadline - time.monotonic()) * 1000)))
-
-    def publication_result(self, result: ScrollResult) -> ScrollResult:
-        """Reject expired success even when Qt has not dispatched its timeout."""
-        if (
-            result.image is not None
-            and self._deadline is not None
-            and time.monotonic() >= self._deadline
-        ):
-            return replace(result, image=None, message="Scrolling capture timed out")
-        return result
 
     def shutdown(self) -> None:
-        """Kill and retire the owned child before the application closes."""
+        """Kill the child before the application closes."""
         if self._terminal:
             return
         self._cancelled = True
@@ -123,23 +93,17 @@ class ScrollHelper(QObject):
                 and self._process.state() != QProcess.ProcessState.NotRunning
             ):
                 raise CaptureError("The scrolling helper has not stopped")
-        self._complete(ScrollResult(None, "Scrolling capture stopped", "unknown", 0))
+        self._complete(ScrollResult(None, "Scrolling capture stopped", 0))
 
     def _timeout(self) -> None:
         if self._terminal:
             return
-        self._cancelled = True
-        self._timeout_message = (
-            "Scrolling capture stopped. The panel's position could not be restored."
-        )
-        self._process.kill()
-        # Keep the directory alive until QProcess confirms process exit.
+        self._timed_out = True
+        self._process.kill()  # _exited completes once the process is gone
 
     def _error(self, error: QProcess.ProcessError) -> None:
         if error == QProcess.ProcessError.FailedToStart:
-            self._complete(
-                ScrollResult(None, "Could not start scrolling capture", "unchanged", 0)
-            )
+            self._complete(ScrollResult(None, "Could not start scrolling capture", 0))
 
     def _read_result(self) -> ScrollResult:
         if self._directory is None:
@@ -151,7 +115,7 @@ class ScrollHelper(QObject):
         if (
             not isinstance(value, dict)
             or not isinstance(value.get("message"), str)
-            or not isinstance(value.get("restoration"), str)
+            or not isinstance(value.get("warning"), str)
             or type(value.get("frames")) is not int
             or type(value.get("success")) is not bool
         ):
@@ -170,29 +134,29 @@ class ScrollHelper(QObject):
             if image.isNull():
                 raise ValueError("Invalid scrolling image")
         message = "Scrolling capture cancelled" if self._cancelled else value["message"]
-        return ScrollResult(image, message, value["restoration"], value["frames"])
-
-    @staticmethod
-    def _validate_exit(code: int, status: QProcess.ExitStatus) -> None:
-        if code != 0 or status != QProcess.ExitStatus.NormalExit:
-            raise ValueError("Scrolling helper stopped unexpectedly")
+        return ScrollResult(image, message, value["frames"], value["warning"])
 
     def _exited(self, code: int, status: QProcess.ExitStatus) -> None:
         if self._terminal:
             return
-        raw = bytes(self._process.readAllStandardError().data())
-        self._diagnostics = (
-            raw[-_MAX_DIAGNOSTIC_BYTES:].decode("utf-8", errors="replace").strip()
-        )
-        if self._diagnostics:
-            logger.info("Scrolling helper diagnostics:\n%s", self._diagnostics)
-        try:
-            self._validate_exit(code, status)
-            result = self._read_result()
-        except (ValueError, OSError) as error:
-            result = ScrollResult(
-                None, self._timeout_message or str(error), "unknown: helper stopped", 0
+        diagnostics = bytes(self._process.readAllStandardError().data())
+        text = diagnostics[-_MAX_DIAGNOSTIC_BYTES:].decode("utf-8", errors="replace")
+        if text.strip():
+            logger.info("Scrolling helper diagnostics:\n%s", text.strip())
+        if self._timed_out:
+            result = ScrollResult(None, "Scrolling capture took too long", 0)
+        elif code != 0 or status != QProcess.ExitStatus.NormalExit:
+            message = (
+                "Scrolling capture cancelled"
+                if self._cancelled
+                else "Scrolling capture stopped unexpectedly"
             )
+            result = ScrollResult(None, message, 0)
+        else:
+            try:
+                result = self._read_result()
+            except (ValueError, OSError) as error:
+                result = ScrollResult(None, str(error), 0)
         self._complete(result)
 
     def _complete(self, result: ScrollResult) -> None:
@@ -208,14 +172,15 @@ class ScrollHelper(QObject):
                 logger.exception("Could not remove scrolling capture temporary files")
                 result = replace(
                     result,
-                    message="Temporary scrolling files could not be removed. "
-                    + result.message,
+                    warning=(
+                        result.warning + " Temporary files could not be removed."
+                    ).strip(),
                 )
-        self.finished.emit(self.publication_result(result))
+        self.finished.emit(result)
 
 
 def _watch_parent(cancelled: threading.Event) -> None:
-    """Exit without restoration when the sole process owner disappears."""
+    """Flag ``cancel``; exit at once when the parent closes stdin."""
     for line in sys.stdin:
         if line.strip() == "cancel":
             cancelled.set()
@@ -223,45 +188,43 @@ def _watch_parent(cancelled: threading.Event) -> None:
 
 
 def main() -> None:
-    """Run only in a fresh helper; no app controller or single-instance setup."""
+    """Capture in a fresh process: no app controller, no single-instance setup."""
     logging.basicConfig(level=logging.INFO, format="%(name)s: %(message)s")
-    # Importing this adapter never starts UIA in the parent GUI process.
-    import ctypes  # noqa: PLC0415 - Windows dependency belongs to the helper
+    import ctypes  # noqa: PLC0415 - Windows-only, helper process only
 
-    from verdiclip.capture.scrolling import ScrollTransaction  # noqa: PLC0415
+    from verdiclip.capture.scrolling import ScrollCapture  # noqa: PLC0415
     from verdiclip.platform.scrolling import UiaScrollTarget  # noqa: PLC0415
 
-    x, y, window, input_tick, directory = sys.argv[1:]
+    x, y, directory = sys.argv[1:]
     user = ctypes.WinDLL("user32", use_last_error=True)
     user.SetProcessDpiAwarenessContext.argtypes = (ctypes.c_void_p,)
     user.SetProcessDpiAwarenessContext.restype = ctypes.c_int
-    if not user.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
-        raise OSError("Could not establish physical-pixel coordinates")
+    # Per-monitor v2: UIA bounds and screen pixels share physical coordinates.
+    user.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
     cancelled = threading.Event()
     threading.Thread(target=_watch_parent, args=(cancelled,), daemon=True).start()
-    result: ScrollResult | None = None
+    started = time.monotonic()
     try:
-        with UiaScrollTarget(
-            Point(int(x), int(y)), window=int(window), input_tick=int(input_tick)
-        ) as target:
-            result = ScrollTransaction(target, cancelled.is_set).run()
+        with UiaScrollTarget(Point(int(x), int(y))) as target:
+            result = ScrollCapture(target, cancelled.is_set).run()
     except (CaptureError, OSError) as error:
-        restoration = (
-            "unchanged: target discovery failed"
-            if result is None
-            else "unknown: provider cleanup failed"
-        )
-        result = ScrollResult(None, str(error), restoration, 0)
+        result = ScrollResult(None, str(error), 0)
+    logger.info(
+        "Scrolling capture: frames=%s seconds=%.1f success=%s",
+        result.frames,
+        time.monotonic() - started,
+        result.image is not None,
+    )
     if result.image is not None and not result.image.save(
         str(Path(directory) / "capture.png")
     ):
-        raise OSError("Could not save the scrolling image")
+        result = ScrollResult(None, "Could not save the scrolling image", result.frames)
     sys.stdout.write(
         json.dumps(
             {
                 "success": result.image is not None,
                 "message": result.message,
-                "restoration": result.restoration,
+                "warning": result.warning,
                 "frames": result.frames,
             }
         )

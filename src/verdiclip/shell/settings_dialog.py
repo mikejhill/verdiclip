@@ -54,19 +54,6 @@ HOTKEY_FIELDS: Final = (
     ("repeat", "Repeat last capture"),
     ("scrolling", "Scrolling area"),
 )
-# Scrolling capture is hidden until its rewrite lands; its saved shortcut is kept.
-SCROLLING_CAPTURE_ENABLED: bool = False
-
-
-def hotkey_fields() -> tuple[tuple[str, str], ...]:
-    """Return the shortcuts offered now: scrolling only while it is enabled."""
-    return tuple(
-        (name, label)
-        for name, label in HOTKEY_FIELDS
-        if name != "scrolling" or SCROLLING_CAPTURE_ENABLED
-    )
-
-
 THEME_LABELS: Final = {
     Theme.SYSTEM: "Match Windows",
     Theme.LIGHT: "Light",
@@ -283,7 +270,7 @@ class SettingsDialog(QDialog):
                 "and press it. Leave empty to disable."
             )
         )
-        for name, label in hotkey_fields():
+        for name, label in HOTKEY_FIELDS:
             field = HotkeyField(capture=self._key_capture)
             status = QLabel()
             field.edit.textChanged.connect(self._validate)
