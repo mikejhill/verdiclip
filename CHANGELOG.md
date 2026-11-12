@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.17.0](https://github.com/mikejhill/verdiclip/compare/v0.16.1...v0.17.0) (2026-11-12)
+
+
+### Features
+
+* **ctl:** open, save, copy and the set_image operation ([#159](https://github.com/mikejhill/verdiclip/issues/159)) ([9d90996](https://github.com/mikejhill/verdiclip/commit/9d909969e6b72f22084776423f9e5927046e2355))
+* rebuild scrolling capture as a simple, tolerant top-to-bottom capture ([#158](https://github.com/mikejhill/verdiclip/issues/158)) ([70a8ec0](https://github.com/mikejhill/verdiclip/commit/70a8ec012d6cd781044a85f3e70c442efb77f9bd))
+
+
+### Bug Fixes
+
+* clear two CodeQL findings from the scrolling rebuild ([#164](https://github.com/mikejhill/verdiclip/issues/164)) ([d763136](https://github.com/mikejhill/verdiclip/commit/d7631362b92becbe2320e2def75690ec6736cc81))
+* **ctl:** open returns the image it opened while a menu is open ([#160](https://github.com/mikejhill/verdiclip/issues/160)) ([b1dbab7](https://github.com/mikejhill/verdiclip/commit/b1dbab7a0febed74629acdbe7daf2d57ebeb0132))
+* name ctl changes after the command line, not an assumed actor ([#156](https://github.com/mikejhill/verdiclip/issues/156)) ([66ec4bc](https://github.com/mikejhill/verdiclip/commit/66ec4bc49cd1c97fd24c20935bed4e0c90841d0c))
+
 ## [0.16.1](https://github.com/mikejhill/verdiclip/compare/v0.16.0...v0.16.1) (2026-11-12)
 
 
