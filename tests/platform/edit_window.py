@@ -79,7 +79,10 @@ def main() -> None:
     user.SetForegroundWindow(frame)
     rect = w.RECT()
     user.GetWindowRect(edit, c.byref(rect))
-    blank = w.POINT(300, 450)  # Frame client area below the EDIT control
+    client = w.RECT()
+    user.GetClientRect(frame, c.byref(client))
+    # Frame client area below the EDIT control, from the real client height.
+    blank = w.POINT(300, (420 + client.bottom) // 2)
     user.ClientToScreen(frame, c.byref(blank))
     sys.stdout.write(
         f"{rect.left} {rect.top} {rect.right} {rect.bottom} {blank.x} {blank.y}\n"

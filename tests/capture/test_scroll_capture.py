@@ -465,3 +465,34 @@ def test_small_change_before_the_paint_is_not_taken_as_the_top() -> None:
     """The top frame waits for the provider, not for any changed pixel."""
     panel = Repaints(1400, start=60.0, lag=6)
     assert run(panel).image == panel.document
+
+
+class Smooth(Panel):
+    """Smooth scrolling: the first read after a scroll is a midway position."""
+
+    midway: ScrollPosition | None = None
+
+    @override
+    def scroll_to(self, percent: float) -> None:
+        """Scroll and remember a midway answer."""
+        before = super().position()
+        super().scroll_to(percent)
+        self.midway = ScrollPosition(
+            (before.percent + super().position().percent) / 2, before.view_size
+        )
+
+    @override
+    def position(self) -> ScrollPosition:
+        """The midway answer once, then the real one."""
+        midway = self.midway
+        if midway is not None:
+            self.midway = None
+            return midway
+        return super().position()
+
+
+def test_midway_position_during_smooth_scrolling_is_not_kept() -> None:
+    """The position is read again once the pixels settle."""
+    for start in (0.0, 60.0):
+        panel = Smooth(900, start=start)
+        assert run(panel).image == panel.document

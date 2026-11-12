@@ -169,6 +169,8 @@ class ScrollCapture:
         # finished drawing, and settling still waits for slow pixels.
         moved = self._position_after(walk.reading)
         following = self._settle(walk.image)
+        # Smooth scrolling reports midway positions: re-read for these pixels.
+        moved = target.position()
         if following == walk.image and moved.percent <= walk.reading:
             # Neither pixels nor position moved: the end, if it says so.
             if moved.percent < _STALL_PERCENT:
@@ -218,6 +220,7 @@ class ScrollCapture:
             return image, position, position.percent
         position = self._position_after(start.percent)
         image = self._settle(before)
+        position = target.position()  # As above: the answer for these pixels
         # A provider that has not caught up yet is still at the top.
         return image, ScrollPosition(0.0, position.view_size), position.percent
 
