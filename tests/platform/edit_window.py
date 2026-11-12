@@ -44,7 +44,7 @@ def main() -> None:
     user.SendMessageW.argtypes = (w.HWND, w.UINT, w.WPARAM, w.LPARAM)
     frame = user.CreateWindowExW(
         0x00000008,  # WS_EX_TOPMOST: other windows must not cover the points
-        "STATIC",
+        "#32770",  # Dialog class: unlike STATIC it is not hit-test transparent
         "VerdiClip scroll fixture",
         _WS_OVERLAPPEDWINDOW | _WS_VISIBLE,
         100,
