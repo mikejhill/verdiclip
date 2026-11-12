@@ -1,1 +1,1 @@
-"""Local automation: let tools and scripts read and edit open documents."""
+"""Local automation: read and edit open documents from the command line."""
