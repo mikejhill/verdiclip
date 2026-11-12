@@ -108,9 +108,6 @@ class AppController(QObject):
         self._capture_handoff.setSingleShot(True)
         self._capture_handoff.timeout.connect(self._resume_capture)
         self._closing = self._hotkeys_paused = self._hotkey_refresh_pending = False
-        self._scrolling.captured.connect(self._on_scrolled)
-        self._scrolling.failed.connect(self._on_scroll_failed)
-        self._scrolling.finished.connect(self._after_scrolling)
         self._editors: list[EditorWindow] = []
         self._workspace = Workspace()
         self._workspace.window_added.connect(self._wire_editor)
@@ -126,7 +123,7 @@ class AppController(QObject):
         self._icon_factory = IconFactory(QApplication.palette().windowText().color())
         self._icon = self._icon_factory.brand()
         self._tray = TrayIcon(self._icon, self._tray_commands())
-        self._scrolling.state_changed.connect(self._tray.set_scrolling_state)
+        self._wire_scrolling()
         self._last_saved_folder: Path | None = None
         self._message_action: Callable[[], None] = self._open_last_folder
         self._default_app_dialog: DefaultAppDialog | None = None
@@ -145,12 +142,19 @@ class AppController(QObject):
             updater.checked.connect(self._on_update_checked)
             updater.check_failed.connect(self._on_update_check_failed)
         self._capture.captured.connect(self._on_captured)
-        self._capture.scroll_requested.connect(self._scroll_at)
         self._capture.failed.connect(
             lambda message: self._notify("Capture failed", message, warning=True)
         )
         self._hotkeys.triggered.connect(self._on_hotkey)
         self._tray.messageClicked.connect(self._on_message_clicked)
+
+    def _wire_scrolling(self) -> None:
+        scrolling = self._scrolling
+        scrolling.captured.connect(self._on_scrolled)
+        scrolling.failed.connect(self._on_scroll_failed)
+        scrolling.finished.connect(self._after_scrolling)
+        scrolling.state_changed.connect(self._tray.set_scrolling_state)
+        self._capture.scroll_requested.connect(self._scroll_at)
 
     # Accessors
 
