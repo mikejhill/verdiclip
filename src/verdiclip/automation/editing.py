@@ -34,6 +34,7 @@ MAX_LABEL = 60
 AI_PREFIX = "AI: "
 
 type StyleLookup = Callable[[AnnotationKind], Style]
+type Fitter = Callable[[Annotation], Annotation]
 
 OPERATIONS = (
     "add",
@@ -63,8 +64,10 @@ class EditPlanner:
     touches the real document until every operation has succeeded.
     """
 
-    def __init__(self, default_style: StyleLookup) -> None:
+    def __init__(self, default_style: StyleLookup, fit: Fitter | None = None) -> None:
+        """``fit`` sizes auto-fit text to its text, as the editor does."""
         self._default_style = default_style
+        self._fit: Fitter = fit or (lambda annotation: annotation)
         self._codec = AnnotationCodec()
 
     def plan(
@@ -151,7 +154,7 @@ class EditPlanner:
             base["label"] = trial.next_counter_label
             base["radius"] = float(style.font_size)
         merged = _merge(base, data) | {"id": ident, "kind": kind.value}
-        return self._codec.decode(merged)
+        return self._fit(self._codec.decode(merged))
 
     def _update(self, trial: Document, operation: JsonObject) -> Command:
         """Change fields of one annotation; style fields merge individually."""
@@ -162,7 +165,8 @@ class EditPlanner:
                 msg = f"set may not change {key}"
                 raise AutomationError(ErrorCode.BAD_REQUEST, msg)
         merged = _merge(self._codec.encode(current), changes)
-        return ReplaceAnnotations([current], [self._codec.decode(merged)], "Edit")
+        changed = self._fit(self._codec.decode(merged))
+        return ReplaceAnnotations([current], [changed], "Edit")
 
     @staticmethod
     def _delete(trial: Document, operation: JsonObject) -> Command:

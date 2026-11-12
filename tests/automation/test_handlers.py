@@ -20,7 +20,7 @@ from verdiclip.automation.protocol import (
     JsonValue,
     Request,
 )
-from verdiclip.document.annotations import ArrowShape, RectangleShape
+from verdiclip.document.annotations import ArrowShape, RectangleShape, TextNote
 from verdiclip.document.commands import AddAnnotations
 from verdiclip.document.document import Document
 from verdiclip.document.style import Color, Style
@@ -28,6 +28,7 @@ from verdiclip.editor.page import DocumentRecord
 from verdiclip.editor.session import EditorSession
 from verdiclip.geometry import Point, Rect
 from verdiclip.output.delivery import ImageDelivery
+from verdiclip.render.renderer import Renderer
 from verdiclip.settings import EditorSettings, OutputSettings
 
 pytestmark = pytest.mark.usefixtures("qapp")
@@ -474,6 +475,58 @@ def test_failed_apply_changes_nothing(
     assert caught.value.code is ErrorCode.NOT_FOUND
     assert annotations_of(records[1]) == []
     assert records[1].session.history.state_id == 0
+
+
+def test_bad_select_is_rejected_before_any_edit(
+    handlers: AutomationHandlers, records: list[DocumentRecord]
+) -> None:
+    """A bad option fails the request without applying its operations."""
+    with pytest.raises(AutomationError, match="select") as caught:
+        call(handlers, "apply", ops=[{"op": "add", "annotation": BOX}], select="yes")
+
+    assert caught.value.code is ErrorCode.BAD_REQUEST
+    assert annotations_of(records[1]) == []
+    assert records[1].session.history.state_id == 0
+
+
+def test_auto_fit_text_follows_its_text(
+    handlers: AutomationHandlers, records: list[DocumentRecord]
+) -> None:
+    """Auto-fit text is sized to its text on add and update; fixed text is not."""
+    note = {"kind": "text", "rect": [10, 20, 5, 5], "text": "Hi"}
+    call(
+        handlers,
+        "apply",
+        ops=[
+            {"op": "add", "annotation": note | {"id": "fit"}},
+            {"op": "add", "annotation": note | {"id": "fixed", "auto_fit": False}},
+        ],
+    )
+    document = records[1].session.document
+
+    def note_of(ident: str) -> TextNote:
+        found = document.find(ident)
+        assert isinstance(found, TextNote)
+        return found
+
+    def rect_of(ident: str) -> Rect:
+        return note_of(ident).rect
+
+    short = rect_of("fit")
+    width, height = Renderer.measure_text("Hi", note_of("fit").style)
+    assert short == Rect(10, 20, width, height)
+    assert rect_of("fixed") == Rect(10, 20, 5, 5)
+
+    call(
+        handlers,
+        "apply",
+        ops=[
+            {"op": "update", "id": "fit", "set": {"text": "A much longer label"}},
+            {"op": "update", "id": "fixed", "set": {"text": "A much longer label"}},
+        ],
+    )
+    assert rect_of("fit").width > short.width
+    assert rect_of("fixed") == Rect(10, 20, 5, 5)
 
 
 def test_long_labels_are_shortened(handlers: AutomationHandlers) -> None:

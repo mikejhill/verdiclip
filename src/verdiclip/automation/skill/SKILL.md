@@ -63,7 +63,7 @@ rects, `[x, y]` for points):
 | --- | --- |
 | `rectangle`, `ellipse` | `rect`, optional `text` (label inside) |
 | `line`, `arrow` | `start`, `end` |
-| `text` | `rect`, `text`, optional `auto_fit` (default true) |
+| `text` | `rect`, `text`, optional `auto_fit` (default true: the box is resized to fit the text from the rect's top-left; false keeps the rect and wraps) |
 | `counter` | `center`; `label` defaults to the next number, `radius` to the tool size |
 | `highlight` | `rect` (translucent marker) |
 | `obfuscate` | `rect` (pixelates what is beneath: use it to hide secrets) |
