@@ -82,7 +82,7 @@ def in_thread[T](work: Callable[[], T]) -> T:
     def target() -> None:
         try:
             results.append(work())
-        except BaseException as error:  # noqa: BLE001 - re-raised below
+        except (Exception, pytest.fail.Exception) as error:  # noqa: BLE001 - re-raised
             errors.append(error)
 
     thread = threading.Thread(target=target)
