@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.15.0](https://github.com/mikejhill/verdiclip/compare/v0.14.2...v0.15.0) (2026-11-11)
+
+
+### Features
+
+* let AI tools read open images through verdiclip ctl ([#146](https://github.com/mikejhill/verdiclip/issues/146)) ([f031949](https://github.com/mikejhill/verdiclip/commit/f031949b9b3f4db3860a388eb832a02b12a39e73))
+
+
+### Bug Fixes
+
+* hide scrolling capture until its rewrite lands ([#147](https://github.com/mikejhill/verdiclip/issues/147)) ([16e15b2](https://github.com/mikejhill/verdiclip/commit/16e15b286144d7e50eaac8133893b53a5bb6ec06))
+
 ## [0.14.2](https://github.com/mikejhill/verdiclip/compare/v0.14.1...v0.14.2) (2026-11-11)
 
 
