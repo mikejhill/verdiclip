@@ -203,7 +203,11 @@ class ScrollCapture:
             return False
         walk.assumed, walk.reading = moved.percent == walk.reading, moved.percent
         distance = None
-        shift = self._shift(walk, following, moved, requested, scale)
+        shift = (
+            None
+            if scale is None
+            else self._shift(walk, following, moved, requested, scale)
+        )
         if shift is not None and scale is not None:
             # The pixels say how far the view went. A provider can lag, or
             # answer with a value that barely moved, after a full step.
@@ -238,11 +242,9 @@ class ScrollCapture:
         following: QImage,
         moved: ScrollPosition,
         requested: float,
-        scale: float | None,
+        scale: float,
     ) -> int | None:
         """The pixel distance, when it disagrees with the provider's answer."""
-        if scale is None:
-            return None
         position = walk.position
         answer = (requested if walk.assumed else moved.percent) - position.percent
         expected = answer * scale
