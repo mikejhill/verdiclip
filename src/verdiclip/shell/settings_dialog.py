@@ -293,12 +293,12 @@ class SettingsDialog(QDialog):
     def _build(self) -> None:
         """Lay out the tabs."""
         tabs = QTabWidget()
-        # The order a capture takes: start it, choose what happens, then the
-        # file and the editor
+        # Starting a capture (hotkeys, then the keys held as it finishes)
+        # before where it goes, then the file and the editor
         tabs.addTab(self._general_tab(), "General")
         tabs.addTab(self._hotkey_tab(), "Hotkeys")
-        tabs.addTab(self._capture_tab(), "Capture")
         tabs.addTab(self._modifiers_tab(), "Modifiers")
+        tabs.addTab(self._capture_tab(), "Capture")
         tabs.addTab(self._output_tab(), "Output")
         tabs.addTab(self._editor_tab(), "Editor")
         tabs.currentChanged.connect(self._cancel_recordings)
