@@ -135,8 +135,42 @@ def test_both_publish_targets_depend_on_gated_build() -> None:
     assert "needs: build" in workflow.split("  publish-testpypi:", 1)[1]
 
 
+def scan(sha: str, category: str, results: int = 0) -> dict[str, object]:
+    """One code-scanning analysis record."""
+    return {"commit_sha": sha, "category": category, "results_count": results}
+
+
+def clean_scan(sha: str) -> list[dict[str, object]]:
+    """A clean analysis of ``sha`` in every category."""
+    return [scan(sha, category) for category in sorted(gate.SCAN_CATEGORIES)]
+
+
+def reply(url: str, rows: list[dict[str, object]], fault: str | None) -> object:
+    """GitHub's answer to ``url`` for a gate run with ``fault``."""
+    if "actions/runs?" in url:
+        return {"workflow_runs": rows, "total_count": len(rows)}
+    if "git/ref/heads/main" in url:
+        if fault == "malformed":
+            return {"object": None}
+        moved = fault in {"moved", "moved-quietly"}
+        return {"object": {"sha": "b" * 40 if moved else SHA}}
+    if "compare/" in url:
+        assert url.endswith(f"compare/{SHA}...{'b' * 40}")
+        title = "chore: release 9.9.9" if fault == "moved" else "fix: other"
+        return {
+            "status": "ahead",
+            "total_commits": 1,
+            "commits": [{"commit": {"message": f"{title} (#1)\n\nbody"}}],
+        }
+    if "code-scanning/analyses?" in url:
+        return [scan("b" * 40, "zizmor"), *clean_scan(SHA), scan("c" * 40, "zizmor")]
+    assert "code-scanning/alerts?" in url
+    return [{}] if fault == "alerts" else []
+
+
 @pytest.mark.parametrize(
-    "fault", [None, "moved", "malformed", "alerts", "pending", "failed"]
+    "fault",
+    [None, "moved", "moved-quietly", "malformed", "alerts", "pending", "failed"],
 )
 def test_complete_gate_path(
     monkeypatch: pytest.MonkeyPatch,
@@ -166,18 +200,7 @@ def test_complete_gate_path(
         url = request.full_url
         assert url.startswith("https://api.github.com/repos/mikejhill/verdiclip/")
         endpoints.append(url)
-        if "actions/runs?" in url:
-            payload = {"workflow_runs": rows, "total_count": len(rows)}
-        elif "git/ref/heads/main" in url:
-            payload = {
-                "object": None
-                if fault == "malformed"
-                else {"sha": "b" * 40 if fault == "moved" else SHA}
-            }
-        else:
-            assert "code-scanning/alerts?" in url
-            payload = [{}] if fault == "alerts" else []
-        return io.StringIO(json.dumps(payload))
+        return io.StringIO(json.dumps(reply(url, rows, fault)))
 
     monkeypatch.setattr(gate, "urlopen", fetch)
     clock = iter([0, 0, 1801])
@@ -190,16 +213,19 @@ def test_complete_gate_path(
         assert receipt == {"main_sha": SHA, "superseded_by": "b" * 40}
         assert output.read_text(encoding="utf-8") == "superseded=true\n"
         assert not any("code-scanning" in url for url in endpoints)
-    elif fault is not None:
+    elif fault not in {None, "moved-quietly"}:
         with pytest.raises((ValueError, TimeoutError)):
             gate.main()
         assert not capsys.readouterr().out
         assert not output.exists()
     else:
+        # Commits other than a release merge landing meanwhile don't stop it
         gate.main()
         receipt = json.loads(capsys.readouterr().out)
         assert receipt == {"main_sha": SHA, "verified_runs": [1, 2]}
-        assert len(endpoints) == 3
+        assert len(endpoints) == (4 if fault else 3)
+        # A moved release is judged by its own commit's scan, not main's alerts
+        assert any("code-scanning/analyses" in u for u in endpoints) == bool(fault)
         assert not output.exists()
 
 
@@ -214,3 +240,95 @@ def test_codeql_is_a_required_publication_gate(outcome: str) -> None:
         rows[-1]["conclusion"] = outcome
         with pytest.raises(ValueError, match="did not succeed"):
             assess(rows, SHA)
+
+
+@pytest.mark.parametrize(
+    ("compare", "held"),
+    [
+        (None, True),
+        ({"status": "diverged", "total_commits": 0, "commits": []}, True),
+        ({"status": "ahead", "total_commits": 300, "commits": []}, True),
+        ({"status": "ahead", "total_commits": 1, "commits": ["x"]}, True),
+        (
+            {
+                "status": "ahead",
+                "total_commits": 2,
+                "commits": [
+                    {"commit": {"message": "fix: a"}},
+                    {"commit": {"message": "chore: release 1.2.3 (#9)"}},
+                ],
+            },
+            True,
+        ),
+        (
+            {
+                "status": "ahead",
+                "total_commits": 1,
+                "commits": [{"commit": {"message": "feat: b"}}],
+            },
+            False,
+        ),
+    ],
+    ids=["unreadable", "diverged", "truncated", "malformed", "release", "quiet"],
+)
+def test_only_a_later_release_merge_supersedes(
+    compare: object,
+    held: bool,  # noqa: FBT001 - pytest parameter
+) -> None:
+    """A newer release merge, or any doubt, stands down; other commits don't."""
+    assert gate.releases_between(compare) is held
+
+
+@pytest.mark.parametrize(
+    ("pages", "clean"),
+    [
+        ([None], False),
+        ([[]], False),
+        ([clean_scan("b" * 40)], False),
+        ([[*clean_scan(SHA)[:2], scan("b" * 40, "zizmor")]], False),
+        ([[*clean_scan(SHA)[:2], scan(SHA, "zizmor", 1)]], False),
+        ([[*clean_scan("b" * 40), "x"]], False),
+        ([[scan("b" * 40, "zizmor")] * 100, clean_scan(SHA)], True),
+        ([clean_scan("b" * 40) + clean_scan(SHA) + clean_scan("c" * 40)], True),
+        (
+            [
+                [
+                    *[scan("b" * 40, "zizmor")] * 98,
+                    *clean_scan(SHA)[:1],
+                    scan("c", "x"),
+                ],
+                [*clean_scan(SHA)[1:], scan("d" * 40, "zizmor")],
+            ],
+            True,
+        ),
+        ([[*clean_scan(SHA), scan(SHA, "zizmor", 3)]], True),
+        ([[scan(SHA, "zizmor", 3), *clean_scan(SHA)]], False),
+    ],
+    ids=[
+        "unreadable",
+        "none",
+        "other-commit-only",
+        "missing-category",
+        "findings",
+        "malformed",
+        "second-page",
+        "clean",
+        "interleaved",
+        "clean-rerun",
+        "failing-rerun",
+    ],
+)
+def test_a_moved_release_needs_its_own_clean_scan(
+    pages: list[object],
+    clean: bool,  # noqa: FBT001 - pytest parameter
+) -> None:
+    """Only this commit's analyses count, in every category, with no results."""
+    answers = iter(pages)
+    asked: list[str] = []
+
+    def fetch(endpoint: str) -> object:
+        asked.append(endpoint)
+        return next(answers, [])
+
+    assert gate.scanned_clean(fetch, SHA) is clean
+    assert all("sha=" not in endpoint for endpoint in asked)

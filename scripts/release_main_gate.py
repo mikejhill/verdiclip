@@ -77,6 +77,61 @@ def collect(fetch: Callable[[str], object], sha: str) -> list[dict[str, object]]
     raise ValueError("Run inventory exceeds bounded budget")
 
 
+def releases_between(compare: object) -> bool:
+    """Whether commits pushed after this one may hold another release.
+
+    Only a release-please merge would make this run tag the wrong release, so
+    anything else that lands meanwhile doesn't stop this commit's release. An
+    unreadable, truncated or diverged comparison counts as holding one.
+    """
+    if not isinstance(compare, dict) or compare.get("status") != "ahead":
+        return True
+    commits = compare.get("commits")
+    if not isinstance(commits, list) or compare.get("total_commits") != len(commits):
+        return True
+    for commit in commits:
+        detail = commit.get("commit") if isinstance(commit, dict) else None
+        message = detail.get("message") if isinstance(detail, dict) else None
+        if not isinstance(message, str) or message.startswith("chore: release"):
+            return True
+    return False
+
+
+# Each main commit gets one code-scanning analysis per category
+SCAN_CATEGORIES = {"/language:python", "/language:actions", "zizmor"}
+
+
+def scanned_clean(fetch: Callable[[str], object], sha: str) -> bool:
+    """Whether every code-scanning category analysed ``sha`` and found nothing.
+
+    Main's open alerts describe its newest analysis, which a later fix may have
+    cleared, so a commit main has moved past needs its own analyses. The list
+    endpoint ignores a commit filter, so pages are read newest first and only
+    records for ``sha`` count, the latest per category; anything missing or
+    unreadable is not clean.
+    """
+    latest: dict[object, object] = {}
+    for page in range(1, 4):
+        records = fetch(
+            f"code-scanning/analyses?ref=refs%2Fheads%2Fmain&per_page=100&page={page}"
+        )
+        if not isinstance(records, list) or not all(
+            isinstance(record, dict) for record in records
+        ):
+            return False
+        # Newest first: a category's first record for ``sha`` is its latest
+        # (a clean rerun wins over an older upload). Uploads from different
+        # commits interleave, so read the whole bounded inventory.
+        for record in records:
+            if record.get("commit_sha") == sha:
+                latest.setdefault(record.get("category"), record.get("results_count"))
+        if len(records) < PAGE_SIZE:
+            break
+    return set(latest) >= SCAN_CATEGORIES and all(
+        count == 0 for count in latest.values()
+    )
+
+
 def superseded(sha: str, head: str) -> None:
     """Report that main moved on, so later release steps skip this commit."""
     output = os.environ.get("GITHUB_OUTPUT", "")
@@ -120,15 +175,22 @@ def main() -> None:
             if not isinstance(head, str) or re.fullmatch(r"[a-f0-9]{40}", head) is None:
                 raise ValueError("Unreadable main branch head")
             if head != sha:
-                # The newer push has its own release run, which verifies and
-                # publishes; this one stands down without publishing.
-                superseded(sha, head)
-                return
-            alerts = fetch(
-                "code-scanning/alerts?ref=refs%2Fheads%2Fmain&state=open&per_page=1"
-            )
-            if alerts != []:
-                raise ValueError("Main has open or unreadable code-scanning findings")
+                # Release this commit unless a newer release merge (with its
+                # own run) landed or its own scan can't be shown clean; then
+                # stand down so the newer push's run releases instead.
+                if releases_between(
+                    fetch(f"compare/{sha}...{head}")
+                ) or not scanned_clean(fetch, sha):
+                    superseded(sha, head)
+                    return
+            else:
+                alerts = fetch(
+                    "code-scanning/alerts?ref=refs%2Fheads%2Fmain&state=open&per_page=1"
+                )
+                if alerts != []:
+                    raise ValueError(
+                        "Main has open or unreadable code-scanning findings"
+                    )
             sys.stdout.write(
                 json.dumps({"main_sha": sha, "verified_runs": identities}) + "\n"
             )
