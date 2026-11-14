@@ -135,6 +135,30 @@ def test_both_publish_targets_depend_on_gated_build() -> None:
     assert "needs: build" in workflow.split("  publish-testpypi:", 1)[1]
 
 
+def reply(url: str, rows: list[dict[str, object]], fault: str | None) -> object:
+    """GitHub's answer to ``url`` for a gate run with ``fault``."""
+    if "actions/runs?" in url:
+        return {"workflow_runs": rows, "total_count": len(rows)}
+    if "git/ref/heads/main" in url:
+        if fault == "malformed":
+            return {"object": None}
+        moved = fault in {"moved", "moved-quietly"}
+        return {"object": {"sha": "b" * 40 if moved else SHA}}
+    if "compare/" in url:
+        assert url.endswith(f"compare/{SHA}...{'b' * 40}")
+        title = "chore: release 9.9.9" if fault == "moved" else "fix: other"
+        return {
+            "status": "ahead",
+            "total_commits": 1,
+            "commits": [{"commit": {"message": f"{title} (#1)\n\nbody"}}],
+        }
+    if "code-scanning/analyses?" in url:
+        assert f"sha={SHA}" in url
+        return [{"results_count": 0}, {"results_count": 0}]
+    assert "code-scanning/alerts?" in url
+    return [{}] if fault == "alerts" else []
+
+
 @pytest.mark.parametrize(
     "fault",
     [None, "moved", "moved-quietly", "malformed", "alerts", "pending", "failed"],
@@ -167,26 +191,7 @@ def test_complete_gate_path(
         url = request.full_url
         assert url.startswith("https://api.github.com/repos/mikejhill/verdiclip/")
         endpoints.append(url)
-        if "actions/runs?" in url:
-            payload = {"workflow_runs": rows, "total_count": len(rows)}
-        elif "git/ref/heads/main" in url:
-            payload = {
-                "object": None
-                if fault == "malformed"
-                else {"sha": "b" * 40 if fault in {"moved", "moved-quietly"} else SHA}
-            }
-        elif "compare/" in url:
-            assert url.endswith(f"compare/{SHA}...{'b' * 40}")
-            title = "chore: release 9.9.9" if fault == "moved" else "fix: other"
-            payload = {
-                "status": "ahead",
-                "total_commits": 1,
-                "commits": [{"commit": {"message": f"{title} (#1)\n\nbody"}}],
-            }
-        else:
-            assert "code-scanning/alerts?" in url
-            payload = [{}] if fault == "alerts" else []
-        return io.StringIO(json.dumps(payload))
+        return io.StringIO(json.dumps(reply(url, rows, fault)))
 
     monkeypatch.setattr(gate, "urlopen", fetch)
     clock = iter([0, 0, 1801])
@@ -210,6 +215,8 @@ def test_complete_gate_path(
         receipt = json.loads(capsys.readouterr().out)
         assert receipt == {"main_sha": SHA, "verified_runs": [1, 2]}
         assert len(endpoints) == (4 if fault else 3)
+        # A moved release is judged by its own commit's scan, not main's alerts
+        assert any("code-scanning/analyses" in u for u in endpoints) == bool(fault)
         assert not output.exists()
 
 
@@ -261,3 +268,22 @@ def test_only_a_later_release_merge_supersedes(
 ) -> None:
     """A newer release merge, or any doubt, stands down; other commits don't."""
     assert gate.releases_between(compare) is held
+
+
+@pytest.mark.parametrize(
+    ("analyses", "clean"),
+    [
+        (None, False),
+        ([], False),
+        ([{"results_count": 0}, {"results_count": 2}], False),
+        ([{"results_count": 0}, "x"], False),
+        ([{"results_count": 0}], True),
+    ],
+    ids=["unreadable", "none", "findings", "malformed", "clean"],
+)
+def test_a_moved_release_needs_its_own_clean_scan(
+    analyses: object,
+    clean: bool,  # noqa: FBT001 - pytest parameter
+) -> None:
+    """Only analyses of the release commit itself, all with no results, pass."""
+    assert gate.clean_analyses(analyses) is clean

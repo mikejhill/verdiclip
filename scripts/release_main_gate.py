@@ -97,6 +97,20 @@ def releases_between(compare: object) -> bool:
     return False
 
 
+def clean_analyses(analyses: object) -> bool:
+    """Whether code scanning analysed this exact commit and found nothing.
+
+    Main's open alerts describe its newest analysis, which a later fix may have
+    cleared, so a commit main has moved past needs its own analyses instead.
+    """
+    if not isinstance(analyses, list) or analyses == []:
+        return False
+    return all(
+        isinstance(analysis, dict) and analysis.get("results_count") == 0
+        for analysis in analyses
+    )
+
+
 def superseded(sha: str, head: str) -> None:
     """Report that main moved on, so later release steps skip this commit."""
     output = os.environ.get("GITHUB_OUTPUT", "")
@@ -139,16 +153,28 @@ def main() -> None:
             head = target.get("sha") if isinstance(target, dict) else None
             if not isinstance(head, str) or re.fullmatch(r"[a-f0-9]{40}", head) is None:
                 raise ValueError("Unreadable main branch head")
-            if head != sha and releases_between(fetch(f"compare/{sha}...{head}")):
-                # A newer release merge has its own run, which verifies and
-                # publishes; this one stands down without publishing.
-                superseded(sha, head)
-                return
-            alerts = fetch(
-                "code-scanning/alerts?ref=refs%2Fheads%2Fmain&state=open&per_page=1"
-            )
-            if alerts != []:
-                raise ValueError("Main has open or unreadable code-scanning findings")
+            if head != sha:
+                # Release this commit unless a newer release merge (with its
+                # own run) landed or its own scan can't be shown clean; then
+                # stand down so the newer push's run releases instead.
+                if releases_between(
+                    fetch(f"compare/{sha}...{head}")
+                ) or not clean_analyses(
+                    fetch(
+                        "code-scanning/analyses?ref=refs%2Fheads%2Fmain"
+                        f"&sha={sha}&per_page=100"
+                    )
+                ):
+                    superseded(sha, head)
+                    return
+            else:
+                alerts = fetch(
+                    "code-scanning/alerts?ref=refs%2Fheads%2Fmain&state=open&per_page=1"
+                )
+                if alerts != []:
+                    raise ValueError(
+                        "Main has open or unreadable code-scanning findings"
+                    )
             sys.stdout.write(
                 json.dumps({"main_sha": sha, "verified_runs": identities}) + "\n"
             )
