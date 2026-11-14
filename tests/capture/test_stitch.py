@@ -620,3 +620,31 @@ def test_soft_edge_of_the_thumb_is_cropped_too() -> None:
                 frame.image.setPixel(WIDTH - 7, y, 0xAAAAAA)
     whole = expected(document)
     assert stitch(shots).image == whole.copy(0, 0, WIDTH - 7, whole.height())
+
+
+def test_soft_edge_of_a_frozen_thumb_is_cropped_too() -> None:
+    """The anti-aliased edge of a thumb that never redraws goes with the bar."""
+    document = page(700)
+    shots = frames(document, 120)
+    for frame in shots:
+        scrollbar(frame.image, 10)
+        for y in range(10, 30):
+            frame.image.setPixel(WIDTH - 7, y, 0xAAAAAA)
+    whole = expected(document)
+    assert stitch(shots, THUMB_VIEW).image == whole.copy(
+        0, 0, WIDTH - 7, whole.height()
+    )
+
+
+def test_soft_edge_that_never_votes_is_cropped_by_its_shape() -> None:
+    """An edge column moving down with the thumb goes with the bar, votes or not."""
+    document = page(680)  # Every step a full 120 rows
+    shots = frames(document, 120)
+    for index, frame in enumerate(shots):
+        position = 20 + 25 * index
+        scrollbar(frame.image, position)
+        if position >= VIEW - 120:  # Only below the rows a seam compares
+            for y in range(position, position + 20):
+                frame.image.setPixel(WIDTH - 7, y, 0xAAAAAA)
+    whole = expected(document)
+    assert stitch(shots).image == whole.copy(0, 0, WIDTH - 7, whole.height())
