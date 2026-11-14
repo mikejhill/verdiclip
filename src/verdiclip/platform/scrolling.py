@@ -109,6 +109,19 @@ class _Interface:
         )
 
 
+def on_screen(area: Rect, monitors: list[dict[str, int]]) -> bool:
+    """Whether displays (which do not overlap) show every pixel of ``area``."""
+    covered = 0.0
+    for monitor in monitors:
+        display = Rect(
+            monitor["left"], monitor["top"], monitor["width"], monitor["height"]
+        )
+        part = area.intersected(display)
+        if not part.is_empty:
+            covered += part.width * part.height
+    return covered >= area.width * area.height
+
+
 class UiaScrollTarget:
     """The nearest vertically scrollable UIA ancestor of a screen point."""
 
@@ -186,6 +199,12 @@ class UiaScrollTarget:
             raise CaptureError("The scrolling area is too small")
         self._grabber = mss.MSS()
         self._owners.callback(self._grabber.close)
+        if not on_screen(self._area, self._grabber.monitors[1:]):
+            # Off every display, a capture is black frames that look like success.
+            raise CaptureError(
+                "Part of the panel is off screen. Move its window fully onto "
+                "a display and try again."
+            )
         logger.info("Scrolling viewport %s", self._area)
 
     def _find(

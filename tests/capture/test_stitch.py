@@ -47,11 +47,16 @@ def view(
         for x in range(WIDTH):
             image.setPixel(x, VIEW - footer + y, 0x405060 + y * 5 + x)
     if thumb:
-        position = header + top * body // max(1, document.height())
-        for y in range(position, min(VIEW - footer, position + 20)):
-            for x in range(WIDTH - 6, WIDTH):
-                image.setPixel(x, y, 0x777777)
+        scrollbar(image, header + top * body // max(1, document.height()), footer)
     return image
+
+
+def scrollbar(image: QImage, position: int, footer: int = 0) -> None:
+    """Paint a plain track down the right edge with a thumb at ``position``."""
+    for y in range(VIEW - footer):
+        for x in range(WIDTH - 6, WIDTH):
+            inside = position <= y < position + 20
+            image.setPixel(x, y, 0x777777 if inside else 0xEEEEEE)
 
 
 def expected(document: QImage, *, header: int = 0, footer: int = 0) -> QImage:
@@ -193,7 +198,7 @@ def test_changed_content_does_not_widen_the_strip() -> None:
         for x in range(WIDTH - 10, WIDTH - 6):
             image.setPixel(x, y, 0x101010 + x)
     for y in range(160, 180):
-        for x in range(WIDTH):
+        for x in range(WIDTH - 6):
             image.setPixel(x, y, 0x101010 + x)
     result = stitch(shots)
     assert result.image.width() == WIDTH - 6
@@ -245,3 +250,36 @@ def test_sparse_view_that_shifts_counts_as_moved() -> None:
             after.setPixel(x, 40 + y, x)
     assert view_moved(before, after, 10)
     assert not view_moved(before, before.copy(), 10)
+
+
+def test_changing_right_edge_without_a_scrollbar_is_kept() -> None:
+    """A timestamp changing near the edge of a short capture is not cropped."""
+    document = page(260)
+    first = view(document, 0)
+    second = view(document, 60)
+    for y in range(100, 110):  # Rows that overlap the first frame
+        for x in range(WIDTH - 10, WIDTH - 6):
+            second.setPixel(x, y, 0x101010 + x)
+    result = stitch([Frame(first), Frame(second, 60.0)])
+    assert result.image.width() == WIDTH
+
+
+def test_scattered_marks_on_a_track_are_not_a_thumb() -> None:
+    """Text-like runs on a plain column are content, not a thumb."""
+    document = page(400)
+    shots = frames(document, 100, thumb=True)
+    for frame in shots:
+        image = frame.image
+        for y in (150, 170):
+            for x in range(WIDTH - 6, WIDTH):
+                image.setPixel(x, y, 0x123456)
+    assert stitch(shots).image.width() == WIDTH
+
+
+def test_thumb_that_moves_up_is_not_a_scrollbar() -> None:
+    """A run moving against the scroll direction is not a thumb."""
+    document = page(400)
+    shots = frames(document, 100, thumb=True)
+    for index, frame in enumerate(shots):
+        scrollbar(frame.image, VIEW - 30 - 40 * index)
+    assert stitch(shots).image.width() == WIDTH

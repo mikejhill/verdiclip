@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
+from itertools import pairwise
 
 from PySide6.QtCore import QPoint, QRect
 from PySide6.QtGui import QImage, QPainter
@@ -30,6 +31,10 @@ _MIN_VOTES = 4
 _MAX_BAND = 1 / 3
 # A scrollbar strip is looked for within this many columns of the right edge.
 _MAX_STRIP = 40
+# A scrollbar column is at least this share of plain track.
+_MIN_TRACK = 0.3
+# A thumb's run of pixels may have gaps this small (anti-aliased edges).
+_THUMB_GAP = 2
 # Two frames sharing this share of their rows in place show the same view.
 _SAME_VIEW = 0.9
 
@@ -222,7 +227,38 @@ def _strip(
             seen[x] += count >= _MIN_VOTES
     needed = (len(seams) + 1) // 2
     first = next((x for x, count in enumerate(seen) if count >= needed > 0), window)
+    # Cropping loses pixels for good: insist on a thumb, not just change.
+    used = [rows[0], *(rows[index] for index, _ in seams)]
+    if not any(_thumb(used, edge + x * 4, top, body) for x in range(first, window)):
+        return 0
     return window - first
+
+
+def _thumb(frames: list[list[bytes]], at: int, top: int, body: int) -> bool:
+    """Whether one column shows a scrollbar thumb moving down a plain track.
+
+    In each frame the column must be mostly one track colour with a single
+    run of other pixels, and that run must move down from frame to frame.
+    Text, timestamps and pictures leave several runs or no common track.
+    """
+    columns = [[r[y][at : at + 4] for y in range(top, top + body)] for r in frames]
+    track, count = Counter(p for column in columns for p in column).most_common(1)[0]
+    if count < _MIN_TRACK * body * len(columns):
+        return False
+    centres: list[float] = []
+    for column in columns:
+        marks = [y for y, pixel in enumerate(column) if pixel != track]
+        if not marks:
+            continue  # Overlay scrollbars fade out
+        runs = 1 + sum(b - a > _THUMB_GAP for a, b in pairwise(marks))
+        if runs > 1 or len(marks) < _MIN_VOTES:
+            return False
+        centres.append((marks[0] + marks[-1]) / 2)
+    return (
+        len(centres) > 1
+        and all(b >= a for a, b in pairwise(centres))
+        and centres[-1] > centres[0]
+    )
 
 
 def stitch(frames: Sequence[Frame]) -> StitchResult:
