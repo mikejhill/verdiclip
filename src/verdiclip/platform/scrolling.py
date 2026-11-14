@@ -3,7 +3,8 @@
 ABI reference: Microsoft WinSDK UIAutomationClient.h.
 IUIAutomation: ElementFromPoint=7, RawViewWalker=16.
 IUIAutomationElement: GetCurrentPatternAs=14, ControlType=21, NativeWindowHandle=36,
-BoundingRectangle=43. IUIAutomationTreeWalker: GetParentElement=3.
+BoundingRectangle=43. IUIAutomationTreeWalker: GetParentElement=3,
+GetFirstChildElement=4, GetNextSiblingElement=6.
 IUIAutomationScrollPattern: SetScrollPercent=4, VerticalScrollPercent=6,
 HorizontalScrollPercent=5, VerticalViewSize=8, VerticallyScrollable=10.
 """
@@ -35,6 +36,7 @@ _SCROLL_IID = "88f4d42a-e881-459d-a77c-73bbbb7e02dc"
 _SCROLL_PATTERN = 10004
 _NO_SCROLL = -1.0
 _MAX_ANCESTORS = 32
+_MAX_CHILDREN = 200
 _MIN_SIZE = 32
 _GA_ROOT = 2
 _LOOKUPS = 2
@@ -240,21 +242,60 @@ class UiaScrollTarget:
         for _ in range(_MAX_ANCESTORS):
             if current is None:
                 break
-            pattern = current.nullable(
-                14,
-                self._owners,
-                (c.c_int, _SCROLL_PATTERN),
-                (c.POINTER(_Guid), c.byref(_Guid.parse(_SCROLL_IID))),
-            )
-            # A panel that does not contain the click is not the one chosen.
-            if (
-                pattern is not None
-                and pattern.flag(10)
-                and current.bounds().contains(point)
-            ):
+            pattern = self._scrolling(current, point)
+            if pattern is not None:
                 return current, pattern
             current = walker.nullable(3, self._owners, (c.c_void_p, current._pointer))
+        # Chromium can answer a point in a scrolled panel with the whole
+        # document: look down through the children under the point instead.
+        found = self._descend(element, walker, point)
+        if found is not None:
+            return found
         raise CaptureError("Nothing at that point scrolls vertically")
+
+    def _scrolling(self, element: _Interface, point: Point) -> _Interface | None:
+        """The element's scroll pattern, if it scrolls vertically at ``point``."""
+        pattern = element.nullable(
+            14,
+            self._owners,
+            (c.c_int, _SCROLL_PATTERN),
+            (c.POINTER(_Guid), c.byref(_Guid.parse(_SCROLL_IID))),
+        )
+        # A panel that does not contain the click is not the one chosen.
+        if (
+            pattern is not None
+            and pattern.flag(10)
+            and element.bounds().contains(point)
+        ):
+            return pattern
+        return None
+
+    def _descend(
+        self, element: _Interface, walker: _Interface, point: Point
+    ) -> tuple[_Interface, _Interface] | None:
+        """The innermost vertically scrollable descendant under ``point``.
+
+        Only children containing the point are followed (the last one, which
+        is drawn on top), so this stays a short path, not a tree walk.
+        """
+        found: tuple[_Interface, _Interface] | None = None
+        current = element
+        for _ in range(_MAX_ANCESTORS):
+            child = walker.nullable(4, self._owners, (c.c_void_p, current._pointer))
+            under: _Interface | None = None
+            for _ in range(_MAX_CHILDREN):
+                if child is None:
+                    break
+                if child.bounds().contains(point):
+                    under = child
+                child = walker.nullable(6, self._owners, (c.c_void_p, child._pointer))
+            if under is None:
+                break
+            pattern = self._scrolling(under, point)
+            if pattern is not None:
+                found = under, pattern
+            current = under
+        return found
 
     def _bars(self, automation: _Interface, walker: _Interface) -> list[Rect]:
         """A scrollbar under the panel's right edge, if UI Automation has one.

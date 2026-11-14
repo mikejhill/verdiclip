@@ -383,3 +383,19 @@ def test_escape_before_the_helper_starts_cancels(make_app: AppFactory) -> None:
     assert not service.busy
     assert isinstance(helper.start, Mock)
     helper.start.assert_not_called()
+
+
+def test_failure_after_escape_is_still_reported(
+    make_app: AppFactory, qtbot: QtBot
+) -> None:
+    """Esc does not hide a real failure, such as an image that could not be saved."""
+    app = make_app()
+    helper = prepare(app)
+    app.controller.capture_scrolling()
+    select(qtbot, app, helper)
+    app.press_hotkey("scroll_cancel")
+    helper.finished.emit(ScrollResult(None, "Could not save the scrolling image", 2))
+    qtbot.waitUntil(lambda: not app.controller._scrolling.busy)
+    status = app.controller._scroll_status
+    assert status is not None
+    assert "Could not save" in status.text()

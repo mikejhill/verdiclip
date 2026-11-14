@@ -24,7 +24,7 @@ from tempfile import TemporaryDirectory
 from PySide6.QtCore import QObject, QProcess, Qt, QTimer, Signal
 from PySide6.QtGui import QImageReader
 
-from verdiclip.capture.scrolling import MAX_PIXELS, MAX_SECONDS, ScrollResult
+from verdiclip.capture.scrolling import CANCELLED, MAX_PIXELS, MAX_SECONDS, ScrollResult
 from verdiclip.exceptions import CaptureError
 from verdiclip.geometry import Point
 
@@ -155,7 +155,7 @@ class ScrollHelper(QObject):
             image = reader.read()
             if image.isNull():
                 raise ValueError("Invalid scrolling image")
-        message = "Scrolling capture cancelled" if self._cancelled else value["message"]
+        message = CANCELLED if self._cancelled else value["message"]
         return ScrollResult(image, message, value["frames"], value["warning"])
 
     def _exited(self, code: int, status: QProcess.ExitStatus) -> None:
@@ -169,7 +169,7 @@ class ScrollHelper(QObject):
             result = ScrollResult(None, "Scrolling capture took too long", 0)
         elif code != 0 or status != QProcess.ExitStatus.NormalExit:
             message = (
-                "Scrolling capture cancelled"
+                CANCELLED
                 if self._cancelled
                 else "Scrolling capture stopped unexpectedly"
             )

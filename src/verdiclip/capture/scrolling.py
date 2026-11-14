@@ -110,6 +110,7 @@ class StoppedError(CancelledError):
 
 
 STOPPED_NOTE = "Stopped early with Esc; the image ends there."
+CANCELLED = "Scrolling capture cancelled"
 
 
 class ScrollCapture:
@@ -145,11 +146,11 @@ class ScrollCapture:
         except StoppedError:
             if not frames:
                 self._restore(start)
-                return ScrollResult(None, "Scrolling capture cancelled", 0)
+                return ScrollResult(None, CANCELLED, 0)
             notes.append(STOPPED_NOTE)
         except CancelledError:
             self._restore(start)
-            return ScrollResult(None, "Scrolling capture cancelled", len(frames))
+            return ScrollResult(None, CANCELLED, len(frames))
         except (CaptureError, OSError) as error:  # OSError: a failed COM call
             self._restore(start)
             return ScrollResult(None, str(error), len(frames))
@@ -168,7 +169,7 @@ class ScrollCapture:
 
     def _check(self) -> None:
         if self._cancelled():
-            raise CancelledError("Scrolling capture cancelled")
+            raise CancelledError(CANCELLED)
         if self._stopped():
             raise StoppedError("Scrolling capture stopped")
         self._target.check()

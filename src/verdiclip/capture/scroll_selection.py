@@ -23,7 +23,7 @@ from verdiclip.capture.grabber import ScreenSource
 from verdiclip.capture.models import ScreenGeometry
 from verdiclip.capture.overlay import SelectionOverlay, SharedSelection
 from verdiclip.capture.scroll_helper import ScrollHelper
-from verdiclip.capture.scrolling import ScrollResult
+from verdiclip.capture.scrolling import CANCELLED, ScrollResult
 from verdiclip.capture.service import WindowSource
 from verdiclip.exceptions import AppError, CaptureError
 from verdiclip.geometry import Point
@@ -216,7 +216,7 @@ class ScrollSelection(QObject):
         cancelled, closing, title = self._cancelled, self._closing, self._title
         stopping = self._stopping
         self._end()
-        if closing or cancelled or (stopping and result.image is None):
+        if closing or cancelled or (stopping and result.message == CANCELLED):
             pass  # Stopped before anything was captured: like a cancel
         elif result.image is not None:
             self.captured.emit(
