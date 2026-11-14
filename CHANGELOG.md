@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.3](https://github.com/mikejhill/verdiclip/compare/v0.18.2...v0.18.3) (2026-11-14)
+
+
+### Bug Fixes
+
+* leave out frozen scrollbars and floating overlays in scrolling captures ([#179](https://github.com/mikejhill/verdiclip/issues/179)) ([d3a15cd](https://github.com/mikejhill/verdiclip/commit/d3a15cd605ea4784543c17e45ac07345c04f805a))
+
 ## [0.18.2](https://github.com/mikejhill/verdiclip/compare/v0.18.1...v0.18.2) (2026-11-14)
 
 
