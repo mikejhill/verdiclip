@@ -19,10 +19,10 @@ From 1.0.0 on, breaking changes bump the major version.
 
 | Commit | Example | Next version from 1.4.2 |
 | --- | --- | --- |
-| `fix:` / `perf:` | `fix: keep crop inside the image` | 1.4.3 |
+| `fix:` / `perf:` / `docs:` | `fix: keep crop inside the image` | 1.4.3 |
 | `feat:` | `feat: add blur obfuscation` | 1.5.0 |
 | `feat!:` / `BREAKING CHANGE:` | `feat!: new settings schema` | 2.0.0 |
-| others | `docs:`, `ci:`, `chore:` … | no release |
+| others | `ci:`, `chore:`, `test:` … | no release |
 
 To force a specific version, add a commit with a `Release-As: 1.0.0` footer.
 
