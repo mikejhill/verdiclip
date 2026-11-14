@@ -761,3 +761,18 @@ def test_step_back_keeps_the_view_it_measures_from() -> None:
     panel = LoadingTop(700, start=0.0)
     result = run(panel)
     assert result.image == expected(panel.document, header=40, footer=30)
+
+
+class ThinBanded(Banded):
+    """A header and footer a few rows tall, like a border and a shadow."""
+
+    header = 3
+    footer = 3
+
+
+def test_thin_fixed_bands_do_not_force_a_step_back() -> None:
+    """A border a row or two tall takes too little overlap to step back for."""
+    panel = ThinBanded(700, start=0.0)
+    result = run(panel)
+    assert result.image == expected(panel.document, header=3, footer=3)
+    assert panel.writes.count(0.0) == 2  # The top and the restore: no step back

@@ -41,6 +41,10 @@ _LAG_PIXELS = 8
 _STILL_POLLS = 2
 # Ask for the top this many times before trusting a view that did not move.
 _TOP_TRIES = 3
+# Overlap a few fixed rows (a border, a shadow) may take from a step before
+# it counts as too far: rows, and a share of the panel's height.
+_STEP_SLACK = 8
+_STEP_SLACK_SHARE = 0.01
 _UNSURE_END = "The panel may not have reached the end; check the bottom of the image."
 
 
@@ -288,7 +292,9 @@ class ScrollCapture:
     def _overshot(self, walk: _Walk, following: QImage, distance: float) -> bool:
         """Step back when fixed bands hid more than the overlap a step leaves."""
         visible = self._target.height - fixed_rows(walk.image, following)
-        if visible >= walk.visible or distance <= STEP * visible + 1:
+        if visible >= walk.visible or distance <= STEP * visible + max(
+            _STEP_SLACK, _STEP_SLACK_SHARE * self._target.height
+        ):
             return False
         walk.visible = visible
         self._target.scroll_to(walk.position.percent)
