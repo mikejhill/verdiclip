@@ -340,7 +340,7 @@ def test_hotkeys_during_a_ctl_overlay_or_scroll(
         Point(30, 40),
         "Panel",
         True,  # noqa: FBT003 - Qt signal
-        ClickOutput.USUAL,
+        ClickOutput.DEFAULT,
     )
     qtbot.waitUntil(lambda: helper is service._helper)
     app.controller.capture_scrolling()  # Second request: cancel

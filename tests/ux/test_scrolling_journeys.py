@@ -324,7 +324,7 @@ def test_ctrl_click_in_region_capture_starts_scrolling(
         Point(30, 40),
         "Notes",
         False,  # noqa: FBT003 - Qt signal
-        ClickOutput.USUAL,
+        ClickOutput.DEFAULT,
     )
     assert not capture.overlays
     service = app.controller._scrolling
@@ -363,7 +363,7 @@ def test_a_modifier_output_reaches_the_scrolling_result(
     qtbot.waitUntil(lambda: not QGuiApplication.clipboard().image().isNull())
     assert not app.controller.workspace.documents
     service.capture()  # The chooser goes back to the usual actions
-    assert service._output is ClickOutput.USUAL
+    assert service._output is ClickOutput.DEFAULT
     service.cancel()
 
 
@@ -398,7 +398,7 @@ def test_ctrl_click_while_scrolling_is_ignored(
     helper = prepare(app)
     app.controller.capture_scrolling()
     select(qtbot, app, helper)
-    app.controller._scroll_at(Point(5, 5), "Other", False, ClickOutput.USUAL)  # noqa: FBT003 - Qt slot
+    app.controller._scroll_at(Point(5, 5), "Other", False, ClickOutput.DEFAULT)  # noqa: FBT003 - Qt slot
     assert isinstance(helper.start, Mock)
     helper.start.assert_called_once_with(Point(30, 40), from_top=True)
     app.controller._scrolling.cancel()

@@ -65,7 +65,7 @@ Tray → **Check for updates** opens a status window immediately. It stays visib
 
 While selecting, the screen is frozen so you get exactly what you saw. A magnifier follows the cursor, arrow keys nudge it by a pixel (`Ctrl` for 10), `Enter` starts and finishes a selection from the keyboard, and `Esc` or a right-click cancels.
 
-Each capture opens as a new tab in the editor and brings it forward (Settings → Capture → **New screenshots** can open a new window instead). If a menu or dialog is open in the editor, the new tab waits behind it rather than interrupting you.
+Each capture opens as a new tab in the editor and brings it forward (Settings → Capture → **Open in the editor as** can open a new window instead). If a menu or dialog is open in the editor, the new tab waits behind it rather than interrupting you.
 
 ### Universal capture
 
@@ -77,11 +77,11 @@ Each capture opens as a new tab in the editor and brings it forward (Settings �
 
 | Keys | Click captures | Send to |
 | --- | --- | --- |
-| none | Window | Usual (Settings → Capture) |
-| `Ctrl` | Scroll: from here down | Usual |
+| none | Window | Default (Settings → Capture) |
+| `Ctrl` | Scroll: from here down | Default |
 | `Alt` | Window | Clipboard only |
 | `Shift` | Window | File only |
-| `Ctrl+Alt` | Scroll: whole pane | Usual |
+| `Ctrl+Alt` | Scroll: whole pane | Default |
 | `Ctrl+Shift` | Scroll: from here down | File only |
 | `Alt+Shift` | Window | Clipboard and file |
 | `Ctrl+Alt+Shift` | Scroll: whole pane | Clipboard only |
@@ -152,12 +152,12 @@ Open from the tray menu or with `Ctrl+,` in any editor.
 
 ![Settings → Capture: after-capture actions can be combined](https://raw.githubusercontent.com/mikejhill/verdiclip/main/docs/images/settings-capture.png)
 
-- **Capture** — after capturing, any combination of: open in the editor, copy to the clipboard, save to the output folder; open new screenshots as tabs or windows; show the magnifier.
-- **Hotkeys** — validated as you type; conflicts are reported.
-- **Modifiers** — for each combination of `Ctrl`, `Alt` and `Shift` in [Universal capture](#universal-capture): what a click captures and where the image is sent; **Restore defaults** resets them.
-- **Output** — folder, file-name pattern (`{date}`, `{time}`, `{title}`, `{counter}`; default `{date}_{time}_{title}`, where `{title}` is the captured window's title (spaces become `_` when the pattern has none), or *Screenshot* / *Screen* for region and full-screen captures) with a live preview, format, JPEG quality.
-- **Editor** — default color, width, and font.
-- **General** — light, dark, or match-Windows theme; start at sign-in; show VerdiClip in the Start menu; check for and install updates automatically; show VerdiClip in Explorer's **Open with** menu for images; let the `verdiclip ctl` command capture and edit images. **Make VerdiClip the default image app…** opens Windows Settings at VerdiClip's Default apps page, where you choose it as the default (Windows requires you to confirm this yourself). **Install AI agent skill…** installs the `verdiclip ctl` skill for Claude Code, Codex, GitHub Copilot or the shared `.agents` folder.
+- **General** — grouped as Appearance (light, dark, or match-Windows theme), Windows (start at sign-in, the Start menu entry, Explorer's **Open with** menu for images, and **Make VerdiClip the default image app…**, which opens Windows Settings at VerdiClip's Default apps page, where you confirm it yourself), Updates (check for and install updates automatically), and Command line (let the `verdiclip ctl` command capture and edit images; **Install AI agent skill…** installs the `verdiclip ctl` skill for Claude Code, Codex, GitHub Copilot or the shared `.agents` folder).
+- **Hotkeys** — validated as you type; conflicts are reported. Hover a field to see what its capture does.
+- **Capture** — the magnifier while selecting; after capturing, any combination of: open in the editor, copy to the clipboard, save to the output folder; open new screenshots in the editor as tabs or windows.
+- **Modifiers** — for each combination of `Ctrl`, `Alt` and `Shift` in [Universal capture](#universal-capture): what a click captures and where the image is sent (**Default** means the after-capture actions on the Capture tab); **Restore defaults** resets them.
+- **Output** — folder, file-name pattern (`{date}`, `{time}`, `{title}`, `{counter}`; hover the field for what each one becomes; default `{date}_{time}_{title}`, where `{title}` is the captured window's title (spaces become `_` when the pattern has none), or *Screenshot* / *Screen* for region and full-screen captures) with a live preview, format, JPEG quality (JPEG only).
+- **Editor** — the starting color, width, and font for new annotations; whether closing an unsaved image asks first.
 
 ![Settings → General: theme, start at sign-in, Open with, default image app, the ctl switch and the AI agent skill installer](https://raw.githubusercontent.com/mikejhill/verdiclip/main/docs/images/settings-general.png)
 

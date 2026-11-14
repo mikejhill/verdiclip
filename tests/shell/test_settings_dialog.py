@@ -12,8 +12,11 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QGroupBox,
+    QLabel,
     QLineEdit,
     QPushButton,
+    QSpinBox,
     QTabWidget,
 )
 from pytestqt.qtbot import QtBot
@@ -25,8 +28,9 @@ from verdiclip.capture.gestures import (
     ClickTarget,
 )
 from verdiclip.document.style import Color
+from verdiclip.output.naming import FilenamePattern
 from verdiclip.settings import ImageFormat, Settings, Theme, UpdateSettings
-from verdiclip.shell.settings_dialog import SettingsDialog
+from verdiclip.shell.settings_dialog import ERROR_STYLE, HOTKEY_FIELDS, SettingsDialog
 
 
 @pytest.fixture
@@ -295,7 +299,12 @@ class TestSettingsDialog:
 
     def test_theme_choice_is_returned(self, dialog: SettingsDialog) -> None:
         """UX-G-08: the theme picker offers system, light, and dark."""
-        combo = next(c for c in dialog.findChildren(QComboBox) if c.count() == 3)
+        combo = next(
+            c for c in dialog.findChildren(QComboBox) if c.accessibleName() == "Theme"
+        )
+        assert [combo.itemData(i) for i in range(combo.count())] == [
+            t.value for t in (Theme.SYSTEM, Theme.LIGHT, Theme.DARK)
+        ]
         combo.setCurrentIndex(combo.findData(Theme.LIGHT.value))
 
         assert dialog.result_settings().appearance.theme is Theme.LIGHT
@@ -432,3 +441,90 @@ class TestUniversalCaptureModifiers:
         buttons[0].click()
         assert created.result_settings().universal_capture == ClickGestures()
         created.reject()
+
+
+class TestLayoutAndHelp:
+    """Tab order, grouping and the help Settings gives without a manual."""
+
+    def test_tabs_follow_a_capture_from_start_to_editor(
+        self, dialog: SettingsDialog
+    ) -> None:
+        """General first, then hotkeys, capture, modifiers, output and editor."""
+        tabs = dialog.findChild(QTabWidget)
+        assert tabs is not None
+        assert [tabs.tabText(i) for i in range(tabs.count())] == [
+            "General",
+            "Hotkeys",
+            "Capture",
+            "Modifiers",
+            "Output",
+            "Editor",
+        ]
+
+    def test_general_and_editor_options_are_grouped(
+        self, dialog: SettingsDialog
+    ) -> None:
+        """Related options sit under a titled group, in a fixed order."""
+        tabs = dialog.findChild(QTabWidget)
+        assert tabs is not None
+
+        def groups(index: int) -> list[str]:
+            page = tabs.widget(index)
+            assert page is not None
+            return [g.title() for g in page.findChildren(QGroupBox)]
+
+        assert groups(0) == ["Appearance", "Windows", "Updates", "Command line"]
+        assert groups(5) == ["New annotations", "Closing"]
+
+    def test_default_output_says_what_it_means(self, dialog: SettingsDialog) -> None:
+        """The Default output points at the after-capture actions."""
+        _, output = dialog.gesture_combos("ctrl")
+        index = output.findData(ClickOutput.DEFAULT.value)
+        assert output.itemText(index) == "Default"
+        tip = output.itemData(index, Qt.ItemDataRole.ToolTipRole)
+        assert "Capture tab" in tip
+        assert ClickOutput("usual") is ClickOutput.DEFAULT
+
+    def test_file_name_tip_lists_every_variable(self, dialog: SettingsDialog) -> None:
+        """Every token FilenamePattern accepts is explained in the tooltip."""
+        pattern = next(
+            e for e in dialog.findChildren(QLineEdit) if "{counter}" in e.toolTip()
+        )
+        for token in FilenamePattern.TOKENS:
+            assert f"{{{token}}}" in pattern.toolTip()
+
+    def test_every_hotkey_has_a_tooltip(self, dialog: SettingsDialog) -> None:
+        """Each hotkey field says what its capture does."""
+        for name, _ in HOTKEY_FIELDS:
+            assert dialog.hotkey_field(name).toolTip()
+
+    def test_jpeg_quality_only_applies_to_jpeg(self, dialog: SettingsDialog) -> None:
+        """The quality box is enabled only while JPEG is the format."""
+        quality = next(s for s in dialog.findChildren(QSpinBox) if s.suffix() == " %")
+        fmt = next(
+            c
+            for c in dialog.findChildren(QComboBox)
+            if c.findData(ImageFormat.WEBP.value) >= 0
+        )
+        assert quality.isEnabled()
+        fmt.setCurrentIndex(fmt.findData(ImageFormat.PNG.value))
+        assert not quality.isEnabled()
+        fmt.setCurrentIndex(fmt.findData(ImageFormat.JPG.value))
+        assert quality.isEnabled()
+
+    def test_action_error_takes_no_space_until_needed(
+        self, dialog: SettingsDialog
+    ) -> None:
+        """The "choose an action" error is hidden while an action is on."""
+        error = next(
+            label
+            for label in dialog.findChildren(QLabel)
+            if label.text() == "" and label.styleSheet() == ERROR_STYLE
+        )
+        assert error.isHidden()
+        copy = next(
+            b for b in dialog.findChildren(QCheckBox) if b.text().startswith("Copy")
+        )
+        copy.setChecked(False)
+        assert not error.isHidden()
+        assert error.text() == "Choose at least one action."

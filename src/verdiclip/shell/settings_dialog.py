@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Final, override
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QFontComboBox,
     QFormLayout,
     QGridLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -69,11 +70,49 @@ THEME_LABELS: Final = {
     Theme.DARK: "Dark",
 }
 ERROR_STYLE: Final = "color: #c62828;"
+HOTKEY_TIPS: Final = {
+    "region": (
+        "Drag an area or click a window. Hold Ctrl, Alt or Shift as you finish "
+        "to change what is captured or where it goes (see Modifiers)."
+    ),
+    "window": "Captures the window in front.",
+    "fullscreen": "Captures the whole monitor under the mouse pointer.",
+    "repeat": (
+        "Captures the same area again without asking. After a window or full "
+        "screen capture, captures the window in front or the monitor under "
+        "the pointer."
+    ),
+    "scrolling": (
+        "Click a scrollable pane. VerdiClip scrolls it to the end and joins "
+        "the pages into one tall image."
+    ),
+}
+FILENAME_TIP: Final = (
+    "<p>Text to name saved screenshots. These are replaced:</p>"
+    "<table cellspacing='4'>"
+    "<tr><td><b>{date}</b></td><td>Date, such as 2026-03-01</td></tr>"
+    "<tr><td><b>{time}</b></td><td>Time, such as 14-05-09</td></tr>"
+    "<tr><td><b>{title}</b></td><td>Title of the captured window (first 80 "
+    "characters); “Screenshot” for an area, “Screen” for a full "
+    "screen</td></tr>"
+    "<tr><td><b>{counter}</b></td><td>The lowest number, from 1, that gives "
+    "an unused name</td></tr>"
+    "</table>"
+    "<p>Without {counter}, a taken name gets “ (2)”, or “_2” when the "
+    "pattern has no spaces. With no spaces in the pattern, spaces in the "
+    "title become “_”. Characters Windows doesn't allow become “_”.</p>"
+)
+DEFAULT_OUTPUT_TIP: Final = "The after-capture actions on the Capture tab."
+EDITOR_HELP: Final = (
+    "Starting style for new shapes, arrows and text. Each tool remembers the "
+    "last style you chose; changing these resets those choices."
+)
 MODIFIERS_HELP: Final = (
     "These apply only to Universal capture (PrtSc). Hold keys while you "
     "finish it. A click captures "
     "what “Click captures” says; a drag always captures the dragged area. "
-    "Either way, the image goes where “Send to” says."
+    "Either way, the image goes where “Send to” says; Default means the "
+    "after-capture actions on the Capture tab."
 )
 
 
@@ -100,9 +139,10 @@ class SettingsDialog(QDialog):
         self._save = QCheckBox("Save to the output folder")
         self._after_status = QLabel()
         self._theme = QComboBox()
+        self._theme.setAccessibleName("Theme")
         self._magnifier = QCheckBox("Show a magnifier")
         self._destination = QComboBox()
-        self._destination.setAccessibleName("New screenshots")
+        self._destination.setAccessibleName("Open in the editor as")
         self._destination.addItem("New tab", CaptureDestination.TABS.value)
         self._destination.addItem("New window", CaptureDestination.WINDOWS.value)
         self._gesture_targets: dict[str, QComboBox] = {}
@@ -113,6 +153,11 @@ class SettingsDialog(QDialog):
         self._folder = QLineEdit()
         self._pattern = QLineEdit()
         self._pattern_preview = QLabel()
+        self._pattern_tokens = QLabel(
+            "Use {date}, {time}, {title} and {counter}. Hover for details."
+        )
+        self._pattern_tokens.setStyleSheet("color: palette(mid);")
+        self._pattern_tokens.setToolTip(FILENAME_TIP)
         self._format = QComboBox()
         self._quality = QSpinBox()
         self._stroke = ColorButton(allow_none=False)
@@ -248,12 +293,14 @@ class SettingsDialog(QDialog):
     def _build(self) -> None:
         """Lay out the tabs."""
         tabs = QTabWidget()
-        tabs.addTab(self._capture_tab(), "Capture")
+        # The order a capture takes: start it, choose what happens, then the
+        # file and the editor
+        tabs.addTab(self._general_tab(), "General")
         tabs.addTab(self._hotkey_tab(), "Hotkeys")
+        tabs.addTab(self._capture_tab(), "Capture")
         tabs.addTab(self._modifiers_tab(), "Modifiers")
         tabs.addTab(self._output_tab(), "Output")
         tabs.addTab(self._editor_tab(), "Editor")
-        tabs.addTab(self._general_tab(), "General")
         tabs.currentChanged.connect(self._cancel_recordings)
         self._buttons.accepted.connect(self.accept)
         self._buttons.rejected.connect(self.reject)
@@ -268,11 +315,27 @@ class SettingsDialog(QDialog):
             box.toggled.connect(self._validate)
             actions.addWidget(box)
         actions.addWidget(self._after_status)
+        self._open_editor.setToolTip(
+            "Hold Ctrl, Alt or Shift as you finish a Universal capture to send "
+            "one capture somewhere else (see Modifiers)."
+        )
+        self._copy.setToolTip(self._open_editor.toolTip())
+        self._save.setToolTip(
+            "Saves to the folder and file name set on the Output tab."
+        )
+        self._destination.setToolTip(
+            "New tab adds the screenshot to an open editor window. New "
+            "window opens it in a window of its own."
+        )
+        self._magnifier.setToolTip(
+            "Shows an enlarged view of the pixels under the pointer while you "
+            "drag an area."
+        )
         tab = QWidget()
         form = QFormLayout(tab)
-        form.addRow("After capturing:", actions)
-        form.addRow("New screenshots:", self._destination)
         form.addRow("While selecting:", self._magnifier)
+        form.addRow("After capturing:", actions)
+        form.addRow("Open in the editor as:", self._destination)
         return tab
 
     def _modifiers_tab(self) -> QWidget:
@@ -285,10 +348,12 @@ class SettingsDialog(QDialog):
         grid.addWidget(QLabel("<b>Send to</b>"), 0, 2)
         # The fixed no-keys row, so every other row reads as a change from it
         for column, text in enumerate(
-            ("None", ClickTarget.WINDOW.label, ClickOutput.USUAL.label)
+            ("None", ClickTarget.WINDOW.label, ClickOutput.DEFAULT.label)
         ):
             baseline = QLabel(text)
             baseline.setEnabled(False)
+            if text == ClickOutput.DEFAULT.label:
+                baseline.setToolTip(DEFAULT_OUTPUT_TIP)
             grid.addWidget(baseline, 1, column)
         for row, name in enumerate(ClickGestures.combos(), start=2):
             label = combo_label(name)
@@ -299,6 +364,11 @@ class SettingsDialog(QDialog):
                 target.addItem(value.label, value.value)
             for value in ClickOutput:
                 output.addItem(value.label, value.value)
+            output.setItemData(
+                output.findData(ClickOutput.DEFAULT.value),
+                DEFAULT_OUTPUT_TIP,
+                Qt.ItemDataRole.ToolTipRole,
+            )
             self._gesture_targets[name] = target
             self._gesture_outputs[name] = output
             grid.addWidget(QLabel(label), row, 0)
@@ -326,23 +396,35 @@ class SettingsDialog(QDialog):
             output.setCurrentIndex(output.findData(action.output.value))
 
     def _general_tab(self) -> QWidget:
-        """Return the General tab."""
+        """Return the General tab: appearance, Windows, updates, then ctl."""
         for value, label in THEME_LABELS.items():
             self._theme.addItem(label, value.value)
-        tab = QWidget()
-        form = QFormLayout(tab)
-        form.addRow("Theme:", self._theme)
-        form.addRow(self._run_at_login)
-        form.addRow(self._start_menu)
+        appearance = QGroupBox("Appearance")
+        QFormLayout(appearance).addRow("Theme:", self._theme)
+
         self._make_default.setToolTip(
             "Adds VerdiClip to Open with, opens Windows Settings, and shows "
             "which image types still need you to pick VerdiClip there."
         )
         self._make_default.clicked.connect(self._request_default)
-        files = QVBoxLayout()
-        files.addWidget(self._open_with)
-        files.addWidget(self._make_default)
-        form.addRow(files)
+        windows = QGroupBox("Windows")
+        windows_layout = QVBoxLayout(windows)
+        for box in (self._run_at_login, self._start_menu, self._open_with):
+            windows_layout.addWidget(box)
+        windows_layout.addLayout(self._left_aligned(self._make_default))
+
+        self._check_updates.setToolTip(
+            "A minute after VerdiClip starts, then every 6 hours."
+        )
+        self._install_updates.setToolTip(
+            "VerdiClip restarts to install the update, then says how it went."
+        )
+        self._check_updates.toggled.connect(self._install_updates.setEnabled)
+        updates = QGroupBox("Updates")
+        updates_layout = QVBoxLayout(updates)
+        updates_layout.addWidget(self._check_updates)
+        updates_layout.addLayout(self._indented(self._install_updates))
+
         self._automation.setToolTip(
             "Only programs running as your Windows user can connect. "
             "They see open images, including unsaved changes."
@@ -352,19 +434,33 @@ class SettingsDialog(QDialog):
             "Copilot to use the verdiclip ctl command."
         )
         self._install_skill.clicked.connect(self.show_skill_dialog)
-        automation = QVBoxLayout()
-        automation.addWidget(self._automation)
-        automation.addWidget(self._install_skill)
-        form.addRow(automation)
-        self._install_updates.setToolTip(
-            "VerdiClip restarts to install the update, then says how it went."
-        )
-        self._check_updates.toggled.connect(self._install_updates.setEnabled)
-        updates = QVBoxLayout()
-        updates.addWidget(self._check_updates)
-        updates.addWidget(self._install_updates)
-        form.addRow(updates)
+        automation = QGroupBox("Command line")
+        automation_layout = QVBoxLayout(automation)
+        automation_layout.addWidget(self._automation)
+        automation_layout.addLayout(self._left_aligned(self._install_skill))
+
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        for group in (appearance, windows, updates, automation):
+            layout.addWidget(group)
+        layout.addStretch(1)
         return tab
+
+    @staticmethod
+    def _left_aligned(widget: QWidget) -> QHBoxLayout:
+        """Return a row holding ``widget`` at its natural width, on the left."""
+        row = QHBoxLayout()
+        row.addWidget(widget)
+        row.addStretch(1)
+        return row
+
+    @staticmethod
+    def _indented(widget: QWidget) -> QHBoxLayout:
+        """Return a row that indents ``widget`` under the option it depends on."""
+        row = QHBoxLayout()
+        row.addSpacing(20)
+        row.addWidget(widget, 1)
+        return row
 
     def _hotkey_tab(self) -> QWidget:
         """Return the Hotkeys tab with live validation."""
@@ -384,10 +480,12 @@ class SettingsDialog(QDialog):
             self._hotkey_fields[name] = field
             self._hotkeys[name] = field.edit
             self._hotkey_status[name] = status
+            field.setToolTip(HOTKEY_TIPS[name])
             row = QHBoxLayout()
             row.addWidget(field, 1)
             row.addWidget(status)
             form.addRow(f"{label}:", row)
+            form.labelForField(row).setToolTip(HOTKEY_TIPS[name])
         return tab
 
     def _output_tab(self) -> QWidget:
@@ -403,27 +501,50 @@ class SettingsDialog(QDialog):
         self._quality.setSuffix(" %")
         self._pattern.textChanged.connect(self._validate)
         self._format.currentIndexChanged.connect(self._validate)
+        self._format.currentIndexChanged.connect(self._update_quality)
+        self._folder.setToolTip(
+            "Where screenshots are saved, including Ctrl+S on a screenshot "
+            "that has no file yet. Created if missing."
+        )
+        self._pattern.setToolTip(FILENAME_TIP)
+        self._pattern.setPlaceholderText("{date}_{time}_{title}")
+        self._quality.setToolTip("Higher looks better and makes larger files.")
         tab = QWidget()
         form = QFormLayout(tab)
         form.addRow("Folder:", folder_row)
         form.addRow("File name:", self._pattern)
+        form.labelForField(self._pattern).setToolTip(FILENAME_TIP)
         form.addRow("", self._pattern_preview)
+        form.addRow("", self._pattern_tokens)
         form.addRow("Format:", self._format)
         form.addRow("JPEG quality:", self._quality)
         return tab
+
+    def _update_quality(self) -> None:
+        """Enable JPEG quality only while JPEG is the format."""
+        self._quality.setEnabled(self._format.currentData() == ImageFormat.JPG.value)
 
     def _editor_tab(self) -> QWidget:
         """Return the Editor tab."""
         self._width.setRange(1, 60)
         self._width.setDecimals(0)
         self._font_size.setRange(6, 200)
-        tab = QWidget()
-        form = QFormLayout(tab)
+        help_text = QLabel(EDITOR_HELP)
+        help_text.setWordWrap(True)
+        style = QGroupBox("New annotations")
+        form = QFormLayout(style)
+        form.addRow(help_text)
         form.addRow("Color:", self._stroke)
         form.addRow("Line width:", self._width)
         form.addRow("Font:", self._font)
         form.addRow("Font size:", self._font_size)
-        form.addRow("Closing:", self._confirm_close)
+        closing = QGroupBox("Closing")
+        QVBoxLayout(closing).addWidget(self._confirm_close)
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.addWidget(style)
+        layout.addWidget(closing)
+        layout.addStretch(1)
         return tab
 
     # Behavior
@@ -450,6 +571,7 @@ class SettingsDialog(QDialog):
             self._format.findData(settings.output.image_format.value)
         )
         self._quality.setValue(settings.output.jpeg_quality)
+        self._update_quality()
         self._stroke.set_color(settings.editor.stroke_color)
         self._width.setValue(settings.editor.stroke_width)
         self._font.setCurrentFont(QFont(settings.editor.font_family))
@@ -519,6 +641,7 @@ class SettingsDialog(QDialog):
         """Require at least one after-capture action."""
         chosen = any(b.isChecked() for b in (self._open_editor, self._copy, self._save))
         self._after_status.setText("" if chosen else "Choose at least one action.")
+        self._after_status.setVisible(not chosen)
         self._after_status.setStyleSheet(ERROR_STYLE)
         return chosen
 

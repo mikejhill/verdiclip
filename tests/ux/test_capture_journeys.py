@@ -463,7 +463,7 @@ class TestWindowPicking:
         assert isinstance(point, Point)
         assert title == "Dialog"
         assert from_top is False  # Ctrl alone: from the current position
-        assert output is ClickOutput.USUAL
+        assert output is ClickOutput.DEFAULT
         assert not service.overlays
         assert not captured
 
@@ -530,7 +530,7 @@ class TestUniversalModifiers:
         overlay = Overlay(service)
         with qtbot.waitSignal(service.captured) as signal:
             overlay.click((200, 200))
-        assert CaptureOf.signal(signal).output is ClickOutput.USUAL
+        assert CaptureOf.signal(signal).output is ClickOutput.DEFAULT
 
     def test_configured_gestures_replace_the_defaults(
         self, service: CaptureService, qtbot: QtBot

@@ -265,7 +265,7 @@ class CaptureService(QObject):
         area: Rect,
         mode: CaptureMode,
         title: str,
-        output: ClickOutput = ClickOutput.USUAL,
+        output: ClickOutput = ClickOutput.DEFAULT,
     ) -> None:
         """Crop the frozen screen and emit the capture."""
         frozen = self._frozen
@@ -414,7 +414,7 @@ class CaptureService(QObject):
         mode: CaptureMode,
         area: Rect,
         title: str,
-        output: ClickOutput = ClickOutput.USUAL,
+        output: ClickOutput = ClickOutput.DEFAULT,
     ) -> bool:
         """Commit repeat history and emit only a still-valid capture result."""
         if self._cancelled_start:

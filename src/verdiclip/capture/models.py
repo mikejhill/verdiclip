@@ -33,7 +33,7 @@ class Capture:
     area: Rect
     title: str
     taken_at: datetime
-    output: ClickOutput = ClickOutput.USUAL
+    output: ClickOutput = ClickOutput.DEFAULT
 
 
 @dataclass(frozen=True, slots=True)

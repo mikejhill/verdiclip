@@ -62,7 +62,7 @@ def test_action_rejects_unknown_names() -> None:
 @pytest.mark.parametrize(
     ("output", "copies", "saves", "edits"),
     [
-        (ClickOutput.USUAL, False, False, False),
+        (ClickOutput.DEFAULT, False, False, False),
         (ClickOutput.CLIPBOARD, True, False, False),
         (ClickOutput.SAVE, False, True, False),
         (ClickOutput.CLIPBOARD_AND_SAVE, True, True, False),
