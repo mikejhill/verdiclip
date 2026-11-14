@@ -38,7 +38,7 @@ class TestCaptureSpec:
 
     def test_universal_and_region(self) -> None:
         """Universal lets the user choose; a region names its rectangle."""
-        chosen = spec(mode="universal")
+        chosen = spec(mode="universal", interactive=True)
         given = spec(mode="region", region=[-5, 0, 10, 20], output=ABSOLUTE, copy=True)
 
         assert chosen.kind is CaptureKind.UNIVERSAL
@@ -49,7 +49,7 @@ class TestCaptureSpec:
         assert given.output == Path(ABSOLUTE)
         assert given.copy
         assert given.editor
-        assert not spec(mode="universal", copy=True, editor=False).editor
+        assert not spec(mode="fullscreen", copy=True, editor=False).editor
 
     def test_window_targets(self) -> None:
         """A window capture finds its window by title, handle or point."""
@@ -68,7 +68,7 @@ class TestCaptureSpec:
 
     def test_scrolling_targets_and_start(self) -> None:
         """Scrolling without a target lets the user click; here needs a target."""
-        assert spec(mode="scrolling").interactive
+        assert spec(mode="scrolling", interactive=True).interactive
         assert not spec(mode="scrolling", at=[1, 2]).interactive
         assert not spec(mode="scrolling", title="Edge").interactive
         assert spec(mode="scrolling", at=[1, 2], **{"from": "here"}).from_top is False
@@ -99,10 +99,20 @@ class TestCaptureSpec:
             ({"mode": "window", "handle": True}, "handle must be an integer"),
             ({"mode": "fullscreen", "all": "yes"}, "all must be true or false"),
             ({"mode": "scrolling", "at": [1, 1], "from": "middle"}, "'top' or"),
-            ({"mode": "universal", "output": "shot.png"}, "output must be an absol"),
-            ({"mode": "universal", "output": 5}, "output must be an absolute"),
-            ({"mode": "universal", "editor": False}, "editor false needs output"),
-            ({"mode": "universal", "editor": "no"}, "editor must be true or false"),
+            ({"mode": "fullscreen", "output": "shot.png"}, "output must be an absol"),
+            ({"mode": "fullscreen", "output": 5}, "output must be an absolute"),
+            ({"mode": "fullscreen", "editor": False}, "editor false needs output"),
+            ({"mode": "fullscreen", "editor": "no"}, "editor must be true or false"),
+            ({"mode": "universal"}, "waits for the user to choose"),
+            ({"mode": "scrolling"}, "waits for the user to choose"),
+            (
+                {"mode": "region", "region": [0, 0, 1, 1], "interactive": True},
+                "interactive applies only",
+            ),
+            (
+                {"mode": "scrolling", "at": [1, 1], "interactive": True},
+                "interactive applies only",
+            ),
         ],
     )
     def test_refusals(self, params: JsonObject, message: str) -> None:
