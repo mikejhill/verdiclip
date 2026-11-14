@@ -449,14 +449,14 @@ class TestLayoutAndHelp:
     def test_tabs_follow_a_capture_from_start_to_editor(
         self, dialog: SettingsDialog
     ) -> None:
-        """General first, then hotkeys, capture, modifiers, output and editor."""
+        """General first, then hotkeys, modifiers, capture, output and editor."""
         tabs = dialog.findChild(QTabWidget)
         assert tabs is not None
         assert [tabs.tabText(i) for i in range(tabs.count())] == [
             "General",
             "Hotkeys",
-            "Capture",
             "Modifiers",
+            "Capture",
             "Output",
             "Editor",
         ]
