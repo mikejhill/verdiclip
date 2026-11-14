@@ -8,7 +8,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import NoReturn
+from typing import NoReturn, cast
 
 from verdiclip import VERSION
 from verdiclip.ctl_cli import add_ctl, ctl_params, parse_rect
@@ -99,8 +99,8 @@ class CommandLine:
 
     def _fail(self, args: argparse.Namespace) -> Callable[[str], NoReturn]:
         """Return the error exit of the command that was parsed."""
-        parser: argparse.ArgumentParser = getattr(args, "usage_parser", self._parser)
-        return parser.error
+        parser = getattr(args, "usage_parser", self._parser)
+        return cast("argparse.ArgumentParser", parser).error
 
     @staticmethod
     def _build_parser() -> argparse.ArgumentParser:
