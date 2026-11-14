@@ -87,3 +87,16 @@ def test_describe_names_only_what_differs_from_a_plain_click() -> None:
     assert action.describe(dragging=True) == "File only"
     assert not action.is_plain
     assert ClickTarget.WINDOW.scrolls is False
+
+
+def test_settings_order_is_by_key_count_then_ctrl_alt_shift() -> None:
+    """Rows scan predictably: single keys, then pairs, then all three."""
+    assert ClickGestures.combos() == (
+        "ctrl",
+        "alt",
+        "shift",
+        "ctrl_alt",
+        "ctrl_shift",
+        "alt_shift",
+        "ctrl_alt_shift",
+    )

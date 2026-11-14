@@ -72,11 +72,11 @@ While selecting, the screen is frozen so you get exactly what you saw. A magnifi
 | --- | --- | --- |
 | none | Window | Usual (Settings → Capture) |
 | `Ctrl` | Scroll: from here down | Usual |
-| `Ctrl+Alt` | Scroll: whole pane | Usual |
 | `Alt` | Window | Clipboard only |
 | `Shift` | Window | File only |
-| `Alt+Shift` | Window | Clipboard and file |
+| `Ctrl+Alt` | Scroll: whole pane | Usual |
 | `Ctrl+Shift` | Scroll: from here down | File only |
+| `Alt+Shift` | Window | Clipboard and file |
 | `Ctrl+Alt+Shift` | Scroll: whole pane | Clipboard only |
 
 A drag always captures the dragged area, so for a drag only **Send to** applies (`Alt`+drag copies the area to the clipboard without opening the editor). The keys count when you let go, and the on-screen label shows what will happen while you hold them. Change any row in **Settings → Modifiers**.
