@@ -46,7 +46,7 @@ _SAMPLES = 64
 # A see-through band along the bottom may skip this many rows (rounding).
 _FADE_GAP = 2
 # Two frames sharing this share of their rows in place show the same view.
-_SAME_VIEW = 0.9
+_SAME_VIEW = 0.75
 
 
 @dataclass(frozen=True, slots=True)
@@ -345,9 +345,56 @@ def _moves_down(columns: list[list[bytes]], colour: bytes, *, thumb: bool) -> bo
     )
 
 
+def _background(row: bytes) -> bytes | None:
+    """The pixel that fills most of a row, if one does."""
+    pixel, count = Counter(row[x : x + 4] for x in range(0, len(row), 4)).most_common(
+        1
+    )[0]
+    return pixel if 2 * count * 4 > len(row) else None
+
+
 def _inside_caps(marks: list[int], length: int) -> list[int]:
     """``marks`` without the rows of a track's end caps."""
     return [y for y in marks if _CAP <= y < length - _CAP]
+
+
+def _stillness(
+    frames: list[list[bytes]],
+    old: tuple[int, bytes],
+    new: tuple[int, bytes],
+    left: int,
+) -> tuple[int, int]:
+    """How still the differing pixels look at the old place and the new one.
+
+    ``old`` and ``new`` are (viewport row, pixels) of one document row in two
+    aligned frames. Where the differing pixels are the same at that place in
+    most frames (not all: a button may only appear once the page has left
+    the top), something sits still over the page there.
+    """
+    first, second = old[1], new[1]
+    differing = [
+        x for x in range(0, len(first), 4) if first[x : x + 4] != second[x : x + 4]
+    ]
+    sample = differing[:: max(1, len(differing) // _SAMPLES)]
+    # The page's own background is still everywhere, so it says nothing
+    # either way; it fills both rows, while a wide overlay's fill fills one.
+    ground = _background(first)
+    if ground != _background(second):
+        ground = None
+    first_score, second_score = (
+        sum(
+            2
+            * sum(
+                frame[place][left + x : left + x + 4] == row[x : x + 4]
+                for frame in frames
+            )
+            > len(frames)
+            for x in sample
+            if row[x : x + 4] != ground
+        )
+        for place, row in (old, new)
+    )
+    return first_score, second_score
 
 
 def _overlay(
@@ -380,23 +427,7 @@ def _overlay(
             new = following[top + y][left:right]
             if old == new:
                 continue
-            # Over the old frame, or the new one: where the differing pixels
-            # are the same in every frame, something sits still over the page.
-            differing = [
-                x for x in range(0, len(old), 4) if old[x : x + 4] != new[x : x + 4]
-            ]
-            sample = differing[:: max(1, len(differing) // _SAMPLES)]
-            # Most frames, not all: a button may only appear once the page
-            # has scrolled away from the top.
-            scores = [
-                sum(
-                    2 * sum(frame[top + place][at : at + 4] == pixel for frame in kept)
-                    > len(kept)
-                    for x in sample
-                    for at, pixel in [(left + x, row[x : x + 4])]
-                )
-                for place, row in ((y + offset, old), (y, new))
-            ]
+            scores = _stillness(kept, (top + y + offset, old), (top + y, new), left)
             if scores[1] > scores[0]:
                 found.add(y)
             elif scores[0] > scores[1]:
@@ -416,10 +447,11 @@ def _overlay(
     # A see-through band (a fade above a chat's input box) is never the same
     # twice, so it cannot be told from text changing by its pixels. Trust it
     # only along the bottom edge, where such bands sit; elsewhere it could be
-    # an overlay over the new frame instead.
+    # an overlay over the new frame instead. A see-through button with a
+    # solid outline looks still at some seams and faded at others.
     row, gap = body - 1, 0
     while row >= 0 and gap <= _FADE_GAP:
-        if faded[row] >= needed:
+        if faded[row] + fixed[row] >= needed:
             overlay.add(row)
             gap = 0
         else:
