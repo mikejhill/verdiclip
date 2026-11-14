@@ -273,6 +273,82 @@ def _moves_down(columns: list[list[bytes]], colour: bytes, *, thumb: bool) -> bo
     )
 
 
+def _differ(old: bytes, new: bytes) -> tuple[int, int]:
+    """First and last differing pixel of two unequal rows of equal length."""
+    low, high = 0, len(old) // 4  # Longest equal prefix, in pixels
+    while low < high:
+        middle = (low + high + 1) // 2
+        if old[: middle * 4] == new[: middle * 4]:
+            low = middle
+        else:
+            high = middle - 1
+    first = low
+    low, high = 0, len(old) // 4 - first  # Longest equal suffix
+    while low < high:
+        middle = (low + high + 1) // 2
+        if old[len(old) - middle * 4 :] == new[len(new) - middle * 4 :]:
+            low = middle
+        else:
+            high = middle - 1
+    return first, len(old) // 4 - 1 - low
+
+
+def _overlay(
+    rows: list[list[bytes]],
+    seams: list[tuple[int, int]],
+    band: tuple[int, int],
+    columns: tuple[int, int],
+) -> set[int]:
+    """Body rows covered by something that stays put while the page scrolls.
+
+    ``band`` is the body's (top, height) and ``columns`` the (left, right)
+    pixels compared. A floating button over the text makes aligned frames
+    disagree where it is, and it looks the same in every frame at that place
+    in the viewport, while the text under it does not.
+    """
+    if not seams:
+        return set()
+    (top, body), (left, right) = band, (columns[0] * 4, columns[1] * 4)
+    kept = [rows[seams[0][0] - 1], *(rows[index] for index, _ in seams)]
+    seen: Counter[int] = Counter()
+    for index, offset in seams:
+        previous, following = rows[index - 1], rows[index]
+        found: set[int] = set()
+        for y in range(body - offset):
+            old = previous[top + y + offset][left:right]
+            new = following[top + y][left:right]
+            if old == new:
+                continue
+            first, last = _differ(old, new)
+            span = slice(left + first * 4, left + (last + 1) * 4)
+            for place in (y + offset, y):  # Over the old frame, or the new one
+                cells = {frame[top + place][span] for frame in kept}
+                if len(cells) == 1:
+                    found.add(place)
+                    break
+        seen.update(found)
+    needed = (len(seams) + 1) // 2
+    return {place for place, count in seen.items() if count >= needed}
+
+
+def _avoid_overlay(pieces: list[list[int]], overlay: set[int]) -> None:
+    """Move seams above a floating overlay, so the next frame shows what it hid.
+
+    Each frame then ends just above the overlay, and the next frame, which
+    shows those rows higher up, supplies them. Only the last frame keeps it.
+    """
+    if not overlay:
+        return
+    for previous, current in pairwise(pieces):
+        if current[0] != previous[0] + 1:
+            continue  # A frame that did not move sits between them
+        offset = previous[2] - current[1]  # How far the current frame moved
+        below = [row for row in overlay if offset <= row < previous[2]]
+        if below and min(below) > previous[1]:
+            cut = min(below)
+            previous[2], current[1] = cut, cut - offset
+
+
 def stitch(frames: Sequence[Frame]) -> StitchResult:
     """Join ``frames`` (all the same size) into one image."""
     if not frames:
@@ -297,8 +373,8 @@ def stitch(frames: Sequence[Frame]) -> StitchResult:
     ):
         lead += 1
 
-    # (frame index, first body row to keep) for each frame after the first.
-    pieces: list[tuple[int, int]] = [(lead, 0)]
+    # [frame index, first body row to keep, end row] for each kept frame.
+    pieces: list[list[int]] = [[lead, 0, body]]
     seams: list[tuple[int, int]] = []  # (frame index, offset) aligned by pixels
     estimated = 0
     for index in range(lead + 1, len(frames)):
@@ -311,19 +387,20 @@ def stitch(frames: Sequence[Frame]) -> StitchResult:
             seams.append((index, offset))
         offset = max(0, min(body, offset))
         if offset:
-            pieces.append((index, body - offset))
+            pieces.append([index, body - offset, body])
     # Leave out the scrollbar: each frame would show its thumb somewhere else.
     width -= _strip(rows, seams, header, body)
+    _avoid_overlay(pieces, _overlay(rows, seams, (header, body), (margin, width)))
     first = frames[lead].image
 
-    total = header + sum(body - start for _, start in pieces) + footer
+    total = header + sum(end - start for _, start, end in pieces) + footer
     result = QImage(width, total, QImage.Format.Format_RGB32)
     painter = QPainter(result)
     try:
         painter.drawImage(QPoint(0, 0), first, QRect(0, 0, width, header))
         y = header
-        for index, start in pieces:
-            span = body - start
+        for index, start, end in pieces:
+            span = end - start
             source = QRect(0, header + start, width, span)
             painter.drawImage(QPoint(0, y), frames[index].image, source)
             y += span

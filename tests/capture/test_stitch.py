@@ -313,3 +313,48 @@ def test_thumb_longer_than_half_the_track_is_cropped(size: int, travel: int) -> 
         scrollbar(frame.image, travel * index, size=size)
     whole = expected(document)
     assert stitch(shots).image == whole.copy(0, 0, WIDTH - 6, whole.height())
+
+
+def button(image: QImage, top: int = 170) -> None:
+    """Paint a floating button that stays put while the page scrolls."""
+    for y in range(top, top + 16):
+        for x in range(50, 70):
+            image.setPixel(x, y, 0x3366CC)
+
+
+def test_floating_button_is_covered_by_the_next_frame() -> None:
+    """A button over the text appears once, at the end, not once per frame."""
+    document = page(700)
+    shots = frames(document, 120)
+    for frame in shots:
+        button(frame.image)
+    result = stitch(shots)
+    whole = expected(document)
+    button_at_end = whole.copy()
+    for y in range(170, 186):
+        for x in range(50, 70):
+            button_at_end.setPixel(x, whole.height() - VIEW + y, 0x3366CC)
+    assert result.estimated_seams == 0
+    assert result.image == button_at_end
+
+
+def test_button_too_high_to_avoid_is_left_alone() -> None:
+    """A button above the overlap stays in every frame; the joins still hold."""
+    document = page(700)
+    shots = frames(document, 120)
+    for frame in shots:
+        button(frame.image, top=30)
+    result = stitch(shots)
+    assert result.estimated_seams == 0
+    assert result.image.height() == document.height()
+
+
+def test_frame_that_did_not_move_does_not_confuse_the_button_seams() -> None:
+    """Seams are only moved between frames that follow one another."""
+    document = page(700)
+    shots = frames(document, 120)
+    for frame in shots:
+        button(frame.image)
+    shots.insert(2, Frame(shots[1].image.copy(), 0.0))
+    result = stitch(shots)
+    assert result.image.height() == document.height()
