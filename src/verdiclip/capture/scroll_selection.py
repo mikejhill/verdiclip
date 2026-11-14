@@ -19,6 +19,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QApplication
 
+from verdiclip.capture.gestures import ClickAction, ClickOutput
 from verdiclip.capture.grabber import ScreenSource
 from verdiclip.capture.models import ScreenGeometry
 from verdiclip.capture.overlay import SelectionOverlay, SharedSelection
@@ -43,6 +44,7 @@ class ScrollingCapture:
     title: str
     taken_at: datetime
     warning: str = ""
+    output: ClickOutput = ClickOutput.USUAL
 
 
 class PointOverlay(SelectionOverlay):
@@ -55,11 +57,19 @@ class PointOverlay(SelectionOverlay):
 
     @override
     def _finish(
-        self, at: Point, *, scroll: bool = False, from_top: bool = False
+        self, at: Point, modifiers: Qt.KeyboardModifier = Qt.KeyboardModifier.NoModifier
     ) -> None:
         # Every click here is a scrolling capture; Ctrl alone means "from here".
         self.shared.release(at)
-        self.chosen.emit(at, from_top or not scroll)
+        here = modifiers & Qt.KeyboardModifier.ControlModifier and not (
+            modifiers & Qt.KeyboardModifier.AltModifier
+        )
+        self.chosen.emit(at, not here)
+
+    @override
+    def action(self) -> ClickAction:
+        # The chooser has its own fixed meaning for modifiers; show no hint.
+        return ClickAction()
 
     @override
     def keyPressEvent(self, event: QKeyEvent) -> None:
@@ -118,6 +128,7 @@ class ScrollSelection(QObject):
         self._point: Point | None = None
         self._title = ""
         self._from_top = True
+        self._output = ClickOutput.USUAL
         self._active = self._cancelled = self._stopping = self._closing = False
         self._launch = QTimer(self)
         self._launch.setSingleShot(True)
@@ -139,6 +150,7 @@ class ScrollSelection(QObject):
         if self._active or self._closing:
             return
         self._active, self._cancelled = True, False
+        self._output = ClickOutput.USUAL
         self.state_changed.emit(True, False)  # noqa: FBT003 - Qt signal
         popup = QApplication.activePopupWidget()
         if popup is not None:
@@ -179,11 +191,22 @@ class ScrollSelection(QObject):
         )
         self._begin(point, window.title if window is not None else "", from_top)
 
-    def start_at(self, point: Point, title: str, *, from_top: bool = True) -> None:
-        """Capture the panel at ``point`` without a chooser (Ctrl+click in PrtSc)."""
+    def start_at(
+        self,
+        point: Point,
+        title: str,
+        *,
+        from_top: bool = True,
+        output: ClickOutput = ClickOutput.USUAL,
+    ) -> None:
+        """Capture the panel at ``point`` without a chooser (from universal capture).
+
+        ``output`` is where the image goes, as the click's modifiers chose.
+        """
         if self._active or self._closing:
             return
         self._active, self._cancelled = True, False
+        self._output = output
         self.state_changed.emit(True, False)  # noqa: FBT003 - Qt signal
         self._begin(point, title, from_top)
 
@@ -214,14 +237,18 @@ class ScrollSelection(QObject):
 
     def _completed(self, result: ScrollResult) -> None:
         cancelled, closing, title = self._cancelled, self._closing, self._title
-        stopping = self._stopping
+        stopping, output = self._stopping, self._output
         self._end()
         if closing or cancelled or (stopping and result.message == CANCELLED):
             pass  # Stopped before anything was captured: like a cancel
         elif result.image is not None:
             self.captured.emit(
                 ScrollingCapture(
-                    result.image, title, datetime.now().astimezone(), result.warning
+                    result.image,
+                    title,
+                    datetime.now().astimezone(),
+                    result.warning,
+                    output,
                 )
             )
         else:

@@ -44,13 +44,13 @@ Tray → **Check for updates** opens a status window immediately. It stays visib
 
 ## Capture and tabs
 
-Completed captures open a new tab in the existing editor by default; Settings can choose separate windows. The editor is brought forward when capture completes, unless protected editor UI is open. Ordinary region, window, full-screen and Repeat capture keep their existing behavior. Scrolling capture is a separate command (see below).
+Completed captures open a new tab in the existing editor by default; Settings can choose separate windows. The editor is brought forward when capture completes, unless protected editor UI is open. Universal capture, active window, full-screen and Repeat capture keep their existing behavior. Scrolling capture is a separate command (see below).
 
 ## Capture
 
 | Do this | Press |
 | --- | --- |
-| Drag a region, or click a window | `PrtSc` (or left-click the tray icon) |
+| **Universal capture**: drag a region, click a window, hold keys for more (below) | `PrtSc` (or left-click the tray icon) |
 | Capture the active window | `Alt+PrtSc` |
 | Capture every monitor | `Ctrl+PrtSc` |
 | Repeat the last capture | `Shift+PrtSc` |
@@ -58,13 +58,31 @@ Completed captures open a new tab in the existing editor by default; Settings ca
 
 ![The capture overlay: the frozen screen is dimmed, the window under the cursor is outlined with its title, and a magnifier shows the exact pixels](https://raw.githubusercontent.com/mikejhill/verdiclip/main/docs/images/capture.png)
 
-While selecting, the screen is frozen so you get exactly what you saw. A magnifier follows the cursor, arrow keys nudge it by a pixel (`Ctrl` for 10), `Enter` starts and finishes a selection from the keyboard, clicking without dragging captures the window under the cursor, and `Esc` cancels.
+While selecting, the screen is frozen so you get exactly what you saw. A magnifier follows the cursor, arrow keys nudge it by a pixel (`Ctrl` for 10), `Enter` starts and finishes a selection from the keyboard, and `Esc` or a right-click cancels.
+
+### Universal capture
+
+`PrtSc` (tray: **Universal capture**) is one capture that covers most needs. What you get depends on how you finish:
+
+| Finish with | Captures | Then |
+| --- | --- | --- |
+| Drag | The region (it can span monitors) | After-capture settings |
+| Click | The window under the pointer (the monitor, on bare desktop) | After-capture settings |
+| `Ctrl`+click | Scrolling capture of the panel under the pointer, from where it is now down | After-capture settings |
+| `Ctrl+Alt`+click | Scrolling capture of the whole panel, top to bottom | After-capture settings |
+| `Alt`+click or drag | Window or region | Copy to the clipboard only (no editor) |
+| `Shift`+click or drag | Window or region | Save to the output folder only |
+| `Alt+Shift`+click or drag | Window or region | Copy and save (no editor) |
+| `Ctrl+Shift`+click | Scrolling, from here down | Save only |
+| `Ctrl+Alt+Shift`+click | Scrolling, whole panel | Copy only |
+
+What matters is which keys are held when you let go of the mouse (or press the second `Enter`), so you can decide after you start dragging. The label beside the window or region names the action while you hold the keys. A drag always captures its region; only the *Then* part of a modifier applies to it. Every row is configurable in **Settings → Capture → Universal capture modifiers**: each combination of `Ctrl`, `Alt` and `Shift` gets a click target (window, scrolling from here, scrolling whole panel) and an output (after-capture settings, copy only, save only, copy and save, editor only). *Editor only* is handy when your after-capture setting is copy-only.
 
 If Windows or another screenshot tool already owns `PrtSc`, VerdiClip tells you which hotkeys are taken; everything is still available from the tray menu, and you can choose other keys in Settings.
 
 ### Scrolling capture
 
-Choose **Capture scrolling area** from the tray, or press `Ctrl+Alt+PrtSc`, then click inside the panel you want (a web page, a document, a list). You can also start it from an ordinary region capture (`PrtSc`): hold `Ctrl` and click the panel. VerdiClip scrolls it to the top, captures it page by page to the bottom, joins the pages, and puts the panel back where it was. The image uses your usual editor, clipboard and file settings. Press `Esc` to stop.
+Choose **Capture scrolling area** from the tray, or press `Ctrl+Alt+PrtSc`, then click inside the panel you want (a web page, a document, a list). You can also start it from universal capture (`PrtSc`): `Ctrl`+click the panel to capture from where it is now, or `Ctrl+Alt`+click for all of it. VerdiClip scrolls it to the top, captures it page by page to the bottom, joins the pages, and puts the panel back where it was. The image uses your usual editor, clipboard and file settings. Press `Esc` to stop.
 
 It works with panels that support Windows UI Automation scrolling, which covers browsers, Office, Explorer and most modern apps. Sticky headers and footers appear once. If some pages could not be matched exactly, the image is still delivered and VerdiClip tells you to check it. Keep other windows off the panel while it runs.
 
@@ -114,6 +132,7 @@ Open from the tray menu or with `Ctrl+,` in any editor.
 ![Settings → Capture: after-capture actions can be combined](https://raw.githubusercontent.com/mikejhill/verdiclip/main/docs/images/settings-capture.png)
 
 - **After capturing** — any combination of: open in the editor, copy to the clipboard, save to the output folder.
+- **Universal capture modifiers** — what a click captures and where the image goes for each combination of `Ctrl`, `Alt` and `Shift` (see [Universal capture](#universal-capture)); **Restore defaults** resets them.
 - **Hotkeys** — validated as you type; conflicts are reported.
 - **Output** — folder, file-name pattern (`{date}`, `{time}`, `{title}`, `{counter}`; default `{date}_{time}_{title}`, where `{title}` is the captured window's title (spaces become `_` when the pattern has none), or *Screenshot* / *Screen* for region and full-screen captures) with a live preview, format, JPEG quality.
 - **Editor** — default color, width, and font.

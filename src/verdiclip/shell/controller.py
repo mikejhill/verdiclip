@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from verdiclip import APP_NAME, DOCS_URL, VERSION
+from verdiclip.capture.gestures import ClickOutput
 from verdiclip.capture.grabber import ScreenSource
 from verdiclip.capture.models import Capture
 from verdiclip.capture.scroll_selection import ScrollingCapture, ScrollSelection
@@ -48,6 +49,7 @@ from verdiclip.platform.shortcuts import Shortcut, ShortcutRegistration
 from verdiclip.platform.startup import StartupRegistration
 from verdiclip.settings import (
     CaptureDestination,
+    CaptureSettings,
     Settings,
     SettingsStore,
 )
@@ -101,7 +103,10 @@ class AppController(QObject):
         self._associations = integration.associations
         self._start_menu = integration.start_menu
         self._capture = CaptureService(
-            screens, windows, show_magnifier=self._settings.capture.show_magnifier
+            screens,
+            windows,
+            show_magnifier=self._settings.capture.show_magnifier,
+            gestures=self._settings.universal_capture,
         )
         self._scrolling = ScrollSelection(screens, windows, hotkeys)
         self._pending_capture: tuple[str, bool] | None = None
@@ -297,13 +302,19 @@ class AppController(QObject):
         self._workspace.cancel_drag()
         self._scrolling.capture()
 
-    def _scroll_at(self, point: Point, title: str, from_top: bool) -> None:  # noqa: FBT001 - Qt slot
-        """Start a scrolling capture of the panel Ctrl+clicked in region selection."""
+    def _scroll_at(
+        self,
+        point: Point,
+        title: str,
+        from_top: bool,  # noqa: FBT001 - Qt slot
+        output: ClickOutput,
+    ) -> None:
+        """Start a scrolling capture of the panel clicked in universal capture."""
         if self._closing or self._scrolling.busy:
             return
         self._dismiss_scroll_status()
         self._workspace.cancel_drag()
-        self._scrolling.start_at(point, title, from_top=from_top)
+        self._scrolling.start_at(point, title, from_top=from_top, output=output)
 
     def _after_scrolling(self) -> None:
         if self._closing:
@@ -386,7 +397,7 @@ class AppController(QObject):
             else ""
         )
         delivery_ok = True
-        actions = self._settings.capture
+        actions = self._actions_for(capture.output)
         delivery = ImageDelivery(self._settings.output)
         saved: Path | None = None
         copied = False
@@ -446,6 +457,18 @@ class AppController(QObject):
             hint = "\nClick to open the folder." if saved is not None else ""
             self._notify("Screenshot captured", "\n".join(done) + hint)
         return delivery_ok
+
+    def _actions_for(self, output: ClickOutput) -> CaptureSettings:
+        """Return the after-capture actions, overridden by a modifier's ``output``."""
+        usual = self._settings.capture
+        if output is ClickOutput.USUAL:
+            return usual
+        return replace(
+            usual,
+            open_editor=output.opens_editor,
+            copy_to_clipboard=output.copies,
+            save_to_file=output.saves,
+        )
 
     def _recover_editor_work(self) -> None:
         """Retry retained views only, never repeat capture or output delivery."""
@@ -663,6 +686,7 @@ class AppController(QObject):
             editor.set_confirm_close(confirm=settings.editor.confirm_unsaved_close)
         ThemeManager.apply(settings.appearance.theme)
         self._capture.set_show_magnifier(show=settings.capture.show_magnifier)
+        self._capture.set_gestures(settings.universal_capture)
         # Only turning it on (or off) moves it; saving other settings keeps it
         self._apply_startup(keep_others=settings.startup == previous.startup)
         if settings.integration.open_with != previous.integration.open_with:

@@ -9,6 +9,7 @@ from typing import Self
 
 from PySide6.QtGui import QGuiApplication, QImage, QScreen
 
+from verdiclip.capture.gestures import ClickOutput
 from verdiclip.geometry import Point, Rect
 
 
@@ -32,6 +33,7 @@ class Capture:
     area: Rect
     title: str
     taken_at: datetime
+    output: ClickOutput = ClickOutput.USUAL
 
 
 @dataclass(frozen=True, slots=True)
