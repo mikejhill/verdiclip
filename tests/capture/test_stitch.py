@@ -494,3 +494,22 @@ def test_button_that_appears_after_the_first_frame_is_not_repeated() -> None:
         y for y in range(result.height()) if result.pixel(3, y) & 0xFFFFFF == 0x3366CC
     ]
     assert len(rows) <= 16
+
+
+def caps(image: QImage) -> None:
+    """Paint fixed end caps at both ends of the scrollbar track."""
+    for y in [*range(2, 8), *range(VIEW - 8, VIEW - 2)]:
+        for x in range(WIDTH - 6, WIDTH):
+            image.setPixel(x, y, 0x555555)
+
+
+@pytest.mark.parametrize("frozen", [False, True])
+def test_scrollbar_with_end_caps_is_cropped(frozen: bool) -> None:
+    """Fixed caps at the ends of the track do not hide a thumb."""
+    document = page(700)
+    shots = frames(document, 120)
+    for index, frame in enumerate(shots):
+        scrollbar(frame.image, 10 if frozen else 20 + 25 * index)
+        caps(frame.image)
+    whole = expected(document)
+    assert stitch(shots).image == whole.copy(0, 0, WIDTH - 6, whole.height())

@@ -35,6 +35,8 @@ _MAX_STRIP = 40
 _MIN_TRACK = 0.3
 # A thumb's run of pixels may have gaps this small (anti-aliased edges).
 _THUMB_GAP = 2
+# Rows at each end of a scrollbar track that may hold fixed end caps or arrows.
+_CAP = 8
 # Differing pixels sampled per row to tell where an overlay sits.
 _SAMPLES = 64
 # A see-through band along the bottom may skip this many rows (rounding).
@@ -273,7 +275,9 @@ def _frozen(frames: list[list[bytes]], at: int, top: int, body: int) -> bool:
     # has no run, and a toolbar of icons has several.
     pixels = [column[i : i + 4] for i in range(0, len(column), 4)]
     track = Counter(pixels).most_common(1)[0][0]
-    marks = [y for y, pixel in enumerate(pixels) if pixel != track]
+    marks = _inside_caps(
+        [y for y, pixel in enumerate(pixels) if pixel != track], len(pixels)
+    )
     runs = 1 + sum(b - a > _THUMB_GAP for a, b in pairwise(marks))
     return len(marks) >= _MIN_VOTES and runs == 1
 
@@ -302,7 +306,10 @@ def _moves_down(columns: list[list[bytes]], colour: bytes, *, thumb: bool) -> bo
     """Whether the thumb (``colour``, or all but it) is one run moving down."""
     centres: list[float] = []
     for column in columns:
-        marks = [y for y, pixel in enumerate(column) if (pixel == colour) == thumb]
+        marks = _inside_caps(
+            [y for y, pixel in enumerate(column) if (pixel == colour) == thumb],
+            len(column),
+        )
         if not marks:
             continue  # Overlay scrollbars fade out
         runs = 1 + sum(b - a > _THUMB_GAP for a, b in pairwise(marks))
@@ -314,6 +321,11 @@ def _moves_down(columns: list[list[bytes]], colour: bytes, *, thumb: bool) -> bo
         and all(b >= a for a, b in pairwise(centres))
         and centres[-1] > centres[0]
     )
+
+
+def _inside_caps(marks: list[int], length: int) -> list[int]:
+    """``marks`` without the rows of a track's end caps."""
+    return [y for y in marks if _CAP <= y < length - _CAP]
 
 
 def _overlay(
