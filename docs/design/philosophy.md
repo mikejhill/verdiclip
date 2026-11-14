@@ -110,11 +110,15 @@ that does not make one of them faster or more correct is out of scope.
 
 ## 4. Scope
 
-**In (v1):** region / window / full-screen / repeat capture with frozen,
-DPI-correct overlay and window snapping; editor with select, crop, rectangle,
-ellipse, line, arrow, text, counter, highlight, obfuscate, freehand; undo/redo;
-element copy/paste; zoom/pan; clipboard, file (Save, Save As, auto-name), and
-print delivery; tray + global hotkeys; settings dialog; CLI `capture` / `open`.
+**In (1.0):** universal capture (drag a region, click a window, modifier
+actions) plus active-window, monitor, repeat and scrolling capture, all from a
+frozen, DPI-correct overlay; editor with select, crop, rectangle, ellipse, line,
+arrow, text, counter, highlight, obfuscate, freehand; rotate, flip, resize;
+undo/redo; element copy/paste; zoom/pan; tabs that move between windows;
+clipboard, file (Save, Save As, auto-name) and print delivery; tray + global
+hotkeys; settings dialog; Explorer Open with / default image app; self-update
+from PyPI; standalone CLI `capture` / `open`; `verdiclip ctl` automation of the
+running app, with an installable skill for AI coding agents.
 
 **Out (until a user need proves otherwise):** image effects (shadows, torn
 edges), uploads to cloud services, OCR, video, plugins.
@@ -124,14 +128,17 @@ edges), uploads to cloud services, OCR, video, plugins.
 ```text
 src/verdiclip/
 ├── __main__.py        Application: entry point, logging, single instance, mode dispatch
-├── cli.py             CommandLine → typed CliRequest
+├── cli.py             CommandLine → typed CliRequest (capture / open / ctl)
+├── ctl_cli.py         `verdiclip ctl` arguments, parameters and help (the usage reference)
 ├── exceptions.py      AppError hierarchy
 ├── settings.py        Frozen Settings dataclasses + SettingsStore (JSON ⇄ dataclasses, migration)
 ├── geometry.py        Point / Rect value objects (pure Python)
+├── startup_lifetime.py Startup cleanup that never hides the original error
 ├── document/          Pure model, no widgets
 │   ├── style.py         Color, Style
 │   ├── annotations.py   Annotation types (frozen), labeled boxes, handles, hit testing
 │   ├── document.py      Document (image + crop + annotations)
+│   ├── admission.py     Metadata for a screenshot admitted to an editor tab
 │   ├── commands.py      Command protocol + implementations
 │   ├── transform.py     Rotate, flip, resize: pixels, crop, and annotations together
 │   ├── history.py       Undo/redo stack, "delivered" tracking
@@ -146,26 +153,57 @@ src/verdiclip/
 │   ├── resize_dialog.py Resize in pixels or percent, aspect ratio linked
 │   ├── style_bar.py     Stroke / fill / width / font controls
 │   ├── style_memory.py  Remembers each tool's last style across editors and restarts
-│   ├── chrome.py        Theme-aware toolbar styling and canvas backdrop
-│   ├── icons.py         Vector-drawn tool and action icons, tinted per theme
-│   └── window.py        EditorWindow: actions, menus, toolbars, status bar
+│   ├── chrome.py, icons.py Theme-aware toolbar styling, canvas backdrop, vector icons
+│   ├── window.py        EditorWindow: actions, menus, toolbars, status bar
+│   ├── workspace.py     Owns every window and tab; atomic tab transfers; close plans
+│   ├── page.py, contracts.py, factory.py, transfer.py  Movable document views and their hosts
+│   ├── tab_bar.py, tab_preview.py  Tab strip, drag owner, drag preview
+│   ├── closing.py, close_prompt.py Safe close and the unsaved-work question
+│   └── jobs.py          Document-owned background job tickets
 ├── capture/
 │   ├── models.py        CaptureMode, Capture, ScreenGeometry (logical ⇄ physical)
 │   ├── grabber.py       Frozen desktop snapshot (mss, physical pixels)
-│   ├── overlay.py       Per-screen frozen overlay: drag region or click window
-│   └── service.py       CaptureService: freeze → select → Capture; repeat-last
+│   ├── overlay.py       Universal capture overlay, one per monitor: drag region or click window
+│   ├── gestures.py      What each modifier combination does when universal capture finishes
+│   ├── modality.py      Keeps app dialogs from blocking the overlay
+│   ├── service.py       CaptureService: freeze → select → Capture; repeat-last
+│   ├── scroll_selection.py Point chooser for scrolling capture; runs one helper
+│   ├── scroll_helper.py One killable child process per scrolling capture
+│   ├── scrolling.py     ScrollCapture: scroll top to bottom, settle, collect frames
+│   └── stitch.py        Join frames by row-hash voting; sticky header/footer kept once
 ├── output/
 │   ├── naming.py        FilenamePattern
 │   └── delivery.py      Clipboard / file / print delivery
+├── automation/        `verdiclip ctl`: local control of the running app
+│   ├── protocol.py, client.py  Wire format and the Qt-free client
+│   ├── server.py, handlers.py  Per-user named-pipe server on the GUI thread
+│   ├── command.py       Runs one ctl request and prints JSON
+│   ├── editing.py       Edit operations → one undoable batch
+│   ├── capturing.py     Validated ctl capture requests
+│   ├── preview.py       Renders a document to PNG for inspection
+│   ├── skills.py        Installs the agent skill (skill/SKILL.md)
+├── update/            Self-update from PyPI
+│   ├── feed.py          Latest release from PyPI
+│   ├── install.py       How VerdiClip was installed, and how to update it
+│   ├── service.py       Periodic check, hand-off, outcome
+│   └── helper.py        Installs after the app exits, then restarts it
 ├── platform/          Windows-only adapters (ctypes), behind typed interfaces
 │   ├── hotkeys.py       HotkeyService (RegisterHotKey + native event filter)
+│   ├── keyboard_hook.py Low-level hook for recording hotkeys
 │   ├── windows.py       WindowLocator (z-ordered top-level windows, DWM bounds)
+│   ├── scrolling.py     UI Automation ScrollPattern target (helper process only)
+│   ├── associations.py  Explorer Open with registration
 │   ├── shortcuts.py     Named, iconed .lnk files (IShellLinkW via COM)
-│   └── startup.py       Run-at-login Startup-folder shortcut
+│   ├── startup.py       Run-at-login registration
+│   ├── launcher.py      Console-free way to start VerdiClip
+│   └── tab_drag.py      Bounded input lease for dragging tabs
 └── shell/             The always-running app
     ├── controller.py    AppController: hotkeys → capture → after-capture actions
+    ├── automation_capture.py Runs ctl capture requests in the app
     ├── instance.py      Single instance + forwarding a second launch's files
-    ├── settings_dialog.py
+    ├── settings_dialog.py, hotkey_field.py Settings and the hotkey editor
+    ├── default_app_dialog.py, skill_dialog.py Default image app and skill install guides
+    ├── warmup.py        Pre-pays first-use costs of the overlay and editor
     ├── theme.py         Light / dark / match-Windows
     └── tray.py          TrayIcon + menu
 
@@ -175,7 +213,7 @@ scripts/ux_gallery.py   Renders key screens in light and dark for design review
 Data flow:
 
 ```text
-Hotkey/Tray/CLI ─▶ AppController ─▶ CaptureService ─▶ Capture(image, metadata)
+Hotkey/Tray/ctl ─▶ AppController ─▶ CaptureService ─▶ Capture(image, metadata)
                                                         │
                        after-capture action ◀───────────┘
                        ├─ editor:    EditorWindow(Document(image)) ─▶ Delivery

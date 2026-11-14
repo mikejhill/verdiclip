@@ -166,7 +166,13 @@ class CommandLine:
         )
         capture.set_defaults(usage_parser=capture)
         open_cmd = commands.add_parser(
-            "open", parents=[shared], help="Open images in the editor."
+            "open",
+            parents=[shared],
+            help="Open images in the editor.",
+            description=(
+                "Open images in the editor: in the running app if there is one, "
+                "otherwise in a new instance that stays in the tray."
+            ),
         )
         open_cmd.add_argument("files", nargs="+", help="Image files to open.")
         add_ctl(commands, shared)

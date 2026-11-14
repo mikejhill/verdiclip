@@ -9,7 +9,7 @@ authors = [{ name = "Mike Hill", email = "mike@mikejhill.com" }]
 requires-python = ">=3.13"
 keywords = ["screenshot", "annotation", "screen-capture", "windows"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Environment :: Win32 (MS Windows)",
     "Intended Audience :: End Users/Desktop",
     "Operating System :: Microsoft :: Windows",
