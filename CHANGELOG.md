@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.2](https://github.com/mikejhill/verdiclip/compare/v0.21.1...v0.21.2) (2026-11-14)
+
+
+### Bug Fixes
+
+* **cli:** usage errors show the subcommand's usage line ([#197](https://github.com/mikejhill/verdiclip/issues/197)) ([91be5b1](https://github.com/mikejhill/verdiclip/commit/91be5b1196e7bd83db4535d67621973bc9c2742c))
+
 ## [0.21.1](https://github.com/mikejhill/verdiclip/compare/v0.21.0...v0.21.1) (2026-11-14)
 
 
