@@ -159,7 +159,7 @@ Open from the tray menu or with `Ctrl+,` in any editor.
 - **Output** — folder, file-name pattern (`{date}`, `{time}`, `{title}`, `{counter}`; hover the field for what each one becomes; default `{date}_{time}_{title}`, where `{title}` is the captured window's title (spaces become `_` when the pattern has none), or *Screenshot* / *Screen* for region and full-screen captures) with a live preview, format, JPEG quality (JPEG only).
 - **Editor** — the starting color, width, and font for new annotations; whether closing an unsaved image asks first.
 
-![Settings → General: theme, start at sign-in, Open with, default image app, the ctl switch and the AI agent skill installer](https://raw.githubusercontent.com/mikejhill/verdiclip/main/docs/images/settings-general.png)
+![Settings → General: Appearance, Windows (start at sign-in, Start menu, Open with, default image app), Updates, and Command line (the ctl switch and the AI agent skill installer)](https://raw.githubusercontent.com/mikejhill/verdiclip/main/docs/images/settings-general.png)
 
 ## Command line
 
