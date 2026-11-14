@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 import pytest
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QColor, QIcon, QPixmap
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 from pytestqt.qtbot import QtBot
 
@@ -230,6 +230,8 @@ class TestClicks:
         tray.activated.emit(QSystemTrayIcon.ActivationReason.Trigger)
         assert calls.names == []
         qtbot.waitUntil(lambda: calls.names == ["region"], timeout=2000)
+        qtbot.wait(2 * QApplication.doubleClickInterval() + 100)
+        assert calls.names == ["region"]  # One click, one capture
 
     def test_double_click_opens_the_folder_only(
         self, tray: TrayIcon, calls: Calls, qtbot: QtBot
@@ -249,6 +251,14 @@ class TestClicks:
         tray.activated.emit(QSystemTrayIcon.ActivationReason.MiddleClick)
         qtbot.wait(QApplication.doubleClickInterval() + 100)
         assert calls.names == []
+
+    def test_shows_the_given_icon(self, qtbot: QtBot, calls: Calls) -> None:
+        """The tray uses the app icon it was given."""
+        del qtbot
+        pixmap = QPixmap(16, 16)
+        pixmap.fill(QColor("green"))
+        icon = QIcon(pixmap)
+        assert TrayIcon(icon, _commands(calls)).icon().cacheKey() == icon.cacheKey()
 
     def test_the_menu_is_the_context_menu(self, tray: TrayIcon) -> None:
         """Right-click shows the same menu the tray exposes."""
