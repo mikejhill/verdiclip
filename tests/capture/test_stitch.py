@@ -293,3 +293,12 @@ def test_dropped_stale_frame_does_not_keep_the_scrollbar() -> None:
     whole = expected(document)
     assert result.stale_frames == 1
     assert result.image == whole.copy(0, 0, WIDTH - 6, whole.height())
+
+
+def test_thumb_that_fades_out_in_some_frames_is_still_cropped() -> None:
+    """An overlay scrollbar hidden in one frame still counts as a scrollbar."""
+    document = page(700)
+    shots = frames(document, 150, thumb=True)
+    scrollbar(shots[2].image, VIEW)  # Track only: the thumb faded out
+    whole = expected(document)
+    assert stitch(shots).image == whole.copy(0, 0, WIDTH - 6, whole.height())
