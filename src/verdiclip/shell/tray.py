@@ -83,9 +83,9 @@ class TrayIcon(QSystemTrayIcon):
         """Keep cancellation discoverable until the helper retires (UX-CAP-18)."""
         self._scroll_active = active
         self.setToolTip(
-            "Cancelling scrolling capture…"
+            "Stopping scrolling capture…"
             if active and cancelling
-            else "Scrolling capture… Esc cancels"
+            else "Scrolling capture… Esc stops"
             if active
             else f"{APP_NAME} {VERSION} — click to capture"
         )

@@ -23,7 +23,7 @@ from verdiclip.capture.grabber import ScreenSource
 from verdiclip.capture.models import ScreenGeometry
 from verdiclip.capture.overlay import SelectionOverlay, SharedSelection
 from verdiclip.capture.scroll_helper import ScrollHelper
-from verdiclip.capture.scrolling import ScrollResult
+from verdiclip.capture.scrolling import CANCELLED, ScrollResult
 from verdiclip.capture.service import WindowSource
 from verdiclip.exceptions import AppError, CaptureError
 from verdiclip.geometry import Point
@@ -46,15 +46,20 @@ class ScrollingCapture:
 
 
 class PointOverlay(SelectionOverlay):
-    """Select one physical point with a click or Enter."""
+    """Select one physical point with a click or Enter.
 
-    chosen = Signal(object)
+    A click captures from the top; Ctrl+click from the current position.
+    """
+
+    chosen = Signal(object, bool)  # Point (physical), from the top
 
     @override
-    def _finish(self, at: Point, *, scroll: bool = False) -> None:
-        del scroll  # Every click here is a scrolling capture
+    def _finish(
+        self, at: Point, *, scroll: bool = False, from_top: bool = False
+    ) -> None:
+        # Every click here is a scrolling capture; Ctrl alone means "from here".
         self.shared.release(at)
-        self.chosen.emit(at)
+        self.chosen.emit(at, from_top or not scroll)
 
     @override
     def keyPressEvent(self, event: QKeyEvent) -> None:
@@ -82,7 +87,8 @@ class PointOverlay(SelectionOverlay):
             painter.drawText(
                 strip,
                 Qt.AlignmentFlag.AlignCenter,
-                "Click the area to capture from top to bottom. Esc cancels.",
+                "Click: capture the area from the top. Ctrl+click: from here "
+                "down. Esc cancels; during the capture it stops and keeps it.",
             )
         finally:
             painter.end()
@@ -111,7 +117,8 @@ class ScrollSelection(QObject):
         self._overlays: list[PointOverlay] = []
         self._point: Point | None = None
         self._title = ""
-        self._active = self._cancelled = self._closing = False
+        self._from_top = True
+        self._active = self._cancelled = self._stopping = self._closing = False
         self._launch = QTimer(self)
         self._launch.setSingleShot(True)
         self._launch.timeout.connect(self._start_helper)
@@ -164,24 +171,25 @@ class ScrollSelection(QObject):
         except (AppError, OSError) as error:
             self._fail(str(error))
 
-    def _selected(self, point: Point) -> None:
+    def _selected(self, point: Point, from_top: bool) -> None:  # noqa: FBT001 - Qt slot
         if not self._active or self._cancelled or self._point is not None:
             return
         window = next(
             (o.hovered_window() for o in self._overlays if o.hovered_window()), None
         )
-        self._begin(point, window.title if window is not None else "")
+        self._begin(point, window.title if window is not None else "", from_top)
 
-    def start_at(self, point: Point, title: str) -> None:
+    def start_at(self, point: Point, title: str, *, from_top: bool = True) -> None:
         """Capture the panel at ``point`` without a chooser (Ctrl+click in PrtSc)."""
         if self._active or self._closing:
             return
         self._active, self._cancelled = True, False
         self.state_changed.emit(True, False)  # noqa: FBT003 - Qt signal
-        self._begin(point, title)
+        self._begin(point, title, from_top)
 
-    def _begin(self, point: Point, title: str) -> None:
+    def _begin(self, point: Point, title: str, from_top: bool) -> None:  # noqa: FBT001
         self._title = title or "Scrolling capture"
+        self._from_top = from_top
         self._point = point
         self._close_overlays()
         if _CANCEL_ACTION not in self._hotkeys.registered and not (
@@ -200,15 +208,16 @@ class ScrollSelection(QObject):
         self._helper = self._helper_factory()
         self._helper.finished.connect(self._completed)
         try:
-            self._helper.start(self._point)
+            self._helper.start(self._point, from_top=self._from_top)
         except (AppError, OSError) as error:
             self._fail(f"Could not start scrolling capture: {error}")
 
     def _completed(self, result: ScrollResult) -> None:
         cancelled, closing, title = self._cancelled, self._closing, self._title
+        stopping = self._stopping
         self._end()
-        if closing or cancelled:
-            pass
+        if closing or cancelled or (stopping and result.message == CANCELLED):
+            pass  # Stopped before anything was captured: like a cancel
         elif result.image is not None:
             self.captured.emit(
                 ScrollingCapture(
@@ -232,6 +241,18 @@ class ScrollSelection(QObject):
         else:
             self._end()
             self.finished.emit()
+
+    def stop(self) -> None:
+        """Esc: end a running capture early and keep it; before that, cancel."""
+        if not self._active:
+            return
+        if self._helper is None or self._cancelled:
+            self.cancel()
+            return
+        if not self._stopping:
+            self._stopping = True
+            self.state_changed.emit(True, True)  # noqa: FBT003 - Qt signal
+            self._helper.stop()
 
     def shutdown(self) -> None:
         """Kill any running helper before the application closes."""
@@ -261,13 +282,14 @@ class ScrollSelection(QObject):
         if helper is not None:
             helper.deleteLater()
         self._point = None
+        self._stopping = False
         if self._active:
             self._active = False
             self.state_changed.emit(False, self._cancelled)  # noqa: FBT003 - Qt signal
 
     def _on_hotkey(self, action: str) -> None:
         if action == _CANCEL_ACTION:
-            self.cancel()
+            self.stop()
 
     def _close_overlays(self) -> None:
         for overlay in self._overlays:

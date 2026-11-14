@@ -102,21 +102,36 @@ class _Walk:
 
 
 class CancelledError(CaptureError):
-    """The user pressed Esc."""
+    """The capture was cancelled: nothing is delivered."""
+
+
+class StoppedError(CancelledError):
+    """The user pressed Esc: what was captured so far is delivered."""
+
+
+STOPPED_NOTE = "Stopped early with Esc; the image ends there."
+CANCELLED = "Scrolling capture cancelled"
 
 
 class ScrollCapture:
-    """Top-to-bottom sequence with best-effort restoration of the start position."""
+    """Top (or here) to bottom, with best-effort restoration of the start position.
 
-    def __init__(
+    ``cancelled`` discards the capture; ``stopped`` (Esc) ends it early and
+    keeps what was captured. ``from_top`` False starts from the current view.
+    """
+
+    def __init__(  # noqa: PLR0913 - collaborators and test seams
         self,
         target: ScrollTarget,
         cancelled: Callable[[], bool],
         *,
+        stopped: Callable[[], bool] = lambda: False,
+        from_top: bool = True,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
-        self._target, self._cancelled = target, cancelled
+        self._target, self._cancelled, self._stopped = target, cancelled, stopped
+        self._from_top = from_top
         self._clock, self._sleep = clock, sleep
         self._deadline = clock() + MAX_SECONDS
 
@@ -128,9 +143,14 @@ class ScrollCapture:
         notes: list[str] = []
         try:
             self._capture(start, frames, notes)
+        except StoppedError:
+            if not frames:
+                self._restore(start)
+                return ScrollResult(None, CANCELLED, 0)
+            notes.append(STOPPED_NOTE)
         except CancelledError:
             self._restore(start)
-            return ScrollResult(None, "Scrolling capture cancelled", len(frames))
+            return ScrollResult(None, CANCELLED, len(frames))
         except (CaptureError, OSError) as error:  # OSError: a failed COM call
             self._restore(start)
             return ScrollResult(None, str(error), len(frames))
@@ -149,7 +169,9 @@ class ScrollCapture:
 
     def _check(self) -> None:
         if self._cancelled():
-            raise CancelledError("Scrolling capture cancelled")
+            raise CancelledError(CANCELLED)
+        if self._stopped():
+            raise StoppedError("Scrolling capture stopped")
         self._target.check()
 
     def _capture(
@@ -160,9 +182,14 @@ class ScrollCapture:
         if start.view_size >= 100.0:  # noqa: PLR2004 - everything is visible
             frames.append(Frame(self._settle(None)))
             return
-        image, position, reading = self._top(start)
+        if self._from_top:
+            image, position, reading = self._top(start)
+        else:
+            image, position, reading = self._settle(None), start, start.percent
         frames.append(Frame(image))
-        walk = _Walk(image, position, reading, target.height, assumed=reading > 0.0)
+        walk = _Walk(
+            image, position, reading, target.height, assumed=reading != position.percent
+        )
         walk.pixels = image.width() * image.height()
         while walk.position.percent < END_PERCENT:
             self._check()

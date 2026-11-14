@@ -1,8 +1,10 @@
 """One disposable process per scrolling capture, so a hung provider can be killed.
 
-The parent passes the chosen point and a scratch directory. The child prints
-one JSON result and writes ``capture.png`` on success. ``cancel`` on stdin asks
-it to stop and restore; stdin closing (parent gone) exits at once.
+The parent passes the chosen point, a scratch directory and where to start
+(``top`` or ``here``). The child prints one JSON result and writes
+``capture.png`` on success. ``cancel`` on stdin asks it to discard and
+restore, ``stop`` to end early and keep what it has; stdin closing (parent
+gone) exits at once.
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ from tempfile import TemporaryDirectory
 from PySide6.QtCore import QObject, QProcess, Qt, QTimer, Signal
 from PySide6.QtGui import QImageReader
 
-from verdiclip.capture.scrolling import MAX_PIXELS, MAX_SECONDS, ScrollResult
+from verdiclip.capture.scrolling import CANCELLED, MAX_PIXELS, MAX_SECONDS, ScrollResult
 from verdiclip.exceptions import CaptureError
 from verdiclip.geometry import Point
 
@@ -31,6 +33,8 @@ logger = logging.getLogger(__name__)
 _MAX_RESULT_BYTES = 8192
 _MAX_DIAGNOSTIC_BYTES = 16_384
 _CANCEL_GRACE_MS = 2000
+# Stopping still stitches and saves what was captured, which takes a while.
+_STOP_GRACE_MS = 20_000
 _DEADLINE_MARGIN = 10.0
 # The child entry point; tests substitute a scripted stand-in.
 CHILD_MODULE = "verdiclip.capture.scroll_helper"
@@ -51,9 +55,9 @@ class ScrollHelper(QObject):
         self._timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._timer.timeout.connect(self._timeout)
         self._directory: TemporaryDirectory[str] | None = None
-        self._cancelled = self._terminal = self._timed_out = False
+        self._cancelled = self._stopped = self._terminal = self._timed_out = False
 
-    def start(self, point: Point) -> None:
+    def start(self, point: Point, *, from_top: bool = True) -> None:
         """Start capturing the panel at ``point`` (physical pixels)."""
         if self._directory is not None or self._terminal:
             raise RuntimeError("A scrolling helper can only be started once")
@@ -66,6 +70,7 @@ class ScrollHelper(QObject):
                 str(round(point.x)),
                 str(round(point.y)),
                 self._directory.name,
+                "top" if from_top else "here",
             ]
         )
         self._timer.start(math.ceil((MAX_SECONDS + _DEADLINE_MARGIN) * 1000))
@@ -80,6 +85,22 @@ class ScrollHelper(QObject):
         remaining = self._timer.remainingTime()
         self._timer.start(
             _CANCEL_GRACE_MS if remaining < 0 else min(remaining, _CANCEL_GRACE_MS)
+        )
+
+    def stop(self) -> None:
+        """Ask the child to end early and deliver what it has captured."""
+        if (
+            self._terminal
+            or self._directory is None
+            or self._cancelled
+            or self._stopped
+        ):
+            return
+        self._stopped = True
+        self._process.write(b"stop\n")
+        remaining = self._timer.remainingTime()
+        self._timer.start(
+            _STOP_GRACE_MS if remaining < 0 else min(remaining, _STOP_GRACE_MS)
         )
 
     def shutdown(self) -> None:
@@ -134,7 +155,7 @@ class ScrollHelper(QObject):
             image = reader.read()
             if image.isNull():
                 raise ValueError("Invalid scrolling image")
-        message = "Scrolling capture cancelled" if self._cancelled else value["message"]
+        message = CANCELLED if self._cancelled else value["message"]
         return ScrollResult(image, message, value["frames"], value["warning"])
 
     def _exited(self, code: int, status: QProcess.ExitStatus) -> None:
@@ -148,7 +169,7 @@ class ScrollHelper(QObject):
             result = ScrollResult(None, "Scrolling capture took too long", 0)
         elif code != 0 or status != QProcess.ExitStatus.NormalExit:
             message = (
-                "Scrolling capture cancelled"
+                CANCELLED
                 if self._cancelled
                 else "Scrolling capture stopped unexpectedly"
             )
@@ -181,12 +202,15 @@ class ScrollHelper(QObject):
 
 
 def _watch_parent(
-    cancelled: threading.Event, commands: Iterable[str], on_eof: Callable[[], None]
+    events: dict[str, threading.Event],
+    commands: Iterable[str],
+    on_eof: Callable[[], None],
 ) -> None:
-    """Flag ``cancel``; call ``on_eof`` when the parent closes stdin."""
+    """Flag ``cancel`` or ``stop``; call ``on_eof`` when the parent closes stdin."""
     for line in commands:
-        if line.strip() == "cancel":
-            cancelled.set()
+        event = events.get(line.strip())
+        if event is not None:
+            event.set()
     on_eof()
 
 
@@ -206,22 +230,31 @@ def main(
     from verdiclip.capture.scrolling import ScrollCapture  # noqa: PLC0415
     from verdiclip.platform.scrolling import UiaScrollTarget  # noqa: PLC0415
 
-    x, y, directory = sys.argv[1:] if argv is None else argv
+    x, y, directory, *start = sys.argv[1:] if argv is None else argv
     user = ctypes.WinDLL("user32", use_last_error=True)
     user.SetProcessDpiAwarenessContext.argtypes = (ctypes.c_void_p,)
     user.SetProcessDpiAwarenessContext.restype = ctypes.c_int
     # Per-monitor v2: UIA bounds and screen pixels share physical coordinates.
     user.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
-    cancelled = threading.Event()
+    cancelled, stopped = threading.Event(), threading.Event()
     threading.Thread(
         target=_watch_parent,
-        args=(cancelled, sys.stdin if commands is None else commands, on_eof),
+        args=(
+            {"cancel": cancelled, "stop": stopped},
+            sys.stdin if commands is None else commands,
+            on_eof,
+        ),
         daemon=True,
     ).start()
     started = time.monotonic()
     try:
         with UiaScrollTarget(Point(int(x), int(y))) as target:
-            result = ScrollCapture(target, cancelled.is_set).run()
+            result = ScrollCapture(
+                target,
+                cancelled.is_set,
+                stopped=stopped.is_set,
+                from_top=start != ["here"],
+            ).run()
     except (CaptureError, OSError) as error:
         result = ScrollResult(None, str(error), 0)
     logger.info(

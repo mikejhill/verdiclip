@@ -16,12 +16,14 @@ from verdiclip.capture.scrolling import ScrollResult
 from verdiclip.geometry import Point
 
 
-def run(
+def run(  # noqa: PLR0913 - scripted child options
     qtbot: QtBot,
     monkeypatch: pytest.MonkeyPatch,
     mode: str,
     *,
     cancel: bool = False,
+    stop: bool = False,
+    from_top: bool = True,
 ) -> ScrollResult:
     """Run."""
     monkeypatch.setattr(scroll_helper, "CHILD_MODULE", "tests.capture.scroll_child")
@@ -29,7 +31,10 @@ def run(
     helper = ScrollHelper()
     results: list[ScrollResult] = []
     helper.finished.connect(results.append)
-    helper.start(Point(5.4, 6.6))
+    helper.start(Point(5.4, 6.6), from_top=from_top)
+    if stop:
+        helper.stop()
+        helper.stop()  # A second request changes nothing
     if cancel:
         helper.cancel()
         helper.cancel()  # A second request changes nothing
@@ -128,12 +133,36 @@ def test_missing_interpreter_reports_failure_to_start(
     assert result.message == "Could not start scrolling capture"
 
 
-def test_parent_watch_flags_cancel_and_reports_eof() -> None:
-    """``cancel`` sets the flag and the end of input calls ``on_eof``."""
-    cancelled = threading.Event()
+def test_parent_watch_flags_commands_and_reports_eof() -> None:
+    """``cancel`` and ``stop`` set their flags; the end of input calls ``on_eof``."""
+    events = {"cancel": threading.Event(), "stop": threading.Event()}
     ends: list[bool] = []
     scroll_helper._watch_parent(
-        cancelled, iter(["noise\n", "cancel\n"]), lambda: ends.append(True)
+        events, iter(["noise\n", "stop\n"]), lambda: ends.append(True)
     )
-    assert cancelled.is_set()
+    assert events["stop"].is_set()
+    assert not events["cancel"].is_set()
     assert ends == [True]
+
+
+def test_stop_keeps_the_image(qtbot: QtBot, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stop asks the child to end early and still reads its image."""
+    result = run(qtbot, monkeypatch, "wait-stop", stop=True)
+    assert result.image is not None
+    assert result.warning == "stopped"
+
+
+def test_capture_from_here_is_passed_to_the_child(
+    qtbot: QtBot, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Starting from the current view reaches the child as ``here``."""
+    result = run(qtbot, monkeypatch, "success", from_top=False)
+    assert result.warning == "note from here"
+
+
+def test_cancel_after_stop_drops_the_image(
+    qtbot: QtBot, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cancel after a stop still discards what was captured."""
+    result = run(qtbot, monkeypatch, "wait-cancel", cancel=True, stop=True)
+    assert result.image is None

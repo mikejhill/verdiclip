@@ -93,12 +93,20 @@ class Clock:
         self.now += seconds
 
 
-def run(panel: Panel, cancel_after: int | None = None) -> scrolling.ScrollResult:
+def run(
+    panel: Panel,
+    cancel_after: int | None = None,
+    *,
+    stop_after: int | None = None,
+    from_top: bool = True,
+) -> scrolling.ScrollResult:
     """Run."""
     clock = Clock()
     return ScrollCapture(
         panel,
         lambda: cancel_after is not None and panel.grabs >= cancel_after,
+        stopped=lambda: stop_after is not None and panel.grabs >= stop_after,
+        from_top=from_top,
         clock=clock,
         sleep=clock.sleep,
     ).run()
@@ -693,3 +701,42 @@ def test_half_painted_view_is_not_kept() -> None:
     """A pause halfway through painting does not count as settled."""
     panel = Tiled(900)
     assert run(panel).image == panel.document
+
+
+def test_esc_keeps_what_was_captured() -> None:
+    """Stopping part way delivers the top of the page, says so, and restores."""
+    panel = Panel(2000)
+    result = run(panel, stop_after=12)
+    assert result.image is not None
+    assert result.frames > 1
+    assert VIEW < result.image.height() < panel.content
+    assert result.image == panel.document.copy(0, 0, WIDTH, result.image.height())
+    assert scrolling.STOPPED_NOTE in result.warning
+    assert panel.writes[-1] == pytest.approx(40.0)
+
+
+def test_esc_before_the_first_frame_delivers_nothing() -> None:
+    """Stopping before anything was captured is a plain cancel."""
+    panel = Panel(2000)
+    result = run(panel, stop_after=0)
+    assert result.image is None
+    assert result.message == "Scrolling capture cancelled"
+
+
+def test_capture_from_here_starts_at_the_current_view() -> None:
+    """From the current position: no scroll to the top, down to the end."""
+    panel = Panel(900, start=40.0)
+    top = panel.top
+    result = run(panel, from_top=False)
+    assert 0.0 not in panel.writes[:-1]
+    assert result.image == panel.document.copy(0, top, WIDTH, panel.content - top)
+    assert result.warning == ""
+    assert panel.writes[-1] == pytest.approx(40.0)
+
+
+def test_capture_from_the_bottom_is_one_frame() -> None:
+    """From a panel already at its end, the current view is the image."""
+    panel = Panel(900, start=100.0)
+    result = run(panel, from_top=False)
+    assert result.frames == 1
+    assert result.image == panel.document.copy(0, panel.range, WIDTH, VIEW)

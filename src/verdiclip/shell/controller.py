@@ -297,13 +297,13 @@ class AppController(QObject):
         self._workspace.cancel_drag()
         self._scrolling.capture()
 
-    def _scroll_at(self, point: Point, title: str) -> None:
+    def _scroll_at(self, point: Point, title: str, from_top: bool) -> None:  # noqa: FBT001 - Qt slot
         """Start a scrolling capture of the panel Ctrl+clicked in region selection."""
         if self._closing or self._scrolling.busy:
             return
         self._dismiss_scroll_status()
         self._workspace.cancel_drag()
-        self._scrolling.start_at(point, title)
+        self._scrolling.start_at(point, title, from_top=from_top)
 
     def _after_scrolling(self) -> None:
         if self._closing:

@@ -17,7 +17,7 @@ from tests.ux.test_app_journeys import (
 )
 
 from verdiclip.capture.scroll_helper import ScrollHelper
-from verdiclip.capture.scrolling import ScrollResult
+from verdiclip.capture.scrolling import STOPPED_NOTE, ScrollResult
 from verdiclip.exceptions import CaptureError
 from verdiclip.geometry import Point
 from verdiclip.settings import Settings
@@ -30,20 +30,23 @@ def prepare(app: App) -> ScrollHelper:
     helper = ScrollHelper()
     helper.start = Mock()
     helper.cancel = Mock()
+    helper.stop = Mock()
     helper.shutdown = Mock()
     app.controller._scrolling._helper_factory = lambda: helper
     return helper
 
 
-def select(qtbot: QtBot, app: App, helper: ScrollHelper) -> None:
+def select(
+    qtbot: QtBot, app: App, helper: ScrollHelper, *, from_top: bool = True
+) -> None:
     """Click a point in the chooser and wait for the helper to start."""
     service = app.controller._scrolling
     qtbot.waitUntil(lambda: bool(service.overlays))
-    service.overlays[0].chosen.emit(Point(30, 40))
+    service.overlays[0].chosen.emit(Point(30, 40), from_top)
     assert not service.overlays
     qtbot.waitUntil(lambda: helper is service._helper)
     assert isinstance(helper.start, Mock)
-    helper.start.assert_called_once_with(Point(30, 40))
+    helper.start.assert_called_once_with(Point(30, 40), from_top=from_top)
 
 
 def tall_image() -> QImage:
@@ -129,21 +132,48 @@ def test_escape_in_chooser_cancels_quietly(make_app: AppFactory, qtbot: QtBot) -
     assert app.controller._scroll_status is None
 
 
-def test_escape_during_capture_cancels_and_drops_the_result(
+def test_escape_during_capture_stops_and_keeps_the_result(
     make_app: AppFactory, qtbot: QtBot
 ) -> None:
-    """Escape during capture cancels and drops the result."""
+    """Esc during capture stops it early; what was captured opens like any capture."""
     app = make_app()
     helper = prepare(app)
     app.controller.capture_scrolling()
     select(qtbot, app, helper)
     app.press_hotkey("scroll_cancel")
-    assert isinstance(helper.cancel, Mock)
-    helper.cancel.assert_called_once()
-    helper.finished.emit(ScrollResult(tall_image(), "", 3))
+    app.press_hotkey("scroll_cancel")  # A second Esc changes nothing
+    assert isinstance(helper.stop, Mock)
+    helper.stop.assert_called_once()
+    assert app.controller.tray.toolTip() == "Stopping scrolling capture…"
+    helper.finished.emit(ScrollResult(tall_image(), "", 3, STOPPED_NOTE))
+    qtbot.waitUntil(lambda: len(app.controller.workspace.documents) == 1)
+    assert app.controller._scroll_status is None
+
+
+def test_escape_before_the_first_frame_is_quiet(
+    make_app: AppFactory, qtbot: QtBot
+) -> None:
+    """Esc before anything was captured reports nothing, like a cancel."""
+    app = make_app()
+    helper = prepare(app)
+    app.controller.capture_scrolling()
+    select(qtbot, app, helper)
+    app.press_hotkey("scroll_cancel")
+    helper.finished.emit(ScrollResult(None, "Scrolling capture cancelled", 0))
     qtbot.waitUntil(lambda: not app.controller._scrolling.busy)
     assert not app.controller.workspace.documents
     assert app.controller._scroll_status is None
+
+
+def test_ctrl_click_in_the_chooser_starts_from_here(
+    make_app: AppFactory, qtbot: QtBot
+) -> None:
+    """Ctrl+click in the chooser captures from the current position down."""
+    app = make_app()
+    helper = prepare(app)
+    app.controller.capture_scrolling()
+    select(qtbot, app, helper, from_top=False)
+    app.controller._scrolling.cancel()
 
 
 def test_second_request_cancels_and_ordinary_capture_waits(
@@ -234,7 +264,7 @@ def test_escape_owned_elsewhere_stops_before_capturing(
     service = app.controller._scrolling
     app.controller.capture_scrolling()
     qtbot.waitUntil(lambda: bool(service.overlays))
-    service.overlays[0].chosen.emit(Point(30, 40))
+    service.overlays[0].chosen.emit(Point(30, 40), True)  # noqa: FBT003 - Qt signal
     qtbot.waitUntil(lambda: not service.busy)
     assert isinstance(helper.start, Mock)
     helper.start.assert_not_called()
@@ -253,7 +283,7 @@ def test_helper_that_cannot_start_releases_the_capture(
     app.controller.capture_scrolling()
     service = app.controller._scrolling
     qtbot.waitUntil(lambda: bool(service.overlays))
-    service.overlays[0].chosen.emit(Point(30, 40))
+    service.overlays[0].chosen.emit(Point(30, 40), True)  # noqa: FBT003 - Qt signal
     qtbot.waitUntil(lambda: not service.busy)
     status = app.controller._scroll_status
     assert status is not None
@@ -283,19 +313,19 @@ def test_failed_shutdown_does_not_block_later_captures(
 def test_ctrl_click_in_region_capture_starts_scrolling(
     make_app: AppFactory, qtbot: QtBot
 ) -> None:
-    """UX-CAP-18: Ctrl+click in the PrtSc overlay captures that panel top to bottom."""
+    """UX-CAP-18: Ctrl+click in the PrtSc overlay captures that panel from here down."""
     app = make_app()
     helper = prepare(app)
     app.press_hotkey("region")
     capture = app.controller._capture
     qtbot.waitUntil(lambda: bool(capture.overlays))
-    capture.overlays[0].scroll_chosen.emit(Point(30, 40), "Notes")
+    capture.overlays[0].scroll_chosen.emit(Point(30, 40), "Notes", False)  # noqa: FBT003 - Qt signal
     assert not capture.overlays
     service = app.controller._scrolling
     assert service.busy
     qtbot.waitUntil(lambda: helper is service._helper)
     assert isinstance(helper.start, Mock)
-    helper.start.assert_called_once_with(Point(30, 40))
+    helper.start.assert_called_once_with(Point(30, 40), from_top=False)
     helper.finished.emit(ScrollResult(tall_image(), "", 5))
     qtbot.waitUntil(lambda: len(app.controller.workspace.documents) == 1)
     assert app.controller.workspace.documents[0].title == "Notes"
@@ -336,7 +366,36 @@ def test_ctrl_click_while_scrolling_is_ignored(
     helper = prepare(app)
     app.controller.capture_scrolling()
     select(qtbot, app, helper)
-    app.controller._scroll_at(Point(5, 5), "Other")
+    app.controller._scroll_at(Point(5, 5), "Other", False)  # noqa: FBT003 - Qt slot
     assert isinstance(helper.start, Mock)
-    helper.start.assert_called_once_with(Point(30, 40))
+    helper.start.assert_called_once_with(Point(30, 40), from_top=True)
     app.controller._scrolling.cancel()
+
+
+def test_escape_before_the_helper_starts_cancels(make_app: AppFactory) -> None:
+    """Esc in the moment between the click and the helper starting cancels."""
+    app = make_app()
+    helper = prepare(app)
+    service = app.controller._scrolling
+    service.stop()  # Idle: nothing to stop
+    service.start_at(Point(1, 1), "")
+    service.stop()
+    assert not service.busy
+    assert isinstance(helper.start, Mock)
+    helper.start.assert_not_called()
+
+
+def test_failure_after_escape_is_still_reported(
+    make_app: AppFactory, qtbot: QtBot
+) -> None:
+    """Esc does not hide a real failure, such as an image that could not be saved."""
+    app = make_app()
+    helper = prepare(app)
+    app.controller.capture_scrolling()
+    select(qtbot, app, helper)
+    app.press_hotkey("scroll_cancel")
+    helper.finished.emit(ScrollResult(None, "Could not save the scrolling image", 2))
+    qtbot.waitUntil(lambda: not app.controller._scrolling.busy)
+    status = app.controller._scroll_status
+    assert status is not None
+    assert "Could not save" in status.text()
