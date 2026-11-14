@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.2](https://github.com/mikejhill/verdiclip/compare/v0.18.1...v0.18.2) (2026-11-14)
+
+
+### Bug Fixes
+
+* confirm the end of a lagging panel and place unaligned frames by the step ([#177](https://github.com/mikejhill/verdiclip/issues/177)) ([5c333e4](https://github.com/mikejhill/verdiclip/commit/5c333e4e42139e96c4347f48d87dde84e1403202))
+
 ## [0.18.1](https://github.com/mikejhill/verdiclip/compare/v0.18.0...v0.18.1) (2026-11-14)
 
 
