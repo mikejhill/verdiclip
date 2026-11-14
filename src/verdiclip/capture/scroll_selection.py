@@ -44,7 +44,7 @@ class ScrollingCapture:
     title: str
     taken_at: datetime
     warning: str = ""
-    output: ClickOutput = ClickOutput.USUAL
+    output: ClickOutput = ClickOutput.DEFAULT
 
 
 class PointOverlay(SelectionOverlay):
@@ -128,7 +128,7 @@ class ScrollSelection(QObject):
         self._point: Point | None = None
         self._title = ""
         self._from_top = True
-        self._output = ClickOutput.USUAL
+        self._output = ClickOutput.DEFAULT
         self._active = self._cancelled = self._stopping = self._closing = False
         self._launch = QTimer(self)
         self._launch.setSingleShot(True)
@@ -150,7 +150,7 @@ class ScrollSelection(QObject):
         if self._active or self._closing:
             return
         self._active, self._cancelled = True, False
-        self._output = ClickOutput.USUAL
+        self._output = ClickOutput.DEFAULT
         self.state_changed.emit(True, False)  # noqa: FBT003 - Qt signal
         popup = QApplication.activePopupWidget()
         if popup is not None:
@@ -197,7 +197,7 @@ class ScrollSelection(QObject):
         title: str,
         *,
         from_top: bool = True,
-        output: ClickOutput = ClickOutput.USUAL,
+        output: ClickOutput = ClickOutput.DEFAULT,
     ) -> None:
         """Capture the panel at ``point`` without a chooser (from universal capture).
 

@@ -514,7 +514,7 @@ class AppController(QObject):
         The waiting ctl request delivers the result itself, so the modifier
         outputs don't apply.
         """
-        self._scroll_at(point, title, from_top, ClickOutput.USUAL)
+        self._scroll_at(point, title, from_top, ClickOutput.DEFAULT)
 
     def _admit_capture(
         self,
@@ -633,11 +633,11 @@ class AppController(QObject):
 
     def _actions_for(self, output: ClickOutput) -> CaptureSettings:
         """Return the after-capture actions, overridden by a modifier's ``output``."""
-        usual = self._settings.capture
-        if output is ClickOutput.USUAL:
-            return usual
+        default = self._settings.capture
+        if output is ClickOutput.DEFAULT:
+            return default
         return replace(
-            usual,
+            default,
             open_editor=output.opens_editor,
             copy_to_clipboard=output.copies,
             save_to_file=output.saves,

@@ -26,9 +26,10 @@ class ClickTarget(StrEnum):
 
 
 class ClickOutput(StrEnum):
-    """Where the image goes; USUAL follows the after-capture settings."""
+    """Where the image goes; DEFAULT follows the after-capture actions."""
 
-    USUAL = "usual"
+    # "usual" is the stored value from before the rename; keep it for old settings
+    DEFAULT = "usual"
     CLIPBOARD = "clipboard"
     SAVE = "save"
     CLIPBOARD_AND_SAVE = "clipboard_save"
@@ -61,7 +62,7 @@ _TARGET_LABELS: Final = {
     ClickTarget.SCROLL_ALL: "Scroll: whole pane",
 }
 _OUTPUT_LABELS: Final = {
-    ClickOutput.USUAL: "Usual (Capture tab)",
+    ClickOutput.DEFAULT: "Default",
     ClickOutput.CLIPBOARD: "Clipboard only",
     ClickOutput.SAVE: "File only",
     ClickOutput.CLIPBOARD_AND_SAVE: "Clipboard and file",
@@ -74,7 +75,7 @@ class ClickAction:
     """What a click captures, and where a click's or a drag's image goes."""
 
     target: ClickTarget = ClickTarget.WINDOW
-    output: ClickOutput = ClickOutput.USUAL
+    output: ClickOutput = ClickOutput.DEFAULT
 
     @property
     def is_plain(self) -> bool:
@@ -89,7 +90,7 @@ class ClickAction:
         parts = []
         if not dragging and self.target.scrolls:
             parts.append(self.target.label)
-        if self.output is not ClickOutput.USUAL:
+        if self.output is not ClickOutput.DEFAULT:
             parts.append(self.output.label)
         return " · ".join(parts)
 
