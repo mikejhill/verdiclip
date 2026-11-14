@@ -455,6 +455,37 @@ class EditorWindow(QMainWindow):
             self.close()
         return True
 
+    def close_page_unprompted(self, page: DocumentPage) -> bool:
+        """Close ``page`` without the unsaved-changes prompt (``ctl close``).
+
+        Returns:
+            False if the page is saving, closing or moving and stays open.
+        """
+        record = page.record
+        if (
+            self._closing
+            or self._workspace.transferring
+            or page not in self.pages
+            or record.operations
+            or record.jobs.blocks_close
+        ):
+            return False
+        self._closing = True
+        record.jobs.freeze()
+        try:
+            page.suspend()
+            approval = CloseApproval(page, record.session.history.state_id)
+            if not approval.current or not self._workspace.close_documents(
+                ((self, (approval,)),)
+            ):
+                return False
+        finally:
+            self._closing = False
+            record.jobs.unfreeze()
+        if not self.pages:
+            self.close()
+        return True
+
     def approve_close(self, page: DocumentPage) -> CloseApproval | None:
         """Ask once while retaining every page until the caller commits close."""
         if page.record.operations or page.record.jobs.blocks_close:

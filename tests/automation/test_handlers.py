@@ -15,6 +15,7 @@ from verdiclip.automation.preview import PreviewFolder
 from verdiclip.automation.protocol import (
     PROTOCOL_VERSION,
     AutomationError,
+    Deferred,
     ErrorCode,
     JsonObject,
     JsonValue,
@@ -95,7 +96,9 @@ def handlers(host: Host, tmp_path: Path) -> AutomationHandlers:
 
 def call(handlers: AutomationHandlers, method: str, **params: object) -> JsonObject:
     """Run one request."""
-    return handlers(Request(method, dict(params)))  # ty: ignore[invalid-argument-type]
+    result = handlers(Request(method, dict(params)))  # ty: ignore[invalid-argument-type]
+    assert not isinstance(result, Deferred)
+    return result
 
 
 def obj(value: JsonValue) -> JsonObject:
@@ -125,8 +128,8 @@ def test_unknown_method(handlers: AutomationHandlers) -> None:
     with pytest.raises(
         AutomationError,
         match=(
-            "apply, copy, get, history, list, open, redo, render, save, select, "
-            "status, undo"
+            "apply, capture, close, copy, export, get, history, list, open, redo, "
+            "render, save, select, status, targets, undo"
         ),
     ) as caught:
         call(handlers, "paint")

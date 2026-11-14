@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import getpass
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 from typing import Final, cast
@@ -35,6 +36,7 @@ class ErrorCode(StrEnum):
     NOT_FOUND = "not_found"
     CONFLICT = "conflict"
     BUSY = "busy"
+    CANCELLED = "cancelled"
     FAILED = "failed"
 
 
@@ -48,6 +50,7 @@ class ExitCode(IntEnum):
     CONFLICT = 4
     NOT_FOUND = 5
     BUSY = 6
+    CANCELLED = 7
 
     @classmethod
     def for_error(cls, code: ErrorCode) -> ExitCode:
@@ -63,6 +66,7 @@ _EXIT_CODES: Final = {
     ErrorCode.NOT_FOUND: ExitCode.NOT_FOUND,
     ErrorCode.CONFLICT: ExitCode.CONFLICT,
     ErrorCode.BUSY: ExitCode.BUSY,
+    ErrorCode.CANCELLED: ExitCode.CANCELLED,
 }
 
 
@@ -77,6 +81,69 @@ class AutomationError(AppError):
     def to_json(self) -> JsonObject:
         """Return the ``error`` member of a failure response."""
         return {"code": self.code.value, "message": self.message}
+
+
+type Settled[T] = Callable[[T | None, AutomationError | None], None]
+
+
+class Deferred[T]:
+    """A result that arrives later, such as a capture the user is still choosing.
+
+    Settles once, with a value or an error; listeners added after that run at once.
+    """
+
+    def __init__(self) -> None:
+        self._done = False
+        self._value: T | None = None
+        self._error: AutomationError | None = None
+        self._listeners: list[Settled[T]] = []
+
+    @property
+    def done(self) -> bool:
+        """Return whether a value or an error has arrived."""
+        return self._done
+
+    def resolve(self, value: T) -> None:
+        """Settle with ``value``; later calls are ignored."""
+        self._settle(value, None)
+
+    def reject(self, error: AutomationError) -> None:
+        """Settle with ``error``; later calls are ignored."""
+        self._settle(None, error)
+
+    def then(self, listener: Settled[T]) -> None:
+        """Call ``listener(value, error)`` once this settles."""
+        if self._done:
+            listener(self._value, self._error)
+        else:
+            self._listeners.append(listener)
+
+    def map[U](self, convert: Callable[[T], U]) -> Deferred[U]:
+        """Return a deferred settling with ``convert(value)``, or the same error.
+
+        An ``AutomationError`` raised by ``convert`` becomes the error.
+        """
+        mapped: Deferred[U] = Deferred()
+
+        def forward(value: T | None, error: AutomationError | None) -> None:
+            if error is not None:
+                mapped.reject(error)
+                return
+            try:
+                mapped.resolve(convert(cast(T, value)))
+            except AutomationError as err:
+                mapped.reject(err)
+
+        self.then(forward)
+        return mapped
+
+    def _settle(self, value: T | None, error: AutomationError | None) -> None:
+        if self._done:
+            return
+        self._done, self._value, self._error = True, value, error
+        listeners, self._listeners = self._listeners, []
+        for listener in listeners:
+            listener(value, error)
 
 
 @dataclass(frozen=True, slots=True)

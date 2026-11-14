@@ -2317,7 +2317,7 @@ class TestAutomation:
         assert printed["installed"] == [
             {"agent": "codex", "path": str(target.resolve()), "replaced": False}
         ]
-        assert "verdiclip ctl apply" in target.read_text(encoding="utf-8")
+        assert "verdiclip ctl --help" in target.read_text(encoding="utf-8")
 
     def test_cli_opens_replaces_saves_and_copies_images(
         self, make_app: AppFactory, tmp_path: Path

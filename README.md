@@ -154,9 +154,12 @@ verdiclip open picture.png          # Opens in the running instance if there is 
 
 ### Command line (`verdiclip ctl`)
 
-`verdiclip ctl` reads and edits images open in the running app, unsaved edits included, and prints JSON:
+`verdiclip ctl` drives the running app: it captures, and reads, edits, saves and closes open images, unsaved edits included, and prints JSON. `verdiclip ctl --help` and `verdiclip ctl COMMAND --help` are the full reference.
 
 ```bash
+verdiclip ctl capture window --title Edge   # Region, window, fullscreen or scrolling, into a new tab
+verdiclip ctl capture scrolling --at 900,600 --from here
+verdiclip ctl targets                       # Monitors and windows to capture
 verdiclip ctl list                          # Every open image, in every window and tab
 verdiclip ctl get --doc <id>                # Annotations, crop, selection, state
 verdiclip ctl render --grid 100 -o view.png # PNG of the current state, gridded in image pixels
@@ -165,12 +168,14 @@ verdiclip ctl history                       # Undo and redo steps, CLI ones mark
 verdiclip ctl undo --only-cli               # Undo the last CLI step, never an editor step
 verdiclip ctl open shot.png                 # Open a file in a new tab
 verdiclip ctl save --path done.png          # Save, as the editor's Save would
+verdiclip ctl export --path copy.jpg        # Write a copy; Save still uses the image's file
 verdiclip ctl copy                          # Copy the image to the clipboard
+verdiclip ctl close                         # Close the tab (--discard for unsaved changes)
 ```
 
 Each `apply` is one undo step named "CLI: …" in the editor's Edit menu.
 
-Teach your AI coding agent to use it by installing the VerdiClip skill (no running app needed):
+Teach your AI coding agent to use it by installing the VerdiClip skill: Settings → General → **Install AI agent skill…**, or from the command line (no running app needed):
 
 ```bash
 verdiclip ctl install-skill --agent claude            # ~/.claude/skills/verdiclip/SKILL.md

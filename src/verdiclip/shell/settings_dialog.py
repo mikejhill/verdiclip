@@ -54,6 +54,7 @@ from verdiclip.settings import (
     UpdateSettings,
 )
 from verdiclip.shell.hotkey_field import HotkeyField
+from verdiclip.shell.skill_dialog import SkillDialog
 
 HOTKEY_FIELDS: Final = (
     ("region", "Universal capture"),
@@ -127,6 +128,8 @@ class SettingsDialog(QDialog):
         self._automation = QCheckBox(
             "Let the verdiclip ctl command read and edit open images"
         )
+        self._install_skill = QPushButton("Install AI agent skill…")
+        self._skill_dialog: SkillDialog | None = None
         self._check_updates = QCheckBox("Check for updates automatically")
         self._install_updates = QCheckBox(
             "Install updates automatically when no image is open"
@@ -218,6 +221,22 @@ class SettingsDialog(QDialog):
     def make_default_button(self) -> QPushButton:
         """Return the "make default" button (for tests)."""
         return self._make_default
+
+    @property
+    def install_skill_button(self) -> QPushButton:
+        """Return the button that opens the skill installer (for tests)."""
+        return self._install_skill
+
+    @property
+    def skill_dialog(self) -> SkillDialog | None:
+        """Return the skill installer once opened (for tests)."""
+        return self._skill_dialog
+
+    def show_skill_dialog(self) -> None:
+        """Open the skill installer over this dialog."""
+        if self._skill_dialog is None:
+            self._skill_dialog = SkillDialog(self)
+        self._skill_dialog.open()
 
     def ok_enabled(self) -> bool:
         """True when every field is valid."""
@@ -327,7 +346,15 @@ class SettingsDialog(QDialog):
             "Only programs running as your Windows user can connect. "
             "They see open images, including unsaved changes."
         )
-        form.addRow(self._automation)
+        self._install_skill.setToolTip(
+            "Teach AI coding agents such as Claude Code, Codex or GitHub "
+            "Copilot to use the verdiclip ctl command."
+        )
+        self._install_skill.clicked.connect(self.show_skill_dialog)
+        automation = QVBoxLayout()
+        automation.addWidget(self._automation)
+        automation.addWidget(self._install_skill)
+        form.addRow(automation)
         self._install_updates.setToolTip(
             "VerdiClip restarts to install the update, then says how it went."
         )

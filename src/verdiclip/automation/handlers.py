@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Protocol
 
 from verdiclip import VERSION
+from verdiclip.automation.capturing import AppActions, CaptureOutcome, CaptureSpec
 from verdiclip.automation.editing import EditPlanner
 from verdiclip.automation.preview import (
     PreviewFolder,
@@ -18,6 +19,7 @@ from verdiclip.automation.protocol import (
     DEFAULT_MAX_SIDE,
     PROTOCOL_VERSION,
     AutomationError,
+    Deferred,
     ErrorCode,
     JsonObject,
     JsonValue,
@@ -80,14 +82,21 @@ class AutomationHandlers:
         previews: PreviewFolder | None = None,
         renderer: PreviewRenderer | None = None,
         opener: Opener | None = None,
+        app: AppActions | None = None,
     ) -> None:
-        """``opener`` opens an image file in an editor tab (``ctl open``)."""
+        """``opener`` opens an image file in an editor tab (``ctl open``).
+
+        ``app`` captures, lists capture targets and closes tabs.
+        """
         self._host = host
         self._opener = opener
+        self._app = app
         self._previews = previews or PreviewFolder()
         self._renderer = renderer or PreviewRenderer()
         self._codec = AnnotationCodec()
-        self._methods: dict[str, Callable[[JsonObject], JsonObject]] = {
+        self._methods: dict[
+            str, Callable[[JsonObject], JsonObject | Deferred[JsonObject]]
+        ] = {
             "status": self.status,
             "list": self.list_documents,
             "get": self.get,
@@ -100,9 +109,13 @@ class AutomationHandlers:
             "open": self.open,
             "save": self.save,
             "copy": self.copy,
+            "export": self.export,
+            "close": self.close,
+            "capture": self.capture,
+            "targets": self.targets,
         }
 
-    def __call__(self, request: Request) -> JsonObject:
+    def __call__(self, request: Request) -> JsonObject | Deferred[JsonObject]:
         """Run ``request``.
 
         Raises:
@@ -295,6 +308,75 @@ class AutomationHandlers:
         record.saved_path = written
         history.mark_delivered(expected_state_id=state)
         return {"id": record.identifier, "path": str(written), "state": state}
+
+    def export(self, params: JsonObject) -> JsonObject:
+        """Write a copy to ``path``; the document keeps its own file."""
+        record = self._settled(self._resolve(params))
+        history = record.session.history
+        self._expect_state(history, params)
+        path = _absolute_path(params, "path")
+        state = history.state_id
+        image = Renderer().flatten(record.session.document)
+        try:
+            written = record.delivery.save(image, path)
+        except AppError as err:
+            raise AutomationError(ErrorCode.FAILED, str(err)) from err
+        history.mark_delivered(expected_state_id=state)
+        return {"id": record.identifier, "path": str(written), "state": state}
+
+    def close(self, params: JsonObject) -> JsonObject:
+        """Close a document's tab; unsaved work needs ``discard``."""
+        app = self._require_app()
+        record = self._settled(self._resolve(params))
+        history = record.session.history
+        self._expect_state(history, params)
+        discard = _boolean(params, "discard")
+        unsaved = not history.is_delivered
+        if unsaved and not discard:
+            msg = (
+                "The image has changes that weren't saved or copied; save it "
+                "first, or pass discard to throw them away"
+            )
+            raise AutomationError(ErrorCode.CONFLICT, msg)
+        try:
+            app.close_document(record, discard=discard)
+        except AppError as err:
+            raise AutomationError(ErrorCode.BUSY, str(err)) from err
+        return {"id": record.identifier, "closed": True, "discarded": unsaved}
+
+    def capture(self, params: JsonObject) -> Deferred[JsonObject]:
+        """Capture and open the result in a tab; answers once it's open."""
+        app = self._require_app()
+        spec = CaptureSpec.from_params(params)
+        return app.capture(spec).map(self._captured)
+
+    def targets(self, params: JsonObject) -> JsonObject:
+        """List the monitors and windows ``capture`` can take."""
+        del params
+        return self._require_app().capture_targets()
+
+    def _captured(self, outcome: CaptureOutcome) -> JsonObject:
+        """Describe a finished capture: its new document and outputs."""
+        result: JsonObject = (
+            self._summary(outcome.record)
+            if outcome.record is not None
+            else {"id": None}
+        )
+        result["saved"] = str(outcome.saved) if outcome.saved else None
+        result["copied"] = outcome.copied
+        result["warning"] = outcome.warning or None
+        return result
+
+    def _require_app(self) -> AppActions:
+        """Return the app's actions.
+
+        Raises:
+            AutomationError: If this server was built without them.
+        """
+        if self._app is None:
+            msg = "This VerdiClip can't capture or close tabs on request"
+            raise AutomationError(ErrorCode.FAILED, msg)
+        return self._app
 
     def copy(self, params: JsonObject) -> JsonObject:
         """Put the document on the clipboard as Copy would."""
