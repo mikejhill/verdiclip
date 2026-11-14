@@ -88,6 +88,9 @@ Each capture opens as a new tab in the editor and brings it forward (Settings �
 
 A drag always captures the dragged area, so for a drag only **Send to** applies (`Alt`+drag copies the area to the clipboard without opening the editor). The keys count when you let go, and the on-screen label shows what will happen while you hold them. Change any row in **Settings → Modifiers**. These modifiers apply only to universal capture; every other capture (active window, full screen, Repeat, and the `Ctrl+Alt+PrtSc` scrolling chooser) uses the after-capture settings.
 
+![Settings → Modifiers: what a click captures and where the image goes for each combination of Ctrl, Alt and Shift](https://raw.githubusercontent.com/mikejhill/verdiclip/main/docs/images/settings-modifiers.png)
+
+
 If Windows or another screenshot tool already owns `PrtSc`, VerdiClip tells you which hotkeys are taken; everything is still available from the tray menu, and you can choose other keys in Settings.
 
 ### Scrolling capture
@@ -154,9 +157,9 @@ Open from the tray menu or with `Ctrl+,` in any editor.
 - **Modifiers** — for each combination of `Ctrl`, `Alt` and `Shift` in [Universal capture](#universal-capture): what a click captures and where the image is sent; **Restore defaults** resets them.
 - **Output** — folder, file-name pattern (`{date}`, `{time}`, `{title}`, `{counter}`; default `{date}_{time}_{title}`, where `{title}` is the captured window's title (spaces become `_` when the pattern has none), or *Screenshot* / *Screen* for region and full-screen captures) with a live preview, format, JPEG quality.
 - **Editor** — default color, width, and font.
-- **General** — light, dark, or match-Windows theme; start at sign-in; show VerdiClip in the Start menu; check for and install updates automatically; show VerdiClip in Explorer's **Open with** menu for images; let the `verdiclip ctl` command drive the app. **Make VerdiClip the default image app…** opens Windows Settings at VerdiClip's Default apps page, where you choose it as the default (Windows requires you to confirm this yourself). **Install AI agent skill…** installs the `verdiclip ctl` skill for Claude Code, Codex, GitHub Copilot or the shared `.agents` folder.
+- **General** — light, dark, or match-Windows theme; start at sign-in; show VerdiClip in the Start menu; check for and install updates automatically; show VerdiClip in Explorer's **Open with** menu for images; let the `verdiclip ctl` command capture and edit images. **Make VerdiClip the default image app…** opens Windows Settings at VerdiClip's Default apps page, where you choose it as the default (Windows requires you to confirm this yourself). **Install AI agent skill…** installs the `verdiclip ctl` skill for Claude Code, Codex, GitHub Copilot or the shared `.agents` folder.
 
-![Settings → General: theme, start at sign-in, and the Open with integration](https://raw.githubusercontent.com/mikejhill/verdiclip/main/docs/images/settings-general.png)
+![Settings → General: theme, start at sign-in, Open with, default image app, the ctl switch and the AI agent skill installer](https://raw.githubusercontent.com/mikejhill/verdiclip/main/docs/images/settings-general.png)
 
 ## Command line
 

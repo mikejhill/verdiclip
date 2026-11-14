@@ -127,7 +127,7 @@ class SettingsDialog(QDialog):
         self._open_with = QCheckBox("Show VerdiClip in “Open with” for image files")
         self._make_default = QPushButton("Make VerdiClip the default image app…")
         self._automation = QCheckBox(
-            "Let the verdiclip ctl command read and edit open images"
+            "Let the verdiclip ctl command capture and edit images"
         )
         self._install_skill = QPushButton("Install AI agent skill…")
         self._skill_dialog: SkillDialog | None = None

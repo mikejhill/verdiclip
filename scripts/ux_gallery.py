@@ -62,6 +62,7 @@ README_IMAGES: Final = {
     "dark-capture-overlay": "capture.png",
     "dark-editor-rotated": "editor-rotated.png",
     "dark-settings-capture": "settings-capture.png",
+    "dark-settings-modifiers": "settings-modifiers.png",
     "dark-settings-general": "settings-general.png",
 }
 
@@ -122,9 +123,10 @@ class Gallery:
             "close-prompt": lambda: ClosePrompt.describe(
                 file_name=None, copied=False
             ).build(None),
-            "settings-capture": lambda: self._settings_tab(0),
-            "settings-hotkeys": lambda: self._settings_tab(1),
-            "settings-general": lambda: self._settings_tab(4),
+            "settings-capture": lambda: self._settings_tab("Capture"),
+            "settings-hotkeys": lambda: self._settings_tab("Hotkeys"),
+            "settings-modifiers": lambda: self._settings_tab("Modifiers"),
+            "settings-general": lambda: self._settings_tab("General"),
             "default-app-guide": lambda: DefaultAppDialog(
                 EXTENSIONS, lambda: {e: e == ".png" for e in EXTENSIONS}
             ),
@@ -186,12 +188,13 @@ class Gallery:
         overlay.setFixedSize(900, 560)
         return overlay
 
-    def _settings_tab(self, index: int) -> QWidget:
-        """Return the settings dialog on tab ``index``."""
+    def _settings_tab(self, title: str) -> QWidget:
+        """Return the settings dialog on the tab named ``title``."""
         dialog = SettingsDialog(self._settings)
         tabs = dialog.findChild(QTabWidget)
         if tabs is not None:
-            tabs.setCurrentIndex(index)
+            titles = [tabs.tabText(i) for i in range(tabs.count())]
+            tabs.setCurrentIndex(titles.index(title))
         return dialog
 
     # Rendering
