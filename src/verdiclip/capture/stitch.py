@@ -243,9 +243,16 @@ def _thumb(frames: list[list[bytes]], at: int, top: int, body: int) -> bool:
     Text, timestamps and pictures leave several runs or no common track.
     """
     columns = [[r[y][at : at + 4] for y in range(top, top + body)] for r in frames]
-    track, count = Counter(p for column in columns for p in column).most_common(1)[0]
-    if count < _MIN_TRACK * body * len(columns):
-        return False
+    least = _MIN_TRACK * body * len(columns)
+    # A thumb longer than half the track outnumbers it: try the runners-up too.
+    colours = Counter(p for column in columns for p in column).most_common(3)
+    return any(
+        _moves_down(columns, track) for track, count in colours if count >= least
+    )
+
+
+def _moves_down(columns: list[list[bytes]], track: bytes) -> bool:
+    """Whether, on ``track``, each column has one run that moves down."""
     centres: list[float] = []
     for column in columns:
         marks = [y for y, pixel in enumerate(column) if pixel != track]

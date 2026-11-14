@@ -51,11 +51,11 @@ def view(
     return image
 
 
-def scrollbar(image: QImage, position: int, footer: int = 0) -> None:
+def scrollbar(image: QImage, position: int, footer: int = 0, size: int = 20) -> None:
     """Paint a plain track down the right edge with a thumb at ``position``."""
     for y in range(VIEW - footer):
         for x in range(WIDTH - 6, WIDTH):
-            inside = position <= y < position + 20
+            inside = position <= y < position + size
             image.setPixel(x, y, 0x777777 if inside else 0xEEEEEE)
 
 
@@ -300,5 +300,15 @@ def test_thumb_that_fades_out_in_some_frames_is_still_cropped() -> None:
     document = page(700)
     shots = frames(document, 150, thumb=True)
     scrollbar(shots[2].image, VIEW)  # Track only: the thumb faded out
+    whole = expected(document)
+    assert stitch(shots).image == whole.copy(0, 0, WIDTH - 6, whole.height())
+
+
+def test_thumb_longer_than_half_the_track_is_cropped() -> None:
+    """A short document's long thumb outnumbers its track and is still found."""
+    document = page(300)
+    shots = frames(document, 50)
+    for index, frame in enumerate(shots):
+        scrollbar(frame.image, 35 * index, size=130)
     whole = expected(document)
     assert stitch(shots).image == whole.copy(0, 0, WIDTH - 6, whole.height())
