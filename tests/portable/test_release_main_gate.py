@@ -173,7 +173,7 @@ def test_complete_gate_path(
         return io.StringIO(json.dumps(payload))
 
     monkeypatch.setattr(gate, "urlopen", fetch)
-    clock = iter([0, 0, 601])
+    clock = iter([0, 0, 1801])
     monkeypatch.setattr(gate.time, "monotonic", lambda: next(clock))
     monkeypatch.setattr(gate.time, "sleep", lambda _: None)
     if fault is not None:

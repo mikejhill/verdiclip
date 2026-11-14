@@ -13,7 +13,9 @@ permissions:
 
 concurrency:
   group: codeql-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # Only PR pushes supersede each other. On main, every commit keeps its
+  # result: the release gate needs CodeQL for the exact commit it publishes.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   analyze:

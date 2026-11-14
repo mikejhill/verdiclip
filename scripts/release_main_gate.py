@@ -99,7 +99,8 @@ def main() -> None:
         with urlopen(request, timeout=10) as response:  # noqa: S310 - fixed HTTPS GitHub API
             return json.load(response)
 
-    deadline = time.monotonic() + 600
+    # Back-to-back merges queue Windows CI; 10 minutes timed out on 2026-11-12.
+    deadline = time.monotonic() + 1800
     while time.monotonic() < deadline:
         ready, identities = assess(collect(fetch, sha), sha)
         if ready:
