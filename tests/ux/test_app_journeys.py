@@ -243,6 +243,9 @@ def make_app(
         "tray_launch",
         lambda *_args: LaunchCommand(PYTHONW, "-m verdiclip"),
     )
+    # A warm-up firing mid-journey would skew timings and window counts;
+    # TestWarmUp checks it directly
+    monkeypatch.setattr(controller_module, "warm_up", lambda *_args: None)
 
     def factory(  # noqa: PLR0913 - explicit owned screen/window boundaries
         settings: Settings | None = None,
@@ -574,6 +577,52 @@ class TestAfterCapture:
         assert len(warnings) == 2
         assert all("Can't open screenshots folder" in r.message for r in warnings)
         assert len(opened) == 1
+
+
+class TestWarmUp:
+    """The overlay and editor are preloaded once the tray is idle (UX-CAP-11)."""
+
+    def test_start_schedules_one_warm_up(
+        self, make_app: AppFactory, monkeypatch: pytest.MonkeyPatch, qtbot: QtBot
+    ) -> None:
+        """Starting arms a single delayed warm-up with the live settings."""
+        calls: list[tuple[object, ...]] = []
+        monkeypatch.setattr(controller_module, "WARM_UP_DELAY_MS", 0, raising=True)
+        monkeypatch.setattr(
+            controller_module, "warm_up", lambda *args: calls.append(args)
+        )
+        app = make_app()
+        timer = app.controller._warm_up_timer
+        assert timer.isActive()
+        assert timer.isSingleShot()
+        qtbot.waitUntil(lambda: bool(calls))
+        settings = app.controller.settings
+        assert calls == [(settings.editor, settings.output)]
+
+    def test_no_warm_up_once_an_editor_is_open(
+        self, make_app: AppFactory, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A capture that beat the timer already paid the cost."""
+        app = make_app()
+        calls: list[tuple[object, ...]] = []
+        monkeypatch.setattr(
+            controller_module, "warm_up", lambda *args: calls.append(args)
+        )
+        app.controller.open_editor(QImage(20, 20, QImage.Format.Format_RGB32))
+        app.controller._warm_up()
+        assert not calls
+
+    def test_no_warm_up_after_shutdown(
+        self, make_app: AppFactory, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Shutting down cancels a pending warm-up."""
+        app = make_app()
+        calls: list[tuple[object, ...]] = []
+        monkeypatch.setattr(
+            controller_module, "warm_up", lambda *args: calls.append(args)
+        )
+        app.controller.shutdown()
+        assert not app.controller._warm_up_timer.isActive()
 
 
 class TestHotkeysAndSettings:

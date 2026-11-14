@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.18.2](https://github.com/mikejhill/verdiclip/compare/v0.18.1...v0.18.2) (2026-11-14)
+
+
+### Bug Fixes
+
+* confirm the end of a lagging panel and place unaligned frames by the step ([#177](https://github.com/mikejhill/verdiclip/issues/177)) ([5c333e4](https://github.com/mikejhill/verdiclip/commit/5c333e4e42139e96c4347f48d87dde84e1403202))
+
+## [0.18.1](https://github.com/mikejhill/verdiclip/compare/v0.18.0...v0.18.1) (2026-11-14)
+
+
+### Bug Fixes
+
+* crop the scrollbar only when a thumb is seen, and refuse off-screen panels ([#175](https://github.com/mikejhill/verdiclip/issues/175)) ([ce47dfd](https://github.com/mikejhill/verdiclip/commit/ce47dfd55d307f89ffad50b369d858636b97e073))
+
+## [0.18.0](https://github.com/mikejhill/verdiclip/compare/v0.17.0...v0.18.0) (2026-11-12)
+
+
+### Features
+
+* Ctrl+click a panel in region capture to capture it top to bottom ([#168](https://github.com/mikejhill/verdiclip/issues/168)) ([1e275b3](https://github.com/mikejhill/verdiclip/commit/1e275b39e85e0cd8ea2eab00832fac87b5860219))
+* install a found update straight from the check window ([#166](https://github.com/mikejhill/verdiclip/issues/166)) ([2748289](https://github.com/mikejhill/verdiclip/commit/2748289a0d36dd492b202d273937e3016203c824)), closes [#124](https://github.com/mikejhill/verdiclip/issues/124)
+
+
+### Bug Fixes
+
+* guide the user through making VerdiClip the default image app ([#169](https://github.com/mikejhill/verdiclip/issues/169)) ([668a052](https://github.com/mikejhill/verdiclip/commit/668a052e269ee184e7ee212da7a266f9dad09840))
+* keep tab labels from showing through the overflow arrows ([#165](https://github.com/mikejhill/verdiclip/issues/165)) ([f41a07c](https://github.com/mikejhill/verdiclip/commit/f41a07c026cebba7fe5ef85e53c60eb5bfbaec67)), closes [#120](https://github.com/mikejhill/verdiclip/issues/120)
+* smooth fractional zoom levels and preload the editor for the first capture ([#171](https://github.com/mikejhill/verdiclip/issues/171)) ([f4d9af1](https://github.com/mikejhill/verdiclip/commit/f4d9af117b6b90ab6bec034eff64e86a28cbc68b))
+* stop scrolling capture repeating content and showing the scrollbar ([#172](https://github.com/mikejhill/verdiclip/issues/172)) ([33fd8b2](https://github.com/mikejhill/verdiclip/commit/33fd8b26071a22f6886dcd898108cc67b270e645))
+
 ## [0.17.0](https://github.com/mikejhill/verdiclip/compare/v0.16.1...v0.17.0) (2026-11-12)
 
 

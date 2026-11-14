@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
+from itertools import pairwise
 
 from PySide6.QtCore import QPoint, QRect
 from PySide6.QtGui import QImage, QPainter
@@ -28,6 +29,14 @@ _MAX_REPEATS = 8
 _MIN_VOTES = 4
 # Header/footer bands never take more than this share of the viewport.
 _MAX_BAND = 1 / 3
+# A scrollbar strip is looked for within this many columns of the right edge.
+_MAX_STRIP = 40
+# A scrollbar column is at least this share of plain track.
+_MIN_TRACK = 0.3
+# A thumb's run of pixels may have gaps this small (anti-aliased edges).
+_THUMB_GAP = 2
+# Two frames sharing this share of their rows in place show the same view.
+_SAME_VIEW = 0.9
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,10 +53,11 @@ class Frame:
 
 @dataclass(frozen=True, slots=True)
 class StitchResult:
-    """The joined image and how many seams fell back to the provider estimate."""
+    """The joined image, seams that fell back to the estimate, frames dropped."""
 
     image: QImage
     estimated_seams: int
+    stale_frames: int = 0
 
 
 def _rows(image: QImage) -> list[bytes]:
@@ -82,6 +92,20 @@ def _band(frames: list[list[bytes]], *, top: bool) -> int:
             break
         size -= 1
     return size
+
+
+def view_moved(first: QImage, second: QImage, animation: int) -> bool:
+    """Whether ``second`` shows more change than an animation of a few rows.
+
+    A move changes most rows that hold anything; a spinner, caret or ticking
+    timer changes up to ``animation`` rows, wherever it is.
+    """
+    if first.size() != second.size():
+        return True
+    old, new = _rows(first), _rows(second)
+    changed = sum(a != b for a, b in zip(old, new, strict=True))
+    detailed = sum(not _uniform(row) for row in old)
+    return changed > animation or 2 * changed > detailed > 0
 
 
 def fixed_rows(first: QImage, second: QImage) -> int:
@@ -161,6 +185,94 @@ def find_offset(
     return max(finalists, key=rank)[2]
 
 
+def _same_view(first: Sequence[int], second: Sequence[int]) -> bool:
+    """Whether two frames show the same view, apart from small animations.
+
+    Only informative rows count, so two mostly blank views are not the same.
+    """
+    counts = Counter(first)
+    pairs = [(a, b) for a, b in zip(first, second, strict=True) if counts[a] == 1]
+    same = sum(a == b for a, b in pairs)
+    return len(pairs) >= _MIN_VOTES and same >= _SAME_VIEW * len(pairs)
+
+
+def _strip(
+    rows: list[list[bytes]], seams: list[tuple[int, int]], top: int, body: int
+) -> int:
+    """Columns at the right edge that did not scroll with the content.
+
+    A scrollbar stays put while the page moves, so once two frames are aligned
+    its thumb disagrees with itself in rows whose content agrees. ``seams`` are
+    the aligned (frame index, offset) pairs; the answer is the strip's width.
+    """
+    width = len(rows[0][0]) // 4
+    window = min(_MAX_STRIP, width // 10)
+    if not window or not seams:
+        return 0
+    edge = (width - window) * 4
+    # Seams at which each column disagreed: a thumb moves at nearly every
+    # seam, while content that changed (a timestamp) does so only now and then.
+    seen = [0] * window
+    for index, offset in seams:
+        previous, following = rows[index - 1], rows[index]
+        misses = [0] * window
+        for y in range(top, top + body - offset):
+            old, new = previous[y + offset], following[y]
+            if old == new or old[:edge] != new[:edge]:
+                continue  # Agrees, or the content itself changed here
+            for x in range(window):
+                at = edge + x * 4
+                misses[x] += old[at : at + 4] != new[at : at + 4]
+        for x, count in enumerate(misses):
+            seen[x] += count >= _MIN_VOTES
+    needed = (len(seams) + 1) // 2
+    first = next((x for x, count in enumerate(seen) if count >= needed > 0), window)
+    # Cropping loses pixels for good: insist on a thumb, not just change.
+    # From the first aligned frame: a dropped stale frame shows the thumb low.
+    used = [rows[seams[0][0] - 1], *(rows[index] for index, _ in seams)]
+    if not any(_thumb(used, edge + x * 4, top, body) for x in range(first, window)):
+        return 0
+    return window - first
+
+
+def _thumb(frames: list[list[bytes]], at: int, top: int, body: int) -> bool:
+    """Whether one column shows a scrollbar thumb moving down a plain track.
+
+    In each frame the thumb must be a single run, either of one common colour
+    or of everything but a common track colour, and it must move down from
+    frame to frame. Text and pictures leave several runs, and content moves
+    up the viewport as the capture moves down.
+    """
+    columns = [[r[y][at : at + 4] for y in range(top, top + body)] for r in frames]
+    least = _MIN_TRACK * body * len(columns)
+    colours = Counter(p for column in columns for p in column).most_common(3)
+    # The common colour is the track, or (a short page's long thumb) the thumb.
+    return any(
+        _moves_down(columns, colour, thumb=thumb)
+        for colour, count in colours
+        for thumb in (False, True)
+        if thumb or count >= least
+    )
+
+
+def _moves_down(columns: list[list[bytes]], colour: bytes, *, thumb: bool) -> bool:
+    """Whether the thumb (``colour``, or all but it) is one run moving down."""
+    centres: list[float] = []
+    for column in columns:
+        marks = [y for y, pixel in enumerate(column) if (pixel == colour) == thumb]
+        if not marks:
+            continue  # Overlay scrollbars fade out
+        runs = 1 + sum(b - a > _THUMB_GAP for a, b in pairwise(marks))
+        if runs > 1 or len(marks) < _MIN_VOTES:
+            return False
+        centres.append((marks[0] + marks[-1]) / 2)
+    return (
+        len(centres) > 1
+        and all(b >= a for a, b in pairwise(centres))
+        and centres[-1] > centres[0]
+    )
+
+
 def stitch(frames: Sequence[Frame]) -> StitchResult:
     """Join ``frames`` (all the same size) into one image."""
     if not frames:
@@ -175,19 +287,34 @@ def stitch(frames: Sequence[Frame]) -> StitchResult:
     body = height - header - footer
     margin = min(width // 10, 32)
     keys = [_keys(r[header : height - footer], margin, width - margin) for r in rows]
+    # Frames taken before the panel reached the top show a later view again;
+    # they join nothing and would repeat that content above the page.
+    lead = 0
+    while (
+        lead + 1 < len(frames)
+        and find_offset(keys[lead], keys[lead + 1], None) is None
+        and any(_same_view(keys[lead], later) for later in keys[lead + 1 :])
+    ):
+        lead += 1
 
     # (frame index, first body row to keep) for each frame after the first.
-    pieces: list[tuple[int, int]] = [(0, 0)]
+    pieces: list[tuple[int, int]] = [(lead, 0)]
+    seams: list[tuple[int, int]] = []  # (frame index, offset) aligned by pixels
     estimated = 0
-    for index in range(1, len(frames)):
+    for index in range(lead + 1, len(frames)):
         moved = frames[index].moved
         offset = find_offset(keys[index - 1], keys[index], moved)
         if offset is None:
             estimated += 1
             offset = body if moved is None else round(moved)
+        else:
+            seams.append((index, offset))
         offset = max(0, min(body, offset))
         if offset:
             pieces.append((index, body - offset))
+    # Leave out the scrollbar: each frame would show its thumb somewhere else.
+    width -= _strip(rows, seams, header, body)
+    first = frames[lead].image
 
     total = header + sum(body - start for _, start in pieces) + footer
     result = QImage(width, total, QImage.Format.Format_RGB32)
@@ -207,4 +334,4 @@ def stitch(frames: Sequence[Frame]) -> StitchResult:
             )
     finally:
         painter.end()
-    return StitchResult(result, estimated)
+    return StitchResult(result, estimated, lead)

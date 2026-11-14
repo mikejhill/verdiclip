@@ -109,6 +109,19 @@ class _Interface:
         )
 
 
+def on_screen(area: Rect, monitors: list[dict[str, int]]) -> bool:
+    """Whether displays (which do not overlap) show every pixel of ``area``."""
+    covered = 0.0
+    for monitor in monitors:
+        display = Rect(
+            monitor["left"], monitor["top"], monitor["width"], monitor["height"]
+        )
+        part = area.intersected(display)
+        if not part.is_empty:
+            covered += part.width * part.height
+    return covered >= area.width * area.height
+
+
 class UiaScrollTarget:
     """The nearest vertically scrollable UIA ancestor of a screen point."""
 
@@ -175,7 +188,7 @@ class UiaScrollTarget:
             if element is None:
                 raise CaptureError("UI Automation is unavailable")
             try:
-                self._element, self._scroll = self._find(element, walker)
+                self._element, self._scroll = self._find(element, walker, point)
                 break
             except CaptureError:
                 if attempt == _LOOKUPS - 1:
@@ -186,10 +199,16 @@ class UiaScrollTarget:
             raise CaptureError("The scrolling area is too small")
         self._grabber = mss.MSS()
         self._owners.callback(self._grabber.close)
+        if not on_screen(self._area, self._grabber.monitors[1:]):
+            # Off every display, a capture is black frames that look like success.
+            raise CaptureError(
+                "Part of the panel is off screen. Move its window fully onto "
+                "a display and try again."
+            )
         logger.info("Scrolling viewport %s", self._area)
 
     def _find(
-        self, element: _Interface, walker: _Interface
+        self, element: _Interface, walker: _Interface, point: Point
     ) -> tuple[_Interface, _Interface]:
         current: _Interface | None = element
         for _ in range(_MAX_ANCESTORS):
@@ -201,7 +220,12 @@ class UiaScrollTarget:
                 (c.c_int, _SCROLL_PATTERN),
                 (c.POINTER(_Guid), c.byref(_Guid.parse(_SCROLL_IID))),
             )
-            if pattern is not None and pattern.flag(10):
+            # A panel that does not contain the click is not the one chosen.
+            if (
+                pattern is not None
+                and pattern.flag(10)
+                and current.bounds().contains(point)
+            ):
                 return current, pattern
             current = walker.nullable(3, self._owners, (c.c_void_p, current._pointer))
         raise CaptureError("Nothing at that point scrolls vertically")

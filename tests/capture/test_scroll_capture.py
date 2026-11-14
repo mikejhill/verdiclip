@@ -237,10 +237,32 @@ def test_in_between_frames_are_not_kept() -> None:
 
 
 def test_position_that_never_moves_still_reaches_the_end() -> None:
-    """Moving pixels are trusted over a stuck position, with a warning."""
+    """Moving pixels are trusted over a stuck position; still pixels confirm it."""
     panel = Stuck(900, start=0.0)
     result = run(panel)
     assert result.image == panel.document
+    assert result.warning == ""
+    assert panel.writes[-2:] == [100.0, 0.0]  # Asked for the end again
+
+
+class ShortOfTheEnd(Stuck):
+    """The first request for the end stops short; a second one gets there."""
+
+    asked: int = 0
+
+    @override
+    def scroll_to(self, percent: float) -> None:
+        """Stop at 90% the first time the end is asked for."""
+        if percent == 100.0:
+            self.asked += 1
+            if self.asked == 1:
+                percent = 90.0
+        super().scroll_to(percent)
+
+
+def test_stuck_position_short_of_the_end_is_flagged() -> None:
+    """If asking for the end again still moves the panel, the user is told."""
+    result = run(ShortOfTheEnd(900, start=0.0))
     assert "reached the end" in result.warning
 
 
@@ -331,6 +353,63 @@ def test_lagging_position_after_the_move_to_the_top_is_waited_for() -> None:
         panel = Lagging(1400, start=start)
         result = run(panel)
         assert result.image == panel.document
+
+
+class Late(Panel):
+    """Ignores the first request to go to the top, like a busy app."""
+
+    @override
+    def scroll_to(self, percent: float) -> None:
+        """Drop the first request."""
+        if self.writes:
+            super().scroll_to(percent)
+        else:
+            self.writes.append(percent)
+
+
+def test_ignored_move_to_the_top_is_asked_again() -> None:
+    """The start view is not kept as the top frame."""
+    panel = Late(1400, start=100.0)
+    result = run(panel)
+    assert result.image == panel.document
+    assert panel.writes[:2] == [0.0, 0.0]
+
+
+def test_start_near_the_top_is_not_asked_again() -> None:
+    """A start a few rows down may look like the top: one request is enough."""
+    panel = Late(1400, start=2.0)
+    run(panel)
+    assert panel.writes[1] != 0.0
+
+
+def test_stale_top_frame_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When the stitcher leaves out stale frames, the user is told."""
+    monkeypatch.setattr(
+        scrolling, "stitch", lambda frames: StitchResult(frames[0].image, 0, 1)
+    )
+    assert "top of the image" in run(Panel(900)).warning
+
+
+class Spinning(Panel):
+    """A spinner in a few rows changes on every grab."""
+
+    @override
+    def grab(self) -> QImage:
+        """The view with a few rows that never settle."""
+        image = super().grab()
+        for y in range(4):
+            image.setPixel(0, y, self.grabs)
+        return image
+
+
+def test_spinner_does_not_hold_up_or_fake_a_move() -> None:
+    """Small animations neither count as the view moving nor stop it settling."""
+    panel = Spinning(900)
+    clock = Clock()
+    result = ScrollCapture(panel, lambda: False, clock=clock, sleep=clock.sleep).run()
+    assert result.image is not None
+    assert result.image.height() == panel.content
+    assert clock.now < 2.0
 
 
 class Banded(Panel):
@@ -496,3 +575,36 @@ def test_midway_position_during_smooth_scrolling_is_not_kept() -> None:
     for start in (0.0, 60.0):
         panel = Smooth(900, start=start)
         assert run(panel).image == panel.document
+
+
+def test_unaligned_frames_with_a_stuck_position_use_the_requested_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without pixel alignment, the requested step places a frame, not a view."""
+    from verdiclip.capture import stitch  # noqa: PLC0415
+
+    monkeypatch.setattr(stitch, "find_offset", lambda *_args: None)
+    panel = Stuck(900, start=0.0)
+    result = run(panel)
+    assert result.image is not None
+    assert abs(result.image.height() - panel.content) <= result.frames
+
+
+class LateAtTheEnd(Lagging):
+    """Answers the request for the end only after many reads, like Chromium."""
+
+    @override
+    def scroll_to(self, percent: float) -> None:
+        """Hold the old answer for sixteen reads after asking for the end."""
+        super().scroll_to(percent)
+        if percent == 100.0:
+            self.stale = 16
+
+
+def test_late_answer_at_the_end_is_waited_for() -> None:
+    """The final check waits for a late answer before asking again."""
+    panel = LateAtTheEnd(900, start=0.0)
+    result = run(panel)
+    assert result.image == panel.document
+    assert result.warning == ""
+    assert panel.writes.count(100.0) == 1
