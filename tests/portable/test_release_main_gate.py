@@ -127,6 +127,10 @@ def test_both_publish_targets_depend_on_gated_build() -> None:
         "main-verification already proves CI on this commit"
     )
     assert "needs.main-verification.result == 'success'" in build
+    superseded = "needs.main-verification.outputs.superseded != 'true'"
+    assert superseded in release
+    assert superseded in build
+    assert "superseded: ${{ steps.gate.outputs.superseded }}" in gate_job
     assert "needs: [release-please, build]" in workflow.split("  publish-pypi:", 1)[1]
     assert "needs: build" in workflow.split("  publish-testpypi:", 1)[1]
 
@@ -137,14 +141,17 @@ def test_both_publish_targets_depend_on_gated_build() -> None:
 def test_complete_gate_path(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
     fault: str | None,
 ) -> None:
     """Complete gate path."""
+    output = tmp_path / "github_output"
     for key, value in {
         "GITHUB_SHA": SHA,
         "GITHUB_REF": "refs/heads/main",
         "GITHUB_REPOSITORY": gate.REPOSITORY,
         "GH_TOKEN": "test-token",
+        "GITHUB_OUTPUT": str(output),
     }.items():
         monkeypatch.setenv(key, value)
     rows = good()
@@ -176,15 +183,24 @@ def test_complete_gate_path(
     clock = iter([0, 0, 1801])
     monkeypatch.setattr(gate.time, "monotonic", lambda: next(clock))
     monkeypatch.setattr(gate.time, "sleep", lambda _: None)
-    if fault is not None:
+    if fault == "moved":
+        # Stands down for the newer push's run: no scan check, no publish
+        gate.main()
+        receipt = json.loads(capsys.readouterr().out)
+        assert receipt == {"main_sha": SHA, "superseded_by": "b" * 40}
+        assert output.read_text(encoding="utf-8") == "superseded=true\n"
+        assert not any("code-scanning" in url for url in endpoints)
+    elif fault is not None:
         with pytest.raises((ValueError, TimeoutError)):
             gate.main()
         assert not capsys.readouterr().out
+        assert not output.exists()
     else:
         gate.main()
         receipt = json.loads(capsys.readouterr().out)
         assert receipt == {"main_sha": SHA, "verified_runs": [1, 2]}
         assert len(endpoints) == 3
+        assert not output.exists()
 
 
 @pytest.mark.parametrize("outcome", ["queued", "failure", "skipped"])

@@ -26,7 +26,10 @@ jobs:
   release-please:
     name: Version and changelog
     needs: main-verification
-    if: github.event_name == 'push'
+    # A newer push to main has its own run, which releases instead
+    if: >-
+      github.event_name == 'push' &&
+      needs.main-verification.outputs.superseded != 'true'
     runs-on: ubuntu-latest
     permissions:
       actions: write
@@ -89,11 +92,14 @@ jobs:
       contents: read
       actions: read
       security-events: read
+    outputs:
+      superseded: ${{ steps.gate.outputs.superseded }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Require all observed main verification and clear scan findings
+        id: gate
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 scripts/release_main_gate.py
@@ -103,6 +109,7 @@ jobs:
     needs: [release-please, main-verification]
     if: >-
       always() && needs.main-verification.result == 'success' &&
+      needs.main-verification.outputs.superseded != 'true' &&
       (needs.release-please.outputs.release_created == 'true' || inputs.testpypi)
     runs-on: windows-latest
     steps:
