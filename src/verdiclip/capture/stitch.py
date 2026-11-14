@@ -253,10 +253,14 @@ def _strip(
 
     if not any(bar(x) for x in range(first, window)):
         return 0
-    # The thumb's soft left edge changes at fewer seams, but still shows; it
-    # changes in the thumb's rows, unlike content beside the strip.
+    # The thumb's soft left edge changes at fewer seams, or none in a short
+    # capture, but still shows: it changes in the thumb's rows, or is itself
+    # a run moving down, unlike content beside the strip.
     for _ in range(_EDGE_COLUMNS):
-        if first == 0 or beside[first - 1] < max(1, needed // 3):
+        if first == 0 or (
+            beside[first - 1] < max(1, needed // 3)
+            and not _thumb(used, edge + (first - 1) * 4, top, body)
+        ):
             break
         first -= 1
     return window - first
