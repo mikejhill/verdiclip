@@ -160,7 +160,7 @@ def test_cancelled_and_failed_choices_answer_with_errors(
     app = make_app()
     ctl = Ctl(app, tmp_path)
     notes: list[str] = []
-    app.controller._notify = lambda title, *_a, **_k: notes.append(title)  # ty: ignore[invalid-assignment]
+    app.controller._notify = lambda title, *_a, **_k: notes.append(title)
 
     ctl.send("capture", mode="universal", interactive=True)
     qtbot.waitUntil(lambda: bool(app.controller.capture.overlays))
