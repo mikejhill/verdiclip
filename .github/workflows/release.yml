@@ -84,7 +84,7 @@ jobs:
     name: Verify exact main checks before publication
     if: github.event_name == 'push' || inputs.testpypi
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 32
     permissions:
       contents: read
       actions: read
