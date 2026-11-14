@@ -352,13 +352,16 @@ def _overlay(
                 x for x in range(0, len(old), 4) if old[x : x + 4] != new[x : x + 4]
             ]
             sample = differing[:: max(1, len(differing) // _SAMPLES)]
+            # Most frames, not all: a button may only appear once the page
+            # has scrolled away from the top.
             scores = [
                 sum(
-                    len({frame[top + place][left + x : left + x + 4] for frame in kept})
-                    == 1
+                    2 * sum(frame[top + place][at : at + 4] == pixel for frame in kept)
+                    > len(kept)
                     for x in sample
+                    for at, pixel in [(left + x, row[x : x + 4])]
                 )
-                for place in (y + offset, y)
+                for place, row in ((y + offset, old), (y, new))
             ]
             if scores[1] > scores[0]:
                 found.add(y)
