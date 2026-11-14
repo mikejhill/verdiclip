@@ -61,10 +61,10 @@ _TARGET_LABELS: Final = {
     ClickTarget.SCROLL_ALL: "Scrolling, whole pane",
 }
 _OUTPUT_LABELS: Final = {
-    ClickOutput.USUAL: "After-capture settings",
-    ClickOutput.CLIPBOARD: "Copy only",
-    ClickOutput.SAVE: "Save only",
-    ClickOutput.CLIPBOARD_AND_SAVE: "Copy and save",
+    ClickOutput.USUAL: "Usual (Capture tab)",
+    ClickOutput.CLIPBOARD: "Clipboard only",
+    ClickOutput.SAVE: "Output folder only",
+    ClickOutput.CLIPBOARD_AND_SAVE: "Clipboard and output folder",
     ClickOutput.EDITOR: "Editor only",
 }
 

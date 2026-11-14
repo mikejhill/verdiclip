@@ -12,6 +12,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QLabel,
     QLineEdit,
     QPushButton,
     QTabWidget,
@@ -403,7 +404,25 @@ class TestUpdateSettings:
 
 
 class TestUniversalCaptureModifiers:
-    """The modifier table on the Capture tab."""
+    """The modifier table on its own Modifiers tab."""
+
+    def test_table_is_on_the_modifiers_tab(self, dialog: SettingsDialog) -> None:
+        """The table is on a Modifiers tab after Hotkeys, with a no-keys row."""
+        tabs = dialog.findChild(QTabWidget)
+        assert tabs is not None
+        names = [tabs.tabText(i) for i in range(tabs.count())]
+        assert names.index("Modifiers") == names.index("Hotkeys") + 1
+        page = tabs.widget(names.index("Modifiers"))
+        capture = tabs.widget(names.index("Capture"))
+        assert page is not None
+        assert capture is not None
+        target, output = dialog.gesture_combos("alt")
+        assert page.isAncestorOf(target)
+        assert page.isAncestorOf(output)
+        assert not capture.isAncestorOf(target)
+        texts = [label.text() for label in page.findChildren(QLabel)]
+        assert "None" in texts
+        assert "Usual (Capture tab)" in texts
 
     def test_shows_and_returns_each_modifier_action(
         self, dialog: SettingsDialog

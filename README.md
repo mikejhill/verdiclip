@@ -62,21 +62,24 @@ While selecting, the screen is frozen so you get exactly what you saw. A magnifi
 
 ### Universal capture
 
-`PrtSc` (tray: **Universal capture**) is one capture that covers most needs. What you get depends on how you finish:
+`PrtSc` (tray: **Universal capture**) is one capture that covers most needs:
 
-| Finish with | Captures | Then |
+- **Drag** to capture a region (it can span monitors).
+- **Click** to capture the window under the pointer (the monitor, on bare desktop).
+- **Hold keys as you let go** to change what you get:
+
+| Keys | A click captures | Image goes to |
 | --- | --- | --- |
-| Drag | The region (it can span monitors) | After-capture settings |
-| Click | The window under the pointer (the monitor, on bare desktop) | After-capture settings |
-| `Ctrl`+click | Scrolling capture of the panel under the pointer, from where it is now down | After-capture settings |
-| `Ctrl+Alt`+click | Scrolling capture of the whole panel, top to bottom | After-capture settings |
-| `Alt`+click or drag | Window or region | Copy to the clipboard only (no editor) |
-| `Shift`+click or drag | Window or region | Save to the output folder only |
-| `Alt+Shift`+click or drag | Window or region | Copy and save (no editor) |
-| `Ctrl+Shift`+click | Scrolling, from here down | Save only |
-| `Ctrl+Alt+Shift`+click | Scrolling, whole panel | Copy only |
+| None | The window | Usual (Settings → Capture → After capturing) |
+| `Ctrl` | Scrolling capture of the panel, from where it is now down | Usual |
+| `Ctrl+Alt` | Scrolling capture of the whole panel, top to bottom | Usual |
+| `Alt` | The window | Clipboard only (no editor) |
+| `Shift` | The window | Output folder only |
+| `Alt+Shift` | The window | Clipboard and output folder (no editor) |
+| `Ctrl+Shift` | Scrolling, from here down | Output folder only |
+| `Ctrl+Alt+Shift` | Scrolling, whole panel | Clipboard only |
 
-What matters is which keys are held when you let go of the mouse (or press the second `Enter`), so you can decide after you start dragging. The label beside the window or region names the action while you hold the keys. A drag always captures its region; only the *Then* part of a modifier applies to it. Every row is configurable in **Settings → Capture → Universal capture modifiers**: each combination of `Ctrl`, `Alt` and `Shift` gets a click target (window, scrolling from here, scrolling whole panel) and an output (after-capture settings, copy only, save only, copy and save, editor only). *Editor only* is handy when your after-capture setting is copy-only.
+A drag always captures the area you drew, so only *Image goes to* applies to it: `Alt`+drag copies a region straight to the clipboard. The keys count when you let go of the mouse (or press the second `Enter`), so you can decide mid-drag; the label by the pointer names the action. Change any row in **Settings → Modifiers**; its *Editor only* choice is handy when your usual setting is copy-only.
 
 If Windows or another screenshot tool already owns `PrtSc`, VerdiClip tells you which hotkeys are taken; everything is still available from the tray menu, and you can choose other keys in Settings.
 
@@ -132,8 +135,8 @@ Open from the tray menu or with `Ctrl+,` in any editor.
 ![Settings → Capture: after-capture actions can be combined](https://raw.githubusercontent.com/mikejhill/verdiclip/main/docs/images/settings-capture.png)
 
 - **After capturing** — any combination of: open in the editor, copy to the clipboard, save to the output folder.
-- **Universal capture modifiers** — what a click captures and where the image goes for each combination of `Ctrl`, `Alt` and `Shift` (see [Universal capture](#universal-capture)); **Restore defaults** resets them.
 - **Hotkeys** — validated as you type; conflicts are reported.
+- **Modifiers** — for each combination of `Ctrl`, `Alt` and `Shift`, what a click captures and where the image goes (see [Universal capture](#universal-capture)); **Restore defaults** resets them.
 - **Output** — folder, file-name pattern (`{date}`, `{time}`, `{title}`, `{counter}`; default `{date}_{time}_{title}`, where `{title}` is the captured window's title (spaces become `_` when the pattern has none), or *Screenshot* / *Screen* for region and full-screen captures) with a live preview, format, JPEG quality.
 - **Editor** — default color, width, and font.
 - **General** — light, dark, or match-Windows theme; start at sign-in; check for and install updates automatically; show VerdiClip in Explorer's **Open with** menu for images; let the `verdiclip ctl` command read and edit open images. **Make VerdiClip the default image app…** opens Windows Settings at VerdiClip's Default apps page, where you choose it as the default (Windows requires you to confirm this yourself).

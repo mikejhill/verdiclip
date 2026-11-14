@@ -548,7 +548,7 @@ class TestUniversalModifiers:
         widget = Overlay(service).widget
         QTest.keyPress(widget, Qt.Key.Key_Alt, Qt.KeyboardModifier.AltModifier)
         assert widget.action() == ClickAction(output=ClickOutput.CLIPBOARD)
-        assert widget.action().describe() == "Copy only"
+        assert widget.action().describe() == "Clipboard only"
         QTest.keyRelease(widget, Qt.Key.Key_Alt, Qt.KeyboardModifier.NoModifier)
         assert widget.action().is_plain
         service.cancel()

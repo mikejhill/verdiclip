@@ -83,7 +83,7 @@ def test_describe_names_only_what_differs_from_a_plain_click() -> None:
     """The overlay hint leaves out the defaults, and a drag has no target."""
     assert ClickAction().describe() == ""
     action = ClickAction(ClickTarget.SCROLL_ALL, ClickOutput.SAVE)
-    assert action.describe() == "Scrolling, whole pane · Save only"
-    assert action.describe(dragging=True) == "Save only"
+    assert action.describe() == "Scrolling, whole pane · Output folder only"
+    assert action.describe(dragging=True) == "Output folder only"
     assert not action.is_plain
     assert ClickTarget.WINDOW.scrolls is False
