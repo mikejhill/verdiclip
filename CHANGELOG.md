@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.3](https://github.com/mikejhill/verdiclip/compare/v0.21.2...v0.21.3) (2026-11-14)
+
+
+### Bug Fixes
+
+* **scrolling:** no false estimated seam at the top of Claude panes ([#200](https://github.com/mikejhill/verdiclip/issues/200)) ([78db924](https://github.com/mikejhill/verdiclip/commit/78db924de5a8706599e99ac31745e1d5cf2de4df))
+
 ## [0.21.2](https://github.com/mikejhill/verdiclip/compare/v0.21.1...v0.21.2) (2026-11-14)
 
 
