@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -311,13 +312,16 @@ class TestCommandLine:
         assert kept.params == {"doc": "d", "discard": False}
 
     def test_ctl_help_covers_every_command(
-        self, capsys: pytest.CaptureFixture[str]
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """`ctl --help` lists each command; capture and apply explain the details."""
+        # Python 3.14 colours help when CI sets FORCE_COLOR
+        monkeypatch.delenv("FORCE_COLOR", raising=False)
+        monkeypatch.setenv("NO_COLOR", "1")
         for args in (["ctl"], ["ctl", "capture"], ["ctl", "apply"]):
             with pytest.raises(SystemExit, match="0"):
                 CommandLine().parse([*args, "--help"])
-        text = capsys.readouterr().out
+        text = re.sub(r"\x1b\[[0-9;]*m", "", capsys.readouterr().out)
 
         for name in command_names():
             assert f"    {name} " in text
