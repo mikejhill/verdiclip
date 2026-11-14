@@ -9,9 +9,21 @@ from pathlib import Path
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QCheckBox, QComboBox, QLineEdit, QTabWidget
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QLineEdit,
+    QPushButton,
+    QTabWidget,
+)
 from pytestqt.qtbot import QtBot
 
+from verdiclip.capture.gestures import (
+    ClickAction,
+    ClickGestures,
+    ClickOutput,
+    ClickTarget,
+)
 from verdiclip.document.style import Color
 from verdiclip.settings import ImageFormat, Settings, Theme, UpdateSettings
 from verdiclip.shell.settings_dialog import SettingsDialog
@@ -117,7 +129,7 @@ class TestSettingsDialog:
 
         QTest.keyClick(field.edit, Qt.Key.Key_Print, Qt.KeyboardModifier.AltModifier)
 
-        assert dialog.hotkey_status("window") == "Also used by Region or window"
+        assert dialog.hotkey_status("window") == "Also used by Universal capture"
         assert not dialog.ok_enabled()
 
     def test_fields_record_through_the_given_capture(self, qtbot: QtBot) -> None:
@@ -388,3 +400,35 @@ class TestUpdateSettings:
         qtbot.addWidget(dialog)
 
         assert not self.boxes(dialog)[1].isEnabled()
+
+
+class TestUniversalCaptureModifiers:
+    """The modifier table on the Capture tab."""
+
+    def test_shows_and_returns_each_modifier_action(
+        self, dialog: SettingsDialog
+    ) -> None:
+        """Changing a row changes only that modifier's action."""
+        target, output = dialog.gesture_combos("alt")
+        assert output.currentData() == ClickOutput.CLIPBOARD.value
+        target.setCurrentIndex(target.findData(ClickTarget.SCROLL_HERE.value))
+        output.setCurrentIndex(output.findData(ClickOutput.EDITOR.value))
+        result = dialog.result_settings().universal_capture
+        assert result.alt == ClickAction(ClickTarget.SCROLL_HERE, ClickOutput.EDITOR)
+        assert result.ctrl == ClickGestures().ctrl
+
+    def test_restore_defaults(self, qtbot: QtBot) -> None:
+        """The button puts every row back to the defaults."""
+        changed = ClickGestures(ctrl=ClickAction(output=ClickOutput.SAVE))
+        created = SettingsDialog(Settings(universal_capture=changed))
+        qtbot.addWidget(created)
+        assert created.result_settings().universal_capture == changed
+        buttons = [
+            b
+            for b in created.findChildren(QPushButton)
+            if b.text() == "Restore defaults"
+        ]
+        assert len(buttons) == 1
+        buttons[0].click()
+        assert created.result_settings().universal_capture == ClickGestures()
+        created.reject()

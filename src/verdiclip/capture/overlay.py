@@ -1,4 +1,8 @@
-"""Full-screen overlays, one per monitor: drag a region or click a window."""
+"""Full-screen overlays for universal capture, one per monitor.
+
+Drag for a region, click for a window; held modifiers choose a scrolling
+capture or where the image goes (see ``ClickGestures``).
+"""
 
 from __future__ import annotations
 
@@ -12,6 +16,7 @@ from PySide6.QtGui import (
     QColor,
     QCursor,
     QFont,
+    QGuiApplication,
     QImage,
     QKeyEvent,
     QMouseEvent,
@@ -23,6 +28,12 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QWidget
 
+from verdiclip.capture.gestures import (
+    ClickAction,
+    ClickGestures,
+    ClickOutput,
+    ClickTarget,
+)
 from verdiclip.capture.grabber import FrozenScreen
 from verdiclip.capture.models import ScreenGeometry
 from verdiclip.geometry import Point, Rect
@@ -34,6 +45,26 @@ MAGNIFIER_OFFSET: Final = 24
 DIM: Final = QColor(0, 0, 0, 110)
 ACCENT: Final = QColor(0, 120, 215)
 RETICLE: Final = QColor(255, 0, 0, 140)
+_CTRL: Final = Qt.KeyboardModifier.ControlModifier
+_ALT: Final = Qt.KeyboardModifier.AltModifier
+_SHIFT: Final = Qt.KeyboardModifier.ShiftModifier
+_MODIFIER_FLAGS: Final = {
+    Qt.Key.Key_Control: _CTRL,
+    Qt.Key.Key_Alt: _ALT,
+    Qt.Key.Key_Shift: _SHIFT,
+}
+MODIFIER_KEYS: Final = frozenset(_MODIFIER_FLAGS)
+
+
+def resolve_action(
+    gestures: ClickGestures, modifiers: Qt.KeyboardModifier
+) -> ClickAction:
+    """Return the action ``gestures`` assigns to the held ``modifiers``."""
+    return gestures.resolve(
+        ctrl=bool(modifiers & _CTRL),
+        alt=bool(modifiers & _ALT),
+        shift=bool(modifiers & _SHIFT),
+    )
 
 
 class WindowTarget(Protocol):
@@ -63,6 +94,19 @@ class SharedSelection(QObject):
         self._pointer: Point | None = None
         self._anchor: Point | None = None
         self._dragging = False
+        self._modifiers = Qt.KeyboardModifier.NoModifier
+
+    @property
+    def modifiers(self) -> Qt.KeyboardModifier:
+        """Return the Ctrl, Alt and Shift keys last seen held."""
+        return self._modifiers
+
+    def set_modifiers(self, modifiers: Qt.KeyboardModifier) -> None:
+        """Record the held Ctrl, Alt and Shift keys, so every overlay shows them."""
+        held = modifiers & (_CTRL | _ALT | _SHIFT)
+        if held != self._modifiers:
+            self._modifiers = held
+            self.changed.emit()
 
     def add_screen(self, screen: ScreenGeometry) -> None:
         """Include ``screen`` when mapping positions."""
@@ -163,10 +207,10 @@ class SelectionOverlay(QWidget):
     or a click on any of them acts at the pointer wherever it is.
     """
 
-    region_chosen = Signal(object)  # Rect (physical)
-    window_chosen = Signal(object, str)  # Rect (physical), title
-    # Point (physical), window title, and whether to start from the top
-    scroll_chosen = Signal(object, str, bool)
+    region_chosen = Signal(object, object)  # Rect (physical), ClickOutput
+    window_chosen = Signal(object, str, object)  # Rect (physical), title, ClickOutput
+    # Point (physical), window title, whether to start from the top, ClickOutput
+    scroll_chosen = Signal(object, str, bool, object)
     cancelled = Signal()
 
     def __init__(  # noqa: PLR0913
@@ -178,8 +222,10 @@ class SelectionOverlay(QWidget):
         *,
         show_magnifier: bool,
         shared: SharedSelection | None = None,
+        gestures: ClickGestures | None = None,
     ) -> None:
         super().__init__(None)
+        self._gestures = gestures if gestures is not None else ClickGestures()
         self._geometry = geometry
         self._frozen = frozen
         self._image = frozen.crop(geometry.physical)
@@ -260,22 +306,24 @@ class SelectionOverlay(QWidget):
 
     def _paint_target(self, painter: QPainter) -> None:
         """Highlight the dragged region or the window under the pointer."""
+        here = self._pointer_here() is not None
         selection = self.selection()
         if selection is not None:
             area = self._shared.area()
-            label = (
+            size = (
                 f"{int(area.width)} × {int(area.height)}"  # noqa: RUF001
-                if area is not None and self._pointer_here() is not None
+                if area is not None and here
                 else ""
             )
-            self._reveal(painter, selection, label)
+            hint = self.action().describe(dragging=True) if here else ""
+            self._reveal(painter, selection, _join(size, hint))
             return
         window = self._highlighted()
         if window is not None:
             # The title shows on the cursor's monitor; other monitors the
             # window reaches onto light up their part of it
-            title = window.title if self._pointer_here() is not None else ""
-            self._reveal(painter, self._geometry.local_rect(window.bounds), title)
+            label = _join(window.title, self.action().describe()) if here else ""
+            self._reveal(painter, self._geometry.local_rect(window.bounds), label)
 
     def _reveal(self, painter: QPainter, area: Rect, label: str) -> None:
         """Undim ``area``, outline it, and show ``label`` (if any) beside it."""
@@ -398,6 +446,10 @@ class SelectionOverlay(QWidget):
 
     # Input
 
+    def action(self) -> ClickAction:
+        """Return what finishing now would do, given the held modifiers."""
+        return resolve_action(self._gestures, self._shared.modifiers)
+
     @override
     def mousePressEvent(self, event: QMouseEvent) -> None:
         """Start a selection on left press; cancel on right press.
@@ -410,57 +462,61 @@ class SelectionOverlay(QWidget):
         if event.button() != Qt.MouseButton.LeftButton:
             return
         at = self._physical(event)
+        self._shared.set_modifiers(event.modifiers())
         if self._shared.pressed:
-            self._finish(at)
+            self._finish(at, event.modifiers())
         else:
             self._shared.press(at)
 
     @override
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         """Track the pointer, here or (while pressed) over another monitor."""
+        self._shared.set_modifiers(event.modifiers())
         self._shared.move_to(self._physical(event))
 
     @override
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         """Report a dragged region, a clicked window, or the monitor clicked.
 
-        Ctrl+click asks for a scrolling capture of the panel under the pointer,
-        from the current position down; Ctrl+Alt+click, from the top.
+        The held modifiers pick the action from ``ClickGestures``: by default
+        Ctrl+click is a scrolling capture of the panel under the pointer from
+        the current position down, and Ctrl+Alt+click of the whole pane.
         """
         if event.button() != Qt.MouseButton.LeftButton or not self._shared.pressed:
             return
-        mods = event.modifiers()
-        self._finish(
-            self._physical(event),
-            scroll=bool(mods & Qt.KeyboardModifier.ControlModifier),
-            from_top=bool(mods & Qt.KeyboardModifier.AltModifier),
-        )
+        self._finish(self._physical(event), event.modifiers())
 
     def _finish(
-        self, at: Point, *, scroll: bool = False, from_top: bool = False
+        self, at: Point, modifiers: Qt.KeyboardModifier = Qt.KeyboardModifier.NoModifier
     ) -> None:
         """End the press at ``at``: report a region, a window, or that monitor."""
+        action = resolve_action(self._gestures, modifiers)
+        output: ClickOutput = action.output
         area = self._shared.release(at)
         if area is not None:
             if area.width >= DRAG_THRESHOLD and area.height >= DRAG_THRESHOLD:
-                self.region_chosen.emit(area)
+                self.region_chosen.emit(area, output)
             return
         window = self._window_at(at)
-        if scroll:
+        if action.target.scrolls:
             title = window.title if window is not None else ""
-            self.scroll_chosen.emit(at, title or "Scrolling capture", from_top)
+            from_top = action.target is ClickTarget.SCROLL_ALL
+            self.scroll_chosen.emit(at, title or "Scrolling capture", from_top, output)
             return
         if window is not None:
             self.window_chosen.emit(
-                window.bounds.intersected(self._frozen.bounds), window.title
+                window.bounds.intersected(self._frozen.bounds), window.title, output
             )
             return
         screen = self._shared.screen_at(at) or self._geometry
-        self.region_chosen.emit(screen.physical)
+        self.region_chosen.emit(screen.physical, output)
 
     @override
     def keyPressEvent(self, event: QKeyEvent) -> None:
         """Cancel on Esc; Enter starts/ends a selection; arrows move (Ctrl = 10 px)."""
+        self._shared.set_modifiers(_held(event, pressed=True))
+        if event.key() in MODIFIER_KEYS:
+            return
         if event.key() == Qt.Key.Key_Escape:
             self.cancelled.emit()
             return
@@ -489,9 +545,15 @@ class SelectionOverlay(QWidget):
         if pointer is None:
             return
         if self._shared.pressed:
-            self._finish(pointer)
+            self._finish(pointer, QGuiApplication.queryKeyboardModifiers())
         else:
             self._shared.press(pointer)
+
+    @override
+    def keyReleaseEvent(self, event: QKeyEvent) -> None:
+        """Update the action shown when a modifier is let go."""
+        self._shared.set_modifiers(_held(event, pressed=False))
+        super().keyReleaseEvent(event)
 
     @override
     def showEvent(self, event: QShowEvent) -> None:
@@ -500,7 +562,8 @@ class SelectionOverlay(QWidget):
         self.sync_cursor()
 
     def sync_cursor(self) -> None:
-        """Pick up the current pointer position."""
+        """Pick up the current pointer position and held modifiers."""
+        self._shared.set_modifiers(QGuiApplication.queryKeyboardModifiers())
         pos = QCursor.pos()
         self._shared.move_to(self._shared.to_physical(Point(pos.x(), pos.y())))
 
@@ -521,6 +584,7 @@ class SelectionOverlay(QWidget):
             self._highlighted(),
             self._pointer_here() is not None,
             self._shared.area(),
+            self._shared.modifiers,
         )
         if shown != self._shown:
             self._shown = shown
@@ -556,3 +620,21 @@ class SelectionOverlay(QWidget):
         """Return the event position in physical desktop pixels."""
         pos = event.globalPosition()
         return self._shared.to_physical(Point(pos.x(), pos.y()))
+
+
+def _held(event: QKeyEvent, *, pressed: bool) -> Qt.KeyboardModifier:
+    """Return the modifiers held after ``event``.
+
+    Platforms differ on whether a modifier key's own event includes its flag,
+    so the key itself decides.
+    """
+    held = event.modifiers()
+    flag = _MODIFIER_FLAGS.get(Qt.Key(event.key()))
+    if flag is None:
+        return held
+    return held | flag if pressed else held & ~flag
+
+
+def _join(*parts: str) -> str:
+    """Join the non-empty ``parts`` of a label."""
+    return " · ".join(part for part in parts if part)

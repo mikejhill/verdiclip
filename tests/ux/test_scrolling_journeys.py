@@ -7,7 +7,7 @@ from unittest.mock import Mock
 
 import pytest
 from PySide6.QtCore import QPoint, Qt
-from PySide6.QtGui import QImage
+from PySide6.QtGui import QGuiApplication, QImage
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 from pytestqt.qtbot import QtBot
@@ -16,6 +16,7 @@ from tests.ux.test_app_journeys import (
     make_app as make_app,  # noqa: PLC0414 - pytest fixture
 )
 
+from verdiclip.capture.gestures import ClickOutput
 from verdiclip.capture.scroll_helper import ScrollHelper
 from verdiclip.capture.scrolling import STOPPED_NOTE, ScrollResult
 from verdiclip.exceptions import CaptureError
@@ -319,7 +320,12 @@ def test_ctrl_click_in_region_capture_starts_scrolling(
     app.press_hotkey("region")
     capture = app.controller._capture
     qtbot.waitUntil(lambda: bool(capture.overlays))
-    capture.overlays[0].scroll_chosen.emit(Point(30, 40), "Notes", False)  # noqa: FBT003 - Qt signal
+    capture.overlays[0].scroll_chosen.emit(
+        Point(30, 40),
+        "Notes",
+        False,  # noqa: FBT003 - Qt signal
+        ClickOutput.USUAL,
+    )
     assert not capture.overlays
     service = app.controller._scrolling
     assert service.busy
@@ -332,6 +338,32 @@ def test_ctrl_click_in_region_capture_starts_scrolling(
     service.start_at(Point(1, 1), "")  # Idle again: a new one would start
     assert service.busy
     service.start_at(Point(2, 2), "")  # Busy: ignored
+    service.cancel()
+
+
+def test_a_modifier_output_reaches_the_scrolling_result(
+    make_app: AppFactory, qtbot: QtBot
+) -> None:
+    """Ctrl+Alt+Shift (default): the whole pane, copied, with no editor."""
+    app = make_app()
+    helper = prepare(app)
+    QGuiApplication.clipboard().clear()
+    app.press_hotkey("region")
+    capture = app.controller._capture
+    qtbot.waitUntil(lambda: bool(capture.overlays))
+    capture.overlays[0].scroll_chosen.emit(
+        Point(30, 40),
+        "Notes",
+        True,  # noqa: FBT003 - Qt signal
+        ClickOutput.CLIPBOARD,
+    )
+    service = app.controller._scrolling
+    qtbot.waitUntil(lambda: helper is service._helper)
+    helper.finished.emit(ScrollResult(tall_image(), "", 5))
+    qtbot.waitUntil(lambda: not QGuiApplication.clipboard().image().isNull())
+    assert not app.controller.workspace.documents
+    service.capture()  # The chooser goes back to the usual actions
+    assert service._output is ClickOutput.USUAL
     service.cancel()
 
 
@@ -366,7 +398,7 @@ def test_ctrl_click_while_scrolling_is_ignored(
     helper = prepare(app)
     app.controller.capture_scrolling()
     select(qtbot, app, helper)
-    app.controller._scroll_at(Point(5, 5), "Other", False)  # noqa: FBT003 - Qt slot
+    app.controller._scroll_at(Point(5, 5), "Other", False, ClickOutput.USUAL)  # noqa: FBT003 - Qt slot
     assert isinstance(helper.start, Mock)
     helper.start.assert_called_once_with(Point(30, 40), from_top=True)
     app.controller._scrolling.cancel()
