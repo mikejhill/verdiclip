@@ -474,3 +474,26 @@ class TestCommandLine:
             CommandLine().parse(args)
 
         assert "error:" in capsys.readouterr().err
+
+    @pytest.mark.parametrize(
+        ("args", "usage"),
+        [
+            (["ctl", "capture", "universal"], "usage: verdiclip ctl capture "),
+            (["capture", "region"], "usage: verdiclip capture "),
+        ],
+        ids=["ctl-capture", "headless-capture"],
+    )
+    def test_errors_after_parsing_show_the_commands_usage(
+        self,
+        args: list[str],
+        usage: str,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A checked option's error shows the subcommand's usage, not the top's."""
+        monkeypatch.delenv("FORCE_COLOR", raising=False)
+        monkeypatch.setenv("NO_COLOR", "1")
+        with pytest.raises(SystemExit, match="2"):
+            CommandLine().parse(args)
+
+        assert capsys.readouterr().err.startswith(usage)

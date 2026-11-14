@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import argparse
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
+from typing import NoReturn, cast
 
 from verdiclip import VERSION
 from verdiclip.ctl_cli import add_ctl, ctl_params, parse_rect
@@ -71,11 +72,12 @@ class CommandLine:
                 files=tuple(Path(f) for f in args.files),
             )
         mode = HeadlessMode(args.mode)
-        region = self._parse_region(args.region) if args.region else None
+        fail = self._fail(args)
+        region = parse_rect(args.region, fail) if args.region else None
         if mode is HeadlessMode.REGION and region is None:
-            self._parser.error("capture region needs --region X,Y,WIDTH,HEIGHT")
+            fail("capture region needs --region X,Y,WIDTH,HEIGHT")
         if not math.isfinite(args.delay) or args.delay < 0:
-            self._parser.error(f"--delay must be a number >= 0, got {args.delay}")
+            fail(f"--delay must be a number >= 0, got {args.delay}")
         return CliRequest(
             command=Command.CAPTURE,
             log_level=level,
@@ -92,12 +94,13 @@ class CommandLine:
             command=Command.CTL,
             log_level=level,
             method=str(args.method),
-            params=ctl_params(args, self._parser.error),
+            params=ctl_params(args, self._fail(args)),
         )
 
-    def _parse_region(self, text: str) -> Rect:
-        """Parse ``X,Y,W,H`` in physical desktop pixels."""
-        return parse_rect(text, self._parser.error)
+    def _fail(self, args: argparse.Namespace) -> Callable[[str], NoReturn]:
+        """Return the error exit of the command that was parsed."""
+        parser = getattr(args, "usage_parser", self._parser)
+        return cast("argparse.ArgumentParser", parser).error
 
     @staticmethod
     def _build_parser() -> argparse.ArgumentParser:
@@ -161,6 +164,7 @@ class CommandLine:
             action="store_true",
             help="Copy to the clipboard instead of saving.",
         )
+        capture.set_defaults(usage_parser=capture)
         open_cmd = commands.add_parser(
             "open", parents=[shared], help="Open images in the editor."
         )

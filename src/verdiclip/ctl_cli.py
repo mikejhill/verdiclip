@@ -195,7 +195,7 @@ class _Commands:
         description: str | None = None,
         epilog: str | None = None,
     ) -> argparse.ArgumentParser:
-        return self._methods.add_parser(
+        parser = self._methods.add_parser(
             name,
             parents=[self._shared, *groups],
             help=summary,
@@ -203,6 +203,9 @@ class _Commands:
             epilog=epilog,
             formatter_class=argparse.RawDescriptionHelpFormatter,
         )
+        # Errors found after parsing show this command's usage, not the top level
+        parser.set_defaults(usage_parser=parser)
+        return parser
 
 
 def _wrapped(text: str) -> str:
