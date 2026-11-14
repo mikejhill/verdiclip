@@ -358,6 +358,45 @@ def _inside_caps(marks: list[int], length: int) -> list[int]:
     return [y for y in marks if _CAP <= y < length - _CAP]
 
 
+def _stillness(
+    frames: list[list[bytes]],
+    old: tuple[int, bytes],
+    new: tuple[int, bytes],
+    left: int,
+) -> tuple[int, int]:
+    """How still the differing pixels look at the old place and the new one.
+
+    ``old`` and ``new`` are (viewport row, pixels) of one document row in two
+    aligned frames. Where the differing pixels are the same at that place in
+    most frames (not all: a button may only appear once the page has left
+    the top), something sits still over the page there.
+    """
+    first, second = old[1], new[1]
+    differing = [
+        x for x in range(0, len(first), 4) if first[x : x + 4] != second[x : x + 4]
+    ]
+    sample = differing[:: max(1, len(differing) // _SAMPLES)]
+    # The page's own background is still everywhere, so it says nothing
+    # either way; it fills both rows, while a wide overlay's fill fills one.
+    ground = _background(first)
+    if ground != _background(second):
+        ground = None
+    first_score, second_score = (
+        sum(
+            2
+            * sum(
+                frame[place][left + x : left + x + 4] == row[x : x + 4]
+                for frame in frames
+            )
+            > len(frames)
+            for x in sample
+            if row[x : x + 4] != ground
+        )
+        for place, row in (old, new)
+    )
+    return first_score, second_score
+
+
 def _overlay(
     rows: list[list[bytes]],
     seams: list[tuple[int, int]],
@@ -388,29 +427,7 @@ def _overlay(
             new = following[top + y][left:right]
             if old == new:
                 continue
-            # Over the old frame, or the new one: where the differing pixels
-            # are the same in every frame, something sits still over the page.
-            differing = [
-                x for x in range(0, len(old), 4) if old[x : x + 4] != new[x : x + 4]
-            ]
-            sample = differing[:: max(1, len(differing) // _SAMPLES)]
-            # Most frames, not all: a button may only appear once the page
-            # has scrolled away from the top. The page's own background is
-            # still everywhere, so it says nothing either way; it fills both
-            # rows, while a wide overlay's fill fills only one.
-            ground = _background(old)
-            if ground != _background(new):
-                ground = None
-            scores = [
-                sum(
-                    2 * sum(frame[top + place][at : at + 4] == pixel for frame in kept)
-                    > len(kept)
-                    for x in sample
-                    for at, pixel in [(left + x, row[x : x + 4])]
-                    if pixel != ground
-                )
-                for place, row in ((y + offset, old), (y, new))
-            ]
+            scores = _stillness(kept, (top + y + offset, old), (top + y, new), left)
             if scores[1] > scores[0]:
                 found.add(y)
             elif scores[0] > scores[1]:
