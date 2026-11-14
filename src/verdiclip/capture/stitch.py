@@ -46,7 +46,7 @@ _SAMPLES = 64
 # A see-through band along the bottom may skip this many rows (rounding).
 _FADE_GAP = 2
 # Two frames sharing this share of their rows in place show the same view.
-_SAME_VIEW = 0.9
+_SAME_VIEW = 0.75
 
 
 @dataclass(frozen=True, slots=True)
@@ -396,7 +396,11 @@ def _overlay(
             sample = differing[:: max(1, len(differing) // _SAMPLES)]
             # Most frames, not all: a button may only appear once the page
             # has scrolled away from the top. The page's own background is
-            # still everywhere, so it says nothing either way.
+            # still everywhere, so it says nothing either way; it fills both
+            # rows, while a wide overlay's fill fills only one.
+            ground = _background(old)
+            if ground != _background(new):
+                ground = None
             scores = [
                 sum(
                     2 * sum(frame[top + place][at : at + 4] == pixel for frame in kept)
@@ -406,7 +410,6 @@ def _overlay(
                     if pixel != ground
                 )
                 for place, row in ((y + offset, old), (y, new))
-                for ground in [_background(row)]
             ]
             if scores[1] > scores[0]:
                 found.add(y)
