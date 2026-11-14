@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.21.6](https://github.com/mikejhill/verdiclip/compare/v0.21.5...v0.21.6) (2026-11-14)
+
+
+### Bug Fixes
+
+* **settings:** put Modifiers before Capture in the tab order ([#213](https://github.com/mikejhill/verdiclip/issues/213)) ([a0aba42](https://github.com/mikejhill/verdiclip/commit/a0aba4280a87ace3a8b975a79376986faf0a18a9))
+* **settings:** reorder tabs and pages, rename Usual to Default, add tooltips ([#211](https://github.com/mikejhill/verdiclip/issues/211)) ([251f78b](https://github.com/mikejhill/verdiclip/commit/251f78b2d3d74e6a5936b69b7d33607e2b5cf7c4))
+
 ## [0.21.5](https://github.com/mikejhill/verdiclip/compare/v0.21.4...v0.21.5) (2026-11-14)
 
 
