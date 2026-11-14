@@ -12,6 +12,7 @@ from verdiclip.capture.stitch import Frame, find_offset, stitch, view_moved
 
 WIDTH = 120
 VIEW = 200
+THUMB_VIEW = 10.9  # The view size a 20-row thumb on the 184-row track stands for
 
 
 def page(height: int, seed: int = 1) -> QImage:
@@ -367,7 +368,9 @@ def test_scrollbar_that_never_redraws_is_cropped() -> None:
     for frame in shots:
         scrollbar(frame.image, 10)
     whole = expected(document)
-    assert stitch(shots).image == whole.copy(0, 0, WIDTH - 6, whole.height())
+    assert stitch(shots, THUMB_VIEW).image == whole.copy(
+        0, 0, WIDTH - 6, whole.height()
+    )
 
 
 def fade(image: QImage, top: int = 180) -> None:
@@ -442,7 +445,9 @@ def test_frozen_scrollbar_that_fades_now_and_then_is_cropped() -> None:
     for index, frame in enumerate(shots):
         scrollbar(frame.image, 10, size=20 if index % 3 else 0)
     whole = expected(document)
-    assert stitch(shots).image == whole.copy(0, 0, WIDTH - 6, whole.height())
+    assert stitch(shots, THUMB_VIEW).image == whole.copy(
+        0, 0, WIDTH - 6, whole.height()
+    )
 
 
 def test_button_at_the_left_edge_is_covered_by_the_next_frame() -> None:
@@ -512,4 +517,43 @@ def test_scrollbar_with_end_caps_is_cropped(step: int) -> None:
         scrollbar(frame.image, 40 + step * index)
         caps(frame.image)
     whole = expected(document)
-    assert stitch(shots).image == whole.copy(0, 0, WIDTH - 6, whole.height())
+    assert stitch(shots, THUMB_VIEW).image == whole.copy(
+        0, 0, WIDTH - 6, whole.height()
+    )
+
+
+def test_second_button_higher_up_is_not_copied_into_every_frame() -> None:
+    """A seam is not moved when that would bring in a control higher up."""
+    document = page(700)
+    shots = frames(document, 120)
+    for frame in shots:
+        button(frame.image)
+        for y in range(60, 76):  # A second control, higher up
+            for x in range(90, 100):
+                frame.image.setPixel(x, y, 0xCC6633)
+    result = stitch(shots).image
+    rows = [
+        y for y in range(result.height()) if result.pixel(95, y) & 0xFFFFFF == 0xCC6633
+    ]
+    assert len(rows) == 16
+
+
+def test_frozen_scrollbar_needs_the_view_size() -> None:
+    """Without the view size, a strip that never moves is kept."""
+    document = page(700)
+    shots = frames(document, 120)
+    for frame in shots:
+        scrollbar(frame.image, 10)
+    assert stitch(shots).image.width() == WIDTH
+
+
+def test_fixed_button_in_a_plain_right_margin_is_kept() -> None:
+    """A button too short for the view size is not taken for a frozen thumb."""
+    document = page(700)
+    shots = frames(document, 120)
+    for frame in shots:
+        for y in range(VIEW):
+            for x in range(WIDTH - 10, WIDTH):
+                inside = 170 <= y < 186 and x >= WIDTH - 8
+                frame.image.setPixel(x, y, 0x3366CC if inside else 0xFFFFFF)
+    assert stitch(shots, VIEW * 100 / 700).image.width() == WIDTH

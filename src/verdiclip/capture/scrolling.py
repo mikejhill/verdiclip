@@ -136,7 +136,7 @@ class ScrollCapture:
             return ScrollResult(None, str(error), len(frames))
         if not self._restore(start):
             notes.append("The panel could not be scrolled back to where it was.")
-        result = stitch(frames)
+        result = stitch(frames, start.view_size)
         if result.stale_frames:
             notes.append(
                 "The panel was slow to reach its top; check the top of the image."

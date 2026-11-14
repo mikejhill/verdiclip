@@ -3,8 +3,7 @@
 ABI reference: Microsoft WinSDK UIAutomationClient.h.
 IUIAutomation: ElementFromPoint=7, RawViewWalker=16.
 IUIAutomationElement: GetCurrentPatternAs=14, ControlType=21, NativeWindowHandle=36,
-BoundingRectangle=43. IUIAutomationTreeWalker: GetParentElement=3,
-GetFirstChildElement=4, GetNextSiblingElement=6.
+BoundingRectangle=43. IUIAutomationTreeWalker: GetParentElement=3.
 IUIAutomationScrollPattern: SetScrollPercent=4, VerticalScrollPercent=6,
 HorizontalScrollPercent=5, VerticalViewSize=8, VerticallyScrollable=10.
 """
@@ -42,7 +41,6 @@ _LOOKUPS = 2
 _RETRY_SECONDS = 0.5
 _SCROLL_BAR = 50014  # UIA_ScrollBarControlTypeId
 _BAR_DEPTH = 3
-_BAR_NODES = 200
 _BAR_WIDTH = 32
 _BAR_HEIGHT = 0.8
 
@@ -221,7 +219,7 @@ class UiaScrollTarget:
         self._trim = 0
         # A scrollbar the panel draws itself stays put in every frame; leave
         # it out when UI Automation says where it is (XAML, not Chromium).
-        self._trim = scrollbar_width(self._viewport(), self._bars(walker))
+        self._trim = scrollbar_width(self._viewport(), self._bars(automation, walker))
         self._area = self._viewport()
         if self._area.width < _MIN_SIZE or self._area.height < _MIN_SIZE:
             raise CaptureError("The scrolling area is too small")
@@ -258,29 +256,27 @@ class UiaScrollTarget:
             current = walker.nullable(3, self._owners, (c.c_void_p, current._pointer))
         raise CaptureError("Nothing at that point scrolls vertically")
 
-    def _bars(self, walker: _Interface) -> list[Rect]:
-        """Bounds of scrollbars a few levels inside the panel."""
-        bars: list[Rect] = []
-        level, seen = [self._element], 0
+    def _bars(self, automation: _Interface, walker: _Interface) -> list[Rect]:
+        """A scrollbar under the panel's right edge, if UI Automation has one.
+
+        One lookup at the edge and a few parents (the thumb or a track button,
+        then the bar) is quick; walking the panel's children is not.
+        """
+        area = self._viewport()
+        edge = w.POINT(round(area.right) - 2, round(area.center.y))
         try:
+            current = automation.nullable(7, self._owners, (w.POINT, edge))
             for _ in range(_BAR_DEPTH):
-                below: list[_Interface] = []
-                for parent in level:
-                    child = walker.nullable(
-                        4, self._owners, (c.c_void_p, parent._pointer)
-                    )
-                    while child is not None and seen < _BAR_NODES:
-                        seen += 1
-                        below.append(child)
-                        if child.integer(21) == _SCROLL_BAR:
-                            bars.append(child.bounds())
-                        child = walker.nullable(
-                            6, self._owners, (c.c_void_p, child._pointer)
-                        )
-                level = below
+                if current is None:
+                    break
+                if current.integer(21) == _SCROLL_BAR:
+                    return [current.bounds()]
+                current = walker.nullable(
+                    3, self._owners, (c.c_void_p, current._pointer)
+                )
         except OSError:
             logger.debug("Could not look for the panel's scrollbar", exc_info=True)
-        return bars
+        return []
 
     def _viewport(self) -> Rect:
         """The element's bounds, without scrollbars around or inside it."""

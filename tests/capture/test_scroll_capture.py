@@ -352,7 +352,7 @@ def test_estimated_seams_are_reported(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         scrolling,
         "stitch",
-        lambda frames: StitchResult(real(frames).image, 2),
+        lambda frames, *_: StitchResult(real(frames).image, 2),
     )
     result = run(Panel(700))
     assert result.warning == "2 seam(s) were estimated; check the image."
@@ -439,7 +439,7 @@ def test_start_near_the_top_is_not_asked_again() -> None:
 def test_stale_top_frame_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
     """When the stitcher leaves out stale frames, the user is told."""
     monkeypatch.setattr(
-        scrolling, "stitch", lambda frames: StitchResult(frames[0].image, 0, 1)
+        scrolling, "stitch", lambda frames, *_: StitchResult(frames[0].image, 0, 1)
     )
     assert "top of the image" in run(Panel(900)).warning
 
