@@ -64,7 +64,8 @@ class CaptureService(QObject):
     captured = Signal(object)  # Capture
     cancelled = Signal()
     failed = Signal(str)
-    scroll_requested = Signal(object, str)  # Point (physical), window title
+    # Point (physical), window title, and whether to start from the top
+    scroll_requested = Signal(object, str, bool)
 
     def __init__(
         self,
@@ -232,10 +233,10 @@ class CaptureService(QObject):
         """Capture the clicked window from the frozen screen."""
         self._finish_selection(area, CaptureMode.WINDOW, title)
 
-    def _on_scroll(self, point: Point, title: str) -> None:
+    def _on_scroll(self, point: Point, title: str, from_top: bool) -> None:  # noqa: FBT001 - Qt slot
         """Hand a Ctrl+clicked panel to scrolling capture."""
         self._close_overlays()
-        self.scroll_requested.emit(point, title)
+        self.scroll_requested.emit(point, title, from_top)
 
     def _on_cancel(self) -> None:
         """Close overlays and report cancellation."""

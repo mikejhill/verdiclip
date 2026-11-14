@@ -448,11 +448,26 @@ class TestWindowPicking:
         with qtbot.waitSignal(service.scroll_requested) as signal:
             overlay.click((200, 200), modifier=Qt.KeyboardModifier.ControlModifier)
 
-        point, title = signal.args or [None, None]
+        point, title, from_top = signal.args or [None, None, None]
         assert isinstance(point, Point)
         assert title == "Dialog"
+        assert from_top is False  # Ctrl alone: from the current position
         assert not service.overlays
         assert not captured
+
+    def test_ctrl_alt_click_asks_for_a_capture_from_the_top(
+        self, service: CaptureService, qtbot: QtBot
+    ) -> None:
+        """Ctrl+Alt+click asks for the whole panel, top to bottom."""
+        service.capture_region()
+        overlay = Overlay(service)
+        with qtbot.waitSignal(service.scroll_requested) as signal:
+            overlay.click(
+                (200, 200),
+                modifier=Qt.KeyboardModifier.ControlModifier
+                | Qt.KeyboardModifier.AltModifier,
+            )
+        assert (signal.args or [None, None, None])[2] is True
 
 
 class TestImmediateCaptures:
