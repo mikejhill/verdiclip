@@ -12,6 +12,7 @@ from tests.ux.test_app_journeys import App, AppFactory
 from tests.ux.test_app_journeys import (
     make_app as make_app,  # noqa: PLC0414 - pytest fixture
 )
+from tests.ux.test_capture_journeys import FakeWindow, FakeWindows
 
 from verdiclip.automation.handlers import AutomationHandlers
 from verdiclip.automation.preview import PreviewFolder
@@ -285,3 +286,56 @@ def test_open_then_close_a_file(make_app: AppFactory, tmp_path: Path) -> None:
     assert edited.error.code is ErrorCode.CONFLICT
     assert closed["discarded"] is False
     assert QImage(str(tmp_path / "e.png")).width() == 5
+
+
+def test_hotkeys_cant_feed_a_waiting_ctl_capture(
+    make_app: AppFactory, tmp_path: Path, qtbot: QtBot
+) -> None:
+    """While ctl raises a window, a hotkey capture is refused, not delivered to it."""
+    notepad = FakeWindow("Notepad", Rect(10, 10, 300, 200), 1)
+    edge = FakeWindow("Edge", Rect(40, 40, 120, 90), 2)
+    windows = FakeWindows([notepad, edge], notepad)
+    app = make_app(windows=windows)
+    ctl = Ctl(app, tmp_path)
+    notes: list[str] = []
+    app.controller._notify = lambda _title, text, **_k: notes.append(text)  # ty: ignore[invalid-assignment]
+
+    assert ctl.send(
+        "capture", mode="window", title="Edge", output=str(tmp_path / "e.png")
+    )
+    app.press_hotkey("fullscreen")
+    app.controller.tray.action("region").trigger()
+    app.controller.capture_scrolling()
+    qtbot.waitUntil(lambda: bool(ctl.replies))
+
+    answer = ctl.replies[-1].result
+    assert answer is not None
+    assert answer["image"] == [120, 90]
+    assert QImage(str(tmp_path / "e.png")).width() == 120
+    assert len(app.controller.workspace.documents) == 1
+    assert len(notes) == 3
+    assert all("verdiclip ctl" in note for note in notes)
+
+
+def test_hotkeys_during_a_ctl_overlay_or_scroll(
+    make_app: AppFactory, tmp_path: Path, qtbot: QtBot
+) -> None:
+    """A hotkey brings ctl's overlay back; the scrolling hotkey stops ctl's scroll."""
+    app = make_app()
+    ctl = Ctl(app, tmp_path)
+    helper = prepare(app)
+    service = app.controller._scrolling
+
+    ctl.send("capture", mode="region")
+    qtbot.waitUntil(lambda: bool(app.controller.capture.overlays))
+    overlays = app.controller.capture.overlays
+    app.press_hotkey("region")
+    same = app.controller.capture.overlays == overlays
+    app.controller.capture.overlays[0].scroll_chosen.emit(Point(30, 40), "Panel", True)  # noqa: FBT003 - Qt signal
+    qtbot.waitUntil(lambda: helper is service._helper)
+    app.controller.capture_scrolling()  # Second request: cancel
+    helper.finished.emit(ScrollResult(None, CANCELLED, 0))
+
+    assert same
+    assert last_error(ctl) is ErrorCode.CANCELLED
+    assert app.controller.workspace.documents == ()

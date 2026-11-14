@@ -85,6 +85,7 @@ class _Pending:
     spec: CaptureSpec
     answer: Deferred[CaptureOutcome]
     warning: str = ""
+    scrolling: bool = False  # A scrolling session belongs to this request
 
 
 class AutomationCaptures(QObject):
@@ -174,6 +175,20 @@ class AutomationCaptures(QObject):
             msg = "The capture was cancelled"
             self._finish(pending, error=AutomationError(ErrorCode.CANCELLED, msg))
 
+    def scrolling_started(self) -> None:
+        """A scrolling session began for the waiting request (overlay Ctrl+click)."""
+        if self._pending is not None:
+            self._pending.scrolling = True
+
+    def scrolling_finished(self) -> None:
+        """A scrolling session ended; with no result yet, its request is cancelled.
+
+        Only the request that started the session is answered, never a later one.
+        """
+        pending = self._pending
+        if pending is not None and pending.scrolling:
+            self.cancelled()
+
     def failed(self, message: str) -> None:
         """The capture failed; pass the reason on."""
         pending = self._pending
@@ -203,18 +218,21 @@ class AutomationCaptures(QObject):
                 lambda: self._take(pending, window.bounds, window.title),
             )
         elif spec.interactive:
+            pending.scrolling = True
             self._choosers.choose_scrolling()
         elif spec.at is not None:
+            pending.scrolling = True
             self._choosers.scroll_at(spec.at, "", from_top=spec.from_top)
         else:
             window = self._window(spec)
-            self._raised(
-                pending,
-                window,
-                lambda: self._choosers.scroll_at(
+
+            def scroll() -> None:
+                pending.scrolling = True
+                self._choosers.scroll_at(
                     window.bounds.center, window.title, from_top=spec.from_top
-                ),
-            )
+                )
+
+            self._raised(pending, window, scroll)
 
     def _raised(
         self, pending: _Pending, window: CapturableWindow, then: Callable[[], None]

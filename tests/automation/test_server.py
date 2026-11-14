@@ -290,10 +290,12 @@ def test_deferred_answers_hold_later_requests_in_order(qtbot: QtBot) -> None:
 
         assert socket.bytesAvailable() == 0
         handler.waiting[0].resolve({"captured": True})
+        handled_at_once = len(server._queues[next(iter(server._queues))])
         lines = read_lines(socket, qtbot, 2)
         first, second = (Response.decode(line) for line in lines)
         assert (first.ident, first.result) == (1, {"captured": True})
         assert second.ident == 2
+        assert handled_at_once == 1  # The next request waits for the event loop
         socket.disconnectFromServer()
         qtbot.waitUntil(lambda: not server._buffers)
     finally:

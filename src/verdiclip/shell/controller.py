@@ -278,8 +278,10 @@ class AppController(QObject):
         else:
             self._request_capture(action, freeze_first=True)
 
-    def _request_capture(self, action: str, *, freeze_first: bool = False) -> None:
-        if self._closing:
+    def _request_capture(
+        self, action: str, *, freeze_first: bool = False, for_ctl: bool = False
+    ) -> None:
+        if self._closing or self._ctl_owns_capture(for_ctl=for_ctl):
             return
         handlers = {
             "region": self._capture.capture_region,
@@ -300,13 +302,15 @@ class AppController(QObject):
         self._workspace.cancel_drag()
         handler(freeze_first=freeze_first)
 
-    def capture_scrolling(self) -> None:
+    def capture_scrolling(self, *, for_ctl: bool = False) -> None:
         """Choose one scrolling area; a second request cancels the active one."""
         if self._closing:
             return
         self._dismiss_scroll_status()
         if self._scrolling.busy:
-            self._scrolling.cancel()
+            self._scrolling.cancel()  # Also lets the user stop a ctl capture
+            return
+        if self._ctl_owns_capture(for_ctl=for_ctl):
             return
         self._pending_capture = None
         self._capture_handoff.stop()
@@ -320,13 +324,31 @@ class AppController(QObject):
             return
         self._dismiss_scroll_status()
         self._workspace.cancel_drag()
+        # While ctl waits, only its own overlay can hand a panel over
+        self._automation.scrolling_started()
         self._scrolling.start_at(point, title, from_top=from_top)
+
+    def _ctl_owns_capture(self, *, for_ctl: bool) -> bool:
+        """Keep hotkeys and the tray from feeding a waiting ctl capture.
+
+        Returns:
+            True if the request must be ignored.
+        """
+        if for_ctl or not self._automation.waiting:
+            return False
+        if self._capture.is_selecting:
+            self._capture.capture_region()  # Brings ctl's overlay back to the front
+        else:
+            self._notify(
+                APP_NAME, "A capture asked for by verdiclip ctl is in progress."
+            )
+        return True
 
     def _after_scrolling(self) -> None:
         if self._closing:
             return
         # Finished without a result or a failure: stopped before any frame
-        self._automation.cancelled()
+        self._automation.scrolling_finished()
         if self._hotkeys_paused:
             self._hotkeys.unregister_all()
         elif self._hotkey_refresh_pending:
@@ -469,11 +491,11 @@ class AppController(QObject):
 
     def choose_region(self) -> None:
         """Show the region overlay for ``ctl capture region`` without a region."""
-        self._request_capture("region")
+        self._request_capture("region", for_ctl=True)
 
     def choose_scrolling(self) -> None:
         """Show the scrolling chooser for ``ctl capture scrolling``."""
-        self.capture_scrolling()
+        self.capture_scrolling(for_ctl=True)
 
     def scroll_at(self, point: Point, title: str, *, from_top: bool) -> None:
         """Start a scrolling capture of the panel at ``point``."""

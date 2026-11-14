@@ -445,3 +445,18 @@ def test_targets_list_monitors_and_windows(rig: Rig) -> None:
             "foreground": False,
         },
     ]
+
+
+def test_only_the_request_that_scrolls_is_cancelled_when_scrolling_ends(
+    rig: Rig,
+) -> None:
+    """A scrolling session ending answers its own request, never a later one."""
+    window = rig.captures.start(spec(mode="region"))
+    rig.captures.scrolling_finished()  # Someone else's session: no effect
+    waiting = not window.done
+    rig.captures.scrolling_started()  # The overlay's Ctrl+click handed it over
+    rig.captures.scrolling_finished()
+
+    assert waiting
+    assert error(window).code is ErrorCode.CANCELLED
+    rig.captures.scrolling_started()  # Nothing waits: no effect

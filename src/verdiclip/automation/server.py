@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 
-from PySide6.QtCore import QCoreApplication, QObject
+from PySide6.QtCore import QCoreApplication, QObject, QTimer
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 
 from verdiclip.automation.protocol import (
@@ -186,8 +186,15 @@ class ControlServer(QObject):
         if socket not in self._buffers:
             return  # The client hung up while it waited
         socket.write(data)
+        socket.flush()
         if socket in self._waiting:
             self._waiting.discard(socket)
+            # Let whatever settled this finish (a capture's last signals) before
+            # the next queued request starts
+            QTimer.singleShot(0, self, lambda: self._resume(socket))
+
+    def _resume(self, socket: QLocalSocket) -> None:
+        if socket in self._buffers and socket not in self._waiting:
             self._drain(socket)
 
     def _disconnected(self, socket: QLocalSocket) -> None:
