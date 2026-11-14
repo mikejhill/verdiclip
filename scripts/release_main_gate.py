@@ -8,6 +8,7 @@ import re
 import sys
 import time
 from collections.abc import Callable
+from pathlib import Path
 from urllib.request import Request, urlopen
 
 PAGE_SIZE = 100
@@ -76,6 +77,15 @@ def collect(fetch: Callable[[str], object], sha: str) -> list[dict[str, object]]
     raise ValueError("Run inventory exceeds bounded budget")
 
 
+def superseded(sha: str, head: str) -> None:
+    """Report that main moved on, so later release steps skip this commit."""
+    output = os.environ.get("GITHUB_OUTPUT", "")
+    if output != "":
+        with Path(output).open("a", encoding="utf-8") as handle:
+            handle.write("superseded=true\n")
+    sys.stdout.write(json.dumps({"main_sha": sha, "superseded_by": head}) + "\n")
+
+
 def main() -> None:
     """Read only GitHub metadata; do not dispatch, retry, approve or publish."""
     sha = os.environ["GITHUB_SHA"]
@@ -106,8 +116,14 @@ def main() -> None:
         if ready:
             branch = fetch("git/ref/heads/main")
             target = branch.get("object") if isinstance(branch, dict) else None
-            if not isinstance(target, dict) or target.get("sha") != sha:
-                raise ValueError("Main moved before release verification completed")
+            head = target.get("sha") if isinstance(target, dict) else None
+            if not isinstance(head, str) or re.fullmatch(r"[a-f0-9]{40}", head) is None:
+                raise ValueError("Unreadable main branch head")
+            if head != sha:
+                # The newer push has its own release run, which verifies and
+                # publishes; this one stands down without publishing.
+                superseded(sha, head)
+                return
             alerts = fetch(
                 "code-scanning/alerts?ref=refs%2Fheads%2Fmain&state=open&per_page=1"
             )
