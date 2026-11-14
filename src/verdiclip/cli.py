@@ -99,9 +99,7 @@ class CommandLine:
 
     def _fail(self, args: argparse.Namespace) -> Callable[[str], NoReturn]:
         """Return the error exit of the command that was parsed."""
-        parser = getattr(args, "usage_parser", None)
-        if not isinstance(parser, argparse.ArgumentParser):
-            parser = self._parser
+        parser: argparse.ArgumentParser = getattr(args, "usage_parser", self._parser)
         return parser.error
 
     @staticmethod
