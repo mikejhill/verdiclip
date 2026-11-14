@@ -180,7 +180,14 @@ def test_font_family_is_shown(qtbot: QtBot) -> None:
     """The font box shows the style's family."""
     bar = StyleBar()
     qtbot.addWidget(bar)
-    family = bar._font.itemText(bar._font.count() - 1)
+    shown = bar._font.currentFont().family()
+    # Aliases such as "Serif" resolve to a real family, so pick one that
+    # names itself and differs from what the box shows already.
+    family = next(
+        name
+        for name in (bar._font.itemText(i) for i in range(bar._font.count()))
+        if name != shown and QFont(name).family() == name
+    )
 
     bar.show_for(FIELD_LAYOUT[ToolId.TEXT], Style(font_family=family))
 
