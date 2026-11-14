@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.1](https://github.com/mikejhill/verdiclip/compare/v0.18.0...v0.18.1) (2026-11-14)
+
+
+### Bug Fixes
+
+* crop the scrollbar only when a thumb is seen, and refuse off-screen panels ([#175](https://github.com/mikejhill/verdiclip/issues/175)) ([ce47dfd](https://github.com/mikejhill/verdiclip/commit/ce47dfd55d307f89ffad50b369d858636b97e073))
+
 ## [0.18.0](https://github.com/mikejhill/verdiclip/compare/v0.17.0...v0.18.0) (2026-11-12)
 
 
