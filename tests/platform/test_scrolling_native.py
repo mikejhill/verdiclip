@@ -127,6 +127,22 @@ def test_point_without_a_scroll_panel_is_refused(window: Fixture) -> None:
         in_thread(work)
 
 
+def test_panel_off_the_displays_is_refused(
+    window: Fixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A panel the displays do not show is refused, not captured black."""
+    from verdiclip.platform import scrolling  # noqa: PLC0415
+
+    monkeypatch.setattr(scrolling, "on_screen", lambda _area, _monitors: False)
+
+    def work() -> None:
+        with scrolling.UiaScrollTarget(window.center):
+            pass
+
+    with pytest.raises(CaptureError, match="off screen"):
+        in_thread(work)
+
+
 def test_closed_window_stops_the_check(window: Fixture) -> None:
     """Closing the target window is reported by ``check``."""
     from verdiclip.platform.scrolling import UiaScrollTarget  # noqa: PLC0415

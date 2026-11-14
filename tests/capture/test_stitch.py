@@ -47,11 +47,16 @@ def view(
         for x in range(WIDTH):
             image.setPixel(x, VIEW - footer + y, 0x405060 + y * 5 + x)
     if thumb:
-        position = header + top * body // max(1, document.height())
-        for y in range(position, min(VIEW - footer, position + 20)):
-            for x in range(WIDTH - 6, WIDTH):
-                image.setPixel(x, y, 0x777777)
+        scrollbar(image, header + top * body // max(1, document.height()), footer)
     return image
+
+
+def scrollbar(image: QImage, position: int, footer: int = 0, size: int = 20) -> None:
+    """Paint a plain track down the right edge with a thumb at ``position``."""
+    for y in range(VIEW - footer):
+        for x in range(WIDTH - 6, WIDTH):
+            inside = position <= y < position + size
+            image.setPixel(x, y, 0x777777 if inside else 0xEEEEEE)
 
 
 def expected(document: QImage, *, header: int = 0, footer: int = 0) -> QImage:
@@ -193,7 +198,7 @@ def test_changed_content_does_not_widen_the_strip() -> None:
         for x in range(WIDTH - 10, WIDTH - 6):
             image.setPixel(x, y, 0x101010 + x)
     for y in range(160, 180):
-        for x in range(WIDTH):
+        for x in range(WIDTH - 6):
             image.setPixel(x, y, 0x101010 + x)
     result = stitch(shots)
     assert result.image.width() == WIDTH - 6
@@ -245,3 +250,66 @@ def test_sparse_view_that_shifts_counts_as_moved() -> None:
             after.setPixel(x, 40 + y, x)
     assert view_moved(before, after, 10)
     assert not view_moved(before, before.copy(), 10)
+
+
+def test_changing_right_edge_without_a_scrollbar_is_kept() -> None:
+    """A timestamp changing near the edge of a short capture is not cropped."""
+    document = page(260)
+    first = view(document, 0)
+    second = view(document, 60)
+    for y in range(100, 110):  # Rows that overlap the first frame
+        for x in range(WIDTH - 10, WIDTH - 6):
+            second.setPixel(x, y, 0x101010 + x)
+    result = stitch([Frame(first), Frame(second, 60.0)])
+    assert result.image.width() == WIDTH
+
+
+def test_marks_on_the_track_do_not_hide_the_thumb() -> None:
+    """Fixed marks on the track leave the thumb itself to be found."""
+    document = page(400)
+    shots = frames(document, 100, thumb=True)
+    for frame in shots:
+        image = frame.image
+        for y in (150, 170):
+            for x in range(WIDTH - 6, WIDTH):
+                image.setPixel(x, y, 0x123456)
+    assert stitch(shots).image.width() == WIDTH - 6
+
+
+def test_thumb_that_moves_up_is_not_a_scrollbar() -> None:
+    """A run moving against the scroll direction is not a thumb."""
+    document = page(400)
+    shots = frames(document, 100, thumb=True)
+    for index, frame in enumerate(shots):
+        scrollbar(frame.image, VIEW - 30 - 40 * index)
+    assert stitch(shots).image.width() == WIDTH
+
+
+def test_dropped_stale_frame_does_not_keep_the_scrollbar() -> None:
+    """A stale first frame showing the thumb low does not hide the scrollbar."""
+    document = page(700)
+    shots = frames(document, 150, thumb=True)
+    result = stitch([Frame(shots[-1].image.copy()), Frame(shots[0].image), *shots[1:]])
+    whole = expected(document)
+    assert result.stale_frames == 1
+    assert result.image == whole.copy(0, 0, WIDTH - 6, whole.height())
+
+
+def test_thumb_that_fades_out_in_some_frames_is_still_cropped() -> None:
+    """An overlay scrollbar hidden in one frame still counts as a scrollbar."""
+    document = page(700)
+    shots = frames(document, 150, thumb=True)
+    scrollbar(shots[2].image, VIEW)  # Track only: the thumb faded out
+    whole = expected(document)
+    assert stitch(shots).image == whole.copy(0, 0, WIDTH - 6, whole.height())
+
+
+@pytest.mark.parametrize(("size", "travel"), [(130, 35), (160, 20), (190, 5)])
+def test_thumb_longer_than_half_the_track_is_cropped(size: int, travel: int) -> None:
+    """A short document's long thumb outnumbers its track and is still found."""
+    document = page(300)
+    shots = frames(document, 50)
+    for index, frame in enumerate(shots):
+        scrollbar(frame.image, travel * index, size=size)
+    whole = expected(document)
+    assert stitch(shots).image == whole.copy(0, 0, WIDTH - 6, whole.height())
