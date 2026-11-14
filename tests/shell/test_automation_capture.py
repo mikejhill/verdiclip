@@ -60,9 +60,13 @@ class Desktop:
 
     fail: bool = False
     frames: int = 0
+    explode: bool = False
 
     def freeze(self) -> FrozenScreen:
         """Return the desktop image."""
+        if self.explode:
+            msg = "cannot convert float infinity to integer"
+            raise OverflowError(msg)
         if self.fail:
             msg = "screen is locked"
             raise CaptureError(msg)
@@ -334,7 +338,7 @@ def test_a_failure_after_raising_is_reported(rig: Rig, qtbot: QtBot) -> None:
 
 def test_interactive_region_waits_for_the_overlay(rig: Rig) -> None:
     """Without a region the overlay opens; its result answers the request."""
-    answer = rig.captures.start(spec(mode="region"))
+    answer = rig.captures.start(spec(mode="universal"))
 
     assert rig.choosers.calls == [("region",)]
     assert rig.captures.waiting
@@ -373,9 +377,9 @@ def test_scrolling_targets(rig: Rig, qtbot: QtBot) -> None:
 
 def test_failures_and_shutdown_answer_a_waiting_request(rig: Rig) -> None:
     """A failed capture and closing the app both answer with an error."""
-    failed = rig.captures.start(spec(mode="region"))
+    failed = rig.captures.start(spec(mode="universal"))
     rig.captures.failed("No scrolling area there")
-    closing = rig.captures.start(spec(mode="region"))
+    closing = rig.captures.start(spec(mode="universal"))
     rig.captures.shutdown()
 
     assert error(failed).message == "No scrolling area there"
@@ -451,7 +455,7 @@ def test_only_the_request_that_scrolls_is_cancelled_when_scrolling_ends(
     rig: Rig,
 ) -> None:
     """A scrolling session ending answers its own request, never a later one."""
-    window = rig.captures.start(spec(mode="region"))
+    window = rig.captures.start(spec(mode="universal"))
     rig.captures.scrolling_finished()  # Someone else's session: no effect
     waiting = not window.done
     rig.captures.scrolling_started()  # The overlay's Ctrl+click handed it over
@@ -460,3 +464,12 @@ def test_only_the_request_that_scrolls_is_cancelled_when_scrolling_ends(
     assert waiting
     assert error(window).code is ErrorCode.CANCELLED
     rig.captures.scrolling_started()  # Nothing waits: no effect
+
+
+def test_an_unexpected_error_still_frees_the_capture(rig: Rig) -> None:
+    """A bug while starting answers failed and doesn't block later captures."""
+    rig.desktop.explode = True
+    with pytest.raises(OverflowError):
+        rig.captures.start(spec(mode="region", region=[0, 0, 5, 5]))
+
+    assert not rig.captures.waiting

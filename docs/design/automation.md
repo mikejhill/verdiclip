@@ -130,7 +130,8 @@ contacting the app. An agent is always required; scope defaults to user.
 | Command | Result |
 | --- | --- |
 | `ctl targets` | Monitors (numbered from 1, physical bounds, scale, primary) and visible windows (handle, title, bounds, foreground) |
-| `ctl capture region [--region X,Y,W,H]` | Crops one frozen frame; without `--region` the overlay opens and the answer waits for the user (its Ctrl+click scrolling capture counts) |
+| `ctl capture universal` | Opens the Universal capture overlay; the answer waits for the user (a region, a window, or its Ctrl+click scrolling capture) |
+| `ctl capture region --region X,Y,W,H` | Crops one frozen frame |
 | `ctl capture window [--title T \| --handle N \| --at X,Y]` | The foreground window, or the named one raised first (`bring_to_front`, then 350 ms to repaint); a refused raise becomes a `warning` |
 | `ctl capture fullscreen [--monitor N \| --all]` | The cursor's monitor, monitor N, or the whole desktop |
 | `ctl capture scrolling [--at X,Y \| --title T \| --handle N] [--from top\|here]` | Starts `ScrollSelection.start_at` (a window's center for title/handle); no target opens the chooser |

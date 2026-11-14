@@ -521,7 +521,7 @@ def test_targets_come_from_the_app(app_handlers: AutomationHandlers) -> None:
 
 @pytest.mark.parametrize(
     ("method", "params"),
-    [("capture", {"mode": "region"}), ("targets", {}), ("close", {"discard": True})],
+    [("capture", {"mode": "universal"}), ("targets", {}), ("close", {"discard": True})],
 )
 def test_app_actions_need_the_app(
     handlers: AutomationHandlers, method: str, params: JsonObject

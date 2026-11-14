@@ -59,8 +59,9 @@ Capture the screen into a new editor tab and print its summary (with "id").
 Coordinates are physical desktop pixels; `verdiclip ctl targets` lists
 monitors and windows with their bounds.
 
-  region      --region X,Y,W,H, or no option to let the user drag a region
-              (in that overlay a Ctrl+click starts a scrolling capture)
+  universal   the user chooses in the Universal capture overlay (PrtSc):
+              drag a region, click a window, or Ctrl+click a scrolling panel
+  region      --region X,Y,W,H
   window      the active window, or --title TEXT, --handle N or --at X,Y;
               a named window is brought to the front first
   fullscreen  the monitor under the mouse, --monitor N, or --all monitors

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import pytest
@@ -35,12 +36,12 @@ def refused(**params: object) -> AutomationError:
 class TestCaptureSpec:
     """Which options each capture type takes."""
 
-    def test_region_with_and_without_a_rectangle(self) -> None:
-        """A region capture is interactive until it names the rectangle."""
-        chosen = spec(mode="region")
+    def test_universal_and_region(self) -> None:
+        """Universal lets the user choose; a region names its rectangle."""
+        chosen = spec(mode="universal")
         given = spec(mode="region", region=[-5, 0, 10, 20], output=ABSOLUTE, copy=True)
 
-        assert chosen.kind is CaptureKind.REGION
+        assert chosen.kind is CaptureKind.UNIVERSAL
         assert chosen.interactive
         assert not chosen.names_window
         assert given.region == Rect(-5, 0, 10, 20)
@@ -74,9 +75,11 @@ class TestCaptureSpec:
     @pytest.mark.parametrize(
         ("params", "message"),
         [
-            ({"mode": "movie"}, "mode must be one of region, window"),
+            ({"mode": "movie"}, "mode must be one of universal, region"),
             ({}, "mode must be one of"),
             ({"mode": "region", "title": "x"}, "region capture doesn't take title"),
+            ({"mode": "region"}, "region capture needs region; universal"),
+            ({"mode": "universal", "region": [0, 0, 1, 1]}, "doesn't take region"),
             ({"mode": "fullscreen", "region": [0, 0, 1, 1]}, "doesn't take region"),
             ({"mode": "window", "monitor": 1}, "window capture doesn't take monitor"),
             ({"mode": "window", "from": "here"}, "doesn't take from"),
@@ -87,13 +90,15 @@ class TestCaptureSpec:
             ({"mode": "region", "region": [0, 0, 5]}, "region must be [x, y, w"),
             ({"mode": "region", "region": [0, 0, 5, True]}, "region must be"),
             ({"mode": "window", "at": "1,2"}, "at must be [x, y]"),
+            ({"mode": "region", "region": [math.inf, 0, 5, 5]}, "region must be"),
+            ({"mode": "window", "at": [math.nan, 1]}, "at must be [x, y]"),
             ({"mode": "window", "title": "  "}, "title must be non-empty"),
             ({"mode": "window", "handle": 0}, "handle must be an integer of at"),
             ({"mode": "window", "handle": True}, "handle must be an integer"),
             ({"mode": "fullscreen", "all": "yes"}, "all must be true or false"),
             ({"mode": "scrolling", "at": [1, 1], "from": "middle"}, "'top' or"),
-            ({"mode": "region", "output": "shot.png"}, "output must be an absolute"),
-            ({"mode": "region", "output": 5}, "output must be an absolute"),
+            ({"mode": "universal", "output": "shot.png"}, "output must be an absol"),
+            ({"mode": "universal", "output": 5}, "output must be an absolute"),
         ],
     )
     def test_refusals(self, params: JsonObject, message: str) -> None:

@@ -32,8 +32,8 @@ command's options (`capture --help` for capture types and targets,
 
 - Save, export, copy or close only when the user asks. Never overwrite a file
   the user didn't name. Never `close --discard` without the user's say-so.
-- An interactive capture (`capture region` with no `--region`, or
-  `capture scrolling` with no target) waits for the user: tell them what to
+- An interactive capture (`capture universal`, or `capture scrolling` with no
+  target) waits for the user: tell them what to
   click first. Exit 7 means they cancelled.
 - Screenshots can hold private information. Don't send them anywhere the user
   didn't ask for.

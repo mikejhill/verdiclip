@@ -490,7 +490,7 @@ class AppController(QObject):
             raise AppError(msg)
 
     def choose_region(self) -> None:
-        """Show the region overlay for ``ctl capture region`` without a region."""
+        """Show the Universal capture overlay for ``ctl capture universal``."""
         self._request_capture("region", for_ctl=True)
 
     def choose_scrolling(self) -> None:

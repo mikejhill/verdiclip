@@ -129,6 +129,10 @@ class AutomationCaptures(QObject):
             self._finish(pending, error=err)
         except AppError as err:
             self._finish(pending, error=AutomationError(ErrorCode.FAILED, str(err)))
+        except Exception as err:
+            # Never leave a request installed: it would block every capture
+            self._finish(pending, error=AutomationError(ErrorCode.FAILED, str(err)))
+            raise
         return answer
 
     def targets(self) -> JsonObject:
@@ -203,11 +207,10 @@ class AutomationCaptures(QObject):
 
     def _begin(self, pending: _Pending) -> None:
         spec = pending.spec
-        if spec.kind is CaptureKind.REGION:
-            if spec.region is None:
-                self._choosers.choose_region()
-            else:
-                self._take(pending, spec.region, "Screenshot")
+        if spec.kind is CaptureKind.UNIVERSAL:
+            self._choosers.choose_region()
+        elif spec.kind is CaptureKind.REGION and spec.region is not None:
+            self._take(pending, spec.region, "Screenshot")
         elif spec.kind is CaptureKind.FULLSCREEN:
             self._take(pending, self._screen_area(spec), "Screen")
         elif spec.kind is CaptureKind.WINDOW:

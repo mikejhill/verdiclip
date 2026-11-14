@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -21,6 +22,7 @@ from verdiclip.geometry import Point, Rect
 class CaptureKind(StrEnum):
     """The capture types ``ctl capture`` offers."""
 
+    UNIVERSAL = "universal"
     REGION = "region"
     WINDOW = "window"
     FULLSCREEN = "fullscreen"
@@ -48,8 +50,8 @@ class CaptureSpec:
     @property
     def interactive(self) -> bool:
         """Return whether the user chooses what to capture on screen."""
-        if self.kind is CaptureKind.REGION:
-            return self.region is None
+        if self.kind is CaptureKind.UNIVERSAL:
+            return True
         if self.kind is CaptureKind.SCROLLING:
             return self.at is None and not self.names_window
         return False
@@ -95,6 +97,7 @@ class CaptureSpec:
             AutomationError: If an option doesn't apply.
         """
         allowed = {
+            CaptureKind.UNIVERSAL: set(),
             CaptureKind.REGION: {"region"},
             CaptureKind.WINDOW: {"title", "handle", "at"},
             CaptureKind.FULLSCREEN: {"monitor", "all"},
@@ -112,6 +115,9 @@ class CaptureSpec:
         extra = [name for name, used in given.items() if used and name not in allowed]
         if extra:
             msg = f"{self.kind.value} capture doesn't take {extra[0]}"
+            raise AutomationError(ErrorCode.BAD_REQUEST, msg)
+        if self.kind is CaptureKind.REGION and self.region is None:
+            msg = "region capture needs region; universal lets the user choose"
             raise AutomationError(ErrorCode.BAD_REQUEST, msg)
         targets = [n for n in ("title", "handle", "at") if given[n]]
         if len(targets) > 1:
@@ -172,7 +178,8 @@ def _numbers(value: JsonValue, count: int, name: str, shape: str) -> list[float]
         return None
     items = value if isinstance(value, list) else []
     if len(items) != count or not all(
-        isinstance(n, (int, float)) and not isinstance(n, bool) for n in items
+        isinstance(n, (int, float)) and not isinstance(n, bool) and math.isfinite(n)
+        for n in items
     ):
         msg = f"{name} must be {shape}, got {value!r}"
         raise AutomationError(ErrorCode.BAD_REQUEST, msg)

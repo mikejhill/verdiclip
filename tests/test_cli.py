@@ -254,7 +254,7 @@ class TestCommandLine:
         region = parser.parse(
             ["ctl", "capture", "region", "--region=-5,0,40,30", "-o", "r.png"]
         )
-        chosen = parser.parse(["ctl", "capture", "region", "--delay", "2"])
+        chosen = parser.parse(["ctl", "capture", "universal", "--delay", "2"])
         window = parser.parse(
             ["ctl", "capture", "window", "--title", "Edge", "--copy", "--timeout", "9"]
         )
@@ -274,7 +274,7 @@ class TestCommandLine:
             "timeout": DEFAULT_TIMEOUT_S,
         }
         assert chosen.params == {
-            "mode": "region",
+            "mode": "universal",
             "delay": 2.0,
             "timeout": CHOOSING_TIMEOUT_S + 2.0,
         }
@@ -415,9 +415,10 @@ class TestCommandLine:
             ["ctl", "capture", "region", "--title", "x"],
             ["ctl", "capture", "scrolling", "--from", "here"],
             ["ctl", "capture", "window", "--at", "1"],
-            ["ctl", "capture", "region", "--delay", "-1"],
-            ["ctl", "capture", "region", "--timeout", "0"],
+            ["ctl", "capture", "region", "--region", "0,0,5,5", "--delay", "-1"],
+            ["ctl", "capture", "universal", "--timeout", "0"],
             ["ctl", "export"],
+            ["ctl", "capture", "region"],
         ],
         ids=[
             "no-method",
@@ -438,6 +439,7 @@ class TestCommandLine:
             "capture-negative-delay",
             "capture-zero-timeout",
             "export-no-path",
+            "capture-region-without-rectangle",
         ],
     )
     def test_ctl_invalid(

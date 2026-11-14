@@ -113,7 +113,7 @@ def test_delay_and_timeout_stay_on_this_side(monkeypatch: pytest.MonkeyPatch) ->
 
     code = run_ctl(
         "capture",
-        {"mode": "region", "delay": 1.5, "timeout": 300.0},
+        {"mode": "universal", "delay": 1.5, "timeout": 300.0},
         out,
         err,
         sleep=slept.append,
@@ -122,7 +122,7 @@ def test_delay_and_timeout_stay_on_this_side(monkeypatch: pytest.MonkeyPatch) ->
     assert code == ExitCode.OK
     assert slept == [1.5]
     assert built == [300.0]
-    assert client.calls == [("capture", {"mode": "region"})]
+    assert client.calls == [("capture", {"mode": "universal"})]
 
 
 def test_no_delay_means_no_sleep_and_the_default_timeout(
