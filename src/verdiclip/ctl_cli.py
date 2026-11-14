@@ -60,30 +60,34 @@ Capture the screen into a new editor tab and print its summary (with "id").
 Coordinates are physical desktop pixels; `verdiclip ctl targets` lists
 monitors and windows with their bounds.
 
-  universal   the user chooses in the Universal capture overlay (PrtSc):
-              drag a region, click a window, or click with a scrolling
-              modifier (Ctrl by default; see Settings)
+automatic (no user action; answers at once):
   region      --region X,Y,W,H
   window      the active window, or --title TEXT, --handle N or --at X,Y;
               a named window is brought to the front first
   fullscreen  the monitor under the mouse, --monitor N, or --all monitors
   scrolling   a tall image of a scrolling panel: --at X,Y on the panel, or
               --title/--handle (the window's center); --from here starts at
-              the current position instead of the top. With no target the
-              user clicks the panel. The user's Esc stops early and keeps it.
+              the current position instead of the top. Scrolls by itself;
+              the user's Esc stops early and keeps what was captured.
+
+INTERACTIVE (waits up to 5 minutes for the user to choose on screen; needs
+--interactive, and only when the user asked to pick it themselves):
+  universal --interactive   the Universal capture overlay (PrtSc): the user
+                            drags a region, clicks a window, or clicks with a
+                            scrolling modifier (Ctrl by default)
+  scrolling --interactive   no target: the user clicks the panel to scroll
 
 examples:
   verdiclip ctl capture fullscreen --monitor 2 -o C:/shots/screen.png
   verdiclip ctl capture window --title "Visual Studio Code" --copy
   verdiclip ctl capture scrolling --at 900,600 --from here
-  verdiclip ctl capture region --region 0,0,800,600 --delay 2
-  verdiclip ctl capture universal --copy --no-editor   # clipboard only
+  verdiclip ctl capture region --region 0,0,800,600 --copy --no-editor
+  verdiclip ctl capture universal --interactive   # the user picks
 
 Without -o the capture isn't saved (`ctl save` saves it later). --no-editor
 skips the tab (reply "id" is null). The user's click modifiers don't apply:
-ctl always gets the capture. The reply's
-"warning" notes anything that went partly wrong. Captures that wait for the
-user answer when they finish; exit 7 means the user cancelled.
+ctl always gets the capture. The reply's "warning" notes anything that went
+partly wrong. Exit 7 means the user cancelled an interactive capture.
 """
 
 APPLY_EPILOG: Final = """\
@@ -209,7 +213,8 @@ def _wrapped(text: str) -> str:
 def _add_capture(command: _Commands) -> None:
     capture = command.add(
         "capture",
-        "Capture a region, window, monitor or scrolling panel into a new tab.",
+        "Capture a region, window, monitor or scrolling panel into a new tab "
+        "(--interactive for the user to choose).",
         description=CAPTURE_DESCRIPTION,
     )
     capture.add_argument("mode", choices=[k.value for k in CaptureKind])
@@ -247,6 +252,12 @@ def _add_capture(command: _Commands) -> None:
         dest="editor",
         action="store_false",
         help="Don't open a tab; needs -o and/or --copy.",
+    )
+    capture.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Allow a capture that waits for the user (universal, untargeted "
+        "scrolling).",
     )
     capture.add_argument(
         "--delay",
@@ -479,9 +490,12 @@ def _capture_params(args: argparse.Namespace, fail: Fail) -> JsonObject:
         spec = CaptureSpec.from_params(params)
     except AutomationError as err:
         fail(
-            err.message.replace("from here", "--from here").replace(
+            err.message.replace("from here", "--from here")
+            .replace(
                 "editor false needs output or copy", "--no-editor needs -o or --copy"
             )
+            .replace("pass interactive", "pass --interactive")
+            .replace("interactive applies", "--interactive applies")
         )
     if not math.isfinite(args.delay) or args.delay < 0:
         fail(f"--delay must be a number >= 0, got {args.delay}")
@@ -513,6 +527,7 @@ def _capture_target(args: argparse.Namespace, fail: Fail) -> JsonObject:
         "output": str(Path(args.output).resolve()) if args.output else None,
         "copy": True if args.copy else None,
         "editor": None if args.editor else False,
+        "interactive": True if args.interactive else None,
     }
     params |= {key: value for key, value in options.items() if value is not None}
     return params

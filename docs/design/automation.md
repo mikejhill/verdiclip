@@ -130,7 +130,7 @@ contacting the app. An agent is always required; scope defaults to user.
 | Command | Result |
 | --- | --- |
 | `ctl targets` | Monitors (numbered from 1, physical bounds, scale, primary) and visible windows (handle, title, bounds, foreground) |
-| `ctl capture universal` | Opens the Universal capture overlay; the answer waits for the user (a region, a window, or a scrolling capture started with a modifier click) |
+| `ctl capture universal --interactive` | Opens the Universal capture overlay; the answer waits for the user (a region, a window, or a scrolling capture started with a modifier click). Without `--interactive` it is a usage error, as is `capture scrolling` with no target, so an agent can't start a capture that waits for the user by accident |
 | `ctl capture region --region X,Y,W,H` | Crops one frozen frame |
 | `ctl capture window [--title T \| --handle N \| --at X,Y]` | The foreground window, or the named one raised first (`bring_to_front`, then 350 ms to repaint); a refused raise becomes a `warning` |
 | `ctl capture fullscreen [--monitor N \| --all]` | The cursor's monitor, monitor N, or the whole desktop |

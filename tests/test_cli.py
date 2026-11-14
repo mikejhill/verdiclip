@@ -256,7 +256,9 @@ class TestCommandLine:
         region = parser.parse(
             ["ctl", "capture", "region", "--region=-5,0,40,30", "-o", "r.png"]
         )
-        chosen = parser.parse(["ctl", "capture", "universal", "--delay", "2"])
+        chosen = parser.parse(
+            ["ctl", "capture", "universal", "--interactive", "--delay", "2"]
+        )
         window = parser.parse(
             ["ctl", "capture", "window", "--title", "Edge", "--copy", "--timeout", "9"]
         )
@@ -266,7 +268,9 @@ class TestCommandLine:
         scrolling = parser.parse(
             ["ctl", "capture", "scrolling", "--at", "900,600", "--from", "here"]
         )
-        tabless = parser.parse(["ctl", "capture", "universal", "--copy", "--no-editor"])
+        tabless = parser.parse(
+            ["ctl", "capture", "fullscreen", "--copy", "--no-editor"]
+        )
 
         assert region.method == "capture"
         assert region.params == {
@@ -278,6 +282,7 @@ class TestCommandLine:
         }
         assert chosen.params == {
             "mode": "universal",
+            "interactive": True,
             "delay": 2.0,
             "timeout": CHOOSING_TIMEOUT_S,
         }
@@ -421,13 +426,16 @@ class TestCommandLine:
             ["ctl", "capture", "scrolling", "--from", "here"],
             ["ctl", "capture", "window", "--at", "1"],
             ["ctl", "capture", "region", "--region", "0,0,5,5", "--delay", "-1"],
-            ["ctl", "capture", "universal", "--timeout", "0"],
+            ["ctl", "capture", "universal", "--interactive", "--timeout", "0"],
             ["ctl", "export"],
             ["ctl", "capture", "region"],
-            ["ctl", "capture", "universal", "--delay", "nan"],
-            ["ctl", "capture", "universal", "--delay", "inf"],
-            ["ctl", "capture", "universal", "--timeout", "inf"],
-            ["ctl", "capture", "universal", "--no-editor"],
+            ["ctl", "capture", "universal", "--interactive", "--delay", "nan"],
+            ["ctl", "capture", "universal", "--interactive", "--delay", "inf"],
+            ["ctl", "capture", "universal", "--interactive", "--timeout", "inf"],
+            ["ctl", "capture", "universal", "--interactive", "--no-editor"],
+            ["ctl", "capture", "universal"],
+            ["ctl", "capture", "scrolling"],
+            ["ctl", "capture", "window", "--interactive"],
         ],
         ids=[
             "no-method",
@@ -453,6 +461,9 @@ class TestCommandLine:
             "capture-infinite-delay",
             "capture-infinite-timeout",
             "capture-no-editor-goes-nowhere",
+            "capture-universal-not-marked-interactive",
+            "capture-untargeted-scrolling-not-marked-interactive",
+            "capture-interactive-that-isnt",
         ],
     )
     def test_ctl_invalid(

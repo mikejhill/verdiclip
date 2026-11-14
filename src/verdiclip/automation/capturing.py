@@ -47,6 +47,7 @@ class CaptureSpec:
     output: Path | None = None
     copy: bool = False
     editor: bool = True
+    allow_interactive: bool = False
 
     @property
     def interactive(self) -> bool:
@@ -88,6 +89,7 @@ class CaptureSpec:
             output=_output(params.get("output")),
             copy=_flag(params.get("copy"), "copy"),
             editor=_flag(params.get("editor", True), "editor"),
+            allow_interactive=_flag(params.get("interactive"), "interactive"),
         )
         spec.check()
         return spec
@@ -133,6 +135,20 @@ class CaptureSpec:
             raise AutomationError(ErrorCode.BAD_REQUEST, msg)
         if self.monitor is not None and self.all_screens:
             msg = "Give monitor or all, not both"
+            raise AutomationError(ErrorCode.BAD_REQUEST, msg)
+        if self.interactive and not self.allow_interactive:
+            what = (
+                "universal capture"
+                if self.kind is CaptureKind.UNIVERSAL
+                else "scrolling capture without a target"
+            )
+            msg = (
+                f"{what} waits for the user to choose on screen; pass interactive "
+                "only when the user asked to choose, otherwise give a target"
+            )
+            raise AutomationError(ErrorCode.BAD_REQUEST, msg)
+        if self.allow_interactive and not self.interactive:
+            msg = "interactive applies only to universal, or scrolling with no target"
             raise AutomationError(ErrorCode.BAD_REQUEST, msg)
         if not self.editor and self.output is None and not self.copy:
             msg = "editor false needs output or copy, or the capture goes nowhere"

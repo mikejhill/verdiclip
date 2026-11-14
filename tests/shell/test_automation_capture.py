@@ -344,7 +344,7 @@ def test_a_failure_after_raising_is_reported(rig: Rig, qtbot: QtBot) -> None:
 
 def test_interactive_region_waits_for_the_overlay(rig: Rig) -> None:
     """Without a region the overlay opens; its result answers the request."""
-    answer = rig.captures.start(spec(mode="universal"))
+    answer = rig.captures.start(spec(mode="universal", interactive=True))
 
     assert rig.choosers.calls == [("region",)]
     assert rig.captures.waiting
@@ -369,7 +369,7 @@ def test_scrolling_targets(rig: Rig, qtbot: QtBot) -> None:
     window = rig.captures.start(spec(mode="scrolling", title="Edge"))
     qtbot.waitUntil(lambda: len(rig.choosers.calls) == 2)
     rig.captures.cancelled()
-    chooser = rig.captures.start(spec(mode="scrolling"))
+    chooser = rig.captures.start(spec(mode="scrolling", interactive=True))
 
     assert rig.choosers.calls == [
         ("scroll_at", Point(30, 40), "", False),
@@ -383,9 +383,9 @@ def test_scrolling_targets(rig: Rig, qtbot: QtBot) -> None:
 
 def test_failures_and_shutdown_answer_a_waiting_request(rig: Rig) -> None:
     """A failed capture and closing the app both answer with an error."""
-    failed = rig.captures.start(spec(mode="universal"))
+    failed = rig.captures.start(spec(mode="universal", interactive=True))
     rig.captures.failed("No scrolling area there")
-    closing = rig.captures.start(spec(mode="universal"))
+    closing = rig.captures.start(spec(mode="universal", interactive=True))
     rig.captures.shutdown()
 
     assert error(failed).message == "No scrolling area there"
@@ -502,7 +502,7 @@ def test_only_the_request_that_scrolls_is_cancelled_when_scrolling_ends(
     rig: Rig,
 ) -> None:
     """A scrolling session ending answers its own request, never a later one."""
-    window = rig.captures.start(spec(mode="universal"))
+    window = rig.captures.start(spec(mode="universal", interactive=True))
     rig.captures.scrolling_finished()  # Someone else's session: no effect
     waiting = not window.done
     rig.captures.scrolling_started()  # The overlay's Ctrl+click handed it over

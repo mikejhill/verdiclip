@@ -32,9 +32,11 @@ command's options (`capture --help` for capture types and targets,
 
 - Save, export, copy or close only when the user asks. Never overwrite a file
   the user didn't name. Never `close --discard` without the user's say-so.
-- An interactive capture (`capture universal`, or `capture scrolling` with no
-  target) waits for the user: tell them what to
-  click first. Exit 7 means they cancelled.
+- Captures run without the user by default: give a target (`--region`,
+  `--title`, `--monitor`, `--at` …). Use `--interactive` (`capture universal`,
+  or `capture scrolling` with no target) only when the user asks to pick the
+  area themselves; it waits for them, so tell them what to click first. Exit 7
+  means they cancelled.
 - For "just copy it" or "just save it", add `--no-editor` with `--copy` or
   `-o`; otherwise the capture opens in a tab for editing.
 - Screenshots can hold private information. Don't send them anywhere the user

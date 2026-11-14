@@ -510,7 +510,12 @@ def test_capture_without_a_tab_has_no_id(
     app_handlers: AutomationHandlers, app: FakeApp
 ) -> None:
     """A --no-editor capture replies with its outputs and a null id."""
-    params: JsonObject = {"mode": "universal", "copy": True, "editor": False}
+    params: JsonObject = {
+        "mode": "region",
+        "region": [0, 0, 5, 5],
+        "copy": True,
+        "editor": False,
+    }
     later = app_handlers(Request("capture", params))
     assert isinstance(later, Deferred)
     replies: list[JsonObject | None] = []
@@ -537,7 +542,11 @@ def test_targets_come_from_the_app(app_handlers: AutomationHandlers) -> None:
 
 @pytest.mark.parametrize(
     ("method", "params"),
-    [("capture", {"mode": "universal"}), ("targets", {}), ("close", {"discard": True})],
+    [
+        ("capture", {"mode": "fullscreen"}),
+        ("targets", {}),
+        ("close", {"discard": True}),
+    ],
 )
 def test_app_actions_need_the_app(
     handlers: AutomationHandlers, method: str, params: JsonObject

@@ -136,7 +136,7 @@ def test_interactive_region_answers_with_the_users_choice(
     app = make_app()
     ctl = Ctl(app, tmp_path)
 
-    assert ctl.send("capture", mode="universal")
+    assert ctl.send("capture", mode="universal", interactive=True)
     qtbot.waitUntil(lambda: bool(app.controller.capture.overlays))
     ctl.ask("capture", mode="fullscreen")
     busy = last_error(ctl)
@@ -162,11 +162,11 @@ def test_cancelled_and_failed_choices_answer_with_errors(
     notes: list[str] = []
     app.controller._notify = lambda title, *_a, **_k: notes.append(title)  # ty: ignore[invalid-assignment]
 
-    ctl.send("capture", mode="universal")
+    ctl.send("capture", mode="universal", interactive=True)
     qtbot.waitUntil(lambda: bool(app.controller.capture.overlays))
     app.controller.capture.cancel()
     cancelled = last_error(ctl)
-    ctl.send("capture", mode="universal")
+    ctl.send("capture", mode="universal", interactive=True)
     qtbot.waitUntil(lambda: bool(app.controller.capture.overlays))
     app.controller.capture.failed.emit("screen is locked")
     failed = ctl.replies[-1].error
@@ -223,7 +223,7 @@ def test_scrolling_chooser_cancel_and_failure_answer(
     helper = prepare(app)
     service = app.controller._scrolling
 
-    ctl.send("capture", mode="scrolling")
+    ctl.send("capture", mode="scrolling", interactive=True)
     qtbot.waitUntil(lambda: bool(service.overlays))
     service.cancel()
     cancelled = last_error(ctl)
@@ -253,7 +253,7 @@ def test_targets_and_shutdown(
     ctl = Ctl(app, tmp_path)
 
     targets = ctl.result("targets")
-    ctl.send("capture", mode="universal")
+    ctl.send("capture", mode="universal", interactive=True)
     qtbot.waitUntil(lambda: bool(app.controller.capture.overlays))
     app.controller.shutdown()
     closing = ctl.replies[-1].error
@@ -331,7 +331,7 @@ def test_hotkeys_during_a_ctl_overlay_or_scroll(
     helper = prepare(app)
     service = app.controller._scrolling
 
-    ctl.send("capture", mode="universal")
+    ctl.send("capture", mode="universal", interactive=True)
     qtbot.waitUntil(lambda: bool(app.controller.capture.overlays))
     overlays = app.controller.capture.overlays
     app.press_hotkey("region")
