@@ -15,13 +15,13 @@ Releases are automatic. Versions follow [SemVer](https://semver.org/) and are co
 
 Running copies pick the release up from PyPI by themselves: VerdiClip checks a minute after it starts and every 6 hours, and installs a newer release when no image is open, whether it runs from `uv tool`, pip, uvx, or a checkout on `main` (UX-TRY-11, UX-TRY-12). A checkout pulls `main`, so it also gets anything merged after the release.
 
-While the version is below 1.0, breaking changes bump the minor version.
+From 1.0.0 on, breaking changes bump the major version.
 
-| Commit | Example | Next version from 0.4.2 |
+| Commit | Example | Next version from 1.4.2 |
 | --- | --- | --- |
-| `fix:` / `perf:` | `fix: keep crop inside the image` | 0.4.3 |
-| `feat:` | `feat: add blur obfuscation` | 0.5.0 |
-| `feat!:` / `BREAKING CHANGE:` | `feat!: new settings schema` | 0.5.0 (1.0+ → major) |
+| `fix:` / `perf:` | `fix: keep crop inside the image` | 1.4.3 |
+| `feat:` | `feat: add blur obfuscation` | 1.5.0 |
+| `feat!:` / `BREAKING CHANGE:` | `feat!: new settings schema` | 2.0.0 |
 | others | `docs:`, `ci:`, `chore:` … | no release |
 
 To force a specific version, add a commit with a `Release-As: 1.0.0` footer.

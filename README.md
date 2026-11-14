@@ -15,6 +15,15 @@ Fast, faithful screenshots for Windows: grab a precise piece of the screen, mark
 
 ![The VerdiClip editor in the dark theme, annotating a fictional weekend itinerary with numbered steps, a labeled callout, an arrow, and a highlight](https://raw.githubusercontent.com/mikejhill/verdiclip/main/docs/images/editor.png)
 
+## Features
+
+- **Capture** a region, a window, a monitor, or a whole scrolling page, from one key (`PrtSc`) or the tray. The screen freezes first, so you get exactly what you saw.
+- **Annotate** with arrows, boxes with labels, numbered steps, highlights, pixelation, text and freehand; crop, rotate, flip and resize without losing your marks. Everything is undoable.
+- **Deliver** to the clipboard, a file, or the printer, in any combination, automatically or from the editor.
+- **Work in tabs**: each capture opens as a tab; drag tabs between windows.
+- **Script it**: `verdiclip ctl` captures, edits, saves and closes images in the running app, and an installable skill teaches AI coding agents to use it.
+- **Stays current**: updates itself from PyPI, and can be the Windows default image app.
+
 VerdiClip is an independent project. See [ATTRIBUTION.md](https://github.com/mikejhill/verdiclip/blob/main/ATTRIBUTION.md) for credits.
 
 ![Capture a region, window, or screen; annotate with arrows, labels, and highlights; deliver to clipboard, file, or print.](https://raw.githubusercontent.com/mikejhill/verdiclip/main/docs/images/workflow.png)
@@ -42,23 +51,21 @@ VerdiClip checks PyPI for a newer release a minute after it starts and every 6 h
 
 Tray → **Check for updates** opens a status window immediately. It stays visible with the result or an error; a failed check can be retried. Development versions that cannot be compared with stable releases say so explicitly. Settings → General turns off automatic checking, or automatic installing (VerdiClip then offers each release in a notification). If an update fails, the old version starts again and the notification names the log, `%APPDATA%\VerdiClip\update\update.log`.
 
-## Capture and tabs
-
-Completed captures open a new tab in the existing editor by default; Settings can choose separate windows. The editor is brought forward when capture completes, unless protected editor UI is open. Universal capture, active window, full-screen and Repeat capture keep their existing behavior. Scrolling capture is a separate command (see below).
-
 ## Capture
 
 | Do this | Press |
 | --- | --- |
 | **Universal capture**: drag a region, click a window, hold keys for more (below) | `PrtSc` (or left-click the tray icon) |
 | Capture the active window | `Alt+PrtSc` |
-| Capture every monitor | `Ctrl+PrtSc` |
+| Capture the monitor under the pointer | `Ctrl+PrtSc` |
 | Repeat the last capture | `Shift+PrtSc` |
 | Capture a scrolling area | `Ctrl+Alt+PrtSc` |
 
 ![The capture overlay: the frozen screen is dimmed, the window under the cursor is outlined with its title, and a magnifier shows the exact pixels](https://raw.githubusercontent.com/mikejhill/verdiclip/main/docs/images/capture.png)
 
 While selecting, the screen is frozen so you get exactly what you saw. A magnifier follows the cursor, arrow keys nudge it by a pixel (`Ctrl` for 10), `Enter` starts and finishes a selection from the keyboard, and `Esc` or a right-click cancels.
+
+Each capture opens as a new tab in the editor and brings it forward (Settings → Capture → **New screenshots** can open a new window instead). If a menu or dialog is open in the editor, the new tab waits behind it rather than interrupting you.
 
 ### Universal capture
 
@@ -85,9 +92,17 @@ If Windows or another screenshot tool already owns `PrtSc`, VerdiClip tells you 
 
 ### Scrolling capture
 
-Choose **Capture scrolling area** from the tray, or press `Ctrl+Alt+PrtSc`, then click inside the panel you want (a web page, a document, a list). You can also start it from universal capture (`PrtSc`): `Ctrl`+click the panel to capture from where it is now, or `Ctrl+Alt`+click for all of it. VerdiClip scrolls it to the top, captures it page by page to the bottom, joins the pages, and puts the panel back where it was. The image uses your usual editor, clipboard and file settings. Press `Esc` to stop.
+Capture a whole web page, document or list, not just what fits on screen:
 
-It works with panels that support Windows UI Automation scrolling, which covers browsers, Office, Explorer and most modern apps. Sticky headers and footers appear once. If some pages could not be matched exactly, the image is still delivered and VerdiClip tells you to check it. Keep other windows off the panel while it runs.
+| Start | Captures |
+| --- | --- |
+| `Ctrl+Alt+PrtSc` (or tray → **Capture scrolling area**), then click the panel | From the top (`Ctrl`+click: from where it is now) |
+| `PrtSc`, then `Ctrl`+click the panel | From where it is now down |
+| `PrtSc`, then `Ctrl+Alt`+click the panel | From the top |
+
+VerdiClip scrolls the panel page by page to the bottom, joins the pages, and scrolls it back to where it was. Press `Esc` to stop early and keep what was captured so far. The image goes to your usual editor, clipboard and file settings.
+
+It works with panels that support Windows UI Automation scrolling, which covers browsers, Office, Explorer, Settings and most modern apps. Sticky headers and footers appear once. A capture stops at 100 pages, 60 megapixels or 45 seconds and keeps what it has. If some pages could not be matched exactly, the image is still delivered and VerdiClip tells you to check it. Keep other windows off the panel while it runs. If nothing at the point scrolls, VerdiClip says why; **Copy last scrolling error** in the tray keeps the reason.
 
 ## Annotate
 
@@ -134,25 +149,30 @@ Open from the tray menu or with `Ctrl+,` in any editor.
 
 ![Settings → Capture: after-capture actions can be combined](https://raw.githubusercontent.com/mikejhill/verdiclip/main/docs/images/settings-capture.png)
 
-- **After capturing** — any combination of: open in the editor, copy to the clipboard, save to the output folder.
+- **Capture** — after capturing, any combination of: open in the editor, copy to the clipboard, save to the output folder; open new screenshots as tabs or windows; show the magnifier.
 - **Hotkeys** — validated as you type; conflicts are reported.
 - **Modifiers** — for each combination of `Ctrl`, `Alt` and `Shift` in [Universal capture](#universal-capture): what a click captures and where the image is sent; **Restore defaults** resets them.
 - **Output** — folder, file-name pattern (`{date}`, `{time}`, `{title}`, `{counter}`; default `{date}_{time}_{title}`, where `{title}` is the captured window's title (spaces become `_` when the pattern has none), or *Screenshot* / *Screen* for region and full-screen captures) with a live preview, format, JPEG quality.
 - **Editor** — default color, width, and font.
-- **General** — light, dark, or match-Windows theme; start at sign-in; check for and install updates automatically; show VerdiClip in Explorer's **Open with** menu for images; let the `verdiclip ctl` command read and edit open images. **Make VerdiClip the default image app…** opens Windows Settings at VerdiClip's Default apps page, where you choose it as the default (Windows requires you to confirm this yourself).
+- **General** — light, dark, or match-Windows theme; start at sign-in; show VerdiClip in the Start menu; check for and install updates automatically; show VerdiClip in Explorer's **Open with** menu for images; let the `verdiclip ctl` command drive the app. **Make VerdiClip the default image app…** opens Windows Settings at VerdiClip's Default apps page, where you choose it as the default (Windows requires you to confirm this yourself). **Install AI agent skill…** installs the `verdiclip ctl` skill for Claude Code, Codex, GitHub Copilot or the shared `.agents` folder.
 
 ![Settings → General: theme, start at sign-in, and the Open with integration](https://raw.githubusercontent.com/mikejhill/verdiclip/main/docs/images/settings-general.png)
 
 ## Command line
 
+Two command families:
+
+- `verdiclip ctl …` drives the **running app** (everything, including scrolling captures and editing). Use this for scripts and AI agents.
+- `verdiclip capture …` and `verdiclip open …` work **without the app running**: a one-shot capture to a file or the clipboard, or opening images in the editor.
+
 ```bash
-verdiclip capture screen -o shot.png
+verdiclip capture screen -o shot.png        # Standalone: every monitor
 verdiclip capture region --region 0,0,1280,720 --clipboard
 verdiclip capture window --delay 3
-verdiclip open picture.png          # Opens in the running instance if there is one
+verdiclip open picture.png                  # Opens in the running instance if there is one
 ```
 
-### Command line (`verdiclip ctl`)
+### Driving the running app (`verdiclip ctl`)
 
 `verdiclip ctl` drives the running app: it captures, and reads, edits, saves and closes open images, unsaved edits included, and prints JSON. `verdiclip ctl --help` and `verdiclip ctl COMMAND --help` are the full reference.
 
@@ -199,12 +219,7 @@ Requires Windows 10+ and [uv](https://docs.astral.sh/uv/).
 
 ### Run from the checkout
 
-Run `uv sync` once in the repository root to create `.venv` and install dependencies. Then use either root launcher:
-
-- Double-click [Run-VerdiClip.bat](https://github.com/mikejhill/verdiclip/blob/main/Run-VerdiClip.bat) in Explorer.
-- From PowerShell, run `.\Run-VerdiClip.ps1` (see [Run-VerdiClip.ps1](https://github.com/mikejhill/verdiclip/blob/main/Run-VerdiClip.ps1)).
-
-Both run `.venv\Scripts\pythonw.exe -m verdiclip` directly and return immediately, starting the tray app without a console window. A terminal opened by double-clicking the batch file closes after launch; an existing terminal stays available. The scripts work from any current directory and require Windows. If `.venv` is missing, run `uv sync` before trying again.
+Run `uv sync` once in the repository root, then double-click [Run-VerdiClip.bat](https://github.com/mikejhill/verdiclip/blob/main/Run-VerdiClip.bat) or run `.\Run-VerdiClip.ps1`. Both start the tray app from `.venv` without a console window and return immediately.
 
 ### Development commands
 

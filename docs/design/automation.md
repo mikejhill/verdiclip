@@ -1,7 +1,9 @@
 # Automation: the `verdiclip ctl` command
 
 Local tools (Claude Code, Codex, scripts) capture the screen, and read, edit,
-open, save, export, copy and close the images open in VerdiClip's editor. The running app owns the documents, their
+open, save, export, copy and close the images open in VerdiClip's editor.
+`verdiclip ctl --help` and `verdiclip ctl COMMAND --help` are the usage
+reference; this page records the design. The running app owns the documents, their
 undo history and the renderer, so tools ask the app instead of touching files.
 
 ```
@@ -30,7 +32,7 @@ pipe as a file, or the Unix socket Qt uses elsewhere. The `verdiclip` entry poin
 still loads PySide6 when it starts, but `ctl` creates no Qt application and
 configures no logging.
 
-## Commands (phase 1)
+## Reading: status, list, get, render
 
 | Command | Result |
 | --- | --- |
@@ -53,7 +55,7 @@ configures no logging.
 - Exit codes: 0 ok, 1 failed, 2 bad usage, 3 not running or turned off,
   4 conflict, 5 not found, 6 busy.
 
-## Commands (phase 2a: editing)
+## Editing: apply, history, undo, redo, select
 
 | Command | Result |
 | --- | --- |
@@ -84,31 +86,7 @@ copy of the document; the real one changes only when all succeed:
 - `history` marks each step `cli: true` when `verdiclip ctl` made it; `--only-cli`
   refuses to undo or redo past a step made in the editor.
 
-## Skill (phase 2b)
-
-`src/verdiclip/automation/skill/SKILL.md` ships in the package and teaches an
-agent the workflow: list, render and look, get the state, apply with
-`--expect-state`, render again; plus history and the rules (save or copy only
-when asked, never close, never undo the user's steps unasked). Since the capture
-commands it is thin: `verdiclip ctl --help` and `COMMAND --help` are the usage
-reference (`ctl_cli.py`), and the skill points to them with only the workflow and
-rules. A test checks every command the skill names exists. Settings → General →
-Install AI agent skill… installs it from the app (`shell/skill_dialog.py`).
-
-`ctl install-skill --agent LIST [--scope user|project] [--dir PATH]` copies it
-to `<skills folder>/verdiclip/SKILL.md`, replacing an older copy, without
-contacting the app. An agent is always required; scope defaults to user.
-
-| Agent | User scope | Project scope |
-| --- | --- | --- |
-| `claude` | `~/.claude/skills` | `.claude/skills` |
-| `codex` | `~/.codex/skills` | `.codex/skills` |
-| `agents` | `~/.agents/skills` | `.agents/skills` |
-| `copilot` | `~/.copilot/skills` | `.github/skills` |
-
-`--dir` replaces the agent's folder and takes one agent.
-
-## Commands (phase 3: files)
+## Files: open, save, copy
 
 | Command | Result |
 | --- | --- |
@@ -125,7 +103,7 @@ contacting the app. An agent is always required; scope defaults to user.
   base image, the tool changes it, and `set_image` puts it back as one undo
   step.
 
-## Commands (phase 4: captures and closing)
+## Capturing, exporting and closing
 
 | Command | Result |
 | --- | --- |
@@ -150,6 +128,30 @@ contacting the app. An agent is always required; scope defaults to user.
 - Any capture already running answers `busy`. `--delay` sleeps in the CLI before
   sending; `--timeout` (default 30 s, 300 s when the user chooses or it scrolls)
   is the CLI's wait. A capture that finishes after the CLI gave up still opens.
+
+## The agent skill
+
+`src/verdiclip/automation/skill/SKILL.md` ships in the package and teaches an
+agent the workflow: list, render and look, get the state, apply with
+`--expect-state`, render again; plus history and the rules (save or copy only
+when asked, never close, never undo the user's steps unasked). Since the capture
+commands it is thin: `verdiclip ctl --help` and `COMMAND --help` are the usage
+reference (`ctl_cli.py`), and the skill points to them with only the workflow and
+rules. A test checks every command the skill names exists. Settings → General →
+Install AI agent skill… installs it from the app (`shell/skill_dialog.py`).
+
+`ctl install-skill --agent LIST [--scope user|project] [--dir PATH]` copies it
+to `<skills folder>/verdiclip/SKILL.md`, replacing an older copy, without
+contacting the app. An agent is always required; scope defaults to user.
+
+| Agent | User scope | Project scope |
+| --- | --- | --- |
+| `claude` | `~/.claude/skills` | `.claude/skills` |
+| `codex` | `~/.codex/skills` | `.codex/skills` |
+| `agents` | `~/.agents/skills` | `.agents/skills` |
+| `copilot` | `~/.copilot/skills` | `.github/skills` |
+
+`--dir` replaces the agent's folder and takes one agent.
 
 ## Later
 

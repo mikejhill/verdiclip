@@ -36,6 +36,10 @@
 
 * **ctl:** captures that wait for the user need --interactive ([#192](https://github.com/mikejhill/verdiclip/issues/192)) ([c943751](https://github.com/mikejhill/verdiclip/commit/c943751a5111bab9327ca12fd257c569c338ca59))
 
+### Bug Fixes
+
+* **scrolling:** crop the thumb's soft edge in short captures too ([#193](https://github.com/mikejhill/verdiclip/issues/193)) ([81d289e](https://github.com/mikejhill/verdiclip/commit/81d289e0772184a06c3f33962fc1b63837d6aa94))
+
 ## [0.20.0](https://github.com/mikejhill/verdiclip/compare/v0.19.0...v0.20.0) (2026-11-14)
 
 

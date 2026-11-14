@@ -86,7 +86,7 @@ class TrayIcon(QSystemTrayIcon):
         self.rebuild_menu(self._hotkey_labels)
 
     def set_scrolling_state(self, active: bool, cancelling: bool) -> None:  # noqa: FBT001 - Qt signal slot
-        """Keep cancellation discoverable until the helper retires (UX-CAP-18)."""
+        """Keep cancellation discoverable until the helper retires (UX-CAP-21)."""
         self._scroll_active = active
         self.setToolTip(
             "Stopping scrolling capture…"
