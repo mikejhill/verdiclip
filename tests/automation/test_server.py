@@ -300,7 +300,7 @@ def test_deferred_answers_hold_later_requests_in_order(qtbot: QtBot) -> None:
         server.close()
 
 
-def test_deferred_errors_and_settled_deferreds(qtbot: QtBot) -> None:
+def test_deferred_errors_and_settled_deferreds() -> None:
     """A rejected deferred answers with its error; a settled one at once."""
     handler = Later()
     server = ControlServer(handler, name="unused")
@@ -317,7 +317,6 @@ def test_deferred_errors_and_settled_deferreds(qtbot: QtBot) -> None:
     assert Response.decode(settled.rstrip(b"\n")).result == {"done": True}
     with pytest.raises(RuntimeError, match="deferred"):
         server.respond(Request("wait", {}, ident=5).encode())
-    del qtbot
 
 
 def test_answer_after_the_client_left_is_dropped(qtbot: QtBot) -> None:
