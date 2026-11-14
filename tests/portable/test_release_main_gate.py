@@ -135,6 +135,16 @@ def test_both_publish_targets_depend_on_gated_build() -> None:
     assert "needs: build" in workflow.split("  publish-testpypi:", 1)[1]
 
 
+def scan(sha: str, category: str, results: int = 0) -> dict[str, object]:
+    """One code-scanning analysis record."""
+    return {"commit_sha": sha, "category": category, "results_count": results}
+
+
+def clean_scan(sha: str) -> list[dict[str, object]]:
+    """A clean analysis of ``sha`` in every category."""
+    return [scan(sha, category) for category in sorted(gate.SCAN_CATEGORIES)]
+
+
 def reply(url: str, rows: list[dict[str, object]], fault: str | None) -> object:
     """GitHub's answer to ``url`` for a gate run with ``fault``."""
     if "actions/runs?" in url:
@@ -153,8 +163,7 @@ def reply(url: str, rows: list[dict[str, object]], fault: str | None) -> object:
             "commits": [{"commit": {"message": f"{title} (#1)\n\nbody"}}],
         }
     if "code-scanning/analyses?" in url:
-        assert f"sha={SHA}" in url
-        return [{"results_count": 0}, {"results_count": 0}]
+        return [scan("b" * 40, "zizmor"), *clean_scan(SHA), scan("c" * 40, "zizmor")]
     assert "code-scanning/alerts?" in url
     return [{}] if fault == "alerts" else []
 
@@ -271,19 +280,39 @@ def test_only_a_later_release_merge_supersedes(
 
 
 @pytest.mark.parametrize(
-    ("analyses", "clean"),
+    ("pages", "clean"),
     [
-        (None, False),
-        ([], False),
-        ([{"results_count": 0}, {"results_count": 2}], False),
-        ([{"results_count": 0}, "x"], False),
-        ([{"results_count": 0}], True),
+        ([None], False),
+        ([[]], False),
+        ([clean_scan("b" * 40)], False),
+        ([[*clean_scan(SHA)[:2], scan("b" * 40, "zizmor")]], False),
+        ([[*clean_scan(SHA)[:2], scan(SHA, "zizmor", 1)]], False),
+        ([[*clean_scan("b" * 40), "x"]], False),
+        ([[scan("b" * 40, "zizmor")] * 100, clean_scan(SHA)], True),
+        ([clean_scan("b" * 40) + clean_scan(SHA) + clean_scan("c" * 40)], True),
     ],
-    ids=["unreadable", "none", "findings", "malformed", "clean"],
+    ids=[
+        "unreadable",
+        "none",
+        "other-commit-only",
+        "missing-category",
+        "findings",
+        "malformed",
+        "second-page",
+        "clean",
+    ],
 )
 def test_a_moved_release_needs_its_own_clean_scan(
-    analyses: object,
+    pages: list[object],
     clean: bool,  # noqa: FBT001 - pytest parameter
 ) -> None:
-    """Only analyses of the release commit itself, all with no results, pass."""
-    assert gate.clean_analyses(analyses) is clean
+    """Only this commit's analyses count, in every category, with no results."""
+    answers = iter(pages)
+    asked: list[str] = []
+
+    def fetch(endpoint: str) -> object:
+        asked.append(endpoint)
+        return next(answers, [])
+
+    assert gate.scanned_clean(fetch, SHA) is clean
+    assert all("sha=" not in endpoint for endpoint in asked)

@@ -97,17 +97,34 @@ def releases_between(compare: object) -> bool:
     return False
 
 
-def clean_analyses(analyses: object) -> bool:
-    """Whether code scanning analysed this exact commit and found nothing.
+# Each main commit gets one code-scanning analysis per category
+SCAN_CATEGORIES = {"/language:python", "/language:actions", "zizmor"}
+
+
+def scanned_clean(fetch: Callable[[str], object], sha: str) -> bool:
+    """Whether every code-scanning category analysed ``sha`` and found nothing.
 
     Main's open alerts describe its newest analysis, which a later fix may have
-    cleared, so a commit main has moved past needs its own analyses instead.
+    cleared, so a commit main has moved past needs its own analyses. The list
+    endpoint ignores a commit filter, so pages are read newest first and only
+    records for ``sha`` count; anything missing or unreadable is not clean.
     """
-    if not isinstance(analyses, list) or analyses == []:
-        return False
-    return all(
-        isinstance(analysis, dict) and analysis.get("results_count") == 0
-        for analysis in analyses
+    mine: list[dict[str, object]] = []
+    for page in range(1, 4):
+        records = fetch(
+            f"code-scanning/analyses?ref=refs%2Fheads%2Fmain&per_page=100&page={page}"
+        )
+        if not isinstance(records, list) or not all(
+            isinstance(record, dict) for record in records
+        ):
+            return False
+        mine.extend(record for record in records if record.get("commit_sha") == sha)
+        past = records != [] and records[-1].get("commit_sha") != sha
+        if len(records) < PAGE_SIZE or (mine and past):
+            break
+    categories = {record.get("category") for record in mine}
+    return categories >= SCAN_CATEGORIES and all(
+        record.get("results_count") == 0 for record in mine
     )
 
 
@@ -159,12 +176,7 @@ def main() -> None:
                 # stand down so the newer push's run releases instead.
                 if releases_between(
                     fetch(f"compare/{sha}...{head}")
-                ) or not clean_analyses(
-                    fetch(
-                        "code-scanning/analyses?ref=refs%2Fheads%2Fmain"
-                        f"&sha={sha}&per_page=100"
-                    )
-                ):
+                ) or not scanned_clean(fetch, sha):
                     superseded(sha, head)
                     return
             else:
