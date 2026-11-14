@@ -57,14 +57,14 @@ class ClickOutput(StrEnum):
 
 _TARGET_LABELS: Final = {
     ClickTarget.WINDOW: "Window",
-    ClickTarget.SCROLL_HERE: "Scrolling, from here down",
-    ClickTarget.SCROLL_ALL: "Scrolling, whole pane",
+    ClickTarget.SCROLL_HERE: "Scroll: from here down",
+    ClickTarget.SCROLL_ALL: "Scroll: whole pane",
 }
 _OUTPUT_LABELS: Final = {
-    ClickOutput.USUAL: "After-capture settings",
-    ClickOutput.CLIPBOARD: "Copy only",
-    ClickOutput.SAVE: "Save only",
-    ClickOutput.CLIPBOARD_AND_SAVE: "Copy and save",
+    ClickOutput.USUAL: "Usual (Capture tab)",
+    ClickOutput.CLIPBOARD: "Clipboard only",
+    ClickOutput.SAVE: "File only",
+    ClickOutput.CLIPBOARD_AND_SAVE: "Clipboard and file",
     ClickOutput.EDITOR: "Editor only",
 }
 

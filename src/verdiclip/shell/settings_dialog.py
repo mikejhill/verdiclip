@@ -19,7 +19,6 @@ from PySide6.QtWidgets import (
     QFontComboBox,
     QFormLayout,
     QGridLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -69,10 +68,10 @@ THEME_LABELS: Final = {
     Theme.DARK: "Dark",
 }
 ERROR_STYLE: Final = "color: #c62828;"
-UNIVERSAL_HELP: Final = (
-    "Universal capture (PrtSc): drag to capture a region, or click to capture "
-    "the window under the pointer. Hold keys while you click or let go to do "
-    "more. A drag always captures its region; only “Then” applies to it."
+MODIFIERS_HELP: Final = (
+    "Hold keys while finishing a Universal capture (PrtSc). A click captures "
+    "what “Click captures” says; a drag always captures the dragged area. "
+    "Either way, the image goes where “Send to” says."
 )
 
 
@@ -195,7 +194,7 @@ class SettingsDialog(QDialog):
         )
 
     def gesture_combos(self, name: str) -> tuple[QComboBox, QComboBox]:
-        """Return the "Click captures" and "Then" boxes for modifier ``name``."""
+        """Return the "Click captures" and "Send to" boxes for modifier ``name``."""
         return self._gesture_targets[name], self._gesture_outputs[name]
 
     def hotkey_edit(self, name: str) -> QLineEdit:
@@ -231,6 +230,7 @@ class SettingsDialog(QDialog):
         tabs = QTabWidget()
         tabs.addTab(self._capture_tab(), "Capture")
         tabs.addTab(self._hotkey_tab(), "Hotkeys")
+        tabs.addTab(self._modifiers_tab(), "Modifiers")
         tabs.addTab(self._output_tab(), "Output")
         tabs.addTab(self._editor_tab(), "Editor")
         tabs.addTab(self._general_tab(), "General")
@@ -253,23 +253,28 @@ class SettingsDialog(QDialog):
         form.addRow("After capturing:", actions)
         form.addRow("New screenshots:", self._destination)
         form.addRow("While selecting:", self._magnifier)
-        form.addRow(self._universal_group())
         return tab
 
-    def _universal_group(self) -> QGroupBox:
+    def _modifiers_tab(self) -> QWidget:
         """Return the table of what each modifier does in universal capture."""
-        group = QGroupBox("Universal capture modifiers")
-        help_text = QLabel(UNIVERSAL_HELP)
+        help_text = QLabel(MODIFIERS_HELP)
         help_text.setWordWrap(True)
         grid = QGridLayout()
-        grid.addWidget(QLabel("<b>Hold</b>"), 0, 0)
+        grid.addWidget(QLabel("<b>Keys</b>"), 0, 0)
         grid.addWidget(QLabel("<b>Click captures</b>"), 0, 1)
-        grid.addWidget(QLabel("<b>Then</b>"), 0, 2)
-        for row, name in enumerate(ClickGestures.combos(), start=1):
+        grid.addWidget(QLabel("<b>Send to</b>"), 0, 2)
+        # The fixed no-keys row, so every other row reads as a change from it
+        for column, text in enumerate(
+            ("None", ClickTarget.WINDOW.label, ClickOutput.USUAL.label)
+        ):
+            baseline = QLabel(text)
+            baseline.setEnabled(False)
+            grid.addWidget(baseline, 1, column)
+        for row, name in enumerate(ClickGestures.combos(), start=2):
             label = combo_label(name)
             target, output = QComboBox(), QComboBox()
             target.setAccessibleName(f"{label}: click captures")
-            output.setAccessibleName(f"{label}: then")
+            output.setAccessibleName(f"{label}: send to")
             for value in ClickTarget:
                 target.addItem(value.label, value.value)
             for value in ClickOutput:
@@ -281,11 +286,16 @@ class SettingsDialog(QDialog):
             grid.addWidget(output, row, 2)
         reset = QPushButton("Restore defaults")
         reset.clicked.connect(lambda: self._load_gestures(ClickGestures()))
-        layout = QVBoxLayout(group)
+        reset_row = QHBoxLayout()
+        reset_row.addStretch(1)
+        reset_row.addWidget(reset)
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
         layout.addWidget(help_text)
         layout.addLayout(grid)
-        layout.addWidget(reset)
-        return group
+        layout.addLayout(reset_row)
+        layout.addStretch(1)
+        return tab
 
     def _load_gestures(self, gestures: ClickGestures) -> None:
         """Show ``gestures`` in the modifier table."""

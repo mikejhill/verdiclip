@@ -167,7 +167,12 @@ class Overlay:
         )
 
     def hover(self, at: tuple[int, int]) -> None:
-        """Move the pointer without pressing."""
+        """Move the pointer without pressing.
+
+        Qt drops a move to where the last test event left the pointer, so
+        step beside ``at`` first; otherwise the overlay never sees the move.
+        """
+        QTest.mouseMove(self._overlay, QPoint(at[0] + 1, at[1] + 1))
         QTest.mouseMove(self._overlay, QPoint(*at))
 
     def click(
@@ -548,7 +553,7 @@ class TestUniversalModifiers:
         widget = Overlay(service).widget
         QTest.keyPress(widget, Qt.Key.Key_Alt, Qt.KeyboardModifier.AltModifier)
         assert widget.action() == ClickAction(output=ClickOutput.CLIPBOARD)
-        assert widget.action().describe() == "Copy only"
+        assert widget.action().describe() == "Clipboard only"
         QTest.keyRelease(widget, Qt.Key.Key_Alt, Qt.KeyboardModifier.NoModifier)
         assert widget.action().is_plain
         service.cancel()

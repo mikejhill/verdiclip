@@ -14,9 +14,9 @@ from verdiclip import APP_NAME, VERSION
 
 CHECK_UPDATES_LABEL: Final = "Check for updates"
 UNIVERSAL_TIP: Final = (
-    "Drag for a region, click for a window. Hold Ctrl, Alt or Shift as you "
-    "click for a scrolling capture, or to copy or save without the editor "
-    "(Settings > Capture)."
+    "Drag for an area, click for a window. Hold Ctrl, Alt or Shift as you "
+    "finish to scroll, or to send to the clipboard or a file without the "
+    "editor (Settings > Modifiers)."
 )
 
 
