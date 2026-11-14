@@ -263,7 +263,14 @@ class SettingsDialog(QDialog):
         grid.addWidget(QLabel("<b>Keys</b>"), 0, 0)
         grid.addWidget(QLabel("<b>Click captures</b>"), 0, 1)
         grid.addWidget(QLabel("<b>Send to</b>"), 0, 2)
-        for row, name in enumerate(ClickGestures.combos(), start=1):
+        # The fixed no-keys row, so every other row reads as a change from it
+        for column, text in enumerate(
+            ("None", ClickTarget.WINDOW.label, ClickOutput.USUAL.label)
+        ):
+            baseline = QLabel(text)
+            baseline.setEnabled(False)
+            grid.addWidget(baseline, 1, column)
+        for row, name in enumerate(ClickGestures.combos(), start=2):
             label = combo_label(name)
             target, output = QComboBox(), QComboBox()
             target.setAccessibleName(f"{label}: click captures")
