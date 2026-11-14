@@ -588,3 +588,23 @@ def test_unaligned_frames_with_a_stuck_position_use_the_requested_step(
     result = run(panel)
     assert result.image is not None
     assert abs(result.image.height() - panel.content) <= result.frames
+
+
+class LateAtTheEnd(Lagging):
+    """Answers the request for the end only after many reads, like Chromium."""
+
+    @override
+    def scroll_to(self, percent: float) -> None:
+        """Hold the old answer for sixteen reads after asking for the end."""
+        super().scroll_to(percent)
+        if percent == 100.0:
+            self.stale = 16
+
+
+def test_late_answer_at_the_end_is_waited_for() -> None:
+    """The final check waits for a late answer before asking again."""
+    panel = LateAtTheEnd(900, start=0.0)
+    result = run(panel)
+    assert result.image == panel.document
+    assert result.warning == ""
+    assert panel.writes.count(100.0) == 1
