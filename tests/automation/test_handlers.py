@@ -388,7 +388,7 @@ def test_apply_is_one_ai_undo_step(
 
     added = listed(result["added"])
     labels = [
-        a.label  # ty: ignore[unresolved-attribute]
+        a.label  # ty: ignore[missing-attribute]
         for a in records[1].session.document.annotations[1:]
     ]
     assert result["state"] == history.state_id == 1
@@ -436,7 +436,7 @@ def test_apply_ops_see_earlier_ops(
     assert box is not None
     assert box.style.stroke.hex == "#ff0000"
     assert box.style.width > 0
-    assert box.text == "here"  # ty: ignore[unresolved-attribute]
+    assert box.text == "here"  # ty: ignore[missing-attribute]
     assert (document.image_rect.width, document.image_rect.height) == (50, 100)
     call(
         handlers,

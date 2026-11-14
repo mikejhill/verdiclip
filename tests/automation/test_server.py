@@ -185,7 +185,7 @@ def test_oversized_complete_line_is_refused(
     accepted.destroyed.connect(lambda: deleted.append(True))
     calls: list[bytes] = []
     original = server.answer
-    server.answer = lambda line, reply: calls.append(line) or original(line, reply)  # ty: ignore[invalid-assignment]
+    server.answer = lambda line, reply: calls.append(line) or original(line, reply)
 
     socket.write(b"x" * (MAX_LINE_BYTES + 10) + b"\n")
     socket.flush()

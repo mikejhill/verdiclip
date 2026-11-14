@@ -175,7 +175,7 @@ class TestEscape:
             for a in user.window.session.document.annotations
             if a.kind.value == "text"
         ]
-        assert [n.text for n in notes] == ["Look"]  # ty: ignore[unresolved-attribute]  # filtered to TextNote
+        assert [n.text for n in notes] == ["Look"]  # ty: ignore[missing-attribute]  # filtered to TextNote
 
 
 class TestUndo:
@@ -307,7 +307,7 @@ class TestTextAndCounters:
         user.key(Qt.Key.Key_Backspace)
         user.key(Qt.Key.Key_Escape)
         notes = user.window.session.document.annotations
-        assert notes[0].text == "Hi"  # ty: ignore[unresolved-attribute]  # only a TextNote exists
+        assert notes[0].text == "Hi"  # ty: ignore[missing-attribute]  # only a TextNote exists
 
         user.key(Qt.Key.Key_V)
         user.double_click((70, 160))
@@ -336,7 +336,7 @@ class TestTextAndCounters:
         user.click((240, 150))
         user.snap("counters")
 
-        labels = [a.label for a in user.window.session.document.annotations]  # ty: ignore[unresolved-attribute]  # all counters
+        labels = [a.label for a in user.window.session.document.annotations]  # ty: ignore[missing-attribute]  # all counters
         assert labels == ["1", "2", "A", "1"]
 
 
