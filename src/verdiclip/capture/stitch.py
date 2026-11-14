@@ -340,6 +340,7 @@ def _overlay(
         previous, following = rows[index - 1], rows[index]
         found: set[int] = set()
         fading: set[int] = set()
+        tied: tuple[set[int], set[int]] = (set(), set())
         for y in range(body - offset):
             old = previous[top + y + offset][left:right]
             new = following[top + y][left:right]
@@ -361,11 +362,17 @@ def _overlay(
             ]
             if scores[1] > scores[0]:
                 found.add(y)
-            elif scores[0]:
+            elif scores[0] > scores[1]:
                 found.add(y + offset)
+            elif scores[0]:
+                tied[0].add(y)
+                tied[1].add(y + offset)
             else:
                 fading.add(y + offset)
-        fixed.update(found)
+        # Over a plain margin both places look still. The overlay's own rows
+        # tie from both sides (once as the new place, once as the old one);
+        # the plain rows beside it only from one.
+        fixed.update(found | (tied[0] & tied[1]))
         faded.update(fading)
     needed = (len(seams) + 1) // 2
     overlay = {place for place, count in fixed.items() if count >= needed}

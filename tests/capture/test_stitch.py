@@ -458,3 +458,21 @@ def test_button_at_the_left_edge_is_covered_by_the_next_frame() -> None:
         y for y in range(result.height()) if result.pixel(3, y) & 0xFFFFFF == 0x3366CC
     ]
     assert len(rows) == 16
+
+
+def test_button_over_a_plain_margin_is_not_repeated() -> None:
+    """A pinned button in a blank margin is shown once, not once per frame."""
+    document = page(700)
+    for y in range(document.height()):
+        for x in range(10):
+            document.setPixel(x, y, 0xFFFFFF)
+    shots = frames(document, 120)
+    for frame in shots:
+        for y in range(40, 56):
+            for x in range(8):
+                frame.image.setPixel(x, y, 0x3366CC)
+    result = stitch(shots).image
+    rows = [
+        y for y in range(result.height()) if result.pixel(3, y) & 0xFFFFFF == 0x3366CC
+    ]
+    assert len(rows) == 16
