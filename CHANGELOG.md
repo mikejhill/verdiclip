@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.21.5](https://github.com/mikejhill/verdiclip/compare/v0.21.4...v0.21.5) (2026-11-14)
+
+
+### Bug Fixes
+
+* **settings:** name what the ctl switch allows; refresh README screenshots ([#208](https://github.com/mikejhill/verdiclip/issues/208)) ([f279874](https://github.com/mikejhill/verdiclip/commit/f2798748c64df4d9134d93b3ff2c5e66c0824cff))
+
+
+### Documentation
+
+* bring README, design docs and changelog up to date for 1.0 ([#205](https://github.com/mikejhill/verdiclip/issues/205)) ([695e353](https://github.com/mikejhill/verdiclip/commit/695e353d7bbc29bb0b7eae111b56ab4dbccd52a8))
+
 ## [0.21.4](https://github.com/mikejhill/verdiclip/compare/v0.21.3...v0.21.4) (2026-11-14)
 
 

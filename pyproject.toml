@@ -1,6 +1,6 @@
 [project]
 name = "verdiclip"
-version = "0.21.4"
+version = "0.21.5"
 description = "Fast, faithful screenshot capture and annotation for Windows."
 readme = "README.md"
 license = "MIT"
