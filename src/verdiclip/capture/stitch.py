@@ -227,12 +227,26 @@ def _strip(
             seen[x] += count >= _MIN_VOTES
     needed = (len(seams) + 1) // 2
     first = next((x for x, count in enumerate(seen) if count >= needed > 0), window)
-    # Cropping loses pixels for good: insist on a thumb, not just change.
+    # Cropping loses pixels for good: insist on a scrollbar, not just change.
     # From the first aligned frame: a dropped stale frame shows the thumb low.
     used = [rows[seams[0][0] - 1], *(rows[index] for index, _ in seams)]
-    if not any(_thumb(used, edge + x * 4, top, body) for x in range(first, window)):
+    if not any(
+        _thumb(used, edge + x * 4, top, body) or _frozen(used, edge + x * 4)
+        for x in range(first, window)
+    ):
         return 0
     return window - first
+
+
+def _frozen(frames: list[list[bytes]], at: int) -> bool:
+    """Whether a column looks the same in (nearly) every frame.
+
+    Some overlay scrollbars do not redraw while scrolled from outside: the
+    strip stays put in every frame while the page moves under it, which
+    content never does. The last frame may catch the redraw.
+    """
+    columns = Counter(b"".join(row[at : at + 4] for row in frame) for frame in frames)
+    return columns.most_common(1)[0][1] >= max(2, len(frames) - 1)
 
 
 def _thumb(frames: list[list[bytes]], at: int, top: int, body: int) -> bool:
@@ -304,7 +318,8 @@ def _overlay(
     ``band`` is the body's (top, height) and ``columns`` the (left, right)
     pixels compared. A floating button over the text makes aligned frames
     disagree where it is, and it looks the same in every frame at that place
-    in the viewport, while the text under it does not.
+    in the viewport, while the text under it does not. Rows must disagree at
+    about half the seams, so an occasional animation or changed line does not.
     """
     if not seams:
         return set()
@@ -326,6 +341,11 @@ def _overlay(
                 if len(cells) == 1:
                     found.add(place)
                     break
+            else:
+                # Translucent (a fade above a chat's input box): the text shows
+                # through, so it is never the same twice. The old frame's
+                # lower rows are the ones a join keeps, so count it there.
+                found.add(y + offset)
         seen.update(found)
     needed = (len(seams) + 1) // 2
     return {place for place, count in seen.items() if count >= needed}

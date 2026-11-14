@@ -358,3 +358,36 @@ def test_frame_that_did_not_move_does_not_confuse_the_button_seams() -> None:
     shots.insert(2, Frame(shots[1].image.copy(), 0.0))
     result = stitch(shots)
     assert result.image.height() == document.height()
+
+
+def test_scrollbar_that_never_redraws_is_cropped() -> None:
+    """An overlay scrollbar frozen in place while the page moves is left out."""
+    document = page(700)
+    shots = frames(document, 120)
+    for frame in shots:
+        scrollbar(frame.image, 10)
+    whole = expected(document)
+    assert stitch(shots).image == whole.copy(0, 0, WIDTH - 6, whole.height())
+
+
+def fade(image: QImage, top: int = 180) -> None:
+    """Darken the bottom rows, like a fade above a chat's input box."""
+    for y in range(top, VIEW):
+        for x in range(WIDTH):
+            image.setPixel(x, y, (image.pixel(x, y) >> 1) & 0x7F7F7F)
+
+
+def test_translucent_fade_is_covered_by_the_next_frame() -> None:
+    """Text under a see-through band comes from the next frame, clear of it."""
+    document = page(700)
+    shots = frames(document, 120)
+    for frame in shots:
+        fade(frame.image)
+    whole = expected(document)
+    end = whole.copy(0, whole.height() - VIEW, WIDTH, VIEW)
+    fade(end)
+    result = stitch(shots)
+    assert result.image.copy(0, 0, WIDTH, whole.height() - VIEW) == whole.copy(
+        0, 0, WIDTH, whole.height() - VIEW
+    )
+    assert result.image.copy(0, whole.height() - VIEW, WIDTH, VIEW) == end
