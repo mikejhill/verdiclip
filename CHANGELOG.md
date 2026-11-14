@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.0](https://github.com/mikejhill/verdiclip/compare/v0.20.0...v0.21.0) (2026-11-14)
+
+
+### Features
+
+* **ctl:** captures that wait for the user need --interactive ([#192](https://github.com/mikejhill/verdiclip/issues/192)) ([c943751](https://github.com/mikejhill/verdiclip/commit/c943751a5111bab9327ca12fd257c569c338ca59))
+
 ## [0.20.0](https://github.com/mikejhill/verdiclip/compare/v0.19.0...v0.20.0) (2026-11-14)
 
 
