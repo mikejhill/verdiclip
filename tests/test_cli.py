@@ -278,7 +278,7 @@ class TestCommandLine:
         assert chosen.params == {
             "mode": "universal",
             "delay": 2.0,
-            "timeout": CHOOSING_TIMEOUT_S + 2.0,
+            "timeout": CHOOSING_TIMEOUT_S,
         }
         assert window.params == {
             "mode": "window",

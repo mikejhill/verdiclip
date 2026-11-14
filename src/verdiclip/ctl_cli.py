@@ -478,7 +478,7 @@ def _capture_params(args: argparse.Namespace, fail: Fail) -> JsonObject:
     params["delay"] = float(args.delay)
     waits = spec.interactive or spec.kind is CaptureKind.SCROLLING
     default = CHOOSING_TIMEOUT_S if waits else DEFAULT_TIMEOUT_S
-    params["timeout"] = float(args.timeout or default) + float(args.delay)
+    params["timeout"] = float(args.timeout or default)  # Counted after the delay
     return params
 
 
