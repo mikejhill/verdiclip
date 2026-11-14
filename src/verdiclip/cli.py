@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -73,8 +74,8 @@ class CommandLine:
         region = self._parse_region(args.region) if args.region else None
         if mode is HeadlessMode.REGION and region is None:
             self._parser.error("capture region needs --region X,Y,WIDTH,HEIGHT")
-        if args.delay < 0:
-            self._parser.error(f"--delay must be >= 0, got {args.delay}")
+        if not math.isfinite(args.delay) or args.delay < 0:
+            self._parser.error(f"--delay must be a number >= 0, got {args.delay}")
         return CliRequest(
             command=Command.CAPTURE,
             log_level=level,

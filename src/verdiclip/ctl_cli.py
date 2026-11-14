@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import textwrap
 from collections.abc import Callable
@@ -468,10 +469,12 @@ def _capture_params(args: argparse.Namespace, fail: Fail) -> JsonObject:
         spec = CaptureSpec.from_params(params)
     except AutomationError as err:
         fail(err.message.replace("from here", "--from here"))
-    if args.delay < 0:
-        fail(f"--delay must be >= 0, got {args.delay}")
-    if args.timeout is not None and args.timeout <= 0:
-        fail(f"--timeout must be > 0, got {args.timeout}")
+    if not math.isfinite(args.delay) or args.delay < 0:
+        fail(f"--delay must be a number >= 0, got {args.delay}")
+    if args.timeout is not None and (
+        not math.isfinite(args.timeout) or args.timeout <= 0
+    ):
+        fail(f"--timeout must be a number > 0, got {args.timeout}")
     params["delay"] = float(args.delay)
     waits = spec.interactive or spec.kind is CaptureKind.SCROLLING
     default = CHOOSING_TIMEOUT_S if waits else DEFAULT_TIMEOUT_S

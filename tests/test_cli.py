@@ -92,6 +92,7 @@ class TestCommandLine:
             ["capture", "region", "--region=a,2,3,4"],
             ["capture", "region", "--region=1,2,0,4"],
             ["capture", "screen", "--delay=-1"],
+            ["capture", "screen", "--delay=nan"],
             ["open"],
             ["--log-level", "TRACE"],
         ],
@@ -103,6 +104,7 @@ class TestCommandLine:
             "noninteger",
             "zero-width",
             "negative-delay",
+            "nan-delay",
             "missing-files",
             "log-level",
         ],
@@ -419,6 +421,9 @@ class TestCommandLine:
             ["ctl", "capture", "universal", "--timeout", "0"],
             ["ctl", "export"],
             ["ctl", "capture", "region"],
+            ["ctl", "capture", "universal", "--delay", "nan"],
+            ["ctl", "capture", "universal", "--delay", "inf"],
+            ["ctl", "capture", "universal", "--timeout", "inf"],
         ],
         ids=[
             "no-method",
@@ -440,6 +445,9 @@ class TestCommandLine:
             "capture-zero-timeout",
             "export-no-path",
             "capture-region-without-rectangle",
+            "capture-nan-delay",
+            "capture-infinite-delay",
+            "capture-infinite-timeout",
         ],
     )
     def test_ctl_invalid(
