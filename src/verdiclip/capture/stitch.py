@@ -238,24 +238,28 @@ def _strip(
 def _thumb(frames: list[list[bytes]], at: int, top: int, body: int) -> bool:
     """Whether one column shows a scrollbar thumb moving down a plain track.
 
-    In each frame the column must be mostly one track colour with a single
-    run of other pixels, and that run must move down from frame to frame.
-    Text, timestamps and pictures leave several runs or no common track.
+    In each frame the thumb must be a single run, either of one common colour
+    or of everything but a common track colour, and it must move down from
+    frame to frame. Text and pictures leave several runs, and content moves
+    up the viewport as the capture moves down.
     """
     columns = [[r[y][at : at + 4] for y in range(top, top + body)] for r in frames]
     least = _MIN_TRACK * body * len(columns)
-    # A thumb longer than half the track outnumbers it: try the runners-up too.
     colours = Counter(p for column in columns for p in column).most_common(3)
+    # The common colour is the track, or (a short page's long thumb) the thumb.
     return any(
-        _moves_down(columns, track) for track, count in colours if count >= least
+        _moves_down(columns, colour, thumb=thumb)
+        for colour, count in colours
+        for thumb in (False, True)
+        if thumb or count >= least
     )
 
 
-def _moves_down(columns: list[list[bytes]], track: bytes) -> bool:
-    """Whether, on ``track``, each column has one run that moves down."""
+def _moves_down(columns: list[list[bytes]], colour: bytes, *, thumb: bool) -> bool:
+    """Whether the thumb (``colour``, or all but it) is one run moving down."""
     centres: list[float] = []
     for column in columns:
-        marks = [y for y, pixel in enumerate(column) if pixel != track]
+        marks = [y for y, pixel in enumerate(column) if (pixel == colour) == thumb]
         if not marks:
             continue  # Overlay scrollbars fade out
         runs = 1 + sum(b - a > _THUMB_GAP for a, b in pairwise(marks))

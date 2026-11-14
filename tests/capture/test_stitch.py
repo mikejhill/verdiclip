@@ -264,8 +264,8 @@ def test_changing_right_edge_without_a_scrollbar_is_kept() -> None:
     assert result.image.width() == WIDTH
 
 
-def test_scattered_marks_on_a_track_are_not_a_thumb() -> None:
-    """Text-like runs on a plain column are content, not a thumb."""
+def test_marks_on_the_track_do_not_hide_the_thumb() -> None:
+    """Fixed marks on the track leave the thumb itself to be found."""
     document = page(400)
     shots = frames(document, 100, thumb=True)
     for frame in shots:
@@ -273,7 +273,7 @@ def test_scattered_marks_on_a_track_are_not_a_thumb() -> None:
         for y in (150, 170):
             for x in range(WIDTH - 6, WIDTH):
                 image.setPixel(x, y, 0x123456)
-    assert stitch(shots).image.width() == WIDTH
+    assert stitch(shots).image.width() == WIDTH - 6
 
 
 def test_thumb_that_moves_up_is_not_a_scrollbar() -> None:
@@ -304,11 +304,12 @@ def test_thumb_that_fades_out_in_some_frames_is_still_cropped() -> None:
     assert stitch(shots).image == whole.copy(0, 0, WIDTH - 6, whole.height())
 
 
-def test_thumb_longer_than_half_the_track_is_cropped() -> None:
+@pytest.mark.parametrize(("size", "travel"), [(130, 35), (160, 20), (190, 5)])
+def test_thumb_longer_than_half_the_track_is_cropped(size: int, travel: int) -> None:
     """A short document's long thumb outnumbers its track and is still found."""
     document = page(300)
     shots = frames(document, 50)
     for index, frame in enumerate(shots):
-        scrollbar(frame.image, 35 * index, size=130)
+        scrollbar(frame.image, travel * index, size=size)
     whole = expected(document)
     assert stitch(shots).image == whole.copy(0, 0, WIDTH - 6, whole.height())
