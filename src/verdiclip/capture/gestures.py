@@ -103,12 +103,13 @@ class ClickGestures:
     settings.
     """
 
+    # Settings order: fewer keys first, then Ctrl, Alt, Shift
     ctrl: ClickAction = ClickAction(ClickTarget.SCROLL_HERE)
-    ctrl_alt: ClickAction = ClickAction(ClickTarget.SCROLL_ALL)
     alt: ClickAction = ClickAction(output=ClickOutput.CLIPBOARD)
     shift: ClickAction = ClickAction(output=ClickOutput.SAVE)
-    alt_shift: ClickAction = ClickAction(output=ClickOutput.CLIPBOARD_AND_SAVE)
+    ctrl_alt: ClickAction = ClickAction(ClickTarget.SCROLL_ALL)
     ctrl_shift: ClickAction = ClickAction(ClickTarget.SCROLL_HERE, ClickOutput.SAVE)
+    alt_shift: ClickAction = ClickAction(output=ClickOutput.CLIPBOARD_AND_SAVE)
     ctrl_alt_shift: ClickAction = ClickAction(
         ClickTarget.SCROLL_ALL, ClickOutput.CLIPBOARD
     )
