@@ -101,8 +101,8 @@ class Walker:
 
 def find(document: Node, point: Point) -> object:
     """Run the lookup from ``document`` with the fakes standing in for COM."""
-    instance = target()
-    return instance._find(cast("Any", document), cast("Any", Walker()), point)
+    fakes = cast(Any, (document, Walker()))
+    return target()._find(*fakes, point)
 
 
 def target() -> UiaScrollTarget:
