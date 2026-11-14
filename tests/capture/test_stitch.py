@@ -503,13 +503,13 @@ def caps(image: QImage) -> None:
             image.setPixel(x, y, 0x555555)
 
 
-@pytest.mark.parametrize("frozen", [False, True])
-def test_scrollbar_with_end_caps_is_cropped(frozen: bool) -> None:
-    """Fixed caps at the ends of the track do not hide a thumb."""
+@pytest.mark.parametrize("step", [0, 25])
+def test_scrollbar_with_end_caps_is_cropped(step: int) -> None:
+    """Fixed caps at the ends of the track do not hide a thumb, moving or not."""
     document = page(700)
     shots = frames(document, 120)
     for index, frame in enumerate(shots):
-        scrollbar(frame.image, 10 if frozen else 20 + 25 * index)
+        scrollbar(frame.image, 40 + step * index)
         caps(frame.image)
     whole = expected(document)
     assert stitch(shots).image == whole.copy(0, 0, WIDTH - 6, whole.height())
