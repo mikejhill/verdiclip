@@ -112,6 +112,16 @@ def view_moved(first: QImage, second: QImage, animation: int) -> bool:
     return changed > animation or 2 * changed > detailed > 0
 
 
+def pixel_offset(first: QImage, second: QImage, expected: float | None) -> int | None:
+    """How many rows ``second`` moved past ``first``, by their pixels, if trusted."""
+    rows = [_rows(first), _rows(second)]
+    header, footer = _band(rows, top=True), _band(rows, top=False)
+    width, height = first.width(), first.height()
+    margin = min(width // 10, 32)
+    keys = [_keys(r[header : height - footer], margin, width - margin) for r in rows]
+    return find_offset(keys[0], keys[1], expected)
+
+
 def fixed_rows(first: QImage, second: QImage) -> int:
     """Rows of header and footer that stayed put between two same-size frames."""
     rows = [_rows(first), _rows(second)]
@@ -248,17 +258,24 @@ def _frozen(frames: list[list[bytes]], at: int, top: int, body: int) -> bool:
 
     Some overlay scrollbars do not redraw while scrolled from outside: the
     strip stays put in every frame while the page moves under it, which
-    content never does. The last frame may catch the redraw. A plain
-    background column is the same everywhere too, so it must hold a shape.
+    content never does. It may fade or catch a redraw in some frames, so
+    about half must agree. A plain column or a fixed toolbar stays put too,
+    so it must look like a thumb.
     """
     columns = Counter(
         b"".join(row[at : at + 4] for row in frame[top : top + body])
         for frame in frames
     )
     column, count = columns.most_common(1)[0]
-    if count < max(2, len(frames) - 1):
+    if count < max(2, (len(frames) + 1) // 2):
         return False
-    return len({column[i : i + 4] for i in range(0, len(column), 4)}) > 1
+    # A thumb on a plain track: one run off the track colour. A plain column
+    # has no run, and a toolbar of icons has several.
+    pixels = [column[i : i + 4] for i in range(0, len(column), 4)]
+    track = Counter(pixels).most_common(1)[0][0]
+    marks = [y for y, pixel in enumerate(pixels) if pixel != track]
+    runs = 1 + sum(b - a > _THUMB_GAP for a, b in pairwise(marks))
+    return len(marks) >= _MIN_VOTES and runs == 1
 
 
 def _thumb(frames: list[list[bytes]], at: int, top: int, body: int) -> bool:
@@ -426,7 +443,7 @@ def stitch(frames: Sequence[Frame]) -> StitchResult:
             pieces.append([index, body - offset, body])
     # Leave out the scrollbar: each frame would show its thumb somewhere else.
     width -= _strip(rows, seams, header, body)
-    _avoid_overlay(pieces, _overlay(rows, seams, (header, body), (margin, width)))
+    _avoid_overlay(pieces, _overlay(rows, seams, (header, body), (0, width)))
     first = frames[lead].image
 
     total = header + sum(end - start for _, start, end in pieces) + footer

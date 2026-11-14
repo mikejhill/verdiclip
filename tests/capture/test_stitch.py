@@ -421,3 +421,40 @@ def test_button_at_the_top_beside_changing_pixels_stays_hidden() -> None:
         y for y in range(result.height()) if result.pixel(55, y) & 0xFFFFFF == 0x3366CC
     ]
     assert len(rows) == 16
+
+
+def test_fixed_toolbar_at_the_right_edge_is_kept() -> None:
+    """A strip of icons that stays put is part of the window, not a scrollbar."""
+    document = page(700)
+    shots = frames(document, 120)
+    for frame in shots:
+        for y in range(VIEW):
+            for x in range(WIDTH - 10, WIDTH):
+                icon = y % 50 < 16
+                frame.image.setPixel(x, y, 0x224488 + (y % 50) if icon else 0xF0F0F0)
+    assert stitch(shots).image.width() == WIDTH
+
+
+def test_frozen_scrollbar_that_fades_now_and_then_is_cropped() -> None:
+    """A frozen thumb missing from a few frames still marks a scrollbar."""
+    document = page(700)
+    shots = frames(document, 120)
+    for index, frame in enumerate(shots):
+        scrollbar(frame.image, 10, size=20 if index % 3 else 0)
+    whole = expected(document)
+    assert stitch(shots).image == whole.copy(0, 0, WIDTH - 6, whole.height())
+
+
+def test_button_at_the_left_edge_is_covered_by_the_next_frame() -> None:
+    """A menu button against the left edge appears once, like one in the middle."""
+    document = page(700)
+    shots = frames(document, 120)
+    for frame in shots:
+        for y in range(170, 186):
+            for x in range(8):
+                frame.image.setPixel(x, y, 0x3366CC)
+    result = stitch(shots).image
+    rows = [
+        y for y in range(result.height()) if result.pixel(3, y) & 0xFFFFFF == 0x3366CC
+    ]
+    assert len(rows) == 16

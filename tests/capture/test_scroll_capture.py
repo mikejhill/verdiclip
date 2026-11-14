@@ -260,10 +260,54 @@ class ShortOfTheEnd(Stuck):
         super().scroll_to(percent)
 
 
-def test_stuck_position_short_of_the_end_is_flagged() -> None:
-    """If asking for the end again still moves the panel, the user is told."""
+def test_stuck_position_short_of_the_end_is_followed_by_the_pixels() -> None:
+    """When the end is not reached, the pixels say so and the end is asked again."""
+    panel = ShortOfTheEnd(900, start=0.0)
+    result = run(panel)
+    assert result.image == panel.document
+    assert panel.asked >= 2
+
+
+def test_stuck_position_short_of_the_end_is_flagged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without pixels, if asking for the end again moves the panel, say so."""
+    monkeypatch.setattr(scrolling, "pixel_offset", lambda *_args: None)
     result = run(ShortOfTheEnd(900, start=0.0))
     assert "reached the end" in result.warning
+
+
+class Creeping(Panel):
+    """Once, answers a full step with a position that barely moved (Edge)."""
+
+    creep: int = 3
+    answer: ScrollPosition | None = None
+
+    @override
+    def scroll_to(self, percent: float) -> None:
+        """Scroll; on the third request, remember a barely moved answer."""
+        before = super().position()
+        super().scroll_to(percent)
+        self.creep -= 1
+        self.answer = (
+            ScrollPosition(before.percent + 0.25, before.view_size)
+            if self.creep == 0
+            else None
+        )
+
+    @override
+    def position(self) -> ScrollPosition:
+        """The barely moved answer for that step, the real one otherwise."""
+        return self.answer or super().position()
+
+
+def test_answer_that_barely_moved_after_a_full_step_is_overruled() -> None:
+    """The next step starts from where the pixels went, not back up the page."""
+    panel = Creeping(2000, start=0.0)
+    result = run(panel)
+    assert result.image == panel.document
+    assert result.warning == ""
+    assert panel.writes == sorted(panel.writes[:-1]) + panel.writes[-1:]
 
 
 def test_position_that_lags_the_pixels_is_waited_for() -> None:
@@ -274,10 +318,20 @@ def test_position_that_lags_the_pixels_is_waited_for() -> None:
     assert result.warning == ""
 
 
-def test_position_that_moves_backwards_stops_with_a_warning() -> None:
-    """A position that goes backwards ends the capture with a warning."""
+def test_position_that_moves_backwards_is_overruled_by_the_pixels() -> None:
+    """A position answer that goes backwards does not undo a step that moved."""
     panel = Backwards(1400, start=0.0)
     result = run(panel)
+    assert result.image == panel.document
+    assert result.warning == ""
+
+
+def test_position_that_moves_backwards_without_pixels_stops_with_a_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With nothing to align, a position going backwards ends with a warning."""
+    monkeypatch.setattr(scrolling, "pixel_offset", lambda *_args: None)
+    result = run(Backwards(1400, start=0.0))
     assert result.image is not None
     assert "reached the end" in result.warning
 
