@@ -6,8 +6,9 @@ import logging
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from datetime import datetime
 from pathlib import Path
-from typing import Final
+from typing import Final, cast
 
 from PySide6.QtCore import QObject, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QImage, QImageReader
@@ -21,6 +22,13 @@ from PySide6.QtWidgets import (
 )
 
 from verdiclip import APP_NAME, DOCS_URL, VERSION
+from verdiclip.automation.capturing import AppActions, CaptureOutcome, CaptureSpec
+from verdiclip.automation.protocol import (
+    AutomationError,
+    Deferred,
+    ErrorCode,
+    JsonObject,
+)
 from verdiclip.capture.grabber import ScreenSource
 from verdiclip.capture.models import Capture
 from verdiclip.capture.scroll_selection import ScrollingCapture, ScrollSelection
@@ -51,6 +59,7 @@ from verdiclip.settings import (
     Settings,
     SettingsStore,
 )
+from verdiclip.shell.automation_capture import AutomationCaptures, WindowList
 from verdiclip.shell.default_app_dialog import DefaultAppDialog
 from verdiclip.shell.settings_dialog import HOTKEY_FIELDS, SettingsDialog
 from verdiclip.shell.theme import ThemeManager
@@ -123,6 +132,14 @@ class AppController(QObject):
         self._icon = self._icon_factory.brand()
         self._tray = TrayIcon(self._icon, self._tray_commands())
         self._wire_scrolling()
+        self._automation = AutomationCaptures(
+            screens,
+            # The app's locator reports handles; WindowSource only needs titles
+            cast(WindowList, windows),
+            self,
+            self._admit_capture,
+            lambda: ImageDelivery(self._settings.output),
+        )
         self._last_saved_folder: Path | None = None
         self._message_action: Callable[[], None] = self._open_last_folder
         self._default_app_dialog: DefaultAppDialog | None = None
@@ -140,9 +157,8 @@ class AppController(QObject):
             updater.checked.connect(self._on_update_checked)
             updater.check_failed.connect(self._on_update_check_failed)
         self._capture.captured.connect(self._on_captured)
-        self._capture.failed.connect(
-            lambda message: self._notify("Capture failed", message, warning=True)
-        )
+        self._capture.failed.connect(self._on_capture_failed)
+        self._capture.cancelled.connect(self._automation.cancelled)
         self._hotkeys.triggered.connect(self._on_hotkey)
         self._tray.messageClicked.connect(self._on_message_clicked)
 
@@ -233,6 +249,7 @@ class AppController(QObject):
             self._scroll_status.deleteLater()
             self._scroll_status = None
         self._closing = True
+        self._automation.shutdown()
         self._pending_capture = None
         self._capture_handoff.stop()
         self._scrolling.shutdown()
@@ -308,6 +325,8 @@ class AppController(QObject):
     def _after_scrolling(self) -> None:
         if self._closing:
             return
+        # Finished without a result or a failure: stopped before any frame
+        self._automation.cancelled()
         if self._hotkeys_paused:
             self._hotkeys.unregister_all()
         elif self._hotkey_refresh_pending:
@@ -329,6 +348,9 @@ class AppController(QObject):
             self._request_capture(action, freeze_first=freeze_first)
 
     def _on_scroll_failed(self, message: str) -> None:
+        if self._automation.waiting:
+            self._automation.failed(message)
+            return
         if not self._closing and self._pending_capture is None:
             self._last_scroll_error = f"No screenshot was captured.\n\n{message}"
             self._tray.set_scroll_error_available()
@@ -370,13 +392,138 @@ class AppController(QObject):
             self._scroll_status.hide()
 
     def _on_scrolled(self, capture: ScrollingCapture) -> None:
+        if self._automation.waiting:
+            self._automation.deliver(
+                capture.image, capture.title, capture.taken_at, capture.warning
+            )
+            return
         delivered = self._deliver_capture(capture)
         if delivered and capture.warning:
             self._notify("Scrolling capture finished", capture.warning, warning=True)
 
     def _on_captured(self, capture: Capture) -> None:
         """Deliver an ordinary capture without changing its Repeat semantics."""
+        if self._automation.waiting:
+            self._automation.deliver(capture.image, capture.title, capture.taken_at)
+            return
         self._deliver_capture(capture)
+
+    def _on_capture_failed(self, message: str) -> None:
+        if self._automation.waiting:
+            self._automation.failed(message)
+            return
+        self._notify("Capture failed", message, warning=True)
+
+    # Automation (verdiclip ctl)
+
+    def automation_capture(self, spec: CaptureSpec) -> Deferred[CaptureOutcome]:
+        """Capture for ``ctl capture``; answers once the result is in a tab.
+
+        Raises:
+            AutomationError: If another capture is in progress.
+        """
+        if self._closing:
+            msg = "VerdiClip is closing"
+            raise AutomationError(ErrorCode.FAILED, msg)
+        if (
+            self._automation.waiting
+            or self._capture.is_selecting
+            or (self._scrolling.busy)
+        ):
+            msg = "Another capture is in progress; finish or cancel it first"
+            raise AutomationError(ErrorCode.BUSY, msg)
+        self._dismiss_scroll_status()
+        self._workspace.cancel_drag()
+        return self._automation.start(spec)
+
+    @property
+    def automation_actions(self) -> AppActions:
+        """Return what ``ctl`` may ask of the app beyond reading documents."""
+        return _AutomationActions(self)
+
+    def capture_targets(self) -> JsonObject:
+        """Describe the monitors and windows ``ctl capture`` can take."""
+        return self._automation.targets()
+
+    def close_document(self, record: DocumentRecord, *, discard: bool) -> None:
+        """Close ``record``'s tab without the unsaved-changes prompt.
+
+        The caller has already decided about unsaved work (``discard``).
+
+        Raises:
+            AppError: If the tab is saving, moving or already gone.
+        """
+        del discard
+        host = self._workspace.host_of(record.identifier)
+        page = (
+            next((p for p in host.pages if p.record is record), None)
+            if host is not None
+            else None
+        )
+        if host is None or page is None or not host.close_page_unprompted(page):
+            msg = (
+                "The tab can't close right now (it is saving, moving or busy); "
+                "try again shortly"
+            )
+            raise AppError(msg)
+
+    def choose_region(self) -> None:
+        """Show the region overlay for ``ctl capture region`` without a region."""
+        self._request_capture("region")
+
+    def choose_scrolling(self) -> None:
+        """Show the scrolling chooser for ``ctl capture scrolling``."""
+        self.capture_scrolling()
+
+    def scroll_at(self, point: Point, title: str, *, from_top: bool) -> None:
+        """Start a scrolling capture of the panel at ``point``."""
+        self._scroll_at(point, title, from_top)
+
+    def _admit_capture(
+        self,
+        image: QImage,
+        title: str,
+        saved: Path | None,
+        taken_at: datetime,
+        delivered: bool,  # noqa: FBT001 - positional callback
+    ) -> DocumentRecord:
+        """Open a ``ctl`` capture in a tab and return its document."""
+        options = EditorOptions(
+            title=title,
+            source_path=saved,
+            confirm_close=self._settings.editor.confirm_unsaved_close,
+            provenance=CaptureProvenance.create(title, taken_at),
+        )
+        before = self._document_ids()
+        self._open_document(
+            image,
+            options,
+            delivered=delivered,
+            new_window=self._settings.capture.destination is CaptureDestination.WINDOWS,
+        )
+        return self._admitted(before, title)
+
+    def _document_ids(self) -> set[str]:
+        return {record.identifier for record in self._workspace.documents}
+
+    def _admitted(self, before: set[str], name: str) -> DocumentRecord:
+        """Return the one document opened since ``before``.
+
+        The new tab isn't selected while a menu or dialog is open, so this finds
+        the admitted document rather than reading the current tab.
+
+        Raises:
+            ValueError: If no single new document appeared.
+        """
+        added = [
+            record
+            for record in self._workspace.documents
+            if record.identifier not in before
+        ]
+        if len(added) != 1:
+            msg = f"{name} did not open in a tab"
+            raise ValueError(msg)
+        return added[0]
 
     def _deliver_capture(self, capture: Capture | ScrollingCapture) -> bool:
         """Deliver once; retain error/recovery precedence over cleanup warnings."""
@@ -525,19 +672,9 @@ class AppController(QObject):
         Raises:
             ValueError: If the file can't be read as an image.
         """
-        before = {record.identifier for record in self._workspace.documents}
+        before = self._document_ids()
         self._open_file(path, None)
-        # The new tab isn't selected while a menu or dialog is open, so find
-        # the admitted document rather than reading the current tab.
-        added = [
-            record
-            for record in self._workspace.documents
-            if record.identifier not in before
-        ]
-        if len(added) != 1:
-            msg = f"{path.name} did not open in a tab"
-            raise ValueError(msg)
-        return added[0]
+        return self._admitted(before, path.name)
 
     def _open_file(self, path: Path, target: EditorWindow | None) -> EditorWindow:
         """Read ``path`` and open it; raise ValueError if it isn't an image."""
@@ -1080,3 +1217,22 @@ class AppController(QObject):
         """Open the folder of the last auto-saved capture."""
         if self._last_saved_folder is not None:
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._last_saved_folder)))
+
+
+class _AutomationActions:
+    """``AppActions`` backed by the controller (whose ``capture`` is the service)."""
+
+    def __init__(self, controller: AppController) -> None:
+        self._controller = controller
+
+    def capture(self, spec: CaptureSpec) -> Deferred[CaptureOutcome]:
+        """Capture for ``ctl capture``."""
+        return self._controller.automation_capture(spec)
+
+    def capture_targets(self) -> JsonObject:
+        """List capture targets."""
+        return self._controller.capture_targets()
+
+    def close_document(self, record: DocumentRecord, *, discard: bool) -> None:
+        """Close a tab without asking."""
+        self._controller.close_document(record, discard=discard)

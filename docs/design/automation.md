@@ -1,7 +1,7 @@
 # Automation: the `verdiclip ctl` command
 
-Local tools (Claude Code, Codex, scripts) read, edit, open, save and copy the
-images open in VerdiClip's editor. The running app owns the documents, their
+Local tools (Claude Code, Codex, scripts) capture the screen, and read, edit,
+open, save, export, copy and close the images open in VerdiClip's editor. The running app owns the documents, their
 undo history and the renderer, so tools ask the app instead of touching files.
 
 ```
@@ -16,7 +16,7 @@ AI tool ──► verdiclip ctl ──► per-user control pipe ──► Contro
 | --- | --- |
 | Pipe | `QLocalServer` named `VerdiClip-<user>-control` (`\\.\pipe\…` on Windows) |
 | Access | `UserAccessOption`: only the same Windows user can connect |
-| Framing | One UTF-8 JSON object per line; one response per request, in order |
+| Framing | One UTF-8 JSON object per line; one response per request, in order. A handler may return a `Deferred` (a capture the user is still choosing); later requests on that connection wait behind it |
 | Request | `{"v": 1, "id": 1, "method": "render", "params": {…}}` |
 | Response | `{"id": 1, "ok": true, "result": {…}}` or `{"id": 1, "ok": false, "error": {"code": "…", "message": "…"}}` |
 | Switch | Settings → General; off answers every request with `disabled` |
@@ -89,7 +89,11 @@ copy of the document; the real one changes only when all succeed:
 `src/verdiclip/automation/skill/SKILL.md` ships in the package and teaches an
 agent the workflow: list, render and look, get the state, apply with
 `--expect-state`, render again; plus history and the rules (save or copy only
-when asked, never close, never undo the user's steps unasked).
+when asked, never close, never undo the user's steps unasked). Since the capture
+commands it is thin: `verdiclip ctl --help` and `COMMAND --help` are the usage
+reference (`ctl_cli.py`), and the skill points to them with only the workflow and
+rules. A test checks every command the skill names exists. Settings → General →
+Install AI agent skill… installs it from the app (`shell/skill_dialog.py`).
 
 `ctl install-skill --agent LIST [--scope user|project] [--dir PATH]` copies it
 to `<skills folder>/verdiclip/SKILL.md`, replacing an older copy, without
@@ -120,6 +124,30 @@ contacting the app. An agent is always required; scope defaults to user.
 - `set_image` lets a tool edit pixels: `render --base --max-side 0` writes the
   base image, the tool changes it, and `set_image` puts it back as one undo
   step.
+
+## Commands (phase 4: captures and closing)
+
+| Command | Result |
+| --- | --- |
+| `ctl targets` | Monitors (numbered from 1, physical bounds, scale, primary) and visible windows (handle, title, bounds, foreground) |
+| `ctl capture region [--region X,Y,W,H]` | Crops one frozen frame; without `--region` the overlay opens and the answer waits for the user (its Ctrl+click scrolling capture counts) |
+| `ctl capture window [--title T \| --handle N \| --at X,Y]` | The foreground window, or the named one raised first (`bring_to_front`, then 350 ms to repaint); a refused raise becomes a `warning` |
+| `ctl capture fullscreen [--monitor N \| --all]` | The cursor's monitor, monitor N, or the whole desktop |
+| `ctl capture scrolling [--at X,Y \| --title T \| --handle N] [--from top\|here]` | Starts `ScrollSelection.start_at` (a window's center for title/handle); no target opens the chooser |
+| `ctl close [--discard]` | Closes the tab without the prompt (`EditorWindow.close_page_unprompted`); unsaved work is `conflict` unless `--discard` |
+| `ctl export --path FILE` | Writes the flattened image; counts as delivered but keeps the document's own file |
+
+- Every capture opens a tab with capture provenance and skips the user's
+  after-capture save/copy; `-o FILE` and `--copy` deliver it too. Results carry
+  `saved`, `copied` and `warning`.
+- `shell/automation_capture.py` runs one request at a time. The controller routes
+  `captured`, `cancelled` and `failed` from the overlay and scrolling engine to it
+  while it waits, so no notification or failure dialog appears for a ctl capture.
+  A scrolling session that finishes with no result (Esc before a frame) answers
+  `cancelled` (exit 7).
+- Any capture already running answers `busy`. `--delay` sleeps in the CLI before
+  sending; `--timeout` (default 30 s, 300 s when the user chooses or it scrolls)
+  is the CLI's wait. A capture that finishes after the CLI gave up still opens.
 
 ## Later
 

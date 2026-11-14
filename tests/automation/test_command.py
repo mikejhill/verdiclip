@@ -6,7 +6,10 @@ import io
 import json
 from typing import override
 
-from verdiclip.automation.client import ControlClient
+import pytest
+
+from verdiclip.automation import command as command_module
+from verdiclip.automation.client import DEFAULT_TIMEOUT_S, ControlClient
 from verdiclip.automation.command import run_ctl
 from verdiclip.automation.protocol import (
     AutomationError,
@@ -93,3 +96,55 @@ def test_output_survives_a_narrow_redirect_encoding() -> None:
     assert err_raw.getvalue().decode("cp1252") == (
         "verdiclip ctl get: no \\u753b\\u50cf\n"
     )
+
+
+def test_delay_and_timeout_stay_on_this_side(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The delay sleeps first and the timeout sets the client; neither is sent."""
+    built: list[float] = []
+    client = FakeClient({"id": "d1"})
+
+    def make_client(*, timeout: float) -> FakeClient:
+        built.append(timeout)
+        return client
+
+    monkeypatch.setattr(command_module, "ControlClient", make_client)
+    slept: list[float] = []
+    out, err = io.StringIO(), io.StringIO()
+
+    code = run_ctl(
+        "capture",
+        {"mode": "region", "delay": 1.5, "timeout": 300.0},
+        out,
+        err,
+        sleep=slept.append,
+    )
+
+    assert code == ExitCode.OK
+    assert slept == [1.5]
+    assert built == [300.0]
+    assert client.calls == [("capture", {"mode": "region"})]
+
+
+def test_no_delay_means_no_sleep_and_the_default_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without delay nothing sleeps; without timeout the client default applies."""
+    built: list[float] = []
+
+    def make_client(*, timeout: float) -> FakeClient:
+        built.append(timeout)
+        return FakeClient({})
+
+    monkeypatch.setattr(command_module, "ControlClient", make_client)
+    slept: list[float] = []
+
+    run_ctl(
+        "list",
+        {"delay": True, "timeout": "x"},
+        io.StringIO(),
+        io.StringIO(),
+        sleep=slept.append,
+    )
+
+    assert slept == []
+    assert built == [DEFAULT_TIMEOUT_S]

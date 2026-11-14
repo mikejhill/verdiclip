@@ -132,7 +132,11 @@ class Application:
             lifetime.callback(self._restore_sigint)
             lifetime.callback(self._stop_signal_timer)
             control = ControlServer(
-                AutomationHandlers(controller.workspace, opener=controller.open_file),
+                AutomationHandlers(
+                    controller.workspace,
+                    opener=controller.open_file,
+                    app=controller.automation_actions,
+                ),
                 enabled=lambda: controller.automation_enabled,
             )
             lifetime.callback(control.close)

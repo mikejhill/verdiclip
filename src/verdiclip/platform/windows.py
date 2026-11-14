@@ -223,3 +223,48 @@ class WindowLocator:
         return next(
             (window for window in windows if window.bounds.contains(point)), None
         )
+
+
+_SW_RESTORE: Final = 9
+
+
+def bring_to_front(handle: int) -> bool:  # pragma: no cover - Windows desktop
+    """Raise ``handle`` above other windows and give it focus, best effort.
+
+    Windows only lets the foreground process hand out focus, so this joins the
+    foreground thread's input queue for the moment it asks.
+
+    Returns:
+        Whether ``handle`` is the foreground window afterwards.
+    """
+    if sys.platform != "win32":
+        return False
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    hwnd = ctypes.wintypes.HWND
+    user32.GetForegroundWindow.restype = hwnd
+    user32.GetWindowThreadProcessId.argtypes = [hwnd, ctypes.c_void_p]
+    user32.GetWindowThreadProcessId.restype = ctypes.wintypes.DWORD
+    user32.AttachThreadInput.argtypes = [
+        ctypes.wintypes.DWORD,
+        ctypes.wintypes.DWORD,
+        ctypes.wintypes.BOOL,
+    ]
+    for name in ("SetForegroundWindow", "BringWindowToTop", "IsIconic"):
+        getattr(user32, name).argtypes = [hwnd]
+    user32.ShowWindow.argtypes = [hwnd, ctypes.c_int]
+    if user32.IsIconic(handle):
+        user32.ShowWindow(handle, _SW_RESTORE)
+    current = kernel32.GetCurrentThreadId()
+    foreground = user32.GetForegroundWindow()
+    other = user32.GetWindowThreadProcessId(foreground, None) if foreground else 0
+    attached = bool(other and other != current) and bool(
+        user32.AttachThreadInput(current, other, True)  # noqa: FBT003 - Win32 BOOL
+    )
+    try:
+        user32.BringWindowToTop(handle)
+        user32.SetForegroundWindow(handle)
+    finally:
+        if attached:
+            user32.AttachThreadInput(current, other, False)  # noqa: FBT003
+    return int(user32.GetForegroundWindow() or 0) == handle

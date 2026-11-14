@@ -16,6 +16,7 @@ from verdiclip.automation.client import ControlClient
 from verdiclip.automation.protocol import (
     MAX_LINE_BYTES,
     AutomationError,
+    Deferred,
     ErrorCode,
     JsonObject,
     Request,
@@ -183,8 +184,8 @@ def test_oversized_complete_line_is_refused(
     deleted: list[bool] = []
     accepted.destroyed.connect(lambda: deleted.append(True))
     calls: list[bytes] = []
-    original = server.respond
-    server.respond = lambda line: calls.append(line) or original(line)  # ty: ignore[invalid-assignment]
+    original = server.answer
+    server.answer = lambda line, reply: calls.append(line) or original(line, reply)  # ty: ignore[invalid-assignment]
 
     socket.write(b"x" * (MAX_LINE_BYTES + 10) + b"\n")
     socket.flush()
@@ -251,3 +252,89 @@ def test_stale_notifications_are_ignored(qtbot: QtBot) -> None:
     server._disconnected(stray)
 
     assert not server._buffers
+
+
+class Later:
+    """A handler whose ``wait`` requests answer only when the test says so."""
+
+    def __init__(self) -> None:
+        self.waiting: list[Deferred[JsonObject]] = []
+
+    def __call__(self, request: Request) -> JsonObject | Deferred[JsonObject]:
+        """Defer ``wait`` and ``done`` (already settled); echo the rest."""
+        if request.method == "wait":
+            deferred: Deferred[JsonObject] = Deferred()
+            self.waiting.append(deferred)
+            return deferred
+        if request.method == "done":
+            settled: Deferred[JsonObject] = Deferred()
+            settled.resolve({"done": True})
+            return settled
+        return echo(request)
+
+
+def test_deferred_answers_hold_later_requests_in_order(qtbot: QtBot) -> None:
+    """A deferred answer arrives when it settles, and requests behind it wait."""
+    handler = Later()
+    server = ControlServer(handler, name=f"verdiclip-control-test-{uuid.uuid4().hex}")
+    assert server.listen()
+    try:
+        socket = connect(server, qtbot)
+        socket.write(
+            Request("wait", {}, ident=1).encode()
+            + Request("after", {}, ident=2).encode()
+        )
+        socket.flush()
+        qtbot.waitUntil(lambda: len(handler.waiting) == 1)
+        qtbot.wait(30)
+
+        assert socket.bytesAvailable() == 0
+        handler.waiting[0].resolve({"captured": True})
+        lines = read_lines(socket, qtbot, 2)
+        first, second = (Response.decode(line) for line in lines)
+        assert (first.ident, first.result) == (1, {"captured": True})
+        assert second.ident == 2
+        socket.disconnectFromServer()
+        qtbot.waitUntil(lambda: not server._buffers)
+    finally:
+        server.close()
+
+
+def test_deferred_errors_and_settled_deferreds(qtbot: QtBot) -> None:
+    """A rejected deferred answers with its error; a settled one at once."""
+    handler = Later()
+    server = ControlServer(handler, name="unused")
+    replies: list[bytes] = []
+
+    later = server.answer(Request("wait", {}, ident=3).encode(), replies.append)
+    handler.waiting[0].reject(AutomationError(ErrorCode.CANCELLED, "stopped"))
+    settled = server.respond(Request("done", {}, ident=4).encode())
+
+    assert later
+    failure = Response.decode(replies[0].rstrip(b"\n"))
+    assert failure.error is not None
+    assert failure.error.code is ErrorCode.CANCELLED
+    assert Response.decode(settled.rstrip(b"\n")).result == {"done": True}
+    with pytest.raises(RuntimeError, match="deferred"):
+        server.respond(Request("wait", {}, ident=5).encode())
+    del qtbot
+
+
+def test_answer_after_the_client_left_is_dropped(qtbot: QtBot) -> None:
+    """A capture finishing after its client hung up writes nothing."""
+    handler = Later()
+    server = ControlServer(handler, name=f"verdiclip-control-test-{uuid.uuid4().hex}")
+    assert server.listen()
+    try:
+        socket = connect(server, qtbot)
+        socket.write(Request("wait", {}, ident=1).encode())
+        socket.flush()
+        qtbot.waitUntil(lambda: len(handler.waiting) == 1)
+        socket.disconnectFromServer()
+        qtbot.waitUntil(lambda: not server._buffers)
+
+        handler.waiting[0].resolve({"late": True})
+
+        assert not server._waiting
+    finally:
+        server.close()

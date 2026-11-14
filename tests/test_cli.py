@@ -8,7 +8,9 @@ from pathlib import Path
 
 import pytest
 
+from verdiclip.automation.client import DEFAULT_TIMEOUT_S
 from verdiclip.cli import Command, CommandLine, HeadlessMode
+from verdiclip.ctl_cli import CHOOSING_TIMEOUT_S, command_names
 from verdiclip.geometry import Rect
 
 
@@ -241,6 +243,87 @@ class TestCommandLine:
         assert (plain.method, plain.params) == ("save", {})
         assert (copied.method, copied.params) == ("copy", {"expect_state": 1})
 
+    def test_ctl_capture_modes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every capture type parses its target, outputs, delay and timeout."""
+        monkeypatch.chdir(tmp_path)
+        parser = CommandLine()
+
+        region = parser.parse(
+            ["ctl", "capture", "region", "--region=-5,0,40,30", "-o", "r.png"]
+        )
+        chosen = parser.parse(["ctl", "capture", "region", "--delay", "2"])
+        window = parser.parse(
+            ["ctl", "capture", "window", "--title", "Edge", "--copy", "--timeout", "9"]
+        )
+        handle = parser.parse(["ctl", "capture", "window", "--handle", "42"])
+        screen = parser.parse(["ctl", "capture", "fullscreen", "--monitor", "2"])
+        every = parser.parse(["ctl", "capture", "fullscreen", "--all"])
+        scrolling = parser.parse(
+            ["ctl", "capture", "scrolling", "--at", "900,600", "--from", "here"]
+        )
+
+        assert region.method == "capture"
+        assert region.params == {
+            "mode": "region",
+            "region": [-5, 0, 40, 30],
+            "output": str(tmp_path / "r.png"),
+            "delay": 0.0,
+            "timeout": DEFAULT_TIMEOUT_S,
+        }
+        assert chosen.params == {
+            "mode": "region",
+            "delay": 2.0,
+            "timeout": CHOOSING_TIMEOUT_S + 2.0,
+        }
+        assert window.params == {
+            "mode": "window",
+            "title": "Edge",
+            "copy": True,
+            "delay": 0.0,
+            "timeout": 9.0,
+        }
+        assert handle.params["handle"] == 42
+        assert screen.params["monitor"] == 2
+        assert every.params["all"] is True
+        assert scrolling.params == {
+            "mode": "scrolling",
+            "at": [900, 600],
+            "from": "here",
+            "delay": 0.0,
+            "timeout": CHOOSING_TIMEOUT_S,
+        }
+
+    def test_ctl_export_and_close(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Export resolves its path; close passes discard and the state guard."""
+        monkeypatch.chdir(tmp_path)
+        parser = CommandLine()
+
+        exported = parser.parse(["ctl", "export", "--path", "c.jpg"])
+        closed = parser.parse(["ctl", "close", "--discard", "--expect-state", "3"])
+        kept = parser.parse(["ctl", "close", "--doc", "d"])
+
+        assert exported.params == {"path": str(tmp_path / "c.jpg")}
+        assert closed.params == {"discard": True, "expect_state": 3}
+        assert kept.params == {"doc": "d", "discard": False}
+
+    def test_ctl_help_covers_every_command(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """`ctl --help` lists each command; capture and apply explain the details."""
+        for args in (["ctl"], ["ctl", "capture"], ["ctl", "apply"]):
+            with pytest.raises(SystemExit, match="0"):
+                CommandLine().parse([*args, "--help"])
+        text = capsys.readouterr().out
+
+        for name in command_names():
+            assert f"    {name} " in text
+        for detail in ("exit codes:", "--from", "ctl targets", "annotation kinds"):
+            assert detail in text
+
     def test_ctl_apply_resolves_op_paths(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -324,6 +407,13 @@ class TestCommandLine:
             ["ctl", "install-skill"],
             ["ctl", "install-skill", "--agent", "gpt"],
             ["ctl", "install-skill", "--agent", "claude,codex", "--dir", "x"],
+            ["ctl", "capture"],
+            ["ctl", "capture", "region", "--title", "x"],
+            ["ctl", "capture", "scrolling", "--from", "here"],
+            ["ctl", "capture", "window", "--at", "1"],
+            ["ctl", "capture", "region", "--delay", "-1"],
+            ["ctl", "capture", "region", "--timeout", "0"],
+            ["ctl", "export"],
         ],
         ids=[
             "no-method",
@@ -337,6 +427,13 @@ class TestCommandLine:
             "skill-no-agent",
             "skill-unknown-agent",
             "skill-dir-two-agents",
+            "capture-no-mode",
+            "capture-wrong-option",
+            "capture-here-without-target",
+            "capture-bad-point",
+            "capture-negative-delay",
+            "capture-zero-timeout",
+            "export-no-path",
         ],
     )
     def test_ctl_invalid(

@@ -353,6 +353,7 @@ def qt_entry_owners(
 
         workspace = SimpleNamespace(windows=(), documents=())
         automation_enabled = True
+        automation_actions = None
 
     controls: list[ControlServer] = []
 

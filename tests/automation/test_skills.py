@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -17,21 +18,35 @@ from verdiclip.automation.skills import (
     parse_agents,
     skill_text,
 )
+from verdiclip.ctl_cli import command_names
 
 
 def test_skill_describes_the_commands_it_needs() -> None:
-    """The shipped skill names itself and teaches the edit workflow."""
+    """The shipped skill names itself and points at the help for the details."""
     text = skill_text()
 
     assert text.startswith("---\nname: verdiclip\ndescription: ")
     for command in (
-        "ctl list",
+        "verdiclip ctl --help",
+        "verdiclip ctl COMMAND --help",
+        "ctl capture",
+        "ctl targets",
+        "ctl open",
         "ctl render",
         "ctl get",
-        "ctl apply",
+        "--expect-state",
         "undo --only-cli",
     ):
         assert command in text
+
+
+def test_skill_names_only_real_commands() -> None:
+    """Every ``verdiclip ctl X`` in the skill is a command the CLI accepts."""
+    named = set(re.findall(r"verdiclip ctl ([a-z][a-z-]*)", skill_text()))
+    commands = set(command_names())
+
+    assert named
+    assert named <= commands
 
 
 @pytest.mark.parametrize(
