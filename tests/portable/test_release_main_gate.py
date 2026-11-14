@@ -290,6 +290,19 @@ def test_only_a_later_release_merge_supersedes(
         ([[*clean_scan("b" * 40), "x"]], False),
         ([[scan("b" * 40, "zizmor")] * 100, clean_scan(SHA)], True),
         ([clean_scan("b" * 40) + clean_scan(SHA) + clean_scan("c" * 40)], True),
+        (
+            [
+                [
+                    *[scan("b" * 40, "zizmor")] * 98,
+                    *clean_scan(SHA)[:1],
+                    scan("c", "x"),
+                ],
+                [*clean_scan(SHA)[1:], scan("d" * 40, "zizmor")],
+            ],
+            True,
+        ),
+        ([[*clean_scan(SHA), scan(SHA, "zizmor", 3)]], True),
+        ([[scan(SHA, "zizmor", 3), *clean_scan(SHA)]], False),
     ],
     ids=[
         "unreadable",
@@ -300,6 +313,9 @@ def test_only_a_later_release_merge_supersedes(
         "malformed",
         "second-page",
         "clean",
+        "interleaved",
+        "clean-rerun",
+        "failing-rerun",
     ],
 )
 def test_a_moved_release_needs_its_own_clean_scan(

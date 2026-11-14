@@ -107,9 +107,10 @@ def scanned_clean(fetch: Callable[[str], object], sha: str) -> bool:
     Main's open alerts describe its newest analysis, which a later fix may have
     cleared, so a commit main has moved past needs its own analyses. The list
     endpoint ignores a commit filter, so pages are read newest first and only
-    records for ``sha`` count; anything missing or unreadable is not clean.
+    records for ``sha`` count, the latest per category; anything missing or
+    unreadable is not clean.
     """
-    mine: list[dict[str, object]] = []
+    latest: dict[object, object] = {}
     for page in range(1, 4):
         records = fetch(
             f"code-scanning/analyses?ref=refs%2Fheads%2Fmain&per_page=100&page={page}"
@@ -118,13 +119,16 @@ def scanned_clean(fetch: Callable[[str], object], sha: str) -> bool:
             isinstance(record, dict) for record in records
         ):
             return False
-        mine.extend(record for record in records if record.get("commit_sha") == sha)
-        past = records != [] and records[-1].get("commit_sha") != sha
-        if len(records) < PAGE_SIZE or (mine and past):
+        # Newest first: a category's first record for ``sha`` is its latest
+        # (a clean rerun wins over an older upload). Uploads from different
+        # commits interleave, so read the whole bounded inventory.
+        for record in records:
+            if record.get("commit_sha") == sha:
+                latest.setdefault(record.get("category"), record.get("results_count"))
+        if len(records) < PAGE_SIZE:
             break
-    categories = {record.get("category") for record in mine}
-    return categories >= SCAN_CATEGORIES and all(
-        record.get("results_count") == 0 for record in mine
+    return set(latest) >= SCAN_CATEGORIES and all(
+        count == 0 for count in latest.values()
     )
 
 
