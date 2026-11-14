@@ -18,6 +18,8 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFontComboBox,
     QFormLayout,
+    QGridLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -28,6 +30,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from verdiclip.capture.gestures import (
+    ClickAction,
+    ClickGestures,
+    ClickOutput,
+    ClickTarget,
+    combo_label,
+)
 from verdiclip.editor.style_bar import ColorButton
 from verdiclip.exceptions import HotkeyError
 from verdiclip.output.naming import FilenamePattern
@@ -49,7 +58,7 @@ from verdiclip.shell.hotkey_field import HotkeyField
 from verdiclip.shell.skill_dialog import SkillDialog
 
 HOTKEY_FIELDS: Final = (
-    ("region", "Region or window"),
+    ("region", "Universal capture"),
     ("window", "Active window"),
     ("fullscreen", "Full screen"),
     ("repeat", "Repeat last capture"),
@@ -61,6 +70,11 @@ THEME_LABELS: Final = {
     Theme.DARK: "Dark",
 }
 ERROR_STYLE: Final = "color: #c62828;"
+UNIVERSAL_HELP: Final = (
+    "Universal capture (PrtSc): drag to capture a region, or click to capture "
+    "the window under the pointer. Hold keys while you click or let go to do "
+    "more. A drag always captures its region; only “Then” applies to it."
+)
 
 
 class SettingsDialog(QDialog):
@@ -91,6 +105,8 @@ class SettingsDialog(QDialog):
         self._destination.setAccessibleName("New screenshots")
         self._destination.addItem("New tab", CaptureDestination.TABS.value)
         self._destination.addItem("New window", CaptureDestination.WINDOWS.value)
+        self._gesture_targets: dict[str, QComboBox] = {}
+        self._gesture_outputs: dict[str, QComboBox] = {}
         self._hotkeys: dict[str, QLineEdit] = {}
         self._hotkey_fields: dict[str, HotkeyField] = {}
         self._hotkey_status: dict[str, QLabel] = {}
@@ -136,6 +152,15 @@ class SettingsDialog(QDialog):
                 show_magnifier=self._magnifier.isChecked(),
                 destination=CaptureDestination(self._destination.currentData()),
             ),
+            universal_capture=ClickGestures(
+                **{
+                    name: ClickAction(
+                        ClickTarget(self._gesture_targets[name].currentData()),
+                        ClickOutput(self._gesture_outputs[name].currentData()),
+                    )
+                    for name in ClickGestures.combos()
+                }
+            ),
             hotkeys=replace(
                 self._initial.hotkeys,
                 **{
@@ -171,6 +196,10 @@ class SettingsDialog(QDialog):
                 install=self._install_updates.isChecked(),
             ),
         )
+
+    def gesture_combos(self, name: str) -> tuple[QComboBox, QComboBox]:
+        """Return the "Click captures" and "Then" boxes for modifier ``name``."""
+        return self._gesture_targets[name], self._gesture_outputs[name]
 
     def hotkey_edit(self, name: str) -> QLineEdit:
         """Return the editor for hotkey ``name`` (for tests)."""
@@ -243,7 +272,47 @@ class SettingsDialog(QDialog):
         form.addRow("After capturing:", actions)
         form.addRow("New screenshots:", self._destination)
         form.addRow("While selecting:", self._magnifier)
+        form.addRow(self._universal_group())
         return tab
+
+    def _universal_group(self) -> QGroupBox:
+        """Return the table of what each modifier does in universal capture."""
+        group = QGroupBox("Universal capture modifiers")
+        help_text = QLabel(UNIVERSAL_HELP)
+        help_text.setWordWrap(True)
+        grid = QGridLayout()
+        grid.addWidget(QLabel("<b>Hold</b>"), 0, 0)
+        grid.addWidget(QLabel("<b>Click captures</b>"), 0, 1)
+        grid.addWidget(QLabel("<b>Then</b>"), 0, 2)
+        for row, name in enumerate(ClickGestures.combos(), start=1):
+            label = combo_label(name)
+            target, output = QComboBox(), QComboBox()
+            target.setAccessibleName(f"{label}: click captures")
+            output.setAccessibleName(f"{label}: then")
+            for value in ClickTarget:
+                target.addItem(value.label, value.value)
+            for value in ClickOutput:
+                output.addItem(value.label, value.value)
+            self._gesture_targets[name] = target
+            self._gesture_outputs[name] = output
+            grid.addWidget(QLabel(label), row, 0)
+            grid.addWidget(target, row, 1)
+            grid.addWidget(output, row, 2)
+        reset = QPushButton("Restore defaults")
+        reset.clicked.connect(lambda: self._load_gestures(ClickGestures()))
+        layout = QVBoxLayout(group)
+        layout.addWidget(help_text)
+        layout.addLayout(grid)
+        layout.addWidget(reset)
+        return group
+
+    def _load_gestures(self, gestures: ClickGestures) -> None:
+        """Show ``gestures`` in the modifier table."""
+        for name in ClickGestures.combos():
+            action = gestures.action(name)
+            target, output = self.gesture_combos(name)
+            target.setCurrentIndex(target.findData(action.target.value))
+            output.setCurrentIndex(output.findData(action.output.value))
 
     def _general_tab(self) -> QWidget:
         """Return the General tab."""
@@ -360,6 +429,7 @@ class SettingsDialog(QDialog):
         self._destination.setCurrentIndex(
             self._destination.findData(settings.capture.destination.value)
         )
+        self._load_gestures(settings.universal_capture)
         for name, edit in self._hotkeys.items():
             text = getattr(settings.hotkeys, name)
             edit.setText(self._display_hotkey(text))

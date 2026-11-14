@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.19.0](https://github.com/mikejhill/verdiclip/compare/v0.18.4...v0.19.0) (2026-11-14)
+
+
+### Features
+
+* scrolling capture from the current position, and Esc keeps what was captured ([#183](https://github.com/mikejhill/verdiclip/issues/183)) ([7f6dd8e](https://github.com/mikejhill/verdiclip/commit/7f6dd8e475dbcde654d28c82488f55c0b88eb5f8))
+
+
+### Bug Fixes
+
+* **scrolling:** crop the scrollbar thumb's soft left edge ([#185](https://github.com/mikejhill/verdiclip/issues/185)) ([195e34c](https://github.com/mikejhill/verdiclip/commit/195e34c34012f1394ca4cc4c6e0a6652d5d5594b))
+
 ## [0.18.4](https://github.com/mikejhill/verdiclip/compare/v0.18.3...v0.18.4) (2026-11-14)
 
 

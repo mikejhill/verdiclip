@@ -13,6 +13,11 @@ from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon, QWidget
 from verdiclip import APP_NAME, VERSION
 
 CHECK_UPDATES_LABEL: Final = "Check for updates"
+UNIVERSAL_TIP: Final = (
+    "Drag for a region, click for a window. Hold Ctrl, Alt or Shift as you "
+    "click for a scrolling capture, or to copy or save without the editor "
+    "(Settings > Capture)."
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,7 +39,7 @@ class TrayCommands:
 
 
 class TrayIcon(QSystemTrayIcon):
-    """Tray icon: click captures a region, double-click opens the screenshots folder.
+    """Tray icon: click for universal capture, double-click for the screenshots folder.
 
     A click waits out the double-click interval before capturing, so the
     capture overlay doesn't swallow the second click of a double-click.
@@ -46,6 +51,7 @@ class TrayIcon(QSystemTrayIcon):
         super().__init__(icon, parent)
         self._commands = commands
         self._menu = QMenu()
+        self._menu.setToolTipsVisible(True)
         self._actions: dict[str, QAction] = {}
         self._hotkey_labels: Mapping[str, str] = {}
         self._update_label = CHECK_UPDATES_LABEL
@@ -121,7 +127,7 @@ class TrayIcon(QSystemTrayIcon):
             else []
         )
         entries: list[tuple[str, str, Callable[[], None]] | None] = [
-            ("region", "Capture region or window", c.capture_region),
+            ("region", "Universal capture", c.capture_region),
             ("window", "Capture active window", c.capture_window),
             ("fullscreen", "Capture full screen", c.capture_fullscreen),
             ("repeat", "Repeat last capture", c.repeat_last),
@@ -155,11 +161,13 @@ class TrayIcon(QSystemTrayIcon):
             action = self._menu.addAction(f"{text}\t{label}" if label else text)
             action.triggered.connect(lambda _=False, cb=callback: cb())
             self._actions[name] = action
+            if name == "region":
+                action.setToolTip(UNIVERSAL_TIP)
             if name == "update":
                 action.setEnabled(not self._update_checking)
 
     def _on_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
-        """Capture a region on click, or open the folder on double-click (UX-TRY-02)."""
+        """Universal capture on click; the folder on double-click (UX-TRY-02)."""
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
             self._click.start(QApplication.doubleClickInterval())
         elif reason == QSystemTrayIcon.ActivationReason.DoubleClick:
@@ -167,5 +175,5 @@ class TrayIcon(QSystemTrayIcon):
             self._commands.open_folder()
 
     def _on_click(self) -> None:
-        """Capture a region once a click turned out not to be a double-click."""
+        """Start universal capture once a click turned out not to be a double-click."""
         self._commands.capture_region()

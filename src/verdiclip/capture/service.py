@@ -12,6 +12,7 @@ from PySide6.QtCore import QEvent, QObject, QTimer, Signal
 from PySide6.QtGui import QCursor, QGuiApplication, QImage
 from PySide6.QtWidgets import QApplication, QWidget
 
+from verdiclip.capture.gestures import ClickGestures, ClickOutput
 from verdiclip.capture.grabber import FrozenScreen, ScreenSource
 from verdiclip.capture.modality import ModalityGuard
 from verdiclip.capture.models import Capture, CaptureMode, ScreenGeometry
@@ -64,8 +65,8 @@ class CaptureService(QObject):
     captured = Signal(object)  # Capture
     cancelled = Signal()
     failed = Signal(str)
-    # Point (physical), window title, and whether to start from the top
-    scroll_requested = Signal(object, str, bool)
+    # Point (physical), window title, whether to start from the top, ClickOutput
+    scroll_requested = Signal(object, str, bool, object)
 
     def __init__(
         self,
@@ -73,8 +74,10 @@ class CaptureService(QObject):
         windows: WindowSource,
         *,
         show_magnifier: bool = True,
+        gestures: ClickGestures | None = None,
     ) -> None:
         super().__init__()
+        self._gestures = gestures if gestures is not None else ClickGestures()
         self._screens = screens
         self._windows = windows
         self._show_magnifier = show_magnifier
@@ -112,10 +115,17 @@ class CaptureService(QObject):
         """Enable or disable the magnifier for future selections."""
         self._show_magnifier = show
 
+    def set_gestures(self, gestures: ClickGestures) -> None:
+        """Use ``gestures`` for the modifiers of future universal captures."""
+        self._gestures = gestures
+
     # Capture modes
 
     def capture_region(self, *, freeze_first: bool = False) -> None:
-        """Select a region; hotkeys freeze before dismissing visible popups."""
+        """Start universal capture: drag a region or click a window.
+
+        Hotkeys freeze before dismissing visible popups.
+        """
         self._request(self._prepare_region, freeze_first=freeze_first)
 
     def _prepare_region(self) -> _PreparedCapture:
@@ -146,6 +156,7 @@ class CaptureService(QObject):
                 prepared.windows,
                 show_magnifier=self._show_magnifier,
                 shared=shared,
+                gestures=self._gestures,
             )
             overlay.region_chosen.connect(self._on_region)
             overlay.window_chosen.connect(self._on_window)
@@ -225,25 +236,37 @@ class CaptureService(QObject):
 
     # Overlay results
 
-    def _on_region(self, area: Rect) -> None:
+    def _on_region(self, area: Rect, output: ClickOutput) -> None:
         """Capture the chosen region from the frozen screen."""
-        self._finish_selection(area, CaptureMode.REGION, "Screenshot")
+        self._finish_selection(area, CaptureMode.REGION, "Screenshot", output)
 
-    def _on_window(self, area: Rect, title: str) -> None:
+    def _on_window(self, area: Rect, title: str, output: ClickOutput) -> None:
         """Capture the clicked window from the frozen screen."""
-        self._finish_selection(area, CaptureMode.WINDOW, title)
+        self._finish_selection(area, CaptureMode.WINDOW, title, output)
 
-    def _on_scroll(self, point: Point, title: str, from_top: bool) -> None:  # noqa: FBT001 - Qt slot
-        """Hand a Ctrl+clicked panel to scrolling capture."""
+    def _on_scroll(
+        self,
+        point: Point,
+        title: str,
+        from_top: bool,  # noqa: FBT001 - Qt slot
+        output: ClickOutput,
+    ) -> None:
+        """Hand a panel clicked with a scrolling modifier to scrolling capture."""
         self._close_overlays()
-        self.scroll_requested.emit(point, title, from_top)
+        self.scroll_requested.emit(point, title, from_top, output)
 
     def _on_cancel(self) -> None:
         """Close overlays and report cancellation."""
         self._close_overlays()
         self.cancelled.emit()
 
-    def _finish_selection(self, area: Rect, mode: CaptureMode, title: str) -> None:
+    def _finish_selection(
+        self,
+        area: Rect,
+        mode: CaptureMode,
+        title: str,
+        output: ClickOutput = ClickOutput.USUAL,
+    ) -> None:
         """Crop the frozen screen and emit the capture."""
         frozen = self._frozen
         self._close_overlays()
@@ -254,7 +277,7 @@ class CaptureService(QObject):
         except AppError as err:
             self._fail(err)
             return
-        self._emit(image, mode, area, title)
+        self._emit(image, mode, area, title, output)
 
     # Internals
 
@@ -385,7 +408,14 @@ class CaptureService(QObject):
         if lost_focus or not owns_grabs or QApplication.activePopupWidget() is not None:
             self._on_cancel()
 
-    def _emit(self, image: QImage, mode: CaptureMode, area: Rect, title: str) -> bool:
+    def _emit(
+        self,
+        image: QImage,
+        mode: CaptureMode,
+        area: Rect,
+        title: str,
+        output: ClickOutput = ClickOutput.USUAL,
+    ) -> bool:
         """Commit repeat history and emit only a still-valid capture result."""
         if self._cancelled_start:
             return False
@@ -400,6 +430,7 @@ class CaptureService(QObject):
                 area=area,
                 title=title,
                 taken_at=datetime.now().astimezone(),
+                output=output,
             )
         )
         return True

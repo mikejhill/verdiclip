@@ -37,6 +37,8 @@ _MIN_TRACK = 0.3
 _THUMB_GAP = 2
 # Rows at each end of a scrollbar track that may hold fixed end caps or arrows.
 _CAP = 8
+# Columns of a thumb's anti-aliased edge that may join the cropped strip.
+_EDGE_COLUMNS = 2
 # How far a frozen thumb's length may stray from what the view size implies,
 # and the shortest thumb drawn (about the same in Chromium and Windows).
 _THUMB_SLACK = 0.3
@@ -236,37 +238,66 @@ def _strip(
     if not window or not seams:
         return 0
     edge = (width - window) * 4
-    # Seams at which each column disagreed: a thumb moves at nearly every
-    # seam, while content that changed (a timestamp) does so only now and then.
-    seen = [0] * window
-    for index, offset in seams:
-        previous, following = rows[index - 1], rows[index]
-        misses = [0] * window
-        for y in range(top, top + body - offset):
-            old, new = previous[y + offset], following[y]
-            if old == new or old[:edge] != new[:edge]:
-                continue  # Agrees, or the content itself changed here
-            for x in range(window):
-                at = edge + x * 4
-                misses[x] += old[at : at + 4] != new[at : at + 4]
-        for x, count in enumerate(misses):
-            seen[x] += count >= _MIN_VOTES
+    seen, beside = _strip_votes(rows, seams, band, window)
     needed = (len(seams) + 1) // 2
     first = next((x for x, count in enumerate(seen) if count >= needed > 0), window)
     # Cropping loses pixels for good: insist on a scrollbar, not just change.
     # From the first aligned frame: a dropped stale frame shows the thumb low.
     used = [rows[seams[0][0] - 1], *(rows[index] for index, _ in seams)]
-    if not any(
-        _thumb(used, edge + x * 4, top, body)
-        or (
-            thumb is not None
-            and seen[x] >= needed
-            and _frozen(used, edge + x * 4, band, thumb)
+
+    def bar(x: int) -> bool:
+        at = edge + x * 4
+        return _thumb(used, at, top, body) or (
+            thumb is not None and seen[x] >= needed and _frozen(used, at, band, thumb)
         )
-        for x in range(first, window)
-    ):
+
+    if not any(bar(x) for x in range(first, window)):
         return 0
+    # The thumb's soft left edge changes at fewer seams, but still shows; it
+    # changes in the thumb's rows, unlike content beside the strip.
+    for _ in range(_EDGE_COLUMNS):
+        if first == 0 or beside[first - 1] < max(1, needed // 3):
+            break
+        first -= 1
     return window - first
+
+
+def _strip_votes(
+    rows: list[list[bytes]],
+    seams: list[tuple[int, int]],
+    band: tuple[int, int],
+    window: int,
+) -> tuple[list[int], list[int]]:
+    """Per right-edge column, the seams at which it disagreed.
+
+    The second list counts only the seams where it disagreed in the same rows
+    as its right neighbour.
+    """
+    top, body = band
+    edge = len(rows[0][0]) - window * 4
+    # A thumb moves at nearly every seam, while content that changed (a
+    # timestamp) does so only now and then.
+    seen = [0] * window
+    beside = [0] * window
+    for index, offset in seams:
+        previous, following = rows[index - 1], rows[index]
+        misses = [0] * window
+        paired = [0] * window
+        for y in range(top, top + body - offset):
+            old, new = previous[y + offset], following[y]
+            if old == new or old[:edge] != new[:edge]:
+                continue  # Agrees, or the content itself changed here
+            row = [
+                old[at : at + 4] != new[at : at + 4]
+                for at in range(edge, edge + window * 4, 4)
+            ]
+            for x, missed in enumerate(row):
+                misses[x] += missed
+                paired[x] += missed and x + 1 < window and row[x + 1]
+        for x in range(window):
+            seen[x] += misses[x] >= _MIN_VOTES
+            beside[x] += paired[x] >= _MIN_VOTES
+    return seen, beside
 
 
 def _frozen(

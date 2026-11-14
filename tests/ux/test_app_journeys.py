@@ -8,6 +8,7 @@ import sys
 import uuid
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
+from datetime import datetime
 from pathlib import Path
 from typing import override
 
@@ -53,8 +54,9 @@ from verdiclip.automation.handlers import AutomationHandlers
 from verdiclip.automation.preview import PreviewFolder
 from verdiclip.automation.protocol import ErrorCode, Request, Response
 from verdiclip.automation.server import ControlServer
+from verdiclip.capture.gestures import ClickOutput
 from verdiclip.capture.grabber import ScreenSource
-from verdiclip.capture.models import Capture
+from verdiclip.capture.models import Capture, CaptureMode
 from verdiclip.capture.overlay import SelectionOverlay
 from verdiclip.capture.service import WindowSource
 from verdiclip.document.commands import SetCrop
@@ -437,6 +439,35 @@ class TestAfterCapture:
         assert QGuiApplication.clipboard().image().width() == 300
         assert app.controller.editors == ()
         assert "Copied to clipboard" in caplog.text
+
+    def test_editor_only_modifier_overrides_clipboard_settings(
+        self, make_app: AppFactory, qtbot: QtBot
+    ) -> None:
+        """A modifier set to "Editor only" opens the editor and copies nothing."""
+        settings = Settings()
+        app = make_app(
+            replace(
+                settings,
+                capture=replace(
+                    settings.capture, open_editor=False, copy_to_clipboard=True
+                ),
+            )
+        )
+        QGuiApplication.clipboard().clear()
+        image = QImage(40, 30, QImage.Format.Format_RGB32)
+        image.fill(0x336699)
+        app.controller.capture.captured.emit(
+            Capture(
+                image=image,
+                mode=CaptureMode.REGION,
+                area=Rect(0, 0, 40, 30),
+                title="Screenshot",
+                taken_at=datetime.now().astimezone(),
+                output=ClickOutput.EDITOR,
+            )
+        )
+        qtbot.waitUntil(lambda: len(app.controller.workspace.documents) == 1)
+        assert QGuiApplication.clipboard().image().isNull()
 
     def test_file_action_saves_with_pattern(
         self, make_app: AppFactory, tmp_path: Path, caplog: pytest.LogCaptureFixture

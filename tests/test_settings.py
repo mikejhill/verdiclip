@@ -8,6 +8,12 @@ from pathlib import Path
 
 import pytest
 
+from verdiclip.capture.gestures import (
+    ClickAction,
+    ClickGestures,
+    ClickOutput,
+    ClickTarget,
+)
 from verdiclip.document.annotations import JsonValue
 from verdiclip.document.style import Color
 from verdiclip.exceptions import SettingsError
@@ -304,3 +310,41 @@ class TestLegacyMigration:
         store.save(chosen)
 
         assert store.load().output.filename_pattern == "Screenshot {date} {time}"
+
+
+class TestUniversalCaptureSettings:
+    """Per-modifier actions persist as small objects and tolerate bad values."""
+
+    def test_round_trip(self, tmp_path: Path) -> None:
+        """A changed action survives save and load; the rest stay default."""
+        store = SettingsStore(tmp_path / "settings.json")
+        gestures = ClickGestures(
+            alt=ClickAction(ClickTarget.SCROLL_HERE, ClickOutput.EDITOR)
+        )
+        store.save(Settings(universal_capture=gestures))
+        raw = json.loads(store.path.read_text(encoding="utf-8"))
+        assert raw["universal_capture"]["alt"] == {
+            "target": "scroll_here",
+            "output": "editor",
+        }
+        assert store.load().universal_capture == gestures
+
+    def test_partial_and_invalid_values(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A missing key keeps the default; an unknown value is ignored."""
+        decoded = SettingsCodec.decode(
+            {
+                "universal_capture": {
+                    "shift": {"target": "scroll_all"},
+                    "alt": {"target": "nowhere", "output": "save"},
+                    "ctrl": "scroll_here",
+                }
+            }
+        )
+        defaults = ClickGestures()
+        assert decoded.universal_capture.shift == ClickAction(
+            ClickTarget.SCROLL_ALL, defaults.shift.output
+        )
+        assert decoded.universal_capture.alt == defaults.alt
+        assert decoded.universal_capture.ctrl == defaults.ctrl
+        assert "universal_capture.alt" in caplog.text
+        assert "universal_capture.ctrl" in caplog.text

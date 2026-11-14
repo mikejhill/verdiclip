@@ -10,6 +10,12 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Final
 
+from verdiclip.capture.gestures import (
+    ClickAction,
+    ClickGestures,
+    ClickOutput,
+    ClickTarget,
+)
 from verdiclip.document.annotations import JsonObject, JsonValue
 from verdiclip.document.style import RED, Color
 from verdiclip.exceptions import SettingsError
@@ -158,6 +164,7 @@ class Settings:
 
     capture: CaptureSettings = field(default_factory=CaptureSettings)
     hotkeys: HotkeySettings = field(default_factory=HotkeySettings)
+    universal_capture: ClickGestures = field(default_factory=ClickGestures)
     output: OutputSettings = field(default_factory=OutputSettings)
     editor: EditorSettings = field(default_factory=EditorSettings)
     appearance: AppearanceSettings = field(default_factory=AppearanceSettings)
@@ -218,6 +225,7 @@ class SettingsStore:
 type SettingsSection = (
     CaptureSettings
     | HotkeySettings
+    | ClickGestures
     | OutputSettings
     | EditorSettings
     | AppearanceSettings
@@ -314,6 +322,8 @@ class SettingsCodec:
             return str(value)
         if isinstance(value, StrEnum):
             return value.value
+        if isinstance(value, ClickAction):
+            return {"target": value.target.value, "output": value.output.value}
         if isinstance(value, (bool, int, float, str)):
             return value
         msg = f"Cannot encode setting of type {type(value).__name__}"
@@ -336,10 +346,26 @@ class SettingsCodec:
         elif isinstance(current, float):
             if isinstance(raw, (int, float)) and not isinstance(raw, bool):
                 return float(raw)
+        elif isinstance(current, ClickAction):
+            if isinstance(raw, dict):
+                return cls._decode_action(current, raw)
         elif isinstance(raw, str):
             return cls._decode_text(current, raw)
         msg = f"expected {type(current).__name__}, got {raw!r}"
         raise TypeError(msg)
+
+    @staticmethod
+    def _decode_action(current: ClickAction, raw: dict[str, JsonValue]) -> ClickAction:
+        """Decode ``{"target": ..., "output": ...}``; a missing key keeps its value.
+
+        Raises:
+            ValueError: If a value is not a known target or output.
+        """
+        target, output = raw.get("target"), raw.get("output")
+        return ClickAction(
+            ClickTarget(target) if isinstance(target, str) else current.target,
+            ClickOutput(output) if isinstance(output, str) else current.output,
+        )
 
     @staticmethod
     def _decode_text(current: object, raw: str) -> object:

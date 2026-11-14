@@ -606,3 +606,17 @@ def test_wide_opaque_overlay_is_shown_once() -> None:
         y for y in range(result.height()) if result.pixel(55, y) & 0xFFFFFF == 0x3366CC
     ]
     assert len(rows) == 16
+
+
+def test_soft_edge_of_the_thumb_is_cropped_too() -> None:
+    """A thumb's anti-aliased edge, changing at fewer seams, goes with the bar."""
+    document = page(700)
+    shots = frames(document, 120)
+    for index, frame in enumerate(shots):
+        position = 20 + 25 * index
+        scrollbar(frame.image, position)
+        if index < 2:  # The soft edge shows only in some frames
+            for y in range(position, position + 20):
+                frame.image.setPixel(WIDTH - 7, y, 0xAAAAAA)
+    whole = expected(document)
+    assert stitch(shots).image == whole.copy(0, 0, WIDTH - 7, whole.height())

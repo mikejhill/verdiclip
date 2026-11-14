@@ -14,6 +14,12 @@ from pytestqt.qtbot import QtBot
 from pytestqt.wait_signal import SignalBlocker
 from tests.ux.conftest import Stopwatch
 
+from verdiclip.capture.gestures import (
+    ClickAction,
+    ClickGestures,
+    ClickOutput,
+    ClickTarget,
+)
 from verdiclip.capture.grabber import FrozenScreen
 from verdiclip.capture.models import Capture, CaptureMode, ScreenGeometry
 from verdiclip.capture.overlay import SelectionOverlay, SharedSelection
@@ -448,10 +454,11 @@ class TestWindowPicking:
         with qtbot.waitSignal(service.scroll_requested) as signal:
             overlay.click((200, 200), modifier=Qt.KeyboardModifier.ControlModifier)
 
-        point, title, from_top = signal.args or [None, None, None]
+        point, title, from_top, output = signal.args or [None, None, None, None]
         assert isinstance(point, Point)
         assert title == "Dialog"
         assert from_top is False  # Ctrl alone: from the current position
+        assert output is ClickOutput.USUAL
         assert not service.overlays
         assert not captured
 
@@ -468,6 +475,83 @@ class TestWindowPicking:
                 | Qt.KeyboardModifier.AltModifier,
             )
         assert (signal.args or [None, None, None])[2] is True
+
+
+class TestUniversalModifiers:
+    """Modifiers held as a click or drag ends choose the configured action."""
+
+    def test_alt_click_captures_the_window_for_the_clipboard_only(
+        self, service: CaptureService, qtbot: QtBot
+    ) -> None:
+        """Alt+click (default): the window, marked to be copied and nothing else."""
+        service.capture_region()
+        overlay = Overlay(service)
+        with qtbot.waitSignal(service.captured) as signal:
+            overlay.click((200, 200), modifier=Qt.KeyboardModifier.AltModifier)
+        capture = CaptureOf.signal(signal)
+        assert capture.mode is CaptureMode.WINDOW
+        assert capture.output is ClickOutput.CLIPBOARD
+
+    def test_a_drag_ended_with_shift_keeps_its_region_and_saves(
+        self, service: CaptureService, qtbot: QtBot
+    ) -> None:
+        """A drag ignores the click target but takes the output (Shift: save)."""
+        service.capture_region()
+        overlay = Overlay(service)
+        widget = overlay.widget
+        with qtbot.waitSignal(service.captured) as signal:
+            QTest.mousePress(
+                widget,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+                QPoint(10, 10),
+            )
+            QTest.mouseMove(widget, QPoint(60, 50))
+            QTest.mouseRelease(
+                widget,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.ShiftModifier,
+                QPoint(110, 90),
+            )
+        capture = CaptureOf.signal(signal)
+        assert capture.mode is CaptureMode.REGION
+        assert capture.output is ClickOutput.SAVE
+
+    def test_a_plain_click_follows_the_after_capture_settings(
+        self, service: CaptureService, qtbot: QtBot
+    ) -> None:
+        """No modifier: the usual actions."""
+        service.capture_region()
+        overlay = Overlay(service)
+        with qtbot.waitSignal(service.captured) as signal:
+            overlay.click((200, 200))
+        assert CaptureOf.signal(signal).output is ClickOutput.USUAL
+
+    def test_configured_gestures_replace_the_defaults(
+        self, service: CaptureService, qtbot: QtBot
+    ) -> None:
+        """Settings can give Shift a whole-pane scrolling capture to the clipboard."""
+        service.set_gestures(
+            ClickGestures(
+                shift=ClickAction(ClickTarget.SCROLL_ALL, ClickOutput.CLIPBOARD)
+            )
+        )
+        service.capture_region()
+        overlay = Overlay(service)
+        with qtbot.waitSignal(service.scroll_requested) as signal:
+            overlay.click((200, 200), modifier=Qt.KeyboardModifier.ShiftModifier)
+        assert (signal.args or [])[2:] == [True, ClickOutput.CLIPBOARD]
+
+    def test_holding_a_modifier_shows_its_action(self, service: CaptureService) -> None:
+        """Pressing and letting go of Alt updates what a click would do."""
+        service.capture_region()
+        widget = Overlay(service).widget
+        QTest.keyPress(widget, Qt.Key.Key_Alt, Qt.KeyboardModifier.AltModifier)
+        assert widget.action() == ClickAction(output=ClickOutput.CLIPBOARD)
+        assert widget.action().describe() == "Copy only"
+        QTest.keyRelease(widget, Qt.Key.Key_Alt, Qt.KeyboardModifier.NoModifier)
+        assert widget.action().is_plain
+        service.cancel()
 
 
 class TestImmediateCaptures:
@@ -631,7 +715,9 @@ class TwoMonitors:
         )
         self.regions: list[Rect] = []
         for overlay in (self.left, self.right):
-            overlay.region_chosen.connect(self.regions.append)
+            overlay.region_chosen.connect(
+                lambda area, _output: self.regions.append(area)
+            )
             overlay.show()
 
     def close(self) -> None:
