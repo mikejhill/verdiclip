@@ -29,6 +29,8 @@ _POLL_SECONDS = 0.05
 _CHANGE_SECONDS = 0.6
 # Give up waiting for animation to stop after this long.
 _SETTLE_SECONDS = 1.5
+# Polls in a row without movement before a view counts as settled.
+_STILL_POLLS = 2
 # Ask for the top this many times before trusting a view that did not move.
 _TOP_TRIES = 3
 _UNSURE_END = "The panel may not have reached the end; check the bottom of the image."
@@ -285,13 +287,16 @@ class ScrollCapture:
             self._sleep(_POLL_SECONDS)
             current = self._target.grab()
         started = self._clock()  # Now wait for the change to finish
+        still = 0
         while self._clock() - started < _SETTLE_SECONDS:
             self._check()  # Esc must reach the restore before the kill
             self._sleep(_POLL_SECONDS)
             following = self._target.grab()
-            moving = self._moved(current, following)
+            still = 0 if self._moved(current, following) else still + 1
             current = following
-            if not moving:
+            # Twice in a row: a browser that paints in tiles can pause for one
+            # poll halfway, and a half-painted frame cannot be joined.
+            if still == _STILL_POLLS:
                 break
         return current
 

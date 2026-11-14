@@ -391,3 +391,33 @@ def test_translucent_fade_is_covered_by_the_next_frame() -> None:
         0, 0, WIDTH, whole.height() - VIEW
     )
     assert result.image.copy(0, whole.height() - VIEW, WIDTH, VIEW) == end
+
+
+def test_plain_background_column_is_not_a_frozen_scrollbar() -> None:
+    """A white edge beside a changed timestamp is not taken for a scrollbar."""
+    document = page(260)
+    first = view(document, 0)
+    second = view(document, 60)
+    for image in (first, second):
+        for y in range(VIEW):
+            image.setPixel(WIDTH - 1, y, 0xFFFFFF)
+    for y in range(100, 110):
+        for x in range(WIDTH - 10, WIDTH - 6):
+            second.setPixel(x, y, 0x101010 + x)
+    assert stitch([Frame(first), Frame(second, 60.0)]).image.width() == WIDTH
+
+
+def test_button_at_the_top_beside_changing_pixels_stays_hidden() -> None:
+    """A pinned button near the top, beside an animation, does not move seams."""
+    document = page(700)
+    shots = frames(document, 120)
+    for index, frame in enumerate(shots):
+        button(frame.image, top=30)
+        for y in range(30, 46):  # An animation in the same rows
+            for x in range(90, 100):
+                frame.image.setPixel(x, y, 0x010101 * (index + 1))
+    result = stitch(shots).image
+    rows = [
+        y for y in range(result.height()) if result.pixel(55, y) & 0xFFFFFF == 0x3366CC
+    ]
+    assert len(rows) == 16

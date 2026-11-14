@@ -35,6 +35,10 @@ _MAX_STRIP = 40
 _MIN_TRACK = 0.3
 # A thumb's run of pixels may have gaps this small (anti-aliased edges).
 _THUMB_GAP = 2
+# Differing pixels sampled per row to tell where an overlay sits.
+_SAMPLES = 64
+# A see-through band along the bottom may skip this many rows (rounding).
+_FADE_GAP = 2
 # Two frames sharing this share of their rows in place show the same view.
 _SAME_VIEW = 0.9
 
@@ -231,22 +235,30 @@ def _strip(
     # From the first aligned frame: a dropped stale frame shows the thumb low.
     used = [rows[seams[0][0] - 1], *(rows[index] for index, _ in seams)]
     if not any(
-        _thumb(used, edge + x * 4, top, body) or _frozen(used, edge + x * 4)
+        _thumb(used, edge + x * 4, top, body)
+        or (seen[x] >= needed and _frozen(used, edge + x * 4, top, body))
         for x in range(first, window)
     ):
         return 0
     return window - first
 
 
-def _frozen(frames: list[list[bytes]], at: int) -> bool:
-    """Whether a column looks the same in (nearly) every frame.
+def _frozen(frames: list[list[bytes]], at: int, top: int, body: int) -> bool:
+    """Whether a column with something drawn in it is the same in every frame.
 
     Some overlay scrollbars do not redraw while scrolled from outside: the
     strip stays put in every frame while the page moves under it, which
-    content never does. The last frame may catch the redraw.
+    content never does. The last frame may catch the redraw. A plain
+    background column is the same everywhere too, so it must hold a shape.
     """
-    columns = Counter(b"".join(row[at : at + 4] for row in frame) for frame in frames)
-    return columns.most_common(1)[0][1] >= max(2, len(frames) - 1)
+    columns = Counter(
+        b"".join(row[at : at + 4] for row in frame[top : top + body])
+        for frame in frames
+    )
+    column, count = columns.most_common(1)[0]
+    if count < max(2, len(frames) - 1):
+        return False
+    return len({column[i : i + 4] for i in range(0, len(column), 4)}) > 1
 
 
 def _thumb(frames: list[list[bytes]], at: int, top: int, body: int) -> bool:
@@ -287,26 +299,6 @@ def _moves_down(columns: list[list[bytes]], colour: bytes, *, thumb: bool) -> bo
     )
 
 
-def _differ(old: bytes, new: bytes) -> tuple[int, int]:
-    """First and last differing pixel of two unequal rows of equal length."""
-    low, high = 0, len(old) // 4  # Longest equal prefix, in pixels
-    while low < high:
-        middle = (low + high + 1) // 2
-        if old[: middle * 4] == new[: middle * 4]:
-            low = middle
-        else:
-            high = middle - 1
-    first = low
-    low, high = 0, len(old) // 4 - first  # Longest equal suffix
-    while low < high:
-        middle = (low + high + 1) // 2
-        if old[len(old) - middle * 4 :] == new[len(new) - middle * 4 :]:
-            low = middle
-        else:
-            high = middle - 1
-    return first, len(old) // 4 - 1 - low
-
-
 def _overlay(
     rows: list[list[bytes]],
     seams: list[tuple[int, int]],
@@ -325,30 +317,54 @@ def _overlay(
         return set()
     (top, body), (left, right) = band, (columns[0] * 4, columns[1] * 4)
     kept = [rows[seams[0][0] - 1], *(rows[index] for index, _ in seams)]
-    seen: Counter[int] = Counter()
+    fixed: Counter[int] = Counter()
+    faded: Counter[int] = Counter()
     for index, offset in seams:
         previous, following = rows[index - 1], rows[index]
         found: set[int] = set()
+        fading: set[int] = set()
         for y in range(body - offset):
             old = previous[top + y + offset][left:right]
             new = following[top + y][left:right]
             if old == new:
                 continue
-            first, last = _differ(old, new)
-            span = slice(left + first * 4, left + (last + 1) * 4)
-            for place in (y + offset, y):  # Over the old frame, or the new one
-                cells = {frame[top + place][span] for frame in kept}
-                if len(cells) == 1:
-                    found.add(place)
-                    break
-            else:
-                # Translucent (a fade above a chat's input box): the text shows
-                # through, so it is never the same twice. The old frame's
-                # lower rows are the ones a join keeps, so count it there.
+            # Over the old frame, or the new one: where the differing pixels
+            # are the same in every frame, something sits still over the page.
+            differing = [
+                x for x in range(0, len(old), 4) if old[x : x + 4] != new[x : x + 4]
+            ]
+            sample = differing[:: max(1, len(differing) // _SAMPLES)]
+            scores = [
+                sum(
+                    len({frame[top + place][left + x : left + x + 4] for frame in kept})
+                    == 1
+                    for x in sample
+                )
+                for place in (y + offset, y)
+            ]
+            if scores[1] > scores[0]:
+                found.add(y)
+            elif scores[0]:
                 found.add(y + offset)
-        seen.update(found)
+            else:
+                fading.add(y + offset)
+        fixed.update(found)
+        faded.update(fading)
     needed = (len(seams) + 1) // 2
-    return {place for place, count in seen.items() if count >= needed}
+    overlay = {place for place, count in fixed.items() if count >= needed}
+    # A see-through band (a fade above a chat's input box) is never the same
+    # twice, so it cannot be told from text changing by its pixels. Trust it
+    # only along the bottom edge, where such bands sit; elsewhere it could be
+    # an overlay over the new frame instead.
+    row, gap = body - 1, 0
+    while row >= 0 and gap <= _FADE_GAP:
+        if faded[row] >= needed:
+            overlay.add(row)
+            gap = 0
+        else:
+            gap += 1
+        row -= 1
+    return overlay
 
 
 def _avoid_overlay(pieces: list[list[int]], overlay: set[int]) -> None:

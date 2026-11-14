@@ -608,3 +608,34 @@ def test_late_answer_at_the_end_is_waited_for() -> None:
     assert result.image == panel.document
     assert result.warning == ""
     assert panel.writes.count(100.0) == 1
+
+
+class Tiled(Panel):
+    """Paints the top half first and pauses for a poll before the rest."""
+
+    torn: int = 0
+
+    @override
+    def scroll_to(self, percent: float) -> None:
+        """Scroll; the next two grabs are half painted."""
+        self.before = self.shown
+        super().scroll_to(percent)
+        self.torn = 2
+
+    @override
+    def grab(self) -> QImage:
+        """The new top half over the old bottom half while torn."""
+        image = super().grab()
+        if self.torn:
+            self.torn -= 1
+            old = self.document.copy(0, self.before, WIDTH, VIEW)
+            for y in range(VIEW // 2, VIEW):
+                for x in range(WIDTH):
+                    image.setPixel(x, y, old.pixel(x, y))
+        return image
+
+
+def test_half_painted_view_is_not_kept() -> None:
+    """A pause halfway through painting does not count as settled."""
+    panel = Tiled(900)
+    assert run(panel).image == panel.document
