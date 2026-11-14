@@ -18,6 +18,7 @@
 ### Features
 
 * scrolling capture from the current position, and Esc keeps what was captured ([#183](https://github.com/mikejhill/verdiclip/issues/183)) ([7f6dd8e](https://github.com/mikejhill/verdiclip/commit/7f6dd8e475dbcde654d28c82488f55c0b88eb5f8))
+* universal capture with configurable click modifiers ([#187](https://github.com/mikejhill/verdiclip/issues/187)) ([6865746](https://github.com/mikejhill/verdiclip/commit/686574616162072887d3b7f94db2ab6ba1948b25))
 
 
 ### Bug Fixes
