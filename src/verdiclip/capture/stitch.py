@@ -35,6 +35,16 @@ _MAX_STRIP = 40
 _MIN_TRACK = 0.3
 # A thumb's run of pixels may have gaps this small (anti-aliased edges).
 _THUMB_GAP = 2
+# Rows at each end of a scrollbar track that may hold fixed end caps or arrows.
+_CAP = 8
+# How far a frozen thumb's length may stray from what the view size implies,
+# and the shortest thumb drawn (about the same in Chromium and Windows).
+_THUMB_SLACK = 0.3
+_MIN_THUMB = 24
+# Differing pixels sampled per row to tell where an overlay sits.
+_SAMPLES = 64
+# A see-through band along the bottom may skip this many rows (rounding).
+_FADE_GAP = 2
 # Two frames sharing this share of their rows in place show the same view.
 _SAME_VIEW = 0.9
 
@@ -106,6 +116,16 @@ def view_moved(first: QImage, second: QImage, animation: int) -> bool:
     changed = sum(a != b for a, b in zip(old, new, strict=True))
     detailed = sum(not _uniform(row) for row in old)
     return changed > animation or 2 * changed > detailed > 0
+
+
+def pixel_offset(first: QImage, second: QImage, expected: float | None) -> int | None:
+    """How many rows ``second`` moved past ``first``, by their pixels, if trusted."""
+    rows = [_rows(first), _rows(second)]
+    header, footer = _band(rows, top=True), _band(rows, top=False)
+    width, height = first.width(), first.height()
+    margin = min(width // 10, 32)
+    keys = [_keys(r[header : height - footer], margin, width - margin) for r in rows]
+    return find_offset(keys[0], keys[1], expected)
 
 
 def fixed_rows(first: QImage, second: QImage) -> int:
@@ -197,14 +217,20 @@ def _same_view(first: Sequence[int], second: Sequence[int]) -> bool:
 
 
 def _strip(
-    rows: list[list[bytes]], seams: list[tuple[int, int]], top: int, body: int
+    rows: list[list[bytes]],
+    seams: list[tuple[int, int]],
+    band: tuple[int, int],
+    thumb: float | None,
 ) -> int:
     """Columns at the right edge that did not scroll with the content.
 
     A scrollbar stays put while the page moves, so once two frames are aligned
     its thumb disagrees with itself in rows whose content agrees. ``seams`` are
-    the aligned (frame index, offset) pairs; the answer is the strip's width.
+    the aligned (frame index, offset) pairs, ``band`` the body's (top,
+    height) and ``thumb`` the thumb length the view size implies, if known;
+    the answer is the strip's width.
     """
+    top, body = band
     width = len(rows[0][0]) // 4
     window = min(_MAX_STRIP, width // 10)
     if not window or not seams:
@@ -227,12 +253,55 @@ def _strip(
             seen[x] += count >= _MIN_VOTES
     needed = (len(seams) + 1) // 2
     first = next((x for x, count in enumerate(seen) if count >= needed > 0), window)
-    # Cropping loses pixels for good: insist on a thumb, not just change.
+    # Cropping loses pixels for good: insist on a scrollbar, not just change.
     # From the first aligned frame: a dropped stale frame shows the thumb low.
     used = [rows[seams[0][0] - 1], *(rows[index] for index, _ in seams)]
-    if not any(_thumb(used, edge + x * 4, top, body) for x in range(first, window)):
+    if not any(
+        _thumb(used, edge + x * 4, top, body)
+        or (
+            thumb is not None
+            and seen[x] >= needed
+            and _frozen(used, edge + x * 4, band, thumb)
+        )
+        for x in range(first, window)
+    ):
         return 0
     return window - first
+
+
+def _frozen(
+    frames: list[list[bytes]], at: int, band: tuple[int, int], thumb: float
+) -> bool:
+    """Whether a column with something drawn in it is the same in every frame.
+
+    Some overlay scrollbars do not redraw while scrolled from outside: the
+    strip stays put in every frame while the page moves under it, which
+    content never does. It may fade or catch a redraw in some frames, so
+    about half must agree. A plain column or a fixed toolbar stays put too,
+    so it must look like a thumb, as long as the view size says (``thumb``
+    rows, or the shortest a thumb is drawn).
+    """
+    top, body = band
+    columns = Counter(
+        b"".join(row[at : at + 4] for row in frame[top : top + body])
+        for frame in frames
+    )
+    column, count = columns.most_common(1)[0]
+    if count < max(2, (len(frames) + 1) // 2):
+        return False
+    # A thumb on a plain track: one run off the track colour. A plain column
+    # has no run, and a toolbar of icons has several.
+    pixels = [column[i : i + 4] for i in range(0, len(column), 4)]
+    track = Counter(pixels).most_common(1)[0][0]
+    marks = _inside_caps(
+        [y for y, pixel in enumerate(pixels) if pixel != track], len(pixels)
+    )
+    runs = 1 + sum(b - a > _THUMB_GAP for a, b in pairwise(marks))
+    if len(marks) < _MIN_VOTES or runs != 1:
+        return False
+    length = marks[-1] - marks[0] + 1
+    slack = max(_MIN_VOTES * 2, thumb * _THUMB_SLACK)
+    return abs(length - max(thumb, _MIN_THUMB)) <= slack
 
 
 def _thumb(frames: list[list[bytes]], at: int, top: int, body: int) -> bool:
@@ -259,7 +328,10 @@ def _moves_down(columns: list[list[bytes]], colour: bytes, *, thumb: bool) -> bo
     """Whether the thumb (``colour``, or all but it) is one run moving down."""
     centres: list[float] = []
     for column in columns:
-        marks = [y for y, pixel in enumerate(column) if (pixel == colour) == thumb]
+        marks = _inside_caps(
+            [y for y, pixel in enumerate(column) if (pixel == colour) == thumb],
+            len(column),
+        )
         if not marks:
             continue  # Overlay scrollbars fade out
         runs = 1 + sum(b - a > _THUMB_GAP for a, b in pairwise(marks))
@@ -273,8 +345,120 @@ def _moves_down(columns: list[list[bytes]], colour: bytes, *, thumb: bool) -> bo
     )
 
 
-def stitch(frames: Sequence[Frame]) -> StitchResult:
-    """Join ``frames`` (all the same size) into one image."""
+def _inside_caps(marks: list[int], length: int) -> list[int]:
+    """``marks`` without the rows of a track's end caps."""
+    return [y for y in marks if _CAP <= y < length - _CAP]
+
+
+def _overlay(
+    rows: list[list[bytes]],
+    seams: list[tuple[int, int]],
+    band: tuple[int, int],
+    columns: tuple[int, int],
+) -> set[int]:
+    """Body rows covered by something that stays put while the page scrolls.
+
+    ``band`` is the body's (top, height) and ``columns`` the (left, right)
+    pixels compared. A floating button over the text makes aligned frames
+    disagree where it is, and it looks the same in every frame at that place
+    in the viewport, while the text under it does not. Rows must disagree at
+    about half the seams, so an occasional animation or changed line does not.
+    """
+    if not seams:
+        return set()
+    (top, body), (left, right) = band, (columns[0] * 4, columns[1] * 4)
+    kept = [rows[seams[0][0] - 1], *(rows[index] for index, _ in seams)]
+    fixed: Counter[int] = Counter()
+    faded: Counter[int] = Counter()
+    for index, offset in seams:
+        previous, following = rows[index - 1], rows[index]
+        found: set[int] = set()
+        fading: set[int] = set()
+        tied: tuple[set[int], set[int]] = (set(), set())
+        for y in range(body - offset):
+            old = previous[top + y + offset][left:right]
+            new = following[top + y][left:right]
+            if old == new:
+                continue
+            # Over the old frame, or the new one: where the differing pixels
+            # are the same in every frame, something sits still over the page.
+            differing = [
+                x for x in range(0, len(old), 4) if old[x : x + 4] != new[x : x + 4]
+            ]
+            sample = differing[:: max(1, len(differing) // _SAMPLES)]
+            # Most frames, not all: a button may only appear once the page
+            # has scrolled away from the top.
+            scores = [
+                sum(
+                    2 * sum(frame[top + place][at : at + 4] == pixel for frame in kept)
+                    > len(kept)
+                    for x in sample
+                    for at, pixel in [(left + x, row[x : x + 4])]
+                )
+                for place, row in ((y + offset, old), (y, new))
+            ]
+            if scores[1] > scores[0]:
+                found.add(y)
+            elif scores[0] > scores[1]:
+                found.add(y + offset)
+            elif scores[0]:
+                tied[0].add(y)
+                tied[1].add(y + offset)
+            else:
+                fading.add(y + offset)
+        # Over a plain margin both places look still. The overlay's own rows
+        # tie from both sides (once as the new place, once as the old one);
+        # the plain rows beside it only from one.
+        fixed.update(found | (tied[0] & tied[1]))
+        faded.update(fading)
+    needed = (len(seams) + 1) // 2
+    overlay = {place for place, count in fixed.items() if count >= needed}
+    # A see-through band (a fade above a chat's input box) is never the same
+    # twice, so it cannot be told from text changing by its pixels. Trust it
+    # only along the bottom edge, where such bands sit; elsewhere it could be
+    # an overlay over the new frame instead.
+    row, gap = body - 1, 0
+    while row >= 0 and gap <= _FADE_GAP:
+        if faded[row] >= needed:
+            overlay.add(row)
+            gap = 0
+        else:
+            gap += 1
+        row -= 1
+    return overlay
+
+
+def _avoid_overlay(pieces: list[list[int]], overlay: set[int]) -> None:
+    """Move seams above a floating overlay, so the next frame shows what it hid.
+
+    Each frame then ends just above the overlay, and the next frame, which
+    shows those rows higher up, supplies them. Only the last frame keeps it.
+    """
+    if not overlay:
+        return
+    for previous, current in pairwise(pieces):
+        if current[0] != previous[0] + 1:
+            continue  # A frame that did not move sits between them
+        offset = previous[2] - current[1]  # How far the current frame moved
+        below = [row for row in overlay if offset <= row < previous[2]]
+        if not below or min(below) <= previous[1]:
+            continue
+        cut = min(below)
+        # The rows the current frame now adds must be clear of any control
+        # higher up, or that one is copied into every frame instead. This one
+        # may show there: the next seam moves above it, or the last frame
+        # keeps it.
+        if any(cut - offset <= row < min(current[1], cut) for row in overlay):
+            continue
+        previous[2], current[1] = cut, cut - offset
+
+
+def stitch(frames: Sequence[Frame], view_size: float = 0.0) -> StitchResult:
+    """Join ``frames`` (all the same size) into one image.
+
+    ``view_size`` is the percentage of the content one view shows, when the
+    provider says; it tells a frozen scrollbar thumb from a fixed button.
+    """
     if not frames:
         raise ValueError("Nothing to stitch")
     first = frames[0].image
@@ -297,8 +481,8 @@ def stitch(frames: Sequence[Frame]) -> StitchResult:
     ):
         lead += 1
 
-    # (frame index, first body row to keep) for each frame after the first.
-    pieces: list[tuple[int, int]] = [(lead, 0)]
+    # [frame index, first body row to keep, end row] for each kept frame.
+    pieces: list[list[int]] = [[lead, 0, body]]
     seams: list[tuple[int, int]] = []  # (frame index, offset) aligned by pixels
     estimated = 0
     for index in range(lead + 1, len(frames)):
@@ -311,19 +495,21 @@ def stitch(frames: Sequence[Frame]) -> StitchResult:
             seams.append((index, offset))
         offset = max(0, min(body, offset))
         if offset:
-            pieces.append((index, body - offset))
+            pieces.append([index, body - offset, body])
     # Leave out the scrollbar: each frame would show its thumb somewhere else.
-    width -= _strip(rows, seams, header, body)
+    thumb = view_size / 100 * (body - 2 * _CAP) if view_size > 0 else None
+    width -= _strip(rows, seams, (header, body), thumb)
+    _avoid_overlay(pieces, _overlay(rows, seams, (header, body), (0, width)))
     first = frames[lead].image
 
-    total = header + sum(body - start for _, start in pieces) + footer
+    total = header + sum(end - start for _, start, end in pieces) + footer
     result = QImage(width, total, QImage.Format.Format_RGB32)
     painter = QPainter(result)
     try:
         painter.drawImage(QPoint(0, 0), first, QRect(0, 0, width, header))
         y = header
-        for index, start in pieces:
-            span = body - start
+        for index, start, end in pieces:
+            span = end - start
             source = QRect(0, header + start, width, span)
             painter.drawImage(QPoint(0, y), frames[index].image, source)
             y += span

@@ -39,6 +39,10 @@ _MIN_SIZE = 32
 _GA_ROOT = 2
 _LOOKUPS = 2
 _RETRY_SECONDS = 0.5
+_SCROLL_BAR = 50014  # UIA_ScrollBarControlTypeId
+_BAR_DEPTH = 3
+_BAR_WIDTH = 32
+_BAR_HEIGHT = 0.8
 
 
 class _Guid(c.Structure):
@@ -122,6 +126,24 @@ def on_screen(area: Rect, monitors: list[dict[str, int]]) -> bool:
     return covered >= area.width * area.height
 
 
+def scrollbar_width(area: Rect, bars: list[Rect]) -> int:
+    """Columns at the right of ``area`` that a vertical scrollbar covers.
+
+    Only a tall, narrow bar against the right edge counts; anything else
+    (a horizontal bar, one outside the viewport) leaves the area alone.
+    """
+    for bar in bars:
+        part = bar.intersected(area)
+        if (
+            not part.is_empty
+            and area.right - part.right <= 1
+            and part.height >= _BAR_HEIGHT * area.height
+            and part.width <= min(_BAR_WIDTH, area.width / 4)
+        ):
+            return math.ceil(area.right - part.left)
+    return 0
+
+
 class UiaScrollTarget:
     """The nearest vertically scrollable UIA ancestor of a screen point."""
 
@@ -194,6 +216,10 @@ class UiaScrollTarget:
                 if attempt == _LOOKUPS - 1:
                     raise
                 time.sleep(_RETRY_SECONDS)
+        self._trim = 0
+        # A scrollbar the panel draws itself stays put in every frame; leave
+        # it out when UI Automation says where it is (XAML, not Chromium).
+        self._trim = scrollbar_width(self._viewport(), self._bars(automation, walker))
         self._area = self._viewport()
         if self._area.width < _MIN_SIZE or self._area.height < _MIN_SIZE:
             raise CaptureError("The scrolling area is too small")
@@ -230,7 +256,34 @@ class UiaScrollTarget:
             current = walker.nullable(3, self._owners, (c.c_void_p, current._pointer))
         raise CaptureError("Nothing at that point scrolls vertically")
 
+    def _bars(self, automation: _Interface, walker: _Interface) -> list[Rect]:
+        """A scrollbar under the panel's right edge, if UI Automation has one.
+
+        One lookup at the edge and a few parents (the thumb or a track button,
+        then the bar) is quick; walking the panel's children is not.
+        """
+        area = self._viewport()
+        edge = w.POINT(round(area.right) - 2, round(area.center.y))
+        try:
+            current = automation.nullable(7, self._owners, (w.POINT, edge))
+            for _ in range(_BAR_DEPTH):
+                if current is None:
+                    break
+                if current.integer(21) == _SCROLL_BAR:
+                    return [current.bounds()]
+                current = walker.nullable(
+                    3, self._owners, (c.c_void_p, current._pointer)
+                )
+        except OSError:
+            logger.debug("Could not look for the panel's scrollbar", exc_info=True)
+        return []
+
     def _viewport(self) -> Rect:
+        """The element's bounds, without scrollbars around or inside it."""
+        area = self._bounds()
+        return Rect(area.x, area.y, area.width - self._trim, area.height)
+
+    def _bounds(self) -> Rect:
         """The element's bounds, without its own window's non-client scrollbars."""
         bounds = self._element.bounds()
         handle = self._element.handle()

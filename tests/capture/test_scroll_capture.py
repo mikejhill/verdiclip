@@ -260,10 +260,54 @@ class ShortOfTheEnd(Stuck):
         super().scroll_to(percent)
 
 
-def test_stuck_position_short_of_the_end_is_flagged() -> None:
-    """If asking for the end again still moves the panel, the user is told."""
+def test_stuck_position_short_of_the_end_is_followed_by_the_pixels() -> None:
+    """When the end is not reached, the pixels say so and the end is asked again."""
+    panel = ShortOfTheEnd(900, start=0.0)
+    result = run(panel)
+    assert result.image == panel.document
+    assert panel.asked >= 2
+
+
+def test_stuck_position_short_of_the_end_is_flagged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without pixels, if asking for the end again moves the panel, say so."""
+    monkeypatch.setattr(scrolling, "pixel_offset", lambda *_args: None)
     result = run(ShortOfTheEnd(900, start=0.0))
     assert "reached the end" in result.warning
+
+
+class Creeping(Panel):
+    """Once, answers a full step with a position that barely moved (Edge)."""
+
+    creep: int = 3
+    answer: ScrollPosition | None = None
+
+    @override
+    def scroll_to(self, percent: float) -> None:
+        """Scroll; on the third request, remember a barely moved answer."""
+        before = super().position()
+        super().scroll_to(percent)
+        self.creep -= 1
+        self.answer = (
+            ScrollPosition(before.percent + 0.25, before.view_size)
+            if self.creep == 0
+            else None
+        )
+
+    @override
+    def position(self) -> ScrollPosition:
+        """The barely moved answer for that step, the real one otherwise."""
+        return self.answer or super().position()
+
+
+def test_answer_that_barely_moved_after_a_full_step_is_overruled() -> None:
+    """The next step starts from where the pixels went, not back up the page."""
+    panel = Creeping(2000, start=0.0)
+    result = run(panel)
+    assert result.image == panel.document
+    assert result.warning == ""
+    assert panel.writes == sorted(panel.writes[:-1]) + panel.writes[-1:]
 
 
 def test_position_that_lags_the_pixels_is_waited_for() -> None:
@@ -274,10 +318,20 @@ def test_position_that_lags_the_pixels_is_waited_for() -> None:
     assert result.warning == ""
 
 
-def test_position_that_moves_backwards_stops_with_a_warning() -> None:
-    """A position that goes backwards ends the capture with a warning."""
+def test_position_that_moves_backwards_is_overruled_by_the_pixels() -> None:
+    """A position answer that goes backwards does not undo a step that moved."""
     panel = Backwards(1400, start=0.0)
     result = run(panel)
+    assert result.image == panel.document
+    assert result.warning == ""
+
+
+def test_position_that_moves_backwards_without_pixels_stops_with_a_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With nothing to align, a position going backwards ends with a warning."""
+    monkeypatch.setattr(scrolling, "pixel_offset", lambda *_args: None)
+    result = run(Backwards(1400, start=0.0))
     assert result.image is not None
     assert "reached the end" in result.warning
 
@@ -298,7 +352,7 @@ def test_estimated_seams_are_reported(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         scrolling,
         "stitch",
-        lambda frames: StitchResult(real(frames).image, 2),
+        lambda frames, *_: StitchResult(real(frames).image, 2),
     )
     result = run(Panel(700))
     assert result.warning == "2 seam(s) were estimated; check the image."
@@ -385,7 +439,7 @@ def test_start_near_the_top_is_not_asked_again() -> None:
 def test_stale_top_frame_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
     """When the stitcher leaves out stale frames, the user is told."""
     monkeypatch.setattr(
-        scrolling, "stitch", lambda frames: StitchResult(frames[0].image, 0, 1)
+        scrolling, "stitch", lambda frames, *_: StitchResult(frames[0].image, 0, 1)
     )
     assert "top of the image" in run(Panel(900)).warning
 
@@ -608,3 +662,34 @@ def test_late_answer_at_the_end_is_waited_for() -> None:
     assert result.image == panel.document
     assert result.warning == ""
     assert panel.writes.count(100.0) == 1
+
+
+class Tiled(Panel):
+    """Paints the top half first and pauses for a poll before the rest."""
+
+    torn: int = 0
+
+    @override
+    def scroll_to(self, percent: float) -> None:
+        """Scroll; the next two grabs are half painted."""
+        self.before = self.shown
+        super().scroll_to(percent)
+        self.torn = 2
+
+    @override
+    def grab(self) -> QImage:
+        """The new top half over the old bottom half while torn."""
+        image = super().grab()
+        if self.torn:
+            self.torn -= 1
+            old = self.document.copy(0, self.before, WIDTH, VIEW)
+            for y in range(VIEW // 2, VIEW):
+                for x in range(WIDTH):
+                    image.setPixel(x, y, old.pixel(x, y))
+        return image
+
+
+def test_half_painted_view_is_not_kept() -> None:
+    """A pause halfway through painting does not count as settled."""
+    panel = Tiled(900)
+    assert run(panel).image == panel.document

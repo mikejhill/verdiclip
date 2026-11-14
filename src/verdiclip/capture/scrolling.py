@@ -13,7 +13,13 @@ from typing import Protocol
 
 from PySide6.QtGui import QImage
 
-from verdiclip.capture.stitch import Frame, fixed_rows, stitch, view_moved
+from verdiclip.capture.stitch import (
+    Frame,
+    fixed_rows,
+    pixel_offset,
+    stitch,
+    view_moved,
+)
 from verdiclip.exceptions import CaptureError
 
 MAX_SECONDS = 45.0
@@ -29,6 +35,10 @@ _POLL_SECONDS = 0.05
 _CHANGE_SECONDS = 0.6
 # Give up waiting for animation to stop after this long.
 _SETTLE_SECONDS = 1.5
+# A provider answer this close to the pixel distance is taken as it is.
+_LAG_PIXELS = 8
+# Polls in a row without movement before a view counts as settled.
+_STILL_POLLS = 2
 # Ask for the top this many times before trusting a view that did not move.
 _TOP_TRIES = 3
 _UNSURE_END = "The panel may not have reached the end; check the bottom of the image."
@@ -126,7 +136,7 @@ class ScrollCapture:
             return ScrollResult(None, str(error), len(frames))
         if not self._restore(start):
             notes.append("The panel could not be scrolled back to where it was.")
-        result = stitch(frames)
+        result = stitch(frames, start.view_size)
         if result.stale_frames:
             notes.append(
                 "The panel was slow to reach its top; check the top of the image."
@@ -193,7 +203,18 @@ class ScrollCapture:
             return False
         walk.assumed, walk.reading = moved.percent == walk.reading, moved.percent
         distance = None
-        if walk.assumed:
+        shift = (
+            None
+            if scale is None
+            else self._shift(walk, following, moved, requested, scale)
+        )
+        if shift is not None and scale is not None:
+            # The pixels say how far the view went. A provider can lag, or
+            # answer with a value that barely moved, after a full step.
+            walk.assumed = True
+            distance = float(shift)
+            moved = ScrollPosition(position.percent + shift / scale, moved.view_size)
+        elif walk.assumed:
             # Pixels moved but the reported position did not (yet). Trust the
             # pixels; the requested step is only the stitcher's fallback.
             if scale is not None:
@@ -214,6 +235,25 @@ class ScrollCapture:
             return False
         walk.image, walk.position = following, moved
         return True
+
+    def _shift(
+        self,
+        walk: _Walk,
+        following: QImage,
+        moved: ScrollPosition,
+        requested: float,
+        scale: float,
+    ) -> int | None:
+        """The pixel distance, when it disagrees with the provider's answer."""
+        position = walk.position
+        answer = (requested if walk.assumed else moved.percent) - position.percent
+        expected = answer * scale
+        shift = pixel_offset(walk.image, following, expected)
+        if shift is None or (
+            not walk.assumed and abs(shift - expected) <= max(_LAG_PIXELS, shift / 4)
+        ):
+            return None  # Agrees with the provider, or nothing to go on
+        return shift
 
     def _overshot(self, walk: _Walk, following: QImage, distance: float) -> bool:
         """Step back when fixed bands hid more than the overlap a step leaves."""
@@ -285,13 +325,16 @@ class ScrollCapture:
             self._sleep(_POLL_SECONDS)
             current = self._target.grab()
         started = self._clock()  # Now wait for the change to finish
+        still = 0
         while self._clock() - started < _SETTLE_SECONDS:
             self._check()  # Esc must reach the restore before the kill
             self._sleep(_POLL_SECONDS)
             following = self._target.grab()
-            moving = self._moved(current, following)
+            still = 0 if self._moved(current, following) else still + 1
             current = following
-            if not moving:
+            # Twice in a row: a browser that paints in tiles can pause for one
+            # poll halfway, and a half-painted frame cannot be joined.
+            if still == _STILL_POLLS:
                 break
         return current
 

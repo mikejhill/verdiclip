@@ -12,6 +12,7 @@ from verdiclip.capture.stitch import Frame, find_offset, stitch, view_moved
 
 WIDTH = 120
 VIEW = 200
+THUMB_VIEW = 10.9  # The view size a 20-row thumb on the 184-row track stands for
 
 
 def page(height: int, seed: int = 1) -> QImage:
@@ -313,3 +314,246 @@ def test_thumb_longer_than_half_the_track_is_cropped(size: int, travel: int) -> 
         scrollbar(frame.image, travel * index, size=size)
     whole = expected(document)
     assert stitch(shots).image == whole.copy(0, 0, WIDTH - 6, whole.height())
+
+
+def button(image: QImage, top: int = 170) -> None:
+    """Paint a floating button that stays put while the page scrolls."""
+    for y in range(top, top + 16):
+        for x in range(50, 70):
+            image.setPixel(x, y, 0x3366CC)
+
+
+def test_floating_button_is_covered_by_the_next_frame() -> None:
+    """A button over the text appears once, at the end, not once per frame."""
+    document = page(700)
+    shots = frames(document, 120)
+    for frame in shots:
+        button(frame.image)
+    result = stitch(shots)
+    whole = expected(document)
+    button_at_end = whole.copy()
+    for y in range(170, 186):
+        for x in range(50, 70):
+            button_at_end.setPixel(x, whole.height() - VIEW + y, 0x3366CC)
+    assert result.estimated_seams == 0
+    assert result.image == button_at_end
+
+
+def test_button_too_high_to_avoid_is_left_alone() -> None:
+    """A button above the overlap stays in every frame; the joins still hold."""
+    document = page(700)
+    shots = frames(document, 120)
+    for frame in shots:
+        button(frame.image, top=30)
+    result = stitch(shots)
+    assert result.estimated_seams == 0
+    assert result.image.height() == document.height()
+
+
+def test_frame_that_did_not_move_does_not_confuse_the_button_seams() -> None:
+    """Seams are only moved between frames that follow one another."""
+    document = page(700)
+    shots = frames(document, 120)
+    for frame in shots:
+        button(frame.image)
+    shots.insert(2, Frame(shots[1].image.copy(), 0.0))
+    result = stitch(shots)
+    assert result.image.height() == document.height()
+
+
+def test_scrollbar_that_never_redraws_is_cropped() -> None:
+    """An overlay scrollbar frozen in place while the page moves is left out."""
+    document = page(700)
+    shots = frames(document, 120)
+    for frame in shots:
+        scrollbar(frame.image, 10)
+    whole = expected(document)
+    assert stitch(shots, THUMB_VIEW).image == whole.copy(
+        0, 0, WIDTH - 6, whole.height()
+    )
+
+
+def fade(image: QImage, top: int = 180) -> None:
+    """Darken the bottom rows, like a fade above a chat's input box."""
+    for y in range(top, VIEW):
+        for x in range(WIDTH):
+            image.setPixel(x, y, (image.pixel(x, y) >> 1) & 0x7F7F7F)
+
+
+def test_translucent_fade_is_covered_by_the_next_frame() -> None:
+    """Text under a see-through band comes from the next frame, clear of it."""
+    document = page(700)
+    shots = frames(document, 120)
+    for frame in shots:
+        fade(frame.image)
+    whole = expected(document)
+    end = whole.copy(0, whole.height() - VIEW, WIDTH, VIEW)
+    fade(end)
+    result = stitch(shots)
+    assert result.image.copy(0, 0, WIDTH, whole.height() - VIEW) == whole.copy(
+        0, 0, WIDTH, whole.height() - VIEW
+    )
+    assert result.image.copy(0, whole.height() - VIEW, WIDTH, VIEW) == end
+
+
+def test_plain_background_column_is_not_a_frozen_scrollbar() -> None:
+    """A white edge beside a changed timestamp is not taken for a scrollbar."""
+    document = page(260)
+    first = view(document, 0)
+    second = view(document, 60)
+    for image in (first, second):
+        for y in range(VIEW):
+            image.setPixel(WIDTH - 1, y, 0xFFFFFF)
+    for y in range(100, 110):
+        for x in range(WIDTH - 10, WIDTH - 6):
+            second.setPixel(x, y, 0x101010 + x)
+    assert stitch([Frame(first), Frame(second, 60.0)]).image.width() == WIDTH
+
+
+def test_button_at_the_top_beside_changing_pixels_stays_hidden() -> None:
+    """A pinned button near the top, beside an animation, does not move seams."""
+    document = page(700)
+    shots = frames(document, 120)
+    for index, frame in enumerate(shots):
+        button(frame.image, top=30)
+        for y in range(30, 46):  # An animation in the same rows
+            for x in range(90, 100):
+                frame.image.setPixel(x, y, 0x010101 * (index + 1))
+    result = stitch(shots).image
+    rows = [
+        y for y in range(result.height()) if result.pixel(55, y) & 0xFFFFFF == 0x3366CC
+    ]
+    assert len(rows) == 16
+
+
+def test_fixed_toolbar_at_the_right_edge_is_kept() -> None:
+    """A strip of icons that stays put is part of the window, not a scrollbar."""
+    document = page(700)
+    shots = frames(document, 120)
+    for frame in shots:
+        for y in range(VIEW):
+            for x in range(WIDTH - 10, WIDTH):
+                icon = y % 50 < 16
+                frame.image.setPixel(x, y, 0x224488 + (y % 50) if icon else 0xF0F0F0)
+    assert stitch(shots).image.width() == WIDTH
+
+
+def test_frozen_scrollbar_that_fades_now_and_then_is_cropped() -> None:
+    """A frozen thumb missing from a few frames still marks a scrollbar."""
+    document = page(700)
+    shots = frames(document, 120)
+    for index, frame in enumerate(shots):
+        scrollbar(frame.image, 10, size=20 if index % 3 else 0)
+    whole = expected(document)
+    assert stitch(shots, THUMB_VIEW).image == whole.copy(
+        0, 0, WIDTH - 6, whole.height()
+    )
+
+
+def test_button_at_the_left_edge_is_covered_by_the_next_frame() -> None:
+    """A menu button against the left edge appears once, like one in the middle."""
+    document = page(700)
+    shots = frames(document, 120)
+    for frame in shots:
+        for y in range(170, 186):
+            for x in range(8):
+                frame.image.setPixel(x, y, 0x3366CC)
+    result = stitch(shots).image
+    rows = [
+        y for y in range(result.height()) if result.pixel(3, y) & 0xFFFFFF == 0x3366CC
+    ]
+    assert len(rows) == 16
+
+
+def test_button_over_a_plain_margin_is_not_repeated() -> None:
+    """A pinned button in a blank margin is shown once, not once per frame."""
+    document = page(700)
+    for y in range(document.height()):
+        for x in range(10):
+            document.setPixel(x, y, 0xFFFFFF)
+    shots = frames(document, 120)
+    for frame in shots:
+        for y in range(40, 56):
+            for x in range(8):
+                frame.image.setPixel(x, y, 0x3366CC)
+    result = stitch(shots).image
+    rows = [
+        y for y in range(result.height()) if result.pixel(3, y) & 0xFFFFFF == 0x3366CC
+    ]
+    assert len(rows) == 16
+
+
+def test_button_that_appears_after_the_first_frame_is_not_repeated() -> None:
+    """A button shown once the page leaves the top is still known as one."""
+    document = page(700)
+    for y in range(document.height()):
+        for x in range(10):
+            document.setPixel(x, y, 0xFFFFFF)
+    shots = frames(document, 120)
+    for frame in shots[1:]:
+        for y in range(40, 56):
+            for x in range(8):
+                frame.image.setPixel(x, y, 0x3366CC)
+    result = stitch(shots).image
+    rows = [
+        y for y in range(result.height()) if result.pixel(3, y) & 0xFFFFFF == 0x3366CC
+    ]
+    assert len(rows) <= 16
+
+
+def caps(image: QImage) -> None:
+    """Paint fixed end caps at both ends of the scrollbar track."""
+    for y in [*range(2, 8), *range(VIEW - 8, VIEW - 2)]:
+        for x in range(WIDTH - 6, WIDTH):
+            image.setPixel(x, y, 0x555555)
+
+
+@pytest.mark.parametrize("step", [0, 25])
+def test_scrollbar_with_end_caps_is_cropped(step: int) -> None:
+    """Fixed caps at the ends of the track do not hide a thumb, moving or not."""
+    document = page(700)
+    shots = frames(document, 120)
+    for index, frame in enumerate(shots):
+        scrollbar(frame.image, 40 + step * index)
+        caps(frame.image)
+    whole = expected(document)
+    assert stitch(shots, THUMB_VIEW).image == whole.copy(
+        0, 0, WIDTH - 6, whole.height()
+    )
+
+
+def test_second_button_higher_up_is_not_copied_into_every_frame() -> None:
+    """A seam is not moved when that would bring in a control higher up."""
+    document = page(700)
+    shots = frames(document, 120)
+    for frame in shots:
+        button(frame.image)
+        for y in range(60, 76):  # A second control, higher up
+            for x in range(90, 100):
+                frame.image.setPixel(x, y, 0xCC6633)
+    result = stitch(shots).image
+    rows = [
+        y for y in range(result.height()) if result.pixel(95, y) & 0xFFFFFF == 0xCC6633
+    ]
+    assert len(rows) == 16
+
+
+def test_frozen_scrollbar_needs_the_view_size() -> None:
+    """Without the view size, a strip that never moves is kept."""
+    document = page(700)
+    shots = frames(document, 120)
+    for frame in shots:
+        scrollbar(frame.image, 10)
+    assert stitch(shots).image.width() == WIDTH
+
+
+def test_fixed_button_in_a_plain_right_margin_is_kept() -> None:
+    """A button too short for the view size is not taken for a frozen thumb."""
+    document = page(700)
+    shots = frames(document, 120)
+    for frame in shots:
+        for y in range(VIEW):
+            for x in range(WIDTH - 10, WIDTH):
+                inside = 170 <= y < 186 and x >= WIDTH - 8
+                frame.image.setPixel(x, y, 0x3366CC if inside else 0xFFFFFF)
+    assert stitch(shots, VIEW * 100 / 700).image.width() == WIDTH
