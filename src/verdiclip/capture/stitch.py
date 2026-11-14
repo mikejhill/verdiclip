@@ -228,7 +228,8 @@ def _strip(
     needed = (len(seams) + 1) // 2
     first = next((x for x, count in enumerate(seen) if count >= needed > 0), window)
     # Cropping loses pixels for good: insist on a thumb, not just change.
-    used = [rows[0], *(rows[index] for index, _ in seams)]
+    # From the first aligned frame: a dropped stale frame shows the thumb low.
+    used = [rows[seams[0][0] - 1], *(rows[index] for index, _ in seams)]
     if not any(_thumb(used, edge + x * 4, top, body) for x in range(first, window)):
         return 0
     return window - first

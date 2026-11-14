@@ -283,3 +283,13 @@ def test_thumb_that_moves_up_is_not_a_scrollbar() -> None:
     for index, frame in enumerate(shots):
         scrollbar(frame.image, VIEW - 30 - 40 * index)
     assert stitch(shots).image.width() == WIDTH
+
+
+def test_dropped_stale_frame_does_not_keep_the_scrollbar() -> None:
+    """A stale first frame showing the thumb low does not hide the scrollbar."""
+    document = page(700)
+    shots = frames(document, 150, thumb=True)
+    result = stitch([Frame(shots[-1].image.copy()), Frame(shots[0].image), *shots[1:]])
+    whole = expected(document)
+    assert result.stale_frames == 1
+    assert result.image == whole.copy(0, 0, WIDTH - 6, whole.height())
