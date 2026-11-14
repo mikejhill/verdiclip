@@ -161,8 +161,17 @@ class ScrollCapture:
                 return
             if not self._advance(walk, frames, notes):
                 return
-        if walk.assumed and self._position_after(-1.0).percent < END_PERCENT:
+        if walk.assumed and not self._at_end(walk):
             notes.append(_UNSURE_END)
+
+    def _at_end(self, walk: _Walk) -> bool:
+        """Whether a panel whose position lagged really reached its end."""
+        if self._position_after(walk.reading).percent >= END_PERCENT:
+            return True
+        # Chromium can keep the last answer for a second. If asking for the
+        # end again moves nothing, the panel is already there.
+        self._target.scroll_to(END_PERCENT)
+        return not self._moved(walk.image, self._settle(walk.image))
 
     def _advance(self, walk: _Walk, frames: list[Frame], notes: list[str]) -> bool:
         """Take one step and keep its frame; False when the capture is over."""
@@ -186,7 +195,9 @@ class ScrollCapture:
         distance = None
         if walk.assumed:
             # Pixels moved but the reported position did not (yet). Trust the
-            # pixels; the stitcher aligns them without a distance.
+            # pixels; the requested step is only the stitcher's fallback.
+            if scale is not None:
+                distance = (requested - position.percent) * scale
             moved = ScrollPosition(requested, moved.view_size)
         elif scale is not None:
             distance = (moved.percent - position.percent) * scale

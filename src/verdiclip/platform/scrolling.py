@@ -188,7 +188,7 @@ class UiaScrollTarget:
             if element is None:
                 raise CaptureError("UI Automation is unavailable")
             try:
-                self._element, self._scroll = self._find(element, walker)
+                self._element, self._scroll = self._find(element, walker, point)
                 break
             except CaptureError:
                 if attempt == _LOOKUPS - 1:
@@ -208,7 +208,7 @@ class UiaScrollTarget:
         logger.info("Scrolling viewport %s", self._area)
 
     def _find(
-        self, element: _Interface, walker: _Interface
+        self, element: _Interface, walker: _Interface, point: Point
     ) -> tuple[_Interface, _Interface]:
         current: _Interface | None = element
         for _ in range(_MAX_ANCESTORS):
@@ -220,7 +220,12 @@ class UiaScrollTarget:
                 (c.c_int, _SCROLL_PATTERN),
                 (c.POINTER(_Guid), c.byref(_Guid.parse(_SCROLL_IID))),
             )
-            if pattern is not None and pattern.flag(10):
+            # A panel that does not contain the click is not the one chosen.
+            if (
+                pattern is not None
+                and pattern.flag(10)
+                and current.bounds().contains(point)
+            ):
                 return current, pattern
             current = walker.nullable(3, self._owners, (c.c_void_p, current._pointer))
         raise CaptureError("Nothing at that point scrolls vertically")
