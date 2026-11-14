@@ -250,6 +250,9 @@ class ScrollCapture:
         elif scale is not None:
             distance = (moved.percent - position.percent) * scale
             if self._overshot(walk, following, distance):
+                # The view stepped back to the last frame's position: keep
+                # what it shows now, which the next step is measured against.
+                frames[-1] = Frame(walk.image, frames[-1].moved)
                 return True
         size = following.width() * following.height()
         if walk.pixels + size > MAX_PIXELS:

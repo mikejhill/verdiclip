@@ -740,3 +740,24 @@ def test_capture_from_the_bottom_is_one_frame() -> None:
     result = run(panel, from_top=False)
     assert result.frames == 1
     assert result.image == panel.document.copy(0, panel.range, WIDTH, VIEW)
+
+
+class LoadingTop(Banded):
+    """The top still finishing a redraw in the first frame taken there."""
+
+    @override
+    def grab(self) -> QImage:
+        """The first grabs show a spinner in the top rows of the body."""
+        image = super().grab()
+        if self.grabs <= 3:  # The settle and the first frame
+            for y in range(self.header, self.header + 10):
+                for x in range(WIDTH):
+                    image.setPixel(x, y, 0x123456 + self.grabs)
+        return image
+
+
+def test_step_back_keeps_the_view_it_measures_from() -> None:
+    """After stepping back from an overshoot, the first frame is grabbed afresh."""
+    panel = LoadingTop(700, start=0.0)
+    result = run(panel)
+    assert result.image == expected(panel.document, header=40, footer=30)
