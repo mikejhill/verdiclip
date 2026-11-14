@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.0](https://github.com/mikejhill/verdiclip/compare/v0.21.6...v1.0.0) (2026-11-14)
+
+
+### Documentation
+
+* **releasing:** docs commits cut a patch release ([8701ee0](https://github.com/mikejhill/verdiclip/commit/8701ee0c3d22050d6cedb8d25f87ee889010a438))
+
 ## [0.21.6](https://github.com/mikejhill/verdiclip/compare/v0.21.5...v0.21.6) (2026-11-14)
 
 

@@ -665,7 +665,7 @@ wheels = [
 
 [[package]]
 name = "verdiclip"
-version = "0.21.6"
+version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "mss" },
