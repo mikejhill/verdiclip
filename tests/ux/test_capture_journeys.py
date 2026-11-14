@@ -167,7 +167,12 @@ class Overlay:
         )
 
     def hover(self, at: tuple[int, int]) -> None:
-        """Move the pointer without pressing."""
+        """Move the pointer without pressing.
+
+        Qt drops a move to where the last test event left the pointer, so
+        step beside ``at`` first; otherwise the overlay never sees the move.
+        """
+        QTest.mouseMove(self._overlay, QPoint(at[0] + 1, at[1] + 1))
         QTest.mouseMove(self._overlay, QPoint(*at))
 
     def click(
