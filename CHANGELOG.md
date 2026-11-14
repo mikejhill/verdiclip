@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.1](https://github.com/mikejhill/verdiclip/compare/v0.21.0...v0.21.1) (2026-11-14)
+
+
+### Bug Fixes
+
+* **scrolling:** re-grab the frame a step-back returns to ([#195](https://github.com/mikejhill/verdiclip/issues/195)) ([5d99678](https://github.com/mikejhill/verdiclip/commit/5d996782bf966f8ad52ffd3359a25f29e01a7d33))
+
 ## [0.21.0](https://github.com/mikejhill/verdiclip/compare/v0.20.0...v0.21.0) (2026-11-14)
 
 
