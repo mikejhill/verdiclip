@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.21.4](https://github.com/mikejhill/verdiclip/compare/v0.21.3...v0.21.4) (2026-11-14)
+
+
+### Bug Fixes
+
+* list modifier rows by key count, then Ctrl, Alt, Shift ([dfe5325](https://github.com/mikejhill/verdiclip/commit/dfe5325fdd1f6edbd5a2177d29aafa4fe1caee06))
+* **release:** publish the release commit even if other commits land meanwhile ([#203](https://github.com/mikejhill/verdiclip/issues/203)) ([0802efc](https://github.com/mikejhill/verdiclip/commit/0802efcdc0e8ac0d7ce1315391780a8b34deb6a3))
+
 ## [0.21.3](https://github.com/mikejhill/verdiclip/compare/v0.21.2...v0.21.3) (2026-11-14)
 
 
