@@ -180,6 +180,8 @@ def test_rows_that_all_agree_confirm_the_provider_distance() -> None:
     following = [*range(20, 40), *range(1000, 1180)]  # Only 20 rows seen before
     assert find_offset(previous, following, 20.0) == 20
     assert find_offset(previous, following, 50.0) is None  # Not the provider's
+    few = [*range(20, 27), *range(1000, 1193)]  # Seven rows are too few
+    assert find_offset(previous, few, 20.0) is None
     following[5] = 199  # One row seen before, elsewhere: not all agree
     assert find_offset(previous, following, 20.0) is None
 

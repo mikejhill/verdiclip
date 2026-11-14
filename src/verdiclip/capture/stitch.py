@@ -28,7 +28,7 @@ _MAX_REPEATS = 8
 # At least this many rows must agree on an offset.
 _MIN_VOTES = 4
 # Agreeing rows that confirm the provider's distance despite low coverage.
-_CONFIRM_VOTES = 16
+_CONFIRM_VOTES = 8
 _CONFIRM_SLACK = 2  # Pixels from the provider's distance
 # Header/footer bands never take more than this share of the viewport.
 _MAX_BAND = 1 / 3
