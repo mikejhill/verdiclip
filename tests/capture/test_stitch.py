@@ -174,6 +174,16 @@ def test_sparse_coincidences_do_not_override_the_provider() -> None:
     assert find_offset(previous, following, 50.0) is None
 
 
+def test_rows_that_all_agree_confirm_the_provider_distance() -> None:
+    """Chrome hiding most of the overlap still leaves the provider confirmed."""
+    previous = list(range(200))
+    following = [*range(20, 40), *range(1000, 1180)]  # Only 20 rows seen before
+    assert find_offset(previous, following, 20.0) == 20
+    assert find_offset(previous, following, 50.0) is None  # Not the provider's
+    following[5] = 199  # One row seen before, elsewhere: not all agree
+    assert find_offset(previous, following, 20.0) is None
+
+
 def test_a_few_coincidences_do_not_beat_a_supported_offset() -> None:
     """Four rows matching far away lose to 146 rows matching the provider."""
     previous = list(range(200))

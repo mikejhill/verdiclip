@@ -27,6 +27,9 @@ MIN_COVERAGE = 0.3
 _MAX_REPEATS = 8
 # At least this many rows must agree on an offset.
 _MIN_VOTES = 4
+# Agreeing rows that confirm the provider's distance despite low coverage.
+_CONFIRM_VOTES = 16
+_CONFIRM_SLACK = 2  # Pixels from the provider's distance
 # Header/footer bands never take more than this share of the viewport.
 _MAX_BAND = 1 / 3
 # A scrollbar strip is looked for within this many columns of the right edge.
@@ -187,8 +190,11 @@ def find_offset(
         if (
             count < _MIN_VOTES
             or comparable == 0
-            or count < MIN_COVERAGE * informative[height - offset]
             or count / comparable < MIN_SCORE
+            or (
+                count < MIN_COVERAGE * informative[height - offset]
+                and not _confirms(offset, count, comparable, expected)
+            )
         ):
             continue
         trusted.append((count, count / comparable, offset))
@@ -205,6 +211,22 @@ def find_offset(
         return (-distance, score, count)
 
     return max(finalists, key=rank)[2]
+
+
+def _confirms(offset: int, count: int, comparable: int, expected: float | None) -> bool:
+    """Whether rows that all agree confirm the provider's distance.
+
+    Chrome that only shows at the top of a page (a taller fade, a shadow) can
+    cover most of the first overlap. Too few rows are then left to prove an
+    offset alone, but many rows agreeing with no exception, at the distance
+    the provider reported, still confirm it.
+    """
+    return (
+        expected is not None
+        and abs(offset - expected) <= _CONFIRM_SLACK
+        and count >= _CONFIRM_VOTES
+        and count == comparable
+    )
 
 
 def _same_view(first: Sequence[int], second: Sequence[int]) -> bool:
