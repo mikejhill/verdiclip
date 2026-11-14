@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.4](https://github.com/mikejhill/verdiclip/compare/v0.18.3...v0.18.4) (2026-11-14)
+
+
+### Bug Fixes
+
+* cover see-through and wide floating controls in scrolling captures ([#181](https://github.com/mikejhill/verdiclip/issues/181)) ([425bedc](https://github.com/mikejhill/verdiclip/commit/425bedcdb749d1e61bbfae3a73f50048f3793bf4))
+
 ## [0.18.3](https://github.com/mikejhill/verdiclip/compare/v0.18.2...v0.18.3) (2026-11-14)
 
 
