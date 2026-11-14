@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.20.0](https://github.com/mikejhill/verdiclip/compare/v0.19.0...v0.20.0) (2026-11-14)
+
+
+### Features
+
+* **ctl:** capture, targets, export and close from the command line; help is the reference ([#186](https://github.com/mikejhill/verdiclip/issues/186)) ([7a35320](https://github.com/mikejhill/verdiclip/commit/7a3532015eae47e6e58d136180a2b4095b7da415))
+
+
+### Bug Fixes
+
+* move universal capture modifiers to their own Settings tab ([#188](https://github.com/mikejhill/verdiclip/issues/188)) ([f2dc6f6](https://github.com/mikejhill/verdiclip/commit/f2dc6f618ae60f1903bb29edf201856869bb4b8d))
+
 ## [0.19.0](https://github.com/mikejhill/verdiclip/compare/v0.18.4...v0.19.0) (2026-11-14)
 
 
