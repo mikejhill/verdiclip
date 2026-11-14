@@ -557,3 +557,36 @@ def test_fixed_button_in_a_plain_right_margin_is_kept() -> None:
                 inside = 170 <= y < 186 and x >= WIDTH - 8
                 frame.image.setPixel(x, y, 0x3366CC if inside else 0xFFFFFF)
     assert stitch(shots, VIEW * 100 / 700).image.width() == WIDTH
+
+
+def dark_page(height: int, seed: int = 3) -> QImage:
+    """Sparse text on a dark background, like a chat in dark mode."""
+    rng = random.Random(seed)  # noqa: S311 - test data
+    image = QImage(WIDTH, height, QImage.Format.Format_RGB32)
+    image.fill(0x191919)
+    for y in range(height):
+        for x in rng.sample(range(WIDTH), WIDTH // 5):
+            image.setPixel(x, y, rng.randrange(1 << 24))
+    return image
+
+
+def glass_button(image: QImage, top: int = 170) -> None:
+    """A see-through button with a solid outline, like a chat's scroll-down."""
+    for y in range(top, top + 16):
+        for x in range(40, 80):
+            edge = y in {top, top + 15} or x in {40, 79}
+            tinted = ((image.pixel(x, y) >> 1) & 0x7F7F7F) + 0x202020
+            image.setPixel(x, y, 0x8899AA if edge else tinted)
+
+
+def test_see_through_button_above_the_bottom_is_shown_once() -> None:
+    """A translucent button over dark text is covered like an opaque one."""
+    document = dark_page(700)
+    shots = frames(document, 120)
+    for frame in shots:
+        glass_button(frame.image)
+    result = stitch(shots).image
+    rows = [
+        y for y in range(result.height()) if result.pixel(40, y) & 0xFFFFFF == 0x8899AA
+    ]
+    assert len(rows) == 16

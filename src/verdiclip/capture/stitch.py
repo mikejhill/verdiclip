@@ -345,6 +345,14 @@ def _moves_down(columns: list[list[bytes]], colour: bytes, *, thumb: bool) -> bo
     )
 
 
+def _background(row: bytes) -> bytes | None:
+    """The pixel that fills most of a row, if one does."""
+    pixel, count = Counter(row[x : x + 4] for x in range(0, len(row), 4)).most_common(
+        1
+    )[0]
+    return pixel if 2 * count * 4 > len(row) else None
+
+
 def _inside_caps(marks: list[int], length: int) -> list[int]:
     """``marks`` without the rows of a track's end caps."""
     return [y for y in marks if _CAP <= y < length - _CAP]
@@ -387,15 +395,18 @@ def _overlay(
             ]
             sample = differing[:: max(1, len(differing) // _SAMPLES)]
             # Most frames, not all: a button may only appear once the page
-            # has scrolled away from the top.
+            # has scrolled away from the top. The page's own background is
+            # still everywhere, so it says nothing either way.
             scores = [
                 sum(
                     2 * sum(frame[top + place][at : at + 4] == pixel for frame in kept)
                     > len(kept)
                     for x in sample
                     for at, pixel in [(left + x, row[x : x + 4])]
+                    if pixel != ground
                 )
                 for place, row in ((y + offset, old), (y, new))
+                for ground in [_background(row)]
             ]
             if scores[1] > scores[0]:
                 found.add(y)
@@ -416,10 +427,11 @@ def _overlay(
     # A see-through band (a fade above a chat's input box) is never the same
     # twice, so it cannot be told from text changing by its pixels. Trust it
     # only along the bottom edge, where such bands sit; elsewhere it could be
-    # an overlay over the new frame instead.
+    # an overlay over the new frame instead. A see-through button with a
+    # solid outline looks still at some seams and faded at others.
     row, gap = body - 1, 0
     while row >= 0 and gap <= _FADE_GAP:
-        if faded[row] >= needed:
+        if faded[row] + fixed[row] >= needed:
             overlay.add(row)
             gap = 0
         else:
