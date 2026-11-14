@@ -18,6 +18,7 @@ from verdiclip.automation.handlers import AutomationHandlers
 from verdiclip.automation.preview import PreviewFolder
 from verdiclip.automation.protocol import ErrorCode, JsonObject, Request, Response
 from verdiclip.automation.server import ControlServer
+from verdiclip.capture.gestures import ClickOutput
 from verdiclip.capture.scroll_helper import ScrollHelper
 from verdiclip.capture.scrolling import CANCELLED, ScrollResult
 from verdiclip.document.commands import SetCrop
@@ -139,12 +140,16 @@ def test_interactive_region_answers_with_the_users_choice(
     qtbot.waitUntil(lambda: bool(app.controller.capture.overlays))
     ctl.ask("capture", mode="fullscreen")
     busy = last_error(ctl)
-    app.controller.capture.overlays[0].region_chosen.emit(Rect(5, 5, 30, 20))
+    # A modifier's output (here clipboard only) doesn't apply: ctl gets the tab
+    app.controller.capture.overlays[0].region_chosen.emit(
+        Rect(5, 5, 30, 20), ClickOutput.CLIPBOARD
+    )
 
     assert busy is ErrorCode.BUSY
     answer = ctl.replies[-1]
     assert answer.result is not None
     assert answer.result["image"] == [30, 20]
+    assert answer.result["copied"] is False
     assert len(app.controller.workspace.documents) == 1
 
 
@@ -331,7 +336,12 @@ def test_hotkeys_during_a_ctl_overlay_or_scroll(
     overlays = app.controller.capture.overlays
     app.press_hotkey("region")
     same = app.controller.capture.overlays == overlays
-    app.controller.capture.overlays[0].scroll_chosen.emit(Point(30, 40), "Panel", True)  # noqa: FBT003 - Qt signal
+    app.controller.capture.overlays[0].scroll_chosen.emit(
+        Point(30, 40),
+        "Panel",
+        True,  # noqa: FBT003 - Qt signal
+        ClickOutput.USUAL,
+    )
     qtbot.waitUntil(lambda: helper is service._helper)
     app.controller.capture_scrolling()  # Second request: cancel
     helper.finished.emit(ScrollResult(None, CANCELLED, 0))

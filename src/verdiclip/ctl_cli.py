@@ -61,7 +61,8 @@ Coordinates are physical desktop pixels; `verdiclip ctl targets` lists
 monitors and windows with their bounds.
 
   universal   the user chooses in the Universal capture overlay (PrtSc):
-              drag a region, click a window, or Ctrl+click a scrolling panel
+              drag a region, click a window, or click with a scrolling
+              modifier (Ctrl by default; see Settings)
   region      --region X,Y,W,H
   window      the active window, or --title TEXT, --handle N or --at X,Y;
               a named window is brought to the front first
@@ -76,8 +77,11 @@ examples:
   verdiclip ctl capture window --title "Visual Studio Code" --copy
   verdiclip ctl capture scrolling --at 900,600 --from here
   verdiclip ctl capture region --region 0,0,800,600 --delay 2
+  verdiclip ctl capture universal --copy --no-editor   # clipboard only
 
-Without -o the capture isn't saved (`ctl save` saves it later); the reply's
+Without -o the capture isn't saved (`ctl save` saves it later). --no-editor
+skips the tab (reply "id" is null). The user's click modifiers don't apply:
+ctl always gets the capture. The reply's
 "warning" notes anything that went partly wrong. Captures that wait for the
 user answer when they finish; exit 7 means the user cancelled.
 """
@@ -237,6 +241,12 @@ def _add_capture(command: _Commands) -> None:
     )
     capture.add_argument(
         "--copy", action="store_true", help="Also copy to the clipboard."
+    )
+    capture.add_argument(
+        "--no-editor",
+        dest="editor",
+        action="store_false",
+        help="Don't open a tab; needs -o and/or --copy.",
     )
     capture.add_argument(
         "--delay",
@@ -468,7 +478,11 @@ def _capture_params(args: argparse.Namespace, fail: Fail) -> JsonObject:
     try:
         spec = CaptureSpec.from_params(params)
     except AutomationError as err:
-        fail(err.message.replace("from here", "--from here"))
+        fail(
+            err.message.replace("from here", "--from here").replace(
+                "editor false needs output or copy", "--no-editor needs -o or --copy"
+            )
+        )
     if not math.isfinite(args.delay) or args.delay < 0:
         fail(f"--delay must be a number >= 0, got {args.delay}")
     if args.timeout is not None and (
@@ -498,6 +512,7 @@ def _capture_target(args: argparse.Namespace, fail: Fail) -> JsonObject:
         "from": None if args.start == "top" else str(args.start),
         "output": str(Path(args.output).resolve()) if args.output else None,
         "copy": True if args.copy else None,
+        "editor": None if args.editor else False,
     }
     params |= {key: value for key, value in options.items() if value is not None}
     return params

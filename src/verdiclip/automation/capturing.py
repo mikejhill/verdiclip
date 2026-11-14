@@ -46,6 +46,7 @@ class CaptureSpec:
     from_top: bool = True
     output: Path | None = None
     copy: bool = False
+    editor: bool = True
 
     @property
     def interactive(self) -> bool:
@@ -86,6 +87,7 @@ class CaptureSpec:
             from_top=_from_top(params.get("from")),
             output=_output(params.get("output")),
             copy=_flag(params.get("copy"), "copy"),
+            editor=_flag(params.get("editor", True), "editor"),
         )
         spec.check()
         return spec
@@ -125,20 +127,23 @@ class CaptureSpec:
             raise AutomationError(ErrorCode.BAD_REQUEST, msg)
         if not self.from_top and not targets:
             msg = (
-                "from here needs at, title or handle; in the on-screen chooser, "
-                "Ctrl+click starts from the current position"
+                "from here needs at, title or handle; in the on-screen chooser, a "
+                "scrolling modifier click (Ctrl by default) starts from there"
             )
             raise AutomationError(ErrorCode.BAD_REQUEST, msg)
         if self.monitor is not None and self.all_screens:
             msg = "Give monitor or all, not both"
             raise AutomationError(ErrorCode.BAD_REQUEST, msg)
+        if not self.editor and self.output is None and not self.copy:
+            msg = "editor false needs output or copy, or the capture goes nowhere"
+            raise AutomationError(ErrorCode.BAD_REQUEST, msg)
 
 
 @dataclass(frozen=True, slots=True)
 class CaptureOutcome:
-    """A capture opened in an editor tab, and what else was done with it."""
+    """Where a capture went: its editor tab, if any, and its outputs."""
 
-    record: DocumentRecord
+    record: DocumentRecord | None
     saved: Path | None = None
     copied: bool = False
     warning: str = ""

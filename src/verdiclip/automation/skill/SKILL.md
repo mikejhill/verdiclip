@@ -35,6 +35,8 @@ command's options (`capture --help` for capture types and targets,
 - An interactive capture (`capture universal`, or `capture scrolling` with no
   target) waits for the user: tell them what to
   click first. Exit 7 means they cancelled.
+- For "just copy it" or "just save it", add `--no-editor` with `--copy` or
+  `-o`; otherwise the capture opens in a tab for editing.
 - Screenshots can hold private information. Don't send them anywhere the user
   didn't ask for.
 - Exit 3: VerdiClip isn't running or automation is off (Settings → General).

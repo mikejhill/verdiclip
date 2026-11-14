@@ -357,7 +357,11 @@ class AutomationHandlers:
 
     def _captured(self, outcome: CaptureOutcome) -> JsonObject:
         """Describe a finished capture: its new document and outputs."""
-        result = self._summary(outcome.record)
+        result: JsonObject = (
+            self._summary(outcome.record)
+            if outcome.record is not None
+            else {"id": None}
+        )
         result["saved"] = str(outcome.saved) if outcome.saved else None
         result["copied"] = outcome.copied
         result["warning"] = outcome.warning or None

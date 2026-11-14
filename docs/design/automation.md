@@ -130,11 +130,12 @@ contacting the app. An agent is always required; scope defaults to user.
 | Command | Result |
 | --- | --- |
 | `ctl targets` | Monitors (numbered from 1, physical bounds, scale, primary) and visible windows (handle, title, bounds, foreground) |
-| `ctl capture universal` | Opens the Universal capture overlay; the answer waits for the user (a region, a window, or its Ctrl+click scrolling capture) |
+| `ctl capture universal` | Opens the Universal capture overlay; the answer waits for the user (a region, a window, or a scrolling capture started with a modifier click) |
 | `ctl capture region --region X,Y,W,H` | Crops one frozen frame |
 | `ctl capture window [--title T \| --handle N \| --at X,Y]` | The foreground window, or the named one raised first (`bring_to_front`, then 350 ms to repaint); a refused raise becomes a `warning` |
 | `ctl capture fullscreen [--monitor N \| --all]` | The cursor's monitor, monitor N, or the whole desktop |
 | `ctl capture scrolling [--at X,Y \| --title T \| --handle N] [--from top\|here]` | Starts `ScrollSelection.start_at` (a window's center for title/handle); no target opens the chooser |
+| `--copy`, `-o FILE`, `--no-editor` | Output targets, matching the Universal capture click outputs: copy, save, both, and with `--no-editor` no tab (needs `-o` or `--copy`; a failed delivery is then an error, not a warning). The user's modifier outputs never apply to a ctl capture: ctl takes the result before `_actions_for` runs |
 | `ctl close [--discard]` | Closes the tab without the prompt (`EditorWindow.close_page_unprompted`); unsaved work is `conflict` unless `--discard` |
 | `ctl export --path FILE` | Writes the flattened image; counts as delivered but keeps the document's own file |
 

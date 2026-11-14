@@ -48,6 +48,8 @@ class TestCaptureSpec:
         assert not given.interactive
         assert given.output == Path(ABSOLUTE)
         assert given.copy
+        assert given.editor
+        assert not spec(mode="universal", copy=True, editor=False).editor
 
     def test_window_targets(self) -> None:
         """A window capture finds its window by title, handle or point."""
@@ -99,6 +101,8 @@ class TestCaptureSpec:
             ({"mode": "scrolling", "at": [1, 1], "from": "middle"}, "'top' or"),
             ({"mode": "universal", "output": "shot.png"}, "output must be an absol"),
             ({"mode": "universal", "output": 5}, "output must be an absolute"),
+            ({"mode": "universal", "editor": False}, "editor false needs output"),
+            ({"mode": "universal", "editor": "no"}, "editor must be true or false"),
         ],
     )
     def test_refusals(self, params: JsonObject, message: str) -> None:

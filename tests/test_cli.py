@@ -266,6 +266,7 @@ class TestCommandLine:
         scrolling = parser.parse(
             ["ctl", "capture", "scrolling", "--at", "900,600", "--from", "here"]
         )
+        tabless = parser.parse(["ctl", "capture", "universal", "--copy", "--no-editor"])
 
         assert region.method == "capture"
         assert region.params == {
@@ -297,6 +298,8 @@ class TestCommandLine:
             "delay": 0.0,
             "timeout": CHOOSING_TIMEOUT_S,
         }
+        assert (tabless.params["copy"], tabless.params["editor"]) == (True, False)
+        assert "editor" not in window.params
 
     def test_ctl_export_and_close(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -424,6 +427,7 @@ class TestCommandLine:
             ["ctl", "capture", "universal", "--delay", "nan"],
             ["ctl", "capture", "universal", "--delay", "inf"],
             ["ctl", "capture", "universal", "--timeout", "inf"],
+            ["ctl", "capture", "universal", "--no-editor"],
         ],
         ids=[
             "no-method",
@@ -448,6 +452,7 @@ class TestCommandLine:
             "capture-nan-delay",
             "capture-infinite-delay",
             "capture-infinite-timeout",
+            "capture-no-editor-goes-nowhere",
         ],
     )
     def test_ctl_invalid(

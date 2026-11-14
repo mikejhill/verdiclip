@@ -176,6 +176,12 @@ def outcome(answer: Deferred[CaptureOutcome]) -> CaptureOutcome:
     return value
 
 
+def tab(done: CaptureOutcome) -> DocumentRecord:
+    """Return the tab a capture opened in."""
+    assert done.record is not None
+    return done.record
+
+
 def error(answer: Deferred[CaptureOutcome]) -> AutomationError:
     """Return the settled error."""
     errors: list[AutomationError | None] = []
@@ -226,9 +232,9 @@ def test_fullscreen_takes_the_named_cursor_or_every_monitor(rig: Rig) -> None:
     every = outcome(rig.captures.start(spec(mode="fullscreen", all=True)))
 
     whole = rig.desktop.freeze().bounds
-    assert first.record.session.document.image_rect.width == screen.width
-    assert cursor.record.title == "Screen"
-    assert every.record.session.document.image_rect.width == whole.width
+    assert tab(first).session.document.image_rect.width == screen.width
+    assert tab(cursor).title == "Screen"
+    assert tab(every).session.document.image_rect.width == whole.width
 
 
 def test_a_missing_monitor_is_not_found(rig: Rig) -> None:
@@ -245,7 +251,7 @@ def test_the_active_window_is_captured_without_raising(rig: Rig) -> None:
     done = outcome(rig.captures.start(spec(mode="window")))
 
     assert rig.raised == []
-    assert done.record.title == NOTEPAD.title
+    assert tab(done).title == NOTEPAD.title
     assert size(rig.admitted.opened[0][3]) == (300, 200)
 
 
@@ -257,7 +263,7 @@ def test_a_named_window_is_raised_then_captured(rig: Rig, qtbot: QtBot) -> None:
     qtbot.waitUntil(lambda: answer.done)
     done = outcome(answer)
     assert rig.raised == [EDGE.handle]
-    assert done.record.title == EDGE.title
+    assert tab(done).title == EDGE.title
     assert done.warning == ""
 
 
@@ -275,9 +281,9 @@ def test_exact_titles_win_and_points_and_handles_pick_windows(
     by_handle = rig.captures.start(spec(mode="window", handle=EDGE.handle))
     qtbot.waitUntil(lambda: by_handle.done)
 
-    assert by_title.record.title == "Notes"
-    assert outcome(by_point).record.title == EDGE.title
-    assert outcome(by_handle).record.title == EDGE.title
+    assert tab(by_title).title == "Notes"
+    assert tab(outcome(by_point)).title == EDGE.title
+    assert tab(outcome(by_handle)).title == EDGE.title
 
 
 def test_a_window_windows_wont_raise_is_captured_with_a_warning(
@@ -347,7 +353,7 @@ def test_interactive_region_waits_for_the_overlay(rig: Rig) -> None:
         QImage(7, 8, QImage.Format.Format_RGB32), "Picked", datetime.now().astimezone()
     )
 
-    assert outcome(answer).record.title == "Picked"
+    assert tab(outcome(answer)).title == "Picked"
     assert not rig.captures.waiting
 
 
@@ -412,6 +418,47 @@ def test_copy_marks_the_capture_delivered(rig: Rig) -> None:
 
     assert done.copied
     assert rig.admitted.opened[0][2] is True
+
+
+def test_no_editor_saves_and_copies_without_a_tab(rig: Rig, tmp_path: Path) -> None:
+    """With editor false the capture only goes to the file and clipboard."""
+    target = tmp_path / "only.png"
+
+    done = outcome(
+        rig.captures.start(
+            spec(
+                mode="region",
+                region=[0, 0, 5, 5],
+                output=str(target),
+                copy=True,
+                editor=False,
+            )
+        )
+    )
+
+    assert done.record is None
+    assert (done.saved, done.copied) == (target, True)
+    assert rig.admitted.opened == []
+    assert QImage(str(target)).width() == 5
+
+
+def test_no_editor_fails_when_nothing_was_delivered(rig: Rig, tmp_path: Path) -> None:
+    """Without a tab, a failed save is an error, not a warning."""
+    failure = error(
+        rig.captures.start(
+            spec(
+                mode="region",
+                region=[0, 0, 5, 5],
+                output=str(tmp_path / "x.abc"),
+                editor=False,
+            )
+        )
+    )
+
+    assert failure.code is ErrorCode.FAILED
+    assert "could not be delivered" in failure.message
+    assert rig.admitted.opened == []
+    assert not rig.captures.waiting
 
 
 def test_an_editor_that_cant_open_fails_the_capture(rig: Rig) -> None:

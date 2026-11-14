@@ -506,6 +506,22 @@ def test_capture_answers_when_the_capture_is_open(
     )
 
 
+def test_capture_without_a_tab_has_no_id(
+    app_handlers: AutomationHandlers, app: FakeApp
+) -> None:
+    """A --no-editor capture replies with its outputs and a null id."""
+    params: JsonObject = {"mode": "universal", "copy": True, "editor": False}
+    later = app_handlers(Request("capture", params))
+    assert isinstance(later, Deferred)
+    replies: list[JsonObject | None] = []
+    later.then(lambda value, _error: replies.append(value))
+
+    app.answer.resolve(CaptureOutcome(None, copied=True))
+
+    assert not app.specs[0].editor
+    assert replies == [{"id": None, "saved": None, "copied": True, "warning": None}]
+
+
 def test_capture_checks_the_request_first(app_handlers: AutomationHandlers) -> None:
     """A malformed capture is refused before anything happens."""
     with pytest.raises(AutomationError) as caught:

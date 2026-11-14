@@ -328,7 +328,7 @@ class AutomationCaptures(QObject):
         taken_at: datetime,
         warning: str = "",
     ) -> None:
-        """Save or copy as asked, then open the capture in a tab."""
+        """Save or copy as asked, then open the capture in a tab unless told not to."""
         spec = pending.spec
         notes = [n for n in (pending.warning, warning) if n]
         saved: Path | None = None
@@ -341,7 +341,17 @@ class AutomationCaptures(QObject):
                 delivery.copy(image)
                 copied = True
         except AppError as err:
+            if not spec.editor:
+                # Without a tab the capture would be lost silently
+                msg = f"The capture could not be delivered: {err}"
+                self._finish(pending, error=AutomationError(ErrorCode.FAILED, msg))
+                return
             notes.append(f"Not delivered: {err}")
+        if not spec.editor:
+            self._finish(
+                pending, outcome=CaptureOutcome(None, saved, copied, " ".join(notes))
+            )
+            return
         try:
             record = self._admit(
                 image, title, saved, taken_at, saved is not None or copied
