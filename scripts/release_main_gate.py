@@ -77,6 +77,26 @@ def collect(fetch: Callable[[str], object], sha: str) -> list[dict[str, object]]
     raise ValueError("Run inventory exceeds bounded budget")
 
 
+def releases_between(compare: object) -> bool:
+    """Whether commits pushed after this one may hold another release.
+
+    Only a release-please merge would make this run tag the wrong release, so
+    anything else that lands meanwhile doesn't stop this commit's release. An
+    unreadable, truncated or diverged comparison counts as holding one.
+    """
+    if not isinstance(compare, dict) or compare.get("status") != "ahead":
+        return True
+    commits = compare.get("commits")
+    if not isinstance(commits, list) or compare.get("total_commits") != len(commits):
+        return True
+    for commit in commits:
+        detail = commit.get("commit") if isinstance(commit, dict) else None
+        message = detail.get("message") if isinstance(detail, dict) else None
+        if not isinstance(message, str) or message.startswith("chore: release"):
+            return True
+    return False
+
+
 def superseded(sha: str, head: str) -> None:
     """Report that main moved on, so later release steps skip this commit."""
     output = os.environ.get("GITHUB_OUTPUT", "")
@@ -119,8 +139,8 @@ def main() -> None:
             head = target.get("sha") if isinstance(target, dict) else None
             if not isinstance(head, str) or re.fullmatch(r"[a-f0-9]{40}", head) is None:
                 raise ValueError("Unreadable main branch head")
-            if head != sha:
-                # The newer push has its own release run, which verifies and
+            if head != sha and releases_between(fetch(f"compare/{sha}...{head}")):
+                # A newer release merge has its own run, which verifies and
                 # publishes; this one stands down without publishing.
                 superseded(sha, head)
                 return

@@ -136,7 +136,8 @@ def test_both_publish_targets_depend_on_gated_build() -> None:
 
 
 @pytest.mark.parametrize(
-    "fault", [None, "moved", "malformed", "alerts", "pending", "failed"]
+    "fault",
+    [None, "moved", "moved-quietly", "malformed", "alerts", "pending", "failed"],
 )
 def test_complete_gate_path(
     monkeypatch: pytest.MonkeyPatch,
@@ -172,7 +173,15 @@ def test_complete_gate_path(
             payload = {
                 "object": None
                 if fault == "malformed"
-                else {"sha": "b" * 40 if fault == "moved" else SHA}
+                else {"sha": "b" * 40 if fault in {"moved", "moved-quietly"} else SHA}
+            }
+        elif "compare/" in url:
+            assert url.endswith(f"compare/{SHA}...{'b' * 40}")
+            title = "chore: release 9.9.9" if fault == "moved" else "fix: other"
+            payload = {
+                "status": "ahead",
+                "total_commits": 1,
+                "commits": [{"commit": {"message": f"{title} (#1)\n\nbody"}}],
             }
         else:
             assert "code-scanning/alerts?" in url
@@ -190,16 +199,17 @@ def test_complete_gate_path(
         assert receipt == {"main_sha": SHA, "superseded_by": "b" * 40}
         assert output.read_text(encoding="utf-8") == "superseded=true\n"
         assert not any("code-scanning" in url for url in endpoints)
-    elif fault is not None:
+    elif fault not in {None, "moved-quietly"}:
         with pytest.raises((ValueError, TimeoutError)):
             gate.main()
         assert not capsys.readouterr().out
         assert not output.exists()
     else:
+        # Commits other than a release merge landing meanwhile don't stop it
         gate.main()
         receipt = json.loads(capsys.readouterr().out)
         assert receipt == {"main_sha": SHA, "verified_runs": [1, 2]}
-        assert len(endpoints) == 3
+        assert len(endpoints) == (4 if fault else 3)
         assert not output.exists()
 
 
@@ -214,3 +224,40 @@ def test_codeql_is_a_required_publication_gate(outcome: str) -> None:
         rows[-1]["conclusion"] = outcome
         with pytest.raises(ValueError, match="did not succeed"):
             assess(rows, SHA)
+
+
+@pytest.mark.parametrize(
+    ("compare", "held"),
+    [
+        (None, True),
+        ({"status": "diverged", "total_commits": 0, "commits": []}, True),
+        ({"status": "ahead", "total_commits": 300, "commits": []}, True),
+        ({"status": "ahead", "total_commits": 1, "commits": ["x"]}, True),
+        (
+            {
+                "status": "ahead",
+                "total_commits": 2,
+                "commits": [
+                    {"commit": {"message": "fix: a"}},
+                    {"commit": {"message": "chore: release 1.2.3 (#9)"}},
+                ],
+            },
+            True,
+        ),
+        (
+            {
+                "status": "ahead",
+                "total_commits": 1,
+                "commits": [{"commit": {"message": "feat: b"}}],
+            },
+            False,
+        ),
+    ],
+    ids=["unreadable", "diverged", "truncated", "malformed", "release", "quiet"],
+)
+def test_only_a_later_release_merge_supersedes(
+    compare: object,
+    held: bool,  # noqa: FBT001 - pytest parameter
+) -> None:
+    """A newer release merge, or any doubt, stands down; other commits don't."""
+    assert gate.releases_between(compare) is held
