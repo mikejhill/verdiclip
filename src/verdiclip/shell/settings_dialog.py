@@ -70,7 +70,8 @@ THEME_LABELS: Final = {
 }
 ERROR_STYLE: Final = "color: #c62828;"
 MODIFIERS_HELP: Final = (
-    "Hold keys while finishing a Universal capture (PrtSc). A click captures "
+    "These apply only to Universal capture (PrtSc). Hold keys while you "
+    "finish it. A click captures "
     "what “Click captures” says; a drag always captures the dragged area. "
     "Either way, the image goes where “Send to” says."
 )

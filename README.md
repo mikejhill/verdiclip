@@ -79,7 +79,7 @@ While selecting, the screen is frozen so you get exactly what you saw. A magnifi
 | `Alt+Shift` | Window | Clipboard and file |
 | `Ctrl+Alt+Shift` | Scroll: whole pane | Clipboard only |
 
-A drag always captures the dragged area, so for a drag only **Send to** applies (`Alt`+drag copies the area to the clipboard without opening the editor). The keys count when you let go, and the on-screen label shows what will happen while you hold them. Change any row in **Settings → Modifiers**.
+A drag always captures the dragged area, so for a drag only **Send to** applies (`Alt`+drag copies the area to the clipboard without opening the editor). The keys count when you let go, and the on-screen label shows what will happen while you hold them. Change any row in **Settings → Modifiers**. These modifiers apply only to universal capture; every other capture (active window, full screen, Repeat, and the `Ctrl+Alt+PrtSc` scrolling chooser) uses the after-capture settings.
 
 If Windows or another screenshot tool already owns `PrtSc`, VerdiClip tells you which hotkeys are taken; everything is still available from the tray menu, and you can choose other keys in Settings.
 
