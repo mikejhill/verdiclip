@@ -5,6 +5,7 @@ from __future__ import annotations
 from abc import abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
@@ -23,6 +24,8 @@ class EditorOptions:
     source_path: Path | None = None
     confirm_close: bool = True
     provenance: CaptureProvenance | None = None
+    # When the image was made, for files without capture provenance
+    created_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)

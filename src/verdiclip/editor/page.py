@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -33,10 +34,13 @@ class DocumentRecord:
     operations: int = 0
     closing: bool = False
     provenance: CaptureProvenance | None = None
+    created_at: datetime = field(default_factory=lambda: datetime.now().astimezone())
     jobs: DocumentJobs = field(init=False)
 
     def __post_init__(self) -> None:
-        """Give every document its own generation-checked job registry."""
+        """Give every document its own job registry; a capture keeps its time."""
+        if self.provenance is not None:
+            self.created_at = self.provenance.created_at
         self.jobs = DocumentJobs(self.identifier, self.session.history)
 
     @property
@@ -44,6 +48,10 @@ class DocumentRecord:
         """Return a full tab title that distinguishes delivery from saving."""
         name = self.saved_path.name if self.saved_path is not None else self.title
         return name if self.session.history.is_delivered else f"{name} •"
+
+    def auto_path(self) -> Path:
+        """Return the next automatic save path, named for when the image was made."""
+        return self.delivery.auto_path(title=self.title, moment=self.created_at)
 
 
 class DocumentPage(QWidget):

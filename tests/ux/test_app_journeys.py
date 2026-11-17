@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 import uuid
 from collections.abc import Callable, Iterator
@@ -557,6 +558,59 @@ class TestAfterCapture:
 
         saved = list((tmp_path / "out").glob("*.png"))
         assert [p.stem.split("_", 2)[2] for p in saved] == ["Notepad"]
+
+    def test_save_names_the_file_after_the_capture_time(
+        self,
+        make_app: AppFactory,
+        tmp_path: Path,
+        qtbot: QtBot,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A capture saved an hour later is named for when it was captured.
+
+        UX-OUT-02.
+        """
+        captured = datetime(2026, 3, 4, 5, 6, 7).astimezone()
+
+        class Clock(datetime):
+            @override
+            @classmethod
+            def now(cls, tz: object = None) -> Clock:
+                return cls.fromtimestamp(captured.timestamp())
+
+        app = make_app()
+        monkeypatch.setattr("verdiclip.capture.service.datetime", Clock)
+        app.press_hotkey("window")
+        qtbot.waitUntil(lambda: len(app.controller.editors) == 1)
+        monkeypatch.undo()
+        editor: EditorWindow = app.controller.editors[0]
+
+        editor.action("save").trigger()
+
+        saved = [p.name for p in (tmp_path / "out").glob("*.png")]
+        assert saved == ["2026-03-04_05-06-07_Notepad.png"]
+
+    def test_opened_file_is_named_after_its_modified_time(
+        self, make_app: AppFactory, tmp_path: Path
+    ) -> None:
+        """An opened file has no capture time; its new name uses its file time.
+
+        UX-OUT-02.
+        """
+        picture = tmp_path / "existing.png"
+        QImage(20, 20, QImage.Format.Format_RGB32).save(str(picture))
+        stamp = datetime(2025, 12, 31, 23, 59, 58).astimezone().timestamp()
+        os.utime(picture, (stamp, stamp))
+        app = make_app()
+
+        assert app.controller.open_image(picture) is not None
+
+        (record,) = app.controller.workspace.documents
+        assert record.auto_path().name == "2025-12-31_23-59-58_existing.png"
+
+    def test_unreadable_file_time_falls_back_to_open_time(self, tmp_path: Path) -> None:
+        """A file whose time can't be read is named for when it was opened."""
+        assert AppController._file_time(tmp_path / "gone.png") is None
 
     def test_all_three_actions_run_together(
         self, make_app: AppFactory, tmp_path: Path, qtbot: QtBot

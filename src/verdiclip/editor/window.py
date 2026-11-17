@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Final, cast, override
 
@@ -141,14 +142,15 @@ class EditorWindow(QMainWindow):
         self._build()
         self._workspace.register_window(self)
         if session is not None:
-            self.add_document(
-                DocumentRecord(
-                    session,
-                    delivery,
-                    options.title or "Screenshot",
-                    options.source_path,
-                )
+            record = DocumentRecord(
+                session,
+                delivery,
+                options.title or "Screenshot",
+                options.source_path,
+                provenance=options.provenance,
+                created_at=options.created_at or datetime.now().astimezone(),
             )
+            self.add_document(record)
         self._refresh_chrome()
 
     def set_application_label(self, label: str) -> None:
@@ -608,7 +610,7 @@ class EditorWindow(QMainWindow):
         """Save to the last path, or to an automatic name (UX-OUT-02)."""
         path = self._saved_path
         if path is None or not self._is_writable_format(path):
-            path = self._delivery.auto_path(title=self._title)
+            path = self._page.record.auto_path()
         return self._save_to(path)
 
     def save_as(self) -> bool:
@@ -618,7 +620,7 @@ class EditorWindow(QMainWindow):
 
     def _choose_save_as(self) -> bool:
         """Keep the initiating record pinned through the native picker."""
-        start = self._saved_path or self._delivery.auto_path(title=self._title)
+        start = self._saved_path or self._page.record.auto_path()
         filters = ";;".join(
             f"{f.value.upper()} image (*.{f.value})" for f in ImageFormat
         )

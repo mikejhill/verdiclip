@@ -563,7 +563,7 @@ def _default_save_path(record: DocumentRecord) -> Path:
             record.delivery.format_for(path)
         except AppError:
             path = None
-    return path or record.delivery.auto_path(title=record.title)
+    return path or record.auto_path()
 
 
 def _integer(params: JsonObject, key: str, default: int) -> int:

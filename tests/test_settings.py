@@ -286,6 +286,50 @@ class TestLegacyMigration:
 
         assert SettingsStore(path).load().output.filename_pattern == expected
 
+    def test_default_save_folder_is_pictures_screenshots(self) -> None:
+        """New installs save to ``~/Pictures/Screenshots``."""
+        assert Settings().output.directory == Path.home() / "Pictures" / "Screenshots"
+
+    @pytest.mark.parametrize(
+        ("version", "stored", "expected"),
+        [
+            (3, ("Pictures", "VerdiClip"), ("Pictures", "Screenshots")),
+            (None, ("Pictures", "VerdiClip"), ("Pictures", "Screenshots")),
+            (4, ("Pictures", "VerdiClip"), ("Pictures", "VerdiClip")),
+            (3, ("Pictures", "Mine"), ("Pictures", "Mine")),
+            (3, ("Pictures", "VerdiClip", "Sub"), ("Pictures", "VerdiClip", "Sub")),
+        ],
+        ids=["v3-old-default", "unversioned", "chosen-in-v4", "custom", "subfolder"],
+    )
+    def test_old_default_save_folder_becomes_current(
+        self,
+        tmp_path: Path,
+        version: int | None,
+        stored: tuple[str, ...],
+        expected: tuple[str, ...],
+    ) -> None:
+        """An older file's default folder becomes the new one; others stay put."""
+        path = tmp_path / "settings.json"
+        raw: dict[str, object] = {
+            "output": {"directory": str(Path.home().joinpath(*stored))}
+        }
+        if version is not None:
+            raw["version"] = version
+        path.write_text(json.dumps(raw), encoding="utf-8")
+
+        loaded = SettingsStore(path).load().output.directory
+
+        assert loaded == Path.home().joinpath(*expected)
+
+    def test_old_folder_chosen_after_upgrade_is_kept(self, tmp_path: Path) -> None:
+        """Choosing the old default folder again survives a save and reload."""
+        store = SettingsStore(tmp_path / "settings.json")
+        settings = Settings()
+        legacy = Path.home() / "Pictures" / "VerdiClip"
+        store.save(replace(settings, output=replace(settings.output, directory=legacy)))
+
+        assert store.load().output.directory == legacy
+
     @pytest.mark.parametrize("stored", [["a"], {"a": 1}], ids=["array", "object"])
     def test_non_string_filename_pattern_falls_back_to_default(
         self, tmp_path: Path, stored: object
