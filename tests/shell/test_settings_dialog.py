@@ -309,6 +309,22 @@ class TestSettingsDialog:
 
         assert dialog.result_settings().appearance.theme is Theme.LIGHT
 
+    def test_save_notification_setting_round_trips(
+        self, dialog: SettingsDialog
+    ) -> None:
+        """UX-CAP-22: the save notification is on by default and can be turned off."""
+        box = next(
+            b
+            for b in dialog.findChildren(QCheckBox)
+            if b.text() == "Show a notification after saving or copying"
+        )
+        default_on = box.isChecked()
+
+        box.setChecked(False)
+
+        assert default_on
+        assert dialog.result_settings().capture.notify_on_delivery is False
+
     def test_close_prompt_setting_round_trips(self, dialog: SettingsDialog) -> None:
         """UX-G-06: the close prompt is on by default and can be turned off."""
         box = next(

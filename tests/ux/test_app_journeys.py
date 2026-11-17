@@ -490,6 +490,57 @@ class TestAfterCapture:
         assert str(saved[0]) in caplog.text
         assert app.controller.editors == ()
 
+    @pytest.mark.parametrize("notify", [True, False], ids=["on", "off"])
+    def test_save_notification_follows_setting(
+        self,
+        make_app: AppFactory,
+        balloons: Balloons,
+        tmp_path: Path,
+        *,
+        notify: bool,
+    ) -> None:
+        """UX-CAP-13, UX-CAP-22: the save notification can be turned off."""
+        settings = Settings()
+        capture = replace(
+            settings.capture,
+            open_editor=False,
+            copy_to_clipboard=True,
+            save_to_file=True,
+            notify_on_delivery=notify,
+        )
+        app = make_app(replace(settings, capture=capture))
+
+        app.press_hotkey("window")
+
+        assert len(list((tmp_path / "out").glob("*.png"))) == 1
+        expected = ["Screenshot captured"] if notify else []
+        assert balloons.titles() == expected
+        if notify:
+            assert "Copied to clipboard" in balloons.shown[0][1]
+
+    def test_failure_still_notifies_with_notifications_off(
+        self, make_app: AppFactory, balloons: Balloons, tmp_path: Path
+    ) -> None:
+        """UX-CAP-22: turning notifications off never hides a failed save."""
+        # The fixture saves into tmp_path/out; a file there blocks the save
+        (tmp_path / "out").write_text("x", encoding="utf-8")
+        settings = Settings()
+        app = make_app(
+            replace(
+                settings,
+                capture=replace(
+                    settings.capture,
+                    open_editor=False,
+                    save_to_file=True,
+                    notify_on_delivery=False,
+                ),
+            )
+        )
+
+        app.press_hotkey("window")
+
+        assert balloons.titles() == ["Could not deliver the capture"]
+
     def test_window_capture_saved_from_editor_is_named_after_window(
         self, make_app: AppFactory, tmp_path: Path, qtbot: QtBot
     ) -> None:
