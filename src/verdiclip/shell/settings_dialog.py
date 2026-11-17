@@ -141,6 +141,7 @@ class SettingsDialog(QDialog):
         self._theme = QComboBox()
         self._theme.setAccessibleName("Theme")
         self._magnifier = QCheckBox("Show a magnifier")
+        self._notify = QCheckBox("Show a notification after saving or copying")
         self._destination = QComboBox()
         self._destination.setAccessibleName("Open in the editor as")
         self._destination.addItem("New tab", CaptureDestination.TABS.value)
@@ -196,6 +197,7 @@ class SettingsDialog(QDialog):
                 save_to_file=self._save.isChecked(),
                 show_magnifier=self._magnifier.isChecked(),
                 destination=CaptureDestination(self._destination.currentData()),
+                notify_on_delivery=self._notify.isChecked(),
             ),
             universal_capture=ClickGestures(
                 **{
@@ -327,6 +329,10 @@ class SettingsDialog(QDialog):
             "New tab adds the screenshot to an open editor window. New "
             "window opens it in a window of its own."
         )
+        self._notify.setToolTip(
+            "Says where the capture was saved or copied in a tray notification. "
+            "Errors and warnings are always shown."
+        )
         self._magnifier.setToolTip(
             "Shows an enlarged view of the pixels under the pointer while you "
             "drag an area."
@@ -336,6 +342,7 @@ class SettingsDialog(QDialog):
         form.addRow("While selecting:", self._magnifier)
         form.addRow("After capturing:", actions)
         form.addRow("Open in the editor as:", self._destination)
+        form.addRow("Notifications:", self._notify)
         return tab
 
     def _modifiers_tab(self) -> QWidget:
@@ -558,6 +565,7 @@ class SettingsDialog(QDialog):
             self._theme.findData(settings.appearance.theme.value)
         )
         self._magnifier.setChecked(settings.capture.show_magnifier)
+        self._notify.setChecked(settings.capture.notify_on_delivery)
         self._destination.setCurrentIndex(
             self._destination.findData(settings.capture.destination.value)
         )

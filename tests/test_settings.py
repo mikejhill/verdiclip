@@ -68,6 +68,7 @@ class TestSettingsStore:
             ("capture", "open_editor", "yes"),
             ("appearance", "theme", "purple"),
             ("capture", "show_magnifier", 1),
+            ("capture", "notify_on_delivery", "no"),
             ("startup", "run_at_login", 1),
             ("hotkeys", "region", 1),
             ("output", "directory", 1),
@@ -86,6 +87,7 @@ class TestSettingsStore:
             "action",
             "theme",
             "bool-capture",
+            "bool-notify",
             "bool-startup",
             "hotkey",
             "directory",
@@ -122,7 +124,10 @@ class TestSettingsStore:
         """All supported types survive an atomic save and reload."""
         settings = Settings(
             capture=CaptureSettings(
-                open_editor=False, save_to_file=True, show_magnifier=False
+                open_editor=False,
+                save_to_file=True,
+                show_magnifier=False,
+                notify_on_delivery=False,
             ),
             appearance=AppearanceSettings(theme=Theme.DARK),
             hotkeys=HotkeySettings(region="", window="ctrl+w"),

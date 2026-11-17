@@ -626,7 +626,7 @@ class AppController(QObject):
                         warning=True,
                     )
                 return False  # Keep recovery; never repeat save/copy delivery.
-        if done and delivery_ok:
+        if done and delivery_ok and actions.notify_on_delivery:
             hint = "\nClick to open the folder." if saved is not None else ""
             self._notify("Screenshot captured", "\n".join(done) + hint)
         return delivery_ok

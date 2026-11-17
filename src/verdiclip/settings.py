@@ -69,6 +69,9 @@ class CaptureSettings:
     save_to_file: bool = False
     show_magnifier: bool = True
     destination: CaptureDestination = CaptureDestination.TABS
+    # The "Screenshot captured" tray notification after a save or copy;
+    # failures and warnings are always shown
+    notify_on_delivery: bool = True
 
     @property
     def has_action(self) -> bool:
