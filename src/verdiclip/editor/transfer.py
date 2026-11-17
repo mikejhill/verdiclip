@@ -117,4 +117,7 @@ class TabTransfer:
             self.target.activate_page(self.target_active)
         if self.created and self.target is not None:
             self.owner.forget_window(self.target)
+            # Shown before verification; hide now so the empty window never
+            # lingers until its deferred delete runs
+            self.target.hide()
             self.target.deleteLater()
