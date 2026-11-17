@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.1.0](https://github.com/mikejhill/verdiclip/compare/v1.0.0...v1.1.0) (2026-11-17)
+
+
+### Features
+
+* **settings:** option to turn off the after-capture notification ([#216](https://github.com/mikejhill/verdiclip/issues/216)) ([2687b6d](https://github.com/mikejhill/verdiclip/commit/2687b6d5cfaed40f8b24d4ce0e10d3210caafb2b))
+
+
+### Bug Fixes
+
+* **editor:** hide the new window when a tab move rolls back ([#217](https://github.com/mikejhill/verdiclip/issues/217)) ([ff18029](https://github.com/mikejhill/verdiclip/commit/ff180297423044921537def3ad58efbea61a9e41))
+
 ## [1.0.0](https://github.com/mikejhill/verdiclip/compare/v0.21.6...v1.0.0) (2026-11-14)
 
 
