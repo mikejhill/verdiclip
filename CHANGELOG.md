@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.1](https://github.com/mikejhill/verdiclip/compare/v1.2.0...v1.2.1) (2026-11-17)
+
+
+### Bug Fixes
+
+* **platform:** start without pythonw.exe where policy blocks it ([#221](https://github.com/mikejhill/verdiclip/issues/221)) ([908ab96](https://github.com/mikejhill/verdiclip/commit/908ab9660b957484fd86c0f89f260a09ce5a6ac0))
+
 ## [1.2.0](https://github.com/mikejhill/verdiclip/compare/v1.1.0...v1.2.0) (2026-11-17)
 
 
