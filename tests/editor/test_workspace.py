@@ -961,6 +961,12 @@ def test_failed_transfer_restores_both_active_tabs_and_host_registry(
     assert failures
     assert "document is retained" in failures[0]
     assert source.statusBar().currentMessage() == failures[0]
+    # A window created for the move is gone, not left open and empty
+    assert {
+        widget
+        for widget in QApplication.topLevelWidgets()
+        if isinstance(widget, EditorWindow) and widget.isVisible()
+    } <= expected_windows
 
 
 def test_move_selects_transferred_page_and_preserves_close_preference(
