@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/mikejhill/verdiclip/compare/v1.1.0...v1.2.0) (2026-11-17)
+
+
+### Features
+
+* **output:** save to Pictures\Screenshots and name files for the capture time ([#219](https://github.com/mikejhill/verdiclip/issues/219)) ([c697828](https://github.com/mikejhill/verdiclip/commit/c697828425090ca315189601e5ce4a492343d88c))
+
 ## [1.1.0](https://github.com/mikejhill/verdiclip/compare/v1.0.0...v1.1.0) (2026-11-17)
 
 
