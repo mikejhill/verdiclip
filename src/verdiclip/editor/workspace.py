@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QObject, QPoint, Qt, QTimer, Signal
@@ -227,6 +228,7 @@ class Workspace(QObject):
             options.title or "Screenshot",
             options.source_path,
             provenance=options.provenance,
+            created_at=options.created_at or datetime.now().astimezone(),
         )
         created_host = new_window or target is None
         if new_window or target is None:

@@ -7,6 +7,7 @@ import signal
 import sys
 import time
 from collections.abc import Callable, Sequence
+from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from types import FrameType
@@ -158,6 +159,7 @@ class Application:
         if request.delay:
             time.sleep(request.delay)
         frozen = MssScreenSource().freeze()
+        taken_at = datetime.now().astimezone()
         if request.mode is HeadlessMode.SCREEN:
             image = frozen.image
         elif request.mode is HeadlessMode.REGION and request.region is not None:
@@ -173,7 +175,7 @@ class Application:
             delivery.copy(image)
             sys.stdout.write("Copied to clipboard\n")
             return 0
-        path = request.output or delivery.auto_path()
+        path = request.output or delivery.auto_path(moment=taken_at)
         sys.stdout.write(f"{delivery.save(image, path)}\n")
         return 0
 

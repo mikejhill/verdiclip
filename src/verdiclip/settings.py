@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # 2: the default filename pattern gained {title}
 # 3: the default filename pattern lost its spaces
-SETTINGS_VERSION: Final = 3
+SETTINGS_VERSION: Final = 4
 
 DEFAULT_FILENAME_PATTERN: Final = "{date}_{time}_{title}"
 # Earlier defaults; files from before each change that still hold it get the current one
@@ -32,6 +32,14 @@ _LEGACY_FILENAME_PATTERNS: Final = {
     1: "Screenshot {date} {time}",
     2: "{date} {time} {title}",
 }
+# Save folder default before settings version 4; files still holding it move on
+_LEGACY_OUTPUT_FOLDER: Final = ("Pictures", "VerdiClip")
+_LEGACY_OUTPUT_FOLDER_UNTIL: Final = 3
+
+
+def default_output_directory() -> Path:
+    """Return the default save folder, ``~/Pictures/Screenshots``."""
+    return Path.home() / "Pictures" / "Screenshots"
 
 
 class Theme(StrEnum):
@@ -94,9 +102,7 @@ class HotkeySettings:
 class OutputSettings:
     """Where and how images are saved."""
 
-    directory: Path = field(
-        default_factory=lambda: Path.home() / "Pictures" / "VerdiClip"
-    )
+    directory: Path = field(default_factory=default_output_directory)
     filename_pattern: str = DEFAULT_FILENAME_PATTERN
     image_format: ImageFormat = ImageFormat.PNG
     jpeg_quality: int = 90
@@ -292,6 +298,14 @@ class SettingsCodec:
             pattern = output.get("filename_pattern")
             if isinstance(pattern, str) and pattern in stale:
                 output["filename_pattern"] = DEFAULT_FILENAME_PATTERN
+            folder = output.get("directory")
+            legacy_folder = Path.home().joinpath(*_LEGACY_OUTPUT_FOLDER)
+            if (
+                version <= _LEGACY_OUTPUT_FOLDER_UNTIL
+                and isinstance(folder, str)
+                and Path(folder) == legacy_folder
+            ):
+                output["directory"] = str(default_output_directory())
         capture = raw.get("capture")
         if not isinstance(capture, dict):
             return

@@ -737,8 +737,18 @@ class AppController(QObject):
             title=path.stem,
             source_path=path,
             confirm_close=self._settings.editor.confirm_unsaved_close,
+            created_at=self._file_time(path),
         )
         return self._open_document(image, options, delivered=True, target=target)
+
+    @staticmethod
+    def _file_time(path: Path) -> datetime | None:
+        """Return when ``path`` was last written, standing in for its capture time."""
+        try:
+            stamp = path.stat().st_mtime
+        except OSError:
+            return None
+        return datetime.fromtimestamp(stamp).astimezone()
 
     def _forget(self, editor: EditorWindow) -> None:
         """Drop a closed editor."""
