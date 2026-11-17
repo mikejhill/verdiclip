@@ -164,16 +164,16 @@ class TestUpdateReport:
 class TestHelperInterpreter:
     """The helper runs on a Python outside the environment being updated."""
 
-    def test_prefers_base_pythonw(self, tmp_path: Path) -> None:
-        """The base installation's pythonw.exe opens no console."""
+    def test_never_uses_pythonw(self, tmp_path: Path) -> None:
+        """Policy can block pythonw.exe; the helper starts windowless anyway."""
+        (tmp_path / "pythonw.exe").write_text("", encoding="utf-8")
+
+        assert helper_interpreter(PYTHON, tmp_path) == PYTHON
+
+    def test_uses_base_python(self, tmp_path: Path) -> None:
+        """The base installation's python.exe, even beside a pythonw.exe."""
         for name in ("pythonw.exe", "python.exe"):
             (tmp_path / name).write_text("", encoding="utf-8")
-
-        assert helper_interpreter(PYTHON, tmp_path) == tmp_path / "pythonw.exe"
-
-    def test_falls_back_to_base_python(self, tmp_path: Path) -> None:
-        """Without pythonw.exe, the base python.exe."""
-        (tmp_path / "python.exe").write_text("", encoding="utf-8")
 
         assert helper_interpreter(PYTHON, tmp_path) == tmp_path / "python.exe"
 

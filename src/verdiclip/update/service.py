@@ -113,14 +113,13 @@ def spawn_detached(argv: Sequence[str], cwd: Path) -> None:
 def helper_interpreter(executable: Path, base_prefix: Path) -> Path:
     """Return a Python outside the environment that's about to change.
 
-    The base installation's ``pythonw.exe`` (or ``python.exe``) runs the
-    helper; with neither, the running interpreter has to do.
+    The base installation's ``python.exe`` runs the helper; without it, the
+    running interpreter has to do. ``python.exe`` rather than ``pythonw.exe``:
+    the helper starts with no window either way, and some machines block
+    ``pythonw.exe`` by policy.
     """
-    for name in ("pythonw.exe", "python.exe"):
-        candidate = base_prefix / name
-        if candidate.is_file():
-            return candidate
-    return executable
+    candidate = base_prefix / "python.exe"
+    return candidate if candidate.is_file() else executable
 
 
 class UpdateLauncher:

@@ -6,13 +6,19 @@ outside a terminal, and it stays open for as long as the program runs. A
 virtual environment's ``pythonw.exe`` is not always a GUI program: uv writes
 its own console launcher under that name. So candidates are checked by their
 PE header rather than trusted by name, and only Python's own executables are
-ever used.
+ever used. Some machines also block ``pythonw.exe`` by policy, so a candidate
+must start a trial run before it is used. Without a usable ``pythonw.exe``, the
+console ``python.exe`` relays instead: its console shows only for a moment.
 """
 
 from __future__ import annotations
 
 import logging
+import subprocess
+import sys
+from collections.abc import Callable
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
 from typing import Final
 
@@ -20,8 +26,9 @@ logger = logging.getLogger(__name__)
 
 MODULE_ARGUMENTS: Final = "-m verdiclip"
 CREATE_NO_WINDOW: Final = 0x08000000
+PROBE_TIMEOUT_S: Final = 15.0
 
-# Run by the base interpreter's pythonw.exe: start the environment's own
+# Run by the base interpreter's pythonw.exe (or python.exe): start the environment's own
 # interpreter (passed as the first argument) with no console, then exit.
 RELAY_CODE: Final = (
     "import subprocess,sys;"
@@ -52,12 +59,17 @@ class LaunchCommand:
     def environment(self) -> Path:
         """Return the interpreter whose environment runs the app.
 
-        For the relay, ``program`` is the shared base ``pythonw.exe`` and the
+        For the relay, ``program`` is the shared base interpreter and the
         environment's own interpreter is the first quoted argument.
         """
-        if self.arguments.startswith(_RELAY_PREFIX):
+        if self.is_relay:
             return Path(self.arguments[len(_RELAY_PREFIX) :].partition('"')[0])
         return self.program
+
+    @property
+    def is_relay(self) -> bool:
+        """Return whether ``program`` only starts the app with no console."""
+        return self.arguments.startswith(_RELAY_PREFIX)
 
     @classmethod
     def parse(cls, command_line: str) -> LaunchCommand:
@@ -88,26 +100,62 @@ def is_windowless(program: Path) -> bool:
     return subsystem == _SUBSYSTEM_WINDOWS_GUI
 
 
-def tray_launch(executable: Path, base_prefix: Path) -> LaunchCommand:
+@cache
+def can_run(program: Path) -> bool:
+    """Return whether ``program`` starts and runs Python here.
+
+    Policy such as AppLocker can block ``pythonw.exe`` while allowing
+    ``python.exe``; Windows then refuses to start it, or stops it at once.
+    """
+    try:
+        result = subprocess.run(  # noqa: S603 - a Python executable we chose
+            [str(program), "-c", "pass"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=PROBE_TIMEOUT_S,
+            creationflags=CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as err:
+        logger.warning("%s can't run here: %s", program, err)
+        return False
+    if result.returncode != 0:
+        logger.warning("%s exited with %s", program, result.returncode)
+    return result.returncode == 0
+
+
+def _relay(program: Path, executable: Path) -> LaunchCommand:
+    """Return ``program`` starting ``executable`` with no console, then exiting."""
+    return LaunchCommand(
+        program, f'-c "{RELAY_CODE}" "{executable}" {MODULE_ARGUMENTS}'
+    )
+
+
+def tray_launch(
+    executable: Path,
+    base_prefix: Path,
+    runs: Callable[[Path], bool] = can_run,
+) -> LaunchCommand:
     """Return the console-less way to start VerdiClip.
 
     ``executable`` is the running interpreter and ``base_prefix`` the Python
     installation behind its environment. A real ``pythonw.exe`` next to
     ``executable`` runs the module directly. Otherwise the installation's
     ``pythonw.exe`` relays to ``executable`` with no console window, which
-    keeps the environment's packages. With neither, ``executable`` runs the
-    module itself and Windows shows its console.
+    keeps the environment's packages. A ``pythonw.exe`` only counts when
+    ``runs`` says it can start. With neither, the installation's ``python.exe``
+    (or ``executable``) relays instead, and its console flashes while it does.
     """
     pythonw = executable.with_name("pythonw.exe")
-    if is_windowless(pythonw):
+    if is_windowless(pythonw) and runs(pythonw):
         return LaunchCommand(pythonw, MODULE_ARGUMENTS)
     base_pythonw = base_prefix / "pythonw.exe"
-    if is_windowless(base_pythonw):
-        return LaunchCommand(
-            base_pythonw, f'-c "{RELAY_CODE}" "{executable}" {MODULE_ARGUMENTS}'
-        )
-    logger.warning("No console-less Python for %s", executable)
-    return LaunchCommand(executable, MODULE_ARGUMENTS)
+    if is_windowless(base_pythonw) and runs(base_pythonw):
+        return _relay(base_pythonw, executable)
+    logger.warning("No usable pythonw.exe for %s; relaying with a console", executable)
+    base_python = base_prefix / "python.exe"
+    return _relay(base_python if base_python.is_file() else executable, executable)
 
 
 def is_other_install(current: LaunchCommand, ours: LaunchCommand) -> bool:
@@ -116,13 +164,17 @@ def is_other_install(current: LaunchCommand, ours: LaunchCommand) -> bool:
     Environments are told apart by their interpreter's folder, so moving
     between ``python.exe``, ``pythonw.exe``, and the relay keeps them the same.
     Another environment only counts while it still exists and ``current``
-    starts it without a console: a command from before console-less launches
-    (``python.exe``, or uv's console ``pythonw.exe``) is stale, and replacing
-    it is the only way it gets repaired.
+    starts it without a lasting console, directly or through a relay: a
+    command from before console-less launches (``python.exe -m verdiclip``, or
+    uv's console ``pythonw.exe``) is stale, and replacing it is the only way it
+    gets repaired.
     """
     environment = current.environment
     return (
         environment.parent != ours.environment.parent
         and environment.is_file()
-        and is_windowless(current.program)
+        and (
+            is_windowless(current.program)
+            or (current.is_relay and current.program.is_file())
+        )
     )
