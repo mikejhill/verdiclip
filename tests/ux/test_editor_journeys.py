@@ -1297,3 +1297,139 @@ class TestFormattedWords:
         assert edited.text == "one two!"
         # Typing after an underlined word continues it, as in word processors
         assert edited.spans == (TextSpan(4, 8, underline=True),)
+
+    def _editor(self, user: User) -> QPlainTextEdit | QTextEdit:
+        """Return the open inline text editor."""
+        widget = user.window.canvas.editors.widget
+        assert isinstance(widget, (QPlainTextEdit, QTextEdit))
+        return widget
+
+    def test_words_after_an_emoji_keep_their_format(self, user: User) -> None:
+        """Formats land on the right characters after characters Qt counts twice."""
+        user.key(Qt.Key.Key_R)
+        user.drag((100, 100), (380, 220))
+        self._editor(user).insertPlainText("\U0001f600 ab")
+        user.key(Qt.Key.Key_Left, SHIFT)
+
+        user.shortcut("Ctrl+U")
+        user.key(Qt.Key.Key_Escape)
+
+        box = user.window.session.document.annotations[0]
+        assert getattr(box, "text", None) == "\U0001f600 ab"
+        assert getattr(box, "spans", None) == (TextSpan(3, 4, underline=True),)
+
+        user.key(Qt.Key.Key_F2)
+        editor = self._editor(user)
+        cursor = editor.textCursor()
+        cursor.setPosition(4)  # UTF-16: the emoji, a space, then "a"
+        cursor.setPosition(5, cursor.MoveMode.KeepAnchor)
+        editor.setTextCursor(cursor)
+        assert self._bar_action(user, "Underline (Ctrl+U)").isChecked()
+
+    @pytest.mark.parametrize("auto_fit", [True, False], ids=["auto-fit", "fixed"])
+    def test_copy_paste_keeps_word_formats(self, user: User, *, auto_fit: bool) -> None:
+        """Copying a bold word and pasting it elsewhere keeps it bold."""
+        user.key(Qt.Key.Key_T)
+        if auto_fit:
+            user.click((40, 40))
+        else:
+            user.drag((40, 40), (380, 200))
+        user.type_text("one two")
+        self._select_left(user, 3)
+        user.shortcut("Ctrl+B")
+        user.shortcut("Ctrl+C")
+        user.key(Qt.Key.Key_Home)
+        user.shortcut("Ctrl+V")
+        user.key(Qt.Key.Key_Escape)
+
+        note = user.window.session.document.annotations[0]
+        assert isinstance(note, TextNote)
+        assert note.text == "twoone two"
+        assert note.spans == (TextSpan(0, 3, bold=True), TextSpan(7, 10, bold=True))
+
+    def test_paste_from_elsewhere_is_plain_text(self, user: User) -> None:
+        """Text from other apps, or a damaged copy, pastes without formatting."""
+        user.key(Qt.Key.Key_T)
+        user.drag((40, 40), (380, 200))
+        editor = self._editor(user)
+        mime = QMimeData()
+        mime.setText("plain")
+        mime.setHtml("<b>plain</b>")
+        editor.insertFromMimeData(mime)
+        broken = QMimeData()
+        broken.setText("!")
+        broken.setData("application/x-verdiclip-rich-text", b'{"text": "?"}')
+        editor.insertFromMimeData(broken)
+        outside = QMimeData()
+        outside.setText("?")
+        outside.setData(
+            "application/x-verdiclip-rich-text",
+            b'{"text": "?", "runs": [[0, 5, true, false, false]]}',
+        )
+        editor.insertFromMimeData(outside)
+        user.key(Qt.Key.Key_Escape)
+
+        note = user.window.session.document.annotations[0]
+        assert isinstance(note, TextNote)
+        assert note.text == "plain!?"
+        assert note.spans == ()
+
+    def test_bar_unbolds_a_bold_word_in_plain_text(self, user: User) -> None:
+        """B shows on for a bold word; pressing it with no selection unbolds all."""
+        user.key(Qt.Key.Key_T)
+        user.drag((100, 100), (300, 220))
+        user.type_text("one two")
+        self._select_left(user, 3)
+        user.shortcut("Ctrl+B")
+        user.key(Qt.Key.Key_Left)
+        user.key(Qt.Key.Key_Right)
+        bold = self._bar_action(user, "Bold (Ctrl+B)")
+        assert bold.isChecked()
+
+        bold.trigger()
+
+        note = user.window.session.document.annotations[0]
+        assert isinstance(note, TextNote)
+        assert not note.style.bold
+        assert note.spans == ()
+
+    def test_toggling_a_selection_across_lines_switches_back(self, user: User) -> None:
+        """Bold twice on two selected lines leaves them plain."""
+        user.key(Qt.Key.Key_T)
+        user.drag((100, 100), (300, 220))
+        user.type_text("one")
+        user.key(Qt.Key.Key_Return)
+        user.type_text("two")
+        user.shortcut("Ctrl+A")
+
+        user.shortcut("Ctrl+B")
+        assert self._bar_action(user, "Bold (Ctrl+B)").isChecked()
+        user.shortcut("Ctrl+B")
+        assert not self._bar_action(user, "Bold (Ctrl+B)").isChecked()
+        user.key(Qt.Key.Key_Escape)
+
+        note = user.window.session.document.annotations[0]
+        assert isinstance(note, TextNote)
+        assert note.text == "one\ntwo"
+        assert note.spans == ()
+
+    def test_undo_while_typing_updates_the_bar(self, user: User) -> None:
+        """Undoing a format shows it gone, and B then bolds again."""
+        user.key(Qt.Key.Key_R)
+        user.drag((100, 100), (380, 220))
+        user.type_text("one two")
+        self._select_left(user, 3)
+        user.shortcut("Ctrl+B")
+        bold = self._bar_action(user, "Bold (Ctrl+B)")
+        assert bold.isChecked()
+
+        user.shortcut("Ctrl+Z")
+        assert not bold.isChecked()
+        user.key(Qt.Key.Key_End)
+        self._select_left(user, 3)
+        assert not bold.isChecked()
+        bold.trigger()
+        user.key(Qt.Key.Key_Escape)
+
+        box = user.window.session.document.annotations[0]
+        assert getattr(box, "spans", None) == (TextSpan(4, 7, bold=True),)

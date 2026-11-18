@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
+from bisect import bisect_left
 from collections.abc import Callable
 from typing import Final, Protocol, override
 
-from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QEvent, QMimeData, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
     QFocusEvent,
     QFont,
@@ -37,6 +39,7 @@ from verdiclip.document.rich_text import (
     TextAttr,
     TextFormat,
     TextSpan,
+    utf16_offsets,
 )
 from verdiclip.document.style import Style, VAlign
 from verdiclip.editor.session import EditorSession, ToolId
@@ -55,6 +58,9 @@ FORMAT_KEYS: Final = {
     QKeySequence.StandardKey.Italic: TextAttr.ITALIC,
     QKeySequence.StandardKey.Underline: TextAttr.UNDERLINE,
 }
+
+# Words copied from an inline editor, with their bold/italic/underline
+RICH_TEXT_MIME: Final = "application/x-verdiclip-rich-text"
 
 type FormatEditor = _TextBox | _BoxTextEdit
 type FormatListener = Callable[[TextFormat | None], None]
@@ -95,26 +101,43 @@ class RichEditing:
         document: QTextDocument, spans: tuple[TextSpan, ...], style: Style
     ) -> None:
         """Apply ``spans`` to the plain text already in ``document``."""
-        base = TextFormat.of(style)
-        for start, end, fmt in RichText.runs(document.toPlainText(), spans, style):
+        text = document.toPlainText()
+        runs = RichText.runs(text, spans, style)
+        RichEditing.apply_runs(document, 0, runs, text, TextFormat.of(style))
+
+    @staticmethod
+    def apply_runs(
+        document: QTextDocument,
+        at: int,
+        runs: list[tuple[int, int, TextFormat]],
+        text: str,
+        base: TextFormat | None = None,
+    ) -> None:
+        """Format ``text``, found at UTF-16 position ``at``, run by run.
+
+        Runs equal to ``base`` are left alone; with no ``base`` every run is
+        set explicitly (for pasted text, which must not take on the caret's).
+        """
+        offsets = utf16_offsets(text)
+        for start, end, fmt in runs:
             if fmt == base:
                 continue
             cursor = QTextCursor(document)
-            cursor.setPosition(start)
-            cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+            cursor.setPosition(at + offsets[start])
+            cursor.setPosition(at + offsets[end], QTextCursor.MoveMode.KeepAnchor)
             for attr in ATTRS:
                 cursor.mergeCharFormat(RichEditing.char_format(attr, on=fmt.get(attr)))
 
     @staticmethod
-    def formats(document: QTextDocument, style: Style) -> list[TextFormat]:
-        """Return the format of each character of ``document.toPlainText()``."""
-        base = TextFormat.of(style)
+    def unit_formats(document: QTextDocument, base: TextFormat) -> list[TextFormat]:
+        """Return the format of each UTF-16 unit of the document's text."""
         result: list[TextFormat] = []
         block = document.begin()
         first = True
         while block.isValid():
             if not first:
-                result.append(base)  # The line break before this block
+                # The line break before this block takes the format before it
+                result.append(result[-1] if result else base)
             first = False
             iterator = block.begin()
             while not iterator.atEnd():
@@ -126,14 +149,90 @@ class RichEditing:
         return result
 
     @staticmethod
+    def formats(document: QTextDocument, style: Style) -> list[TextFormat]:
+        """Return the format of each character of ``document.toPlainText()``."""
+        units = RichEditing.unit_formats(document, TextFormat.of(style))
+        offsets = utf16_offsets(document.toPlainText())
+        return [units[offsets[i]] for i in range(len(offsets) - 1)]
+
+    @staticmethod
+    def selected(editor: FormatEditor) -> tuple[int, int]:
+        """Return the selection as Python character indexes into the text."""
+        cursor = editor.textCursor()
+        offsets = utf16_offsets(editor.toPlainText())
+        return (
+            bisect_left(offsets, cursor.selectionStart()),
+            bisect_left(offsets, cursor.selectionEnd()),
+        )
+
+    @staticmethod
     def at_cursor(editor: FormatEditor, base: TextFormat) -> TextFormat:
-        """Return the selection's format (on only if on throughout) or the caret's."""
+        """Return the selection's format (on only if on throughout) or the caret's.
+
+        Line breaks don't count: they show nothing to format.
+        """
         cursor = editor.textCursor()
         if not cursor.hasSelection():
             return RichEditing.format_of(editor.currentCharFormat(), base)
+        text = editor.toPlainText()
         formats = RichEditing.formats(editor.document(), editor.style_of_text)
-        chosen = formats[cursor.selectionStart() : cursor.selectionEnd()] or [base]
+        start, end = RichEditing.selected(editor)
+        shown = [i for i in range(start, end) if text[i] != "\n"]
+        chosen = [formats[i] for i in shown] or [base]
         return TextFormat(**{a.value: all(f.get(a) for f in chosen) for a in ATTRS})
+
+    @staticmethod
+    def copy(editor: FormatEditor, mime: QMimeData) -> QMimeData:
+        """Return ``mime`` plus the selected words' formats.
+
+        Qt's own selection data lists only its built-in formats, so its
+        contents move to a plain QMimeData that can list one more.
+        """
+        copied = QMimeData()
+        for kind in mime.formats():
+            copied.setData(kind, mime.data(kind))
+        mime = copied
+        start, end = RichEditing.selected(editor)
+        text = editor.toPlainText()[start:end]
+        formats = RichEditing.formats(editor.document(), editor.style_of_text)
+        runs = [
+            [s, e, f.bold, f.italic, f.underline]
+            for s, e, f in RichText.runs(
+                text, RichText.spans(formats[start:end], Style()), Style()
+            )
+        ]
+        payload = json.dumps({"text": text, "runs": runs})
+        mime.setData(RICH_TEXT_MIME, payload.encode("utf-8"))
+        return mime
+
+    @staticmethod
+    def paste(editor: FormatEditor, source: QMimeData) -> bool:
+        """Insert words copied from an inline editor with their formats.
+
+        Returns False when ``source`` holds no such words.
+        """
+        if not source.hasFormat(RICH_TEXT_MIME):
+            return False
+        try:
+            payload = json.loads(bytes(source.data(RICH_TEXT_MIME).data()))
+            text = str(payload["text"])
+            runs = [
+                (int(s), int(e), TextFormat(bool(b), bool(i), bool(u)))
+                for s, e, b, i, u in payload["runs"]
+            ]
+        except (ValueError, KeyError, TypeError):
+            return False
+        if any(not 0 <= s < e <= len(text) for s, e, _ in runs):
+            return False
+        cursor = editor.textCursor()
+        cursor.beginEditBlock()
+        cursor.removeSelectedText()
+        at = cursor.position()
+        cursor.insertText(text)
+        RichEditing.apply_runs(editor.document(), at, runs, text)
+        cursor.endEditBlock()
+        editor.setTextCursor(cursor)
+        return True
 
     @staticmethod
     def toggle(editor: FormatEditor, attr: TextAttr, *, on: bool | None = None) -> None:
@@ -199,6 +298,17 @@ class _TextBox(QPlainTextEdit):
         self.style_of_text = style
 
     @override
+    def createMimeDataFromSelection(self) -> QMimeData:
+        """Copy the selected words with their formats."""
+        return RichEditing.copy(self, super().createMimeDataFromSelection())
+
+    @override
+    def insertFromMimeData(self, source: QMimeData) -> None:
+        """Paste copied words with their formats; anything else as plain text."""
+        if not RichEditing.paste(self, source):
+            super().insertFromMimeData(source)
+
+    @override
     def event(self, e: QEvent) -> bool:
         """Keep Ctrl+B, Ctrl+I, and Ctrl+U for formatting the text."""
         if RichEditing.is_format_key(e):
@@ -233,6 +343,17 @@ class _BoxTextEdit(QTextEdit):
     def __init__(self, parent: QWidget, style: Style) -> None:
         super().__init__(parent)
         self.style_of_text = style
+
+    @override
+    def createMimeDataFromSelection(self) -> QMimeData:
+        """Copy the selected words with their formats."""
+        return RichEditing.copy(self, super().createMimeDataFromSelection())
+
+    @override
+    def insertFromMimeData(self, source: QMimeData) -> None:
+        """Paste copied words with their formats; anything else as plain text."""
+        if not RichEditing.paste(self, source):
+            super().insertFromMimeData(source)
 
     @override
     def event(self, e: QEvent) -> bool:
@@ -388,6 +509,7 @@ class InlineEditors:
         text_box.cursorPositionChanged.connect(self._report_format)
         text_box.selectionChanged.connect(self._report_format)
         text_box.formatted.connect(self._report_format)
+        text_box.document().contentsChanged.connect(self._report_format)
         text_box.finished.connect(self.commit)
         self._open(text_box)
         text_box.moveCursor(text_box.textCursor().MoveOperation.End)
@@ -518,6 +640,7 @@ class InlineEditors:
         editor.cursorPositionChanged.connect(self._report_format)
         editor.selectionChanged.connect(self._report_format)
         editor.formatted.connect(self._report_format)
+        editor.document().contentsChanged.connect(self._report_format)
         editor.finished.connect(self.commit)
         return editor
 

@@ -8,7 +8,12 @@ from dataclasses import replace
 from enum import StrEnum
 from typing import cast
 
-from verdiclip.document.annotations import Annotation, JsonValue, TextNote
+from verdiclip.document.annotations import (
+    Annotation,
+    JsonValue,
+    LabeledBox,
+    TextNote,
+)
 from verdiclip.document.codec import AnnotationCodec
 from verdiclip.document.commands import (
     AddAnnotations,
@@ -19,6 +24,7 @@ from verdiclip.document.commands import (
 )
 from verdiclip.document.document import Document
 from verdiclip.document.history import History
+from verdiclip.document.rich_text import RichText, TextAttr
 from verdiclip.document.style import HIGHLIGHT_YELLOW, TRANSPARENT, WHITE, Style
 from verdiclip.document.transform import ImageTransform
 from verdiclip.exceptions import CodecError
@@ -224,6 +230,29 @@ class EditorSession:
         after = [a.with_style(change(a.style)) for a in before]
         if fit is not None:
             after = [fit(a) for a in after]
+        return self._replace_changed(before, after, "Change style")
+
+    def format_selected(
+        self, attr: TextAttr, *, on: bool, fit: Fitter | None = None
+    ) -> bool:
+        """Switch ``attr`` for all text of the selection, words included.
+
+        Unlike a plain style change this also clears per-word overrides when
+        the whole-text value already matches, so a bold word in plain text
+        loses its bold.
+        """
+        before = self.selected()
+        after: list[Annotation] = []
+        for annotation in before:
+            changed = annotation.with_style(
+                replace(annotation.style, **{attr.value: on})
+            )
+            if isinstance(changed, (LabeledBox, TextNote)):
+                spans = RichText.with_all(
+                    changed.spans, len(changed.text), changed.style, attr, on=on
+                )
+                changed = replace(changed, spans=spans)
+            after.append(fit(changed) if fit is not None else changed)
         return self._replace_changed(before, after, "Change style")
 
     def set_auto_fit(self, *, on: bool, fit: Fitter) -> bool:

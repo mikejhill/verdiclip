@@ -12,6 +12,7 @@ from verdiclip.document.rich_text import (
     TextAttr,
     TextFormat,
     TextSpan,
+    utf16_offsets,
 )
 from verdiclip.document.style import Style
 from verdiclip.geometry import Rect
@@ -166,3 +167,18 @@ class TestFormattedAnnotations:
         ]
         box = RectangleShape(rect=Rect(0, 0, 1, 1), text="x", spans=formatted.spans)
         assert box.geometry_json()["spans"] == [{"start": 0, "end": 1, "bold": True}]
+
+
+def test_utf16_offsets_count_emoji_twice() -> None:
+    """Qt positions count characters outside the BMP as two units."""
+    assert utf16_offsets("a\U0001f600b") == [0, 1, 3, 4]
+    assert utf16_offsets("") == [0]
+
+
+def test_with_all_sets_every_character() -> None:
+    """Formatting all text clears overrides even when the style already matches."""
+    spans = (TextSpan(0, 2, bold=True), TextSpan(3, 4, italic=True))
+
+    assert RichText.with_all(spans, 4, Style(), TextAttr.BOLD, on=False) == (
+        TextSpan(3, 4, italic=True),
+    )

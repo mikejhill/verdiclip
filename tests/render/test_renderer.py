@@ -521,6 +521,8 @@ class TestFormattedText:
         assert not font.underline()
         assert font.pixelSize() == style.font_size
         assert QtConvert.formats("one two", (), style) == []
+        emoji = QtConvert.formats("\U0001f600 ab", (TextSpan(3, 4, bold=True),), style)
+        assert [(r.start, r.length) for r in emoji] == [(4, 1)]
 
     def test_bold_words_measure_wider(self, qapp: QApplication) -> None:
         """Auto-fit text grows to fit a bold word."""

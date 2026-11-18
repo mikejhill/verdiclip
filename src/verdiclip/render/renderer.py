@@ -39,7 +39,7 @@ from verdiclip.document.annotations import (
     TextNote,
 )
 from verdiclip.document.document import Document
-from verdiclip.document.rich_text import RichText, TextSpan
+from verdiclip.document.rich_text import RichText, TextSpan, utf16_offsets
 from verdiclip.document.style import (
     SHADOW_BLUR,
     SHADOW_OFFSET,
@@ -112,6 +112,7 @@ class QtConvert:
     ) -> list[QTextLayout.FormatRange]:
         """Return layout formats for the runs of ``text`` that differ from ``style``."""
         base = QtConvert.font(style)
+        offsets = utf16_offsets(text)  # Qt positions count UTF-16 units
         result: list[QTextLayout.FormatRange] = []
         for start, end, fmt in RichText.runs(text, spans, style):
             if (fmt.bold, fmt.italic, fmt.underline) == (
@@ -127,8 +128,8 @@ class QtConvert:
             font.setUnderline(fmt.underline)
             char.setFont(font)
             item = QTextLayout.FormatRange()
-            item.start = start
-            item.length = end - start
+            item.start = offsets[start]
+            item.length = offsets[end] - offsets[start]
             item.format = char
             result.append(item)
         return result

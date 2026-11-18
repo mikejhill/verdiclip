@@ -1101,7 +1101,10 @@ class EditorWindow(QMainWindow):
         """Format the words selected while typing, or else all the text."""
         if self._canvas.editors.apply_format(attr, on=on):
             return
-        self._on_style_changed(lambda s: replace(s, **{attr.value: on}))
+        self._on_style_changed(
+            lambda s: replace(s, **{attr.value: on}),
+            lambda: self._session.format_selected(attr, on=on, fit=Renderer.fit),
+        )
 
     def _on_text_format(self, fmt: TextFormat | None) -> None:
         """Show the typed words' format on the bar, or the selection's when done."""
@@ -1110,16 +1113,24 @@ class EditorWindow(QMainWindow):
         else:
             self._style_bar.show_text_format(fmt)
 
-    def _on_style_changed(self, change: Callable[[Style], Style]) -> None:
+    def _on_style_changed(
+        self,
+        change: Callable[[Style], Style],
+        restyle: Callable[[], object] | None = None,
+    ) -> None:
         """Apply a style edit to the selection and to the matching tool defaults.
 
         An open text editor is committed first, as if the bar had taken focus,
-        so the edit and the text being typed can't drift apart.
+        so the edit and the text being typed can't drift apart. ``restyle``
+        replaces the plain style change for the selection.
         """
         self._canvas.editors.commit()
         selected = self._session.selected()
         if selected:
-            self._session.restyle_selected(change, Renderer.fit)
+            if restyle is not None:
+                restyle()
+            else:
+                self._session.restyle_selected(change, Renderer.fit)
             for kind in {a.kind for a in selected}:
                 tool = KIND_TOOLS[kind]
                 self._session.styles.set(tool, change(self._session.styles.get(tool)))

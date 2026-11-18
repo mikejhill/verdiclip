@@ -87,6 +87,20 @@ class TextSpan:
         return result
 
 
+def utf16_offsets(text: str) -> list[int]:
+    """Return each character's UTF-16 offset, then the text's UTF-16 length.
+
+    Qt counts positions in UTF-16 code units, so a character outside the
+    Basic Multilingual Plane (such as most emoji) takes two.
+    """
+    offsets: list[int] = [0]
+    position = 0
+    for char in text:
+        position += 2 if ord(char) > 0xFFFF else 1  # noqa: PLR2004 — BMP limit
+        offsets.append(position)
+    return offsets
+
+
 class RichText:
     """Stateless conversions between spans and per-character formats."""
 
@@ -158,6 +172,19 @@ class RichText:
             on = after.get(attr)
             formats = [f.with_attr(attr, on=on) for f in formats]
         return RichText.spans(formats, new)
+
+    @staticmethod
+    def with_all(
+        spans: Iterable[TextSpan],
+        length: int,
+        style: Style,
+        attr: TextAttr,
+        *,
+        on: bool,
+    ) -> tuple[TextSpan, ...]:
+        """Return spans for ``style`` after setting ``attr`` for every character."""
+        formats = RichText.formats(length, spans, style)
+        return RichText.spans([f.with_attr(attr, on=on) for f in formats], style)
 
     @staticmethod
     def sliced(
