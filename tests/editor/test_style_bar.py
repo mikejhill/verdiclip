@@ -10,6 +10,7 @@ from PySide6.QtGui import QAction, QColor, QFont
 from PySide6.QtWidgets import QLabel
 from pytestqt.qtbot import QtBot
 
+from verdiclip.document.rich_text import TextAttr, TextFormat
 from verdiclip.document.style import TRANSPARENT, Color, HAlign, Style, VAlign
 from verdiclip.editor.session import ToolId
 from verdiclip.editor.style_bar import (
@@ -79,10 +80,12 @@ def test_color_choices_change_their_own_field(
 
 
 def test_number_and_font_edits(qtbot: QtBot) -> None:
-    """Width, font, size, bold and italic each change only their field."""
+    """Width, font, size, and shadow each change only their field."""
     bar = StyleBar()
     qtbot.addWidget(bar)
     changes = _changes(bar)
+    toggled: list[tuple[TextAttr, bool]] = []
+    bar.format_toggled.connect(lambda attr, on: toggled.append((attr, on)))
     base = Style()
 
     bar._width.setValue(9)
@@ -90,6 +93,7 @@ def test_number_and_font_edits(qtbot: QtBot) -> None:
     bar._font.setCurrentFont(QFont("Courier New"))
     bar._bold.setChecked(True)
     bar._italic.setChecked(True)
+    bar._underline.setChecked(True)
     bar._shadow.setChecked(True)
 
     applied = [change(base) for change in changes]
@@ -97,10 +101,13 @@ def test_number_and_font_edits(qtbot: QtBot) -> None:
     assert replace(base, width=9.0) in applied
     assert replace(base, font_size=31) in applied
     assert replace(base, font_family=family) in applied
-    assert replace(base, bold=True) in applied
-    assert replace(base, italic=True) in applied
     assert replace(base, shadow=True) in applied
-    assert len(applied) == 6
+    assert len(applied) == 4
+    assert toggled == [
+        (TextAttr.BOLD, True),
+        (TextAttr.ITALIC, True),
+        (TextAttr.UNDERLINE, True),
+    ]
 
 
 def test_alignment_buttons_are_exclusive_and_emit(qtbot: QtBot) -> None:
@@ -156,7 +163,15 @@ def test_populating_emits_nothing(qtbot: QtBot) -> None:
     assert bar._h_align[HAlign.CENTER].isChecked()
     assert bar._v_align[VAlign.MIDDLE].isChecked()
     # Edits after populating are reported again
-    bar._bold.setChecked(False)
+    toggled: list[tuple[TextAttr, bool]] = []
+    bar.format_toggled.connect(lambda attr, on: toggled.append((attr, on)))
+    bar.show_text_format(TextFormat(underline=True))
+    assert toggled == []
+    assert bar._underline.isChecked()
+    assert not bar._bold.isChecked()
+    bar._bold.setChecked(True)
+    bar._width.setValue(3)
+    assert toggled == [(TextAttr.BOLD, True)]
     assert len(changes) == 1
 
 
@@ -203,8 +218,11 @@ def test_controls_explain_themselves(qtbot: QtBot) -> None:
     assert bar._fill.toolTip() == "Fill color"
     assert bar._outline.toolTip() == "Outline color"
     assert bar._width.toolTip() == "Line width in pixels"
-    assert bar._bold.toolTip() == "Bold"
-    assert bar._italic.toolTip() == "Italic"
+    assert bar._bold.toolTip() == "Bold (Ctrl+B)"
+    assert bar._italic.toolTip() == "Italic (Ctrl+I)"
+    assert bar._underline.toolTip() == "Underline (Ctrl+U)"
+    assert bar._underline.font().underline()
+    assert bar._underline.isCheckable()
     assert bar._bold.font().bold()
     assert not bar._bold.font().italic()
     assert bar._italic.font().italic()

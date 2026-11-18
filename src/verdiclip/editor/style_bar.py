@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from verdiclip.document.annotations import AnnotationKind
+from verdiclip.document.rich_text import TextAttr, TextFormat
 from verdiclip.document.style import TRANSPARENT, Color, HAlign, Style, VAlign
 from verdiclip.editor.icons import IconFactory
 from verdiclip.editor.session import ToolId
@@ -214,6 +215,7 @@ class StyleBar(QToolBar):
     """Edits the style of the selection, or of the active tool when none."""
 
     style_changed = Signal(object)  # Callable[[Style], Style]
+    format_toggled = Signal(object, bool)  # TextAttr, on
     auto_fit_toggled = Signal(bool)
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -237,6 +239,12 @@ class StyleBar(QToolBar):
         self._font_size.setRange(6, 200)
         self._bold = QAction("B", self)
         self._italic = QAction("I", self)
+        self._underline = QAction("U", self)
+        self._formats = {
+            TextAttr.BOLD: self._bold,
+            TextAttr.ITALIC: self._italic,
+            TextAttr.UNDERLINE: self._underline,
+        }
         self._shadow = QAction("Shadow", self)
         self._auto_fit = QAction("Auto-fit", self)
         self._h_align = {
@@ -300,10 +308,19 @@ class StyleBar(QToolBar):
             self._width.setValue(round(style.width))
             self._font.setCurrentFont(QFont(style.font_family))
             self._font_size.setValue(style.font_size)
-            self._bold.setChecked(style.bold)
-            self._italic.setChecked(style.italic)
+            self.show_text_format(TextFormat.of(style))
         finally:
             self._updating = False
+
+    def show_text_format(self, fmt: TextFormat) -> None:
+        """Check B, I, and U as ``fmt`` has them (the words being typed)."""
+        updating = self._updating
+        self._updating = True
+        try:
+            for attr, action in self._formats.items():
+                action.setChecked(fmt.get(attr))
+        finally:
+            self._updating = updating
 
     # Building
 
@@ -314,15 +331,23 @@ class StyleBar(QToolBar):
         self._group(StyleField.OUTLINE, self._outline_label, self._outline)
         self._group(StyleField.WIDTH, self._width_label, self._width)
         self._group(StyleField.FONT, self._font, self._font_size)
-        for action, tip in ((self._bold, "Bold"), (self._italic, "Italic")):
+        # While typing, these format the selected words; otherwise all the text
+        tips = {
+            TextAttr.BOLD: "Bold (Ctrl+B)",
+            TextAttr.ITALIC: "Italic (Ctrl+I)",
+            TextAttr.UNDERLINE: "Underline (Ctrl+U)",
+        }
+        for attr, action in self._formats.items():
             font = QFont()
-            font.setBold(action is self._bold)
-            font.setItalic(action is self._italic)
+            font.setBold(attr is TextAttr.BOLD)
+            font.setItalic(attr is TextAttr.ITALIC)
+            font.setUnderline(attr is TextAttr.UNDERLINE)
             action.setFont(font)
             action.setCheckable(True)
-            action.setToolTip(tip)
+            action.setToolTip(tips[attr])
             self.addAction(action)
             self._actions[StyleField.FONT].append(action)
+            action.toggled.connect(lambda on, attr=attr: self._emit_format(attr, on=on))
         self._actions[StyleField.FONT].append(self.addSeparator())
         self._toggle(StyleField.SHADOW, self._shadow, "Drop shadow")
         self._toggle(StyleField.AUTO_FIT, self._auto_fit, "Size the box to its text")
@@ -365,10 +390,6 @@ class StyleBar(QToolBar):
         self._font_size.valueChanged.connect(
             lambda v: self._emit(lambda s: replace(s, font_size=v))
         )
-        self._bold.toggled.connect(lambda on: self._emit(lambda s: replace(s, bold=on)))
-        self._italic.toggled.connect(
-            lambda on: self._emit(lambda s: replace(s, italic=on))
-        )
 
     def _group(self, field: StyleField, *widgets: QWidget) -> None:
         """Add ``widgets`` and remember their actions for show/hide."""
@@ -400,6 +421,11 @@ class StyleBar(QToolBar):
         """Report an auto-fit toggle unless the bar is being populated."""
         if not self._updating:
             self.auto_fit_toggled.emit(on)
+
+    def _emit_format(self, attr: TextAttr, *, on: bool) -> None:
+        """Report a bold, italic, or underline toggle unless being populated."""
+        if not self._updating:
+            self.format_toggled.emit(attr, on)
 
     def _emit(self, change: object) -> None:
         """Emit a style change unless the bar is being populated."""

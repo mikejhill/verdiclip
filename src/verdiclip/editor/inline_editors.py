@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Final, Protocol, override
 
 from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
     QFocusEvent,
+    QFont,
     QKeyEvent,
     QKeySequence,
+    QTextCharFormat,
     QTextCursor,
+    QTextDocument,
+    QTextFormat,
     QTextOption,
 )
 from PySide6.QtWidgets import QFrame, QLineEdit, QPlainTextEdit, QTextEdit, QWidget
@@ -26,6 +31,13 @@ from verdiclip.document.commands import (
     RemoveAnnotations,
     ReplaceAnnotations,
 )
+from verdiclip.document.rich_text import (
+    ATTRS,
+    RichText,
+    TextAttr,
+    TextFormat,
+    TextSpan,
+)
 from verdiclip.document.style import Style, VAlign
 from verdiclip.editor.session import EditorSession, ToolId
 from verdiclip.geometry import Point, Rect
@@ -38,6 +50,119 @@ from verdiclip.render.renderer import (
 )
 
 EDITOR_FRAME: Final = 1  # Editor border width in screen pixels
+FORMAT_KEYS: Final = {
+    QKeySequence.StandardKey.Bold: TextAttr.BOLD,
+    QKeySequence.StandardKey.Italic: TextAttr.ITALIC,
+    QKeySequence.StandardKey.Underline: TextAttr.UNDERLINE,
+}
+
+type FormatEditor = _TextBox | _BoxTextEdit
+type FormatListener = Callable[[TextFormat | None], None]
+
+
+class RichEditing:
+    """Move bold, italic, and underline between spans and an editor's document."""
+
+    @staticmethod
+    def char_format(attr: TextAttr, *, on: bool) -> QTextCharFormat:
+        """Return a format that sets only ``attr``."""
+        char = QTextCharFormat()
+        if attr is TextAttr.BOLD:
+            weight = QFont.Weight.Bold if on else QFont.Weight.Normal
+            char.setFontWeight(int(weight.value))
+        elif attr is TextAttr.ITALIC:
+            char.setFontItalic(on)
+        else:
+            char.setFontUnderline(on)
+        return char
+
+    @staticmethod
+    def format_of(char: QTextCharFormat, base: TextFormat) -> TextFormat:
+        """Return the format ``char`` gives text whose default is ``base``."""
+        prop = QTextFormat.Property
+        bold = base.bold
+        if char.hasProperty(prop.FontWeight):
+            bold = char.fontWeight() >= QFont.Weight.Bold.value
+        italic = char.fontItalic() if char.hasProperty(prop.FontItalic) else base.italic
+        underlined = char.hasProperty(prop.TextUnderlineStyle) or char.hasProperty(
+            prop.FontUnderline
+        )
+        underline = char.fontUnderline() if underlined else base.underline
+        return TextFormat(bold=bold, italic=italic, underline=underline)
+
+    @staticmethod
+    def load(
+        document: QTextDocument, spans: tuple[TextSpan, ...], style: Style
+    ) -> None:
+        """Apply ``spans`` to the plain text already in ``document``."""
+        base = TextFormat.of(style)
+        for start, end, fmt in RichText.runs(document.toPlainText(), spans, style):
+            if fmt == base:
+                continue
+            cursor = QTextCursor(document)
+            cursor.setPosition(start)
+            cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+            for attr in ATTRS:
+                cursor.mergeCharFormat(RichEditing.char_format(attr, on=fmt.get(attr)))
+
+    @staticmethod
+    def formats(document: QTextDocument, style: Style) -> list[TextFormat]:
+        """Return the format of each character of ``document.toPlainText()``."""
+        base = TextFormat.of(style)
+        result: list[TextFormat] = []
+        block = document.begin()
+        first = True
+        while block.isValid():
+            if not first:
+                result.append(base)  # The line break before this block
+            first = False
+            iterator = block.begin()
+            while not iterator.atEnd():
+                fragment = iterator.fragment()
+                fmt = RichEditing.format_of(fragment.charFormat(), base)
+                result.extend([fmt] * fragment.length())
+                iterator += 1
+            block = block.next()
+        return result
+
+    @staticmethod
+    def at_cursor(editor: FormatEditor, base: TextFormat) -> TextFormat:
+        """Return the selection's format (on only if on throughout) or the caret's."""
+        cursor = editor.textCursor()
+        if not cursor.hasSelection():
+            return RichEditing.format_of(editor.currentCharFormat(), base)
+        formats = RichEditing.formats(editor.document(), editor.style_of_text)
+        chosen = formats[cursor.selectionStart() : cursor.selectionEnd()] or [base]
+        return TextFormat(**{a.value: all(f.get(a) for f in chosen) for a in ATTRS})
+
+    @staticmethod
+    def toggle(editor: FormatEditor, attr: TextAttr, *, on: bool | None = None) -> None:
+        """Switch ``attr`` for the selection, or for what is typed next.
+
+        ``on`` None flips it: on unless the selection already has it throughout.
+        """
+        base = TextFormat.of(editor.style_of_text)
+        if on is None:
+            on = not RichEditing.at_cursor(editor, base).get(attr)
+        editor.mergeCurrentCharFormat(RichEditing.char_format(attr, on=on))
+
+    @staticmethod
+    def format_key(editor: FormatEditor, e: QKeyEvent) -> bool:
+        """Handle Ctrl+B, Ctrl+I, or Ctrl+U; return True if ``e`` was one."""
+        for key, attr in FORMAT_KEYS.items():
+            if e.matches(key):
+                RichEditing.toggle(editor, attr)
+                return True
+        return False
+
+    @staticmethod
+    def is_format_key(e: QEvent) -> bool:
+        """True for a shortcut override of a format key, which editors keep."""
+        return (
+            e.type() == QEvent.Type.ShortcutOverride
+            and isinstance(e, QKeyEvent)
+            and any(e.matches(key) for key in FORMAT_KEYS)
+        )
 
 
 class CanvasHost(Protocol):
@@ -67,12 +192,28 @@ class _TextBox(QPlainTextEdit):
     """A frameless multi-line editor that finishes on Esc or focus loss."""
 
     finished = Signal()
+    formatted = Signal()
+
+    def __init__(self, parent: QWidget, style: Style) -> None:
+        super().__init__(parent)
+        self.style_of_text = style
+
+    @override
+    def event(self, e: QEvent) -> bool:
+        """Keep Ctrl+B, Ctrl+I, and Ctrl+U for formatting the text."""
+        if RichEditing.is_format_key(e):
+            e.accept()
+            return True
+        return super().event(e)
 
     @override
     def keyPressEvent(self, e: QKeyEvent) -> None:
-        """Finish on Esc; otherwise edit normally."""
+        """Finish on Esc; format on Ctrl+B/I/U; otherwise edit normally."""
         if e.key() == Qt.Key.Key_Escape:
             self.finished.emit()
+            return
+        if RichEditing.format_key(self, e):
+            self.formatted.emit()
             return
         super().keyPressEvent(e)
 
@@ -87,14 +228,23 @@ class _BoxTextEdit(QTextEdit):
     """Centered, wrapping editor for a box label; finishes on Esc or focus loss."""
 
     finished = Signal()
+    formatted = Signal()
+
+    def __init__(self, parent: QWidget, style: Style) -> None:
+        super().__init__(parent)
+        self.style_of_text = style
 
     @override
     def event(self, e: QEvent) -> bool:
         """Let Undo/Redo reach the document when the label has nothing to undo.
 
         The editor opens automatically after drawing a box, so Ctrl+Z must
-        still undo the box itself rather than silently doing nothing.
+        still undo the box itself rather than silently doing nothing. Ctrl+B,
+        Ctrl+I, and Ctrl+U stay here to format the text.
         """
+        if RichEditing.is_format_key(e):
+            e.accept()
+            return True
         if e.type() == QEvent.Type.ShortcutOverride and isinstance(e, QKeyEvent):
             doc = self.document()
             passthrough = (
@@ -109,9 +259,12 @@ class _BoxTextEdit(QTextEdit):
 
     @override
     def keyPressEvent(self, e: QKeyEvent) -> None:
-        """Finish on Esc; otherwise edit normally (Enter adds a line)."""
+        """Finish on Esc; format on Ctrl+B/I/U; else edit (Enter adds a line)."""
         if e.key() == Qt.Key.Key_Escape:
             self.finished.emit()
+            return
+        if RichEditing.format_key(self, e):
+            self.formatted.emit()
             return
         super().keyPressEvent(e)
 
@@ -155,6 +308,11 @@ class InlineEditors:
         self._fixed: Rect | None = None
         self._anchor = Point(0, 0)
         self._style = Style()
+        self._listener: FormatListener | None = None
+
+    def set_format_listener(self, listener: FormatListener | None) -> None:
+        """Report the format at the caret while typing, and None when done."""
+        self._listener = listener
 
     @property
     def editing_id(self) -> str | None:
@@ -209,19 +367,27 @@ class InlineEditors:
             # No placeholder: the dashed box already shows where text goes,
             # and a hint would clip in a small box
             editor = self._wrapping_editor(
-                note.text if note is not None else "", H_ALIGN[self._style.h_align]
+                note.text if note is not None else "",
+                note.spans if note is not None else (),
+                H_ALIGN[self._style.h_align],
             )
             self._open(editor, transparent=True)
             editor.moveCursor(QTextCursor.MoveOperation.End)
             editor.document().clearUndoRedoStacks()
             return
-        text_box = _TextBox(self._canvas.viewport())
+        text_box = _TextBox(self._canvas.viewport(), self._style)
         text_box.setFrameShape(QFrame.Shape.NoFrame)
         text_box.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         text_box.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         text_box.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         text_box.setPlainText(note.text if note is not None else "")
+        if note is not None:
+            RichEditing.load(text_box.document(), note.spans, self._style)
+        text_box.document().clearUndoRedoStacks()
         text_box.textChanged.connect(self.reposition)
+        text_box.cursorPositionChanged.connect(self._report_format)
+        text_box.selectionChanged.connect(self._report_format)
+        text_box.formatted.connect(self._report_format)
         text_box.finished.connect(self.commit)
         self._open(text_box)
         text_box.moveCursor(text_box.textCursor().MoveOperation.End)
@@ -244,7 +410,10 @@ class InlineEditors:
         self._box = box
         self._style = box.style
         editor = self._wrapping_editor(
-            box.text, Qt.AlignmentFlag.AlignHCenter, "Type a label (Esc to skip)"
+            box.text,
+            box.spans,
+            Qt.AlignmentFlag.AlignHCenter,
+            "Type a label (Esc to skip)",
         )
         editor.selectAll()
         self._open(editor, transparent=True)
@@ -258,12 +427,10 @@ class InlineEditors:
         if widget is None:
             return
         self._widget = None
-        if isinstance(widget, _TextBox):
-            self._commit_text(widget.toPlainText().rstrip())
-        elif isinstance(widget, _BoxTextEdit) and self._box is not None:
-            self._commit_box(widget.toPlainText().strip())
-        elif isinstance(widget, _BoxTextEdit):
-            self._commit_text(widget.toPlainText().rstrip())
+        if isinstance(widget, _BoxTextEdit) and self._box is not None:
+            self._commit_box(*self._typed(widget, strip_start=True))
+        elif isinstance(widget, (_TextBox, _BoxTextEdit)):
+            self._commit_text(*self._typed(widget, strip_start=False))
         elif isinstance(widget, _LabelBox):
             self._commit_label(widget.text().strip())
         self._note = None
@@ -272,8 +439,24 @@ class InlineEditors:
         self._fixed = None
         widget.hide()
         widget.deleteLater()
+        if self._listener is not None:
+            self._listener(None)
         self._canvas.setFocus()
         self._canvas.refresh()
+
+    def apply_format(self, attr: TextAttr, *, on: bool) -> bool:
+        """Format the selected words in the open editor; False if none are selected.
+
+        Without a selection the style bar formats the whole annotation instead.
+        """
+        widget = self._widget
+        if not isinstance(widget, (_TextBox, _BoxTextEdit)):
+            return False
+        if not widget.textCursor().hasSelection():
+            return False
+        RichEditing.toggle(widget, attr, on=on)
+        self._report_format()
+        return True
 
     def reposition(self) -> None:
         """Move and size the editor to match the zoomed annotation."""
@@ -285,7 +468,8 @@ class InlineEditors:
         font.setPixelSize(max(1, round(self._style.font_size * zoom)))
         widget.setFont(font)
         if isinstance(widget, _TextBox):
-            w, h = Renderer.measure_text(widget.toPlainText() + "  ", self._style)
+            text, spans = self._typed(widget, strip_start=False, strip_end=False)
+            w, h = Renderer.measure_text(text + "  ", self._style, spans)
             top_left = self._canvas.to_view(self._anchor)
             inset = Renderer.text_inset(self._style)
             widget.document().setDocumentMargin(inset * zoom)
@@ -311,23 +495,49 @@ class InlineEditors:
     # Internals
 
     def _wrapping_editor(
-        self, text: str, align: Qt.AlignmentFlag, placeholder: str = ""
+        self,
+        text: str,
+        spans: tuple[TextSpan, ...],
+        align: Qt.AlignmentFlag,
+        placeholder: str = "",
     ) -> _BoxTextEdit:
         """Return a frameless editor that wraps ``text`` inside a box."""
-        editor = _BoxTextEdit(self._canvas.viewport())
+        editor = _BoxTextEdit(self._canvas.viewport(), self._style)
         editor.setFrameShape(QFrame.Shape.NoFrame)
         editor.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         editor.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         editor.setAcceptRichText(False)
         editor.setPlaceholderText(placeholder)
         editor.setPlainText(text)
+        RichEditing.load(editor.document(), spans, self._style)
         option = editor.document().defaultTextOption()
         option.setAlignment(align)
         option.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
         editor.document().setDefaultTextOption(option)
         editor.textChanged.connect(self._place_box_editor)
+        editor.cursorPositionChanged.connect(self._report_format)
+        editor.selectionChanged.connect(self._report_format)
+        editor.formatted.connect(self._report_format)
         editor.finished.connect(self.commit)
         return editor
+
+    def _typed(
+        self, widget: FormatEditor, *, strip_start: bool, strip_end: bool = True
+    ) -> tuple[str, tuple[TextSpan, ...]]:
+        """Return the editor's text, trimmed as it is committed, and its spans."""
+        text = widget.toPlainText()
+        start = len(text) - len(text.lstrip()) if strip_start else 0
+        end = len(text.rstrip()) if strip_end else len(text)
+        end = max(start, end)
+        formats = RichEditing.formats(widget.document(), self._style)
+        return text[start:end], RichText.spans(formats[start:end], self._style)
+
+    def _report_format(self) -> None:
+        """Tell the listener the format at the caret or of the selection."""
+        widget = self._widget
+        if self._listener is None or not isinstance(widget, (_TextBox, _BoxTextEdit)):
+            return
+        self._listener(RichEditing.at_cursor(widget, TextFormat.of(self._style)))
 
     def _place_box_editor(self) -> None:
         """Size the box editor to its wrapped text and align it in the box."""
@@ -384,7 +594,7 @@ class InlineEditors:
         current = self._session.document.find(edited.id)
         return current if isinstance(current, type(edited)) else None
 
-    def _commit_text(self, text: str) -> None:
+    def _commit_text(self, text: str, spans: tuple[TextSpan, ...]) -> None:
         """Add, change, or remove the note.
 
         A box drawn by dragging is kept even when empty, so finishing without
@@ -399,14 +609,19 @@ class InlineEditors:
                 return
             if self._fixed is not None:
                 created = TextNote(
-                    rect=self._fixed, text=text, style=self._style, auto_fit=False
+                    rect=self._fixed,
+                    text=text,
+                    style=self._style,
+                    auto_fit=False,
+                    spans=spans,
                 )
             else:
-                w, h = Renderer.measure_text(text, self._style)
+                w, h = Renderer.measure_text(text, self._style, spans)
                 created = TextNote(
                     rect=Rect(self._anchor.x, self._anchor.y, w, h),
                     text=text,
                     style=self._style,
+                    spans=spans,
                 )
             history.execute(AddAnnotations([created], "Add text"))
             self._session.selection.set([created.id])
@@ -414,18 +629,21 @@ class InlineEditors:
         if not text and note.auto_fit:
             history.execute(RemoveAnnotations([note.id], "Delete text"))
             return
-        if text != note.text:
-            edited = Renderer.fit(note.with_text(text, note.rect))
-            history.execute(ReplaceAnnotations([note], [edited], "Edit text"))
+        edited = note.with_text(text, note.rect, spans)
+        if (edited.text, edited.spans) != (note.text, note.spans):
+            history.execute(
+                ReplaceAnnotations([note], [Renderer.fit(edited)], "Edit text")
+            )
 
-    def _commit_box(self, text: str) -> None:
+    def _commit_box(self, text: str, spans: tuple[TextSpan, ...]) -> None:
         """Change the box's label if it changed (empty text clears it)."""
         box = self._current(self._box)
-        if box is None or text == box.text:
+        if box is None:
             return
-        self._session.history.execute(
-            ReplaceAnnotations([box], [box.with_text(text)], "Edit label")
-        )
+        edited = box.with_text(text, spans)
+        if (edited.text, edited.spans) == (box.text, box.spans):
+            return
+        self._session.history.execute(ReplaceAnnotations([box], [edited], "Edit label"))
 
     def _commit_label(self, label: str) -> None:
         """Relabel the counter if the label changed and is not empty."""

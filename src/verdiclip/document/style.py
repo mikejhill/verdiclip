@@ -96,6 +96,7 @@ class Style:
     font_size: int = 16
     bold: bool = False
     italic: bool = False
+    underline: bool = False
     outline: Color = TRANSPARENT
     shadow: bool = False
     h_align: HAlign = HAlign.LEFT

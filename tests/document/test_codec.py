@@ -19,6 +19,7 @@ from verdiclip.document.annotations import (
     TextNote,
 )
 from verdiclip.document.codec import AnnotationCodec
+from verdiclip.document.rich_text import TextSpan
 from verdiclip.document.style import BLACK, HAlign, Style, VAlign
 from verdiclip.exceptions import CodecError
 from verdiclip.geometry import Point, Rect
@@ -50,6 +51,18 @@ class TestAnnotationCodec:
                 ),
             ),
             CounterMarker(center=Point(1, 2), radius=12, label="A"),
+            TextNote(
+                rect=Rect(1, 2, 30, 40),
+                text="one two three",
+                style=Style(underline=True),
+                spans=(
+                    TextSpan(0, 3, bold=True),
+                    TextSpan(4, 7, underline=False, italic=True),
+                ),
+            ),
+            RectangleShape(
+                rect=Rect(1, 2, 30, 40), text="a b", spans=(TextSpan(2, 3, bold=True),)
+            ),
         ],
         ids=[
             "rectangle",
@@ -62,6 +75,8 @@ class TestAnnotationCodec:
             "text",
             "fixed-text",
             "counter",
+            "formatted-text",
+            "formatted-label",
         ],
     )
     def test_round_trip(self, annotation: Annotation) -> None:
@@ -188,7 +203,7 @@ class TestAnnotationCodec:
         data = codec.encode(TextNote(rect=Rect(0, 0, 10, 10), text="t"))
         style = data["style"]
         assert isinstance(style, dict)
-        for key in ("outline", "shadow", "h_align", "v_align"):
+        for key in ("outline", "shadow", "h_align", "v_align", "underline"):
             del style[key]
         del data["auto_fit"]
 
@@ -197,6 +212,37 @@ class TestAnnotationCodec:
         assert isinstance(decoded, TextNote)
         assert decoded.auto_fit
         assert decoded.style == Style()
+
+    @pytest.mark.parametrize(
+        "spans",
+        [
+            "bad",
+            [None],
+            [{"start": 0}],
+            [{"start": 2, "end": 1, "bold": True}],
+            [{"start": 0, "end": 1, "bold": "yes"}],
+        ],
+        ids=["not-list", "null-span", "no-end", "backwards", "string-bold"],
+    )
+    def test_invalid_spans(self, spans: JsonValue) -> None:
+        """Malformed formatted ranges raise CodecError."""
+        codec = AnnotationCodec()
+        data = codec.encode(TextNote(rect=Rect(0, 0, 10, 10), text="text"))
+        data["spans"] = spans
+
+        with pytest.raises(CodecError, match=r"must be|Missing|Invalid|object"):
+            codec.decode(data)
+
+    def test_spans_past_new_text_are_trimmed(self) -> None:
+        """Replacing text with a shorter one keeps only spans that still fit."""
+        codec = AnnotationCodec()
+        data = codec.encode(TextNote(rect=Rect(0, 0, 10, 10), text="ab"))
+        data["spans"] = [{"start": 1, "end": 9, "underline": True}]
+
+        decoded = codec.decode(data)
+
+        assert isinstance(decoded, TextNote)
+        assert decoded.spans == (TextSpan(1, 2, underline=True),)
 
     def test_empty_envelope(self) -> None:
         """An empty valid envelope decodes without annotations."""

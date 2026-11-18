@@ -115,8 +115,10 @@ annotation kinds (rects [x, y, w, h], points [x, y], image pixels):
 
 style (optional; omitted fields use the user's tool style): stroke, fill,
 outline (#rrggbb or #rrggbbaa; #00000000 is clear), width, font_family,
-font_size, bold, italic, shadow, h_align (left/center/right), v_align
-(top/middle/bottom).
+font_size, bold, italic, underline, shadow, h_align (left/center/right),
+v_align (top/middle/bottom). Text and labels take optional "spans" that format
+characters [start, end): [{"start": 4, "end": 7, "underline": true}] (bold,
+italic, underline; each overrides the style for those characters).
 
 After rotate or resize, later coordinates are in the new image. To edit
 pixels: `render --base --max-side 0 -o base.png`, change it, then set_image

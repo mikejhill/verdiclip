@@ -9,6 +9,7 @@ one instance of its class, which Hypothesis rejects as differing executors.
 
 from __future__ import annotations
 
+import itertools
 import json
 import math
 from pathlib import Path
@@ -29,6 +30,7 @@ from verdiclip.document.annotations import (
     TextNote,
 )
 from verdiclip.document.codec import AnnotationCodec, StyleCodec
+from verdiclip.document.rich_text import RichText, TextFormat
 from verdiclip.document.style import Color, Style
 from verdiclip.geometry import Affine, Point, Rect
 from verdiclip.settings import (
@@ -312,3 +314,21 @@ def test_settings_round_trip(settings: Settings) -> None:
     raw = json.loads(json.dumps(SettingsCodec.encode(settings)))
 
     assert SettingsCodec.decode(raw) == settings
+
+
+text_formats = st.builds(TextFormat, st.booleans(), st.booleans(), st.booleans())
+styles_with_formats = st.builds(
+    Style, bold=st.booleans(), italic=st.booleans(), underline=st.booleans()
+)
+
+
+@given(st.lists(text_formats, max_size=40), styles_with_formats)
+def test_spans_reproduce_every_character_format(
+    formats: list[TextFormat], style: Style
+) -> None:
+    """Spans built from formats give back exactly those formats, minimally."""
+    spans = RichText.spans(formats, style)
+
+    assert RichText.formats(len(formats), spans, style) == formats
+    assert RichText.normalized(spans, len(formats), style) == spans
+    assert all(a.end <= b.start for a, b in itertools.pairwise(spans))

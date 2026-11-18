@@ -21,6 +21,7 @@ from verdiclip.document.annotations import (
     RectangleShape,
     TextNote,
 )
+from verdiclip.document.rich_text import TextSpan
 from verdiclip.document.style import TRANSPARENT, Color, HAlign, Style, VAlign
 from verdiclip.exceptions import CodecError
 from verdiclip.geometry import Point, Rect
@@ -40,6 +41,7 @@ class StyleCodec:
             "font_size": style.font_size,
             "bold": style.bold,
             "italic": style.italic,
+            "underline": style.underline,
             "outline": style.outline.hex,
             "shadow": style.shadow,
             "h_align": style.h_align.value,
@@ -65,6 +67,7 @@ class StyleCodec:
                 italic=s.boolean("italic"),
                 # Fields added later are optional so older data still loads
                 outline=Color.from_hex(s.optional_string("outline", TRANSPARENT.hex)),
+                underline=s.optional_boolean("underline", default=False),
                 shadow=s.optional_boolean("shadow", default=False),
                 h_align=HAlign(s.optional_string("h_align", HAlign.LEFT)),
                 v_align=VAlign(s.optional_string("v_align", VAlign.TOP)),
@@ -151,6 +154,7 @@ class AnnotationCodec:
                 style=style,
                 rect=r.rect("rect"),
                 text=r.optional_string("text"),
+                spans=r.spans(),
             )
         if kind in box_types:
             return box_types[kind](id=ident, style=style, rect=r.rect("rect"))
@@ -169,6 +173,7 @@ class AnnotationCodec:
                 rect=r.rect("rect"),
                 text=r.string("text"),
                 auto_fit=r.optional_boolean("auto_fit", default=True),
+                spans=r.spans(),
             )
         return CounterMarker(
             id=ident,
@@ -195,6 +200,10 @@ class _JsonReader:
             msg = f"Missing field {key!r} in {self._context}"
             raise CodecError(msg)
         return self._data[key]
+
+    def has(self, key: str) -> bool:
+        """Return True when ``key`` is present."""
+        return key in self._data
 
     def child(self, key: str) -> _JsonReader:
         """Return a reader for a nested object."""
@@ -239,6 +248,23 @@ class _JsonReader:
         if not isinstance(value, list):
             raise self._type_error(key, "a list", value)
         return value
+
+    def spans(self) -> tuple[TextSpan, ...]:
+        """Return the optional ``spans`` list of formatted text ranges."""
+        if not self.has("spans"):
+            return ()
+        result: list[TextSpan] = []
+        for index, item in enumerate(self.items("spans")):
+            span = _JsonReader(item, f"{self._context}.spans[{index}]")
+            overrides = {
+                attr: span.boolean(attr)
+                for attr in ("bold", "italic", "underline")
+                if span.has(attr)
+            }
+            result.append(
+                TextSpan(span.integer("start"), span.integer("end"), **overrides)
+            )
+        return tuple(result)
 
     def point(self, key: str) -> Point:
         """Return a ``[x, y]`` field as a Point."""
