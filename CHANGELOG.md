@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.0](https://github.com/mikejhill/verdiclip/compare/v1.3.0...v1.4.0) (2026-11-18)
+
+
+### Features
+
+* **editor:** bold, italic, and underline single words in text and box labels ([#226](https://github.com/mikejhill/verdiclip/issues/226)) ([a8a1b35](https://github.com/mikejhill/verdiclip/commit/a8a1b35171738930e951e7b130e555f514d16120))
+
 ## [1.3.0](https://github.com/mikejhill/verdiclip/compare/v1.2.1...v1.3.0) (2026-11-18)
 
 
