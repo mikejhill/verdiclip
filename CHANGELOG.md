@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/mikejhill/verdiclip/compare/v1.2.1...v1.3.0) (2026-11-18)
+
+
+### Features
+
+* **editor:** bring to front and send to back ([#224](https://github.com/mikejhill/verdiclip/issues/224)) ([4e68b0d](https://github.com/mikejhill/verdiclip/commit/4e68b0dbf867ee1d0d21c025a63659316754b908))
+
 ## [1.2.1](https://github.com/mikejhill/verdiclip/compare/v1.2.0...v1.2.1) (2026-11-17)
 
 
