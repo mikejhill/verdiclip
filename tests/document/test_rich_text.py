@@ -182,3 +182,15 @@ def test_with_all_sets_every_character() -> None:
     assert RichText.with_all(spans, 4, Style(), TextAttr.BOLD, on=False) == (
         TextSpan(3, 4, italic=True),
     )
+
+
+def test_plain_lines_moves_spans_with_line_breaks() -> None:
+    """CRLF and other breaks become one newline; formats stay on their words."""
+    text, spans = RichText.plain_lines(
+        "one\r\ntwo\rthree" + chr(0x2028) + "x",
+        (TextSpan(5, 8, underline=True),),
+        Style(),
+    )
+
+    assert text == "one\ntwo\nthree\nx"
+    assert spans == (TextSpan(4, 7, underline=True),)

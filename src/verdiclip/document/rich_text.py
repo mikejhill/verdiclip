@@ -187,6 +187,24 @@ class RichText:
         return RichText.spans([f.with_attr(attr, on=on) for f in formats], style)
 
     @staticmethod
+    def plain_lines(
+        text: str, spans: Iterable[TextSpan], style: Style
+    ) -> tuple[str, tuple[TextSpan, ...]]:
+        """Return ``text`` with every line break as one newline, spans moved to match.
+
+        Qt's editors make the same change on loading, so spans must follow it.
+        """
+        formats = RichText.formats(len(text), spans, style)
+        chars: list[str] = []
+        kept: list[TextFormat] = []
+        for i, char in enumerate(text):
+            if char == "\r" and text[i + 1 : i + 2] == "\n":
+                continue
+            chars.append("\n" if char in "\r\u2028\u2029" else char)
+            kept.append(formats[i])
+        return "".join(chars), RichText.spans(kept, style)
+
+    @staticmethod
     def sliced(
         spans: Iterable[TextSpan], start: int, end: int, style: Style
     ) -> tuple[TextSpan, ...]:

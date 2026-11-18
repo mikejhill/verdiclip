@@ -1433,3 +1433,23 @@ class TestFormattedWords:
 
         box = user.window.session.document.annotations[0]
         assert getattr(box, "spans", None) == (TextSpan(4, 7, bold=True),)
+
+    def test_reediting_crlf_text_keeps_formats_on_their_words(self, user: User) -> None:
+        """Text with Windows line breaks (from ctl) keeps its formats when edited."""
+        session = user.window.session
+        note = TextNote(
+            rect=Rect(100, 100, 200, 120),
+            text="one\r\ntwo",
+            auto_fit=False,
+            spans=(TextSpan(5, 8, underline=True),),
+        )
+        session.document.insert([(0, note)])
+        user.key(Qt.Key.Key_T)
+
+        user.click((120, 120))
+        user.key(Qt.Key.Key_Escape)
+
+        edited = session.document.annotations[0]
+        assert isinstance(edited, TextNote)
+        assert edited.text == "one\ntwo"
+        assert edited.spans == (TextSpan(4, 7, underline=True),)

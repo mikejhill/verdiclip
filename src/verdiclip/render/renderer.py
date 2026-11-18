@@ -177,6 +177,8 @@ class TextLayout:
         height = 0.0
         while (line := self._layout.createLine()).isValid():
             line.setLineWidth(max(line_width, 0.0))
+            # Space lines as the inline editor does, font leading included
+            line.setLeadingIncluded(True)
             line.setPosition(QPointF(0, height))
             height += line.height()
         self._layout.endLayout()
