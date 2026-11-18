@@ -371,6 +371,32 @@ class TestSelection:
 
         assert user.window.session.document.annotations == ()
 
+    def test_layer_shortcuts_restack_the_selection(self, user: User) -> None:
+        """UX-SEL-10: Ctrl+]/[ step the selection; with Shift it jumps to an end."""
+        user.key(Qt.Key.Key_L)
+        for y in (10, 30, 50, 70):
+            user.drag((10, y), (100, y))
+        session = user.window.session
+        a, b, c, d = (item.id for item in session.document.annotations)
+        session.selection.set([b])
+
+        def order() -> list[str]:
+            return [item.id for item in session.document.annotations]
+
+        steps = [
+            ("Ctrl+]", [a, c, b, d]),
+            ("Ctrl+Shift+]", [a, c, d, b]),
+            ("Ctrl+[", [a, c, b, d]),
+            ("Ctrl+Shift+[", [b, a, c, d]),
+        ]
+        for sequence, expected in steps:
+            user.shortcut(sequence)
+            assert order() == expected, sequence
+
+        assert user.window.action("undo").text() == "&Undo Send to back"
+        user.shortcut("Ctrl+Z")
+        assert order() == [a, c, b, d]
+
     def test_style_change_applies_to_selection_and_becomes_default(
         self, user: User
     ) -> None:

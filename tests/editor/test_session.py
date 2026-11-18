@@ -69,9 +69,10 @@ class TestEditorSession:
         nudged = session.nudge_selected(Point(1, 0))
         restyled = session.restyle_selected(lambda style: replace(style, width=8))
         restacked = session.restack_selected(forward=True)
+        jumped = session.restack_selected_to_end(front=True)
         pasted = session.paste('{"version":1,"annotations":[]}')
 
-        assert not any((deleted, nudged, restyled, restacked, pasted))
+        assert not any((deleted, nudged, restyled, restacked, jumped, pasted))
         assert not session.history.can_undo
 
     def test_delete_and_prune(self, session: EditorSession) -> None:
@@ -140,6 +141,26 @@ class TestEditorSession:
         )
         assert changed is (direction != "boundary")
         assert session.document.annotations == tuple(expected)
+
+    @pytest.mark.parametrize("front", [True, False], ids=["front", "back"])
+    def test_restack_to_end(self, session: EditorSession, *, front: bool) -> None:
+        """Front/back moves the selection to an end, keeping its own order."""
+        shapes = [RectangleShape(rect=Rect(i * 30, 0, 20, 20)) for i in range(4)]
+        session.history.execute(AddAnnotations(shapes, "Draw"))
+        a, b, c, d = shapes
+        session.selection.set([c.id, a.id])
+
+        changed = session.restack_selected_to_end(front=front)
+
+        expected = (b, d, a, c) if front else (a, c, b, d)
+        assert changed
+        assert session.document.annotations == expected
+        assert session.history.undo_text == (
+            "Bring to front" if front else "Send to back"
+        )
+        assert not session.restack_selected_to_end(front=front)
+        session.history.undo()
+        assert session.document.annotations == tuple(shapes)
 
     def test_copy_paste(self, session: EditorSession) -> None:
         """Pasted elements gain new identities, ten-pixel offsets, and selection."""
