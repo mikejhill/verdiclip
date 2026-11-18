@@ -6,7 +6,7 @@ from dataclasses import replace
 
 import pytest
 from PySide6.QtCore import QPointF
-from PySide6.QtGui import QColor, QFontMetricsF, QImage, QPainter
+from PySide6.QtGui import QColor, QImage, QPainter, QTextDocument
 from PySide6.QtWidgets import QApplication
 
 from verdiclip.document.annotations import (
@@ -582,12 +582,18 @@ class TestFormattedText:
         assert width < whole / 2
 
     def test_line_spacing_matches_the_editor(self, qapp: QApplication) -> None:
-        """Measured lines advance by the font's full line spacing, leading included."""
+        """Measured lines advance as far as the inline editor's lines do."""
         assert qapp is not None
-        style = Style(font_family="DejaVu Serif", font_size=18)
-        metrics = QFontMetricsF(QtConvert.font(style))
+        style = Style(font_size=18)
+        editor = QTextDocument()
+        editor.setDocumentMargin(0)
+        editor.setDefaultFont(QtConvert.font(style))
+        editor.setPlainText("a\nb\nc")
+        layout = editor.documentLayout()
+        first = layout.blockBoundingRect(editor.begin()).top()
+        last = layout.blockBoundingRect(editor.lastBlock()).top()
 
         one = Renderer.measure_text("a", style)[1]
         three = Renderer.measure_text("a\nb\nc", style)[1]
 
-        assert three - one == pytest.approx(2 * metrics.lineSpacing(), abs=1.5)
+        assert three - one == pytest.approx(last - first, abs=1.0)

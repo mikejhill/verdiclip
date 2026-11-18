@@ -657,12 +657,18 @@ class InlineEditors:
         formats = RichEditing.formats(widget.document(), self._style)
         return text[start:end], RichText.spans(formats[start:end], self._style)
 
+    def typing_format(self) -> TextFormat | None:
+        """Return the format at the caret or of the selection, if typing text."""
+        widget = self._widget
+        if not isinstance(widget, (_TextBox, _BoxTextEdit)):
+            return None
+        return RichEditing.at_cursor(widget, TextFormat.of(self._style))
+
     def _report_format(self) -> None:
         """Tell the listener the format at the caret or of the selection."""
-        widget = self._widget
-        if self._listener is None or not isinstance(widget, (_TextBox, _BoxTextEdit)):
-            return
-        self._listener(RichEditing.at_cursor(widget, TextFormat.of(self._style)))
+        fmt = self.typing_format()
+        if self._listener is not None and fmt is not None:
+            self._listener(fmt)
 
     def _place_box_editor(self) -> None:
         """Size the box editor to its wrapped text and align it in the box."""

@@ -1453,3 +1453,21 @@ class TestFormattedWords:
         assert isinstance(edited, TextNote)
         assert edited.text == "one\ntwo"
         assert edited.spans == (TextSpan(4, 7, underline=True),)
+
+    def test_chrome_refresh_keeps_the_typed_words_format(self, user: User) -> None:
+        """A refresh while typing still shows the selected words' format on the bar."""
+        user.key(Qt.Key.Key_T)
+        user.drag((100, 100), (300, 220))
+        user.type_text("one two")
+        self._select_left(user, 3)
+        user.shortcut("Ctrl+B")
+        bold = self._bar_action(user, "Bold (Ctrl+B)")
+
+        user.window._sync_style_bar()
+
+        assert bold.isChecked()
+        bold.trigger()
+        user.key(Qt.Key.Key_Escape)
+        note = user.window.session.document.annotations[0]
+        assert isinstance(note, TextNote)
+        assert note.spans == ()

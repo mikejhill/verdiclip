@@ -1270,9 +1270,17 @@ class EditorWindow(QMainWindow):
                 fit = TextFit.AUTO if first.auto_fit else TextFit.FIXED
             tool = KIND_TOOLS[first.kind]
             self._style_bar.show_for(FIELD_LAYOUT[tool], first.style, fit)
+            self._show_typing_format()
             return
         tool = self._current_tool_id()
         self._style_bar.show_for(FIELD_LAYOUT[tool], self._session.styles.get(tool))
+        self._show_typing_format()
+
+    def _show_typing_format(self) -> None:
+        """While typing, show B/I/U for the words at the caret, not the note."""
+        typing = self._canvas.editors.typing_format()
+        if typing is not None:
+            self._style_bar.show_text_format(typing)
 
     def _refresh_chrome(self) -> None:
         """Update title, undo/redo state, and size label."""
