@@ -6,7 +6,7 @@ from dataclasses import replace
 
 import pytest
 from PySide6.QtCore import QPointF
-from PySide6.QtGui import QColor, QImage, QPainter
+from PySide6.QtGui import QColor, QImage, QPainter, QTextDocument
 from PySide6.QtWidgets import QApplication
 
 from verdiclip.document.annotations import (
@@ -23,6 +23,7 @@ from verdiclip.document.annotations import (
     TextNote,
 )
 from verdiclip.document.document import Document
+from verdiclip.document.rich_text import TextSpan
 from verdiclip.document.style import (
     HIGHLIGHT_YELLOW,
     RED,
@@ -500,3 +501,99 @@ class TestTextBoxesAndShadows:
         assert not self._dark_columns(
             image, Rect(110, 0, 80, 100), QtConvert.color(RED)
         )
+
+
+class TestFormattedText:
+    """Bold, italic, and underline on parts of the text."""
+
+    def test_formats_cover_only_overridden_runs(self, qapp: QApplication) -> None:
+        """Layout formats name the runs that differ from the whole-text style."""
+        assert qapp is not None
+        style = Style(font_family="Arial", underline=True)
+        spans = (TextSpan(4, 7, bold=True, underline=False),)
+
+        ranges = QtConvert.formats("one two", spans, style)
+
+        assert QtConvert.font(style).underline()
+        assert [(r.start, r.length) for r in ranges] == [(4, 3)]
+        font = ranges[0].format.font()
+        assert font.bold()
+        assert not font.underline()
+        assert font.pixelSize() == style.font_size
+        assert QtConvert.formats("one two", (), style) == []
+        emoji = QtConvert.formats("\U0001f600 ab", (TextSpan(3, 4, bold=True),), style)
+        assert [(r.start, r.length) for r in emoji] == [(4, 1)]
+
+    def test_bold_words_measure_wider(self, qapp: QApplication) -> None:
+        """Auto-fit text grows to fit a bold word."""
+        assert qapp is not None
+        style = Style(font_size=30)
+        text = "WWWW WWWW"
+
+        plain = Renderer.measure_text(text, style)
+        bold = Renderer.measure_text(text, style, (TextSpan(0, 4, bold=True),))
+        note = TextNote(
+            rect=Rect(0, 0, 1, 1), text=text, spans=(TextSpan(0, 4, bold=True),)
+        )
+
+        assert bold[0] > plain[0]
+        assert bold[1] == plain[1]
+        fitted = Renderer.fit(replace(note, style=style))
+        assert isinstance(fitted, TextNote)
+        assert fitted.rect.width == pytest.approx(bold[0])
+
+    @pytest.mark.parametrize(
+        "annotation",
+        [
+            TextNote(rect=Rect(40, 120, 300, 80), text="one two three", auto_fit=False),
+            TextNote(rect=Rect(40, 120, 1, 1), text="one two three"),
+            RectangleShape(rect=Rect(40, 120, 300, 80), text="one two three"),
+            EllipseShape(rect=Rect(40, 110, 320, 120), text="one two three"),
+        ],
+        ids=["fixed-text", "auto-fit-text", "rectangle-label", "ellipse-label"],
+    )
+    def test_underlining_one_word_marks_only_that_word(
+        self, qapp: QApplication, document: Document, annotation: Annotation
+    ) -> None:
+        """An underlined word changes pixels below it and nowhere else."""
+        assert qapp is not None
+        annotation = Renderer.fit(annotation)
+        assert isinstance(annotation, (TextNote, RectangleShape, EllipseShape))
+        underlined = replace(annotation, spans=(TextSpan(4, 7, underline=True),))
+        plain = Document(document.image)
+        plain.insert([(0, annotation)])
+        document.insert([(0, underlined)])
+
+        flat = Renderer().flatten(plain)
+        marked = Renderer().flatten(document)
+
+        changed = [
+            (x, y)
+            for y in range(300)
+            for x in range(400)
+            if flat.pixelColor(x, y) != marked.pixelColor(x, y)
+        ]
+        assert changed
+        xs = sorted(x for x, _ in changed)
+        width = xs[-1] - xs[0]
+        # "two" is about a quarter of "one two three"; the whole line is ~100px
+        assert 10 < width < 50
+        whole = Renderer.measure_text("one two three", annotation.style)[0]
+        assert width < whole / 2
+
+    def test_line_spacing_matches_the_editor(self, qapp: QApplication) -> None:
+        """Measured lines advance as far as the inline editor's lines do."""
+        assert qapp is not None
+        style = Style(font_size=18)
+        editor = QTextDocument()
+        editor.setDocumentMargin(0)
+        editor.setDefaultFont(QtConvert.font(style))
+        editor.setPlainText("a\nb\nc")
+        layout = editor.documentLayout()
+        first = layout.blockBoundingRect(editor.begin()).top()
+        last = layout.blockBoundingRect(editor.lastBlock()).top()
+
+        one = Renderer.measure_text("a", style)[1]
+        three = Renderer.measure_text("a\nb\nc", style)[1]
+
+        assert three - one == pytest.approx(last - first, abs=1.0)

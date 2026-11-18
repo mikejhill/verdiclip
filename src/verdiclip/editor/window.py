@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Final, cast, override
@@ -38,6 +39,7 @@ from PySide6.QtWidgets import (
 
 from verdiclip import APP_NAME, DOCS_URL
 from verdiclip.document.annotations import CounterMarker, LabeledBox, TextNote
+from verdiclip.document.rich_text import TextAttr, TextFormat
 from verdiclip.document.style import Style
 from verdiclip.document.transform import (
     Flip,
@@ -364,6 +366,7 @@ class EditorWindow(QMainWindow):
         page.canvas.cursor_moved.connect(self._show_position)
         page.canvas.escape_unhandled.connect(self._on_escape)
         page.canvas.enter_unhandled.connect(self._on_enter)
+        page.canvas.editors.set_format_listener(self._on_text_format)
         self._tab_bar.setTabData(inserted, page.record.identifier)
         self._tab_bar.setTabToolTip(inserted, page.record.label)
         self._page_changed()
@@ -381,6 +384,7 @@ class EditorWindow(QMainWindow):
         page.canvas.cursor_moved.disconnect(self._show_position)
         page.canvas.escape_unhandled.disconnect(self._on_escape)
         page.canvas.enter_unhandled.disconnect(self._on_enter)
+        page.canvas.editors.set_format_listener(None)
         self._tabs.removeTab(index)
         page.setParent(self._workspace.parking)
         self._page_changed()
@@ -661,6 +665,7 @@ class EditorWindow(QMainWindow):
         self._tab_bar.tabCloseRequested.connect(self.close_tab)
         self._tab_bar.context_requested.connect(self._tab_context)
         self._style_bar.style_changed.connect(self._on_style_changed)
+        self._style_bar.format_toggled.connect(self._on_format_toggled)
         self._style_bar.auto_fit_toggled.connect(self._on_auto_fit_toggled)
         self.resize(900, 650)
 
@@ -1106,16 +1111,40 @@ class EditorWindow(QMainWindow):
         self._canvas.editors.commit()
         self._session.set_auto_fit(on=on, fit=Renderer.fit)
 
-    def _on_style_changed(self, change: Callable[[Style], Style]) -> None:
+    def _on_format_toggled(self, attr: TextAttr, on: bool) -> None:  # noqa: FBT001 — Qt signal payload
+        """Format the words selected while typing, or else all the text."""
+        if self._canvas.editors.apply_format(attr, on=on):
+            return
+        self._on_style_changed(
+            lambda s: replace(s, **{attr.value: on}),
+            lambda: self._session.format_selected(attr, on=on, fit=Renderer.fit),
+        )
+
+    def _on_text_format(self, fmt: TextFormat | None) -> None:
+        """Show the typed words' format on the bar, or the selection's when done."""
+        if fmt is None:
+            self._sync_style_bar()
+        else:
+            self._style_bar.show_text_format(fmt)
+
+    def _on_style_changed(
+        self,
+        change: Callable[[Style], Style],
+        restyle: Callable[[], object] | None = None,
+    ) -> None:
         """Apply a style edit to the selection and to the matching tool defaults.
 
         An open text editor is committed first, as if the bar had taken focus,
-        so the edit and the text being typed can't drift apart.
+        so the edit and the text being typed can't drift apart. ``restyle``
+        replaces the plain style change for the selection.
         """
         self._canvas.editors.commit()
         selected = self._session.selected()
         if selected:
-            self._session.restyle_selected(change, Renderer.fit)
+            if restyle is not None:
+                restyle()
+            else:
+                self._session.restyle_selected(change, Renderer.fit)
             for kind in {a.kind for a in selected}:
                 tool = KIND_TOOLS[kind]
                 self._session.styles.set(tool, change(self._session.styles.get(tool)))
@@ -1255,9 +1284,17 @@ class EditorWindow(QMainWindow):
                 fit = TextFit.AUTO if first.auto_fit else TextFit.FIXED
             tool = KIND_TOOLS[first.kind]
             self._style_bar.show_for(FIELD_LAYOUT[tool], first.style, fit)
+            self._show_typing_format()
             return
         tool = self._current_tool_id()
         self._style_bar.show_for(FIELD_LAYOUT[tool], self._session.styles.get(tool))
+        self._show_typing_format()
+
+    def _show_typing_format(self) -> None:
+        """While typing, show B/I/U for the words at the caret, not the note."""
+        typing = self._canvas.editors.typing_format()
+        if typing is not None:
+            self._style_bar.show_text_format(typing)
 
     def _refresh_chrome(self) -> None:
         """Update title, undo/redo state, and size label."""

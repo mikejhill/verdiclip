@@ -13,6 +13,7 @@ from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import ClassVar, Final, Self, override
 
+from verdiclip.document.rich_text import RichText, TextSpan
 from verdiclip.document.style import Style
 from verdiclip.geometry import Affine, Point, Rect
 
@@ -248,24 +249,41 @@ class BoxAnnotation(Annotation):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class LabeledBox(BoxAnnotation):
-    """A box that can hold centered text, so it works as a label."""
+    """A box that can hold centered text, so it works as a label.
+
+    ``spans`` make parts of the text bold, italic, or underlined.
+    """
 
     text: str = ""
+    spans: tuple[TextSpan, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Keep spans inside the text and reduced to their effect."""
+        _normalize_spans(self)
 
     @property
     def is_solid(self) -> bool:
         """True when clicking inside should select it (filled or labeled)."""
         return not self.style.fill.is_transparent or bool(self.text)
 
-    def with_text(self, text: str) -> Self:
-        """Return a copy showing ``text``."""
-        return replace(self, text=text)
+    def with_text(self, text: str, spans: tuple[TextSpan, ...] = ()) -> Self:
+        """Return a copy showing ``text`` formatted by ``spans``."""
+        return replace(self, text=text, spans=spans)
+
+    @override
+    def with_style(self, style: Style) -> Self:
+        """Return a copy drawn with ``style``; whole-text formats reset spans."""
+        return replace(self, style=style, spans=_restyled(self, style))
 
     @override
     def geometry_json(self) -> JsonObject:
-        """Return the rectangle and text as JSON."""
+        """Return the rectangle, text, and its formatted spans as JSON."""
         r = self.rect
-        return {"rect": [r.x, r.y, r.width, r.height], "text": self.text}
+        return {
+            "rect": [r.x, r.y, r.width, r.height],
+            "text": self.text,
+            **_spans_json(self.spans),
+        }
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -504,6 +522,37 @@ class FreehandShape(Annotation):
 # Text-bearing annotations
 
 
+def _normalize_spans(annotation: LabeledBox | TextNote) -> None:
+    """Store ``annotation``'s spans clipped to its text and reduced."""
+    spans = RichText.normalized(
+        annotation.spans, len(annotation.text), annotation.style
+    )
+    if spans != annotation.spans:
+        object.__setattr__(annotation, "spans", spans)
+
+
+def _restyled(annotation: LabeledBox | TextNote, style: Style) -> tuple[TextSpan, ...]:
+    """Return the spans under ``style``, reset where it formats all the text."""
+    return RichText.restyled(
+        annotation.spans, len(annotation.text), annotation.style, style
+    )
+
+
+def _spans_json(spans: tuple[TextSpan, ...]) -> JsonObject:
+    """Return ``{"spans": [...]}``, or nothing when the text has no spans."""
+    if not spans:
+        return {}
+    encoded: list[JsonValue] = []
+    for span in spans:
+        item: JsonObject = {"start": span.start, "end": span.end}
+        for attr in ("bold", "italic", "underline"):
+            value = getattr(span, attr)
+            if value is not None:
+                item[attr] = value
+        encoded.append(item)
+    return {"spans": encoded}
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class TextNote(Annotation):
     """Text in a box.
@@ -517,6 +566,11 @@ class TextNote(Annotation):
     rect: Rect
     text: str
     auto_fit: bool = True
+    spans: tuple[TextSpan, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Keep spans inside the text and reduced to their effect."""
+        _normalize_spans(self)
 
     @property
     def has_outline(self) -> bool:
@@ -568,9 +622,16 @@ class TextNote(Annotation):
         rect = Geometry.resize_box(self.rect, role, point, constrain=constrain)
         return replace(self, rect=rect, auto_fit=False)
 
-    def with_text(self, text: str, rect: Rect) -> Self:
-        """Return a copy with new text and its box."""
-        return replace(self, text=text, rect=rect)
+    def with_text(
+        self, text: str, rect: Rect, spans: tuple[TextSpan, ...] = ()
+    ) -> Self:
+        """Return a copy with new text, its formatted spans, and its box."""
+        return replace(self, text=text, rect=rect, spans=spans)
+
+    @override
+    def with_style(self, style: Style) -> Self:
+        """Return a copy drawn with ``style``; whole-text formats reset spans."""
+        return replace(self, style=style, spans=_restyled(self, style))
 
     def fitted(self, width: float, height: float) -> Self:
         """Return an auto-fit copy sized ``width`` x ``height`` at the same corner."""
@@ -589,6 +650,7 @@ class TextNote(Annotation):
             "rect": [r.x, r.y, r.width, r.height],
             "text": self.text,
             "auto_fit": self.auto_fit,
+            **_spans_json(self.spans),
         }
 
 

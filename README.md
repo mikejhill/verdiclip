@@ -140,6 +140,7 @@ It works with panels that support Windows UI Automation scrolling, which covers 
 | Back out one step | `Esc` |
 
 - **Labels in boxes.** After drawing a rectangle or ellipse, just type — the text is centered and wraps inside it. Double-click (or `Enter`/`F2`) to edit later; `Esc` skips.
+- **Bold, italic, or underline single words.** While typing in a text box or a box label, select words and press `Ctrl+B`, `Ctrl+I`, or `Ctrl+U` (or the **B**, **I**, **U** buttons). With no words selected, the buttons format all of the selected annotation's text.
 - **Shift** draws squares, circles, and 45° lines.
 - **Your styles stick.** Colors, fills, widths, and fonts you pick are remembered per tool for the next screenshot.
 - **Rotate, flip, and resize** from the Image menu or the toolbar's Image button. Your marks turn and scale with the picture; text stays upright. Resize works on what you see (after cropping), in pixels or percent, keeping the aspect ratio unless you untick it.

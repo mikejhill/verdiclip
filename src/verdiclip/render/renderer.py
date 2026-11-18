@@ -14,13 +14,13 @@ from PySide6.QtGui import (
     QBrush,
     QColor,
     QFont,
-    QFontMetricsF,
     QImage,
     QPainter,
     QPainterPath,
     QPainterPathStroker,
     QPen,
     QPolygonF,
+    QTextCharFormat,
     QTextLayout,
     QTextOption,
 )
@@ -39,6 +39,7 @@ from verdiclip.document.annotations import (
     TextNote,
 )
 from verdiclip.document.document import Document
+from verdiclip.document.rich_text import RichText, TextSpan, utf16_offsets
 from verdiclip.document.style import (
     SHADOW_BLUR,
     SHADOW_OFFSET,
@@ -102,7 +103,86 @@ class QtConvert:
         font.setPixelSize(style.font_size)
         font.setBold(style.bold)
         font.setItalic(style.italic)
+        font.setUnderline(style.underline)
         return font
+
+    @staticmethod
+    def formats(
+        text: str, spans: Iterable[TextSpan], style: Style
+    ) -> list[QTextLayout.FormatRange]:
+        """Return layout formats for the runs of ``text`` that differ from ``style``."""
+        base = QtConvert.font(style)
+        offsets = utf16_offsets(text)  # Qt positions count UTF-16 units
+        result: list[QTextLayout.FormatRange] = []
+        for start, end, fmt in RichText.runs(text, spans, style):
+            if (fmt.bold, fmt.italic, fmt.underline) == (
+                style.bold,
+                style.italic,
+                style.underline,
+            ):
+                continue
+            char = QTextCharFormat()
+            font = QFont(base)
+            font.setBold(fmt.bold)
+            font.setItalic(fmt.italic)
+            font.setUnderline(fmt.underline)
+            char.setFont(font)
+            item = QTextLayout.FormatRange()
+            item.start = offsets[start]
+            item.length = offsets[end] - offsets[start]
+            item.format = char
+            result.append(item)
+        return result
+
+
+class TextLayout:
+    """Lay out text with its formatted spans, as both export and measuring see it."""
+
+    def __init__(
+        self, text: str, spans: Iterable[TextSpan], style: Style, h_align: HAlign
+    ) -> None:
+        # QTextLayout breaks lines only at the Unicode line separator
+        self._layout = QTextLayout(text.replace("\n", "\u2028"), QtConvert.font(style))
+        self._layout.setFormats(QtConvert.formats(text, spans, style))
+        self._align = H_ALIGN[h_align]
+
+    def natural_size(self) -> tuple[float, float]:
+        """Return the unwrapped text's width and height."""
+        height = self._lay_out(None)
+        width = max(
+            (
+                self._layout.lineAt(i).naturalTextWidth()
+                for i in range(self._layout.lineCount())
+            ),
+            default=0.0,
+        )
+        return width, height
+
+    def draw(self, painter: QPainter, area: Rect, share: float, *, wrap: bool) -> None:
+        """Draw aligned in ``area``; ``share`` places leftover height (0 top)."""
+        height = self._lay_out(area.width if wrap else None, line_width=area.width)
+        top = area.y + (area.height - height) * share
+        self._layout.draw(painter, QPointF(area.x, top))
+
+    def _lay_out(self, wrap_width: float | None, line_width: float = 0.0) -> float:
+        """Break the text into lines and return their total height."""
+        option = QTextOption(self._align)
+        option.setWrapMode(
+            QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere
+            if wrap_width is not None
+            else QTextOption.WrapMode.NoWrap
+        )
+        self._layout.setTextOption(option)
+        self._layout.beginLayout()
+        height = 0.0
+        while (line := self._layout.createLine()).isValid():
+            line.setLineWidth(max(line_width, 0.0))
+            # Space lines as the inline editor does, font leading included
+            line.setLeadingIncluded(True)
+            line.setPosition(QPointF(0, height))
+            height += line.height()
+        self._layout.endLayout()
+        return height
 
 
 class Renderer:
@@ -152,12 +232,12 @@ class Renderer:
         return TEXT_PADDING + outline
 
     @staticmethod
-    def measure_text(text: str, style: Style) -> tuple[float, float]:
+    def measure_text(
+        text: str, style: Style, spans: Iterable[TextSpan] = ()
+    ) -> tuple[float, float]:
         """Return the padded width and height of ``text`` drawn in ``style``."""
-        metrics = QFontMetricsF(QtConvert.font(style))
-        lines = text.split("\n") or [""]
-        width = max(metrics.horizontalAdvance(line) for line in lines)
-        height = metrics.lineSpacing() * len(lines)
+        layout = TextLayout(text, spans, style, HAlign.LEFT)
+        width, height = layout.natural_size()
         inset = Renderer.text_inset(style)
         return width + 2 * inset, height + 2 * inset
 
@@ -166,7 +246,9 @@ class Renderer:
         """Return ``annotation`` resized to its text when it is auto-fit text."""
         if isinstance(annotation, TextNote) and annotation.auto_fit:
             return annotation.fitted(
-                *Renderer.measure_text(annotation.text, annotation.style)
+                *Renderer.measure_text(
+                    annotation.text, annotation.style, annotation.spans
+                )
             )
         return annotation
 
@@ -357,13 +439,12 @@ class Renderer:
         """Draw a box's text centered and word-wrapped, clipped to the box."""
         if not box.text:
             return
-        area = QtConvert.rect(self.label_area(box, inset=inset))
+        area = self.label_area(box, inset=inset)
         painter.save()
         painter.setClipRect(QtConvert.rect(box.rect), Qt.ClipOperation.IntersectClip)
-        painter.setFont(QtConvert.font(box.style))
         painter.setPen(QtConvert.color(box.style.stroke))
-        flags = Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap
-        painter.drawText(area, int(flags.value), box.text)
+        layout = TextLayout(box.text, box.spans, box.style, HAlign.CENTER)
+        layout.draw(painter, area, V_SHARE[VAlign.MIDDLE], wrap=True)
         painter.restore()
 
     def _paint_text(self, painter: QPainter, note: TextNote) -> None:
@@ -401,36 +482,11 @@ class Renderer:
             painter.setClipRect(
                 QtConvert.rect(note.rect), Qt.ClipOperation.IntersectClip
             )
-        font = QtConvert.font(note.style)
-        painter.setFont(font)
         painter.setPen(color)
-        if note.auto_fit:
-            flags = self.text_flags(note.style)
-            painter.drawText(QtConvert.rect(area), flags, note.text)
-        else:
-            self._draw_wrapped(painter, note, area, font)
+        layout = TextLayout(note.text, note.spans, note.style, note.style.h_align)
+        # Fixed boxes wrap like the inline editor: at words, else anywhere
+        layout.draw(painter, area, V_SHARE[note.style.v_align], wrap=not note.auto_fit)
         painter.restore()
-
-    @staticmethod
-    def _draw_wrapped(
-        painter: QPainter, note: TextNote, area: Rect, font: QFont
-    ) -> None:
-        """Draw text wrapped like the inline editor: at words, else anywhere."""
-        option = QTextOption(H_ALIGN[note.style.h_align])
-        option.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
-        # QTextLayout breaks lines only at the Unicode line separator
-        layout = QTextLayout(note.text.replace("\n", "\u2028"), font)
-        layout.setTextOption(option)
-        layout.beginLayout()
-        height = 0.0
-        while (line := layout.createLine()).isValid():
-            line.setLineWidth(area.width)
-            line.setPosition(QPointF(0, height))
-            height += line.height()
-        layout.endLayout()
-        share = V_SHARE[note.style.v_align]
-        top = area.y + (area.height - height) * share
-        layout.draw(painter, QPointF(area.x, top))
 
     @staticmethod
     def _paint_counter(painter: QPainter, marker: CounterMarker) -> None:
