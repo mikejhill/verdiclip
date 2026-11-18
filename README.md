@@ -131,6 +131,8 @@ It works with panels that support Windows UI Automation scrolling, which covers 
 | Zoom | `Ctrl+wheel` |
 | Actual size / Fit | `Ctrl+0` / `Ctrl+Shift+F` |
 | Pan | `Space`+drag |
+| Bring forward / Send backward | `Ctrl+]` / `Ctrl+[` |
+| Bring to front / Send to back | `Ctrl+Shift+]` / `Ctrl+Shift+[` |
 | Nudge / Nudge faster | Arrows / `Ctrl`+Arrows |
 | Rotate right / left | `Ctrl+R` / `Ctrl+Shift+R` |
 | Flip horizontally / vertically | `Ctrl+Shift+H` / `Ctrl+Shift+V` |

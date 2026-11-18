@@ -140,7 +140,7 @@ so it can be adjusted immediately; the tool stays active for the next mark.
 | UX-SEL-07 | Change stroke/fill/width/font with a selection | The selected annotations change (one undo step) and the value becomes the default for new annotations. With no selection, only the default changes. |
 | UX-SEL-08 | `Ctrl+C` then `Ctrl+V` with a selection | Copies of the annotations appear offset by 10 px and become the selection. Works between editor windows. |
 | UX-SEL-09 | `Esc` | Steps down the [Keyboard model](#keyboard-model): finish typing → abandon the gesture or crop frame → leave a drawing tool for Select and clear the selection together → in Select, clear the selection. Focus in the style bar is returned to the canvas first. |
-| UX-SEL-10 | `Ctrl+]` / `Ctrl+[` | Bring selected annotations forward / send backward. |
+| UX-SEL-10 | `Ctrl+]` / `Ctrl+[`, or Edit → Bring forward / Send backward; `Ctrl+Shift+]` / `Ctrl+Shift+[`, or Edit → Bring to front / Send to back | The selection moves one step up or down the stack, or all the way to the top or bottom; selected annotations keep their order relative to each other. One undo step; at the end of the stack nothing changes and no step is added. |
 | UX-SEL-11 | Change a tool's color, fill, width, or font (directly or via a selected item) | The choice is remembered for that tool and used by every later editor, including after restarting. Changing editor defaults in Settings resets the remembered choices. |
 
 ## Editor: image

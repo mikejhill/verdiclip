@@ -249,6 +249,22 @@ class EditorSession:
         self._history.execute(ReorderAnnotations(order, new, label))
         return True
 
+    def restack_selected_to_end(self, *, front: bool) -> bool:
+        """Move the selection to the top (``front``) or bottom of the stack.
+
+        Selected annotations keep their order relative to each other.
+        """
+        order = [a.id for a in self._document.annotations]
+        selected = set(self._selection.ids)
+        moved = [i for i in order if i in selected]
+        rest = [i for i in order if i not in selected]
+        new = rest + moved if front else moved + rest
+        if new == order:
+            return False
+        label = "Bring to front" if front else "Send to back"
+        self._history.execute(ReorderAnnotations(order, new, label))
+        return True
+
     # Element clipboard
 
     def copy_selected(self) -> str | None:

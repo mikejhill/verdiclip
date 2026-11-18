@@ -736,6 +736,18 @@ class EditorWindow(QMainWindow):
             lambda: self._session.restack_selected(forward=False),
         )
         self._add_action(
+            "to_front",
+            "Bring to fr&ont",
+            "Ctrl+Shift+]",
+            lambda: self._session.restack_selected_to_end(front=True),
+        )
+        self._add_action(
+            "to_back",
+            "Send to bac&k",
+            "Ctrl+Shift+[",
+            lambda: self._session.restack_selected_to_end(front=False),
+        )
+        self._add_action(
             "rotate_right",
             "Rotate &right",
             "Ctrl+R",
@@ -856,8 +868,10 @@ class EditorWindow(QMainWindow):
                 "select_all",
                 "edit_text",
                 None,
+                "to_front",
                 "forward",
                 "backward",
+                "to_back",
             ],
             "&Image": [
                 "rotate_left",
