@@ -141,7 +141,4 @@ def test_real_baseline_capture_destination_and_focus(
                 )
             )
     finally:
-        try:
-            app.controller.capture.cancel()
-        finally:
-            source.close()
+        app.controller.capture.cancel()

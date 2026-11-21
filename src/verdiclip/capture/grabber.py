@@ -54,25 +54,23 @@ class ScreenSource(Protocol):
 class MssScreenSource:
     """Snapshot the desktop with mss (physical pixels, all monitors).
 
-    The mss handle is created on first use and reused; call from the GUI thread.
+    Each freeze opens its own mss handle: mss caches the monitor layout for the
+    life of a handle, so a reused one keeps the old desktop size after a
+    display change (a resized remote session, a new resolution or monitor)
+    and grabs only part of the screen. Call from the GUI thread.
     """
 
-    def __init__(self) -> None:
-        self._grabber: mss.MSS | None = None
-
     def freeze(self) -> FrozenScreen:
-        """Return a snapshot of every monitor.
+        """Return a snapshot of every monitor, as laid out right now.
 
         Raises:
             CaptureError: If the screen cannot be read.
         """
         try:
-            if self._grabber is None:
-                self._grabber = mss.MSS()
-            desktop = self._grabber.monitors[0]
-            shot = self._grabber.grab(desktop)
+            with mss.MSS() as grabber:
+                desktop = grabber.monitors[0]
+                shot = grabber.grab(desktop)
         except mss.ScreenShotError as err:
-            self.close()
             msg = f"Could not capture the screen: {err}"
             raise CaptureError(msg) from err
         width, height = shot.width, shot.height
@@ -83,9 +81,3 @@ class MssScreenSource:
         bounds = Rect(desktop["left"], desktop["top"], width, height)
         logger.debug("Froze desktop %s", bounds)
         return FrozenScreen(image=image, bounds=bounds)
-
-    def close(self) -> None:
-        """Release the mss handle."""
-        if self._grabber is not None:
-            self._grabber.close()
-            self._grabber = None
