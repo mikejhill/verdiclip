@@ -34,7 +34,11 @@ class FakeMss:
             raise mss.ScreenShotError("test screen unavailable")
         return ScreenShot(self.raw, monitor)
 
-    def close(self) -> None:
+    def __enter__(self) -> FakeMss:
+        """Open like a native handle."""
+        return self
+
+    def __exit__(self, *_: object) -> None:
         """Record native handle release."""
         self.closes += 1
 
@@ -96,28 +100,16 @@ class TestMssScreenSource:
             pytest.skip(reason)
         source = MssScreenSource()
 
-        try:
-            frozen = source.freeze()
-            second = source.freeze()
-        finally:
-            source.close()
-            source.close()
+        frozen = source.freeze()
+        second = source.freeze()
 
         assert not frozen.image.isNull()
         assert frozen.image.width() == frozen.bounds.width
         assert frozen.image.height() == frozen.bounds.height
         assert second.bounds == frozen.bounds
 
-    def test_close_unused(self) -> None:
-        """Closing an unused source is harmless."""
-        source = MssScreenSource()
-
-        source.close()
-
-        assert source is not None
-
     def test_native_boundary(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Native BGRA pixels become detached images and the handle is reused."""
+        """Native BGRA pixels become detached images; each freeze closes its handle."""
         native = FakeMss()
         monkeypatch.setattr(mss, "MSS", lambda: native)
         source = MssScreenSource()
@@ -125,14 +117,44 @@ class TestMssScreenSource:
         first = source.freeze()
         native.raw[0] = 99
         second = source.freeze()
-        source.close()
-        source.close()
 
         assert first.bounds == Rect(-2, -3, 2, 1)
         assert first.image.pixelColor(0, 0).blue() == 10
         assert second.image.pixelColor(0, 0).blue() == 99
         assert native.grabs == 2
-        assert native.closes == 1
+        assert native.closes == 2
+
+    def test_display_change(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A desktop resized between captures is grabbed at its new full size.
+
+        mss caches the layout per handle, so a remote session resized after the
+        first capture used to be grabbed at the old height (black bar).
+        """
+        layouts = iter(
+            [
+                {"left": 0, "top": 0, "width": 4, "height": 2},
+                {"left": 0, "top": 0, "width": 4, "height": 3},
+            ]
+        )
+
+        def open_handle() -> FakeMss:
+            native = FakeMss()
+            monitor = next(layouts)
+            native.monitors = [monitor]
+            native.raw = bytearray(
+                [1, 2, 3, 255] * monitor["width"] * monitor["height"]
+            )
+            return native
+
+        monkeypatch.setattr(mss, "MSS", open_handle)
+        source = MssScreenSource()
+
+        before = source.freeze()
+        after = source.freeze()
+
+        assert before.bounds == Rect(0, 0, 4, 2)
+        assert after.bounds == Rect(0, 0, 4, 3)
+        assert (after.image.width(), after.image.height()) == (4, 3)
 
     def test_native_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Native capture failures release the handle and become CaptureError."""

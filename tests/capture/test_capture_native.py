@@ -305,14 +305,11 @@ class NativeRun:
     def save_and_close(
         self, directory: Path, scenario: str, source: RealDesktop
     ) -> None:
-        """Retire observers and source independently of diagnostic writing."""
+        """Retire observers independently of diagnostic writing."""
         try:
             self.record(directory, scenario, source.frames)
         finally:
-            try:
-                self.close()
-            finally:
-                source.close()
+            self.close()
 
     def await_settings(self) -> None:
         """Observe the actual new owned dialog, without warming or opening another."""
