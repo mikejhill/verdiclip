@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.1](https://github.com/mikejhill/verdiclip/compare/v1.4.0...v1.4.1) (2026-11-21)
+
+
+### Bug Fixes
+
+* **capture:** read the desktop size at each capture ([#228](https://github.com/mikejhill/verdiclip/issues/228)) ([a784747](https://github.com/mikejhill/verdiclip/commit/a7847476bfe748ad39d7a4e9248fc5779c38459d))
+
 ## [1.4.0](https://github.com/mikejhill/verdiclip/compare/v1.3.0...v1.4.0) (2026-11-18)
 
 
